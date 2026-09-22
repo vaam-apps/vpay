@@ -919,6 +919,103 @@ test-flutter-emulator: _flutter-preflight
     fi
     echo "test-flutter-emulator: both suites green"
 
+# ----------------------------------------------------------------- tauri ---
+#
+# `tauri-plugin-vpay-checkout` (docs/plans/2026-09-22-tauri-plugin.md,
+# ADR-0023) — the second payer surface, after the Flutter plugin above, and
+# it sits here for the same reason: it is not a merchant SDK.
+#
+# **NONE OF THE RUST RECIPES BELOW IS IN `just ci` OR `just verify`** (T7),
+# and there are two separate reasons, neither of which a comment can fix:
+# the `tauri` crate does not build on Linux without `libwebkit2gtk-4.1-dev`,
+# which the CI image does not carry, and `check-tauri-mobile` needs an
+# Android and an Apple target the CI image has no toolchain for. Adding
+# either is a runner-image change — the maintainer's call. `just ci` and
+# `just verify` are deliberately untouched by this block, and the gate tally
+# in this file's own header is unchanged at fifteen.
+#
+# The JavaScript half needs no recipe to be gated and has none of its own
+# beyond the convenience one below: `pnpm-workspace.yaml` names
+# `sdks/tauri/*`, so `just lint-web` (`pnpm -r typecheck`, `pnpm -r lint`),
+# `just test-web` (`pnpm -r test`) and `just fmt-check-web`
+# (`prettier --check .`) already reach `@vaam-apps/vpay-tauri-checkout`, and
+# CI's `web` job filter already names `**/*.ts`. `test-tauri-js` below exists
+# only to scope a run to this one package while iterating on it.
+#
+# `docs/sdks/parity.md`'s Tauri table carries the dated ⛔ that says all of
+# this where a reader who trusts a green build will actually look; it is not
+# this comment's job to duplicate it.
+#
+# The crate is its OWN Cargo workspace (T2), which is why every recipe below
+# passes `--manifest-path` rather than `-p`: `cargo clippy --workspace`,
+# `cargo nextest run --workspace` and `cargo deny` at the repository root
+# cannot see this crate at all, by design, so these are the only commands in
+# the repository that compile it.
+tauri_plugin_dir := "sdks/tauri/tauri-plugin-vpay-checkout"
+
+# Fail clearly, and only once, when the plugin is not there — shared by the
+# recipes below so the message is identical everywhere it can occur, exactly
+# as `_flutter-preflight` is for the block above.
+_tauri-preflight:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if [ ! -d "{{ tauri_plugin_dir }}" ]; then
+        echo "{{ tauri_plugin_dir }}: FAIL — this directory does not exist." >&2
+        echo "  docs/plans/2026-09-22-tauri-plugin-brief.md creates it; until it" >&2
+        echo "  lands there is nothing here for cargo or pnpm to build, and this" >&2
+        echo "  recipe refuses rather than fail several commands deep with an" >&2
+        echo "  error naming neither this repository nor the actual problem." >&2
+        exit 1
+    fi
+    if [ ! -f "{{ tauri_plugin_dir }}/Cargo.toml" ]; then
+        echo "{{ tauri_plugin_dir }}/Cargo.toml: FAIL — the directory exists and" >&2
+        echo "  the crate manifest does not. Every recipe in this block drives" >&2
+        echo "  cargo through --manifest-path, because this crate is its own" >&2
+        echo "  workspace (ADR-0023, T2)." >&2
+        exit 1
+    fi
+
+# The crate's own unit suite. `cargo test`, not `cargo nextest run`: this is
+# a one-crate workspace of its own and nextest is not worth the second tool
+# here — and `cargo test` runs the doctests in the same invocation, which on
+# this crate is the `init()` example in `src/lib.rs` that nothing else would
+# ever compile.
+test-tauri-rust: _tauri-preflight
+    cargo test --manifest-path {{ tauri_plugin_dir }}/Cargo.toml
+
+# The root `just clippy` runs `--workspace`, and this crate is in no
+# workspace of the root's (T2), so this is the ONLY thing in the repository
+# that lints it. The crate restates ADR-0007's deny list in its own
+# `[lints.clippy]` table for the same reason — `lints.workspace = true`
+# needs a parent workspace.
+clippy-tauri-rust: _tauri-preflight
+    cargo clippy --manifest-path {{ tauri_plugin_dir }}/Cargo.toml --all-targets -- -D warnings
+
+# The guest-JS suite, scoped. `just test-web`'s `pnpm -r test` already runs
+# this package; the recipe exists so a single-package iteration loop is
+# written down once and correctly (the package's own `test` script builds
+# `@vaam-apps/vpay-stripe-js` first, because its types resolve through that
+# package's `exports` to `dist/`).
+test-tauri-js: _tauri-preflight
+    pnpm --filter @vaam-apps/vpay-tauri-checkout test
+
+# The two mobile targets, type-checked without an NDK or a device. This is
+# the cheapest thing that proves the `#[cfg(mobile)]` half of the crate still
+# compiles; it proves NOTHING about the Kotlin or the Swift, which no gate
+# and no recipe in this repository builds — that is the example app's
+# `cargo tauri android build` / `cargo tauri ios build`.
+#
+# `rustup target add aarch64-linux-android aarch64-apple-ios` first.
+# `IPHONEOS_DEPLOYMENT_TARGET` is NOT set here on purpose: swift-rs defaults
+# to iOS 13.0, the Swift host needs 15.0 for `sheetPresentationController`,
+# and that is handled by an `if #available(iOS 15.0, *)` guard in
+# `VpayCheckoutExternalBrowserSession.swift` rather than by an environment
+# variable a caller has to remember. If this stops building with a Swift
+# availability error, that guard is what regressed.
+check-tauri-mobile: _tauri-preflight
+    cargo check --manifest-path {{ tauri_plugin_dir }}/Cargo.toml --target aarch64-linux-android
+    cargo check --manifest-path {{ tauri_plugin_dir }}/Cargo.toml --target aarch64-apple-ios
+
 # Vendors `@vaam-apps/vpay-stripe-js`'s build output into
 # `examples/checkout-browser/dist/stripe-js/`, which its `index.html` imports
 # as a plain relative ESM path (no bundler, no import map). A COPY rather

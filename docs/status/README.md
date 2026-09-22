@@ -25,6 +25,7 @@ rules that used to separate two sections which now live in two files.
 | how far CrateStack adoption has got, and what each step measured                                      | [cratestack.md](cratestack.md) and [cratestack/](cratestack/)  |
 | what each merchant SDK ships, and which gaps are dated                                                | [merchant-sdks.md](merchant-sdks.md)                           |
 | what the Flutter checkout plugin's gate/recipes/pin actually do, and what is still unbuilt            | [mobile-flutter-plugin.md](mobile-flutter-plugin.md)           |
+| what the Tauri v2 checkout plugin actually compiles, what no gate touches, and what has never run     | [mobile-tauri-plugin.md](mobile-tauri-plugin.md)               |
 | what would have to be true before any of this is an MVP                                               | [mvp.md](mvp.md)                                               |
 | how the "vpay is a scaffold" banner was narrowed, step by step                                        | [overall-history.md](overall-history.md)                       |
 | what `just ci` actually printed on a given day                                                        | [verification/](verification/)                                 |
@@ -36,9 +37,13 @@ appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
-try to be.** Re-measured 2026-09-20: the directory holds 59 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 36 of them. This is a hand-maintained list, not a generated one,
-and the 23 it omits were simply never appended to it. Most of the 23 are
+try to be.** Re-measured 2026-09-20, and again 2026-09-22 when the Tauri
+plugin's page landed: the directory holds 60 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 37 of them. This is a hand-maintained list, not a generated one,
+and the 23 it omits were simply never appended to it. (It said 59 files and 36
+named until 2026-09-22; both moved by one and only one page was added, so the
+23 is unchanged — the arithmetic is stated because the "23" is the only one of
+the three numbers no gate measures.) Most of the 23 are
 still findable: they are linked individually from the area page whose
 section they verify (for example
 `verification/2026-09-13-adr-0018-admin-role-review.md` from
@@ -50,6 +55,22 @@ hand-maintained list is exactly how this gap happened; browse
 [verification/](verification/) directly for the complete, current file set
 rather than trusting this list to be exhaustive.
 
+- [verification/2026-09-22-tauri-plugin.md](verification/2026-09-22-tauri-plugin.md) —
+  the Tauri v2 checkout plugin, built in parallel lanes: what each lane
+  measured (the Rust crate's 19 tests + 1 doctest and its clippy/`cargo doc`
+  runs; the guest-JS package's 71 vitest cases; the Swift's two clean
+  compiles) and what the docs lane re-ran through the four new
+  `just *-tauri-*` recipes. Carries the `cargo check --target
+aarch64-apple-ios` **exit 101** that swift-rs's iOS 13.0 default caused and
+  the `if #available(iOS 15.0, *)` guard that closed it, the finding that
+  **iOS cannot produce `stopUrlReached` at all** on tauri-v2.11.6, and the
+  gate limitations this pass hit rather than worked around —
+  `verify-npm-scope` and `verify-links` both walking `git ls-files` on an
+  untracked tree, and `verify-sdk-parity`'s table reader splitting a row on
+  every raw `|`, which makes two live test titles uncitable. Says plainly
+  that no gate compiles the Rust, the Kotlin or the Swift, that the Kotlin
+  was compiled by none of the lanes that wrote it, and that nothing has run
+  against a vpay, a rail, a device or a simulator.
 - [verification/2026-09-20-doc-counts-gate.md](verification/2026-09-20-doc-counts-gate.md) —
   `verify-doc-counts`, the **fifteenth** gate, and the survey that argued for
   it: 35 checkably-false claims in the live docs, **thirteen** of them numbers

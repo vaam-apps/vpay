@@ -1,0 +1,22 @@
+// Present because every upstream Tauri v2 Android plugin module has one —
+// tauri-apps/plugins-workspace@v2 `plugins/opener/android/settings.gradle`
+// and `plugins/dialog/android/settings.gradle` are these same two lines
+// verbatim, and tauri-apps/tauri@tauri-v2.11.6
+// `crates/tauri-cli/templates/plugin/android/settings.gradle` is the same
+// two lines plus a `pluginManagement` block pinning AGP 8.0.2 / Kotlin
+// 1.8.20.
+//
+// This file is NOT what a real build reads. When the Tauri CLI wires this
+// plugin into a consuming app it adds this directory to the *app's*
+// `tauri.settings.gradle` as its own Gradle subproject, and the app's
+// settings file wins; the app's root `build.gradle.kts` buildscript supplies
+// the Android Gradle Plugin and Kotlin plugin versions. This file only
+// matters if someone opens `android/` on its own — which is also why the
+// version-pinning `pluginManagement` block of the CLI template is omitted
+// here, exactly as `opener` and `dialog` omit it: pinning AGP 8.0.2 in a
+// file that the real build ignores buys nothing and misleads a reader.
+//
+// `.tauri/tauri-api` is created by the Tauri CLI (it is in `.gitignore`), so
+// this path resolves only after a `cargo tauri android` command has run.
+include ':tauri-android'
+project(':tauri-android').projectDir = new File('./.tauri/tauri-api')

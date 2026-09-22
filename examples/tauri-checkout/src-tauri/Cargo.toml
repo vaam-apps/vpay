@@ -1,0 +1,58 @@
+# The Rust half of `examples/tauri-checkout` — the smallest real Tauri v2
+# application that consumes `tauri-plugin-vpay-checkout`.
+#
+# Its purpose is evidence. `cargo build` here, `cargo tauri android build`
+# and `cargo tauri ios build` are what actually compile the plugin's Kotlin
+# and Swift hosts and link its Rust static library into an application
+# binary; nothing in `sdks/tauri/tauri-plugin-vpay-checkout` can do that on
+# its own. See ../README.md § Status for what has and has not been run.
+#
+# Like the plugin's own manifest, this one carries its OWN `[workspace]`
+# table, and for the same load-bearing reason: it keeps `tauri`'s dependency
+# graph (wry, tao, objc2, webkit2gtk on Linux) out of the repository root's
+# `Cargo.lock`, `cargo deny`, `cargo xtask verify-no-mocks`'s `cargo
+# metadata` sweep and `just ci`'s `cargo nextest run --workspace`. The root
+# `Cargo.toml` is untouched.
+[workspace]
+
+[package]
+name = "vpay-example-tauri-checkout"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "Apache-2.0"
+repository = "https://github.com/vaam-apps/vpay"
+authors = ["Vymalo"]
+description = "Example Tauri v2 application that consumes tauri-plugin-vpay-checkout"
+# An example, not an artefact.
+publish = false
+
+[lib]
+# `cargo tauri init` generates exactly this for an app that is meant to build
+# on mobile: `tauri android build` and `tauri ios build` compile the app as a
+# static/dynamic library and link it into a Gradle/Xcode-generated host
+# binary, which calls the `#[tauri::mobile_entry_point]` in `src/lib.rs`.
+# `src/main.rs` is the desktop entry point and calls the same `run()`.
+name = "vpay_example_tauri_checkout_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.6.3", features = [] }
+
+[dependencies]
+# Same caret minor the plugin declares, so one `tauri` resolves for the whole
+# binary.
+tauri = { version = "2.11", features = [] }
+# By path, not by version: the crate is `publish = false` and this example is
+# the thing that proves it builds.
+tauri-plugin-vpay-checkout = { path = "../../../sdks/tauri/tauri-plugin-vpay-checkout" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# NOTE, deliberately: this crate does NOT restate the repository's
+# `unwrap_used`/`expect_used`/`panic` clippy denies that
+# `tauri-plugin-vpay-checkout/Cargo.toml` does. `src/lib.rs`'s single
+# `.expect(...)` is at the process edge of an example binary — the
+# conventional `cargo tauri init` line — and there is no caller it could
+# fail. The plugin, which is the code a merchant's payment path actually
+# runs, keeps the denies.

@@ -1,0 +1,42 @@
+# Front-end build output and dependencies.
+/dist
+/node_modules
+
+# Vite's local env overrides — where the three `VITE_VPAY_*` prefills go.
+.env.local
+.env.*.local
+
+# Cargo's build directory for `src-tauri`, which is its own workspace root.
+#
+# Measured 2026-09-22: it does not appear there today, because the repository
+# root's `.cargo/config.toml` sets `build.target-dir = "target"` and cargo
+# finds that file by walking up out of this directory — so the artefacts land
+# in the root `target/`, which the root `.gitignore` covers. The line stays
+# because that redirect is not this example's to rely on: build with
+# `CARGO_TARGET_DIR` unset and a different config, and the directory appears
+# here.
+/src-tauri/target
+
+# Written by `tauri_build::build()` on every build: the capability JSON
+# schemas (`desktop-schema.json`, `macOS-schema.json`, …), the resolved
+# ACL and the generated capability manifest. Regenerated from
+# `tauri.conf.json` + `capabilities/` + every plugin's `permissions/`, so
+# tracking it would only give a reviewer a second copy of the inputs.
+/src-tauri/gen/schemas
+
+# ALL of `gen/`, and the decision is deliberate rather than lazy.
+#
+# `cargo tauri android init` writes `gen/android/` — a full Gradle project:
+# wrapper jar, `local.properties` pointing at THIS machine's SDK, a
+# `tauri.settings.gradle` naming absolute paths to every plugin's `android/`
+# directory, and `app/src/main/jniLibs/**` holding the built `.so`s.
+# `cargo tauri ios init` writes `gen/apple/` — an Xcode project carrying
+# absolute paths and a `Podfile`/`Externals` tree that CocoaPods resolves.
+# Neither is deterministic across machines and neither is source: both are
+# regenerated in full by re-running `init`, which the README tells you to
+# do. `create-tauri-app`'s own templates track the generated Xcode/Gradle
+# project and then ignore the dozen sub-paths inside it that are not
+# reproducible; this example ignores the whole tree instead, because the
+# only thing it would gain by tracking it is a diff nobody reads and a
+# `local.properties` naming a home directory.
+/src-tauri/gen

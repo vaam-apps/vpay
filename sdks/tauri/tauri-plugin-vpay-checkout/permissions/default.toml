@@ -1,0 +1,17 @@
+"$schema" = "schemas/schema.json"
+
+[default]
+description = """
+The two commands vpay's checkout window needs, and nothing else.
+
+#### Granted Permissions
+
+`allow-show` lets the front end open the payer's browser on a checkout
+session's own hosted URL, and `allow-dismiss` lets it end that window. Neither
+command can read a payment's outcome, reach vpay's merchant API, or open a URL
+the caller did not supply, so this set is the whole of the plugin's surface —
+an application that grants it grants no more than the ability to send the
+payer to a checkout page.
+"""
+
+permissions = ["allow-show", "allow-dismiss"]

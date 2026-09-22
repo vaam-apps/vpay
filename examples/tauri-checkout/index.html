@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>vpay checkout example</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+        line-height: 1.5;
+      }
+
+      body {
+        margin: 0;
+        padding: 1.5rem;
+        max-width: 34rem;
+      }
+
+      h1 {
+        font-size: 1.25rem;
+        margin: 0 0 0.25rem;
+      }
+
+      p.lede {
+        margin: 0 0 1.5rem;
+        opacity: 0.75;
+        font-size: 0.9rem;
+      }
+
+      label {
+        display: block;
+        margin-bottom: 0.9rem;
+        font-size: 0.85rem;
+      }
+
+      label span {
+        display: block;
+        margin-bottom: 0.2rem;
+        font-weight: 600;
+      }
+
+      input[type="text"],
+      input[type="url"] {
+        width: 100%;
+        box-sizing: border-box;
+        padding: 0.5rem;
+        font: inherit;
+        font-size: 0.9rem;
+      }
+
+      label.inline {
+        display: flex;
+        gap: 0.5rem;
+        align-items: flex-start;
+      }
+
+      label.inline span {
+        font-weight: 400;
+      }
+
+      .actions {
+        display: flex;
+        gap: 0.75rem;
+        margin: 1.25rem 0;
+      }
+
+      button {
+        font: inherit;
+        padding: 0.5rem 1.25rem;
+      }
+
+      /* An empty <output> would otherwise render as a bordered box with
+         nothing in it, which reads as a broken panel rather than as one
+         that has simply not been used yet. */
+      #result:empty {
+        display: none;
+      }
+
+      #result {
+        display: block;
+        margin: 0;
+        padding: 0.75rem;
+        border: 1px solid currentColor;
+        border-radius: 0.25rem;
+        white-space: pre-wrap;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+        font-size: 0.8rem;
+        min-height: 1.2rem;
+      }
+
+      footer {
+        margin-top: 1.5rem;
+        font-size: 0.75rem;
+        opacity: 0.7;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>vpay checkout example</h1>
+    <p class="lede">
+      Opens a vpay hosted checkout session in the payer's own browser and
+      reports the result kind. No merchant credential is involved: the
+      publishable key and the session URL are all this page holds.
+    </p>
+
+    <form id="checkout-form" novalidate>
+      <label>
+        <span>API base URL</span>
+        <input
+          id="base-url"
+          name="base-url"
+          type="url"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="https://api.vpay.example"
+        />
+      </label>
+
+      <label>
+        <span>Publishable key</span>
+        <input
+          id="publishable-key"
+          name="publishable-key"
+          type="text"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="pk_test_…"
+        />
+      </label>
+
+      <label>
+        <span>Checkout session URL</span>
+        <input
+          id="session-url"
+          name="session-url"
+          type="url"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="https://checkout.vpay.example/c/cs_…?key=pk_…#cs_…_secret_…"
+        />
+      </label>
+
+      <label class="inline">
+        <input id="allow-insecure" name="allow-insecure" type="checkbox" />
+        <span>
+          Allow an insecure <code>http://</code> base URL (demo stack only —
+          this is D6's named opt-in, never inferred from the scheme)
+        </span>
+      </label>
+
+      <div class="actions">
+        <button id="pay" type="submit">Pay</button>
+        <button id="dismiss" type="button">Dismiss</button>
+      </div>
+    </form>
+
+    <output id="result" for="checkout-form" aria-live="polite"></output>
+
+    <footer>
+      A <code>succeeded</code> here is a UI fact. A merchant's server fulfils
+      from the signature-verified <code>payment_intent.succeeded</code>
+      webhook, never from this screen.
+    </footer>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

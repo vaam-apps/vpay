@@ -1,0 +1,17 @@
+# Same two entries every upstream Tauri v2 Android plugin module ignores
+# (tauri-apps/tauri `crates/tauri-cli/templates/plugin/android/.gitignore`,
+# and tauri-apps/plugins-workspace `plugins/opener/android/.gitignore` /
+# `plugins/dialog/android/.gitignore`, both on `v2`):
+#
+#   /build   — Gradle's output for this library module.
+#   /.tauri  — created by the Tauri CLI when it wires this module into a
+#              consuming app: `.tauri/tauri-api` is the `:tauri-android`
+#              project this module's `settings.gradle` points at.
+/build
+/.tauri
+
+# Not in the upstream template, but Gradle writes both of these into any
+# directory it is invoked from, and a plugin module is a directory a
+# developer will eventually invoke Gradle from by accident.
+/.gradle
+local.properties

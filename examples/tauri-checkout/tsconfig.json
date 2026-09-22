@@ -1,0 +1,20 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    // ES2020 rather than the base's ES2023, and DOM rather than
+    // DOM + DOM.Iterable: this is the front end of a Tauri app, and the
+    // oldest WebView it has to run in is Android's System WebView on an
+    // API-21 device (`minSdk = 21`, D-M4). Nothing in `src/` needs a later
+    // language level, so the example does not ask for one.
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM"],
+    // Vite compiles; `tsc` here is a type check only. `vite build` runs
+    // esbuild over the same files.
+    "noEmit": true,
+    // `import.meta.env.VITE_*` — the three prefilled fields. Without this
+    // the `ImportMetaEnv` interface does not exist and `src/main.ts` does
+    // not type-check.
+    "types": ["vite/client"]
+  },
+  "include": ["src"]
+}

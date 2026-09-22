@@ -1,0 +1,54 @@
+{
+  "name": "@vaam-apps/vpay-tauri-checkout",
+  "version": "0.4.0",
+  "description": "The guest-JS half of tauri-plugin-vpay-checkout: opens vpay's hosted checkout in the payer's own browser from a Tauri v2 app, and falls back to a window.open popup in a plain browser.",
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vaam-apps/vpay.git",
+    "directory": "sdks/tauri/tauri-plugin-vpay-checkout"
+  },
+  "homepage": "https://github.com/vaam-apps/vpay/tree/master/sdks/tauri/tauri-plugin-vpay-checkout#readme",
+  "bugs": {
+    "url": "https://github.com/vaam-apps/vpay/issues"
+  },
+  "type": "module",
+  "engines": {
+    "node": ">=22.11.0"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "deps": "pnpm --filter @vaam-apps/vpay-stripe-js build",
+    "build": "pnpm run deps && tsc -p tsconfig.build.json",
+    "prepack": "pnpm run build",
+    "typecheck": "pnpm run deps && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm run deps && vitest run",
+    "lint": "pnpm run deps && eslint . --max-warnings 0"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "@vaam-apps/vpay-stripe-js": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@vpay/config": "workspace:*",
+    "eslint": "9.39.5",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
+  }
+}

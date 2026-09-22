@@ -86,6 +86,18 @@ see [`docs/sdks/parity.md`](docs/sdks/parity.md)
 ([ADR-0015](docs/adr/0015-sdk-parity.md)) for where they agree and the dated,
 owned list of where they still don't.
 
+Two **payer-device** surfaces sit beside that browser client and are not
+merchant SDKs either: [`sdks/flutter/vpay_checkout_flutter`](sdks/flutter/vpay_checkout_flutter/)
+([ADR-0021](docs/adr/0021-flutter-checkout-plugin.md)) and, since 2026-09-22,
+[`sdks/tauri/tauri-plugin-vpay-checkout`](sdks/tauri/tauri-plugin-vpay-checkout/)
+([ADR-0023](docs/adr/0023-tauri-checkout-plugin.md)) — vpay's hosted checkout
+opened in the payer's **own browser**, answered by polling the payment intent
+and never by reading a URL. Each has its own table in
+[`docs/sdks/parity.md`](docs/sdks/parity.md), and **neither is gated by
+`just ci`**: see [`docs/status/mobile-flutter-plugin.md`](docs/status/mobile-flutter-plugin.md)
+and [`docs/status/mobile-tauri-plugin.md`](docs/status/mobile-tauri-plugin.md)
+for what each has and has not actually been run against.
+
 Two rails ship in the MVP, and they have genuinely different payer journeys:
 
 |                                      | **MTN MoMo** (`push`)           | **Orange Money** (`redirect`)            |
@@ -204,6 +216,8 @@ sdks/
   rust/         vpay-sdk                   — merchant SDK (workspace crate)
   nodejs/       @vaam-apps/vpay-sdk        — the same, zero-dependency Node ≥ 22 ESM
   stripe-js/    @vaam-apps/vpay-stripe-js  — the browser client for a payer's page
+  flutter/      vpay_checkout_flutter      — payer surface: the hosted page in the payer's own browser (ADR-0021)
+  tauri/        tauri-plugin-vpay-checkout — the same, on Tauri v2; its own cargo workspace (ADR-0023)
   stripe-compat/                           — the official `stripe` package, driven against a real stack
 examples/       merchant-demo (`just demo`) · shop · checkout-browser · merchant-curl
                 merchant-node · merchant-stripe-node · webhook-receiver

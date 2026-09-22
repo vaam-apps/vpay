@@ -1,0 +1,580 @@
+# The Tauri v2 checkout plugin — what was actually run, and by whom
+
+**Date:** 2026-09-22. **Branch:** `claude/tauri-v2-sdk-multiplatform-ca900b`,
+base `master` at `7134ecb`. **Host:** macOS 26.5.1, Xcode 26.2 (build
+17C52), Apple Swift 6.2.3, `rustc 1.98.0` (the version
+`rust-toolchain.toml` pins), Node v24.15.0, pnpm 11.18.0.
+
+This page has two kinds of evidence in it and says which is which on every
+line. **Measured by the lane that built the piece**, on this host, earlier
+the same day: everything in "Per lane" below, taken from the orchestrator's
+lane notes. **Re-measured by the docs lane**, in this pass: the section after
+it, which re-ran the cheap things rather than trusting them. Where the two
+disagree, the re-measurement is the one to believe; they did not disagree.
+
+What is being verified is
+[`sdks/tauri/tauri-plugin-vpay-checkout`](../../../sdks/tauri/tauri-plugin-vpay-checkout/):
+a Rust crate in its own Cargo workspace, the `@vaam-apps/vpay-tauri-checkout`
+guest-JS package, a Kotlin Android host and a Swift iOS host. Design:
+[`../../plans/2026-09-22-tauri-plugin.md`](../../plans/2026-09-22-tauri-plugin.md).
+Decisions: [ADR-0023](../../adr/0023-tauri-checkout-plugin.md). Status page:
+[`../mobile-tauri-plugin.md`](../mobile-tauri-plugin.md).
+
+## Per lane — measured by the lane that built it, 2026-09-22
+
+### Lane A1 — the Rust crate
+
+| Command                                               | Result                                                                |
+| ----------------------------------------------------- | --------------------------------------------------------------------- |
+| `cargo build`                                         | exit 0                                                                |
+| `cargo clippy --all-targets -- -D warnings`           | exit 0                                                                |
+| `cargo test`                                          | **19 passed, 0 failed, 0 ignored**                                    |
+| `cargo test --doc`                                    | **1 passed**                                                          |
+| `cargo doc`                                           | exit 0, **0 warnings**                                                |
+| `cargo fmt --check`                                   | clean                                                                 |
+| `cargo check --target aarch64-linux-android`          | exit 0 — no NDK required                                              |
+| `cargo check --target aarch64-apple-ios` (and `-sim`) | exit 0, with `IPHONEOS_DEPLOYMENT_TARGET=15.0` at the time it was run |
+
+**The failure that lane hit and fixed rather than papered over.** A bare
+`cargo check --target aarch64-apple-ios` **failed, exit 101**: `swift-rs`
+compiles the plugin's Swift for iOS **13.0** by default, and the Swift host
+uses `sheetPresentationController`, which is iOS 15. The lane's first answer
+was the environment variable above. Lane C's follow-up replaced it with an
+`if #available(iOS 15.0, *)` guard in
+`VpayCheckoutExternalBrowserSession.swift`, after which
+`cargo check --target aarch64-apple-ios` exits 0 **without** the variable —
+verified both ways by that lane, and the swift-rs 13.0 default confirmed from
+`cargo check -vv` output rather than from documentation.
+
+Deviations from the brief that lane recorded, because a contract read later
+should not look like it was met: `show` takes **four flat arguments** rather
+than one `request` object (`tauri::ipc::Channel` implements `CommandArg` and
+not `Deserialize`, so it cannot sit inside a deserialised struct — the JS
+wire is unchanged, which is what the brief actually fixes); `tauri = "2.11"`
+is a caret, not an exact pin; `links = "tauri-plugin-vpay-checkout"` is
+mandatory, because `tauri_plugin::Builder::try_build` refuses without
+`CARGO_MANIFEST_LINKS`; `Error::Tauri` renders the fixed `channel_send_failed`
+while `Error::PluginInvoke` is deliberately `transparent` (the mobile
+rejection tokens are the contract, so D6's fixed-string duty sits on the
+Kotlin and the Swift); and there is one extra token the brief did not name,
+`insecure_url`. The lint denies were proven live by mutation: an `unwrap`
+added to the crate made clippy exit 101.
+
+**And one the brief got wrong rather than one the lane changed.** The
+"Pinned versions" row of the brief's Names table lists `tauri-build = "2.6.3"`
+among this plugin's pins. **This crate does not depend on `tauri-build` at
+all.** `tauri-build` is the **consuming application's** build dependency —
+read on disk, 2026-09-22: `examples/tauri-checkout/src-tauri/Cargo.toml:40`
+carries `tauri-build = { version = "2.6.3", features = [] }`, and
+`sdks/tauri/tauri-plugin-vpay-checkout/Cargo.toml` carries no such line. What
+the plugin actually has in `[build-dependencies]` is
+`tauri-plugin = { version = "2.6.3", features = ["build"] }` (its line 59),
+which is what generates `permissions/autogenerated/`, the permission JSON
+schema and the `mobile`/`desktop` cfg aliases. The `2.6.3` figure is right;
+it was attached to the wrong crate. Recorded by Lane A1 and corrected in the
+brief's own appended note.
+
+### Lane A2 — the guest-JS package
+
+| Command                                                  | Result                                                                                                                                       |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm --filter @vaam-apps/vpay-tauri-checkout typecheck` | exit 0                                                                                                                                       |
+| `pnpm --filter @vaam-apps/vpay-tauri-checkout lint`      | exit 0, `--max-warnings 0`                                                                                                                   |
+| `pnpm --filter @vaam-apps/vpay-tauri-checkout test`      | exit 0 — **8 files, 71 passed, 0 skipped**                                                                                                   |
+| `pnpm --filter @vaam-apps/vpay-tauri-checkout build`     | exit 0                                                                                                                                       |
+| `cargo xtask verify-npm-scope`                           | exit 0 — **but the package was untracked**, and that gate walks `git ls-files`, so it did not see the new manifest. See "Re-measured" below. |
+
+The 71 cases are `stop-url` 10, `host-tauri` 5, `host-web` 11, `redaction` 4,
+`errors` 5, `no-logging` 4, `controller` 17, `checkout` 15.
+
+Deviations that lane recorded: `embeddedSessionNotSupportedError` interpolates
+the `cs_…` id (as the Dart original does — a session id is public, and the
+no-logging suite asserts it is the _only_ interpolated value);
+`webHost` resolves its `window` lazily; there is no `pollingTimeout` error
+factory, only the exported constant; and **a host that resolves `show` and
+then never reports anything still hangs `start`** — there is no stream-done
+signal on this seam. That last one is a real gap, named rather than fixed,
+and it is why the flow page's "what can go wrong" table carries a row for it.
+
+Lane A2 also measured the two prettier failures that produced this pass's
+`.prettierignore` entries: `ios/.build/**` (10 files) and
+`permissions/autogenerated/reference.md` +
+`permissions/schemas/schema.json`. The two permission files are **tracked**
+and are rewritten by `tauri_plugin::Builder` on every `cargo build`, so a
+formatted copy is un-formatted again by the next build.
+
+### Lane B — the Android host
+
+**Compiled by nobody in this lane**, and by no gate or `just` recipe in this
+repository. What that lane did instead, and it is a review rather than a
+build:
+
+- `xmllint` — `AndroidManifest.xml` is well-formed.
+- A source read: no `Log`, no `println`, no `WebView` anywhere in the three
+  Kotlin files.
+- Every upstream API used was **line-cited at tag `tauri-v2.11.6`** and
+  diffed against the extracted `android/.tauri/tauri-api` on disk.
+
+Deviations recorded: a two-guard `already_open` check
+(`pendingEvents != null || isOpen()`); every argument read inside one `try`,
+so a decode failure becomes a fixed token rather than a message quoting the
+URL (D6); `invalid_url` is `Uri.parse(url).scheme == null`; there is no
+`no_activity` branch, because Tauri always supplies the Activity;
+`REQUEST_CODE` dropped in favour of Tauri's own callback name; and
+`jvmTarget = 17` is **flagged as a risk** — `tauri-android` itself compiles
+at 1.8 — with the fallback documented in `build.gradle.kts` rather than
+guessed at. `show` resolves immediately after
+`startActivityForResult(invoke, intent, "onCheckoutResult")`; the outcome
+travels only on the `Channel`, and the `@ActivityCallback` never touches the
+invoke.
+
+### Lane C — the iOS host
+
+| Command                                                                                       | Result                                        |
+| --------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| `swift build --sdk iphonesimulator -target arm64-apple-ios15.0-simulator`                     | exit 0                                        |
+| `xcodebuild -scheme tauri-plugin-vpay-checkout -destination 'generic/platform=iOS Simulator'` | **BUILD SUCCEEDED** (Xcode 26.2, Swift 6.2.3) |
+
+The built product carries the `show:error:` and `dismiss:` selectors Tauri
+looks up, and the `_init_plugin_vpay_checkout` symbol. **Not run on a
+simulator**, and no `cargo tauri ios build` was performed.
+
+**The deviation that became a dated ⛔** (T6): Universal-Link intake is
+**absent**, not merely unverified. tauri-v2.11.6's Swift `Plugin` base class
+exposes no app-lifecycle hook; a grep for `userActivity`, `NSUserActivity`,
+`openURL`, `UIApplicationDelegate` and `applicationDelegate` over every file
+in `crates/tauri/mobile/ios-api/Sources/Tauri/` returns nothing; and
+`tauri-apps/plugins-workspace@v2`'s `deep-link` plugin ships **no `ios/`
+directory**, handling iOS in Rust via `RunEvent::Opened`. So
+`stopUrlReached` cannot be produced on iOS and every iOS checkout ends
+`dismissed`. `matchesStopUrl` and `handleUniversalLink` exist and nothing
+calls them.
+
+Also recorded: an extra rejection token `invalid_arguments` for an argument
+decode failure (a fixed token — it never quotes the URL); UIKit work is
+confined to `DispatchQueue.main.async` rather than `@MainActor`, because
+Tauri dispatches commands from a background queue through the Objective-C
+runtime, which bypasses actor isolation rather than hopping for it;
+swift-tools 5.9, `.iOS(.v15)`; and `allowInsecureUrl` is decoded and unused,
+because D6's refusal happens in guest-JS before a host is ever called.
+
+## Re-measured by the docs lane, 2026-09-22
+
+Run in this pass, on this host, from this worktree.
+
+| Command                                                              | Exit | What it printed                                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------------------- | ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just test-tauri-rust` (new recipe)                                  | 0    | `test result: ok. 19 passed; 0 failed; 0 ignored` and, in the same invocation, `Doc-tests tauri_plugin_vpay_checkout … 1 passed`                                                                                                                                                       |
+| `just clippy-tauri-rust` (new recipe)                                | 0    | `Finished dev profile` — no warning, at `-D warnings`                                                                                                                                                                                                                                  |
+| `just test-tauri-js` (new recipe)                                    | 0    | `Test Files 8 passed (8)`, `Tests 71 passed (71)`                                                                                                                                                                                                                                      |
+| `just check-tauri-mobile` (new recipe)                               | 0    | both `cargo check --target aarch64-linux-android` and `--target aarch64-apple-ios` finished — the latter **without** `IPHONEOS_DEPLOYMENT_TARGET`, confirming Lane C's `if #available` guard                                                                                           |
+| `cargo xtask verify-sdk-parity`                                      | 0    | `750 proving test(s) … all exist, 44 dated gap(s), 35 SDK method(s) enumerated across 39 row(s)` — was 662 / 37 before this pass                                                                                                                                                       |
+| `cargo xtask verify-versions`                                        | 0    | `24 version references all say 0.4.0` — was 22 before the two `release-please-config.json` entries                                                                                                                                                                                     |
+| `cargo xtask verify-doc-counts`                                      | 0    | see the note below                                                                                                                                                                                                                                                                     |
+| `cargo xtask verify-links`                                           | —    | see the note below                                                                                                                                                                                                                                                                     |
+| `cargo xtask verify-npm-scope`                                       | 0    | reports **2** publishable packages, not 3: the gate walks `git ls-files`, and `sdks/tauri/**` is untracked in this worktree. It will see `@vaam-apps/vpay-tauri-checkout` the moment the tree is staged, and not before. This is a property of the gate, not a defect in the manifest. |
+| `pnpm exec prettier --check sdks/tauri`                              | 0    | `All matched files use Prettier code style!` — after the `.prettierignore` entries this pass added. Before them it flagged three generated JSON files under `android/build/intermediates/`, on top of the twelve Lane A2 had already measured.                                         |
+| `pnpm exec prettier --check` on every file this pass wrote or edited | 0    | clean                                                                                                                                                                                                                                                                                  |
+
+**`verify-links`.** It reads `git ls-files`, so a link to a file created in
+this worktree and not yet staged fails until the orchestrator stages it. The
+failures this pass's own pages provoke are all of exactly that kind, and the
+report lists each; nothing points at a path that does not exist. Staging the
+tree is the whole fix.
+
+**`verify-doc-counts`.** The one marker this pass could have moved is
+`docs/status/README.md`'s
+`count:files-with-suffix docs/status/verification .md`, which this page's own
+existence increments from **59** to **60**. It was updated in the same change.
+`docs/flows/README.md`'s `count:dir-entries docs/flows` is **unaffected** —
+it measures directories, and `docs/flows/tauri-checkout.md` is a file.
+
+**An observation, not a measurement.** While this page was first being
+written,
+`sdks/tauri/tauri-plugin-vpay-checkout/android/build/tmp/kotlin-classes/debug/dev/vpay/tauri/checkout/*.class`
+appeared on disk with timestamps minutes old — Lane D's example-app build,
+running concurrently. The docs lane did not run that build and did not see
+its exit code. **It has since reported, and the section at the foot of this
+page is its evidence**; this paragraph is left in place because it is how
+the files got there.
+
+**One thing this pass deleted, so it is not a mystery later.**
+`sdks/tauri/tauri-plugin-vpay-checkout/ios/.build/` was removed when this
+host ran out of disk (`df` reported 128 MiB free and every write failed).
+It is SwiftPM's build output, ignored by the plugin's own `ios/.gitignore`,
+and it is regenerated by the next `swift build`. Lane C's measurements above
+were taken before the deletion and are unaffected.
+
+## What none of this proves
+
+**Read this list against § "Lane D2" at the foot of the page**, which closed
+four of its bullets later the same day. They are struck rather than deleted,
+because what they were true of — the lanes' own suites — has not changed.
+
+- **No `just ci` or `just verify` gate compiles the Rust, the Kotlin or the
+  Swift** (T7). The four `just *-tauri-*` recipes are run by a human; the
+  TypeScript half is genuinely gated, through `pnpm -r` and CI's existing
+  `web` job filter. **Unchanged by anything below.**
+- ~~**Nothing has spoken to a running vpay.**~~ **Closed 2026-09-22 by
+  Lane D2** — three real sessions, two paid to `succeeded`. Still true of the
+  guest-JS suite itself: every `fetch` in it is injected and scripted.
+- ~~**Nothing has spoken to a real rail.**~~ **Still true, and now for the
+  ordinary reason rather than for want of a stack:** the rail behind
+  Lane D2's stack is a `wiremock/wiremock` container, like every other test
+  in this repository (`../../status.md`'s banner). No MTN endpoint has been
+  called.
+- **`stopUrlReached` has never fired anywhere.** Unreachable on iOS,
+  unimplemented on desktop, and on Android it needs a merchant-verified host
+  serving `assetlinks.json` this repository cannot deploy. **Confirmed
+  rather than changed by Lane D2:** both of its successful checkouts ended
+  with the payer closing the window by hand and D4's poll deciding.
+- **`open::that_detached` has never executed.** The eleven desktop cases
+  drive a crate-private `BrowserOpener` seam; the one shipping
+  implementation is covered by nothing, and Lane D2 ran no desktop checkout.
+- ~~**No device, emulator or simulator run of any kind.**~~ **Closed for an
+  emulator and a simulator** — first by Lane D (launch only), then by
+  Lane D2 (a full checkout on each). **No physical device.**
+- **No App Store or Play review.** D9's reading of the published rules
+  carries over from ADR-0021 unchanged; a reviewer's verdict is a different
+  thing.
+
+## Lane D — the example app and the real Android/iOS builds
+
+**Reported after the sections above were written; every line here is Lane D's
+measurement, taken 2026-09-22 on this same macOS host.** It is what makes
+this page more than a review: nothing inside `sdks/tauri/` can compile the
+Kotlin (it needs a consuming app's Gradle project), the Swift (a consuming
+app's Xcode project) or link the Rust library, and
+[`examples/tauri-checkout`](../../../examples/tauri-checkout/) is the
+something that can. Its own
+[README § Status](../../../examples/tauri-checkout/README.md) is the primary
+record; this is the part that bears on the plugin.
+
+**Zero edits to the plugin were needed by any real build.** Every deviation
+recorded in the sections above survived first contact with a real Gradle, a
+real Xcode and a real cargo link, unchanged.
+
+### What was built
+
+`examples/tauri-checkout/` — a private `@vpay/example-tauri-checkout`
+package, a Vite + vanilla-TypeScript front end, and `src-tauri/` with its own
+`[workspace]`, a **path** dependency on the plugin, and
+`capabilities/default.json` granting `core:default` + `vpay-checkout:default`.
+One row was appended to [`examples/README.md`](../../../examples/README.md).
+
+### Builds — every one exit 0
+
+| Command                                                                                  | Result                                                                                                                                                                                                                  |
+| ---------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm install`, `typecheck`, `lint`, `build` (`tsc --noEmit` + vite)                     | exit 0                                                                                                                                                                                                                  |
+| `cargo build` in `src-tauri`                                                             | exit 0 — **after** icons were added, see below                                                                                                                                                                          |
+| `pnpm exec tauri build --debug --no-bundle` (macOS aarch64)                              | exit 0 — `target/debug/vpay-example-tauri-checkout`, **29,479,920 bytes**; launched, ran 6 s, no stderr, no panic                                                                                                       |
+| `pnpm exec tauri ios init --ci`, then `ios build --debug --target aarch64-sim`           | **BUILD SUCCEEDED** (Xcode 26.2 build 17C52, Swift 6.2.3, CocoaPods 1.17.0). Bundle `gen/apple/build/arm64-sim/"vpay checkout example.app"`, 81 MB                                                                      |
+| `pnpm exec tauri android init --ci`, then `android build --debug --target aarch64 --apk` | exit 0. APK `src-tauri/gen/android/app/build/outputs/apk/universal/debug/app-universal-debug.apk`, **134,491,016 bytes** (261,741,242 after a rebuild with prefilled env — a universal debug APK accumulates `jniLibs`) |
+
+Android toolchain, as `tauri android init` generated it: AGP 8.11.0,
+Kotlin 1.9.25, Gradle 8.14.3, `compileSdk` 36, the app's `minSdk` 24,
+JDK 21.0.2, NDK 28.2.13676358, build-tools 36.0.0.
+
+**Two first attempts failed, and both are configuration facts worth keeping.**
+`cargo build` first exited **101** with `failed to open icon 32x32.png`:
+`generate_context!` reads `bundle.icon` even when `bundle.active` is
+`false`, so the icons had to be generated with `tauri icon`. And
+`tauri android build` first exited **1** with _"You must change the
+`version` in `tauri.conf.json`. The default value `0.0.0` is not allowed for
+Android"_ — which is why that file says `0.0.1` while everything else about
+the example is `0.0.0`.
+
+### What the builds prove about the plugin, specifically
+
+- **The Kotlin compiled.** This is the claim the sections above could not
+  make. `dexdump` finds `Ldev/vpay/tauri/checkout/…` classes in the APK, and
+  `aapt2 dump xmltree` shows **both** Activities merged into the APK's own
+  manifest with `VpayCheckoutActivity` `exported="false"` and
+  `VpayCheckoutAppLinkActivity` `exported="true"` — read out of the built
+  APK, not off the source manifest.
+- **Lane B's flagged `jvmTarget` risk did not materialise.** The plugin's
+  `android/build.gradle.kts` compiles at **JVM 17** while `:tauri-android`
+  and the app itself compile at **1.8**, and the build succeeded anyway. The
+  documented fallback was **not** applied. One Kotlin **deprecation warning**
+  was emitted, citing
+  `sdks/tauri/tauri-plugin-vpay-checkout/android/src/main/java/dev/vpay/tauri/checkout/VpayCheckoutActivity.kt:349`
+  (`getParcelableArrayListExtra`) — a warning, not an error, and left for
+  whoever next touches that file.
+- **The Swift linked into a real app.** `nm` on the built app binary shows
+  `_init_plugin_vpay_checkout` and the mangled Swift symbols
+  (`$s26tauri_plugin_vpay_checkout10initPlugin…`, `…11StopUrlArgsV…`).
+- **`bundle.iOS.minimumSystemVersion` does reach the compiler**, which the
+  "the 15.0 floor is enforced by nothing in the build" correction earlier on
+  this page is the plugin-side half of: with `"15.0"` set in
+  `tauri.conf.json`, the generated `pbxproj` carries
+  `IPHONEOS_DEPLOYMENT_TARGET = 15.0` and the Podfile carries
+  `platform :ios, '15.0'`. So an **app** can raise the floor; the **plugin's
+  own** `cargo check` still cannot, and still needs the `#available` guard.
+- **The five tracked permission files were regenerated byte-identical** by
+  every app build — checked by mtime, since the tree is untracked. Nothing a
+  consuming build does to them is a diff.
+
+### Runs — an emulator and a simulator, both launched, neither exercised
+
+- **Android.** No system image was installed on this host, so Lane D
+  installed `system-images;android-36;google_apis;arm64-v8a`, created the AVD
+  `vpay_tauri` (pixel) and booted it headless. `adb install -r` + `am start`
+  gave `topResumedActivity …/.MainActivity`,
+  `libvpay_example_tauri_checkout_lib.so` loaded, the form rendered, and
+  logcat carried no `AndroidRuntime`/`FATAL`. The emulator was torn down
+  afterwards.
+- **iOS.** iPhone 17 simulator, iOS 26.3.1, booted by Lane D. `simctl
+install` + `launch`: the app launched and rendered the form, with no errors
+  in `log show`. Uninstalled and shut down afterwards. **How the UI was
+  driven matters and is not tidy:** the native simulator tool refused to run
+  on this host (it looks for `/var/db/xcode_select_link`, which is absent),
+  so Lane D drove the UI with **AppleScript keystrokes through
+  Simulator.app**. That is a real interaction with a real app, and it is not
+  an accessibility-tree assertion — read the outcomes below as "what was
+  rendered on screen", not as "what a test harness read back".
+
+### The plugin was not exercised, and here is exactly why
+
+`docker info` was healthy at the start of Lane D's run. `just demo-up` then
+**filled the disk** during its image build, and the `ENOSPC` wedged Docker;
+Lane D recovered space with `docker builder prune -f` alone, and Docker
+Desktop's daemon did not come back during its run. **So there was no vpay
+stack to point the app at.**
+
+The fallback Lane D took on **both** platforms: rebuild with
+`VITE_VPAY_BASE_URL=https://api.vpay.invalid`, a fake publishable key and a
+fake session URL, then press **Pay**. Both rendered, verbatim:
+
+```
+unresolved — session cs_test_laned · intent (unknown)
+error type: api_connection_error
+error code: (none)
+
+No outcome was observed. Not a failure either.
+```
+
+That is the **correct** answer, and the reason is D2: the pre-flight read
+happens before any window opens, so a pre-flight that cannot reach the API
+resolves `unresolved` and never asks a host to show anything. No Custom Tab
+and no `SFSafariViewController` appeared, and neither should have.
+
+**State the consequence plainly, because a launch screenshot is easy to
+mistake for a working payment surface.** ~~**No browser sheet has ever
+opened on any platform.** The partial Custom Tab, the
+`SFSafariViewController` and the desktop `open::that_detached` hand-off are
+**compiled and linked and never executed**; `show` and `dismiss` have
+**never crossed the IPC boundary at runtime**. There has been no vpay
+stack, no checkout session, no poll
+(`GET /v1/browser/payment_intents/{id}` has never been called by anything),
+no payment, no rail, no deep link, no physical device, no release build, no
+Windows or Linux desktop build, and `tauri ios dev` / `tauri android dev`
+were not used — the artefacts were installed directly.~~
+
+**Struck hours later by § "Lane D2" below**, which opened both mobile
+sheets against a real vpay and paid two checkouts through to `succeeded`.
+The paragraph is kept verbatim because it was the honest state of this
+plugin for most of the day, and because five of its clauses survived intact:
+**no desktop checkout** (`open::that_detached` is still unexecuted), **no
+real rail**, **no deep link**, **no physical device**, and **no release or
+Windows/Linux build**. `tauri ios dev`/`android dev` were never used
+either.
+
+**A side effect to record rather than discover.** `tauri ios init` installed
+Homebrew packages without asking: `libplist`,
+`libimobiledevice-glue`, `libtasn1`, `libtatsu`, `libusbmuxd`,
+`libimobiledevice`. Anyone reproducing this on their own machine should know
+that before running it.
+
+~~**Room is deliberately left here for an addendum.** The orchestrator is
+restarting Docker; if a stack-driven run happens it belongs in a dated
+section below this one. Nothing on this page predicts its result.~~ **It
+happened. See the next section.**
+
+## Lane D2 — the plugin driven for real on both simulators against a running vpay
+
+**2026-09-22, later the same day, on the same macOS host. Every line is
+Lane D2's measurement.** This is the section that moves this plugin from
+"compiles and launches" to "has taken a payment": the
+`SFSafariViewController` and the Custom Tab both opened on vpay's **real
+hosted checkout page**, an MTN push was driven through each to a real
+`succeeded`, and `show`/`dismiss` crossed the IPC boundary into the Swift
+and the Kotlin at runtime for the first time.
+
+**Read the scope before the results.** The stack ran
+`ghcr.io/vaam-apps/vpay-*:edge` images from GHCR, **not a build of this
+tree**; its rail is WireMock, so **no real MTN endpoint was called and no
+money moved**; no merchant webhook was verified; and no `stopUrlReached`
+fired on either platform. Each of those is expanded at the foot of this
+section rather than left implied.
+
+### The stack, and the thing that made it possible
+
+Lane D's attempt died because `just demo-up` filled the disk building
+images. Lane D2 brought the same stack up with **zero image builds**:
+`ghcr.io/vaam-apps/vpay-server:edge` (21.1 MB) and
+`ghcr.io/vaam-apps/vpay-checkout:edge` (348 MB) pull **anonymously**, so a
+scratchpad-only compose override set `image:` on `vpay-server`,
+`vpay-worker` and `vpay-checkout` and compose ran **without `--build`**:
+
+```
+docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml -f <override> \
+  up -d --wait postgres wiremock-mtn wiremock-orange wiremock-webhook \
+  vpay-server vpay-worker vpay-checkout
+```
+
+All healthy; API on `127.0.0.1:8080`, checkout on `127.0.0.1:3080`. Docker
+grew **0.2 GiB**, and the stack was torn down with `down -v` afterwards.
+
+**`vpay-shop` and the dashboard were not run** — there is no published shop
+image — so sessions were minted with `curl`, doing exactly what
+`examples/shop/src/server/orders.ts` does: a real `private_key_jwt`
+`client_credentials` exchange signed with
+`.e2e/shop-merchant/oauth-signing-key.pem`, a real
+`POST /v1/payment_intents`, and a real form-encoded
+`POST /v1/checkout/sessions` with `ui_mode=hosted`. Nothing was stubbed on
+the way in.
+
+### iOS — a real payment, and a real dismissal
+
+iPhone 17 simulator, iOS 26.3.1, UDID `94D24087-…`;
+`pnpm exec tauri ios build --debug --target aarch64-sim` exit 0.
+
+**Run 1 — paid.** Session `cs_kde86t758d6191xvezz01p0b`, intent
+`pi_xpprqgpved3gh58p0yqsvs7v`, session URL
+`http://localhost:3080/c/cs_kde86t758d6191xvezz01p0b?key=pk_test_shopmerchantsandbox1#[67 chars redacted]`
+— the fragment is the session secret and is redacted here the way the
+plugin's own `redacted()` renders it (D6). The insecure-base opt-in was
+ticked, because the stack is plain HTTP and D6 requires that to be asked for
+by name.
+
+**Pay** opened the `SFSafariViewController` on the real page. Title bar:
+`localhost`. On the page, verbatim: `Vaam Payments` · `Test mode — no money
+moves on this deployment.` · `Payment` `FCFA 12,000` · `Reference:
+cs_kde86t758d6191xvezz01p0b` · `Choose how you want to pay` · `MTN Mobile
+Money` / `Orange Money`. Tapping MTN, entering `237670000000` (the shop
+README's "pays" number) and `Pay FCFA 12,000` gave `Payment received` / `The
+merchant has been told you paid FCFA 12,000.` Closing the sheet with its X
+made the app render, verbatim:
+
+```
+succeeded — session cs_kde86t758d6191xvezz01p0b · intent pi_xpprqgpved3gh58p0yqsvs7v
+Fulfil from the webhook, not from this.
+```
+
+**Run 2 — dismissed without paying**, which is the one that exercises D4.
+Session `cs_a4exjc3yhx5695957shm4v8z`, intent `pi_v265kb7sgn48h8bky6f8mtap`.
+The sheet opened and was **swiped away** with no payment made:
+
+```
+pending — session cs_a4exjc3yhx5695957shm4v8z · intent pi_v265kb7sgn48h8bky6f8mtap
+The polling budget elapsed with the intent still moving. Not a failure either.
+```
+
+Never `canceled`. That is D4's whole point, observed on a real intent for
+the first time. `Dismiss` with nothing open answered `Nothing open to
+dismiss.`
+
+### Android — a real payment, and two findings
+
+AVD `vpay_tauri`, API 36 arm64, started `-read-only`;
+`pnpm exec tauri android build --debug --target aarch64 --apk` exit 0.
+
+The host was rewritten to `10.0.2.2`, and the checkout container recreated
+with `NEXT_PUBLIC_VPAY_API_URL=http://10.0.2.2:8080` because
+`frontends/apps/checkout/src/lib/env.ts` reads it at **runtime**. **No
+cleartext workaround was needed:** Tauri's generated `app/build.gradle.kts`
+already sets `manifestPlaceholders["usesCleartextTraffic"] = "true"` for
+debug builds.
+
+Session `cs_kn3r3emzq917988xkt4bfn4m`, intent `pi_93htevhkrn5vn23ys9e2se70`.
+
+**Finding 1 — the first Pay never reached vpay at all.** Chrome's
+`FirstRunActivity` appeared, because its terms had not been accepted on that
+image. Force-stopping Chrome from there resolved **`pending`** — which is
+correct (a window closed, nothing paid, the poll ran) and is a trap worth
+knowing about for anyone reproducing this. It was bypassed by writing
+`/data/local/tmp/chrome-command-line` with `--disable-fre --no-first-run
+--no-default-browser-check`, honoured on the userdebug image, **inside the
+emulator only** and discarded by `-read-only`.
+
+**The second Pay** opened the Custom Tab on `10.0.2.2:3080` (`XAF 12,000`,
+`Reference: cs_kn3r3emzq917988xkt4bfn4m`). MTN → `237670000000` → `Pay XAF
+12,000` → `Check your phone` / `Approve XAF 12,000 on your handset. This
+page updates on its own.` → about **25 s** later, `Payment received`.
+Closing the tab gave:
+
+```
+succeeded — session cs_kn3r3emzq917988xkt4bfn4m · intent pi_93htevhkrn5vn23ys9e2se70
+Fulfil from the webhook, not from this.
+```
+
+logcat carried **no `AndroidRuntime` entry and no crash** — and no vpay log
+line either, which is the Kotlin behaving as designed: it has none (D6).
+`dev.vpay.tauri.checkout.VpayCheckoutActivity` was visible in the task stack
+as the transparent trampoline it is meant to be, with
+`lastNonFullscreenBounds=Rect(215, 420 - 865, 1500)`.
+
+**Finding 2, and it is a gap: the Custom Tab rendered FULL-HEIGHT, not
+partial.** Chrome offered "Minimize tab to return to it later". The
+plugin's requested initial bounds **are** in the task record (above), so the
+request is being made; Chrome simply did not honour a partial presentation
+on this device. `setInitialActivityHeightPx` is a request, not a contract,
+and every document in this repository that called the Android surface a
+"partial Custom Tab" was describing what the plugin asks for. Recorded as a
+dated ⛔ in [`../../sdks/parity.md`](../../sdks/parity.md).
+
+### The cross-check, under a real merchant token
+
+Each intent was read back with `GET /v1/payment_intents/{id}` using a **real
+merchant credential** — a different authority from the publishable-key
+`/v1/browser` read the plugin itself polls:
+
+| Intent                        | What the app said | What the merchant API said                                             |
+| ----------------------------- | ----------------- | ---------------------------------------------------------------------- |
+| `pi_xpprqgpved3gh58p0yqsvs7v` | `succeeded`       | `succeeded`, 12000 `xaf`, `last_payment_error` null                    |
+| `pi_93htevhkrn5vn23ys9e2se70` | `succeeded`       | `succeeded`                                                            |
+| `pi_v265kb7sgn48h8bky6f8mtap` | `pending`         | `requires_payment_method` — still moving, exactly as `pending` claimed |
+
+The MTN WireMock journal shows the real `POST /collection/token/`,
+`POST /collection/v1_0/requesttopay` and
+`GET /collection/v1_0/requesttopay/{ref}`.
+
+**This is a weaker merchant-side check than the Flutter plugin's e2e
+suite makes**, and the difference should not be glossed: that suite asks
+`examples/shop`'s own database whether its order row says `paid`, a field
+written only by a signature-verified webhook delivery. No shop ran here, the
+webhook receiver's journal was **empty**, and **no merchant webhook was
+verified**. The evidence above is a token-authenticated read, not an
+independent observer acting on a delivery.
+
+### What Lane D2 did not verify
+
+- **No `stopUrlReached`, on either platform.** There is no `assetlinks.json`
+  and no `apple-app-site-association`, and on iOS the plugin has no
+  Universal-Link intake at all (T6). Both successes were a **manual close
+  plus D4's poll** — which is the only way a checkout ends here today, and
+  is why D1/D4 make that correct rather than lucky.
+- **Dismiss-from-the-app while a sheet is open could not be driven on
+  iOS.** The `.large()` detent covers the app's own UI, and dragging the
+  grabber dismisses the sheet outright rather than reaching the app's
+  Dismiss button. So the desktop-style `dismiss()` path stays unexercised on
+  iOS too.
+- **No merchant webhook**, per the section above.
+- **Orange Money, the failure MSISDNs, desktop, physical devices, and `just
+demo-up` itself** were all untouched.
+- **The rail is WireMock.** No real MTN endpoint was called; no money moved.
+- **The stack was `edge` images, not this tree.** Everything above is
+  evidence about the plugin against a vpay, not evidence about this
+  branch's server code.
+
+### Side effects, and one number worth watching
+
+Two images pulled. The app was uninstalled from the simulator and the
+emulator and both were shut down. **Free disk went from 33 GiB to 11 GiB**
+over the run — this worktree's `target/` is 7.3 GiB, DerivedData 11 GiB,
+`examples/tauri-checkout/src-tauri/gen/android` build output 532 MB, plus
+another session's AVD. This host has already run out of disk once during
+this work (see the deletion note earlier on this page); anyone repeating
+these runs should clear space first. Screenshots were kept in a scratchpad
+directory and are **not** committed.

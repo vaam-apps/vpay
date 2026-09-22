@@ -88,6 +88,15 @@
         },
         {
           "type": "generic",
+          "path": "sdks/tauri/tauri-plugin-vpay-checkout/Cargo.toml"
+        },
+        {
+          "type": "json",
+          "path": "sdks/tauri/tauri-plugin-vpay-checkout/package.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "generic",
           "path": "sdks/nodejs/src/version.ts"
         },
         {

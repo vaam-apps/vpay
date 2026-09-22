@@ -4,6 +4,7 @@ packages:
   - "frontends/tests/*"
   - "examples/*"
   - "sdks/*"
+  - "sdks/tauri/*"
 
 # ---------------------------------------------------------------------------
 # settings

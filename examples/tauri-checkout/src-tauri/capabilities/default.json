@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "The example's one capability: Tauri's own defaults, plus the checkout plugin's two commands and nothing else.",
+  "windows": ["main"],
+  "permissions": ["core:default", "vpay-checkout:default"]
+}
