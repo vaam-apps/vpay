@@ -258,6 +258,17 @@ library moved together, as the pin's own comment requires: `justfile`'s
 `.github/workflows/ci.yml` to the commit `v0.12.0` was tagged at
 (`0823bab382425e1fe4d04c42b9657b7e7bb7b286`).
 
+**Superseded 2026-09-22 for the action pin only.** Both
+`install-cratestack-cli` steps now point at
+`3b50ceab9750d9c0eb90838f6c931f8d1fe5d534`, a post-v0.12.0 commit carrying
+[cratestack#982](https://github.com/cratestack/cratestack/pull/982) — a
+CLI-download retry fix, after an HTTP 504 from the release CDN failed this
+repository's own `self-checks` job twice on 2026-09-21 against an asset that
+was present throughout. This does **not** break the move-together rule above:
+the action's `version:` input is `just --evaluate cratestack_version`, so which
+CLI binary is installed still follows the library pin. Only the action's own
+download logic comes from the newer commit.
+
 **What the bump could have broken, and what was measured instead of assumed.**
 
 - _The gate._ 0.12.0's one breaking change gives `SchemaError` file identity,

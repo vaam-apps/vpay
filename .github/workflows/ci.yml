@@ -430,7 +430,7 @@ jobs:
       # checksum-verified prebuilt binary is seconds against compiling the
       # CLI and its graph on every `self-checks` run, not because the
       # compiler cannot do it.
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@0823bab382425e1fe4d04c42b9657b7e7bb7b286 # v0.12.0
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@3b50ceab9750d9c0eb90838f6c931f8d1fe5d534 # post-v0.12.0: cratestack#982, the CLI-download retry fix. NOT the v0.12.0 tag commit — the installed CLI version is the justfile's cratestack_version (read above), independent of this ref.
         with:
           version: ${{ steps.cratestack.outputs.version }}
       # `just check-schema`, not a copy of the command it runs: the recipe is
@@ -613,7 +613,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@0823bab382425e1fe4d04c42b9657b7e7bb7b286 # v0.12.0
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@3b50ceab9750d9c0eb90838f6c931f8d1fe5d534 # post-v0.12.0: cratestack#982, the CLI-download retry fix. NOT the v0.12.0 tag commit — the installed CLI version is the justfile's cratestack_version (read above), independent of this ref.
         with:
           version: ${{ steps.cratestack.outputs.version }}
       - run: cargo fmt --all -- --check
