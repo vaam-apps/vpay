@@ -76,7 +76,7 @@ curl -X POST https://api.vpay.example/v1/oauth/token \
 
 Every `POST` under `/v1` **must** carry an `Idempotency-Key`:
 
-```
+```text
 -H "Idempotency-Key: 5f0d5e4c-9f4e-4d2a-9c1b-4a2a1e0f7f31"
 ```
 

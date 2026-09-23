@@ -38,7 +38,7 @@ case. This is the payoff for not lying about finality at minute 15.
 
 A callback never changes state. It only enqueues a status query.
 
-```
+```text
 POST /provider/{code}/callback
   → no adapter for {code}                     → 404, the router's own fallback
   → adapter.parse_callback() extracts identifiers ONLY

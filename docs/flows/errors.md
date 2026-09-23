@@ -16,7 +16,7 @@ through.
 
 ## The three tiers
 
-```
+```text
  rail / Postgres / YAML / caller input
           │
           ▼
@@ -222,7 +222,7 @@ rejections (`Form`, `Json`, `Path`, `Query`) convert into `InvalidParam`
 with a curated sentence, so a malformed body gets the envelope rather than
 axum's plain-text 400. `IntoResponse` does exactly this and nothing else:
 
-```
+```text
 status  = err.category().http_status()
 body    = { "error": { "type": category.stripe_type(), "code": err.code(),
                        "message": err.public_message(), "param"?: <if the variant names one> } }
