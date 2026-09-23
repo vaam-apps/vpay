@@ -507,6 +507,30 @@ export type ListParams = {
 };
 
 /**
+ * `GET /v1/payment_intents` query parameters: {@link ListParams} plus the
+ * `customer` filter (RFC-0004 § 5).
+ *
+ * Written flat rather than as `ListParams & { … }` for {@link ListParams}'
+ * index-signature reason. `ListParams` itself stays exported and unchanged —
+ * it is public, and every `ListParams` value is still a valid one of these.
+ */
+export type ListPaymentIntentsParams = {
+  limit?: number | undefined;
+  starting_after?: string | undefined;
+  ending_before?: string | undefined;
+  /**
+   * Only intents for this `cus_…` (the intent's own `customer`).
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   */
+  customer?: string | undefined;
+};
+
+/**
  * A postal address on a {@link Customer} — Stripe's six formal components
  * **and** the GPS point (issue #67).
  *
@@ -1161,6 +1185,17 @@ export type ListCheckoutSessionsParams = {
   ending_before?: string | undefined;
   /** Only sessions for this `pi_…`. */
   payment_intent?: string | undefined;
+  /**
+   * Only sessions for this `cus_…` — the session's own `customer`, which is
+   * the one it renders.
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   */
+  customer?: string | undefined;
 };
 
 /**
@@ -1320,6 +1355,17 @@ export type ListRefundsParams = {
    * page** and not a `404`.
    */
   payment_intent?: string | undefined;
+  /**
+   * Only refunds of payments by this `cus_…` — matched through each refund's
+   * PaymentIntent, since a refund carries no customer of its own.
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   */
+  customer?: string | undefined;
 };
 
 /**

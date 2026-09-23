@@ -403,8 +403,10 @@ pub struct NewCheckoutSession {
 /// One page request for [`CheckoutSessions::list_page`].
 ///
 /// The same shape and the same cursor rule as [`crate::ListPage`] — cursors
-/// are public `cs_…` ids, never `seq` values — plus one filter this resource
-/// has and payment intents do not.
+/// are public `cs_…` ids, never `seq` values — plus two filters:
+/// `payment_intent`, which this resource has and payment intents do not, and
+/// `customer` (RFC-0004 § 5, 2026-09-23). _(This said "plus one filter" until
+/// the second one landed.)_
 ///
 /// A separate type rather than a `ListPage` with an extra field, because
 /// `ListPage` is the payment-intent list's contract and a filter on it would
@@ -429,6 +431,22 @@ pub struct SessionListPage {
     /// filter applied after `LIMIT` would return short pages and a
     /// `has_more` that describes the wrong set.
     pub payment_intent: Option<String>,
+    /// Only sessions for this customer (the wire contract's `customer`
+    /// filter, a `cus_…`). `None` means every session of the tenant's.
+    ///
+    /// Compared against the session's **own** `customer_id` (migration
+    /// `0034`), not against its intent's. The two agree whenever the intent
+    /// has a customer — `vpay_api` copies it at create, and refuses a session
+    /// that names a different one — but a session created with a `customer`
+    /// for an intent that has none carries a customer its intent does not,
+    /// and the `customer` a merchant reads on the rendered session is this
+    /// column. A filter that went through the intent would omit exactly
+    /// those sessions while their objects said `customer: cus_…`.
+    ///
+    /// Not validated for existence, for
+    /// [`crate::InvoiceListPage::customer`]'s reason, and applied in the
+    /// same `WHERE` as the tenant for [`Self::payment_intent`]'s.
+    pub customer: Option<String>,
 }
 
 /// Flips a session's `payment_status`/`status` to match the intent that has
@@ -681,8 +699,9 @@ pub trait CheckoutSessions: Send + Sync {
     /// Ordering, cursors and `has_more` work exactly as
     /// [`crate::PaymentIntents::list_page`]'s do — read that one for the
     /// direction-of-travel argument and for why an unknown cursor yields an
-    /// empty page rather than the newest rows. The one addition is
-    /// [`SessionListPage::payment_intent`], applied in the same statement.
+    /// empty page rather than the newest rows. The two additions are
+    /// [`SessionListPage::payment_intent`] and [`SessionListPage::customer`],
+    /// both applied in the same statement.
     ///
     /// # Errors
     ///
@@ -992,9 +1011,13 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         // `payment_intents::list_page`'s are, so a cursor from another tenant
         // resolves to NULL rather than to a position in their range.
         //
-        // The `payment_intent` filter is *not* scoped a second time: it is
-        // combined with `merchant_id = $1` in the same `WHERE`, so an intent
-        // id belonging to another tenant simply matches no row of this one's.
+        // The `payment_intent` and `customer` filters are *not* scoped a
+        // second time: each is combined with `merchant_id = $1` in the same
+        // `WHERE`, so an intent or customer id belonging to another tenant
+        // simply matches no row of this one's. Nor do they narrow the cursor
+        // sub-selects: a cursor is a position in this merchant's list,
+        // whichever intent or customer its session belongs to —
+        // `invoices::list_page`'s behaviour for its own `customer` filter.
         let sql = format!(
             "SELECT {COLUMNS} FROM checkout_sessions \
              WHERE merchant_id = $1 \
@@ -1005,8 +1028,9 @@ impl CheckoutSessions for crate::repository::PgRepositories {
                     OR seq > (SELECT seq FROM checkout_sessions \
                               WHERE id = $3 AND merchant_id = $1)) \
                AND ($4::TEXT IS NULL OR payment_intent_id = $4) \
+               AND ($5::TEXT IS NULL OR customer_id = $5) \
              ORDER BY seq {direction} \
-             LIMIT $5"
+             LIMIT $6"
         );
 
         let mut rows = sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
@@ -1014,6 +1038,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
             .bind(page.starting_after.as_deref())
             .bind(page.ending_before.as_deref())
             .bind(page.payment_intent.as_deref())
+            .bind(page.customer.as_deref())
             .bind(limit.saturating_add(1))
             .fetch_all(&self.pool)
             .await

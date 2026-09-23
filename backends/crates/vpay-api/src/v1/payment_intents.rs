@@ -33,8 +33,8 @@ use vpay_core::state::{IntentStatus, Transition, next_status};
 use vpay_core::{Currency, Money, ProviderFlow, ids};
 use vpay_db::{
     ChargeRow, Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome,
-    NewCharge, NewPaymentIntent, PaymentIntents, Repositories, ResponseSubject, StoredResponse,
-    TxOutcome, UnitOfWork as _,
+    IntentFilter, NewCharge, NewPaymentIntent, PaymentIntents, Repositories, ResponseSubject,
+    StoredResponse, TxOutcome, UnitOfWork as _,
 };
 use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
 
@@ -562,9 +562,27 @@ pub(crate) struct ListParams {
     limit: Option<String>,
     starting_after: Option<String>,
     ending_before: Option<String>,
+    customer: Option<String>,
 }
 
 /// `GET /v1/payment_intents`.
+///
+/// # The `customer` filter (RFC-0004 § 5)
+///
+/// `customer=cus_…` narrows the list to intents whose own `customer_id` is
+/// that id. It is checked for **shape** and not for existence
+/// ([`super::customers::filter_param`]) and applied in the same `WHERE` as
+/// `merchant_id` (`vpay_db::IntentFilter::customer`), so another merchant's
+/// customer, an unknown one and one of yours with no intents are all the
+/// same empty page — never a `404`, never a different sentence. A malformed
+/// value is the `400` naming `customer` that `GET /v1/invoices` answers for
+/// its own `customer` filter, byte for byte.
+///
+/// The cursors page the *filtered* list: `limit + 1` rows are fetched with
+/// the filter in the statement, so `has_more` describes the filtered set.
+/// A cursor is resolved to its position in this merchant's whole list, so a
+/// cursor naming one of your intents *outside* the filter still pages from
+/// that point, exactly as it does on `GET /v1/invoices?customer=`.
 pub(crate) async fn list(
     State(repositories): State<Arc<dyn Repositories>>,
     scope: MerchantScope,
@@ -576,9 +594,18 @@ pub(crate) async fn list(
         params.ending_before,
         CURSOR,
     )?;
+    let filter = IntentFilter {
+        customer: super::customers::filter_param(params.customer)?,
+        ..IntentFilter::default()
+    };
 
-    let (rows, has_more) =
-        PaymentIntents::list_page(repositories.as_ref(), scope.merchant_id(), &page).await?;
+    let (rows, has_more) = PaymentIntents::list_page_filtered(
+        repositories.as_ref(),
+        scope.merchant_id(),
+        &page,
+        &filter,
+    )
+    .await?;
     let data = rows
         .iter()
         .map(PaymentIntentObject::try_from)

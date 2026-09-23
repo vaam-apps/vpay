@@ -258,6 +258,14 @@ pub struct ListPaymentIntentsParams {
     pub starting_after: Option<String>,
     /// Cursor: return objects *before* this id (the previous page).
     pub ending_before: Option<String>,
+    /// Only intents for this `cus_…` (the intent's own `customer`).
+    ///
+    /// Held to the Customer id shape by the server, which answers a `400`
+    /// naming `customer` for anything else. An id of the right shape that
+    /// names nothing, or another merchant's customer, is an **empty page**
+    /// and not a `404`, so the filter cannot tell you which customers exist
+    /// under some other account.
+    pub customer: Option<String>,
 }
 
 impl ListPaymentIntentsParams {
@@ -271,6 +279,10 @@ impl ListPaymentIntentsParams {
             (
                 "ending_before".to_string(),
                 FormValue::from(self.ending_before.clone()),
+            ),
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.clone()),
             ),
         ])
     }
@@ -356,6 +368,15 @@ pub struct ListCheckoutSessionsParams {
     pub ending_before: Option<String>,
     /// Only sessions for this `pi_…`.
     pub payment_intent: Option<String>,
+    /// Only sessions for this `cus_…` — the session's own `customer`, which
+    /// is the one it renders.
+    ///
+    /// Held to the Customer id shape by the server, which answers a `400`
+    /// naming `customer` for anything else. An id of the right shape that
+    /// names nothing, or another merchant's customer, is an **empty page**
+    /// and not a `404`, so the filter cannot tell you which customers exist
+    /// under some other account.
+    pub customer: Option<String>,
 }
 
 impl ListCheckoutSessionsParams {
@@ -373,6 +394,10 @@ impl ListCheckoutSessionsParams {
             (
                 "payment_intent".to_string(),
                 FormValue::from(self.payment_intent.clone()),
+            ),
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.clone()),
             ),
         ])
     }
@@ -1195,6 +1220,15 @@ pub struct ListRefundsParams {
     /// of the right shape that names nothing, or another merchant's intent,
     /// is an **empty page** and not a `404`.
     pub payment_intent: Option<String>,
+    /// Only refunds of payments by this `cus_…` — matched through each
+    /// refund's PaymentIntent, since a refund carries no customer of its own.
+    ///
+    /// Held to the Customer id shape by the server, which answers a `400`
+    /// naming `customer` for anything else. An id of the right shape that
+    /// names nothing, or another merchant's customer, is an **empty page**
+    /// and not a `404`, so the filter cannot tell you which customers exist
+    /// under some other account.
+    pub customer: Option<String>,
 }
 
 impl ListRefundsParams {
@@ -1212,6 +1246,10 @@ impl ListRefundsParams {
             (
                 "payment_intent".to_string(),
                 FormValue::from(self.payment_intent.clone()),
+            ),
+            (
+                "customer".to_string(),
+                FormValue::from(self.customer.clone()),
             ),
         ])
     }

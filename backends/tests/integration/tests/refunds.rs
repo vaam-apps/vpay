@@ -36,6 +36,10 @@
 //!    back; a payee the rail does not know is refused before any transfer;
 //!    and a bad destination is the caller's `400`, never a `502` about a rail
 //!    that was never asked.
+//! 7. `GET /v1/refunds?customer=` (RFC-0004 § 5, 2026-09-23, test 16)
+//!    matches through each refund's intent, pages inside the filtered set,
+//!    and answers another merchant's real `cus_…` exactly as one that never
+//!    existed.
 //!
 //! # What none of it proves
 //!
@@ -2288,4 +2292,238 @@ async fn rail_harness() -> anyhow::Result<RailHarness> {
         pem_a,
         signing_key: served.signing_key,
     })
+}
+
+// ----------------------------------------------------------------- test 16
+
+/// **`GET /v1/refunds?customer=`** (RFC-0004 § 5): refunds of one customer's
+/// payments, matched **through the refund's intent**, paged inside the
+/// filtered set, and not an existence oracle.
+///
+/// `refunds` has no customer column (migration `0017`, and nothing since),
+/// so the filter is `payment_intents.customer_id` inside the join the tenant
+/// predicate already makes. Five of merchant A's refunds, at fixed instants
+/// so the `(created_at, id)` order is the one written here and not a race
+/// between two `now()`s:
+///
+/// ```text
+/// t1 rx1a (intent x1, X)   t2 ry (Y)   t3 rx2 (intent x2, X)
+/// t4 rn (intent for nobody)            t5 rx1b (intent x1, X)
+/// ```
+///
+/// The cursor, oracle and refusal halves are `payment_intents.rs` test 26's,
+/// against this list.
+#[tokio::test]
+async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let a = harness.a();
+    let http = raw_client();
+
+    let customer_a = |name: &'static str| {
+        let a = a.clone();
+        async move {
+            a.customers()
+                .create(
+                    vpay_sdk::CreateCustomerParams {
+                        name: Some(name.to_owned()),
+                        ..Default::default()
+                    },
+                    RequestOptions::new(),
+                )
+                .await
+                .map(|customer| customer.id)
+        }
+    };
+    let x = customer_a("Xavier").await.context("customer X")?;
+    let y = customer_a("Yvonne").await.context("customer Y")?;
+
+    let intent_a = |customer: Option<String>| {
+        let a = a.clone();
+        async move {
+            a.payment_intents()
+                .create(
+                    CreatePaymentIntentParams {
+                        customer,
+                        ..create_params()
+                    },
+                    RequestOptions::new(),
+                )
+                .await
+                .map(|intent| intent.id)
+        }
+    };
+    let x1 = intent_a(Some(x.clone())).await?;
+    let x2 = intent_a(Some(x.clone())).await?;
+    let iy = intent_a(Some(y.clone())).await?;
+    let none = intent_a(None).await?;
+
+    // Merchant B's customer and intent, over B's own credential, so the id
+    // the oracle case uses is one B really holds.
+    let bearer_b = harness.bearer(CLIENT_B);
+    let z: Value = http
+        .post(harness.url("/v1/customers"))
+        .bearer_auth(&bearer_b)
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+        .form(&[("name", "Zita")])
+        .send()
+        .await?
+        .json()
+        .await?;
+    let z = z
+        .get("id")
+        .and_then(Value::as_str)
+        .context("merchant B's customer")?
+        .to_owned();
+    let iz: Value = http
+        .post(harness.url("/v1/payment_intents"))
+        .bearer_auth(&bearer_b)
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "amount={AMOUNT}&currency={CURRENCY}&payment_method_types[0]={RAIL}&customer={z}"
+        ))
+        .send()
+        .await?
+        .json()
+        .await?;
+    let iz = iz
+        .get("id")
+        .and_then(Value::as_str)
+        .context("merchant B's intent")?
+        .to_owned();
+
+    // Seeded at fixed, strictly increasing instants — see the doc.
+    let at = |intent: String, second: i64| {
+        let pool = harness.pool.clone();
+        async move {
+            let id = seed_refund(&pool, &intent, "pending", None).await?;
+            sqlx::query(
+                "UPDATE refunds SET created_at = TIMESTAMPTZ '2026-09-01 00:00:00+00' \
+                     + $2::BIGINT * INTERVAL '1 second' WHERE id = $1",
+            )
+            .bind(&id)
+            .bind(second)
+            .execute(&pool)
+            .await
+            .context("pinning a refund's created_at")?;
+            Ok::<_, anyhow::Error>(id)
+        }
+    };
+    let rx1a = at(x1.clone(), 1).await?;
+    let ry = at(iy.clone(), 2).await?;
+    let rx2 = at(x2.clone(), 3).await?;
+    let rn = at(none.clone(), 4).await?;
+    let rx1b = at(x1.clone(), 5).await?;
+    let rz = at(iz.clone(), 6).await?;
+
+    let bearer_a = harness.bearer(CLIENT_A);
+    let raw = |bearer: String, query: String| {
+        let request = http
+            .get(harness.url(&format!("/v1/refunds?{query}")))
+            .bearer_auth(bearer);
+        async move {
+            let response = request.send().await?;
+            let status = response.status().as_u16();
+            let body = response.text().await?;
+            Ok::<_, reqwest::Error>((status, body))
+        }
+    };
+    let page = |query: String| {
+        let raw = &raw;
+        let bearer = bearer_a.clone();
+        async move {
+            let (status, body) = raw(bearer, query.clone()).await?;
+            anyhow::ensure!(status == 200, "GET /v1/refunds?{query}: {body}");
+            let body: Value = serde_json::from_str(&body)?;
+            let ids: Vec<String> = body
+                .get("data")
+                .and_then(Value::as_array)
+                .context("`data`")?
+                .iter()
+                .filter_map(|item| item.get("id").and_then(Value::as_str).map(str::to_owned))
+                .collect();
+            let has_more = body.get("has_more").and_then(Value::as_bool);
+            Ok::<_, anyhow::Error>((ids, has_more == Some(true)))
+        }
+    };
+
+    // The filtered set, through two intents of X's, newest first.
+    let (ids, has_more) = page(format!("customer={x}")).await?;
+    assert_eq!(ids, vec![rx1b.clone(), rx2.clone(), rx1a.clone()]);
+    assert!(!has_more);
+
+    // Paging inside it, both directions.
+    let (first, has_more) = page(format!("customer={x}&limit=2")).await?;
+    assert_eq!(first, vec![rx1b.clone(), rx2.clone()]);
+    assert!(has_more, "one more of X's remains");
+    let (second, has_more) = page(format!("customer={x}&limit=2&starting_after={rx2}")).await?;
+    assert_eq!(second, vec![rx1a.clone()]);
+    assert!(!has_more);
+    let (back, has_more) = page(format!("customer={x}&limit=2&ending_before={rx1a}")).await?;
+    assert_eq!(back, vec![rx1b.clone(), rx2.clone()]);
+    assert!(!has_more);
+
+    // A cursor OUTSIDE the filter — A's own refund of nobody's payment —
+    // pages from its position in A's whole list, as `GET /v1/invoices?
+    // customer=` does.
+    let (after_rn, has_more) = page(format!("customer={x}&starting_after={rn}")).await?;
+    assert_eq!(after_rn, vec![rx2.clone(), rx1a.clone()]);
+    assert!(!has_more);
+    let (before_ry, has_more) = page(format!("customer={x}&limit=1&ending_before={ry}")).await?;
+    assert_eq!(before_ry, vec![rx2.clone()]);
+    assert!(has_more, "rx1b is newer too");
+
+    // Combined with `payment_intent`, the two narrow together.
+    let (ids, _) = page(format!("customer={x}&payment_intent={x1}")).await?;
+    assert_eq!(ids, vec![rx1b.clone(), rx1a.clone()]);
+    let (ids, _) = page(format!("customer={y}&payment_intent={x1}")).await?;
+    assert!(ids.is_empty(), "{ids:?}");
+    let (ids, _) = page(format!("customer={y}")).await?;
+    assert_eq!(ids, vec![ry]);
+
+    // THE ORACLE. Z is real: B's own list finds B's refund through it…
+    let (status, theirs) = raw(bearer_b.clone(), format!("customer={z}")).await?;
+    assert_eq!(status, 200, "{theirs}");
+    assert!(theirs.contains(&rz), "{theirs}");
+    // …and from A's side it is byte for byte an id nobody ever had.
+    let foreign = raw(bearer_a.clone(), format!("customer={z}")).await?;
+    let unknown = raw(
+        bearer_a.clone(),
+        "customer=cus_00000000000000000000000x".to_owned(),
+    )
+    .await?;
+    assert_eq!(foreign.0, 200, "{}", foreign.1);
+    assert_eq!(
+        foreign, unknown,
+        "another merchant's real customer must be indistinguishable from one that never existed"
+    );
+    let parsed: Value = serde_json::from_str(&foreign.1)?;
+    assert_eq!(
+        parsed.get("data"),
+        Some(&Value::Array(vec![])),
+        "{parsed:#}"
+    );
+
+    // A MALFORMED value: the bytes `GET /v1/invoices` answers.
+    for malformed in [rx1a.as_str(), "cus_tooshort"] {
+        let ours = raw(bearer_a.clone(), format!("customer={malformed}")).await?;
+        let response = http
+            .get(harness.url(&format!("/v1/invoices?customer={malformed}")))
+            .bearer_auth(&bearer_a)
+            .send()
+            .await?;
+        let invoices = (response.status().as_u16(), response.text().await?);
+        assert_eq!(ours.0, 400, "{}", ours.1);
+        assert_eq!(ours, invoices, "for {malformed:?}");
+        assert!(ours.1.contains(r#""param":"customer""#), "{}", ours.1);
+    }
+
+    // ERASED (migration 0041): the id stays, and so do its refunds.
+    let deleted = a.customers().del(&x, RequestOptions::new()).await?;
+    assert!(deleted.deleted);
+    let (ids, _) = page(format!("customer={x}")).await?;
+    assert_eq!(ids, vec![rx1b, rx2, rx1a]);
+
+    harness.shutdown().await;
+    Ok(())
 }

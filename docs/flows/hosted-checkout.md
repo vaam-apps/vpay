@@ -138,7 +138,7 @@ POST, tenant-scoped, in `V1_ROUTES`:
 | ------ | ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | POST   | `/v1/checkout/sessions`             | `201` with the session **and its `client_secret`**, plus `url` when hosted. Refuses an intent that is not `requires_payment_method`, one that already has a charge, and one that already has an open session |
 | GET    | `/v1/checkout/sessions/{id}`        | The session with `client_secret`, like `retrieve` on intents                                                                                                                                                 |
-| GET    | `/v1/checkout/sessions`             | A list, no secrets, filterable by `payment_intent`                                                                                                                                                           |
+| GET    | `/v1/checkout/sessions`             | A list, no secrets, filterable by `payment_intent` and (since 2026-09-23) `customer`                                                                                                                         |
 | POST   | `/v1/checkout/sessions/{id}/expire` | `open` → `expired`; a session with a live charge is `409`                                                                                                                                                    |
 
 Browser surface, `/v1/browser` — publishable key plus a session credential,
@@ -200,6 +200,19 @@ verbatim:
 other three make.
 
 ## Status
+
+**Updated 2026-09-23 (RFC-0004 § 5): `GET /v1/checkout/sessions` takes a
+`customer` filter.** It compares the session's **own** `customer_id`
+(migration `0034`), not its intent's — the two differ for a session created
+with `customer=` on an intent that has none, and the session's is the
+`customer` the list renders. Checked for shape only and applied in the same
+`WHERE` as `merchant_id`: another merchant's real `cus_…` is byte-identical
+to one that never existed (an empty page), and a malformed one is the `400`
+`GET /v1/invoices` answers, byte for byte. Proven by
+`the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracle`
+against a real Postgres, in both SDKs by the `checkout.sessions.list` row of
+[../sdks/parity.md](../sdks/parity.md); evidence in
+[../status/verification/2026-09-23-customer-filters.md](../status/verification/2026-09-23-customer-filters.md).
 
 Built and merged 2026-09-04 (Step 9). Proven in a real browser by
 `frontends/tests/e2e/cypress/e2e/shop-hosted.cy.ts` (3 tests, both rails,

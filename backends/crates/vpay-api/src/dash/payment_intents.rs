@@ -101,6 +101,11 @@ pub(crate) async fn list(
             .created_lte
             .map(|raw| parse_timestamp("created_lte", &raw))
             .transpose()?,
+        // `/v1`'s filter (RFC-0004 § 5), not offered here: the operator
+        // console has no customer view to filter from, and a parameter this
+        // list accepted without a screen that sends it would be untested
+        // surface.
+        customer: None,
     };
 
     let (rows, has_more) = PaymentIntents::list_page_filtered(

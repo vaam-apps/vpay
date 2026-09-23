@@ -56,6 +56,14 @@
 //!     which is a documented gap rather than a claim — see
 //!     `vpay_api`'s `STRIPE_SHOULD_RETRY_HEADER`.
 //!
+//! RFC-0004 § 5 (2026-09-23) adds one more, test 26:
+//!
+//! 18. `customer=` narrows the list to that customer's intents **in the
+//!     statement**, pages with both cursors inside the filtered set, answers
+//!     another merchant's real `cus_…` with the same empty page as one that
+//!     never existed, refuses a malformed one with `GET /v1/invoices`' own
+//!     `400` byte for byte, and still finds an erased customer's intents.
+//!
 //! # What is deliberately not claimed here
 //!
 //! **Nothing in this file shows a payment being taken.** Every rail it
@@ -92,8 +100,8 @@ use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
-    ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    ListPaymentIntentsParams, PaymentMethodType, RequestOptions,
+    ConfirmPaymentIntentParams, CreateCustomerParams, CreatePaymentIntentParams, Credentials,
+    IntentStatus, ListPaymentIntentsParams, PaymentMethodType, RequestOptions,
 };
 
 mod support;
@@ -1514,6 +1522,7 @@ async fn a_list_refuses_two_cursors_and_a_malformed_one() -> anyhow::Result<()> 
             limit: Some(10),
             starting_after: Some(second.id.clone()),
             ending_before: Some(first.id.clone()),
+            ..Default::default()
         })
         .await
         .expect_err("two cursors name opposite directions and must be refused");
@@ -1539,6 +1548,7 @@ async fn a_list_refuses_two_cursors_and_a_malformed_one() -> anyhow::Result<()> 
                 limit: Some(10),
                 starting_after,
                 ending_before,
+                ..Default::default()
             })
             .await
             .expect_err("a malformed cursor must be named, not answered with an empty page");
@@ -2685,6 +2695,260 @@ async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> 
         "the body really is the stored one, so the two responses now agree on all three of \
          status, body and advisory"
     );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 26
+
+/// **`GET /v1/payment_intents?customer=`** (RFC-0004 § 5): the filter is in
+/// the statement, pages correctly, and is not an existence oracle.
+///
+/// Seven of merchant A's intents are interleaved across two customers and
+/// none, so a filter applied anywhere but in the `WHERE` the `LIMIT` sees
+/// would show up as a short page or a wrong `has_more`:
+///
+/// ```text
+/// oldest  x1  y1  x2  none  x3  y2  x4  newest
+/// ```
+///
+/// **The cursor rule is `GET /v1/invoices?customer=`'s**, found by reading
+/// `vpay_db::invoices::list_page` rather than chosen: a cursor is resolved to
+/// its position in the merchant's *whole* list (the sub-select carries
+/// `merchant_id` and nothing else), so a cursor naming one of the merchant's
+/// intents that is *outside* the filter pages from that point. The two
+/// `y…` cursors below pin it.
+///
+/// **The oracle half uses merchant B's real customer**, one with an intent,
+/// and asserts A's answer for it is byte-identical to A's answer for an id no
+/// merchant has ever had — so "exists elsewhere" and "never existed" cannot
+/// be told apart from A's side, while B's own list shows the id is real.
+#[tokio::test]
+async fn the_customer_filter_pages_inside_its_set_and_is_not_an_oracle() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let a = harness.a();
+    let b = harness.b();
+    let http = raw_client();
+
+    let customer = |client: vpay_sdk::Client, name: &'static str| async move {
+        client
+            .customers()
+            .create(
+                CreateCustomerParams {
+                    name: Some(name.to_owned()),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .map(|customer| customer.id)
+    };
+    let x = customer(a.clone(), "Xavier").await.context("customer X")?;
+    let y = customer(a.clone(), "Yvonne").await.context("customer Y")?;
+    let z = customer(b.clone(), "Zita")
+        .await
+        .context("merchant B's customer Z")?;
+
+    let intent = |client: vpay_sdk::Client, customer: Option<String>| async move {
+        client
+            .payment_intents()
+            .create(
+                CreatePaymentIntentParams {
+                    customer,
+                    ..create_params()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .map(|intent| intent.id)
+    };
+    let x1 = intent(a.clone(), Some(x.clone())).await?;
+    let y1 = intent(a.clone(), Some(y.clone())).await?;
+    let x2 = intent(a.clone(), Some(x.clone())).await?;
+    let _none = intent(a.clone(), None).await?;
+    let x3 = intent(a.clone(), Some(x.clone())).await?;
+    let y2 = intent(a.clone(), Some(y.clone())).await?;
+    let x4 = intent(a.clone(), Some(x.clone())).await?;
+    let z1 = intent(b.clone(), Some(z.clone())).await?;
+
+    let list = |client: vpay_sdk::Client, params: ListPaymentIntentsParams| async move {
+        let page = client.payment_intents().list(params).await?;
+        let ids: Vec<String> = page.data.iter().map(|i| i.id.clone()).collect();
+        Ok::<_, vpay_sdk::Error>((ids, page.has_more))
+    };
+    let for_x = |limit: u32| ListPaymentIntentsParams {
+        limit: Some(limit),
+        customer: Some(x.clone()),
+        ..Default::default()
+    };
+
+    // The whole filtered set, newest first, and every row really is X's.
+    let (ids, has_more) = list(a.clone(), for_x(10)).await?;
+    assert_eq!(ids, vec![x4.clone(), x3.clone(), x2.clone(), x1.clone()]);
+    assert!(!has_more);
+    let page = a.payment_intents().list(for_x(10)).await?;
+    assert!(
+        page.data
+            .iter()
+            .all(|i| i.customer.as_deref() == Some(x.as_str())),
+        "the filter and the rendered `customer` agree on every row"
+    );
+
+    // Forward, a page boundary inside the filtered set: two, then the next
+    // two *filtered* rows — not the unfiltered rows between them.
+    let (first, has_more) = list(a.clone(), for_x(2)).await?;
+    assert_eq!(first, vec![x4.clone(), x3.clone()]);
+    assert!(
+        has_more,
+        "`has_more` counts the filtered set: two more of X's remain"
+    );
+    let (second, has_more) = list(
+        a.clone(),
+        ListPaymentIntentsParams {
+            starting_after: Some(x3.clone()),
+            ..for_x(2)
+        },
+    )
+    .await?;
+    assert_eq!(second, vec![x2.clone(), x1.clone()]);
+    assert!(
+        !has_more,
+        "x1 is the last of X's, though y1 is older than x2"
+    );
+
+    // Backward from the second page's first row returns the first page.
+    let (back, has_more) = list(
+        a.clone(),
+        ListPaymentIntentsParams {
+            ending_before: Some(x2.clone()),
+            ..for_x(2)
+        },
+    )
+    .await?;
+    assert_eq!(back, vec![x4.clone(), x3.clone()]);
+    assert!(!has_more, "nothing of X's is newer than x4");
+
+    // A cursor OUTSIDE the filter — one of A's own intents, for Y — positions
+    // the page in A's whole list, as it does on `GET /v1/invoices?customer=`.
+    let (after_y2, has_more) = list(
+        a.clone(),
+        ListPaymentIntentsParams {
+            starting_after: Some(y2.clone()),
+            ..for_x(2)
+        },
+    )
+    .await?;
+    assert_eq!(after_y2, vec![x3.clone(), x2.clone()]);
+    assert!(has_more);
+    let (before_y1, has_more) = list(
+        a.clone(),
+        ListPaymentIntentsParams {
+            ending_before: Some(y1.clone()),
+            ..for_x(2)
+        },
+    )
+    .await?;
+    assert_eq!(before_y1, vec![x3.clone(), x2.clone()]);
+    assert!(has_more, "x4 is also newer than y1");
+
+    // Y's filter is Y's rows, so the filter is not merely "has a customer".
+    let (ids, _) = list(
+        a.clone(),
+        ListPaymentIntentsParams {
+            customer: Some(y.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(ids, vec![y2.clone(), y1.clone()]);
+
+    // THE ORACLE. Z is real — B's own list finds its intent through it…
+    let (ids, _) = list(
+        b.clone(),
+        ListPaymentIntentsParams {
+            customer: Some(z.clone()),
+            ..Default::default()
+        },
+    )
+    .await?;
+    assert_eq!(ids, vec![z1.clone()]);
+    // …and A's answer for Z is byte for byte A's answer for an id no merchant
+    // has ever had: 200, an empty page, and nothing that tells them apart.
+    let bearer_a = harness.bearer(CLIENT_A);
+    let raw = |path: String| {
+        let request = http.get(harness.url(&path)).bearer_auth(&bearer_a);
+        async move {
+            let response = request.send().await?;
+            let status = response.status().as_u16();
+            let body = response.text().await?;
+            Ok::<_, reqwest::Error>((status, body))
+        }
+    };
+    let (foreign_status, foreign) = raw(format!("/v1/payment_intents?customer={z}")).await?;
+    let (unknown_status, unknown) =
+        raw("/v1/payment_intents?customer=cus_00000000000000000000000x".to_owned()).await?;
+    assert_eq!(foreign_status, 200, "{foreign}");
+    assert_eq!(unknown_status, 200, "{unknown}");
+    assert_eq!(
+        foreign, unknown,
+        "another merchant's real customer must be indistinguishable from one that never existed"
+    );
+    let parsed: Value = serde_json::from_str(&foreign)?;
+    assert_eq!(
+        parsed.get("data"),
+        Some(&Value::Array(vec![])),
+        "{parsed:#}"
+    );
+    assert_eq!(
+        parsed.get("has_more"),
+        Some(&Value::Bool(false)),
+        "{parsed:#}"
+    );
+
+    // A MALFORMED value is a 400 naming `customer` — the same bytes
+    // `GET /v1/invoices` answers for its own `customer` filter.
+    for malformed in [x1.as_str(), "cus_tooshort", "not-an-id"] {
+        let (status, body) = raw(format!("/v1/payment_intents?customer={malformed}")).await?;
+        assert_eq!(status, 400, "{body}");
+        let (invoices_status, invoices) = raw(format!("/v1/invoices?customer={malformed}")).await?;
+        assert_eq!(invoices_status, 400, "{invoices}");
+        assert_eq!(
+            body, invoices,
+            "one parameter, one refusal, on both lists that take it ({malformed:?})"
+        );
+        let parsed: Value = serde_json::from_str(&body)?;
+        assert_eq!(
+            parsed.pointer("/error/param").and_then(Value::as_str),
+            Some("customer"),
+            "{parsed:#}"
+        );
+    }
+
+    // Blank is absent, not malformed: the whole of A's list.
+    let (status, body) = raw("/v1/payment_intents?customer=".to_owned()).await?;
+    assert_eq!(status, 200, "{body}");
+    let parsed: Value = serde_json::from_str(&body)?;
+    assert_eq!(
+        parsed.get("data").and_then(Value::as_array).map(Vec::len),
+        Some(7),
+        "{parsed:#}"
+    );
+
+    // ERASED (migration 0041). X is referenced by four intents, so
+    // `DELETE /v1/customers/{id}` anonymises rather than deletes — and the id
+    // stays, so the filter finds the same four.
+    let deleted = a.customers().del(&x, RequestOptions::new()).await?;
+    assert!(deleted.deleted);
+    let anonymized: bool =
+        sqlx::query_scalar("SELECT anonymized_at IS NOT NULL FROM customers WHERE id = $1")
+            .bind(&x)
+            .fetch_one(&harness.pool)
+            .await
+            .context("reading the erased customer")?;
+    assert!(anonymized, "X was anonymised, not deleted");
+    let (ids, _) = list(a.clone(), for_x(10)).await?;
+    assert_eq!(ids, vec![x4, x3, x2, x1]);
 
     harness.shutdown().await;
     Ok(())

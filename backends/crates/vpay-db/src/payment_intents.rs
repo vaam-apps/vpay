@@ -258,10 +258,13 @@ pub struct ListPage {
 
 /// Extra predicates a list may narrow by, beyond the tenant and the cursor.
 ///
-/// **Empty on `/v1`**, which offers no filters at all
-/// (`crate::PaymentIntents::list_page` passes `Self::default()`), and
-/// populated only by `/dash/v1`'s payments list, where an operator asking
-/// "what failed yesterday?" is the ordinary question.
+/// **On `/v1` only [`Self::customer`] is ever set** (RFC-0004 § 5,
+/// 2026-09-23), and `/dash/v1`'s payments list is the only caller that sets
+/// the other three, where an operator asking "what failed yesterday?" is the
+/// ordinary question. `crate::PaymentIntents::list_page` is still
+/// `Self::default()`. _(This said "Empty on `/v1`, which offers no filters at
+/// all" until 2026-09-23, when `GET /v1/payment_intents?customer=` became the
+/// first `/v1` caller.)_
 ///
 /// Its own type rather than three arguments so that adding a fourth
 /// predicate is one edit at each end rather than a signature change at
@@ -298,6 +301,18 @@ pub struct IntentFilter {
     pub created_gte: Option<OffsetDateTime>,
     /// Only intents created at or before this instant.
     pub created_lte: Option<OffsetDateTime>,
+    /// Only this customer's intents — `payment_intents.customer_id`, a
+    /// `cus_…` — the `customer` filter of `GET /v1/payment_intents`.
+    ///
+    /// **Not validated for existence**, for
+    /// [`crate::InvoiceListPage::customer`]'s reason: it is compared in the
+    /// same `WHERE` as `merchant_id`, so another merchant's customer, an
+    /// unknown one and one of this merchant's with no intents are all the
+    /// same empty page, and the filter cannot become an oracle for which
+    /// `cus_…` exist under some other tenant. An erased customer (migration
+    /// `0041`) keeps its id and its intents keep pointing at it, so the
+    /// filter finds them exactly as before the erasure.
+    pub customer: Option<String>,
 }
 
 /// [`PaymentIntents::transition`], inside a transaction the caller owns.
@@ -1060,12 +1075,20 @@ impl PaymentIntents for crate::repository::PgRepositories {
         // outer query so a cursor from elsewhere resolves to NULL rather than
         // to a position in someone else's range.
         //
-        // The three filter predicates are `$N IS NULL OR …`, not string
+        // The four filter predicates are `$N IS NULL OR …`, not string
         // interpolation: an absent filter must produce the *same statement*
-        // as `/v1` sends, so Postgres plans one query rather than eight, and
-        // so a filter value can never reach the SQL text. `status` is a
-        // plain column comparison since migration 0037 made the column
-        // `TEXT`; see `IntentFilter::status` for what it cost before.
+        // whichever surface sends it, so Postgres plans one query rather
+        // than sixteen, and so a filter value can never reach the SQL text.
+        // `status` is a plain column comparison since migration 0037 made
+        // the column `TEXT`; see `IntentFilter::status` for what it cost
+        // before.
+        //
+        // The cursor sub-selects are deliberately *not* narrowed by the
+        // `customer` filter: a cursor is resolved to its position in this
+        // merchant's list, whichever customer it belongs to, and the filtered
+        // rows beyond that position are the page — `invoices::list_page`'s
+        // behaviour for its own `customer` filter, kept identical so the two
+        // lists answer the same cursor the same way.
         let sql = format!(
             "SELECT {COLUMNS} FROM payment_intents \
          WHERE merchant_id = $1 \
@@ -1076,6 +1099,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
            AND ($5::TEXT IS NULL OR status = $5) \
            AND ($6::TIMESTAMPTZ IS NULL OR created_at >= $6) \
            AND ($7::TIMESTAMPTZ IS NULL OR created_at <= $7) \
+           AND ($8::TEXT IS NULL OR customer_id = $8) \
          ORDER BY seq {direction} \
          LIMIT $4"
         );
@@ -1088,6 +1112,7 @@ impl PaymentIntents for crate::repository::PgRepositories {
             .bind(filter.status.as_deref())
             .bind(filter.created_gte)
             .bind(filter.created_lte)
+            .bind(filter.customer.as_deref())
             .fetch_all(&self.pool)
             .await
             .map_err(DbError::Query)?;

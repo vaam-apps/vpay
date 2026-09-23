@@ -39,6 +39,9 @@
 //!    sees it;
 //! 9. a deployment with no `checkout.public_base_url` refuses to create a
 //!    session rather than minting a `url` that resolves to nothing.
+//! 10. `customer=` on the list (RFC-0004 § 5, 2026-09-23) filters by the
+//!     **session's own** customer, pages inside the filtered set, and is not
+//!     an existence oracle for another merchant's customers.
 //!
 //! # No test doubles
 //!
@@ -3628,6 +3631,256 @@ async fn a_second_session_after_an_expiry_makes_the_intent_payable_again() -> an
         stored_session(&h.pool, &first.id).await?,
         ("expired".to_owned(), "unpaid".to_owned())
     );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------------------ claim 10
+
+/// `POST /v1/customers` as `client_id`'s own server does it, answering the
+/// `cus_…`.
+async fn create_customer_for(h: &Harness, client_id: &str, name: &str) -> anyhow::Result<String> {
+    let body: Value = browser()
+        .post(h.url("/v1/customers"))
+        .bearer_auth(h.bearer(client_id))
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .form(&[("name", name)])
+        .send()
+        .await
+        .context("creating a customer")?
+        .json()
+        .await
+        .context("the customer body is JSON")?;
+    field(&body, "id")
+}
+
+/// [`create_intent_for`], with the intent's own `customer` set or not.
+async fn create_intent_with_customer(
+    h: &Harness,
+    client_id: &str,
+    customer: Option<&str>,
+) -> anyhow::Result<String> {
+    let customer = customer.map_or_else(String::new, |id| format!("&customer={id}"));
+    let body: Value = browser()
+        .post(h.url("/v1/payment_intents"))
+        .bearer_auth(h.bearer(client_id))
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(format!(
+            "amount={AMOUNT}&currency={CURRENCY}&payment_method_types[0]={PUSH_RAIL}{customer}"
+        ))
+        .send()
+        .await
+        .context("creating a payment intent")?
+        .json()
+        .await
+        .context("the create body is JSON")?;
+    field(&body, "id")
+}
+
+/// A hosted session for `client_id` on `intent_id`, naming `customer` on the
+/// session itself when given.
+async fn session_on(
+    h: &Harness,
+    client_id: &str,
+    intent_id: &str,
+    customer: Option<&str>,
+) -> anyhow::Result<String> {
+    let mut fields = vec![
+        ("payment_intent", intent_id),
+        ("success_url", SUCCESS_URL),
+        ("cancel_url", CANCEL_URL),
+    ];
+    if let Some(customer) = customer {
+        fields.push(("customer", customer));
+    }
+    let (status, body) = create_session(h, client_id, &fields).await?;
+    anyhow::ensure!(status == 201, "creating a session: {body:#}");
+    field(&body, "id")
+}
+
+/// A raw `GET` as `client_id`: the status and the body **as bytes**, because
+/// the oracle and refusal comparisons below are byte comparisons.
+async fn get_raw(h: &Harness, client_id: &str, path: &str) -> anyhow::Result<(u16, String)> {
+    let response = browser()
+        .get(h.url(path))
+        .bearer_auth(h.bearer(client_id))
+        .send()
+        .await
+        .with_context(|| format!("GET {path}"))?;
+    let status = response.status().as_u16();
+    Ok((status, response.text().await?))
+}
+
+/// The ids on one list page, and its `has_more`.
+async fn session_page(
+    h: &Harness,
+    client_id: &str,
+    query: &str,
+) -> anyhow::Result<(Vec<String>, bool)> {
+    let (status, body) = get_raw(h, client_id, &format!("/v1/checkout/sessions?{query}")).await?;
+    anyhow::ensure!(status == 200, "listing sessions ({query}): {body}");
+    let body: Value = serde_json::from_str(&body)?;
+    let ids = body
+        .get("data")
+        .and_then(Value::as_array)
+        .context("`data`")?
+        .iter()
+        .map(|item| field(item, "id"))
+        .collect::<anyhow::Result<Vec<_>>>()?;
+    let has_more = body
+        .get("has_more")
+        .and_then(Value::as_bool)
+        .context("`has_more`")?;
+    Ok((ids, has_more))
+}
+
+/// Claim 10 — **`GET /v1/checkout/sessions?customer=`** (RFC-0004 § 5).
+///
+/// Five of merchant A's sessions, oldest first:
+///
+/// ```text
+/// s1  intent for X, session inherits X
+/// s2  intent for NOBODY, session created with customer=X
+/// s3  intent for Y
+/// s4  intent for nobody, session for nobody
+/// s5  intent for X
+/// ```
+///
+/// **`s2` is the case that decides the column.** Its intent has no customer
+/// and the session does, so a filter that went through the intent would drop
+/// a session whose own rendered `customer` says X. The filter reads the
+/// session's own `customer_id` (migration `0034`), and this test proves it
+/// does by showing `s2`'s intent absent from `GET /v1/payment_intents?
+/// customer=X` while `s2` is present here.
+///
+/// The paging, oracle and refusal halves are `payment_intents.rs` test 26's,
+/// against this list: a cursor outside the filter pages from its position in
+/// the merchant's whole list, as `GET /v1/invoices?customer=` does; merchant
+/// B's **real** customer is byte-identical from A's side to one that never
+/// existed; and a malformed value is `GET /v1/invoices`' own `400`.
+#[tokio::test]
+async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracle()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+
+    let x = create_customer_for(&h, CLIENT_A, "Xavier").await?;
+    let y = create_customer_for(&h, CLIENT_A, "Yvonne").await?;
+    let z = create_customer_for(&h, CLIENT_B, "Zita").await?;
+
+    let intent_1 = create_intent_with_customer(&h, CLIENT_A, Some(&x)).await?;
+    let s1 = session_on(&h, CLIENT_A, &intent_1, None).await?;
+    let intent_2 = create_intent_with_customer(&h, CLIENT_A, None).await?;
+    let s2 = session_on(&h, CLIENT_A, &intent_2, Some(&x)).await?;
+    let intent_3 = create_intent_with_customer(&h, CLIENT_A, Some(&y)).await?;
+    let s3 = session_on(&h, CLIENT_A, &intent_3, None).await?;
+    let intent_4 = create_intent_with_customer(&h, CLIENT_A, None).await?;
+    let s4 = session_on(&h, CLIENT_A, &intent_4, None).await?;
+    let intent_5 = create_intent_with_customer(&h, CLIENT_A, Some(&x)).await?;
+    let s5 = session_on(&h, CLIENT_A, &intent_5, None).await?;
+    let intent_b = create_intent_with_customer(&h, CLIENT_B, Some(&z)).await?;
+    let s_b = session_on(&h, CLIENT_B, &intent_b, None).await?;
+
+    // The whole filtered set, s2 included.
+    let (ids, has_more) = session_page(&h, CLIENT_A, &format!("customer={x}")).await?;
+    assert_eq!(ids, vec![s5.clone(), s2.clone(), s1.clone()]);
+    assert!(!has_more);
+
+    // s2 is found by its OWN customer: its intent has none, so the intent
+    // list filtered by X does not carry it.
+    let (status, intents) =
+        get_raw(&h, CLIENT_A, &format!("/v1/payment_intents?customer={x}")).await?;
+    assert_eq!(status, 200, "{intents}");
+    assert!(
+        !intents.contains(&intent_2),
+        "s2's intent has no customer, so a filter through the intent would have missed s2: \
+         {intents}"
+    );
+    assert!(intents.contains(&intent_1) && intents.contains(&intent_5));
+
+    // Paging inside the filtered set, both directions.
+    let (first, has_more) = session_page(&h, CLIENT_A, &format!("customer={x}&limit=2")).await?;
+    assert_eq!(first, vec![s5.clone(), s2.clone()]);
+    assert!(has_more, "one more of X's remains");
+    let (second, has_more) = session_page(
+        &h,
+        CLIENT_A,
+        &format!("customer={x}&limit=2&starting_after={s2}"),
+    )
+    .await?;
+    assert_eq!(second, vec![s1.clone()]);
+    assert!(!has_more);
+    let (back, has_more) = session_page(
+        &h,
+        CLIENT_A,
+        &format!("customer={x}&limit=2&ending_before={s1}"),
+    )
+    .await?;
+    assert_eq!(back, vec![s5.clone(), s2.clone()]);
+    assert!(!has_more);
+
+    // A cursor OUTSIDE the filter: A's own sessions, for Y and for nobody.
+    let (after_s3, has_more) =
+        session_page(&h, CLIENT_A, &format!("customer={x}&starting_after={s3}")).await?;
+    assert_eq!(after_s3, vec![s2.clone(), s1.clone()]);
+    assert!(!has_more);
+    let (before_s4, has_more) =
+        session_page(&h, CLIENT_A, &format!("customer={x}&ending_before={s4}")).await?;
+    assert_eq!(before_s4, vec![s5.clone()]);
+    assert!(!has_more);
+
+    // The two filters combine rather than one replacing the other.
+    let (ids, _) = session_page(
+        &h,
+        CLIENT_A,
+        &format!("customer={x}&payment_intent={intent_1}"),
+    )
+    .await?;
+    assert_eq!(ids, vec![s1.clone()]);
+    let (ids, _) = session_page(
+        &h,
+        CLIENT_A,
+        &format!("customer={y}&payment_intent={intent_1}"),
+    )
+    .await?;
+    assert!(ids.is_empty(), "{ids:?}");
+
+    // THE ORACLE. Z is real: B's own list finds B's session through it.
+    let (ids, _) = session_page(&h, CLIENT_B, &format!("customer={z}")).await?;
+    assert_eq!(ids, vec![s_b]);
+    let foreign = get_raw(&h, CLIENT_A, &format!("/v1/checkout/sessions?customer={z}")).await?;
+    let unknown = get_raw(
+        &h,
+        CLIENT_A,
+        "/v1/checkout/sessions?customer=cus_00000000000000000000000x",
+    )
+    .await?;
+    assert_eq!(foreign.0, 200, "{}", foreign.1);
+    assert_eq!(
+        foreign, unknown,
+        "another merchant's real customer must be indistinguishable from one that never existed"
+    );
+    let parsed: Value = serde_json::from_str(&foreign.1)?;
+    assert_eq!(
+        parsed.get("data"),
+        Some(&Value::Array(vec![])),
+        "{parsed:#}"
+    );
+
+    // A MALFORMED value: the bytes `GET /v1/invoices` answers.
+    for malformed in [s1.as_str(), "cus_tooshort"] {
+        let ours = get_raw(
+            &h,
+            CLIENT_A,
+            &format!("/v1/checkout/sessions?customer={malformed}"),
+        )
+        .await?;
+        let invoices = get_raw(&h, CLIENT_A, &format!("/v1/invoices?customer={malformed}")).await?;
+        assert_eq!(ours.0, 400, "{}", ours.1);
+        assert_eq!(ours, invoices, "for {malformed:?}");
+        assert!(ours.1.contains(r#""param":"customer""#), "{}", ours.1);
+    }
 
     h.shutdown().await;
     Ok(())

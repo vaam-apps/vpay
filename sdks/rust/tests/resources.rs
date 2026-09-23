@@ -487,6 +487,7 @@ async fn list_payment_intents_encodes_its_pagination_into_the_query_string() {
             limit: Some(2),
             starting_after: Some("pi_0".to_string()),
             ending_before: None,
+            customer: None,
         })
         .await
         .unwrap();
@@ -499,6 +500,45 @@ async fn list_payment_intents_encodes_its_pagination_into_the_query_string() {
     assert_eq!(request.method.as_str(), "GET");
     assert_eq!(request.url.query(), Some("limit=2&starting_after=pi_0"));
     assert!(request.body.is_empty());
+}
+
+/// RFC-0004 § 5: `customer` is sent as `customer=`, after the cursors, and
+/// nothing else changes — the same GET, no body, no `Idempotency-Key`.
+#[tokio::test]
+async fn list_payment_intents_sends_the_customer_filter() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/payment_intents"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [support::payment_intent_json("pi_1")],
+            "has_more": false,
+            "url": "/v1/payment_intents",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let list = client
+        .payment_intents()
+        .list(ListPaymentIntentsParams {
+            limit: Some(3),
+            ending_before: Some("pi_9".to_string()),
+            customer: Some("cus_1".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.data.len(), 1);
+
+    let request = only_request(&server, "/v1/payment_intents").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert_eq!(
+        request.url.query(),
+        Some("limit=3&ending_before=pi_9&customer=cus_1")
+    );
+    assert!(request.body.is_empty());
+    assert!(request.headers.get("idempotency-key").is_none());
 }
 
 #[tokio::test]
@@ -768,6 +808,7 @@ async fn list_refunds_sends_the_documented_query_string() {
             starting_after: Some("re_0".to_string()),
             ending_before: None,
             payment_intent: Some("pi_1".to_string()),
+            customer: None,
         })
         .await
         .unwrap();
@@ -780,6 +821,42 @@ async fn list_refunds_sends_the_documented_query_string() {
     assert_eq!(
         request.url.query(),
         Some("limit=2&starting_after=re_0&payment_intent=pi_1")
+    );
+    assert!(request.body.is_empty());
+}
+
+/// RFC-0004 § 5: `customer` is sent as `customer=`, after `payment_intent`,
+/// and the two filters combine rather than one replacing the other.
+#[tokio::test]
+async fn list_refunds_sends_the_customer_filter() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/refunds"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [refund_json()],
+            "has_more": false,
+            "url": "/v1/refunds",
+        })))
+        .mount(&server)
+        .await;
+
+    let page = client
+        .refunds()
+        .list(ListRefundsParams {
+            payment_intent: Some("pi_1".to_string()),
+            customer: Some("cus_1".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(page.data.len(), 1);
+
+    let request = only_request(&server, "/v1/refunds").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert_eq!(
+        request.url.query(),
+        Some("payment_intent=pi_1&customer=cus_1")
     );
     assert!(request.body.is_empty());
 }
@@ -1899,6 +1976,43 @@ async fn list_checkout_sessions_encodes_its_pagination_and_intent_filter() {
 
     let request = only_request(&server, "/v1/checkout/sessions").await;
     assert_eq!(request.url.query(), Some("limit=10&payment_intent=pi_123"));
+}
+
+/// RFC-0004 § 5: `customer` is sent as `customer=`, after `payment_intent`.
+#[tokio::test]
+async fn list_checkout_sessions_sends_the_customer_filter() {
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/checkout/sessions"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "object": "list",
+            "data": [support::checkout_session_json("cs_123", None)],
+            "has_more": false,
+            "url": "/v1/checkout/sessions",
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let list = client
+        .checkout()
+        .sessions()
+        .list(ListCheckoutSessionsParams {
+            starting_after: Some("cs_0".to_string()),
+            customer: Some("cus_1".to_string()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert_eq!(list.data.len(), 1);
+
+    let request = only_request(&server, "/v1/checkout/sessions").await;
+    assert_eq!(request.method.as_str(), "GET");
+    assert_eq!(
+        request.url.query(),
+        Some("starting_after=cs_0&customer=cus_1")
+    );
+    assert!(request.body.is_empty());
 }
 
 #[tokio::test]

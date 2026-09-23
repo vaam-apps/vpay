@@ -257,6 +257,21 @@ pub struct RefundListPage {
     /// `404` would make the filter an existence oracle for another
     /// merchant's ids.
     pub payment_intent: Option<String>,
+    /// Only refunds of this customer's payments — a `cus_…` (RFC-0004 § 5,
+    /// 2026-09-23).
+    ///
+    /// **Through the refund's intent**, `payment_intents.customer_id`,
+    /// because `refunds` carries no customer column of its own (migration
+    /// `0017`; nothing since has added one). The page already joins the
+    /// intent for the tenant predicate, so this is one more comparison on a
+    /// row the statement has in hand, not a second lookup. A refund's intent
+    /// is fixed at creation and an intent's customer is never rewritten, so
+    /// "this customer's refunds" cannot drift from what the intent says.
+    ///
+    /// Not validated for existence, for [`Self::payment_intent`]'s reason:
+    /// another merchant's customer, an unknown one, and one of this
+    /// merchant's with no refunds are all the same empty page.
+    pub customer: Option<String>,
 }
 
 /// The `refunds` writes and reads a consumer of this crate may perform.
@@ -421,9 +436,9 @@ pub trait Refunds: Send + Sync {
     /// unbounded because the number of refunds of one intent is bounded by
     /// its amount. This one is a merchant-facing **page** over a table that
     /// grows with traffic, so it is descending, limited, and cursored — and
-    /// the `payment_intent` filter is a filter, never a second scope: it is
-    /// applied in the same `WHERE` as the tenant predicate, so it can only
-    /// ever narrow.
+    /// the `payment_intent` and `customer` filters are filters, never a
+    /// second scope: each is applied in the same `WHERE` as the tenant
+    /// predicate, so it can only ever narrow.
     ///
     /// # Errors
     ///
@@ -1150,6 +1165,13 @@ impl Refunds for crate::repository::PgRepositories {
         // row's position and page this merchant's list from a point they
         // could not otherwise learn — the filter must never widen the scope
         // it is applied inside.
+        //
+        // The `customer` filter is `p.customer_id`, the joined intent's: see
+        // `RefundListPage::customer` for why there is no column on `refunds`
+        // to compare instead. Like `payment_intent`, it narrows the outer
+        // rows and not the cursor sub-selects, so a cursor is a position in
+        // this merchant's list whichever customer its refund belongs to —
+        // `invoices::list_page`'s behaviour for its own `customer` filter.
         let sql = format!(
             "SELECT {COLUMNS} FROM refunds r \
              JOIN payment_intents p ON p.id = r.payment_intent_id \
@@ -1165,8 +1187,9 @@ impl Refunds for crate::repository::PgRepositories {
                                                  ON cp.id = c.payment_intent_id \
                                                WHERE c.id = $3 AND cp.merchant_id = $1)) \
                AND ($4::TEXT IS NULL OR r.payment_intent_id = $4) \
+               AND ($5::TEXT IS NULL OR p.customer_id = $5) \
              ORDER BY r.created_at {direction}, r.id {direction} \
-             LIMIT $5"
+             LIMIT $6"
         );
 
         let mut rows = sqlx::query_as::<_, RefundRow>(AssertSqlSafe(sql))
@@ -1174,6 +1197,7 @@ impl Refunds for crate::repository::PgRepositories {
             .bind(page.starting_after.as_deref())
             .bind(page.ending_before.as_deref())
             .bind(page.payment_intent.as_deref())
+            .bind(page.customer.as_deref())
             .bind(limit.saturating_add(1))
             .fetch_all(&self.pool)
             .await

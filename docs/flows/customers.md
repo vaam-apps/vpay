@@ -159,6 +159,18 @@ two deliberate creates are two customers.
 
 ## Status
 
+**Updated 2026-09-23 (RFC-0004 § 5): a customer's payments, sessions and
+refunds can be listed.** `customer=cus_…` filters
+`GET /v1/payment_intents`, `GET /v1/checkout/sessions` and
+`GET /v1/refunds` — the Stripe spelling of a customer-scoped read — each in
+the same `WHERE` as `merchant_id`, which is the shape the `email` bullet
+below names as the safe one. It is a filter by the merchant's own id and
+not a lookup by a payer identifier, so it is not that bullet's gap closed:
+**`GET /v1/customers` is still unfiltered**, and for the same reason. An
+erased customer keeps its `cus_…`, and the filter still finds everything
+that names it. [merchant-auth.md](merchant-auth.md) § Status has the
+details.
+
 **Built and proven against a real Postgres and the shipping router, worker and
 SDKs (2026-09-06, S4a; extended 2026-09-10 twice — issue #66's events, then
 issues #67/#68/#96's address and erasure — and again on 2026-09-11 with the

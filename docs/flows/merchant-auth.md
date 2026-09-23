@@ -229,6 +229,21 @@ before you treat anything above as safe with money.
 
 ## Status
 
+**Updated 2026-09-23 (RFC-0004 § 5): `GET /v1/payment_intents` and
+`GET /v1/refunds` take a `customer` filter**, and so does
+`GET /v1/checkout/sessions` ([hosted-checkout.md](hosted-checkout.md)).
+Intents compare their own `customer_id`; refunds have no customer column,
+so they compare their intent's, inside the join the tenant predicate already
+makes. Both are checked for shape only and applied in the same `WHERE` as
+`merchant_id`, so another merchant's real `cus_…` is an empty page
+byte-identical to one that never existed, and a malformed one is the `400`
+naming `customer` that `GET /v1/invoices` answers. Cursors keep
+`GET /v1/invoices?customer=`'s rule: a cursor is a position in the
+merchant's whole list, so one naming a row outside the filter pages from
+there. `GET /v1/customers` stays unfiltered, deliberately. No migration was
+added; which index serves each filtered query is on the evidence page,
+[../status/verification/2026-09-23-customer-filters.md](../status/verification/2026-09-23-customer-filters.md).
+
 **Updated 2026-09-06: the whole kill-switch repository changed engine, and
 nothing else changed.** `disabled_clients` (the row in the failure table
 above) is read _and written_ through CrateStack now —
