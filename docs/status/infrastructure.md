@@ -109,9 +109,18 @@ writer of `paid` and always matched on an intent. `postgres_smoke.rs`'
 `schema_migrates_cleanly_on_an_empty_database` records 49 applied; see
 [verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md).
 `MANIFEST.sha256`'s line was appended by hand with `shasum -a 256`, because
-`just migrations-manifest` uses GNU `find -printf` and fails on macOS
+`just migrations-manifest` used GNU `find -printf` and failed on macOS
 (`find: -printf: unknown primary or operator`); `verify-migrations` accepts
-the line. _(The paragraph below said "47" and was one behind from
+the line. _(This said "uses … and fails on macOS" until later on 2026-09-23,
+when the recipe was made portable: it lists files with
+`find … -exec basename` and takes the digest from `sha256sum`, or from
+`shasum -a 256` where there is none. Run on macOS 26.5.1 (BSD `find`) and on
+Debian 13 (GNU findutils 4.10.0, coreutils 9.7) it reproduces the committed
+manifest byte for byte, appends the same single line for an extra file on
+both, and is byte-identical to the old recipe's output under GNU tools — see
+[verification/2026-09-23-migrations-manifest-macos.md](verification/2026-09-23-migrations-manifest-macos.md).
+The `0049` line itself was not rewritten; the recipe now derives the same
+bytes.)_ _(The paragraph below said "47" and was one behind from
 2026-09-16, when `0048_refunds-comments-post-v1-refunds-is-routed.sql` — a
 second comment-only migration — landed without moving it.)_
 

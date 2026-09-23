@@ -114,7 +114,11 @@ the pre-existing body of `pay_once` moved into a function).
 `just migrations-manifest` **does not run on macOS** — it calls GNU
 `find -printf` (`find: -printf: unknown primary or operator`). The `0049` line
 was appended with `shasum -a 256`, the same digest `sha256sum` writes, and
-`verify-migrations` accepts it.
+`verify-migrations` accepts it. _(True when measured. Later on 2026-09-23 the
+recipe was made portable and now runs on macOS; run there against this
+tree it leaves that `0049` line, and the whole manifest, byte for byte as
+they are — see
+[2026-09-23-migrations-manifest-macos.md](2026-09-23-migrations-manifest-macos.md).)_
 
 ## Suites at the first commit (`471d9b7`)
 
