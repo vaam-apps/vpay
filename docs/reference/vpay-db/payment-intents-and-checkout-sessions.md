@@ -193,16 +193,62 @@ the tenant filter: applied after `LIMIT` they would return short pages and a
 `has_more` describing the wrong set.
 
 `customer` compares the session's **own** `customer_id`, not its intent's.
-The two differ in exactly one case: a session created with `customer=` on an
-intent that has none stores the customer on the session only. So the payment
-that session collects is listed by `GET /v1/checkout/sessions?customer=` and
-**not** by `GET /v1/payment_intents?customer=` or `GET /v1/refunds?customer=`,
-which read the intent's column. That is recorded, not decided; whether a
-session's customer should be written back to its intent is an open maintainer
-question — open question 3 of ADR-0024, whose decisions (D12, sessions filter on their own `customer_id`, among them) are otherwise accepted: `docs/adr/0024-customer-filters-and-manual-payments.md`. The
+Since [ADR-0025](../../adr/0025-session-customer-onto-intent.md)
+(2026-09-23) the two agree for every session created from then on: a session
+created with `customer=` on an intent that has none writes the customer onto
+the intent in `create`'s own transaction (next section). They still differ
+for **historical** rows, which were not backfilled. A pre-ADR-0025 session
+created that way stores the customer on the session only, so the payment it
+collected is listed by `GET /v1/checkout/sessions?customer=` and **not** by
+`GET /v1/payment_intents?customer=` or `GET /v1/refunds?customer=`, which
+read the intent's column. Those rows are why the session filter still reads
+the session's own column. _(Until ADR-0025 this paragraph described that as
+the one case the columns differ, "recorded, not decided", and named it as
+open question 3 of ADR-0024, whose decisions — D12, sessions filter on their
+own `customer_id`, among them — are otherwise accepted:
+`docs/adr/0024-customer-filters-and-manual-payments.md`.)_ The
 payment-intent list's `customer` lives on `IntentFilter`, not on `ListPage`,
 for the same reason `payment_intent` is not on `ListPage`: `/v1/events` pages
 with `ListPage` too.
+
+### Why `create` writes the intent's customer, and how
+
+`CheckoutSessions::create` is a transaction since ADR-0025, where it was one
+`INSERT`. When the session names a customer, it first runs
+`claim_intent_customer`:
+
+```sql
+UPDATE payment_intents SET customer_id = $3, updated_at = now()
+WHERE id = $1 AND merchant_id = $2 AND customer_id IS NULL
+```
+
+This is a compare-and-swap, like every other transition in this crate, and
+the reason is the race. Two sessions naming two customers for one
+customer-less intent can both pass `vpay_api`'s read of the intent. The
+second `UPDATE` then waits on the first's row lock and re-evaluates
+`customer_id IS NULL` against the committed row under `READ COMMITTED`. It
+matches nothing, so the second customer cannot silently replace the first.
+Zero rows is then decided by re-reading the intent in the same transaction:
+
+- the same customer, which is every inheriting session and every invoice
+  session, proceeds;
+- a different one is `DbError::IntentCustomerConflict`, which `vpay_api`
+  renders as the pre-check's `400`, byte for byte;
+- no row for this merchant is left to the insert's foreign key.
+
+A `NULL` that survived a zero-row `UPDATE` is `WriteMatchedNoRow`, because
+the predicate would have matched it. The session and the intent's customer
+therefore commit or roll back together. The integration suite proves they
+share one creating transaction by comparing the two rows' `xmin`.
+
+The lock order is intent row, then the customer row's `FOR KEY SHARE` taken
+by the foreign-key checks. Erasure takes `FOR UPDATE` on the customer, then
+writes intents `WHERE customer_id = $1`. It cannot match this transaction's
+uncommitted row, so the two do not deadlock. What erasure can still do, as
+it already could against `POST /v1/payment_intents` with `customer=`, is
+commit between `resolve_for_attachment`'s read and this write. The intent
+then names a customer that has just been anonymised. That is the late-write
+exposure the intent create path already has. ADR-0025 does not change it.
 
 ### Why the settlement flip is `pub(crate)` and not a trait method
 

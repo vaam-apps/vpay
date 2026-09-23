@@ -38,13 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and six times on 2026-09-23, when the super-linter
+plugin's page landed, and eight times on 2026-09-23, when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
-page, the migrations-manifest page and the erasure-through-checkout-sessions
-page did: the directory holds 66 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 43 of them. This is a hand-maintained list, not a generated one,
+page, the migrations-manifest page, the test-clock-skew page, the
+session-customer page and the erasure-through-checkout-sessions page did: the directory holds 68 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 45 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41 and then 65/42 on 2026-09-23; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43 and then 67/44 on 2026-09-23; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -59,6 +59,12 @@ hand-maintained list is exactly how this gap happened; browse
 [verification/](verification/) directly for the complete, current file set
 rather than trusting this list to be exhaustive.
 
+- [verification/2026-09-23-session-customer-onto-intent.md](verification/2026-09-23-session-customer-onto-intent.md) —
+  ADR-0025, answering ADR-0024's question 3: a checkout session's customer is
+  written onto a customer-less intent in the insert's own transaction. What
+  the old code allowed, the SQL, the four container-backed cases (one forcing
+  the race with a held row lock), both mutations, every affected suite's
+  passed and ignored counts, and the gates.
 - [verification/2026-09-23-customer-filters.md](verification/2026-09-23-customer-filters.md) —
   RFC-0004 § 5's first bullet: `customer=` on the intent, session and refund
   lists, in both SDKs. Which column each list compares and why (a session's
@@ -105,6 +111,16 @@ rather than trusting this list to be exhaustive.
   after, and the reason the two exclusions are exclusions — a file
   `cargo build` regenerates on every run, and TypeScript's own
   comment-bearing config format.
+- [verification/2026-09-23-test-clock-skew.md](verification/2026-09-23-test-clock-skew.md) —
+  the `webhooks.rs` "the fan-out job is claimable" failures after a Docker
+  Desktop restart, and every other test fixture that stamped a job with this
+  host's clock and then claimed it on Postgres' `now()`, or held a
+  database-written instant against this host's clock. Each now reads the
+  database's clock. The failure mode is demonstrated with a simulated 200 ms
+  skew; the flake itself was **not** reproduced, and the page says so. Ten
+  production sites with the same two clocks are listed and deliberately not
+  changed: in production they cost a delay equal to the skew, not a failure.
+  Test code only.
 - [verification/2026-09-22-tauri-plugin.md](verification/2026-09-22-tauri-plugin.md) —
   the Tauri v2 checkout plugin, built in parallel lanes: what each lane
   measured (the Rust crate's 19 tests + 1 doctest and its clippy/`cargo doc`

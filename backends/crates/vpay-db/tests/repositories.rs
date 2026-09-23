@@ -1049,7 +1049,7 @@ async fn concurrent_ensure_active_signing_key_calls_with_the_same_kid_rotate_exa
 /// would have gone on passing while the crash loop stayed.
 #[tokio::test]
 async fn ensure_active_signing_key_refuses_to_reactivate_a_retired_kid() -> anyhow::Result<()> {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     // Truncated to whole microseconds before it is written: `TIMESTAMPTZ`
     // stores microseconds, so a nanosecond-precision instant would never
     // compare equal to what Postgres hands back. This is the exact
@@ -1079,9 +1079,11 @@ async fn ensure_active_signing_key_refuses_to_reactivate_a_retired_kid() -> anyh
             // The retirement instant comes from the row the *previous*
             // rotation wrote, so it is in the past — a check that the field
             // carries `updated_at` and not the future `expires_at` the
-            // caller passed in (`now + 24h`).
+            // caller passed in (`now + 24h`). Compared against the
+            // database's clock, because `updated_at` is Postgres' `now()`
+            // and this host's clock is not the container's.
             assert!(
-                *retired_at <= time::OffsetDateTime::now_utc(),
+                *retired_at <= db_now(&pool).await?,
                 "retired_at must be when the key was retired, not when it stops publishing: \
                  {retired_at}"
             );
@@ -5092,6 +5094,24 @@ async fn enqueue(
     Ok(inserted)
 }
 
+/// Postgres' `now()`, read off the same pool the claims run through.
+///
+/// **Every "now" a jobs test claims against, or compares a database-written
+/// instant with, comes from here** rather than `OffsetDateTime::now_utc()`,
+/// because `Jobs::claim` compares `run_at <= now()` on the *database's* clock. With testcontainers on Docker Desktop
+/// the database runs in a VM whose clock is not this process's, and a job
+/// written at this host's "now" is not due until the VM's clock catches up
+/// — so a container a few milliseconds behind turns "claimable" into `None`
+/// (2026-09-23, `docs/status/verification/2026-09-23-test-clock-skew.md`).
+/// Offsets from this instant (`- 60s`, `+ 1h`) keep their meaning exactly;
+/// only the zero moves onto the clock the predicate reads.
+async fn db_now(pool: &PgPool) -> anyhow::Result<time::OffsetDateTime> {
+    sqlx::query_scalar::<_, time::OffsetDateTime>("SELECT now()")
+        .fetch_one(pool)
+        .await
+        .context("reading the database's clock must succeed")
+}
+
 /// How many `events` rows name this object. The settlement transaction's
 /// central claim is "exactly one", and a count is the only assertion that
 /// can catch the failure that matters (a second delivery to a merchant).
@@ -5119,8 +5139,8 @@ async fn charge_state(pool: &PgPool, charge_id: &str) -> anyhow::Result<String> 
 /// decorative: every rescheduled job would be claimed again immediately.
 #[tokio::test]
 async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> anyhow::Result<()> {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
-    let now = time::OffsetDateTime::now_utc();
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = db_now(&pool).await?;
 
     enqueue(
         repositories.as_ref(),
@@ -5174,12 +5194,12 @@ async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> an
 /// other into the settlement transaction.
 #[tokio::test]
 async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyhow::Result<()> {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
         "poll_charge",
         "poll:contended",
-        time::OffsetDateTime::now_utc(),
+        db_now(&pool).await?,
     )
     .await?;
 
@@ -5220,8 +5240,8 @@ async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyho
 /// past one worker, and this is the test that catches it.
 #[tokio::test]
 async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> anyhow::Result<()> {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
-    let now = time::OffsetDateTime::now_utc();
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = db_now(&pool).await?;
 
     const WORKERS: usize = 8;
     for n in 0..WORKERS {
@@ -5276,12 +5296,12 @@ async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> a
 /// claim predicate cannot pass by accident.
 #[tokio::test]
 async fn a_leased_job_is_invisible_to_claim() -> anyhow::Result<()> {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
         "sweep_expired",
         "sweep:expired",
-        time::OffsetDateTime::now_utc(),
+        db_now(&pool).await?,
     )
     .await?;
 
@@ -5323,7 +5343,7 @@ async fn finish_with_the_wrong_worker_id_deletes_nothing() -> anyhow::Result<()>
         repositories.as_ref(),
         "poll_charge",
         "poll:aba",
-        time::OffsetDateTime::now_utc(),
+        db_now(&pool).await?,
     )
     .await?;
 
@@ -5367,7 +5387,7 @@ async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyho
         repositories.as_ref(),
         "poll_charge",
         "poll:ladder",
-        time::OffsetDateTime::now_utc(),
+        db_now(&pool).await?,
     )
     .await?;
 
@@ -5412,7 +5432,7 @@ async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyho
         .context("re-reading the job must succeed")?;
 
     assert!(
-        run_at > time::OffsetDateTime::now_utc(),
+        run_at > db_now(&pool).await?,
         "a rescheduled job must not be runnable yet"
     );
     assert_eq!(locked_at, None, "the lease is released");
@@ -5438,7 +5458,7 @@ async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyho
 #[tokio::test]
 async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = db_now(&pool).await?;
     enqueue(
         repositories.as_ref(),
         "poll_charge",
@@ -5514,7 +5534,7 @@ async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> 
 #[tokio::test]
 async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = db_now(&pool).await?;
 
     assert_eq!(
         repositories
@@ -5613,7 +5633,7 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
 #[tokio::test]
 async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let later = time::OffsetDateTime::now_utc() + time::Duration::hours(1);
+    let later = db_now(&pool).await? + time::Duration::hours(1);
 
     assert!(
         enqueue(repositories.as_ref(), "poll_charge", "poll:ch_once", later).await?,
@@ -5625,7 +5645,7 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
         "resubmit_charge",
         "poll:ch_once",
         &json!({ "charge_id": "ch_other" }),
-        time::OffsetDateTime::now_utc(),
+        db_now(&pool).await?,
     )
     .await
     .context("a duplicate enqueue must not error")?;
@@ -5643,7 +5663,7 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
     assert_eq!(kind, "poll_charge", "the first enqueue's kind survives");
     assert_eq!(payload, json!({ "charge_id": "ch_x" }), "and its payload");
     assert!(
-        run_at > time::OffsetDateTime::now_utc(),
+        run_at > db_now(&pool).await?,
         "a duplicate enqueue must not pull a scheduled job forward — DO NOTHING, not DO UPDATE"
     );
 
@@ -5668,7 +5688,7 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
 async fn pull_forward_moves_a_job_past_the_floor_and_leaves_near_leased_parked_and_due_alone()
 -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = db_now(&pool).await?;
     // The poll ladder's first rung, which is the floor the one caller passes
     // (`vpay_worker::poll_delay(0)`, spelled in `vpay_api::provider_callback`
     // because the dependency runs the other way).
@@ -5728,7 +5748,7 @@ async fn pull_forward_moves_a_job_past_the_floor_and_leaves_near_leased_parked_a
     );
     let moved: time::OffsetDateTime = run_at_of(&pool, "poll:ch_rung").await?;
     assert!(
-        moved <= time::OffsetDateTime::now_utc(),
+        moved <= db_now(&pool).await?,
         "the job must be claimable now, not at its rung; run_at is {moved}"
     );
 
@@ -8316,7 +8336,7 @@ async fn set_payload_writes_only_for_the_lease_holder() -> anyhow::Result<()> {
         repositories.as_ref(),
         "poll_charge",
         "poll:streak",
-        time::OffsetDateTime::now_utc(),
+        db_now(&pool).await?,
     )
     .await?;
 

@@ -2615,7 +2615,9 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
 
     // A poll job naming a charge that does not exist. That is precisely
     // `Poisoned`: the row is wrong, and no rail, no retry and no amount of
-    // waiting changes it.
+    // waiting changes it. Due at the database's `now()`, which is the clock
+    // the claim inside `step` compares against (`support::db_now`).
+    let run_at = support::db_now(&h.pool).await?;
     h.repositories
         .transaction(|tx| {
             Box::pin(async move {
@@ -2623,7 +2625,7 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
                     "poll_charge",
                     "poll:ch_does_not_exist",
                     &serde_json::json!({ "charge_id": "ch_does_not_exist" }),
-                    time::OffsetDateTime::now_utc(),
+                    run_at,
                 )
                 .await?;
                 Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
@@ -2724,6 +2726,18 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
         ],
         "three boots must leave exactly five rows"
     );
+
+    // `seed_singletons` stamps `run_at` from this host's clock and the claim
+    // compares it with the database's `now()`, so a Postgres container even
+    // milliseconds behind this host leaves every freshly seeded row not yet
+    // due and the first `step` below finds nothing. That is shipping code's
+    // clock, not this test's to change (see
+    // `docs/status/verification/2026-09-23-test-clock-skew.md`); this puts the
+    // seeded rows on the database's clock instead. It moves only rows still in
+    // the future, so with the two clocks agreeing it moves nothing, and it
+    // runs before any step, so every reschedule asserted below is the loop's
+    // own.
+    make_every_job_runnable(&h.pool).await?;
 
     // Both run, and both go back on the clock. A sweep that finished would be
     // a deployment that swept once and never again — which is the bug
@@ -2867,6 +2881,9 @@ async fn the_backstop_scan_re_enqueues_an_unattended_charge_and_leaves_attended_
 async fn two_workers_claiming_together_never_take_the_same_job() -> anyhow::Result<()> {
     let h = harness().await?;
 
+    // Due at the database's `now()`: the claims below compare against that
+    // clock, not this host's (`support::db_now`).
+    let run_at = support::db_now(&h.pool).await?;
     h.repositories
         .transaction(|tx| {
             Box::pin(async move {
@@ -2875,7 +2892,7 @@ async fn two_workers_claiming_together_never_take_the_same_job() -> anyhow::Resu
                         "poll_charge",
                         &format!("poll:ch_{n}"),
                         &serde_json::json!({ "charge_id": format!("ch_{n}") }),
-                        time::OffsetDateTime::now_utc(),
+                        run_at,
                     )
                     .await?;
                 }

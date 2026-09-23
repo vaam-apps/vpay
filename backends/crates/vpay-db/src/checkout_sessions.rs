@@ -163,6 +163,12 @@ pub struct CheckoutSessionRow {
     /// repeat themselves — and so the two rows cannot disagree about who is
     /// paying. Same `NO ACTION` foreign key as
     /// [`crate::PaymentIntentRow::customer_id`].
+    ///
+    /// The other direction holds since ADR-0025 (2026-09-23): a session
+    /// created with a customer on an intent that had none writes it onto the
+    /// intent in the same transaction. A session **older** than that may
+    /// still carry a customer its intent does not; those rows were not
+    /// backfilled.
     pub customer_id: Option<String>,
     /// The merchant publishable key every URL vpay mints for this session
     /// carries as `?key=` — the hosted page, the embedded iframe and the
@@ -381,6 +387,10 @@ pub struct NewCheckoutSession {
     /// The customer this session is for, or `None`. Resolved by the API from
     /// the session's intent, or from an explicit `customer` on the request —
     /// see `vpay_api::v1::checkout_sessions::prepare_create`.
+    ///
+    /// When set, [`CheckoutSessions::create`] also writes it onto the intent
+    /// if the intent has none (ADR-0025), and refuses the session if the
+    /// intent is for someone else.
     pub customer_id: Option<String>,
     /// The publishable key to pin on this session. Must be one of
     /// [`Self::merchant_id`]'s registered keys — a rule only `vpay-config`
@@ -442,6 +452,12 @@ pub struct SessionListPage {
     /// and the `customer` a merchant reads on the rendered session is this
     /// column. A filter that went through the intent would omit exactly
     /// those sessions while their objects said `customer: cus_…`.
+    ///
+    /// _(Since ADR-0025, 2026-09-23, such a session writes its customer onto
+    /// the intent at create, so the two columns agree for every session
+    /// created from then on. The sentence above stays true of older rows,
+    /// which were not backfilled, and they are why this still reads the
+    /// session's own column.)_
     ///
     /// Not validated for existence, for
     /// [`crate::InvoiceListPage::customer`]'s reason, and applied in the
@@ -517,6 +533,96 @@ pub(crate) async fn settle_for_intent(
     Ok(affected)
 }
 
+/// Writes a session's customer onto its intent **if the intent has none**,
+/// and refuses the session if the intent is already for someone else
+/// (ADR-0025, answering ADR-0024's question 3).
+///
+/// Called by [`CheckoutSessions::create`] inside its own transaction, before
+/// the insert, so the session and the intent's customer commit or roll back
+/// together.
+///
+/// # A compare-and-swap, like every other transition here
+///
+/// `customer_id IS NULL` is a predicate of the `UPDATE`, not a check beside
+/// it. Two sessions naming two customers for one customer-less intent can
+/// both pass `vpay_api`'s read of the intent; the second `UPDATE` waits on
+/// the first's row lock, re-evaluates its `WHERE` against the committed row
+/// under `READ COMMITTED`, and matches nothing. The re-read that follows then
+/// sees the winner's customer and refuses. A read-then-write would let both
+/// write, and the second customer would silently replace the first.
+///
+/// # Zero rows is three answers, and the re-read tells them apart
+///
+/// * the intent is already for **this** customer — the ordinary case for a
+///   session that inherited or repeated its intent's, and for every invoice
+///   session — and the session proceeds;
+/// * it is for **another** customer, which is
+///   [`DbError::IntentCustomerConflict`];
+/// * there is no such intent for this merchant, which is left to the
+///   insert's foreign key to refuse exactly as it did before this write
+///   existed.
+///
+/// A row that is still `NULL` after the `UPDATE` matched nothing cannot
+/// happen: the predicate would have matched it, and nothing writes
+/// `customer_id` back to `NULL`. It is [`DbError::WriteMatchedNoRow`] rather
+/// than a silent success.
+///
+/// `merchant_id` is in both statements for the reason every write in this
+/// crate carries it: the intent id arrived from a request, and the tenant is
+/// what makes another merchant's intent indistinguishable from none.
+///
+/// `updated_at` moves with the customer, because every writer of
+/// `payment_intents` maintains it and there is no trigger to do it instead.
+///
+/// # Errors
+///
+/// [`DbError::IntentCustomerConflict`] as above;
+/// [`DbError::ForeignKeyViolation`] if `customer_id` names no customer;
+/// [`DbError::Query`] if either statement fails.
+async fn claim_intent_customer(
+    tx: &mut sqlx::PgConnection,
+    new: &NewCheckoutSession,
+    customer_id: &str,
+) -> Result<(), DbError> {
+    let claimed = sqlx::query(
+        "UPDATE payment_intents SET customer_id = $3, updated_at = now() \
+         WHERE id = $1 AND merchant_id = $2 AND customer_id IS NULL",
+    )
+    .bind(&new.payment_intent_id)
+    .bind(&new.merchant_id)
+    .bind(customer_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(classify_write)?
+    .rows_affected();
+    if claimed == 1 {
+        return Ok(());
+    }
+
+    let on_intent: Option<Option<String>> = sqlx::query_scalar(
+        "SELECT customer_id FROM payment_intents WHERE id = $1 AND merchant_id = $2",
+    )
+    .bind(&new.payment_intent_id)
+    .bind(&new.merchant_id)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(DbError::Query)?;
+
+    match on_intent {
+        // No such intent for this merchant: the insert's foreign key says so.
+        None => Ok(()),
+        Some(Some(on_intent)) if on_intent == customer_id => Ok(()),
+        Some(Some(on_intent)) => Err(DbError::IntentCustomerConflict {
+            payment_intent_id: new.payment_intent_id.clone(),
+            on_intent,
+        }),
+        Some(None) => Err(DbError::WriteMatchedNoRow {
+            table: "payment_intents",
+            key: new.payment_intent_id.clone(),
+        }),
+    }
+}
+
 #[async_trait::async_trait]
 pub trait CheckoutSessions: Send + Sync {
     /// Inserts a new session and returns the row the database actually
@@ -524,7 +630,23 @@ pub trait CheckoutSessions: Send + Sync {
     /// `payment_status`, `updated_at`), so a caller never has to re-read to
     /// render its response.
     ///
+    /// # A session's customer is written onto a customer-less intent
+    ///
+    /// Since ADR-0025 (2026-09-23), a session whose
+    /// [`NewCheckoutSession::customer_id`] is set writes that customer onto
+    /// its intent **in the same transaction as the insert**, if the intent
+    /// has none — a compare-and-swap on `customer_id IS NULL`. So a session
+    /// and the intent it drives can no longer name two different payers, and
+    /// the three list filters (`customer` on intents, sessions and refunds)
+    /// agree for every session created from then on. Rows written before it
+    /// are not backfilled; ADR-0025 says why.
+    ///
     /// # Errors
+    ///
+    /// [`DbError::IntentCustomerConflict`] if the intent is already for a
+    /// different customer — the losing side of two concurrent sessions
+    /// naming two customers for one intent that had none, since the API
+    /// refuses the sequential case before the write. Nothing is written.
     ///
     /// [`DbError::ForeignKeyViolation`] if `payment_intent_id` names no
     /// intent — which the API refuses first, with a `400` naming the
@@ -894,6 +1016,16 @@ pub trait CheckoutSessions: Send + Sync {
 #[async_trait::async_trait]
 impl CheckoutSessions for crate::repository::PgRepositories {
     async fn create(&self, new: &NewCheckoutSession) -> Result<CheckoutSessionRow, DbError> {
+        // One transaction, because the session and the customer it may write
+        // onto its intent (ADR-0025) are one fact: a crash between them would
+        // leave a session naming a payer its intent does not, which is the
+        // divergence the write exists to end.
+        let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
+
+        if let Some(customer_id) = new.customer_id.as_deref() {
+            claim_intent_customer(&mut tx, new, customer_id).await?;
+        }
+
         // `status` and `payment_status` are literals rather than binds: see
         // `NewCheckoutSession` for why a session has exactly one birth state.
         let sql = format!(
@@ -906,7 +1038,7 @@ impl CheckoutSessions for crate::repository::PgRepositories {
              RETURNING {COLUMNS}"
         );
 
-        sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
+        let row = sqlx::query_as::<_, CheckoutSessionRow>(AssertSqlSafe(sql))
             .bind(&new.id)
             .bind(&new.merchant_id)
             .bind(&new.payment_intent_id)
@@ -921,9 +1053,12 @@ impl CheckoutSessions for crate::repository::PgRepositories {
             .bind(&new.return_token)
             .bind(new.expires_at)
             .bind(new.created_at)
-            .fetch_one(&self.pool)
+            .fetch_one(&mut *tx)
             .await
-            .map_err(classify_write)
+            .map_err(classify_write)?;
+
+        tx.commit().await.map_err(DbError::Query)?;
+        Ok(row)
     }
 
     async fn get_for_merchant(

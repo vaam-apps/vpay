@@ -312,6 +312,13 @@ pub struct IntentFilter {
     /// `cus_…` exist under some other tenant. An erased customer (migration
     /// `0041`) keeps its id and its intents keep pointing at it, so the
     /// filter finds them exactly as before the erasure.
+    ///
+    /// Since ADR-0025 (2026-09-23) the column is also written by
+    /// [`crate::CheckoutSessions::create`], once, when a session names a
+    /// customer for an intent that had none — so the filter finds the
+    /// payment such a session collects. An intent whose session did that
+    /// **before** ADR-0025 still has no customer, and this filter does not
+    /// find it; see that ADR for why nothing was backfilled.
     pub customer: Option<String>,
 }
 
