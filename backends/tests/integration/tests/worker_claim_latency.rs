@@ -32,6 +32,11 @@
 //! have happened. That also keeps the measurement off any comparison between
 //! this process's clock and the database's — [`Instant`] is read once, on the
 //! line after the commit returns, and every number here is an offset from it.
+//! _(Only since 2026-09-23 in full: until then `run_at` was this host's
+//! clock, so a Postgres container behind this host left every probe not yet
+//! due at the commit, and [`claim_curve`] — which counts a row that is not
+//! claimable as claimed — recorded it as taken at 0 ms. `run_at` is now the
+//! database's own `now()`; see [`enqueue_round`].)_
 //!
 //! A job leaves the claimable set when [`vpay_db::Jobs::claim`] stamps its
 //! lease. [`claim_curve`] samples `locked_at IS NULL AND run_at <= now()`
@@ -75,7 +80,6 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use sqlx::PgPool;
-use time::OffsetDateTime;
 use vpay_db::{Repositories, TxOutcome, UnitOfWork as _};
 use vpay_worker::run_loop::IDLE_SLEEP;
 use vpay_worker::{Adapters, JobKind, RailConfigs, RecoveryPolicy};
@@ -177,13 +181,22 @@ const WORKER: &str = "claim-latency-suite";
 /// as any other job.
 async fn enqueue_round(
     repositories: &dyn Repositories,
+    pool: &PgPool,
     round: usize,
 ) -> anyhow::Result<(Vec<String>, Instant)> {
     let keys: Vec<String> = (0..BACKLOG)
         .map(|index| format!("claim-latency-probe:{round}:{index}"))
         .collect();
     let payload = serde_json::Value::Object(serde_json::Map::new());
-    let run_at = OffsetDateTime::now_utc();
+    // The database's `now()`, read before the transaction opens, so every
+    // probe is already due on the clock the claim and [`still_claimable`]
+    // both read by the time the commit makes it visible. A host-clock
+    // `run_at` would put the database's clock back into the measurement
+    // this file's header says it is kept out of: a container behind this
+    // host would leave the rows unclaimable for the width of the skew, and
+    // [`claim_curve`] — which counts a row that is not yet due as already
+    // claimed — would record that as an instant claim.
+    let run_at = support::db_now(pool).await?;
 
     repositories
         .transaction(|tx| {
@@ -370,7 +383,7 @@ async fn measure_backlog_latency(concurrency: usize) -> anyhow::Result<()> {
     let mut rounds: Vec<Round> = Vec::with_capacity(ROUNDS);
     let mut curves: Vec<Vec<Duration>> = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
-        let (keys, committed) = enqueue_round(repositories.as_ref(), round).await?;
+        let (keys, committed) = enqueue_round(repositories.as_ref(), &pool, round).await?;
         let curve = claim_curve(&pool, &keys, committed).await?;
         rounds.push(Round::of(&curve));
         curves.push(curve);
