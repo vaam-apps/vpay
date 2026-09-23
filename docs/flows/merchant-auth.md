@@ -244,6 +244,21 @@ there. `GET /v1/customers` stays unfiltered, deliberately. No migration was
 added; which index serves each filtered query is on the evidence page,
 [../status/verification/2026-09-23-customer-filters.md](../status/verification/2026-09-23-customer-filters.md).
 
+**One consequence, recorded rather than decided.** A checkout session
+created with `customer=X` on an intent that has no customer stores `X` on
+the session only. The payment it collects is therefore listed by
+`GET /v1/checkout/sessions?customer=X` and **not** by
+`GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`,
+which read the intent's column. The column each list compares is accepted
+in ADR-0024 (D12 for sessions); whether a session's customer should be
+written onto a customer-less intent is its **open question 3**
+(`docs/adr/0024-customer-filters-and-manual-payments.md`, not yet on
+`master`). Nothing here changes until that is answered.
+
+**`/dash/v1` refuses `customer`** (2026-09-23, same branch): until then
+its `ListParams` ignored the unknown key and `GET /dash/v1/payment_intents?customer=…`
+answered every customer's intents. It is a `400` naming `customer` now.
+
 **Updated 2026-09-06: the whole kill-switch repository changed engine, and
 nothing else changed.** `disabled_clients` (the row in the failure table
 above) is read _and written_ through CrateStack now —

@@ -1531,8 +1531,8 @@ pub(crate) async fn resolve_for_attachment(
 }
 
 /// The `customer` **query filter** of `GET /v1/payment_intents`,
-/// `GET /v1/checkout/sessions` and `GET /v1/refunds` (RFC-0004 § 5): the
-/// trimmed `cus_…`, or `None` when absent or blank.
+/// `GET /v1/checkout/sessions`, `GET /v1/refunds` (RFC-0004 § 5) and
+/// `GET /v1/invoices`: the trimmed `cus_…`, or `None` when absent or blank.
 ///
 /// Checked for **shape only** — never looked up — and that is the whole
 /// difference from [`resolve_for_attachment`]. A filter is compared in the
@@ -1543,9 +1543,11 @@ pub(crate) async fn resolve_for_attachment(
 /// `paging::validated_cursor`'s reason: a `pi_…` pasted into `customer`
 /// would otherwise be an empty page with nothing to fix.
 ///
-/// The refusal is byte for byte `GET /v1/invoices`' for its own `customer`
-/// filter, and [`resolve_for_attachment`]'s for a malformed id: one
+/// The refusal is [`resolve_for_attachment`]'s for a malformed id: one
 /// parameter name, one sentence, on every route that takes it.
+/// `GET /v1/invoices` spelled its own copy of this match until 2026-09-23;
+/// the integration suites compare its answer with the other three lists'
+/// byte for byte, which is what showed the move changed nothing.
 ///
 /// # Errors
 ///
@@ -2465,7 +2467,7 @@ mod tests {
     /// The list filter checks the `cus_…` shape and nothing else: blank is
     /// absent, surrounding whitespace is trimmed, and every malformed value
     /// is the one `400` naming `customer` with the sentence
-    /// `resolve_for_attachment` and `GET /v1/invoices` answer.
+    /// `resolve_for_attachment` answers.
     #[test]
     fn the_customer_filter_is_checked_for_shape_and_answers_the_one_sentence() {
         assert_eq!(filter_param(None).expect("absent"), None);

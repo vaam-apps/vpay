@@ -931,7 +931,9 @@ pub trait PaymentIntents: Send + Sync {
     ) -> Result<(Vec<PaymentIntentRow>, bool), DbError>;
 
     /// [`Self::list_page`] with extra predicates — the `/dash/v1` payments
-    /// list.
+    /// list (status and `created` bounds) and, since 2026-09-23, the `/v1`
+    /// list (`customer` only, RFC-0004 § 5). _(This said "the `/dash/v1`
+    /// payments list" and nothing else until then.)_
     ///
     /// The same tenancy filter and the same cursor semantics; see
     /// [`IntentFilter`] for why the predicates cannot be applied to the

@@ -479,7 +479,9 @@ pub(crate) async fn retrieve(
     scope: MerchantScope,
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
-    // Fully qualified, like `PaymentIntents::list_page` below: since Step 9
+    // Fully qualified, like `PaymentIntents::list_page_filtered` in `list`
+    // below (which called `list_page` until the `customer` filter,
+    // 2026-09-23): since Step 9
     // `CheckoutSessions` offers a `get_for_merchant` of its own, so the bare
     // method call on `&dyn Repositories` is ambiguous. Naming the trait is
     // also the more readable answer — it says which table is being read.

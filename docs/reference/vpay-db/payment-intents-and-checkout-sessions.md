@@ -186,9 +186,23 @@ not less: the call now says which table it reads.
 `SessionListPage` is a separate type from `ListPage` rather than that one with
 a `payment_intent` field added, because `ListPage` is the payment-intent
 list's contract and a filter on it would be a parameter that resource
-silently ignores. The filter is applied _in the statement_, beside the tenant
-filter: applied after `LIMIT` it would return short pages and a `has_more`
-describing the wrong set.
+silently ignores. It carries **two** filters since 2026-09-23 —
+`payment_intent` and `customer` (RFC-0004 § 5); this paragraph said "the
+filter", singular, until then. Both are applied _in the statement_, beside
+the tenant filter: applied after `LIMIT` they would return short pages and a
+`has_more` describing the wrong set.
+
+`customer` compares the session's **own** `customer_id`, not its intent's.
+The two differ in exactly one case: a session created with `customer=` on an
+intent that has none stores the customer on the session only. So the payment
+that session collects is listed by `GET /v1/checkout/sessions?customer=` and
+**not** by `GET /v1/payment_intents?customer=` or `GET /v1/refunds?customer=`,
+which read the intent's column. That is recorded, not decided; whether a
+session's customer should be written back to its intent is an open maintainer
+question — open question 3 of ADR-0024, whose decisions (D12, sessions filter on their own `customer_id`, among them) are otherwise accepted: `docs/adr/0024-customer-filters-and-manual-payments.md`. The
+payment-intent list's `customer` lives on `IntentFilter`, not on `ListPage`,
+for the same reason `payment_intent` is not on `ListPage`: `/v1/events` pages
+with `ListPage` too.
 
 ### Why the settlement flip is `pub(crate)` and not a trait method
 

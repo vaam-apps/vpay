@@ -2721,9 +2721,11 @@ async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> 
 /// `y…` cursors below pin it.
 ///
 /// **The oracle half uses merchant B's real customer**, one with an intent,
-/// and asserts A's answer for it is byte-identical to A's answer for an id no
-/// merchant has ever had — so "exists elsewhere" and "never existed" cannot
-/// be told apart from A's side, while B's own list shows the id is real.
+/// and asserts A's answer for it is byte-identical both to A's answer for an
+/// id no merchant has ever had and to A's answer for **A's own** customer
+/// with no intents — so "exists elsewhere", "never existed" and "yours, with
+/// nothing" cannot be told apart from A's side, while B's own list shows the
+/// id is real.
 #[tokio::test]
 async fn the_customer_filter_pages_inside_its_set_and_is_not_an_oracle() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -2749,6 +2751,11 @@ async fn the_customer_filter_pages_inside_its_set_and_is_not_an_oracle() -> anyh
     let z = customer(b.clone(), "Zita")
         .await
         .context("merchant B's customer Z")?;
+    // Merchant A's own customer with no intents at all: "exists under B" must
+    // not read differently from "yours, with nothing".
+    let w = customer(a.clone(), "Wanda")
+        .await
+        .context("customer W, who never pays")?;
 
     let intent = |client: vpay_sdk::Client, customer: Option<String>| async move {
         client
@@ -2888,11 +2895,17 @@ async fn the_customer_filter_pages_inside_its_set_and_is_not_an_oracle() -> anyh
     let (foreign_status, foreign) = raw(format!("/v1/payment_intents?customer={z}")).await?;
     let (unknown_status, unknown) =
         raw("/v1/payment_intents?customer=cus_00000000000000000000000x".to_owned()).await?;
+    let (unused_status, unused) = raw(format!("/v1/payment_intents?customer={w}")).await?;
     assert_eq!(foreign_status, 200, "{foreign}");
     assert_eq!(unknown_status, 200, "{unknown}");
+    assert_eq!(unused_status, 200, "{unused}");
     assert_eq!(
         foreign, unknown,
         "another merchant's real customer must be indistinguishable from one that never existed"
+    );
+    assert_eq!(
+        foreign, unused,
+        "…and from one of the caller's own customers that simply has no intents"
     );
     let parsed: Value = serde_json::from_str(&foreign)?;
     assert_eq!(
@@ -2921,6 +2934,14 @@ async fn the_customer_filter_pages_inside_its_set_and_is_not_an_oracle() -> anyh
         assert_eq!(
             parsed.pointer("/error/param").and_then(Value::as_str),
             Some("customer"),
+            "{parsed:#}"
+        );
+        // The sentence itself, as `GET /v1/invoices` answered it before its
+        // list was moved onto the shared `filter_param` (2026-09-23): the
+        // comparison above cannot catch a change both lists now share.
+        assert_eq!(
+            parsed.pointer("/error/message").and_then(Value::as_str),
+            Some("`customer` must be a Customer id — `cus_` followed by 24 characters."),
             "{parsed:#}"
         );
     }

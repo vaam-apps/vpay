@@ -106,7 +106,11 @@ passed`. The first attempt failed `verify-links` on six links to this page,
   because it was still untracked. `verify-doc-counts`: 13 documented counts
   agree, `docs/status/README.md`'s verification-file count included (62 → 63).
 
-## Which index serves each query — NOT measured
+## Which index serves each query — NOT measured (first commit)
+
+_Superseded for `payment_intents` by the coordinating session's measurement
+in "Review round" below. Kept as written, because it is what the first
+commit claimed._
 
 The brief asked for `EXPLAIN` on the testcontainers Postgres. **It was not
 run**: Docker was wedged. What follows comes from reading the migrations, and
@@ -133,7 +137,9 @@ $n` cannot, and would fall back to the merchant/seq index plus a filter.
 was shown to be unnecessary either.** Whoever runs the EXPLAIN should record
 it here.
 
-## What was not run
+## What was not run (first commit)
+
+_See "Review round" below for what the second commit ran._
 
 - **The full integration suites** for `payment_intents.rs`,
   `checkout_sessions.rs` and `refunds.rs`. Only the three new cases ran, and
@@ -148,3 +154,126 @@ it here.
   the filter through `vpay-sdk` against the real server. The session and
   refund cases use raw HTTP.
 - **The vpay-skills companion change** is left to the coordinator.
+
+## Review round — second commit, 2026-09-23
+
+An independent review of `8d328d4` found no blocker and eight things to fix.
+They are one new commit on the same branch; `8d328d4` was not amended. Docker
+was healthy again for this round (the Docker Desktop VM had died behind a
+"running" status; the coordinator restarted it). The build flags above were
+used for every run.
+
+### What changed
+
+1. **The session/intent consequence, documented and not changed.** A checkout
+   session created with `customer=X` on an intent with no customer stores
+   `X` on the session only. So the payment it collects is listed by
+   `GET /v1/checkout/sessions?customer=X` and **not** by
+   `GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`. The
+   column each list compares is **accepted** in ADR-0024 (D12 for sessions;
+   the maintainer confirmed D9–D19 "as proposed" on 2026-09-23, PR #248).
+   Whether a session's customer should be written onto a customer-less intent
+   is its **open question 3**
+   (`docs/adr/0024-customer-filters-and-manual-payments.md`, not on `master`
+   yet). This is now stated in `docs/api/README.md`'s three rows, the Status
+   sections of `merchant-auth.md`, `hosted-checkout.md` and `customers.md`,
+   `docs/reference/vpay-db/payment-intents-and-checkout-sessions.md`, and
+   both SDKs' doc comments for `customer`.
+2. **`/dash/v1` refuses `customer`.** Its `ListParams` ignored unknown keys,
+   so `GET /dash/v1/payment_intents?customer=…` answered every customer's
+   intents. It is now a `400` naming `customer` (blank is still absent), via
+   `refuse_customer`, which follows `parse_status`'s shape. Proven by the unit
+   case `the_customer_parameter_is_refused_and_not_ignored` and by a new
+   assertion in
+   `dashboard_read_surface::the_status_filter_narrows_the_page_and_refuses_an_unknown_status`.
+   Both SDKs' `customer` doc comments also state the minimum server: **vpay
+   0.6.0**, the first release after 0.5.0 (release-please's
+   `bump-minor-pre-major` makes both this `feat` and its breaking footer a
+   minor bump). A self-hosted server at 0.5.0 or earlier ignores the
+   parameter and answers the unfiltered list.
+3. **Status rows** are ✅ only for what the runs below proved.
+4. **Performance**: see the next subsection.
+5. **One copy of the refusal.** `v1/invoices.rs` now calls
+   `customers::filter_param`. Because every list now shares one function, the
+   byte comparison against `GET /v1/invoices` can no longer catch a change to
+   the sentence itself. So each integration case now also asserts the literal
+   message, which is the text `invoices.rs` spelled before the move. The unit
+   case asserts it too.
+6. **Test gaps closed.**
+   - Each list's foreign-customer answer is now also compared byte for byte
+     with the answer for **the caller's own** real customer that has no rows.
+     That is `W`: no intents, no sessions, or intents with no refunds.
+   - Blank `customer=` is tested on sessions and refunds.
+   - The erased customer is tested on sessions.
+7. **Stale comments** fixed:
+   - `PaymentIntents::list_page_filtered`'s doc said it served the dash list
+     only.
+   - `v1::payment_intents::retrieve`'s comment pointed at a `list_page` call
+     that is now `list_page_filtered`.
+   - The vpay-db reference said "the filter", singular.
+8. **Breaking Rust SDK change**, recorded in
+   [../merchant-sdks.md](../merchant-sdks.md), `sdks/rust/README.md` §
+   Status, and the commit's `BREAKING CHANGE:` footer.
+
+### Performance — measured separately by the coordinating session, payment_intents only
+
+Measured on Postgres 16 (`postgres:16-alpine`) with 200,000
+`payment_intents`: 180,000 for one merchant, 120,000 of those spread over
+2,000 customers. The predicate shape is exactly `list_page_filtered`'s. This
+session did not run these measurements; they are recorded as reported.
+
+- **Custom plan:** Bitmap Index Scan on `payment_intents_customer_idx`,
+  0.47 ms.
+- **Forced generic plan** (`plan_cache_mode=force_generic_plan`): Index Scan
+  Backward on `payment_intents_seq_key`, with the customer as a Filter —
+  31,949 rows removed, 8.95 ms. An unused or foreign customer id scans all
+  200,000 rows, 37.8 ms.
+- **Default `auto`:** custom plans chosen and the index used — 0.064 ms for a
+  customer with 66 intents, 0.013 ms for an unused id.
+- **After 50 unfiltered executions** of the same prepared statement on one
+  connection, `pg_prepared_statements` shows `generic_plans=0`,
+  `custom_plans=51`, and the filtered call still uses the customer index
+  (0.20 ms).
+
+**Conclusion: no migration is needed at this scale and distribution.** The
+degradation exists only under generic plans — forced, or if the planner's
+estimates change at larger or differently distributed data. **Not
+measured:** `checkout_sessions` and `refunds`. The same predicate shape
+predates this change, in `invoices::list_page`.
+
+### What ran, and what it printed
+
+All on the second commit's tree, with the flags above, against a healthy
+Docker. "Skipped" is nextest's count, and it includes `#[ignore]`d tests.
+
+| Run                                                                                                                                                                                      | Passed                                    | Failed       | Skipped / ignored                  |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------- | ------------ | ---------------------------------- |
+| `cargo nextest run -p vpay-tests-integration` over `payment_intents` (26), `checkout_sessions` (32), `refunds` (20), `invoices` (16), `dashboard_read_surface` (21) — **the full files** | 115                                       | 0            | 0 (17 other binaries not selected) |
+| `cargo nextest run -p vpay-db -p vpay-api`                                                                                                                                               | 641, then the one failure re-run alone: 1 | 1, see below | 0                                  |
+| `cargo nextest run -p vpay-sdk`                                                                                                                                                          | 181                                       | 0            | 0                                  |
+| `sdks/nodejs` `pnpm test` (9 files); `typecheck` and `lint` clean                                                                                                                        | 225                                       | 0            | 0                                  |
+| `just test-doc`                                                                                                                                                                          | 121                                       | 0            | 1 ignored                          |
+
+- **The one `vpay-db` failure was infrastructure, not an assertion.**
+  `repositories::a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event`
+  failed on testcontainers startup — `container '…' does not expose port
+5432/tcp` — while the manual-payments agent was using the same Docker. It
+  touches no filter code. Re-run alone, it passed: 1 passed, 242 skipped by
+  the name filter. So `vpay-db` is **243 of 243**, but not in a single run,
+  and this page does not claim one.
+- `vpay-api`'s 399 include both new unit cases:
+  `dash::payment_intents::tests::the_customer_parameter_is_refused_and_not_ignored`
+  and
+  `v1::customers::tests::the_customer_filter_is_checked_for_shape_and_answers_the_one_sentence`.
+- `just fmt` clean. `just clippy` clean, after fmt.
+- `just verify`: see below.
+
+`just verify` on the staged second commit: exit 0, `verify: ok — the
+fifteen gates above passed`. `verify-sdk-parity` is unchanged at 756
+proving tests: no test was renamed, and the new SDK doc text is not a
+capability row.
+
+**Still not run on this branch:** `just ci` as a whole, meaning
+`test-rust --workspace` across the other 17 integration binaries,
+`test-web`, `audit-web`, `deny` and `verify-ignored`. Also no live-suite SDK
+case, and no `EXPLAIN` for `checkout_sessions` or `refunds`.

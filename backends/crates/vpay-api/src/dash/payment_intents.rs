@@ -71,6 +71,11 @@ pub(crate) struct ListParams {
     created_gte: Option<String>,
     /// RFC 3339, inclusive upper bound on `created`.
     created_lte: Option<String>,
+    /// **Refused**, not accepted: see [`refuse_customer`]. Declared only so
+    /// the refusal can happen — an undeclared key is ignored by serde, and an
+    /// ignored `customer` answers every customer's intents while reading as
+    /// the filtered list `/v1` would have returned.
+    customer: Option<String>,
 }
 
 /// `GET /dash/v1/payment_intents`.
@@ -91,6 +96,7 @@ pub(crate) async fn list(
         params.ending_before,
         crate::v1::payment_intents::CURSOR,
     )?;
+    refuse_customer(params.customer.as_deref())?;
     let filter = IntentFilter {
         status: params.status.map(parse_status).transpose()?,
         created_gte: params
@@ -101,10 +107,8 @@ pub(crate) async fn list(
             .created_lte
             .map(|raw| parse_timestamp("created_lte", &raw))
             .transpose()?,
-        // `/v1`'s filter (RFC-0004 § 5), not offered here: the operator
-        // console has no customer view to filter from, and a parameter this
-        // list accepted without a screen that sends it would be untested
-        // surface.
+        // `/v1`'s filter (RFC-0004 § 5), refused above: see
+        // `refuse_customer`.
         customer: None,
     };
 
@@ -386,6 +390,30 @@ fn parse_status(raw: String) -> Result<String, ApiError> {
     ))
 }
 
+/// Refuses `customer` on the dashboard's list with a `400` naming it.
+///
+/// `/v1` takes `customer` since RFC-0004 § 5 (2026-09-23); this list does
+/// not, because the operator console has no customer view to filter from and
+/// a parameter accepted without a screen that sends it is untested surface.
+/// Refusing rather than ignoring is the point: until this refusal, serde
+/// dropped the unknown key and the list answered **every** customer's
+/// intents, which an operator — or the BFF, copying a `/v1` query — would
+/// read as the filtered answer. Blank is absent, as on every other filter.
+///
+/// # Errors
+///
+/// [`ApiError::InvalidParam`] naming `customer` for any non-blank value.
+fn refuse_customer(raw: Option<&str>) -> Result<(), ApiError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None => Ok(()),
+        Some(_) => Err(ApiError::invalid_param(
+            "customer",
+            "`customer` is not a filter on the dashboard's payment list. \
+             `GET /v1/payment_intents?customer=` offers it.",
+        )),
+    }
+}
+
 /// Parses an RFC 3339 timestamp bound, naming the parameter that was wrong.
 ///
 /// RFC 3339 rather than Stripe's unix-seconds `created[gte]`: this is not an
@@ -439,6 +467,23 @@ mod tests {
     /// Both bounds go through one function, so the parameter name is an
     /// argument — and an argument is exactly the kind of thing that gets
     /// copied from the line above and left pointing at the wrong field.
+    /// `customer` is refused whatever its value — a real-looking `cus_…`
+    /// included, because that is the case that used to return the whole
+    /// list — and blank is absent.
+    #[test]
+    fn the_customer_parameter_is_refused_and_not_ignored() {
+        assert!(refuse_customer(None).is_ok());
+        assert!(refuse_customer(Some("  ")).is_ok(), "blank is absent");
+        for sent in ["cus_00000000000000000000000x", "anything"] {
+            match refuse_customer(Some(sent)) {
+                Err(ApiError::InvalidParam { param, .. }) => {
+                    assert_eq!(param, "customer", "for {sent:?}");
+                }
+                other => panic!("{sent:?} answered {other:?}"),
+            }
+        }
+    }
+
     #[test]
     fn a_malformed_timestamp_names_the_parameter_it_came_from() {
         for param in ["created_gte", "created_lte"] {

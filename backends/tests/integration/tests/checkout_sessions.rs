@@ -3759,7 +3759,14 @@ async fn session_page(
 /// against this list: a cursor outside the filter pages from its position in
 /// the merchant's whole list, as `GET /v1/invoices?customer=` does; merchant
 /// B's **real** customer is byte-identical from A's side to one that never
-/// existed; and a malformed value is `GET /v1/invoices`' own `400`.
+/// existed and to A's own customer with no sessions; a malformed value is
+/// `GET /v1/invoices`' own `400`; blank is absent; and an erased customer's
+/// sessions are still found by its id.
+///
+/// **What `s2` also shows, and this test does not decide:** the payment `s2`
+/// collects is found here and not by the intent or refund list's `customer`,
+/// which read the intent's column. That is ADR-0024's open question 3
+/// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
 #[tokio::test]
 async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracle()
 -> anyhow::Result<()> {
@@ -3768,6 +3775,8 @@ async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracl
     let x = create_customer_for(&h, CLIENT_A, "Xavier").await?;
     let y = create_customer_for(&h, CLIENT_A, "Yvonne").await?;
     let z = create_customer_for(&h, CLIENT_B, "Zita").await?;
+    // Merchant A's own customer, with no sessions at all.
+    let w = create_customer_for(&h, CLIENT_A, "Wanda").await?;
 
     let intent_1 = create_intent_with_customer(&h, CLIENT_A, Some(&x)).await?;
     let s1 = session_on(&h, CLIENT_A, &intent_1, None).await?;
@@ -3856,10 +3865,15 @@ async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracl
         "/v1/checkout/sessions?customer=cus_00000000000000000000000x",
     )
     .await?;
+    let unused = get_raw(&h, CLIENT_A, &format!("/v1/checkout/sessions?customer={w}")).await?;
     assert_eq!(foreign.0, 200, "{}", foreign.1);
     assert_eq!(
         foreign, unknown,
         "another merchant's real customer must be indistinguishable from one that never existed"
+    );
+    assert_eq!(
+        foreign, unused,
+        "…and from one of the caller's own customers that simply has no sessions"
     );
     let parsed: Value = serde_json::from_str(&foreign.1)?;
     assert_eq!(
@@ -3880,8 +3894,45 @@ async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracl
         assert_eq!(ours.0, 400, "{}", ours.1);
         assert_eq!(ours, invoices, "for {malformed:?}");
         assert!(ours.1.contains(r#""param":"customer""#), "{}", ours.1);
+        // The literal, too: since the invoice list calls the same function,
+        // the comparison above can no longer catch a change to the sentence
+        // itself.
+        assert!(ours.1.contains(MALFORMED_CUSTOMER), "{}", ours.1);
     }
+
+    // BLANK is absent, not malformed: all five of A's sessions.
+    let (ids, _) = session_page(&h, CLIENT_A, "customer=").await?;
+    assert_eq!(
+        ids,
+        vec![s5.clone(), s4.clone(), s3.clone(), s2.clone(), s1.clone()]
+    );
+
+    // ERASED (migration 0041). X is referenced by intents and sessions, so the
+    // delete anonymises rather than removes it, and the id — and every
+    // session naming it — stays.
+    let response = browser()
+        .delete(h.url(&format!("/v1/customers/{x}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .send()
+        .await
+        .context("erasing customer X")?;
+    assert_eq!(response.status().as_u16(), 200);
+    let anonymized: bool =
+        sqlx::query_scalar("SELECT anonymized_at IS NOT NULL FROM customers WHERE id = $1")
+            .bind(&x)
+            .fetch_one(&h.pool)
+            .await
+            .context("reading the erased customer")?;
+    assert!(anonymized, "X was anonymised, not deleted");
+    let (ids, _) = session_page(&h, CLIENT_A, &format!("customer={x}")).await?;
+    assert_eq!(ids, vec![s5, s2, s1]);
 
     h.shutdown().await;
     Ok(())
 }
+
+/// The malformed-`customer` refusal, as the wire carries it — the sentence
+/// `GET /v1/invoices` has always answered.
+const MALFORMED_CUSTOMER: &str =
+    "`customer` must be a Customer id — `cus_` followed by 24 characters.";

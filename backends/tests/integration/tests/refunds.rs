@@ -2336,6 +2336,8 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
     };
     let x = customer_a("Xavier").await.context("customer X")?;
     let y = customer_a("Yvonne").await.context("customer Y")?;
+    // Merchant A's own customer, with intents but no refunds at all.
+    let w = customer_a("Wanda").await.context("customer W")?;
 
     let intent_a = |customer: Option<String>| {
         let a = a.clone();
@@ -2356,6 +2358,7 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
     let x2 = intent_a(Some(x.clone())).await?;
     let iy = intent_a(Some(y.clone())).await?;
     let none = intent_a(None).await?;
+    let _unrefunded = intent_a(Some(w.clone())).await?;
 
     // Merchant B's customer and intent, over B's own credential, so the id
     // the oracle case uses is one B really holds.
@@ -2479,7 +2482,7 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
     let (ids, _) = page(format!("customer={y}&payment_intent={x1}")).await?;
     assert!(ids.is_empty(), "{ids:?}");
     let (ids, _) = page(format!("customer={y}")).await?;
-    assert_eq!(ids, vec![ry]);
+    assert_eq!(ids, vec![ry.clone()]);
 
     // THE ORACLE. Z is real: B's own list finds B's refund through it…
     let (status, theirs) = raw(bearer_b.clone(), format!("customer={z}")).await?;
@@ -2492,10 +2495,15 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
         "customer=cus_00000000000000000000000x".to_owned(),
     )
     .await?;
+    let unused = raw(bearer_a.clone(), format!("customer={w}")).await?;
     assert_eq!(foreign.0, 200, "{}", foreign.1);
     assert_eq!(
         foreign, unknown,
         "another merchant's real customer must be indistinguishable from one that never existed"
+    );
+    assert_eq!(
+        foreign, unused,
+        "…and from one of the caller's own customers whose payments were never refunded"
     );
     let parsed: Value = serde_json::from_str(&foreign.1)?;
     assert_eq!(
@@ -2516,7 +2524,26 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
         assert_eq!(ours.0, 400, "{}", ours.1);
         assert_eq!(ours, invoices, "for {malformed:?}");
         assert!(ours.1.contains(r#""param":"customer""#), "{}", ours.1);
+        assert!(
+            ours.1
+                .contains("`customer` must be a Customer id — `cus_` followed by 24 characters."),
+            "the sentence itself, not only the parameter: {}",
+            ours.1
+        );
     }
+
+    // BLANK is absent, not malformed: all five of A's refunds, B's excluded.
+    let (ids, _) = page("customer=".to_owned()).await?;
+    assert_eq!(
+        ids,
+        vec![
+            rx1b.clone(),
+            rn.clone(),
+            rx2.clone(),
+            ry.clone(),
+            rx1a.clone()
+        ]
+    );
 
     // ERASED (migration 0041): the id stays, and so do its refunds.
     let deleted = a.customers().del(&x, RequestOptions::new()).await?;
