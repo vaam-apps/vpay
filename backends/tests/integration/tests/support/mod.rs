@@ -720,30 +720,37 @@ pub(crate) async fn crashed_charge(
         .transaction(|tx| {
             let id = &id;
             Box::pin(async move {
-                tx.insert_for_intent(&vpay_db::NewCharge {
-                    id: id.clone(),
-                    payment_intent_id: payment_intent_id.to_owned(),
-                    provider_code: rail.to_owned(),
-                    provider_reference_id: reference,
-                    provider_ref_extra: None,
-                    redirect_url: None,
-                    return_url: None,
-                    state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
-                    amount,
-                    currency_code: currency.to_owned(),
-                    payer_ref: payer_ref.map(str::to_owned),
-                    payer_ref_masked: None,
-                })
-                .await
-                .context("inserting the charge")?;
+                let charge = tx
+                    .insert_for_intent(&vpay_db::NewCharge {
+                        id: id.clone(),
+                        payment_intent_id: payment_intent_id.to_owned(),
+                        provider_code: rail.to_owned(),
+                        provider_reference_id: reference,
+                        provider_ref_extra: None,
+                        redirect_url: None,
+                        return_url: None,
+                        state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+                        amount,
+                        currency_code: currency.to_owned(),
+                        payer_ref: payer_ref.map(str::to_owned),
+                        payer_ref_masked: None,
+                    })
+                    .await
+                    .context("inserting the charge")?;
                 // In the same transaction, exactly as `vpay_api`'s
                 // `insert_charge` does it — that atomicity is the property
                 // these suites exist to exercise.
+                //
+                // Due at the charge's own `created_at`, which Postgres' `now()`
+                // wrote a statement ago in this transaction, rather than at
+                // this host's clock: every case that drives this fixture then
+                // claims the job, and the claim asks `run_at <= now()` on the
+                // database's clock (see `db_now`).
                 tx.enqueue_in_tx(
                     vpay_worker::JobKind::PollCharge.as_wire_str(),
                     &vpay_worker::jobs::poll_dedupe_key(id),
                     &json!({ "charge_id": id }),
-                    time::OffsetDateTime::now_utc(),
+                    charge.created_at,
                 )
                 .await
                 .context("enqueueing the poll job")?;
@@ -795,6 +802,30 @@ pub(crate) async fn age_the_crash(
     .rows_affected();
     anyhow::ensure!(aged == 1, "the charge was not there to age");
     Ok(())
+}
+
+/// Postgres' `now()`, read off `pool`.
+///
+/// **The "now" a fixture writes into a column the code under test compares
+/// with `now()` — `jobs.run_at` above all, since `vpay_db::Jobs::claim` asks
+/// `run_at <= now()` — and the "now" an assertion holds a database-written
+/// instant against, both come from here** rather than from
+/// `OffsetDateTime::now_utc()`. testcontainers on Docker Desktop runs
+/// Postgres in a VM whose clock is not this process's, so a job stamped with
+/// this host's "now" is not due until the VM's clock catches up, and a claim
+/// a few milliseconds later comes back empty whenever the container is
+/// further behind than that. That is the mechanism proposed for five
+/// `webhooks.rs` failures after a Docker Desktop restart on 2026-09-23, and
+/// it is demonstrated, not merely proposed, in
+/// `docs/status/verification/2026-09-23-test-clock-skew.md`.
+///
+/// Offsets from this instant keep their meaning exactly; only the zero moves
+/// onto the clock the predicate reads.
+pub(crate) async fn db_now(pool: &PgPool) -> anyhow::Result<time::OffsetDateTime> {
+    sqlx::query_scalar::<_, time::OffsetDateTime>("SELECT now()")
+        .fetch_one(pool)
+        .await
+        .context("reading the database's clock")
 }
 
 /// Brings every future-dated job back to now.
