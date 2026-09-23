@@ -538,6 +538,14 @@ limits. [docs/README.md](docs/README.md) indexes optional API, flow, runbook,
 and decision references. [AGENTS.md](AGENTS.md) contains the full policy for
 high-risk changes.
 
+For a readable, illustrated guide to vpay as a whole, see the human
+documentation at **[vpay-oss.vaam.store](https://vpay-oss.vaam.store)**
+([vaam-apps/vpay-docs](https://github.com/vaam-apps/vpay-docs)). It covers
+what vpay is, how a payment moves, how to integrate and how to operate it. It
+describes one vpay **release** at a time and names that release on every page.
+It is summarised from this repository's `docs/`, which stays the source of
+truth: where the two disagree, this repository is right.
+
 ## Licence
 
 Apache-2.0. See [LICENSE](LICENSE).
