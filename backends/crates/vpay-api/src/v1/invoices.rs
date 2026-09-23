@@ -423,21 +423,10 @@ pub(crate) async fn list(
         ),
     };
 
-    let customer = match params
-        .customer
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        None => None,
-        Some(raw) if ids::is_well_formed(ids::CUSTOMER_PREFIX, raw) => Some(raw.to_owned()),
-        Some(_) => {
-            return Err(ApiError::invalid_param(
-                "customer",
-                "`customer` must be a Customer id — `cus_` followed by 24 characters.",
-            ));
-        }
-    };
+    // The same shape check, blank-is-absent rule and refusal as the intent,
+    // session and refund lists' `customer` filter — one function since
+    // 2026-09-23, when this was the last of four copies.
+    let customer = super::customers::filter_param(params.customer)?;
 
     let page = InvoiceListPage {
         limit: page.limit,

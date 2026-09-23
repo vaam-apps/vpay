@@ -16,7 +16,10 @@
 
 Nothing in this document is built. Every route, table, event type and
 capability below is a proposal; the Status sections of the flow documents
-remain the only statement of what exists.
+remain the only statement of what exists. _(Corrected 2026-09-23: one piece
+is built — § 5's `customer` filter, on the three list routes that exist. The
+note in § 5 says what and where the evidence is. Everything else here is
+still a proposal.)_
 
 ## Problem
 
@@ -39,7 +42,9 @@ _repeatedly_, or to be paid in any way other than mobile money, is missing:
 5. **No document.** No PDF, no receipt. A Cameroonian invoice number is read
    by a tax authority; the document it numbers does not exist.
 6. **No lookup by customer** outside `GET /v1/invoices?customer=`.
-   `GET /v1/payment_intents` takes no `customer` filter.
+   `GET /v1/payment_intents` takes no `customer` filter. _(Closed
+   2026-09-23 for intents, sessions and refunds by § 5's first bullet; see
+   the note there.)_
 
 ### The constraints every proposal below is shaped by
 
@@ -227,6 +232,18 @@ frozen one.
   `/payments` and `/subscriptions`. **`GET /v1/customers` stays unfiltered**,
   for the reason [customers.rs](../../backends/crates/vpay-api/src/v1/customers.rs)
   gives.
+
+  > _**Built 2026-09-23 for the three routes that exist**_ — `GET
+/v1/payment_intents`, `/v1/checkout/sessions` and `/v1/refunds`, in both
+  > SDKs. `/v1/subscriptions` does not exist, so its filter is not built and
+  > stays part of this proposal. Sessions filter on their own `customer_id`
+  > and refunds through their intent's; a cursor pages from its position in
+  > the merchant's whole list, as `GET /v1/invoices?customer=` does. No
+  > migration. Evidence:
+  > [status/verification/2026-09-23-customer-filters.md](../status/verification/2026-09-23-customer-filters.md).
+  > The rest of this RFC, the invoice preview below included, is still
+  > Draft and unbuilt.
+
 - **Invoice preview** for a subscription's next period: Stripe's
   `create_preview`, which replaced `upcoming`. The exact spelling is checked
   against the `stripe` version `sdks/stripe-compat` pins before the route is

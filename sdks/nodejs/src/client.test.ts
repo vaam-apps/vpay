@@ -683,6 +683,38 @@ describe("resource methods", () => {
     expect(result.data[0]?.client_secret).toBeUndefined();
   });
 
+  it("payment_intents.list: the customer filter is sent after the cursors", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [makeSamplePaymentIntent()],
+          has_more: false,
+          url: "/v1/payment_intents",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.paymentIntents.list({
+      limit: 3,
+      ending_before: "pi_9",
+      customer: "cus_1",
+    });
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/payment_intents?"),
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe(
+      "/v1/payment_intents?limit=3&ending_before=pi_9&customer=cus_1",
+    );
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+    expect(result.data).toHaveLength(1);
+  });
+
   it("refunds.create: exact path and body, amount omitted for a full refund", async () => {
     const server = await withServer({
       resource: () => ({
@@ -970,6 +1002,32 @@ describe("resource methods", () => {
     expect(result.object).toBe("list");
     expect(result.data).toHaveLength(1);
     expect(result.has_more).toBe(true);
+  });
+
+  it("refunds.list: the customer filter combines with payment_intent", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [makeSampleRefund()],
+          has_more: false,
+          url: "/v1/refunds",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.refunds.list({
+      payment_intent: "pi_1",
+      customer: "cus_1",
+    });
+
+    const req = server.requests.find((r) => r.url.startsWith("/v1/refunds"))!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe("/v1/refunds?payment_intent=pi_1&customer=cus_1");
+    expect(req.body).toBe("");
+    expect(result.data).toHaveLength(1);
   });
 
   it("refunds.list with no parameters sends a bare path, not an empty query", async () => {
@@ -2243,6 +2301,36 @@ describe("checkout.sessions", () => {
     expect(page.data).toHaveLength(1);
     // A list item never carries the payer credential — the same rule the
     // intent list obeys, for the same reason.
+    expect(page.data[0]?.client_secret).toBeUndefined();
+  });
+
+  it("checkout.sessions.list: the customer filter is sent after payment_intent", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [sampleSession()],
+          has_more: false,
+          url: "/v1/checkout/sessions",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const page = await client.checkout.sessions.list({
+      starting_after: "cs_0",
+      customer: "cus_1",
+    });
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/checkout/sessions?"),
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe(
+      "/v1/checkout/sessions?starting_after=cs_0&customer=cus_1",
+    );
+    expect(page.data).toHaveLength(1);
     expect(page.data[0]?.client_secret).toBeUndefined();
   });
 

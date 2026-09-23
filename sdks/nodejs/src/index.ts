@@ -69,6 +69,7 @@ export type {
   BalanceAmount,
   List,
   ListParams,
+  ListPaymentIntentsParams,
   ListEventsParams,
   CreatePaymentIntentParams,
   ConfirmPaymentIntentParams,

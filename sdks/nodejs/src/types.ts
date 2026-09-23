@@ -507,6 +507,44 @@ export type ListParams = {
 };
 
 /**
+ * `GET /v1/payment_intents` query parameters: {@link ListParams} plus the
+ * `customer` filter (RFC-0004 § 5).
+ *
+ * Written flat rather than as `ListParams & { … }` for {@link ListParams}'
+ * index-signature reason. `ListParams` itself stays exported and unchanged —
+ * it is public, and every `ListParams` value is still a valid one of these.
+ */
+export type ListPaymentIntentsParams = {
+  limit?: number | undefined;
+  starting_after?: string | undefined;
+  ending_before?: string | undefined;
+  /**
+   * Only intents for this `cus_…` (the intent's own `customer`).
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   *
+   * **A checkout session's customer is not seen here.** A session created
+   * with `customer` on an intent that has none stores that customer on the
+   * session only, and this filter reads the intent's own `customer` — so the
+   * payment that session collects is **not** in this list, and only
+   * {@link ListCheckoutSessionsParams}' `customer` finds it. Whether the
+   * session's customer should be written onto such an intent is open
+   * question 3 of ADR-0024
+   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   *
+   * **Needs vpay 0.6.0 or later**, the first release after 0.5.0. A
+   * self-hosted server at 0.5.0 or earlier does not know this parameter: it
+   * ignores it and answers the **unfiltered** list — every customer's rows,
+   * with no error. Check the server's version before relying on it.
+   */
+  customer?: string | undefined;
+};
+
+/**
  * A postal address on a {@link Customer} — Stripe's six formal components
  * **and** the GPS point (issue #67).
  *
@@ -1161,6 +1199,31 @@ export type ListCheckoutSessionsParams = {
   ending_before?: string | undefined;
   /** Only sessions for this `pi_…`. */
   payment_intent?: string | undefined;
+  /**
+   * Only sessions for this `cus_…` — the session's own `customer`, which is
+   * the one it renders.
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   *
+   * This is the **session's** customer, and it includes a session created
+   * with `customer` on an intent that has none. That customer is on the
+   * session only, so the payment such a session collects is found here but
+   * **not** by {@link ListPaymentIntentsParams}' or
+   * {@link ListRefundsParams}' `customer`, which read the intent's. Whether
+   * the session's customer should be written onto such an intent is open
+   * question 3 of ADR-0024
+   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   *
+   * **Needs vpay 0.6.0 or later**, the first release after 0.5.0. A
+   * self-hosted server at 0.5.0 or earlier does not know this parameter: it
+   * ignores it and answers the **unfiltered** list — every customer's rows,
+   * with no error. Check the server's version before relying on it.
+   */
+  customer?: string | undefined;
 };
 
 /**
@@ -1320,6 +1383,30 @@ export type ListRefundsParams = {
    * page** and not a `404`.
    */
   payment_intent?: string | undefined;
+  /**
+   * Only refunds of payments by this `cus_…` — matched through each refund's
+   * PaymentIntent, since a refund carries no customer of its own.
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   *
+   * **A checkout session's customer is not seen here.** A session created
+   * with `customer` on an intent that has none stores that customer on the
+   * session only, and this filter reads the refund's intent's `customer` — so
+   * refunds of the payment that session collected are **not** in this list.
+   * Whether the session's customer should be written onto such an intent is
+   * open question 3 of ADR-0024
+   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   *
+   * **Needs vpay 0.6.0 or later**, the first release after 0.5.0. A
+   * self-hosted server at 0.5.0 or earlier does not know this parameter: it
+   * ignores it and answers the **unfiltered** list — every customer's rows,
+   * with no error. Check the server's version before relying on it.
+   */
+  customer?: string | undefined;
 };
 
 /**
