@@ -1851,6 +1851,109 @@ pub struct InvoiceStatusTransitions {
     pub marked_uncollectible_at: Option<i64>,
 }
 
+/// How a merchant says an invoice paid out of band was settled — the closed
+/// vocabulary of `out_of_band[method]` (migration `0049`'s
+/// `manual_payments_method_enum_check`, RFC-0004 § 6).
+///
+/// vpay's own words: Stripe records `paid_out_of_band` as a bare flag and
+/// has no method. Four, and `other` is one of them on purpose — a merchant
+/// paid in a way vpay has no label for must still be able to record it,
+/// rather than pick a false one.
+///
+/// ```
+/// use vpay_api::model::OutOfBandMethod;
+///
+/// assert_eq!(OutOfBandMethod::from_wire("bank_transfer"), Some(OutOfBandMethod::BankTransfer));
+/// assert_eq!(OutOfBandMethod::BankTransfer.as_wire_str(), "bank_transfer");
+/// // Case-sensitive, like every other vocabulary on this wire.
+/// assert_eq!(OutOfBandMethod::from_wire("Cash"), None);
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutOfBandMethod {
+    /// Notes and coins.
+    Cash,
+    /// A cheque.
+    Cheque,
+    /// A transfer the merchant received directly into their own account.
+    BankTransfer,
+    /// Anything else.
+    Other,
+}
+
+impl OutOfBandMethod {
+    /// Every method, in the order a `400` lists them.
+    pub const ALL: [Self; 4] = [Self::Cash, Self::Cheque, Self::BankTransfer, Self::Other];
+
+    /// The label on the wire and in `manual_payments.method`.
+    #[must_use]
+    pub const fn as_wire_str(self) -> &'static str {
+        match self {
+            Self::Cash => "cash",
+            Self::Cheque => "cheque",
+            Self::BankTransfer => "bank_transfer",
+            Self::Other => "other",
+        }
+    }
+
+    /// The method a label names, or `None` for one vpay does not have.
+    #[must_use]
+    pub fn from_wire(label: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|method| method.as_wire_str() == label)
+    }
+}
+
+/// `invoice.out_of_band_payment` — the merchant's statement that an invoice
+/// was settled outside vpay (RFC-0004 § 6).
+///
+/// **Nothing in vpay verified it.** It is what the merchant sent to
+/// `POST /v1/invoices/{id}/pay` with `paid_out_of_band=true`, echoed back;
+/// no rail saw the money and nothing was posted to the ledger.
+///
+/// Four keys and no `object`: it is a nested record of one invoice, reached
+/// only through the invoice, and has no route of its own.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct OutOfBandPaymentObject {
+    /// `mp_…` — `vpay_core::ids::manual_payment_id`.
+    pub id: String,
+    /// How the merchant says the money arrived.
+    pub method: OutOfBandMethod,
+    /// The merchant's reference — a cheque number, a transfer reference — or
+    /// `null`. `[redacted]` once the invoice's customer has been erased: a
+    /// reference routinely names the payer.
+    pub reference: Option<String>,
+    /// Unix **seconds**: when the merchant says the money arrived.
+    pub received_at: i64,
+}
+
+impl TryFrom<&vpay_db::ManualPaymentRow> for OutOfBandPaymentObject {
+    type Error = ApiError;
+
+    /// Renders the stored record.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError::Internal`] for a `method` outside [`OutOfBandMethod`] —
+    /// a state `manual_payments_method_enum_check` makes impossible.
+    fn try_from(row: &vpay_db::ManualPaymentRow) -> Result<Self, Self::Error> {
+        let method = OutOfBandMethod::from_wire(&row.method).ok_or_else(|| {
+            ApiError::Internal(format!(
+                "manual_payments.method is `{}`, which is not an out-of-band method",
+                row.method
+            ))
+        })?;
+        Ok(Self {
+            id: row.id.clone(),
+            method,
+            reference: row.reference.clone(),
+            received_at: row.received_at.unix_timestamp(),
+        })
+    }
+}
+
 /// An `invoice` (S4b): a merchant's bill to one customer.
 ///
 /// # `lines` is expanded, always, and `hosted_invoice_url` is derived
@@ -1876,12 +1979,12 @@ pub struct InvoiceStatusTransitions {
 /// zero-decimal, so `5000` means 5,000 FCFA and there is no division
 /// anywhere.
 ///
-/// # Nineteen keys, and the count is the tripwire
+/// # Twenty-one keys, and the count is the tripwire
 ///
-/// `the_invoice_object_is_the_documented_nineteen_keys` below is what keeps
+/// `the_invoice_object_is_the_documented_twenty_one_keys` below is what keeps
 /// `docs/api/README.md`'s listing honest, and it exists for the reason
 /// [`CustomerObject`]'s twin does: this struct is the `data.object` of all
-/// four `invoice.*` event types, so a nineteenth key is signed, delivered
+/// four `invoice.*` event types, so a twenty-second key is signed, delivered
 /// at-least-once and stored in `events` **forever** — the one place vpay
 /// cannot retract a field it has published. `InvoiceRow` carries `seq`,
 /// `merchant_id` and `updated_at`, none of which belongs on a merchant's
@@ -1892,7 +1995,9 @@ pub struct InvoiceStatusTransitions {
 /// of any name held the number. It is **nineteen** since 2026-09-10, when
 /// migration `0042` added `amount_refunded` (issue #91, D5) — the count, the
 /// test's name and `docs/api/README.md` moved in the same commit, which is
-/// what the tripwire is for.
+/// what the tripwire is for. It is **twenty-one** since 2026-09-23, when
+/// migration `0049` added `paid_out_of_band` and `out_of_band_payment`
+/// (RFC-0004 § 6), and the same three things moved together again.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct InvoiceObject {
@@ -1935,6 +2040,15 @@ pub struct InvoiceObject {
     /// because a key that appears only sometimes is a key a merchant's typed
     /// client has to guess at.
     pub amount_refunded: i64,
+    /// Stripe's key: `true` exactly when the merchant recorded that this
+    /// invoice was settled outside vpay (`POST /v1/invoices/{id}/pay` with
+    /// `paid_out_of_band=true`). Always `false` on a bill a payer paid
+    /// through a rail.
+    pub paid_out_of_band: bool,
+    /// The record behind [`Self::paid_out_of_band`], or `null` — vpay's own
+    /// key, since Stripe keeps only the flag. Present exactly when the flag is
+    /// `true`.
+    pub out_of_band_payment: Option<OutOfBandPaymentObject>,
     /// Unix **seconds**, or `null`. **Advisory**: nothing in vpay acts on it
     /// — there is no dunning and no automatic transition.
     pub due_date: Option<i64>,
@@ -1970,24 +2084,28 @@ impl InvoiceObject {
     /// Renders a stored invoice, its lines and its hosted URL as the object a
     /// merchant reads.
     ///
-    /// Three inputs rather than one, and each is a query the caller has
+    /// Four inputs rather than one, and each is a query the caller has
     /// already made: the row, its lines
-    /// (`vpay_db::Invoices::items_for_invoice`) and the checkout session's
-    /// URL. Taking them as parameters rather than fetching them keeps this
-    /// module free of I/O — the property that lets every handler and the
-    /// worker share one renderer.
+    /// (`vpay_db::Invoices::items_for_invoice`), the checkout session's URL,
+    /// and — for an invoice paid out of band — its payment record
+    /// (`vpay_db::Invoices::manual_payment_for_invoice`, or the row the
+    /// paying transaction just wrote). Taking them as parameters rather than
+    /// fetching them keeps this module free of I/O — the property that lets
+    /// every handler and the worker share one renderer.
     ///
     /// # Errors
     ///
-    /// [`ApiError::Internal`] for a `metadata` that is not a JSON object or a
-    /// `status` outside [`vpay_core::InvoiceStatus`] — states migration
-    /// `0036`'s `metadata_is_object` and `invoices_status_enum_check` make
-    /// impossible, so seeing one means the schema and this code disagree.
-    /// Nothing a *caller* can send reaches an `Err` here.
+    /// [`ApiError::Internal`] for a `metadata` that is not a JSON object, a
+    /// `status` outside [`vpay_core::InvoiceStatus`], or a record whose
+    /// presence disagrees with `paid_out_of_band` — states migrations
+    /// `0036` and `0049` and the paying transaction make impossible, so
+    /// seeing one means the schema and this code disagree. Nothing a
+    /// *caller* can send reaches an `Err` here.
     pub fn render(
         row: &vpay_db::InvoiceRow,
         lines: &[vpay_db::InvoiceItemRow],
         hosted_invoice_url: Option<String>,
+        out_of_band: Option<&vpay_db::ManualPaymentRow>,
     ) -> Result<Self, ApiError> {
         let status = vpay_core::InvoiceStatus::from_wire(&row.status).ok_or_else(|| {
             ApiError::Internal(format!(
@@ -1995,6 +2113,23 @@ impl InvoiceObject {
                 row.status
             ))
         })?;
+
+        // Both directions: a flag with no record is a paid invoice nobody
+        // can account for, and a record on an unflagged invoice is a second
+        // story about how it was paid. Neither is storable through the one
+        // writer (`pay_out_of_band_in_tx` writes both in one transaction),
+        // so either is the schema and this code disagreeing.
+        let out_of_band_payment = match (row.paid_out_of_band, out_of_band) {
+            (true, Some(record)) => Some(OutOfBandPaymentObject::try_from(record)?),
+            (false, None) => None,
+            (flag, record) => {
+                return Err(ApiError::Internal(format!(
+                    "invoice {} has paid_out_of_band = {flag} and {} manual_payments record",
+                    row.id,
+                    if record.is_some() { "a" } else { "no" }
+                )));
+            }
+        };
 
         Ok(Self {
             id: row.id.clone(),
@@ -2007,6 +2142,8 @@ impl InvoiceObject {
             amount_paid: row.amount_paid,
             amount_remaining: row.amount_remaining,
             amount_refunded: row.amount_refunded,
+            paid_out_of_band: row.paid_out_of_band,
+            out_of_band_payment,
             due_date: row.due_date.map(OffsetDateTime::unix_timestamp),
             description: row.description.clone(),
             metadata: metadata_of(&row.metadata, "invoices")?,
@@ -2894,6 +3031,7 @@ mod tests {
             amount_paid: 0,
             amount_remaining: 5000,
             amount_refunded: 0,
+            paid_out_of_band: false,
             due_date: None,
             description: Some("September hosting".to_owned()),
             metadata: json!({ "order_id": "1234" }),
@@ -2935,7 +3073,9 @@ mod tests {
     ///
     /// `docs/api/README.md` said **seventeen keys** from the day S4b landed
     /// until the review on 2026-09-07. The object was eighteen then and is
-    /// **nineteen** since migration `0042` added `amount_refunded`, and —
+    /// **nineteen** since migration `0042` added `amount_refunded` — and
+    /// **twenty-one** since migration `0049` added `paid_out_of_band` and
+    /// `out_of_band_payment` (2026-09-23) — and —
     /// unlike
     /// the customer's and the refund's, whose counts each name a test — no
     /// test of any name existed: adding a key to [`InvoiceObject`] and
@@ -2947,8 +3087,8 @@ mod tests {
     /// # Why the count is the assertion and not only the key list
     ///
     /// This object is the `data.object` of `invoice.created`,
-    /// `invoice.finalized`, `invoice.paid` and `invoice.voided`. A twentieth
-    /// key is signed, delivered at-least-once and stored in `events`
+    /// `invoice.finalized`, `invoice.paid` and `invoice.voided`. A
+    /// twenty-second key is signed, delivered at-least-once and stored in `events`
     /// **forever**. `InvoiceRow`'s `seq`, `merchant_id` and `updated_at` are
     /// each one field's inattention away from being there, so they are named.
     ///
@@ -2958,12 +3098,13 @@ mod tests {
     /// pointing at a route that exists, and `metadata` a map rather than a
     /// string.
     #[test]
-    fn the_invoice_object_is_the_documented_nineteen_keys() {
+    fn the_invoice_object_is_the_documented_twenty_one_keys() {
         let rendered = serde_json::to_value(
             InvoiceObject::render(
                 &invoice_row(),
                 &[invoice_line_row()],
                 Some("https://checkout.vpay.test/c/cs_1#secret".to_owned()),
+                None,
             )
             .expect("a well-formed row renders"),
         )
@@ -2981,6 +3122,8 @@ mod tests {
             "amount_paid",
             "amount_remaining",
             "amount_refunded",
+            "paid_out_of_band",
+            "out_of_band_payment",
             "due_date",
             "description",
             "metadata",
@@ -3004,7 +3147,7 @@ mod tests {
 
         assert_eq!(
             object.len(),
-            19,
+            21,
             "an undocumented key was added to the invoice object: {object:?}"
         );
 
@@ -3021,6 +3164,8 @@ mod tests {
                 "amount_paid": 0,
                 "amount_remaining": 5000,
                 "amount_refunded": 0,
+                "paid_out_of_band": false,
+                "out_of_band_payment": null,
                 "due_date": null,
                 "description": "September hosting",
                 "metadata": { "order_id": "1234" },
@@ -3077,7 +3222,7 @@ mod tests {
         row.amount_refunded = 2500;
 
         let rendered = serde_json::to_value(
-            InvoiceObject::render(&row, &[invoice_line_row()], None)
+            InvoiceObject::render(&row, &[invoice_line_row()], None, None)
                 .expect("a paid, part-refunded row renders"),
         )
         .expect("serialises");
@@ -3092,6 +3237,72 @@ mod tests {
         assert_eq!(rendered.get("amount_paid"), Some(&json!(5000)));
         assert_eq!(rendered.get("amount_remaining"), Some(&json!(0)));
         assert_eq!(rendered.get("status"), Some(&json!("paid")));
+    }
+
+    /// An invoice paid out of band renders the flag **and** the record, from
+    /// the row and the record respectively — and the renderer refuses a flag
+    /// and a record that disagree, in both directions.
+    ///
+    /// The four nested keys are asserted as a whole value so that the one
+    /// `docs/api/README.md` documents is the one that renders. The two
+    /// refusals are the renderer's half of migration `0049`'s one-transaction
+    /// guarantee: a flag with no record (or the reverse) is a `500` naming the
+    /// invoice rather than a paid bill with no account of how.
+    #[test]
+    fn an_invoice_paid_out_of_band_renders_its_record_and_refuses_a_disagreeing_one() {
+        let mut row = invoice_row();
+        row.status = vpay_core::InvoiceStatus::Paid.as_wire_str().to_owned();
+        row.amount_paid = 5000;
+        row.amount_remaining = 0;
+        row.paid_out_of_band = true;
+        row.paid_at = time::OffsetDateTime::from_unix_timestamp(1_753_488_000).ok();
+        let record = vpay_db::ManualPaymentRow {
+            id: "mp_1".to_owned(),
+            merchant_id: row.merchant_id.clone(),
+            livemode: false,
+            invoice_id: row.id.clone(),
+            method: "bank_transfer".to_owned(),
+            reference: Some("AFB-2026-0917".to_owned()),
+            received_at: time::OffsetDateTime::from_unix_timestamp(1_753_401_900)
+                .expect("a fixed, valid timestamp"),
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            created_at: time::OffsetDateTime::from_unix_timestamp(1_753_488_000)
+                .expect("a fixed, valid timestamp"),
+        };
+
+        let rendered = serde_json::to_value(
+            InvoiceObject::render(&row, &[], None, Some(&record))
+                .expect("a consistent pair renders"),
+        )
+        .expect("serialises");
+        assert_eq!(rendered.get("paid_out_of_band"), Some(&json!(true)));
+        assert_eq!(
+            rendered.get("out_of_band_payment"),
+            Some(&json!({
+                "id": "mp_1",
+                "method": "bank_transfer",
+                "reference": "AFB-2026-0917",
+                "received_at": 1_753_401_900,
+            })),
+            "the record renders from the record, in unix seconds: {rendered:?}"
+        );
+
+        assert!(
+            InvoiceObject::render(&row, &[], None, None).is_err(),
+            "a flag with no record is a paid invoice nobody can account for"
+        );
+        let unflagged = invoice_row();
+        assert!(
+            InvoiceObject::render(&unflagged, &[], None, Some(&record)).is_err(),
+            "a record on an unflagged invoice is a second story about how it was paid"
+        );
+        let mut unknown = record.clone();
+        unknown.method = "barter".to_owned();
+        assert!(
+            InvoiceObject::render(&row, &[], None, Some(&unknown)).is_err(),
+            "a method the CHECK would refuse is the schema and this code disagreeing"
+        );
     }
 
     /// A phone-only customer renders `null` for the two absent identifiers

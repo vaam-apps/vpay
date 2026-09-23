@@ -5,7 +5,7 @@ import type {
   ConfirmPaymentIntentParams,
   CreatePaymentIntentParams,
   List,
-  ListParams,
+  ListPaymentIntentsParams,
   PaymentIntent,
   RequestOptions,
 } from "../types.js";
@@ -80,7 +80,8 @@ export class PaymentIntentsResource {
     );
   }
 
-  async list(params?: ListParams): Promise<List<PaymentIntent>> {
+  /** `GET /v1/payment_intents`, newest first; `customer` narrows it. */
+  async list(params?: ListPaymentIntentsParams): Promise<List<PaymentIntent>> {
     return this.#http.request<List<PaymentIntent>>(
       "GET",
       "/payment_intents",

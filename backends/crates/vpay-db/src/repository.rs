@@ -343,6 +343,26 @@ pub trait TxRepositories: Send {
         now: time::OffsetDateTime,
     ) -> Result<Option<crate::InvoiceRow>, DbError>;
 
+    /// `invoices` + `manual_payments`: records that an **open** invoice was
+    /// settled outside vpay — `open -> paid` and its one payment record
+    /// (migration `0049`, RFC-0004 § 6).
+    ///
+    /// Transactional for create's reason: `invoice.paid` is appended beside
+    /// it with [`TxRepositories::insert_in_tx`], rendered by `vpay-api` from
+    /// the row this returns. [`crate::OutOfBandPayment::Refused`] and
+    /// [`crate::OutOfBandPayment::CustomerErased`] wrote nothing, and the
+    /// caller abandons rather than commits. Posts nothing to the ledger: no
+    /// money crossed a rail. `vpay_db::invoices`' `pay_out_of_band_in_tx`
+    /// carries the three statements and why each is there.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if any statement fails.
+    async fn pay_invoice_out_of_band_in_tx(
+        &mut self,
+        new: &crate::NewManualPayment,
+    ) -> Result<crate::OutOfBandPayment, DbError>;
+
     /// `jobs`: enqueues work, `ON CONFLICT (dedupe_key) DO NOTHING`.
     ///
     /// `false` means the key was already taken and nothing was written,
@@ -725,6 +745,13 @@ impl TxRepositories for PendingTransaction {
         now: time::OffsetDateTime,
     ) -> Result<Option<crate::InvoiceRow>, DbError> {
         crate::invoices::void_in_tx(self.conn(), merchant_id, id, now).await
+    }
+
+    async fn pay_invoice_out_of_band_in_tx(
+        &mut self,
+        new: &crate::NewManualPayment,
+    ) -> Result<crate::OutOfBandPayment, DbError> {
+        crate::invoices::pay_out_of_band_in_tx(self.conn(), new).await
     }
 
     async fn enqueue_in_tx(

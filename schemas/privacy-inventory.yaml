@@ -63,6 +63,12 @@ elements:
         table: ledger_entries
         column: currency_code
       - kind: column
+        table: manual_payments
+        column: amount
+      - kind: column
+        table: manual_payments
+        column: currency_code
+      - kind: column
         table: payment_intents
         column: amount
       - kind: column
@@ -195,6 +201,12 @@ elements:
       - kind: column
         table: ledger_transactions
         column: created_at
+      - kind: column
+        table: manual_payments
+        column: created_at
+      - kind: column
+        table: manual_payments
+        column: received_at
       - kind: column
         table: oauth_authorization_codes
         column: consumed_at
@@ -357,10 +369,22 @@ elements:
         column: livemode
       - kind: column
         table: invoices
+        column: paid_out_of_band
+      - kind: column
+        table: invoices
         column: status
       - kind: column
         table: jobs
         column: kind
+      - kind: column
+        table: manual_payments
+        column: livemode
+      - kind: column
+        table: manual_payments
+        column: method
+      - kind: column
+        table: manual_payments
+        column: paid_out_of_band
       - kind: column
         table: oauth_authorization_codes
         column: nonce
@@ -597,6 +621,15 @@ elements:
       - kind: column
         table: ledger_transactions
         column: id
+      - kind: column
+        table: manual_payments
+        column: id
+      - kind: column
+        table: manual_payments
+        column: invoice_id
+      - kind: column
+        table: manual_payments
+        column: merchant_id
       - kind: column
         table: oauth_authorization_codes
         column: client_id
@@ -1012,6 +1045,20 @@ elements:
       - kind: column
         table: idempotency_keys
         column: response_status
+  payment_reference:
+    subject: payer
+    purpose: merchant-record
+    necessary: false
+    tenant_boundary: merchant
+    recipients:
+      - merchant-endpoint
+    retention: customer
+    owner: maintainer
+    control: redact
+    copies:
+      - kind: column
+        table: manual_payments
+        column: reference
   merchant_note:
     subject: merchant
     purpose: merchant-record

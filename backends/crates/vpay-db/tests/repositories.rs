@@ -5883,12 +5883,13 @@ async fn open_invoice_for(pool: &PgPool, invoice_id: &str, intent_id: &str) -> a
     // no DEFAULT: an insert that omitted it is a `23502` rather than a
     // silent zero. That is the tripwire the migration's header describes,
     // and this fixture is one of the statements it is aimed at.
+    // `paid_out_of_band` (migration `0049`) is named for the same reason.
     sqlx::query(
         "INSERT INTO invoices \
             (id, merchant_id, livemode, customer_id, currency_code, status, number, \
-             amount_due, amount_paid, amount_remaining, amount_refunded, metadata, \
-             payment_intent_id, finalized_at) \
-         VALUES ($1, 'merchant_a', false, $2, 'XAF', 'open', $3, 5000, 0, 5000, 0, \
+             amount_due, amount_paid, amount_remaining, amount_refunded, paid_out_of_band, \
+             metadata, payment_intent_id, finalized_at) \
+         VALUES ($1, 'merchant_a', false, $2, 'XAF', 'open', $3, 5000, 0, 5000, 0, false, \
                  '{}'::jsonb, $4, now())",
     )
     .bind(invoice_id)
@@ -6198,6 +6199,248 @@ async fn marking_uncollectible_moves_an_open_invoice_and_nothing_else() -> anyho
     // deliberately outside migration `0036`'s vocabulary because nothing
     // writes it — this is the assertion that says so.
     assert_eq!(event_count(&pool, "in_unc").await?, 0);
+
+    Ok(())
+}
+
+/// Runs `pay_invoice_out_of_band_in_tx` in a transaction of its own and
+/// commits whatever it answered — a refusal writes nothing, so committing it
+/// commits nothing, which is what lets the cases below assert on the pool.
+async fn pay_out_of_band(
+    repositories: &dyn Repositories,
+    new: &vpay_db::NewManualPayment,
+) -> anyhow::Result<vpay_db::OutOfBandPayment> {
+    let outcome = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(
+                    tx.pay_invoice_out_of_band_in_tx(new).await?,
+                ))
+            })
+        })
+        .await
+        .context("the out-of-band transaction must not fail")?;
+    Ok(outcome.into_inner())
+}
+
+/// A `NewManualPayment` for `invoice_id`, as `vpay-api` would build it.
+fn manual_payment(id: &str, merchant_id: &str, invoice_id: &str) -> vpay_db::NewManualPayment {
+    let now = time::OffsetDateTime::now_utc();
+    vpay_db::NewManualPayment {
+        id: id.to_owned(),
+        merchant_id: merchant_id.to_owned(),
+        invoice_id: invoice_id.to_owned(),
+        method: "cheque".to_owned(),
+        reference: Some("Cheque 0042".to_owned()),
+        received_at: now,
+        recorded_at: now,
+    }
+}
+
+/// `pay_invoice_out_of_band_in_tx` is a compare-and-swap on `open` **and**
+/// on `NO_LIVE_INTENT`, the record's amount is the invoice's own, and nothing
+/// reaches the ledger (RFC-0004 § 6, migration `0049`).
+///
+/// # Why the amount assertion is the one migration `0049` points at
+///
+/// `manual_payments.amount = invoices.amount_paid` is a cross-table fact no
+/// CHECK can state. What guarantees it is that no caller supplies the amount:
+/// the insert copies it off the invoice row the same transaction just paid.
+/// `NewManualPayment` has no amount field, so the only way this assertion
+/// could fail is the `INSERT … SELECT` copying the wrong column — which is
+/// the mutation it exists for (copy `amount_remaining`, now `0`, and the
+/// record reads `0` and `amount_positive` refuses it; copy a constant and the
+/// equality below fails).
+///
+/// **The decisive mutations:** drop `AND {NO_LIVE_INTENT}` from the
+/// compare-and-swap — the first call returns `Paid` while an intent is live;
+/// drop the tenant filter — the foreign merchant's call returns `Paid`.
+#[tokio::test]
+async fn paying_out_of_band_records_the_invoices_own_amount_and_posts_nothing() -> anyhow::Result<()>
+{
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    repositories
+        .insert(&fixture_intent("pi_oob", "XAF"))
+        .await?;
+    open_invoice_for(&pool, "in_oob", "pi_oob").await?;
+
+    // A live intent refuses it — `requires_payment_method` is live.
+    assert_eq!(
+        pay_out_of_band(
+            repositories.as_ref(),
+            &manual_payment("mp_first", "merchant_a", "in_oob")
+        )
+        .await?,
+        vpay_db::OutOfBandPayment::Refused,
+        "a merchant cannot record cash while a payer may still be paying"
+    );
+
+    sqlx::query("UPDATE payment_intents SET status = 'canceled' WHERE id = 'pi_oob'")
+        .execute(&pool)
+        .await
+        .context("cancelling the attempt")?;
+
+    // Another merchant cannot, whatever the intent says.
+    assert_eq!(
+        pay_out_of_band(
+            repositories.as_ref(),
+            &manual_payment("mp_foreign", "merchant_b", "in_oob")
+        )
+        .await?,
+        vpay_db::OutOfBandPayment::Refused,
+        "the tenant filter is in the statement"
+    );
+
+    let vpay_db::OutOfBandPayment::Paid(paid) = pay_out_of_band(
+        repositories.as_ref(),
+        &manual_payment("mp_paid", "merchant_a", "in_oob"),
+    )
+    .await?
+    else {
+        panic!("an open invoice whose intent is canceled is paid out of band");
+    };
+    let (invoice, record) = *paid;
+
+    assert_eq!(invoice.status, "paid");
+    assert!(invoice.paid_out_of_band);
+    assert_eq!((invoice.amount_paid, invoice.amount_remaining), (5000, 0));
+    assert!(invoice.paid_at.is_some());
+    assert_eq!(record.invoice_id, "in_oob");
+    assert_eq!(
+        (record.amount, record.currency_code.as_str()),
+        (invoice.amount_paid, invoice.currency_code.as_str()),
+        "the record's amount and currency are the invoice's own, copied by the insert"
+    );
+    assert_eq!(record.merchant_id, invoice.merchant_id);
+    assert_eq!(record.livemode, invoice.livemode);
+    assert_eq!(
+        invoice_state(&pool, "in_oob").await?,
+        ("paid".to_owned(), 5000, 0),
+        "committed"
+    );
+
+    // The read the render path makes returns exactly that record, through
+    // CrateStack.
+    assert_eq!(
+        vpay_db::Invoices::manual_payment_for_invoice(repositories.as_ref(), "in_oob").await?,
+        Some(record.clone())
+    );
+
+    // Nothing reached the ledger: no money crossed `payer_clearing`.
+    let (transactions, entries): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM ledger_transactions), (SELECT COUNT(*) FROM ledger_entries)",
+    )
+    .fetch_one(&pool)
+    .await
+    .context("counting ledger rows")?;
+    assert_eq!(
+        (transactions, entries),
+        (0, 0),
+        "an out-of-band payment posts nothing"
+    );
+
+    // Nor does this statement write the event — the caller does, in the same
+    // transaction, because only `vpay-api` knows the wire shape.
+    assert_eq!(event_count(&pool, "in_oob").await?, 0);
+
+    // And it is once: a paid invoice refuses a second statement.
+    assert_eq!(
+        pay_out_of_band(
+            repositories.as_ref(),
+            &manual_payment("mp_again", "merchant_a", "in_oob")
+        )
+        .await?,
+        vpay_db::OutOfBandPayment::Refused
+    );
+    let records: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM manual_payments WHERE invoice_id = 'in_oob'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(records, 1);
+
+    Ok(())
+}
+
+/// An invoice paid out of band after its attempt was canceled **keeps naming
+/// the canceled intent**, every CHECK admits the row, and nothing can move it
+/// again through that intent.
+///
+/// The decision this pins (recorded in `docs/flows/invoices.md`): the payment
+/// record survives the document, exactly as a voided invoice keeps its
+/// intent. What makes it safe is that each path an intent could take to the
+/// invoice is closed:
+///
+/// * the settlement's lookup (`find_open_by_intent`) needs `status = 'open'`,
+///   so a settlement of that intent — impossible anyway, it is canceled —
+///   would find no invoice to flip;
+/// * `attach_intent` needs `open`, so no second attempt can be bound;
+/// * the refund counter carries `AND NOT paid_out_of_band`, and migration
+///   `0049`'s `paid_out_of_band_is_never_refunded` refuses the row if it did
+///   not — asserted straight against the table here.
+#[tokio::test]
+async fn paying_out_of_band_keeps_the_canceled_intent_and_nothing_can_move_it_again()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    for id in ["pi_abandoned", "pi_late"] {
+        repositories.insert(&fixture_intent(id, "XAF")).await?;
+    }
+    open_invoice_for(&pool, "in_cash", "pi_abandoned").await?;
+    sqlx::query("UPDATE payment_intents SET status = 'canceled' WHERE id = 'pi_abandoned'")
+        .execute(&pool)
+        .await?;
+
+    let outcome = pay_out_of_band(
+        repositories.as_ref(),
+        &manual_payment("mp_cash", "merchant_a", "in_cash"),
+    )
+    .await?;
+    assert!(
+        matches!(outcome, vpay_db::OutOfBandPayment::Paid(_)),
+        "{outcome:?}"
+    );
+
+    let (status, intent, flag): (String, Option<String>, bool) = sqlx::query_as(
+        "SELECT status, payment_intent_id, paid_out_of_band FROM invoices WHERE id = 'in_cash'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        (status.as_str(), intent.as_deref(), flag),
+        ("paid", Some("pi_abandoned"), true),
+        "the canceled attempt stays attached; only_a_live_invoice_has_an_intent forbids an \
+         intent on a draft and nothing else"
+    );
+
+    assert!(
+        vpay_db::Invoices::find_open_by_intent(repositories.as_ref(), "pi_abandoned")
+            .await?
+            .is_none(),
+        "no settlement can find this invoice through the canceled intent"
+    );
+    assert!(
+        repositories
+            .attach_intent(
+                "merchant_a",
+                "in_cash",
+                "pi_late",
+                time::OffsetDateTime::now_utc()
+            )
+            .await?
+            .is_none(),
+        "a paid invoice takes no second attempt"
+    );
+    let refused = sqlx::query("UPDATE invoices SET amount_refunded = 1 WHERE id = 'in_cash'")
+        .execute(&pool)
+        .await;
+    assert_eq!(
+        refused
+            .expect_err("a rail refund against a bill no rail collected is unstorable")
+            .as_database_error()
+            .and_then(|error| error.constraint()),
+        Some("paid_out_of_band_is_never_refunded")
+    );
 
     Ok(())
 }

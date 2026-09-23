@@ -22,7 +22,13 @@ import {
   isInvoiceEvent,
   isPaymentIntentEvent,
 } from "./types.js";
-import type { Event, KnownEventType, PaymentIntent, Refund } from "./types.js";
+import type {
+  Event,
+  KnownEventType,
+  PayInvoiceParams,
+  PaymentIntent,
+  Refund,
+} from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 const { privateKey, privateKeyPem, publicKey } = generateTestRsaKeyPair();
@@ -683,6 +689,38 @@ describe("resource methods", () => {
     expect(result.data[0]?.client_secret).toBeUndefined();
   });
 
+  it("payment_intents.list: the customer filter is sent after the cursors", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [makeSamplePaymentIntent()],
+          has_more: false,
+          url: "/v1/payment_intents",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.paymentIntents.list({
+      limit: 3,
+      ending_before: "pi_9",
+      customer: "cus_1",
+    });
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/payment_intents?"),
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe(
+      "/v1/payment_intents?limit=3&ending_before=pi_9&customer=cus_1",
+    );
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+    expect(result.data).toHaveLength(1);
+  });
+
   it("refunds.create: exact path and body, amount omitted for a full refund", async () => {
     const server = await withServer({
       resource: () => ({
@@ -970,6 +1008,32 @@ describe("resource methods", () => {
     expect(result.object).toBe("list");
     expect(result.data).toHaveLength(1);
     expect(result.has_more).toBe(true);
+  });
+
+  it("refunds.list: the customer filter combines with payment_intent", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [makeSampleRefund()],
+          has_more: false,
+          url: "/v1/refunds",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const result = await client.refunds.list({
+      payment_intent: "pi_1",
+      customer: "cus_1",
+    });
+
+    const req = server.requests.find((r) => r.url.startsWith("/v1/refunds"))!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe("/v1/refunds?payment_intent=pi_1&customer=cus_1");
+    expect(req.body).toBe("");
+    expect(result.data).toHaveLength(1);
   });
 
   it("refunds.list with no parameters sends a bare path, not an empty query", async () => {
@@ -2246,6 +2310,36 @@ describe("checkout.sessions", () => {
     expect(page.data[0]?.client_secret).toBeUndefined();
   });
 
+  it("checkout.sessions.list: the customer filter is sent after payment_intent", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: {
+          object: "list",
+          data: [sampleSession()],
+          has_more: false,
+          url: "/v1/checkout/sessions",
+        },
+      }),
+    });
+    const client = makeClient(server);
+
+    const page = await client.checkout.sessions.list({
+      starting_after: "cs_0",
+      customer: "cus_1",
+    });
+
+    const req = server.requests.find((r) =>
+      r.url.startsWith("/v1/checkout/sessions?"),
+    )!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe(
+      "/v1/checkout/sessions?starting_after=cs_0&customer=cus_1",
+    );
+    expect(page.data).toHaveLength(1);
+    expect(page.data[0]?.client_secret).toBeUndefined();
+  });
+
   it("checkout.sessions.expire: exact path, method and empty body", async () => {
     const server = await withServer({
       resource: () => ({
@@ -2927,10 +3021,11 @@ describe("invoices", () => {
   });
 
   /**
-   * All **eighteen** keys of the invoice object, one line expanded.
+   * All **twenty-one** keys of the invoice object, one line expanded (this
+   * said "eighteen" through two additions; corrected 2026-09-23).
    *
    * The count is the point: this object is the `data.object` of four event
-   * types, so a nineteenth key is signed, delivered and stored forever.
+   * types, so a twenty-second key is signed, delivered and stored forever.
    * `status` is `open` with a number assigned rather than a draft, so that
    * `number: string | null` is decoded in its assigned form somewhere.
    */
@@ -2951,6 +3046,10 @@ describe("invoices", () => {
     // out anyway: `amount_refunded` is optional on the type, so a fixture that
     // omitted it would read identically whether the server sent it or not.
     amount_refunded: 0,
+    // Migration 0049. Optional on the type, so spelled out for
+    // `amount_refunded`'s reason.
+    paid_out_of_band: false,
+    out_of_band_payment: null,
     due_date: null,
     description: "September hosting",
     metadata: { order_id: "1234" },
@@ -2999,8 +3098,8 @@ describe("invoices", () => {
       "customer=cus_1&currency=xaf&description=September%20hosting&due_date=1753401600&metadata[order_id]=1234",
     );
 
-    // Every one of the nineteen keys decodes, including the two that do not
-    // come from the row.
+    // Every one of the twenty-one keys decodes, including the two that do
+    // not come from the row.
     expect(invoice.id).toBe("in_123");
     expect(invoice.object).toBe("invoice");
     expect(invoice.customer).toBe("cus_123");
@@ -3011,6 +3110,8 @@ describe("invoices", () => {
     expect(invoice.amount_paid).toBe(0);
     expect(invoice.amount_remaining).toBe(11000);
     expect(invoice.amount_refunded).toBe(0);
+    expect(invoice.paid_out_of_band).toBe(false);
+    expect(invoice.out_of_band_payment).toBeNull();
     expect(invoice.due_date).toBeNull();
     expect(invoice.description).toBe("September hosting");
     expect(invoice.metadata).toEqual({ order_id: "1234" });
@@ -3275,6 +3376,112 @@ describe("invoices", () => {
       "success_url=https%3A%2F%2Fshop.example%2Fok%3Fsid%3D%7BCHECKOUT_SESSION_ID%7D&cancel_url=https%3A%2F%2Fshop.example%2Fcancel",
     );
     expect(req.headers["idempotency-key"]).toBe("idem_pay");
+  });
+
+  // RFC-0004 § 6. The absence of both URLs is asserted by the string
+  // equality: the server refuses either on this path.
+  it("invoices.pay out of band sends the flag and the record and no url", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: sampleInvoice({
+          status: "paid",
+          amount_paid: 11000,
+          amount_remaining: 0,
+          paid_out_of_band: true,
+          out_of_band_payment: {
+            id: "mp_1",
+            method: "bank_transfer",
+            reference: "AFB 2026/0917",
+            received_at: 1_753_401_900,
+          },
+        }),
+      }),
+    });
+    const client = makeClient(server);
+
+    const invoice = await client.invoices.pay(
+      "in_123",
+      {
+        outOfBand: {
+          method: "bank_transfer",
+          reference: "AFB 2026/0917",
+          receivedAt: 1_753_401_900,
+        },
+      },
+      { idempotencyKey: "idem_oob" },
+    );
+
+    expect(invoice.status).toBe("paid");
+    expect(invoice.paid_out_of_band).toBe(true);
+    expect(invoice.out_of_band_payment).toEqual({
+      id: "mp_1",
+      method: "bank_transfer",
+      reference: "AFB 2026/0917",
+      received_at: 1_753_401_900,
+    });
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoices/in_123/pay",
+    )!;
+    // Byte-identical to `sdks/rust`'s
+    // `pay_out_of_band_sends_the_flag_and_the_record_and_no_url`.
+    expect(req.body).toBe(
+      "paid_out_of_band=true&out_of_band[method]=bank_transfer&out_of_band[reference]=AFB%202026%2F0917&out_of_band[received_at]=1753401900",
+    );
+    expect(req.headers["idempotency-key"]).toBe("idem_oob");
+  });
+
+  it("invoices.pay out of band with only a method sends only the method", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.pay("in_123", { outOfBand: { method: "cash" } });
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoices/in_123/pay",
+    )!;
+    expect(req.body).toBe("paid_out_of_band=true&out_of_band[method]=cash");
+  });
+
+  // An empty `outOfBand` is Stripe's bare flag, which the server records as
+  // `other` (ADR-0024 D11). Byte-identical to `sdks/rust`'s
+  // `pay_out_of_band_with_nothing_else_sends_only_the_flag`.
+  it("invoices.pay out of band with nothing else sends only the flag", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.pay("in_123", { outOfBand: {} });
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoices/in_123/pay",
+    )!;
+    expect(req.body).toBe("paid_out_of_band=true");
+  });
+
+  // The type forbids a URL beside `outOfBand`; a plain-JS caller the type
+  // did not reach is refused at runtime, before any request, as `sdks/rust`
+  // refuses the same combination (`InvalidParams`).
+  it("invoices.pay out of band with a url is refused before any request", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    const smuggled = {
+      outOfBand: {},
+      success_url: "https://shop.example/ok",
+    } as unknown as PayInvoiceParams;
+    await expect(client.invoices.pay("in_123", smuggled)).rejects.toThrow(
+      /success_url/,
+    );
+    expect(
+      server.requests.some((r) => r.url === "/v1/invoices/in_123/pay"),
+    ).toBe(false);
   });
 
   it("invoiceItems.create: exact body, and no currency or amount in it", async () => {

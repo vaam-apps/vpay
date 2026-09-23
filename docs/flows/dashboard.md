@@ -39,10 +39,10 @@ lie as an empty table.
 Two `GET` routes, behind an authentication and authorisation boundary, over
 the same rows `/v1` serves:
 
-| Route                               | Answers                                                                                                |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| `GET /dash/v1/payment_intents`      | The bound merchant's intents, newest first, cursor-paged; `?status=`, `?created_gte=`, `?created_lte=` |
-| `GET /dash/v1/payment_intents/{id}` | One intent, plus its charge, its refunds and its event timeline                                        |
+| Route                               | Answers                                                                                                                                                                                                                                                             |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /dash/v1/payment_intents`      | The bound merchant's intents, newest first, cursor-paged; `?status=`, `?created_gte=`, `?created_lte=`. `?customer=` is `/v1`'s filter and is a `400` naming `customer` here (2026-09-23) — it was silently ignored, answering every customer's intents, until then |
+| `GET /dash/v1/payment_intents/{id}` | One intent, plus its charge, its refunds and its event timeline                                                                                                                                                                                                     |
 
 Both are read-only, and that is structural rather than a promise: any method
 but `GET`/`HEAD` is refused by the boundary _before_ the router matches — with

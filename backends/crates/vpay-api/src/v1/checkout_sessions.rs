@@ -883,9 +883,18 @@ pub(crate) struct ListParams {
     starting_after: Option<String>,
     ending_before: Option<String>,
     payment_intent: Option<String>,
+    customer: Option<String>,
 }
 
 /// `GET /v1/checkout/sessions`.
+///
+/// Two filters, `payment_intent` and `customer` (RFC-0004 § 5, 2026-09-23),
+/// both checked for shape and not for existence and both applied in the same
+/// `WHERE` as `merchant_id`, so a foreign or unknown id is an empty page and
+/// never a `404`. `customer` is compared against the **session's own**
+/// `customer` — the one this list renders — not its intent's; see
+/// `vpay_db::SessionListPage::customer` for the one case where the two
+/// differ. Its malformed-id `400` is `GET /v1/invoices`', byte for byte.
 ///
 /// **No `client_secret` and no `url` on any row**, and that is the whole
 /// reason [`CheckoutSessionWithSecret`] is a separate type: one page would
@@ -921,11 +930,14 @@ pub(crate) async fn list(
         ));
     }
 
+    let customer = super::customers::filter_param(params.customer)?;
+
     let page = SessionListPage {
         limit: page.limit,
         starting_after: page.starting_after,
         ending_before: page.ending_before,
         payment_intent,
+        customer,
     };
 
     let (rows, has_more) =

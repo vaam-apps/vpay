@@ -374,7 +374,19 @@ mod tests {
     /// caller-supplied value — the merchant, the refund id, the cursors, the
     /// `payment_intent` filter, the limit, the metadata and the timestamp —
     /// is bound.
-    const EXPECTED_ASSERT_SITES: usize = 69;
+    /// **69 → 71 on 2026-09-23** (RFC-0004 § 6, migration `0049`), two
+    /// additions and no removals, both in `invoices::pay_out_of_band_in_tx`:
+    /// the `open -> paid` compare-and-swap, which interpolates `COLUMNS` and
+    /// `NO_LIVE_INTENT`, and the `INSERT … SELECT` that copies the amount off
+    /// the invoice, which interpolates `MANUAL_PAYMENT_COLUMNS`. Every caller
+    /// value — tenant, invoice, method, reference, both instants — is bound.
+    /// The statements that landed beside them and are **not** here: the
+    /// customer share lock in the same function, the five erasure
+    /// statements in `customers::redact_out_of_band_references` and
+    /// `redact_stored_invoice_responses_in_tx`, and the read, which goes
+    /// through CrateStack — every one of them a plain `&'static str` or no
+    /// string at all.
+    const EXPECTED_ASSERT_SITES: usize = 71;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

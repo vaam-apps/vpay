@@ -947,7 +947,9 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
 // ------------------------------------------------------------------ test 9
 
 /// The `status` filter narrows the page, and an unknown status is a `400`
-/// naming `status`.
+/// naming `status`. Since 2026-09-23 it also pins that `customer` — `/v1`'s
+/// filter, not this list's — is a `400` naming `customer` rather than an
+/// ignored key that answers the whole list.
 ///
 /// The second half is the one worth having: a filter that passed an unknown
 /// value through to the `WHERE` clause would answer an empty list, and "no
@@ -992,6 +994,19 @@ async fn the_status_filter_narrows_the_page_and_refuses_an_unknown_status() -> a
         at(&unknown_body, "/error/param"),
         "status",
         "{unknown_body}"
+    );
+
+    // `customer` is `/v1`'s filter (RFC-0004 § 5) and is refused here rather
+    // than ignored: ignored, this answered all three intents — every
+    // customer's — as though it were the filtered list.
+    let (customer_status, customer_body) = harness
+        .dash_json("/dash/v1/payment_intents?customer=cus_00000000000000000000000x")
+        .await?;
+    assert_eq!(customer_status, 400, "{customer_body}");
+    assert_eq!(
+        at(&customer_body, "/error/param"),
+        "customer",
+        "{customer_body}"
     );
     Ok(())
 }

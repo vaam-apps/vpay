@@ -1504,10 +1504,7 @@ pub(crate) async fn resolve_for_attachment(
     // from the message, and letting it reach the database would answer the
     // deliberately opaque "no such customer" instead.
     if !ids::is_well_formed(ids::CUSTOMER_PREFIX, customer) {
-        return Err(ApiError::invalid_param(
-            "customer",
-            "`customer` must be a Customer id — `cus_` followed by 24 characters.",
-        ));
+        return Err(malformed_customer());
     }
 
     // `get_for_merchant` and not an unscoped read: the tenant is a parameter
@@ -1531,6 +1528,49 @@ pub(crate) async fn resolve_for_attachment(
 
     touch(repositories, &row.id).await;
     Ok(Some(row.id))
+}
+
+/// The `customer` **query filter** of `GET /v1/payment_intents`,
+/// `GET /v1/checkout/sessions`, `GET /v1/refunds` (RFC-0004 § 5) and
+/// `GET /v1/invoices`: the trimmed `cus_…`, or `None` when absent or blank.
+///
+/// Checked for **shape only** — never looked up — and that is the whole
+/// difference from [`resolve_for_attachment`]. A filter is compared in the
+/// same `WHERE` as `merchant_id`, so a well-formed id that is another
+/// merchant's, erased, or never existed is simply an empty page; a lookup
+/// here could only add a way to answer those three differently, which is
+/// the existence oracle the filter must not be. The shape check is kept for
+/// `paging::validated_cursor`'s reason: a `pi_…` pasted into `customer`
+/// would otherwise be an empty page with nothing to fix.
+///
+/// The refusal is [`resolve_for_attachment`]'s for a malformed id: one
+/// parameter name, one sentence, on every route that takes it.
+/// `GET /v1/invoices` spelled its own copy of this match until 2026-09-23;
+/// the integration suites compare its answer with the other three lists'
+/// byte for byte, which is what showed the move changed nothing.
+///
+/// # Errors
+///
+/// [`ApiError::InvalidParam`] naming `customer` for a value that is not a
+/// well-formed `cus_…`.
+pub(crate) fn filter_param(raw: Option<String>) -> Result<Option<String>, ApiError> {
+    match raw.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(customer) if ids::is_well_formed(ids::CUSTOMER_PREFIX, customer) => {
+            Ok(Some(customer.to_owned()))
+        }
+        Some(_) => Err(malformed_customer()),
+    }
+}
+
+/// The `400` for a `customer` that is not a well-formed `cus_…`, shared by
+/// [`resolve_for_attachment`] and [`filter_param`] so the sentence cannot
+/// drift between a create and a list.
+fn malformed_customer() -> ApiError {
+    ApiError::invalid_param(
+        "customer",
+        "`customer` must be a Customer id — `cus_` followed by 24 characters.",
+    )
 }
 
 /// Stamps a customer's retention clock, logging and swallowing a failure.
@@ -2422,5 +2462,54 @@ mod tests {
             cleared.contains(&format!("[{} chars redacted]", DEBUG_CITY.chars().count())),
             "{cleared}"
         );
+    }
+
+    /// The list filter checks the `cus_…` shape and nothing else: blank is
+    /// absent, surrounding whitespace is trimmed, and every malformed value
+    /// is the one `400` naming `customer` with the sentence
+    /// `resolve_for_attachment` answers.
+    #[test]
+    fn the_customer_filter_is_checked_for_shape_and_answers_the_one_sentence() {
+        assert_eq!(filter_param(None).expect("absent"), None);
+        for blank in ["", "   "] {
+            assert_eq!(
+                filter_param(Some(blank.to_owned())).expect("blank is absent"),
+                None
+            );
+        }
+        let real = ids::customer_id();
+        assert_eq!(
+            filter_param(Some(format!("  {real} "))).expect("trimmed, then accepted"),
+            Some(real)
+        );
+        // Well-formed and owned by nobody: accepted, because the query — not
+        // this check — answers it, with an empty page.
+        assert!(
+            filter_param(Some("cus_00000000000000000000000x".to_owned()))
+                .expect("shape is all that is checked")
+                .is_some()
+        );
+
+        for malformed in [
+            "cus_",
+            "cus_tooshort",
+            "pi_00000000000000000000000x",
+            "00000000000000000000000x",
+            "CUS_00000000000000000000000X",
+        ] {
+            let error = filter_param(Some(malformed.to_owned()))
+                .expect_err("a malformed customer is named, not answered with an empty page");
+            match error {
+                ApiError::InvalidParam { param, message } => {
+                    assert_eq!(param, "customer", "for {malformed:?}");
+                    assert_eq!(
+                        message,
+                        "`customer` must be a Customer id — `cus_` followed by 24 characters.",
+                        "for {malformed:?}"
+                    );
+                }
+                other => panic!("{malformed:?} answered {other:?}"),
+            }
+        }
     }
 }

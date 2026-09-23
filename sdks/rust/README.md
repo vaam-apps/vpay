@@ -435,6 +435,18 @@ Where the two type systems land differently, and why:
 
 ## Status
 
+**Breaking, 2026-09-23 (RFC-0004 § 5).** `ListPaymentIntentsParams`,
+`ListCheckoutSessionsParams` and `ListRefundsParams` each gained a public
+`customer: Option<String>`. Code that builds one of the three with a struct
+literal naming every field and no `..Default::default()` no longer compiles
+(`E0063`, missing field `customer`); add `customer: None` or
+`..Default::default()`. `ListPaymentIntentsParams { .. }` literals were the
+likeliest to break, because that struct had only three fields and naming
+all three was natural. Code using `Default::default()`, field assignment
+or `..Default::default()` is unaffected. The filter itself needs a vpay
+server that has it (no release up to and including 0.5.0 does, as of
+2026-09-23); an older server ignores it and answers the unfiltered list.
+
 **The server side of this contract is partial, not absent.** `vpay-server`
 mounts the merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
 `GET /v1/oauth/.well-known/openid-configuration` — and gates every other `/v1`

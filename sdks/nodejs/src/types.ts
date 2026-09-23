@@ -507,6 +507,45 @@ export type ListParams = {
 };
 
 /**
+ * `GET /v1/payment_intents` query parameters: {@link ListParams} plus the
+ * `customer` filter (RFC-0004 § 5).
+ *
+ * Written flat rather than as `ListParams & { … }` for {@link ListParams}'
+ * index-signature reason. `ListParams` itself stays exported and unchanged —
+ * it is public, and every `ListParams` value is still a valid one of these.
+ */
+export type ListPaymentIntentsParams = {
+  limit?: number | undefined;
+  starting_after?: string | undefined;
+  ending_before?: string | undefined;
+  /**
+   * Only intents for this `cus_…` (the intent's own `customer`).
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   *
+   * **A checkout session's customer is not seen here.** A session created
+   * with `customer` on an intent that has none stores that customer on the
+   * session only, and this filter reads the intent's own `customer` — so the
+   * payment that session collects is **not** in this list, and only
+   * {@link ListCheckoutSessionsParams}' `customer` finds it. Whether the
+   * session's customer should be written onto such an intent is open
+   * question 3 of ADR-0024
+   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   *
+   * **Needs a vpay server that has this filter**: no release up to and
+   * including 0.5.0 has it (as of 2026-09-23). A
+   * self-hosted server at 0.5.0 or earlier does not know this parameter: it
+   * ignores it and answers the **unfiltered** list — every customer's rows,
+   * with no error. Check the server's version before relying on it.
+   */
+  customer?: string | undefined;
+};
+
+/**
  * A postal address on a {@link Customer} — Stripe's six formal components
  * **and** the GPS point (issue #67).
  *
@@ -822,7 +861,8 @@ export interface InvoiceStatusTransitions {
 }
 
 /**
- * An `invoice` (S4b): a merchant's bill to one customer. **Eighteen keys.**
+ * An `invoice` (S4b): a merchant's bill to one customer. **Twenty-one keys** (this
+ * said "Eighteen" through two additions; corrected 2026-09-23).
  *
  * # `lines` is always expanded, and always unpaged
  *
@@ -884,6 +924,16 @@ export interface Invoice {
    * a server that predates migration `0042`, where the key is absent.
    */
   amount_refunded?: number;
+  /**
+   * Stripe's key: `true` exactly when the merchant recorded that this invoice
+   * was settled outside vpay (`client.invoices.pay` with `outOfBand`).
+   * Always `false` on a bill a payer paid through
+   * a rail. Optional in the type so a client of this version keeps compiling
+   * against a server that predates migration `0049`.
+   */
+  paid_out_of_band?: boolean;
+  /** The record behind `paid_out_of_band`, or `null`. Present exactly when the flag is `true`. */
+  out_of_band_payment?: OutOfBandPayment | null;
   /**
    * Unix **seconds**, or `null`. **Advisory**: nothing in vpay reads it —
    * there is no dunning, no reminder and no automatic transition.
@@ -1029,10 +1079,74 @@ export type ListInvoicesParams = {
  * carry the literal `{CHECKOUT_SESSION_ID}` — and this SDK deliberately does
  * not duplicate them, for {@link CreateCheckoutSessionParams}' reason.
  */
-export type PayInvoiceParams = {
+export type PayInvoiceParams =
+  HostedPayInvoiceParams | OutOfBandPayInvoiceParams;
+
+/** The hosted-checkout payment: both URLs, and no `outOfBand`. */
+export interface HostedPayInvoiceParams {
   success_url: string;
   cancel_url: string;
-};
+  outOfBand?: undefined;
+}
+
+/**
+ * Records the invoice as settled **outside vpay** (RFC-0004 § 6). The
+ * presence of `outOfBand` is the flag: it puts Stripe's
+ * `paid_out_of_band=true` plus vpay's `out_of_band[…]` on the wire. The
+ * invoice becomes `"paid"` on the merchant's word, with no intent and no
+ * checkout, and **nothing is verified or posted to any ledger**. No URL may
+ * go with it — the type forbids one, and `client.invoices.pay` refuses one at
+ * runtime for a caller the type did not reach — and none needs configuring.
+ *
+ * `outOfBand` and its keys are camelCase, unlike the snake_case URL fields
+ * beside them, by the maintainer's decision of 2026-09-23 (ADR-0024).
+ */
+export interface OutOfBandPayInvoiceParams {
+  outOfBand: OutOfBandParams;
+  success_url?: undefined;
+  cancel_url?: undefined;
+}
+
+/** How a merchant says an out-of-band payment arrived. vpay's own words. */
+export type OutOfBandMethod = "cash" | "cheque" | "bank_transfer" | "other";
+
+/**
+ * What the merchant says about a payment made outside vpay. Every key is
+ * optional: `{}` is Stripe's bare `paid_out_of_band=true`, which the server
+ * records with the method `"other"`.
+ */
+export interface OutOfBandParams {
+  /** Sent as `out_of_band[method]`; omitted, the server records `"other"`. */
+  method?: OutOfBandMethod | undefined;
+  /**
+   * Sent as `out_of_band[reference]`. A cheque number, a transfer reference;
+   * at most 500 characters. **Treat it as personal data**: vpay does — a
+   * reference routinely names the payer — and replaces it with `[redacted]`
+   * when the invoice's customer is erased, and refuses one on an erased
+   * customer's invoice.
+   */
+  reference?: string | undefined;
+  /**
+   * Sent as `out_of_band[received_at]`, unix **seconds**. The server defaults
+   * it to now, and refuses one more than 30 seconds in the future or earlier
+   * than the second the invoice was finalized in.
+   */
+  receivedAt?: number | undefined;
+}
+
+/**
+ * `invoice.out_of_band_payment` — the merchant's own statement, echoed back.
+ * **Nothing in vpay verified it.** Four keys and no `object`.
+ */
+export interface OutOfBandPayment {
+  /** `mp_…`. */
+  id: string;
+  method: OutOfBandMethod;
+  /** `null`, or `"[redacted]"` once the invoice's customer has been erased. */
+  reference: string | null;
+  /** Unix **seconds**: when the merchant says the money arrived. */
+  received_at: number;
+}
 
 /**
  * `POST /v1/invoice_items` request fields (S4b).
@@ -1161,6 +1275,32 @@ export type ListCheckoutSessionsParams = {
   ending_before?: string | undefined;
   /** Only sessions for this `pi_…`. */
   payment_intent?: string | undefined;
+  /**
+   * Only sessions for this `cus_…` — the session's own `customer`, which is
+   * the one it renders.
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   *
+   * This is the **session's** customer, and it includes a session created
+   * with `customer` on an intent that has none. That customer is on the
+   * session only, so the payment such a session collects is found here but
+   * **not** by {@link ListPaymentIntentsParams}' or
+   * {@link ListRefundsParams}' `customer`, which read the intent's. Whether
+   * the session's customer should be written onto such an intent is open
+   * question 3 of ADR-0024
+   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   *
+   * **Needs a vpay server that has this filter**: no release up to and
+   * including 0.5.0 has it (as of 2026-09-23). A
+   * self-hosted server at 0.5.0 or earlier does not know this parameter: it
+   * ignores it and answers the **unfiltered** list — every customer's rows,
+   * with no error. Check the server's version before relying on it.
+   */
+  customer?: string | undefined;
 };
 
 /**
@@ -1320,6 +1460,31 @@ export type ListRefundsParams = {
    * page** and not a `404`.
    */
   payment_intent?: string | undefined;
+  /**
+   * Only refunds of payments by this `cus_…` — matched through each refund's
+   * PaymentIntent, since a refund carries no customer of its own.
+   *
+   * Held to the Customer id shape by the server, which answers `400` naming
+   * `customer` for anything else. An id of the right shape that names
+   * nothing, or another merchant's customer, is an **empty page** and not a
+   * `404`, so the filter cannot tell you which customers exist under some
+   * other account.
+   *
+   * **A checkout session's customer is not seen here.** A session created
+   * with `customer` on an intent that has none stores that customer on the
+   * session only, and this filter reads the refund's intent's `customer` — so
+   * refunds of the payment that session collected are **not** in this list.
+   * Whether the session's customer should be written onto such an intent is
+   * open question 3 of ADR-0024
+   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   *
+   * **Needs a vpay server that has this filter**: no release up to and
+   * including 0.5.0 has it (as of 2026-09-23). A
+   * self-hosted server at 0.5.0 or earlier does not know this parameter: it
+   * ignores it and answers the **unfiltered** list — every customer's rows,
+   * with no error. Check the server's version before relying on it.
+   */
+  customer?: string | undefined;
 };
 
 /**

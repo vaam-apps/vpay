@@ -1393,9 +1393,18 @@ pub(crate) struct ListParams {
     starting_after: Option<String>,
     ending_before: Option<String>,
     payment_intent: Option<String>,
+    customer: Option<String>,
 }
 
 /// `GET /v1/refunds` — this merchant's refunds, newest first.
+///
+/// `customer=cus_…` (RFC-0004 § 5, 2026-09-23) narrows it to refunds of that
+/// customer's payments. `refunds` has no customer column, so the comparison
+/// is on the refund's **intent's** `customer_id`, inside the join the tenant
+/// predicate already makes (`vpay_db::RefundListPage::customer`). Checked
+/// for shape only, like `payment_intent` below: a malformed value is
+/// `GET /v1/invoices`' `400` naming `customer`, byte for byte, and a
+/// well-formed one that is not this merchant's is an empty page.
 ///
 /// The `payment_intent` filter's *shape* is checked for `validated_cursor`'s
 /// reason: a `re_…` sent as `payment_intent` (an easy mistake, since both ids
@@ -1428,11 +1437,14 @@ pub(crate) async fn list(
         ));
     }
 
+    let customer = super::customers::filter_param(params.customer)?;
+
     let page = RefundListPage {
         limit: page.limit,
         starting_after: page.starting_after,
         ending_before: page.ending_before,
         payment_intent,
+        customer,
     };
 
     let (rows, has_more) =

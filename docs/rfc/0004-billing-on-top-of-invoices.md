@@ -16,7 +16,12 @@
 
 Nothing in this document is built. Every route, table, event type and
 capability below is a proposal; the Status sections of the flow documents
-remain the only statement of what exists.
+remain the only statement of what exists. _(Corrected 2026-09-23: two pieces
+are built — § 5's `customer` filter, on the three list routes that exist, and
+§ 6, invoices paid out of band. Each section's own dated note says what and
+where the evidence is. The status line records both as accepted through
+ADR-0024; everything else here is
+still a proposal.)_
 
 ## Problem
 
@@ -39,7 +44,9 @@ _repeatedly_, or to be paid in any way other than mobile money, is missing:
 5. **No document.** No PDF, no receipt. A Cameroonian invoice number is read
    by a tax authority; the document it numbers does not exist.
 6. **No lookup by customer** outside `GET /v1/invoices?customer=`.
-   `GET /v1/payment_intents` takes no `customer` filter.
+   `GET /v1/payment_intents` takes no `customer` filter. _(Closed
+   2026-09-23 for intents, sessions and refunds by § 5's first bullet; see
+   the note there.)_
 
 ### The constraints every proposal below is shaped by
 
@@ -227,12 +234,41 @@ frozen one.
   `/payments` and `/subscriptions`. **`GET /v1/customers` stays unfiltered**,
   for the reason [customers.rs](../../backends/crates/vpay-api/src/v1/customers.rs)
   gives.
+
+  > _**Built 2026-09-23 for the three routes that exist**_ — `GET
+/v1/payment_intents`, `/v1/checkout/sessions` and `/v1/refunds`, in both
+  > SDKs. `/v1/subscriptions` does not exist, so its filter is not built and
+  > stays part of this proposal. Sessions filter on their own `customer_id`
+  > and refunds through their intent's; a cursor pages from its position in
+  > the merchant's whole list, as `GET /v1/invoices?customer=` does. No
+  > migration. Evidence:
+  > [status/verification/2026-09-23-customer-filters.md](../status/verification/2026-09-23-customer-filters.md).
+  > The rest of this RFC, the invoice preview below included, is still
+  > Draft and unbuilt.
+
 - **Invoice preview** for a subscription's next period: Stripe's
   `create_preview`, which replaced `upcoming`. The exact spelling is checked
   against the `stripe` version `sdks/stripe-compat` pins before the route is
   written. It writes nothing and takes no number.
 
 ### 6. Manual (out-of-band) payments
+
+> **Built 2026-09-23** (step A; migration `0049_manual-payments.sql`),
+> as proposed below. [docs/flows/invoices.md](../flows/invoices.md)
+> § "Paid out of band" is the record of what exists — including the
+> decisions this section left open, all **accepted** in ADR-0024
+> (`docs/adr/0024-customer-filters-and-manual-payments.md`, D9–D19,
+> confirmed by the maintainer on 2026-09-23): the method optional and
+> defaulting to `other` (D11), a 500-character `reference` (D13), a
+> 30-second clock allowance on `received_at` and nothing before
+> `finalized_at` (D14, D11), a canceled intent staying attached (D15), a new
+> `paid_names_how` CHECK (D16), and a reference refused on an erased
+> customer's invoice (D17). Its Status carries the evidence: the
+> integration, repository and smoke suites against a real Postgres. The one
+> wire addition beyond this section is `out_of_band_payment`, the record's
+> four keys on the invoice beside Stripe's `paid_out_of_band` (D9). _(This
+> note said "five decisions this section left open" without their status
+> until the ADR was accepted the same day.)_
 
 The merchant records that an invoice was settled outside vpay: cash, cheque,
 bank transfer received directly, or anything else.
