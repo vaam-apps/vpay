@@ -301,21 +301,34 @@ has none of this, and the capability being off is what says so.
   needs an instructions screen.
 - **A transfer the merchant received directly** is § 6, not a rail.
 
-**Choosing providers.** Several PSPs serving Cameroon have been suggested for
-evaluation — CinetPay, Flutterwave, Notch Pay and Maviance Smobilpay among them.
-**None has been checked against these criteria; this list is a starting point,
-not a finding.**
+**Choosing providers.** CinetPay, Flutterwave, Notch Pay and Maviance Smobilpay
+were evaluated against the criteria below on 2026-09-23, together with a screen
+of eleven more names. **That evaluation read public documentation only**, and
+its result is
+[plans/2026-09-23-card-provider-evaluation.md](../plans/2026-09-23-card-provider-evaluation.md):
 
-| Criterion                                                              | Why it is disqualifying if absent |
-| ---------------------------------------------------------------------- | --------------------------------- |
-| Onboards Cameroon merchants and settles XAF to the merchant's own bank | Pass-through (rule 1)             |
-| Visa and Mastercard acquiring with 3-D Secure on a hosted page         | PCI scope (rule 2)                |
-| Authenticated transaction status query                                 | Callbacks are hints (rule 3)      |
-| Refund API with a status read                                          | RFC-0003's refund path            |
-| Sandbox reachable from CI, or enough spec to write WireMock mappings   | The conformance suite             |
-| Signed webhooks                                                        | SSRF and forgery posture          |
-| Reusable tokens for merchant-initiated charges                         | Only for `supports_off_session`   |
-| Bank transfer or virtual accounts                                      | Only for `Instructions`           |
+- **No candidate is shown to meet the disqualifying criteria for Visa and
+  Mastercard for a Cameroon merchant.**
+- CinetPay and Smobilpay have no refund API.
+- Flutterwave v3 is the closest candidate, blocked on written confirmation of
+  hosted XAF card acceptance and of its Cameroon payout pause.
+- None of the candidates documents bank-transfer collection in Cameroon.
+- A local bank acquirer is the lead to pursue.
+
+_(This paragraph read "None has been checked against these criteria; this list
+is a starting point, not a finding" until that evaluation. Criteria 1, 3 and 6
+were reworded by it, for the reasons its § "Two corrections" gives.)_
+
+| Criterion                                                                                                                                | Why it matters                                                                                         |
+| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| Onboards Cameroon merchants; funds sit in the **merchant's own** account with the PSP, withdrawable in XAF to their bank or mobile money | Disqualifying — pass-through (rule 1). A PSP that credits vpay is out                                  |
+| Visa and Mastercard acquiring with 3-D Secure on a hosted page                                                                           | Disqualifying — PCI scope (rule 2)                                                                     |
+| **Secret**-authenticated transaction status query                                                                                        | Disqualifying — callbacks are hints (rule 3). A read authenticated by a publishable key does not count |
+| Refund API with a status read                                                                                                            | Disqualifying — RFC-0003's refund path                                                                 |
+| Sandbox reachable from CI, or enough spec to write WireMock mappings                                                                     | Disqualifying — the conformance suite                                                                  |
+| Signed webhooks                                                                                                                          | Preferred, not disqualifying: under rule 3 a forged callback costs one status read and moves no money  |
+| Reusable tokens for merchant-initiated charges                                                                                           | Only for `supports_off_session`                                                                        |
+| Bank transfer or virtual accounts                                                                                                        | Only for `Instructions`                                                                                |
 
 A PSP that also offers mobile money duplicates MTN and Orange. That is
 allowed, since a merchant may prefer one contract, but the direct adapters stay.
@@ -505,8 +518,11 @@ Independent tracks, each shippable alone:
 5. **Payer reminders:** should vpay ever message a payer (for instance through
    `vsms`), or does every reminder stay a merchant webhook? (Maintainer,
    product.)
-6. **Which PSP first,** once the table in § 7 has been filled in for each
-   candidate. (Maintainer, after evaluation.)
+6. **Which PSP first.** The 2026-09-23 desk evaluation found none that
+   qualifies on documentation alone. The choice waits on the written answers
+   that evaluation lists, from Flutterwave, CinetPay, the Cameroon bank
+   acquirers (Ecobank Cameroun first), Hub2, Monetbil and Campay. Delivery step
+   F is blocked on those answers, not on engineering. (Maintainer.)
 7. **Tax rounding and the VAT rate** actually applicable to each merchant.
    (Accountant.)
 8. **Customer snapshot at finalize** and its retention class, versus erasure.
