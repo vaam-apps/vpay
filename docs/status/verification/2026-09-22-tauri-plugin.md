@@ -346,7 +346,7 @@ The fallback Lane D took on **both** platforms: rebuild with
 `VITE_VPAY_BASE_URL=https://api.vpay.invalid`, a fake publishable key and a
 fake session URL, then press **Pay**. Both rendered, verbatim:
 
-```
+```text
 unresolved — session cs_test_laned · intent (unknown)
 error type: api_connection_error
 error code: (none)
@@ -417,7 +417,7 @@ images. Lane D2 brought the same stack up with **zero image builds**:
 scratchpad-only compose override set `image:` on `vpay-server`,
 `vpay-worker` and `vpay-checkout` and compose ran **without `--build`**:
 
-```
+```bash
 docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml -f <override> \
   up -d --wait postgres wiremock-mtn wiremock-orange wiremock-webhook \
   vpay-server vpay-worker vpay-checkout
@@ -457,7 +457,7 @@ README's "pays" number) and `Pay FCFA 12,000` gave `Payment received` / `The
 merchant has been told you paid FCFA 12,000.` Closing the sheet with its X
 made the app render, verbatim:
 
-```
+```text
 succeeded — session cs_kde86t758d6191xvezz01p0b · intent pi_xpprqgpved3gh58p0yqsvs7v
 Fulfil from the webhook, not from this.
 ```
@@ -466,7 +466,7 @@ Fulfil from the webhook, not from this.
 Session `cs_a4exjc3yhx5695957shm4v8z`, intent `pi_v265kb7sgn48h8bky6f8mtap`.
 The sheet opened and was **swiped away** with no payment made:
 
-```
+```text
 pending — session cs_a4exjc3yhx5695957shm4v8z · intent pi_v265kb7sgn48h8bky6f8mtap
 The polling budget elapsed with the intent still moving. Not a failure either.
 ```
@@ -504,7 +504,7 @@ emulator only** and discarded by `-read-only`.
 page updates on its own.` → about **25 s** later, `Payment received`.
 Closing the tab gave:
 
-```
+```text
 succeeded — session cs_kn3r3emzq917988xkt4bfn4m · intent pi_93htevhkrn5vn23ys9e2se70
 Fulfil from the webhook, not from this.
 ```

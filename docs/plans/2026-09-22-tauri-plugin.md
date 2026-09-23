@@ -60,7 +60,7 @@
 
 ## The shape
 
-```
+```text
  guest-JS — @vaam-apps/vpay-tauri-checkout (every decision; runs in and out of Tauri)
  ┌───────────────────────────────────────────────────────────────────────┐
  │ VpayCheckout.start(sessionUrl)                                        │

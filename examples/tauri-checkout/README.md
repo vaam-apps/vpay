@@ -269,7 +269,7 @@ was **Pay against a base URL that does not resolve**
 (`https://api.vpay.invalid`, with a made-up `cs_test_laned` session URL).
 Both rendered, verbatim:
 
-```
+```text
 unresolved — session cs_test_laned · intent (unknown)
 error type: api_connection_error
 error code: (none)
@@ -346,7 +346,7 @@ Money` / `Orange Money`. MTN, `237670000000` (the shop README's "pays"
 number), `Pay FCFA 12,000` → `Payment received` / `The merchant has been
 told you paid FCFA 12,000.` Closing the sheet with its X gave, verbatim:
 
-```
+```text
 succeeded — session cs_kde86t758d6191xvezz01p0b · intent pi_xpprqgpved3gh58p0yqsvs7v
 Fulfil from the webhook, not from this.
 ```

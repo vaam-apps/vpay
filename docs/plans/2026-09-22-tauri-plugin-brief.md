@@ -28,7 +28,7 @@ machine, three hosts.
 
 ## Where it lives
 
-```
+```text
 sdks/tauri/tauri-plugin-vpay-checkout/
   Cargo.toml            # its OWN [workspace] — NOT a member of the root workspace
   build.rs              # tauri_build::plugin: COMMANDS = ["show", "dismiss"], android + ios paths
