@@ -19,11 +19,19 @@ business resource exists**", which was true when it was written on
 2026-09-02 and false the next day. `/v1/payment_intents` — create, retrieve,
 list, confirm, cancel — is served, and a confirm reaches a rail.
 
-`merchant-demo`, `merchant-stripe-node` and `checkout-browser` are the three
+`merchant-demo`, `merchant-stripe-node` and `checkout-browser` are the ~~three~~
 examples written against what vpay actually serves, and all three are run
 end to end against the compose stack — the first two by a human or CI running
 them directly, `checkout-browser` additionally by
 [`frontends/tests/e2e/cypress/e2e/checkout.cy.ts`](../frontends/tests/e2e/cypress/e2e/checkout.cy.ts).
+**Corrected 2026-09-23: there are four.** `tauri-checkout` joined them on
+2026-09-22, when it drove two real payments to `succeeded` against a running
+`vpay-server` from an iOS Simulator and an Android emulator — see its row
+above. It is deliberately not folded into the sentence's "all three are run
+end to end" claim, because the other three are run by a human **or CI** and
+this one is run by neither: nothing in the `justfile`, in
+`.github/workflows/` or in `.xtask/` names `examples/tauri-checkout` at all,
+so every count it has ever produced came from somebody running it by hand.
 `merchant-curl` and `merchant-node` still describe the _intended_ API as
 pinned down by [`docs/flows/merchant-auth.md`](../docs/flows/merchant-auth.md),
 and their balance call and their _refund creation_ still reach a
