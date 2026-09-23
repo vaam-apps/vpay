@@ -2553,13 +2553,45 @@ migrations-manifest:
     current="$workdir/current"
     header="$workdir/header"
 
+    # Portable across GNU (Linux, CI) and BSD (macOS) userlands. Until
+    # 2026-09-23 this listed files with GNU-only `find -printf '%f\n'`, which
+    # macOS's `find` rejects (`find: -printf: unknown primary or operator`),
+    # so the `0049` line was appended by hand that day. `-exec basename` keeps
+    # the same selection `-type f` made — regular files only, dotfiles
+    # included — and `-maxdepth` is in both finds. The digest comes from
+    # `sha256sum` where it exists (every Linux; `/sbin/sha256sum` on recent
+    # macOS) and from `shasum -a 256` otherwise; both write the same hex, and
+    # each reads the file on stdin so a filename can never change the output
+    # (GNU prefixes a line with `\` when a name holds a backslash).
+    if command -v sha256sum >/dev/null 2>&1; then
+        digest() { sha256sum < "$1" | cut -d' ' -f1; }
+    elif command -v shasum >/dev/null 2>&1; then
+        digest() { shasum -a 256 < "$1" | cut -d' ' -f1; }
+    else
+        echo "migrations-manifest: neither sha256sum nor shasum is on PATH." >&2
+        exit 1
+    fi
+
     # `LC_ALL=C` so the order does not depend on the developer's locale. The
     # gate does not care about order, but a manifest that reshuffles itself on
     # someone else's machine makes every diff unreadable.
-    find "$migrations_dir" -maxdepth 1 -type f -name '*.sql' -printf '%f\n' \
+    find "$migrations_dir" -maxdepth 1 -type f -name '*.sql' -exec basename {} \; \
         | LC_ALL=C sort \
         | while IFS= read -r filename; do
-            printf '%s  %s\n' "$(sha256sum "$migrations_dir/$filename" | cut -d' ' -f1)" "$filename"
+            hash=$(digest "$migrations_dir/$filename")
+            # A digest tool that printed anything but 64 lowercase hex digits
+            # would otherwise be written into the manifest verbatim.
+            case "$hash" in
+                *[!0-9a-f]* | '')
+                    echo "migrations-manifest: unexpected digest for $filename: '$hash'" >&2
+                    exit 1
+                    ;;
+            esac
+            if [ "${#hash}" -ne 64 ]; then
+                echo "migrations-manifest: unexpected digest for $filename: '$hash'" >&2
+                exit 1
+            fi
+            printf '%s  %s\n' "$hash" "$filename"
         done > "$current"
 
     # The `#` header carries the immutability rule to whoever opens the file to
@@ -2594,7 +2626,8 @@ migrations-manifest:
         [ "$refused" -eq 0 ] || exit 1
     fi
 
-    added=$(LC_ALL=C comm -13 <(grep -v '^#' "$manifest" 2>/dev/null | grep -v '^$' | LC_ALL=C sort) <(LC_ALL=C sort "$current") | wc -l)
+    # `tr -d ' '`: BSD `wc -l` pads its count with leading spaces.
+    added=$(LC_ALL=C comm -13 <(grep -v '^#' "$manifest" 2>/dev/null | grep -v '^$' | LC_ALL=C sort) <(LC_ALL=C sort "$current") | wc -l | tr -d ' ')
     cat "$header" "$current" > "$manifest"
     chmod 644 "$manifest"
     echo "migrations-manifest: ok — $added line(s) appended to $manifest"
