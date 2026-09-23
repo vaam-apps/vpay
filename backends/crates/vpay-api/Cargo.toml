@@ -218,7 +218,7 @@ metrics-exporter-prometheus.workspace = true
 # `version` is required alongside `path`: `deny.toml` sets `wildcards =
 # "deny"`, and a path-only dependency is a wildcard requirement as far as
 # `cargo deny check bans` is concerned — it fails the supply-chain gate.
-vpay-sdk = { path = "../../../sdks/rust", version = "0.4.1" } # x-release-please-version
+vpay-sdk = { path = "../../../sdks/rust", version = "0.5.0" } # x-release-please-version
 # Test-only: captures `tracing` output into a buffer so the log/body split
 # above is asserted on what an operator would actually see, rather than on the
 # arguments this crate passed to a macro.

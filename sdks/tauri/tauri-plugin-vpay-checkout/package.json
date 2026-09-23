@@ -1,6 +1,6 @@
 {
   "name": "@vaam-apps/vpay-tauri-checkout",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "The guest-JS half of tauri-plugin-vpay-checkout: opens vpay's hosted checkout in the payer's own browser from a Tauri v2 app, and falls back to a window.open popup in a plain browser.",
   "license": "Apache-2.0",
   "publishConfig": {

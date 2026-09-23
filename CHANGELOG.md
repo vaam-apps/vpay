@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.5.0](https://github.com/vaam-apps/vpay/compare/v0.4.1...v0.5.0) (2026-09-23)
+
+
+### Features
+
+* **sdks:** Tauri v2 checkout plugin for Android, iOS and web ([#238](https://github.com/vaam-apps/vpay/issues/238)) ([999a23f](https://github.com/vaam-apps/vpay/commit/999a23f95e196f56d76d635156aa3d50325a7288))
+
+
+### Bug Fixes
+
+* **examples:** repair the tauri-checkout example's clean-checkout build ([#241](https://github.com/vaam-apps/vpay/issues/241)) ([dd1a48b](https://github.com/vaam-apps/vpay/commit/dd1a48b005c9e0e93a681ec7a491bdf53031d2ab))
+* **sdks:** align the Tauri plugin's version with master's 0.4.1 ([#240](https://github.com/vaam-apps/vpay/issues/240)) ([078fa3d](https://github.com/vaam-apps/vpay/commit/078fa3d88f15f7cb5291bdbd8ad561d4a9a4ed4c))
+
+
+### Documentation
+
+* link the human documentation site, vpay-oss.vaam.store ([#245](https://github.com/vaam-apps/vpay/issues/245)) ([7f1b108](https://github.com/vaam-apps/vpay/commit/7f1b1081097cc56a24ad663d02fccf7c075f28a0))
+* retire stale claims found while writing vpay-docs ([#243](https://github.com/vaam-apps/vpay/issues/243)) ([ac6e78c](https://github.com/vaam-apps/vpay/commit/ac6e78c9792cba235f68ec5083a6cefe5eecd016))
+* **rfc:** propose billing, payment routing, direct card processing and bank reconciliation ([#244](https://github.com/vaam-apps/vpay/issues/244)) ([7997536](https://github.com/vaam-apps/vpay/commit/7997536b7efddc85ce994047e6e7ca02fe451368))
+* **tauri:** correct the claims [#240](https://github.com/vaam-apps/vpay/issues/240) and [#241](https://github.com/vaam-apps/vpay/issues/241) left stale, and write down two silent gaps ([#242](https://github.com/vaam-apps/vpay/issues/242)) ([51082a7](https://github.com/vaam-apps/vpay/commit/51082a7ab1cbcd437e7a200dcada6c358631c58a))
+
+
+### Continuous Integration
+
+* tell vpay-docs when a release lands ([#246](https://github.com/vaam-apps/vpay/issues/246)) ([26b0bb6](https://github.com/vaam-apps/vpay/commit/26b0bb6557a1ce86ab5909242a490dc964a81afe))
+
+
+### Chores
+
+* **ci:** bump install-cratestack-cli to pick up the download retry fix ([#237](https://github.com/vaam-apps/vpay/issues/237)) ([e0889e5](https://github.com/vaam-apps/vpay/commit/e0889e51fbe586ebb4f5eb7b8b30c0150efe3359))
+
 ## [0.4.1](https://github.com/vaam-apps/vpay/compare/v0.4.0...v0.4.1) (2026-09-21)
 
 

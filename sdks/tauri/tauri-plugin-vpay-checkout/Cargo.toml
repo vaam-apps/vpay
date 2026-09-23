@@ -14,7 +14,7 @@
 
 [package]
 name = "tauri-plugin-vpay-checkout"
-version = "0.4.1" # x-release-please-version
+version = "0.5.0" # x-release-please-version
 edition = "2024"
 # Same floor the rest of the repository declares; the toolchain this crate is
 # actually built and verified with is `rust-toolchain.toml`'s 1.98.0, which
