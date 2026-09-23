@@ -241,3 +241,6 @@ allowBuilds:
   cypress: true
   esbuild: true
   prisma: true
+
+minimumReleaseAgeExclude:
+  - '@vaam-apps/ui@0.2.4'
