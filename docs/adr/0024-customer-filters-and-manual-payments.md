@@ -9,9 +9,16 @@
   - **D9–D19 are proposed and need the maintainer's confirmation.** None
     appears in any document the maintainer read before directing the work.
     D9–D11 were added while briefing it; D12–D19 were taken by the
-    implementing agents where the brief was silent, and are recorded with
-    their reasons in `docs/flows/invoices.md` § "Paid out of band". Each is
+    implementing agents where the brief was silent. Their reasons are
+    recorded here; the implementation, which is not part of this change,
+    records them again in `docs/flows/invoices.md` when it lands. Each is
     marked where it stands.
+- **Implementation:** **not merged, and nothing in this ADR is built on
+  `master`**, as of 2026-09-23. The code is on two unpushed branches,
+  `feat/rfc-0004-customer-filters` and `feat/rfc-0004-manual-payments`. Their
+  Postgres-backed suites were blocked by a local Docker failure. They land in a
+  later pull request, which moves `docs/status/` and the flow pages. This ADR
+  records decisions, not capability.
 - **Date:** 2026-09-23
 - **Deciders:** the vpay maintainer (D1–D8, by directing RFC-0004 step A to be
   built); the implementing agents (D9–D19, pending the maintainer)
@@ -183,8 +190,8 @@ an erased customer's invoice is refused:
 
 - the copies are the `manual_payments` row, stored `invoice.*` event bodies
   and their deliveries, and stored idempotent responses;
-- a new response subject, `OutOfBandInvoice`, closes the race #111 closed for
-  customers;
+- a new response subject, `OutOfBandInvoice`, closes the late-write race described in issue
+  #111 (still open), the same way the customer erasure path handles it;
 - an out-of-band payment **with** a reference on an anonymised customer's
   invoice is a `400` naming `out_of_band[reference]`, because the reference
   would be a new copy of personal data about someone erased. Without a
