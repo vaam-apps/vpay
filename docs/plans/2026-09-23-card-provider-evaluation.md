@@ -13,7 +13,7 @@
 
 **No candidate is shown to meet the disqualifying criteria for Visa and
 Mastercard acceptance by a Cameroon merchant.** Every one of the four named in
-[RFC-0004 § 7](../rfc/0004-billing-on-top-of-invoices.md#7-cards-and-bank-through-third-party-providers)
+[RFC-0004 § 7](../rfc/0004-billing-on-top-of-invoices.md#7-cards-and-bank-one-adapter-per-provider)
 is a **mobile-money aggregator** first. Its card story is undocumented, retired
 or unconfirmed for Cameroon specifically. **No candidate documents bank-transfer
 or virtual-account collection in Cameroon.**
@@ -24,6 +24,17 @@ or virtual-account collection in Cameroon.**
 | CinetPay           | Documented on the v2 API, whose host no longer resolves; the current v1 SDKs carry no card flow | Yes               | **No**     | **Disqualified** (no refund API); cards unconfirmed on the live API                                          |
 | Notch Pay          | A `cm.card` channel name and a phrase in an FAQ; no guide, no 3DS, no price                     | Yes (weak key)    | Partial    | **Not a card rail on its documentation**                                                                     |
 | Maviance Smobilpay | Its supported-methods page lists mobile money only                                              | Yes (HMAC-signed) | **No**     | **Disqualified** (no cards, no refund API); poor pass-through fit                                            |
+
+**Reframed later the same day.** RFC-0004 § 7 now gives every provider that
+meets its hard rules an adapter, and
+[RFC-0008](../rfc/0008-payment-method-routing.md) routes between them. Under
+that framing, "Disqualified" for CinetPay and Smobilpay above means
+**disqualified as a card rail today, and as the one first provider**: a missing
+refund API is a capability switched off (`supports_refunds = false`), not a
+reason to have no adapter. Both remain candidate mobile-money adapters.
+Smobilpay's S3P partner model still fails the hard rule that vpay never holds
+the money, unless each merchant is its own partner. The table is kept as it
+was written.
 
 ## Criterion by criterion
 

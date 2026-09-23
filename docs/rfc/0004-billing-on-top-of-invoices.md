@@ -92,7 +92,7 @@ price).
 ### 2. Subscriptions: `subscription` (`sub_…`) and `subscription_item` (`si_…`)
 
 A **schedule that issues invoices**. On mobile money it does not collect; on a
-rail with `supports_off_session` ([§ 7](#7-cards-and-bank-through-third-party-providers))
+rail with `supports_off_session` ([§ 7](#7-cards-and-bank-one-adapter-per-provider))
 it may.
 
 **Object:** `customer` (required), `currency`, `items[]` (each a `price` and a
@@ -251,87 +251,132 @@ bank transfer received directly, or anything else.
   under pass-through vpay has no account the money arrived in. The row is a
   record of a merchant's statement, and the API says so: nothing in vpay can
   verify it.
+- A bank transfer the merchant would otherwise record here by hand can
+  instead be matched automatically from the merchant's bank statement:
+  [RFC-0007](0007-bank-transfer-reconciliation.md).
 - Only the merchant API writes it. An operator recording a payment on a
   merchant's behalf needs ADR-0008's unbuilt dashboard writes and their audit
   log.
 
-### 7. Cards and bank through third-party providers
+### 7. Cards and bank: one adapter per provider
 
-Visa and Mastercard, and bank payments, arrive as **new adapters behind the
-existing port**, each wrapping a third-party payment service provider (PSP)
-the merchant contracts directly. Four rules:
+vpay is open source, and a deployment's choice of provider is the operator's,
+not the project's. So **every provider that can meet the hard rules below gets
+its own adapter behind the existing port**, the operator enables the ones
+their merchants have contracts with, and
+[RFC-0008](0008-payment-method-routing.md) chooses between them when more than
+one can serve the same payment method. No provider is "the" card provider.
 
-1. **Pass-through holds.** The PSP account is the merchant's; the PSP
-   acquires and settles to the merchant. vpay never holds the funds
-   (RFC-0001). A provider that can only settle to _vpay_ is disqualified,
-   because using it would be aggregation.
-2. **vpay never sees a card number.** The card is entered on the PSP's hosted
-   page or PSP-hosted fields, and 3-D Secure happens there. For the payer this
-   is the existing `Redirect` flow — the path Orange Money already takes — so
-   one-off card payments need **no new flow**. Merchants stay on PCI SAQ-A.
-   ADR-0021 and `mobile-checkout.md` already refuse a native card field for
-   that reason, and this RFC keeps that decision.
-3. **Callbacks are hints.** The PSP must offer an authenticated status read;
-   `query_status` is still the only thing that moves money. A PSP whose only
-   signal is a webhook is disqualified.
-4. **Branch on capability, never on provider.** New values, each defaulting to
-   off:
-   - `supports_off_session` — the rail can charge a stored method with no
-     payer present. Gates `charge_automatically`.
-   - A port method `charge_stored(method_ref, amount, reference)`, defaulting
-     to `Unsupported`, like `refund`.
+There are three routes to a card or bank payment, and this RFC covers the first:
 
-**Stored card methods** (`payment_method`, `pm_…`) hold only what the PSP
-returns: its token (sealed at rest like a rail credential), `brand`, `last4`,
-`exp_month`, `exp_year`. A method is saved when a hosted payment completes with
-Stripe's `setup_future_usage=off_session` — accepted and ignored today, it
-becomes meaningful on rails that declare the capability, and stays ignored on
-the rest. `GET /v1/customers/{id}/payment_methods` and
-`POST /v1/payment_methods/{id}/detach` are the Stripe spellings. Mobile money
-has none of this, and the capability being off is what says so.
+| Route                                          | Where                                             | Who holds PCI scope for card data |
+| ---------------------------------------------- | ------------------------------------------------- | --------------------------------- |
+| A third-party PSP's hosted page                | This section                                      | The PSP                           |
+| vpay's own card vault and acquirer connectors  | [RFC-0006](0006-card-processing-without-a-psp.md) | The operator, for the vault alone |
+| Bank transfers reconciled from bank statements | [RFC-0007](0007-bank-transfer-reconciliation.md)  | Nobody: no card data is involved  |
 
-**Bank payments have two shapes:**
+_(This section was titled "Cards and bank through third-party providers" and
+framed its criteria as a filter for choosing **one** first provider until the
+2026-09-23 amendment. That framing is what made refund-less providers read as
+"disqualified". Under one adapter per provider they are adapters with a
+capability switched off, as `orange_money` already is.)_
+
+#### The criteria, in three kinds
+
+**Hard rules.** A provider that cannot meet one of these gets no adapter,
+because the adapter would break an invariant:
+
+1. **vpay never holds the money.** The merchant contracts the PSP directly,
+   and funds land in the **merchant's own** account with the PSP, withdrawable
+   to the merchant's bank or mobile money. A PSP that credits _vpay_ is
+   aggregation (RFC-0001), and it is out. (Maviance's S3P partner model is out
+   on these terms, unless each merchant is its own S3P partner.)
+2. **vpay never sees a card number** outside RFC-0006's separately deployed
+   vault. A PSP's card is entered on its hosted page or hosted fields, and
+   3-D Secure happens there. For the payer this is the existing `Redirect`
+   flow, the path Orange Money already takes, so one-off PSP card payments
+   need **no new flow**, and merchants stay on PCI SAQ-A. ADR-0021's refusal of
+   a native card field stands. (Flutterwave v4's integrator-side card
+   encryption fails this rule. Its v3 hosted page does not.)
+3. **A secret-authenticated status query.** Callbacks are hints, and
+   `query_status` is the only thing that moves money. A PSP whose only signal
+   is a webhook, or whose status read accepts a publishable key, gets no
+   adapter.
+4. **A stub-able contract.** A sandbox reachable from CI, or a specification
+   detailed enough to write WireMock mappings from, because every adapter joins
+   the one conformance suite.
+
+**Capabilities.** Each is declared by the adapter, off by default. A provider
+without one still gets an adapter, and vpay refuses the dependent operation
+the way it already does:
+
+| Capability                                     | Existing or new                                                  |
+| ---------------------------------------------- | ---------------------------------------------------------------- |
+| `supports_refunds`, `supports_partial_refunds` | Existing                                                         |
+| `delivers_callbacks`                           | Existing. Signed webhooks are a quality of this, not a gate      |
+| `supports_off_session` + `charge_stored`       | New. Gates `charge_automatically` (§ 2)                          |
+| `method_types`                                 | New (RFC-0008). Which payment methods the adapter serves         |
+| `amount_limits`                                | New (RFC-0008). A provider's per-transaction minimum and maximum |
+| `ProviderFlow::Instructions`                   | New flow. PSP-mediated bank transfer or virtual accounts         |
+
+**Deployment questions.** Whether a provider onboards Cameroon merchants,
+settles XAF, or is licensed in CEMAC is **not** a property of its adapter. An
+open-source adapter for a provider that serves another market is a legitimate
+contribution, and the operator's configuration is where the question is
+answered. The
+[2026-09-23 evaluation](../plans/2026-09-23-card-provider-evaluation.md)
+answers it for Cameroon today, from public documentation only:
+
+- No candidate is shown to accept Visa and Mastercard for a Cameroon merchant
+  on a hosted page.
+- Flutterwave v3 is closest, blocked on written confirmation.
+- A local bank acquirer (through RFC-0006) is the lead.
+
+#### Which adapters that implies
+
+From the evaluation, and each subject to its hard rules being confirmed
+against a sandbox:
+
+| Adapter            | Method types it would serve                                        | Capabilities off                                    |
+| ------------------ | ------------------------------------------------------------------ | --------------------------------------------------- |
+| `flutterwave` (v3) | `card` (if hosted XAF is confirmed), MTN and Orange wallets        | none known                                          |
+| `cinetpay` (v1)    | MTN, Orange and Express Union wallets; `card` if the v1 API has it | refunds                                             |
+| `notch_pay`        | MTN, Orange, Express Union and Yoomee wallets                      | refunds until its OpenAPI carries them; off-session |
+| `smobilpay_enkap`  | MTN, Orange and Express Union wallets                              | refunds, off-session                                |
+
+An aggregator that also serves MTN or Orange **duplicates a direct adapter**.
+That is now a feature, not a redundancy: RFC-0008 routes an MTN wallet payment
+to whichever of `mtn_momo` and the aggregators is cheapest for that merchant.
+
+#### Stored card methods
+
+A `payment_method` (`pm_…`) holds only what the PSP (or RFC-0006's vault)
+returns:
+
+- its token, sealed at rest like a rail credential;
+- `brand`, `last4`, `exp_month` and `exp_year`.
+
+A method is saved when a hosted payment completes with Stripe's
+`setup_future_usage=off_session`. vpay accepts and ignores that parameter
+today; it becomes meaningful on rails that declare `supports_off_session`, and
+stays ignored on the rest.
+
+A stored method is **bound to the rail that minted it**. A PSP's token is
+worthless to any other PSP, so RFC-0008 never routes a stored-method charge
+away from its rail.
+
+`GET /v1/customers/{id}/payment_methods` and
+`POST /v1/payment_methods/{id}/detach` are the Stripe spellings.
+
+#### Bank payments
 
 - **PSP-mediated bank transfer** (a virtual account or a transfer
   reference): the payer is shown account details and a reference, pays from
-  their bank, and the PSP reports it. This is a third flow,
-  `ProviderFlow::Instructions`, rendered as Stripe's
-  `next_action.display_bank_transfer_instructions`. Settlement may take days;
-  the poll ladder already never runs out (15-minute ceiling). The checkout page
-  needs an instructions screen.
-- **A transfer the merchant received directly** is § 6, not a rail.
-
-**Choosing providers.** CinetPay, Flutterwave, Notch Pay and Maviance Smobilpay
-were evaluated against the criteria below on 2026-09-23, together with a screen
-of eleven more names. **That evaluation read public documentation only**, and
-its result is
-[plans/2026-09-23-card-provider-evaluation.md](../plans/2026-09-23-card-provider-evaluation.md):
-
-- **No candidate is shown to meet the disqualifying criteria for Visa and
-  Mastercard for a Cameroon merchant.**
-- CinetPay and Smobilpay have no refund API.
-- Flutterwave v3 is the closest candidate, blocked on written confirmation of
-  hosted XAF card acceptance and of its Cameroon payout pause.
-- None of the candidates documents bank-transfer collection in Cameroon.
-- A local bank acquirer is the lead to pursue.
-
-_(This paragraph read "None has been checked against these criteria; this list
-is a starting point, not a finding" until that evaluation. Criteria 1, 3 and 6
-were reworded by it, for the reasons its § "Two corrections" gives.)_
-
-| Criterion                                                                                                                                | Why it matters                                                                                         |
-| ---------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Onboards Cameroon merchants; funds sit in the **merchant's own** account with the PSP, withdrawable in XAF to their bank or mobile money | Disqualifying — pass-through (rule 1). A PSP that credits vpay is out                                  |
-| Visa and Mastercard acquiring with 3-D Secure on a hosted page                                                                           | Disqualifying — PCI scope (rule 2)                                                                     |
-| **Secret**-authenticated transaction status query                                                                                        | Disqualifying — callbacks are hints (rule 3). A read authenticated by a publishable key does not count |
-| Refund API with a status read                                                                                                            | Disqualifying — RFC-0003's refund path                                                                 |
-| Sandbox reachable from CI, or enough spec to write WireMock mappings                                                                     | Disqualifying — the conformance suite                                                                  |
-| Signed webhooks                                                                                                                          | Preferred, not disqualifying: under rule 3 a forged callback costs one status read and moves no money  |
-| Reusable tokens for merchant-initiated charges                                                                                           | Only for `supports_off_session`                                                                        |
-| Bank transfer or virtual accounts                                                                                                        | Only for `Instructions`                                                                                |
-
-A PSP that also offers mobile money duplicates MTN and Orange. That is
-allowed, since a merchant may prefer one contract, but the direct adapters stay.
+  their bank, and the PSP reports it. That is `ProviderFlow::Instructions`,
+  rendered as Stripe's `next_action.display_bank_transfer_instructions`.
+- **A transfer into the merchant's own account, with no PSP**, is RFC-0007:
+  a reference per payment, and the merchant's bank statement as the evidence.
+- **A transfer the merchant simply tells vpay about** is § 6.
 
 Each adapter joins the one conformance suite. Its stub is a WireMock host in
 configuration, never a linked double.
@@ -474,7 +519,7 @@ Independent tracks, each shippable alone:
 | C    | Subscriptions with `send_invoice`, draft window, link at finalize, `past_due` | B                                           |
 | D    | Renderer port, Typst and HTTP (§ 10)                                          | open question 8 for anonymised customers    |
 | E    | Taxes (§ 8), coupons (§ 9)                                                    | accountant's rounding rule; D for printing  |
-| F    | First card/bank PSP adapter (§ 7)                                             | PSP evaluation                              |
+| F    | PSP adapters, one per provider (§ 7), and routing (RFC-0008)                  | Providers' written answers; sandbox access  |
 | G    | Stored methods and `charge_automatically`                                     | C, F, and a PSP with reusable tokens        |
 | H    | Retry and payment requests (§ 4)                                              | RFC-0003's refund path for payment requests |
 
@@ -518,11 +563,12 @@ Independent tracks, each shippable alone:
 5. **Payer reminders:** should vpay ever message a payer (for instance through
    `vsms`), or does every reminder stay a merchant webhook? (Maintainer,
    product.)
-6. **Which PSP first.** The 2026-09-23 desk evaluation found none that
-   qualifies on documentation alone. The choice waits on the written answers
-   that evaluation lists, from Flutterwave, CinetPay, the Cameroon bank
-   acquirers (Ecobank Cameroun first), Hub2, Monetbil and Campay. Delivery step
-   F is blocked on those answers, not on engineering. (Maintainer.)
+6. **Which adapters first.** This is sequencing, not selection: every provider
+   that meets § 7's hard rules can have an adapter, and RFC-0008 routes between
+   them. The order is set by the written answers the 2026-09-23 evaluation
+   lists, and by which merchants have contracts. _(This question read "Which
+   PSP first" until the 2026-09-23 amendment made providers additive.)_
+   (Maintainer.)
 7. **Tax rounding and the VAT rate** actually applicable to each merchant.
    (Accountant.)
 8. **Customer snapshot at finalize** and its retention class, versus erasure.

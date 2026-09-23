@@ -13,6 +13,9 @@ is recorded as an ADR and the RFC is marked resolved.
 | [0003](0003-refunds-destinations-and-the-first-ledger-postings.md) | Refunds, refund destinations, and the first ledger postings | Draft        |
 | [0004](0004-billing-on-top-of-invoices.md)                         | Billing on top of invoices                                  | Draft        |
 | [0005](0005-prepaid-customer-balances.md)                          | Prepaid customer balances                                   | Draft        |
+| [0006](0006-card-processing-without-a-psp.md)                      | Card processing without a PSP                               | Draft        |
+| [0007](0007-bank-transfer-reconciliation.md)                       | Bank transfers reconciled from bank statements              | Draft        |
+| [0008](0008-payment-method-routing.md)                             | Payment-method routing                                      | Draft        |
 
 ## Template
 
