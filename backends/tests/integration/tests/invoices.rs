@@ -3176,17 +3176,25 @@ async fn erasing_the_customer_redacts_the_out_of_band_reference_everywhere() -> 
 /// naming `out_of_band[reference]` means the erasure committed first. The
 /// erasure's start is staggered by a growing delay so the rounds sweep the
 /// collision window; rounds run until **both** outcomes have been seen (at
-/// least five, at most thirty), and the case fails if no round wrote a
-/// reference: a race the erasure always wins would prove nothing about
-/// redaction.
+/// least five, at most thirty, plus up to five fallback rounds with a long
+/// head start if no payment has committed first by then), and the case fails
+/// if no round wrote a reference: a race the erasure always wins would prove
+/// nothing about redaction.
 #[tokio::test]
 async fn an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference()
 -> anyhow::Result<()> {
     let harness = harness().await?;
     let (mut payment_first, mut erasure_first) = (0_u32, 0_u32);
 
-    for round in 0_u32..30 {
+    // Thirty sweeping rounds, then at most five fallback rounds that run only
+    // while no payment has yet committed first. Their head start doubles from
+    // 200 ms, which outlasts any pay request, so a slow runner still reaches a
+    // payment-first round instead of failing the vacuity check below.
+    for round in 0_u32..35 {
         if payment_first > 0 && erasure_first > 0 && round >= 5 {
+            break;
+        }
+        if round >= 30 && payment_first > 0 {
             break;
         }
         let invoice = open_invoice(&harness, CLIENT_B).await?;
@@ -3215,7 +3223,15 @@ async fn an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_t
                 // erasure won 30 rounds of 30 — the pay request does three
                 // reads before its transaction opens — and this case could
                 // not see a payment-first round at all.
-                tokio::time::sleep(std::time::Duration::from_millis(u64::from(round) * 3)).await;
+                // Past round 29 the stagger is the fallback: 200, 400, 800,
+                // 1600, 3200 ms (added 2026-09-23 in integration review, since
+                // 29 × 3 ms = 87 ms is a bound a slow CI runner can exceed).
+                let head_start_ms = if round < 30 {
+                    u64::from(round) * 3
+                } else {
+                    200 << (round - 30)
+                };
+                tokio::time::sleep(std::time::Duration::from_millis(head_start_ms)).await;
                 harness.delete(CLIENT_B, &erase_path).await
             },
         );

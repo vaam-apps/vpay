@@ -14,12 +14,13 @@
   - _(This read "Accepted in part", with D9–D19 "proposed and need the
     maintainer's confirmation", from the ADR's first draft until that
     confirmation.)_
-- **Implementation:** **not merged, and nothing in this ADR is built on
-  `master`**, as of 2026-09-23. The code is on two unpushed branches,
-  `feat/rfc-0004-customer-filters` and `feat/rfc-0004-manual-payments`. Their
-  Postgres-backed suites were blocked by a local Docker failure. They land in a
-  later pull request, which moves `docs/status/` and the flow pages. This ADR
-  records decisions, not capability.
+- **Implementation:** RFC-0004 step A, the pull request that carries both
+  slices and this ADR. Its `docs/status/` rows, flow pages and verification
+  pages are the statement of what is built, and this ADR records decisions, not
+  capability. _(This line read "not merged, and nothing in this ADR is built on
+  `master` … two unpushed branches … blocked by a local Docker failure" while
+  the ADR travelled alone in #248. That was true then, and stopped being the
+  whole story once the implementation joined it.)_
 - **Date:** 2026-09-23
 - **Deciders:** the vpay maintainer. D1–D8 by directing RFC-0004 step A to be
   built; D9–D19 by confirming them as proposed, after the implementing agents

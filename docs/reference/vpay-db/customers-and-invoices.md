@@ -540,6 +540,10 @@ still name a **canceled** intent (the attempt it abandoned), and nothing a
 rail refunds against that intent was ever collected for this document.
 Migration `0049`'s `paid_out_of_band_is_never_refunded` is the backstop.
 
-**Cost to the drift report: predicted +5, one relation, not measured** — see
-`postgres_smoke.rs`' `EXPECTED_DRIFT_CHANGES` note for the line-by-line
-derivation and why it could not be measured on the day.
+**Cost to the drift report: +7 lines (194 → 201) and one more drifted relation
+(25 → 26, `manual_payments`), measured 2026-09-23 against a real Postgres.**
+`postgres_smoke.rs`' `EXPECTED_DRIFT_CHANGES` note has the line-by-line
+derivation. _(This read "predicted +5, one relation, not measured" until that
+measurement. The +5 was right for migration `0049` as first written. Review
+then added the single-column CHECK `records_an_out_of_band_payment` and the
+undeclared index `invoices_payment_record_key`, one line each.)_
