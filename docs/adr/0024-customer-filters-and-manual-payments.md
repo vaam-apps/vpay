@@ -145,6 +145,16 @@ so filtering through the intent would hide a session that visibly names the
 customer. Refunds have no customer column and filter through their intent's
 `customer_id` inside the join the query already makes.
 
+**The consequence, found in review on 2026-09-23:** a session created with
+`customer=X` on an intent with no customer stores `X` on the session only. So
+the payment it collects is listed by `GET /v1/checkout/sessions?customer=X`,
+but **not** by `GET /v1/payment_intents?customer=X` or `GET
+/v1/refunds?customer=X`. The three list pages and both SDKs state this. The
+alternative, writing the session's customer onto a customer-less intent when
+the session is created, would also stop two sessions on one intent from
+naming different customers. It is a behaviour change to checkout sessions, and
+it is left to the maintainer (question 3 below).
+
 **D13. `out_of_band[reference]` is 1–500 characters**, the bound on a
 metadata value, because a reference is one value and not a paragraph
 (`description` allows 1 000).
@@ -241,3 +251,9 @@ review replaced them with one object.)_
 2. **Should the out-of-band path accept `received_at` before `finalized_at`**
    at all? A merchant may have been paid before issuing the document. D11
    refuses it, as the stricter default.
+
+3. **Should creating a checkout session with `customer=` write that customer
+   onto an intent that has none** (D12's consequence)? That would make all
+   three filters agree, and would stop one intent from gaining two payers
+   across two sessions. It changes checkout-session creation, which this ADR
+   does not.
