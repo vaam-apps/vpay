@@ -37,14 +37,14 @@ appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
-try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri plugin's
-page landed, and again 2026-09-23 when the stale-claims page did: the
-directory holds 61 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 38 of them. This is a hand-maintained list, not a generated one,
+try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
+plugin's page landed, and twice on 2026-09-23, when the super-linter page and
+then the stale-claims page did: the directory holds 62 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 39 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, and 60 and 37 until 2026-09-23; each time both moved
-by one and only one page was added, so the 23 is unchanged — the arithmetic is
-stated because the "23" is the only one of the three numbers no gate
+named until 2026-09-22, 60/37 and then 61/38 on 2026-09-23; each time both
+moved by one and one page was added, so the 23 is unchanged — the arithmetic
+is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
 still findable: they are linked individually from the area page whose
 section they verify (for example
@@ -67,6 +67,18 @@ rather than trusting this list to be exhaustive.
   `"expires_in": 300` against a 900-second constant, and READMEs that still
   said the dashboard had no login and the SDKs were not on npm. Documents and
   one doc comment only; no behaviour changed.
+- [verification/2026-09-23-super-linter.md](verification/2026-09-23-super-linter.md) —
+  the `lint / Super-linter` check that has been red since #238, which failed
+  it and was merged during a GitHub Actions outage before checks reported.
+  Why #240 and #241 were green in between (super-linter lints only a pull
+  request's changed files, and neither touched markdown), the ten findings
+  verbatim, and the one that is a real rendering bug rather than a nit: a
+  `docs/sdks/parity.md` gap-ledger row that has supplied one cell where the
+  table has four since **#176, 2026-09-14**. Carries the local
+  `ghcr.io/super-linter/super-linter:slim-v8.7.0` reproduction, before and
+  after, and the reason the two exclusions are exclusions — a file
+  `cargo build` regenerates on every run, and TypeScript's own
+  comment-bearing config format.
 - [verification/2026-09-22-tauri-plugin.md](verification/2026-09-22-tauri-plugin.md) —
   the Tauri v2 checkout plugin, built in parallel lanes: what each lane
   measured (the Rust crate's 19 tests + 1 doctest and its clippy/`cargo doc`

@@ -31,8 +31,8 @@ says by whom and links the page that carries the command lines.
 | `stopUrlReached` on iOS                                                               | ⛔ **unreachable**, not merely unverified (T6). tauri-v2.11.6 gives a Swift plugin no app-lifecycle hook, and Tauri's own `deep-link` plugin ships no `ios/` at all. Every iOS checkout ends `dismissed`; `matchesStopUrl`/`handleUniversalLink` exist and nothing calls them. D1/D4 make that correct — and Lane D2's two successful checkouts are the proof of the pudding rather than an exception: both ended with a **manual close plus the poll**, and both were right.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | The example app                                                                       | ✅ [`examples/tauri-checkout`](../../examples/tauri-checkout/) builds on all three targets — desktop (`tauri build --debug --no-bundle`, a 29,479,920-byte binary that launched and ran 6 s clean), iOS simulator and Android APK, every command exit 0 — and it is what drove both real checkouts above. **Zero edits to the plugin were needed by any build or any run**, which is the strongest single thing this row says: every deviation the writing lanes recorded survived a real Gradle, a real Xcode, a real cargo link and a real payment unchanged. It also confirms `bundle.iOS.minimumSystemVersion: "15.0"` reaches the compiler (generated `pbxproj` carries `IPHONEOS_DEPLOYMENT_TARGET = 15.0`, the Podfile `platform :ios, '15.0'`), and that the five tracked permission files are regenerated **byte-identical** by every app build. Its README records a trap worth knowing: an **unquoted** `VITE_VPAY_SESSION_URL` is silently truncated at the `#`, because vite's dotenv parser reads it as a comment — and that `#` fragment is the session secret.                                                     |
 | `just test-tauri-rust` / `clippy-tauri-rust` / `test-tauri-js` / `check-tauri-mobile` | ✅ exist, each preceded by a `_tauri-preflight` that refuses with a named reason when the plugin directory or its manifest is missing. **None of the three Rust ones is in `just ci` or `just verify`** (T7) — confirmed by reading both recipe lists; neither names any of them, and the justfile's own gate tally is unchanged at fifteen.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `release-please-config.json`                                                          | ✅ two new `extra-files` entries — a `generic` one for `Cargo.toml` (whose `version` line carries `# x-release-please-version`) and a `json` one at `$.version` for `package.json`. Neither is a bare string, for the reason #203/#204 wrote down. `cargo xtask verify-versions` now counts **24** references, all `0.4.0` (was 22).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| `docs/sdks/parity.md`                                                                 | ✅ a fourth table, one column, **88 new proving tests and 7 dated ⛔ rows** — `verify-sdk-parity` goes from 662/37 to **750 proving tests / 44 dated gaps**.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| `release-please-config.json`                                                          | ✅ two new `extra-files` entries — a `generic` one for `Cargo.toml` (whose `version` line carries `# x-release-please-version`) and a `json` one at `$.version` for `package.json`. Neither is a bare string, for the reason #203/#204 wrote down. `cargo xtask verify-versions` now counts **24** references, ~~all `0.4.0`~~ (was 22). **Corrected 2026-09-22:** all **`0.4.1`**. The branch that added this crate forked at `7134ecb`, one commit before release-please's `0.4.0` → `0.4.1` bump (#236) landed on master, so both new manifests were born at the version master had just left. The branch was internally consistent and `verify-versions` was green on it; the tree the merge produced was not. #240 (`078fa3d`) moved `Cargo.toml` and `package.json` to `0.4.1`, and the gate's own output is the correction: `24 version references all say 0.4.1`.                                                                                                                                                                                                                                                          |
+| `docs/sdks/parity.md`                                                                 | ✅ a fourth table, one column, **88 new proving tests and ~~7~~ 8 dated ⛔ rows** — `verify-sdk-parity` goes from 662/37 to **750 proving tests / ~~44~~ 45 dated gaps**. **Corrected 2026-09-23:** the ⛔ figure was miscounted when this row was written, not moved afterwards. The Tauri pass added **eight** ⛔ rows (parity.md:577–584) and eight matching gap-ledger rows (625–632), so 37 + 8 = **45**, which is what the gate has printed since the pass landed: `750 proving test(s) … all exist, 45 dated gap(s), 35 SDK method(s) enumerated across 39 row(s)`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | ADR-0023                                                                              | ⚠️ [docs/adr/0023-tauri-checkout-plugin.md](../adr/0023-tauri-checkout-plugin.md) — **Proposed, needs maintainer acceptance.** T1–T7 were taken by the implementing agent; the maintainer asked for the surface and the fan-out and nothing else here has been put to them.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 
 ## What is still not real
@@ -126,9 +126,56 @@ says by whom and links the page that carries the command lines.
   rules carries over unchanged.
 - **Nothing is published.** The crate is `publish = false` with a stated
   reason; the npm package is publish-ready and published by nothing.
-- **`verify-npm-scope` has not yet seen the new manifest**, because it walks
-  `git ls-files` and the tree was untracked when this page was written. It
-  will the moment the tree is staged.
+- ~~**`verify-npm-scope` has not yet seen the new manifest**, because it
+  walks `git ls-files` and the tree was untracked when this page was
+  written. It will the moment the tree is staged.~~ **Closed 2026-09-22 by
+  #238's merge**, which is exactly what the sentence predicted, and it is
+  struck rather than deleted because the reason it was true — the gate reads
+  tracked files only, so an unstaged manifest is invisible to it — is a trap
+  the next tree-adding pass will meet again. Re-measured on `dd1a48b`:
+  `cargo xtask verify-npm-scope` exits 0 and reports **3 publishable
+  package(s) under `sdks/`** —
+  `@vaam-apps/vpay-sdk (sdks/nodejs/package.json)`,
+  `@vaam-apps/vpay-stripe-js (sdks/stripe-js/package.json)` and
+  `@vaam-apps/vpay-tauri-checkout
+(sdks/tauri/tauri-plugin-vpay-checkout/package.json)`.
+
+## After the merge — #240 and #241, 2026-09-22
+
+Neither PR left a trace on any status or verification page when it landed,
+and that omission is why three numbers above had to be struck rather than
+simply read off a gate. Both are recorded here and, with their command
+lines, in
+[verification/2026-09-22-tauri-plugin.md § "After the merge"](verification/2026-09-22-tauri-plugin.md).
+
+- **#240 (`078fa3d`) — `fix(sdks): align the Tauri plugin's version with
+master's 0.4.1`.** The crate's `Cargo.toml` and the npm `package.json`
+  both moved `0.4.0` → `0.4.1`. The cause is worth stating in full because
+  it is a property of how this repository releases, not a typo: the plugin
+  branch forked at `7134ecb`, and release-please's `0.4.0` → `0.4.1` bump
+  (#236) landed after that point. On the branch, every one of the 24
+  references agreed at `0.4.0` and `verify-versions` was green; on master
+  after the merge, two of them disagreed with the other 22. **A PR that
+  passes `verify-versions` says nothing about the tree the merge produces**
+  — the gate is run on the fork, and a version bump is precisely the kind
+  of change that moves underneath it. Nothing in `just verify` runs on the
+  merge result before it is master.
+- **#241 (`dd1a48b`) — `fix(examples): repair the tauri-checkout example's
+clean-checkout build`.** Two things #238 and #240 left broken, both in
+  `examples/tauri-checkout`, and **found by the maintainer testing on real
+  hardware** rather than by any gate here.
+  1. `src-tauri/Cargo.lock` still pinned `tauri-plugin-vpay-checkout` at
+     `0.4.0`. The dependency is by **path**, but the lockfile records a
+     version, so #240's hand-edit of the crate's `version` left it stale —
+     and no gate catches that, for the reasons
+     [`examples/tauri-checkout/README.md`](../../examples/tauri-checkout/README.md)
+     § "`src-tauri/gen/` is not tracked" now spells out.
+  2. `package.json`'s `dev` script was a bare `"vite"` with no
+     `pnpm run deps &&`, so it never built `@vaam-apps/vpay-tauri-checkout`
+     first. `build`, `typecheck` and `lint` all chained `deps`; `dev` alone
+     did not, and `dev` is the one script `pnpm -r` never calls — so a
+     clean checkout could not run the example by following its own README,
+     and nothing in `just ci` could notice.
 
 ## Verification
 

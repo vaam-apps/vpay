@@ -157,6 +157,23 @@ verify-repositories` fails if `mod schema` is made `pub` or re-exported,
   `cargo build`** of the crate: do not hand-edit them, do not reformat them
   (they are in `.prettierignore` for exactly that reason), and expect a dirty
   tree after a build if the command list in `build.rs` changed.
+- **`examples/tauri-checkout` is the only thing in this repository that can
+  compile that plugin's Kotlin and Swift at all, and nothing gates it** — it
+  appears in **0** `just` recipes, **0** files under `.github/workflows/` and
+  **0** places in `.xtask/src/` (measured 2026-09-23). Its TypeScript half is
+  the exception: `pnpm-workspace.yaml` globs `examples/*`, so `pnpm -r` reaches
+  its `typecheck`, `lint` and `test`. Ungated is therefore exactly `src-tauri/`
+  — which carries its own `[workspace]`, so T2's isolation applies a second
+  time — plus any script `pnpm -r` never calls, i.e. `dev`. Those are precisely
+  the two things [#241](https://github.com/vaam-apps/vpay/pull/241) had to
+  repair. One trap follows from it: `examples/tauri-checkout/src-tauri/Cargo.lock`
+  pins the plugin **by version** even though the dependency is by path, so a
+  hand-edit of the crate's version strands it and no gate notices — `--locked`
+  appears here only on `cargo install` lines and `verify-versions` does not read
+  lockfiles. [#240](https://github.com/vaam-apps/vpay/pull/240) did exactly that.
+  The release path self-heals (`release-please.yml`'s "Refresh Cargo.lock" step
+  walks `git ls-files '*Cargo.lock'`), so the exposure is the **manual** bump:
+  run `cargo metadata` in `src-tauri/` and commit the lockfile in the same change.
 - Four `backends/tests/integration/tests/staff_sign_in.rs` cases —
   `the_sign_in_rate_limit_is_per_source_address`,
   `the_second_factor_is_rate_limited_and_not_only_the_password`,

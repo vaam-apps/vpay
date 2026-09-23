@@ -31,10 +31,11 @@ inside the workspace as `"@vaam-apps/vpay-tauri-checkout": "workspace:*"`
 
 Inside this workspace it is a `workspace:*` consumer of
 `@vaam-apps/vpay-stripe-js`, and that dependency must be **built** before this
-package typechecks: its `exports` resolve to `dist/`.
+package typechecks: its `exports` resolve to `dist/`. You do not have to do
+that by hand — this package's `build`, `typecheck`, `test` and `lint` scripts
+each chain a `deps` step that builds `@vaam-apps/vpay-stripe-js` first.
 
 ```bash
-pnpm --filter @vaam-apps/vpay-stripe-js build
 pnpm --filter @vaam-apps/vpay-tauri-checkout typecheck
 ```
 

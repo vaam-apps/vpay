@@ -28,7 +28,7 @@ machine, three hosts.
 
 ## Where it lives
 
-```
+```text
 sdks/tauri/tauri-plugin-vpay-checkout/
   Cargo.toml            # its OWN [workspace] — NOT a member of the root workspace
   build.rs              # tauri_build::plugin: COMMANDS = ["show", "dismiss"], android + ios paths
@@ -324,8 +324,9 @@ and every host" above reads as though three hosts implement both outcomes;
 two do. Every iOS checkout ends `dismissed`, which D1/D4 make correct, and it
 is a dated ⛔ in [`../sdks/parity.md`](../sdks/parity.md).
 
-**Two sentences in the contract above are wrong as written, corrected here
-2026-09-22 rather than edited in place.**
+**~~Two~~ Three sentences in the contract above are wrong as written,
+corrected here — two on 2026-09-22, the third on 2026-09-23 — rather than
+edited in place.**
 
 1. **"Pinned versions" (the Names table) lists `tauri-build = "2.6.3"` among
    this plugin's pins. The plugin does not depend on `tauri-build` at all.**
@@ -356,6 +357,21 @@ is a dated ⛔ in [`../sdks/parity.md`](../sdks/parity.md).
    the guard existed, a bare `cargo check --target aarch64-apple-ios` exited
    **101**. `Package.swift`'s own "The two version floors" comment carries
    this at length.
+3. **The Names table above spells `0.4.0` twice — the crate's
+   `version = "0.4.0" # x-release-please-version` and the npm package's
+   `"version": "0.4.0"`. Both manifests are at `0.4.1` today, and the table
+   is deliberately left alone.** Added 2026-09-23. The contract's intent was
+   "whatever version master is on, carried by release-please the same way
+   every other first-party manifest is" — the load-bearing parts of those
+   two rows are the `# x-release-please-version` annotation and the
+   `$.version` JSON path, not the literal. What aged is the literal. The
+   branch this brief drove forked at `7134ecb`, one commit before
+   release-please's `0.4.0` → `0.4.1` bump (#236) landed, so both manifests
+   were born at the version master had just left; vpay #240 (`078fa3d`)
+   moved them to `0.4.1` and `cargo xtask verify-versions` now prints
+   `24 version references all say 0.4.1`. A frozen contract naming a version
+   literal will always age this way, and the correction belongs here rather
+   than in the table for exactly that reason.
 
 Lane D's example app and the real Android/iOS builds were still in flight
 when this note was written; the verification page's final section is where
