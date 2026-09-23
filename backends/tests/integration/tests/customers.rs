@@ -1754,7 +1754,10 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
 /// an update that writes a second `customer.*` event body, a paid intent with
 /// a charge carrying the payer's MSISDN, a **failed** charge and refund
 /// carrying the rail's own prose about the payer, and a stored idempotent
-/// response.
+/// response. Since 2026-09-23 (ADR-0027) it also has a second payment that
+/// reaches the payer **only through a checkout session**: a customer-less
+/// intent whose session names the customer, carrying a sixth literal,
+/// `SESSION_MSISDN`.
 ///
 /// # `failure_raw` is in the fixture because it was not in the design
 ///
@@ -1784,6 +1787,12 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     // here passes by being refused.
     const LATITUDE: i64 = 4_061_777;
     const LONGITUDE: i64 = 9_786_777;
+    // The MSISDN the payer paid from through a checkout session (ADR-0027,
+    // 2026-09-23). It is a different number from `PHONE` on purpose. A payer
+    // types the number on the checkout page, and it need not be the one the
+    // merchant stored. A distinct literal also means that finding it after
+    // the erasure can only mean the session path failed, not the intent path.
+    const SESSION_MSISDN: &str = "237600000772";
 
     let customer = sdk
         .customers()
@@ -1985,8 +1994,23 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
             .expect("recorded as paid out of band");
     }
 
+    // A payment whose only link to this payer is a checkout session: a
+    // customer-less intent, a session naming the customer, and a charge,
+    // refund and decline text quoting `SESSION_MSISDN`. Every session created
+    // with `customer=` on a customer-less intent before vpay#253 has this
+    // shape. It is staged in SQL because the API stops producing it once
+    // vpay#253 lands (ADR-0027).
+    stage_payment(&h, &sdk, None, &customer.id, SESSION_MSISDN).await?;
+
     let latitude_digits = LATITUDE.to_string();
-    let literals = [NAME, EMAIL, PHONE, STREET, latitude_digits.as_str()];
+    let literals = [
+        NAME,
+        EMAIL,
+        PHONE,
+        STREET,
+        latitude_digits.as_str(),
+        SESSION_MSISDN,
+    ];
 
     let (before, columns) = scan_for(&h.pool, &literals).await?;
     assert!(
@@ -2028,6 +2052,23 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
             "nothing was found in `{expected}` before the erasure; if that column stopped \
              holding a payer identifier, say so here rather than leaving a scan that no \
              longer covers it. Found: {before:?}"
+        );
+    }
+
+    // And the session-reached copies are where they should be. The generic
+    // check above passes on `PHONE`'s copies alone, so it cannot say this.
+    for expected in [
+        "charges.payer_ref",
+        "charges.failure_raw",
+        "refunds.failure_raw",
+        "payment_intents.last_payment_error_message",
+    ] {
+        assert!(
+            before
+                .get(SESSION_MSISDN)
+                .is_some_and(|places| places.iter().any(|place| place == expected)),
+            "the session-only payment's MSISDN is not in `{expected}` before the erasure. \
+             Found: {before:?}"
         );
     }
 
@@ -2163,6 +2204,601 @@ async fn scan_for(
     }
 
     Ok((found, columns.len()))
+}
+
+// ------------------------------------- erasure through a checkout session
+
+/// One payment staged for the ADR-0027 cases: an intent, one checkout session
+/// on it, a failed charge whose `payer_ref` is `msisdn`, a failed refund of
+/// that charge, and the intent's own decline text. Every per-payment copy
+/// the erasure writes is present, and each one quotes `msisdn`.
+struct StagedPayment {
+    intent: String,
+    session: String,
+    charge: String,
+    refund: String,
+}
+
+/// Stages [`StagedPayment`] with `payment_intents.customer_id` set to
+/// `intent_customer` and `checkout_sessions.customer_id` set to
+/// `session_customer`, **directly in SQL**.
+///
+/// The intent and the session are created through the shipping API, and then
+/// their two customer columns are written by hand. The API cannot produce the
+/// two shapes these cases need, or will not once vpay#253 lands:
+///
+/// - **a customer-less intent whose session names `X`.** Every session
+///   created with `customer=` on a customer-less intent before vpay#253 has
+///   this shape. vpay#253 writes the session's customer onto the intent from
+///   then on and backfills nothing, so only historical rows keep it;
+/// - **an intent naming `Y` whose session names `X`.** The API has always
+///   refused that contradiction. A database reaches it anyway: before vpay#253
+///   an expired session could name `X` on a customer-less intent, and after it
+///   a later session naming `Y` writes `Y` onto the intent.
+///
+/// The session is created **without** `customer`, and both columns are then
+/// set, so this helper behaves the same on either side of vpay#253. The charge
+/// and refund are inserted exactly as
+/// [`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`]
+/// inserts its own, because nothing in this suite can reach a rail.
+async fn stage_payment(
+    h: &Harness,
+    sdk: &vpay_sdk::Client,
+    intent_customer: Option<&str>,
+    session_customer: &str,
+    msisdn: &str,
+) -> anyhow::Result<StagedPayment> {
+    let intent = sdk
+        .payment_intents()
+        .create(create_intent_params(None), RequestOptions::new())
+        .await
+        .expect("an intent to stage a payment on")
+        .id;
+    let (status, body) = create_session(
+        h,
+        CLIENT_A,
+        &[
+            ("payment_intent", intent.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    anyhow::ensure!(status == 201, "the session is created: {body:#}");
+    let session = body
+        .get("id")
+        .and_then(Value::as_str)
+        .context("a session id")?
+        .to_owned();
+
+    sqlx::query("UPDATE payment_intents SET customer_id = $2 WHERE id = $1")
+        .bind(&intent)
+        .bind(intent_customer)
+        .execute(&h.pool)
+        .await
+        .context("staging the intent's customer")?;
+    sqlx::query("UPDATE checkout_sessions SET customer_id = $2 WHERE id = $1")
+        .bind(&session)
+        .bind(session_customer)
+        .execute(&h.pool)
+        .await
+        .context("staging the session's customer")?;
+
+    let charge = format!("ch_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
+         state, amount, currency_code, payer_ref, payer_ref_masked, failure_code, \
+         failure_raw) \
+         VALUES ($1, $2, $3, gen_random_uuid(), 'failed', $4, 'XAF', $5, $6, \
+                 'invalid_payer', $7)",
+    )
+    .bind(&charge)
+    .bind(&intent)
+    .bind(RAIL)
+    .bind(AMOUNT)
+    .bind(msisdn)
+    .bind(format!("*** *** {}", &msisdn[msisdn.len() - 3..]))
+    .bind(format!(
+        "PAYER_NOT_FOUND: subscriber {msisdn} is not registered"
+    ))
+    .execute(&h.pool)
+    .await
+    .context("seeding the charge that carries the payer reference")?;
+
+    let refund = format!("re_{}", uuid::Uuid::new_v4().simple());
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, charge_id, amount, currency_code, \
+         status, failure_code, failure_raw) \
+         VALUES ($1, $2, $3, $4, 'XAF', 'failed', 'invalid_payer', $5)",
+    )
+    .bind(&refund)
+    .bind(&intent)
+    .bind(&charge)
+    .bind(AMOUNT)
+    .bind(format!(
+        "REFUND_REFUSED: subscriber {msisdn} is not registered"
+    ))
+    .execute(&h.pool)
+    .await
+    .context("seeding the refund that carries the rail's words about the payer")?;
+
+    sqlx::query(
+        "UPDATE payment_intents SET last_payment_error_code = 'invalid_payer', \
+         last_payment_error_message = $2 WHERE id = $1",
+    )
+    .bind(&intent)
+    .bind(format!(
+        "PAYER_NOT_FOUND: subscriber {msisdn} is not registered"
+    ))
+    .execute(&h.pool)
+    .await
+    .context("seeding the intent's decline text that names the payer")?;
+
+    // The shape really is the one asked for, read back rather than assumed.
+    let (on_intent, on_session): (Option<String>, Option<String>) = sqlx::query_as(
+        "SELECT p.customer_id, s.customer_id FROM checkout_sessions s \
+         JOIN payment_intents p ON p.id = s.payment_intent_id WHERE s.id = $1",
+    )
+    .bind(&session)
+    .fetch_one(&h.pool)
+    .await
+    .context("reading back the staged shape")?;
+    anyhow::ensure!(
+        on_intent.as_deref() == intent_customer && on_session.as_deref() == Some(session_customer),
+        "the staged shape is intent={on_intent:?}, session={on_session:?}"
+    );
+
+    Ok(StagedPayment {
+        intent,
+        session,
+        charge,
+        refund,
+    })
+}
+
+/// Every per-payment copy of [`StagedPayment`]: the charge's `payer_ref`,
+/// `payer_ref_masked` and `failure_raw`, the refund's `failure_raw`, and the
+/// intent's `last_payment_error_code` and `_message`.
+type PaymentCopies = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+async fn payment_copies(pool: &PgPool, staged: &StagedPayment) -> anyhow::Result<PaymentCopies> {
+    sqlx::query_as(
+        "SELECT c.payer_ref, c.payer_ref_masked, c.failure_raw, r.failure_raw, \
+                p.last_payment_error_code, p.last_payment_error_message \
+         FROM charges c \
+         JOIN refunds r ON r.charge_id = c.id \
+         JOIN payment_intents p ON p.id = c.payment_intent_id \
+         WHERE c.id = $1 AND r.id = $2",
+    )
+    .bind(&staged.charge)
+    .bind(&staged.refund)
+    .fetch_one(pool)
+    .await
+    .context("reading a staged payment's copies")
+}
+
+/// The erased state of [`payment_copies`], which is also what an erasure
+/// through the intent's own `customer_id` leaves.
+fn erased_copies() -> PaymentCopies {
+    (
+        Some(vpay_db::REDACTED.to_owned()),
+        None,
+        Some(vpay_db::REDACTED.to_owned()),
+        Some(vpay_db::REDACTED.to_owned()),
+        None,
+        None,
+    )
+}
+
+/// **ADR-0027: an erasure reaches a payment whose only link to the payer is a
+/// checkout session**, through `DELETE /v1/customers/{id}` and through the
+/// twelve-month sweep.
+///
+/// # The gap this closes
+///
+/// Before vpay#253, a session created with `customer=X` on an intent with no
+/// customer stored `X` on the session row only. Erasure reached a payment
+/// only through `payment_intents.customer_id`, so erasing `X` never reached
+/// that intent's charge. `payer_ref`, the MSISDN `X` paid from, survived.
+/// So did the rail's prose about `X` in `failure_raw`, on the charge and its
+/// refund, and the intent's decline text. vpay#253 stops new rows taking this
+/// shape and backfills nothing, so the historical rows keep the gap, and this
+/// case stages them in SQL ([`stage_payment`]).
+///
+/// # What is asserted
+///
+/// Both erasure paths run the same `vpay_db::customers::erase_in_tx`, and
+/// each has its own round, so that neither path is only assumed.
+///
+/// The per-payment copies, which are the whole gap, are asserted directly by
+/// column. Then the whole-database scan, [`scan_for`], runs before and after
+/// the erasure, and it adds the copies the erasure reaches through the
+/// customer's own id. Those are the `customer.created` body in
+/// `events.data`, a delivery of it whose `response_excerpt` echoes the payer,
+/// and the stored `POST /v1/customers` response in
+/// `idempotency_keys.response_body`. They are not the gap: no intent,
+/// session or refund body vpay stores renders a payer identifier, only a
+/// `cus_…`. They are here so that "every copy is redacted" is a claim about
+/// the whole database and not only about the three statements that changed.
+///
+/// # The mutation
+///
+/// Remove the session branch from `vpay_db::customers::PAYERS_INTENTS`
+/// (so the constant is `SELECT id FROM payment_intents WHERE customer_id =
+/// $1`, the reach before 2026-09-23). Then both rounds fail at the first
+/// per-payment assertion, with the payer's MSISDN still in
+/// `charges.payer_ref`. Measured 2026-09-23; see
+/// `docs/status/verification/2026-09-23-erasure-through-checkout-sessions.md`.
+#[tokio::test]
+async fn an_erasure_reaches_a_payment_whose_only_link_to_the_payer_is_a_checkout_session()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    for (round, phone) in [("delete", "237600000781"), ("sweep", "237600000782")] {
+        let name = format!("Quennell Sessionby {round}");
+        let customer = sdk
+            .customers()
+            .create(
+                CreateCustomerParams {
+                    name: Some(name.clone()),
+                    phone: Some(phone.to_owned()),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .expect("the customer this round erases")
+            .id;
+
+        let staged = stage_payment(&h, &sdk, None, &customer, phone).await?;
+
+        // A delivery of the payer's own `customer.created` whose excerpt
+        // echoes the payer back. The event is the one the API wrote.
+        let created_event: String = sqlx::query_scalar(
+            "SELECT id FROM events WHERE object_id = $1 AND type = 'customer.created'",
+        )
+        .bind(&customer)
+        .fetch_one(&h.pool)
+        .await
+        .context("the customer.created event")?;
+        sqlx::query(
+            "INSERT INTO webhook_deliveries (event_id, endpoint_id, url, state, \
+             response_excerpt) \
+             VALUES ($1, 'whk_session', 'https://merchant.example.invalid/hook', \
+                     'succeeded', $2)",
+        )
+        .bind(&created_event)
+        .bind(format!("{{\"error\":\"unknown subscriber {phone}\"}}"))
+        .execute(&h.pool)
+        .await
+        .context("seeding the delivery whose response echoes the payer")?;
+
+        let literals = [name.as_str(), phone];
+        let (before, _) = scan_for(&h.pool, &literals).await?;
+        for expected in [
+            "customers.name",
+            "customers.phone",
+            "charges.payer_ref",
+            "charges.failure_raw",
+            "refunds.failure_raw",
+            "payment_intents.last_payment_error_message",
+            "events.data",
+            "webhook_deliveries.response_excerpt",
+            "idempotency_keys.response_body",
+        ] {
+            assert!(
+                before
+                    .values()
+                    .any(|places| places.iter().any(|place| place == expected)),
+                "{round}: nothing was found in `{expected}` before the erasure, so its absence \
+                 afterwards proves nothing. Found: {before:?}"
+            );
+        }
+        assert_ne!(
+            payment_copies(&h.pool, &staged).await?,
+            erased_copies(),
+            "{round}: the staged payment must start out carrying the payer"
+        );
+
+        match round {
+            "delete" => {
+                sdk.customers()
+                    .del(&customer, RequestOptions::new())
+                    .await
+                    .expect("the erasure");
+            }
+            _ => {
+                age_customer(&h.pool, &customer, 400).await?;
+                run_the_sweep(&h.repositories, &h.pool).await?;
+            }
+        }
+
+        let anonymized: bool =
+            sqlx::query_scalar("SELECT anonymized_at IS NOT NULL FROM customers WHERE id = $1")
+                .bind(&customer)
+                .fetch_one(&h.pool)
+                .await
+                .context("the erased customer")?;
+        assert!(
+            anonymized,
+            "{round}: the customer was erased — anonymised, since a session names it"
+        );
+
+        assert_eq!(
+            payment_copies(&h.pool, &staged).await?,
+            erased_copies(),
+            "{round}: a payment whose only link to the payer is a checkout session kept the \
+             payer's MSISDN or the rail's words about them through an erasure. The maintainer \
+             decided on 2026-09-23 that erasure reaches payments through \
+             `checkout_sessions.customer_id` too (ADR-0027)"
+        );
+
+        let (after, _) = scan_for(&h.pool, &literals).await?;
+        assert!(
+            after.is_empty(),
+            "{round}: a payer identifier survived the erasure: {after:?}"
+        );
+
+        // The erasure detaches and attaches nothing. The intent still names
+        // nobody, the session still names the customer, and the money is
+        // untouched.
+        let (on_intent, on_session, amount): (Option<String>, Option<String>, i64) =
+            sqlx::query_as(
+                "SELECT p.customer_id, s.customer_id, p.amount FROM checkout_sessions s \
+                 JOIN payment_intents p ON p.id = s.payment_intent_id \
+                 WHERE s.id = $1 AND p.id = $2",
+            )
+            .bind(&staged.session)
+            .bind(&staged.intent)
+            .fetch_one(&h.pool)
+            .await
+            .context("the staged payment after the erasure")?;
+        assert_eq!(
+            on_intent, None,
+            "{round}: the erasure must not write the intent's customer"
+        );
+        assert_eq!(on_session.as_deref(), Some(customer.as_str()));
+        assert_eq!(amount, AMOUNT);
+    }
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// **ADR-0027's guard: a session leads an erasure only to an intent whose own
+/// customer is NULL or the one being erased.**
+///
+/// An intent that names customer `Y` is `Y`'s payment, and its charge carries
+/// `Y`'s MSISDN. A session on it that names `X` does not change that, and
+/// erasing `X` must leave every one of `Y`'s copies exactly as it was. The
+/// API does not produce this shape, so [`stage_payment`] seeds it in SQL. A
+/// database still reaches it. Before vpay#253 an expired session could name
+/// `X` on a customer-less intent, and after it a later session naming `Y`
+/// writes `Y` onto that intent.
+///
+/// # Not vacuous
+///
+/// A guard test that erased nothing would pass as well. So the same erasure
+/// also reaches a **control** payment, a customer-less intent whose session
+/// names `X`, and the case asserts that the control *was* redacted. Then it
+/// erases `Y` and asserts that `Y`'s payment is redacted through its own
+/// intent. The guard holds `Y`'s data back from `X`'s erasure only, and not
+/// from `Y`'s own.
+///
+/// # The mutation
+///
+/// Drop `AND p.customer_id IS NULL` from `vpay_db::customers::PAYERS_INTENTS`,
+/// so that any session naming the customer leads the erasure to its intent.
+/// This case then fails with `Y`'s `payer_ref` replaced by the marker.
+/// Measured 2026-09-23.
+#[tokio::test]
+async fn an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    const X_PHONE: &str = "237600000791";
+    const Y_PHONE: &str = "237600000792";
+
+    let mut ids = Vec::new();
+    for (name, phone) in [("Xanthe Erased", X_PHONE), ("Ysolde Kept", Y_PHONE)] {
+        ids.push(
+            sdk.customers()
+                .create(
+                    CreateCustomerParams {
+                        name: Some(name.to_owned()),
+                        phone: Some(phone.to_owned()),
+                        ..Default::default()
+                    },
+                    RequestOptions::new(),
+                )
+                .await
+                .expect("a customer")
+                .id,
+        );
+    }
+    let [x, y] = <[String; 2]>::try_from(ids).expect("two customers were created");
+
+    let control = stage_payment(&h, &sdk, None, &x, X_PHONE).await?;
+    let guarded = stage_payment(&h, &sdk, Some(&y), &x, Y_PHONE).await?;
+    let ys_before = payment_copies(&h.pool, &guarded).await?;
+    assert_eq!(
+        ys_before.0.as_deref(),
+        Some(Y_PHONE),
+        "Y's charge starts out carrying Y's MSISDN"
+    );
+
+    let erased = raw_client()
+        .delete(h.url(&format!("/v1/customers/{x}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "erase-x-not-y")
+        .send()
+        .await
+        .context("erasing X")?;
+    assert_eq!(erased.status().as_u16(), 200);
+
+    assert_eq!(
+        payment_copies(&h.pool, &control).await?,
+        erased_copies(),
+        "the control: a customer-less intent whose session names X is X's payment, and X's \
+         erasure must reach it — otherwise the assertion below proves nothing"
+    );
+    assert_eq!(
+        payment_copies(&h.pool, &guarded).await?,
+        ys_before,
+        "erasing X redacted a payment whose intent names Y. That charge carries Y's MSISDN; \
+         a session naming X does not make it X's"
+    );
+    let y_is_live: bool =
+        sqlx::query_scalar("SELECT anonymized_at IS NULL FROM customers WHERE id = $1")
+            .bind(&y)
+            .fetch_one(&h.pool)
+            .await
+            .context("Y after X's erasure")?;
+    assert!(y_is_live, "erasing X must not erase Y");
+
+    // Y's own erasure still reaches Y's payment, through the intent.
+    let erased = raw_client()
+        .delete(h.url(&format!("/v1/customers/{y}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "erase-y")
+        .send()
+        .await
+        .context("erasing Y")?;
+    assert_eq!(erased.status().as_u16(), 200);
+    assert_eq!(
+        payment_copies(&h.pool, &guarded).await?,
+        erased_copies(),
+        "Y's erasure reaches Y's payment through the intent's own customer_id"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// **An erasure takes no row lock on a session-reached intent it has nothing
+/// to erase on.**
+///
+/// # Why this is a property worth a case
+///
+/// Erasure locks the customer first (`FOR UPDATE`) and only then writes the
+/// per-payment rows. vpay#253's session create works in the other order. It
+/// first `UPDATE`s a customer-less intent to name the session's customer, and
+/// then inserts the session, whose foreign key needs a share lock on that
+/// customer. If an erasure also wanted that intent's row lock, the two would
+/// deadlock. Postgres would abort one of them. The customer's erasure would
+/// roll back whole, which is safe, but it would still fail.
+///
+/// Such an intent has no charge, because a session is only created on one
+/// with no charge, and so it has no decline text. The erasure's
+/// `payment_intents` statement is filtered on `last_payment_error_code IS NOT
+/// NULL`, so it never matches that row and never waits for it. The
+/// `charges` and `refunds` statements lock charges and refunds, never an
+/// intent.
+///
+/// The test holds the intent's row lock itself, in its own transaction,
+/// standing in for the create that vpay#253 would run. That branch is not on
+/// `master`, so the real create is not what is run here. The `DELETE` must
+/// finish while the lock is held.
+///
+/// # The mutation
+///
+/// Drop `last_payment_error_code IS NOT NULL` from the statement in
+/// `vpay_db::customers::redact_stored_copies`. The `DELETE` then blocks
+/// behind the held lock and this case fails on its timeout. Measured
+/// 2026-09-23.
+#[tokio::test]
+async fn an_erasure_takes_no_lock_on_a_session_reached_intent_it_has_nothing_to_erase_on()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    let customer = sdk
+        .customers()
+        .create(phone_only(), RequestOptions::new())
+        .await
+        .expect("the customer to erase")
+        .id;
+    let intent = sdk
+        .payment_intents()
+        .create(create_intent_params(None), RequestOptions::new())
+        .await
+        .expect("a customer-less intent")
+        .id;
+    let (status, body) = create_session(
+        &h,
+        CLIENT_A,
+        &[
+            ("payment_intent", intent.as_str()),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 201, "the session is created: {body:#}");
+    let session = body
+        .get("id")
+        .and_then(Value::as_str)
+        .expect("a session id")
+        .to_owned();
+    // The historical shape, in SQL: the session names the customer, the
+    // intent names nobody. See `stage_payment`.
+    sqlx::query("UPDATE checkout_sessions SET customer_id = $2 WHERE id = $1")
+        .bind(&session)
+        .bind(&customer)
+        .execute(&h.pool)
+        .await
+        .context("staging the session's customer")?;
+    sqlx::query("UPDATE payment_intents SET customer_id = NULL WHERE id = $1")
+        .bind(&intent)
+        .execute(&h.pool)
+        .await
+        .context("staging a customer-less intent")?;
+
+    let mut holder = h.pool.begin().await.context("the lock holder")?;
+    sqlx::query("SELECT id FROM payment_intents WHERE id = $1 FOR UPDATE")
+        .bind(&intent)
+        .fetch_one(&mut *holder)
+        .await
+        .context("holding the intent's row lock")?;
+
+    let erasure = raw_client()
+        .delete(h.url(&format!("/v1/customers/{customer}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", "erase-past-a-held-intent")
+        .send();
+    let response = tokio::time::timeout(std::time::Duration::from_secs(10), erasure)
+        .await
+        .map_err(|_| {
+            anyhow::anyhow!(
+                "the erasure waited on a row lock held on a customer-less intent it had nothing \
+                 to erase on — the lock a session create takes before it waits on the \
+                 customer, which is a deadlock"
+            )
+        })?
+        .context("erasing the customer")?;
+    assert_eq!(response.status().as_u16(), 200);
+
+    holder.rollback().await.context("releasing the lock")?;
+
+    let anonymized: bool =
+        sqlx::query_scalar("SELECT anonymized_at IS NOT NULL FROM customers WHERE id = $1")
+            .bind(&customer)
+            .fetch_one(&h.pool)
+            .await
+            .context("the erased customer")?;
+    assert!(anonymized, "the erasure committed");
+
+    h.shutdown().await;
+    Ok(())
 }
 
 // -------------------------------------------- the erasure/idempotency race

@@ -159,6 +159,25 @@ two deliberate creates are two customers.
 
 ## Status
 
+**Updated 2026-09-23 ([ADR-0027](../adr/0027-erasure-reaches-through-checkout-sessions.md)):
+an erasure now reaches a payment whose only link to the payer is a checkout
+session.** Before vaam-apps/vpay#253, a session created with `customer=X` on
+a customer-less intent stored `X` on the session only. Erasing `X` therefore
+left that payment's `charges.payer_ref`, the rail's `failure_raw` on the
+charge and its refund, and the intent's decline text. vpay#253 stops new rows
+taking that shape and backfills nothing. The maintainer decided on 2026-09-23
+that erasure must reach those payments through `checkout_sessions.customer_id`
+as well. It does so, through `DELETE` and through the sweep, in the same
+transaction. **It never reaches an intent that names a different customer.**
+One consequence is stated rather than smoothed over: an old intent whose
+sessions named two payers is redacted by either payer's erasure. See
+[customers/privacy-and-erasure.md](customers/privacy-and-erasure.md) §
+"Added 2026-09-23, later the same day" and
+[the verification page](../status/verification/2026-09-23-erasure-through-checkout-sessions.md).
+`customers.rs` is **twenty-seven** cases now, three more than the
+twenty-four counted below, and the whole-database scan seeds the new shape.
+Nothing here changes the list filters in the paragraph that follows.
+
 **Updated 2026-09-23 (RFC-0004 § 5): a customer's payments, sessions and
 refunds can be listed.** `customer=cus_…` filters
 `GET /v1/payment_intents`, `GET /v1/checkout/sessions` and
