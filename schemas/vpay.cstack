@@ -2071,6 +2071,12 @@ model Invoice {
   // report. A GROSS counter beside the three amounts above and not inside
   // `amounts_add_up`; that migration's header says why.
   amount_refunded Int
+  // Migration 0049 (RFC-0004 section 6), Stripe's key. No `@default(...)`
+  // for `amount_refunded`'s reason above: the ADD's backfill DEFAULT is
+  // dropped on the next line, so the two sides agree and the column costs
+  // the drift report nothing. `paid_out_of_band_means_paid` and
+  // `paid_out_of_band_is_never_refunded` are multi-column and invisible here.
+  paid_out_of_band Boolean
   due_date DateTime?
   description String? @length(min: 1, max: 1000)
   payment_intent_id String? @length(min: 1, max: 64)
@@ -2140,6 +2146,80 @@ model InvoiceItem {
   // declared above. The table was shaped so it could be — no `jsonb`, no
   // `bytea`, no native enum, no `int4` — which is migration 0035's discipline
   // applied to a table that also had to be readable through this layer.
+}
+
+// --- manual (out-of-band) payments (RFC-0004 section 6) --------------------
+
+// `manual_payments` (migration 0049) — a merchant's statement that an invoice
+// was settled outside vpay. BORN WITH THIS MODEL, in `invoice_items`' shape:
+// no `jsonb`, no `bytea`, no native enum, no `int4`, no DEFAULT a writer
+// names, so every column is declared and compared.
+//
+// ONE METHOD RUNS THROUGH IT: `Invoices::manual_payment_for_invoice` ->
+// `ManualPayment.read`, the render path's third read. The one write is
+// hand-written `sqlx`, for a reason that is new rather than one of
+// `model Invoice`'s three: `INSERT … SELECT invoices.amount_paid,
+// invoices.currency_code, … FROM invoices WHERE …` copies four columns off
+// the invoice inside the statement, so no caller ever supplies the amount;
+// migration 0049's composite foreign key is the database's guard behind it.
+// A generated `create` takes values, and a value the caller read first is
+// the read-then-write this crate does not do.
+//
+// `invoice_id` carries `@unique` because the live index is named
+// `manual_payments_invoice_id_key` — `naming.rs::index_name_unique`'s own
+// spelling — so the declaration and the index are one object to the diff
+// engine. `model Charge`'s note is the counter-example: a `@unique` over an
+// index named anything else is a drop-and-add pair.
+//
+// No `@relation` to `Invoice`: 0.12.0 introspects no foreign key, so a
+// declared relation reports as a missing constraint (the fifth gap in
+// `docs/reference/vpay-db/cratestack.md`), and nothing reads through one.
+enum ManualPaymentMethod {
+  cash
+  cheque
+  bank_transfer
+  other
+}
+
+model ManualPayment {
+  id String @id @length(min: 1, max: 64)
+  merchant_id String @length(min: 1, max: 128)
+  livemode Boolean
+  invoice_id String @unique @length(min: 1, max: 64)
+  // The live CHECK is `manual_payments_method_enum_check`, born under the
+  // generated name exactly as `invoices_status_enum_check` was.
+  method ManualPaymentMethod
+  // Personal data (`schemas/privacy-inventory.yaml`, `payment_reference`):
+  // the customer erasure writes the `[redacted]` marker over it. No
+  // `@db_enforce`, for `model Invoice.number`'s measured reason — the live
+  // CHECK is hand-named `reference_length`.
+  reference String? @length(min: 1, max: 500)
+  received_at DateTime
+  amount Int
+  currency_code String @length(min: 3, max: 3)
+  created_at DateTime @default(now())
+  // Always `true` (`records_an_out_of_band_payment`): the sixth column of the
+  // composite foreign key `manual_payments_agree_with_their_invoice`, which
+  // is how the database says a record exists only for an invoice flagged
+  // `paid_out_of_band` and agrees with it on amount, tenant, mode and
+  // currency. Neither the key nor the invoices-side
+  // `invoices_payment_record_key` is expressible here — 0.12.0 introspects no
+  // foreign key, and a six-column `@@unique`'s generated name is past
+  // Postgres's 63-byte limit. `ManualPaymentRow` does not carry it: a column
+  // that can hold one value says nothing a reader needs.
+  paid_out_of_band Boolean
+
+  // `read`, and NOTHING else — the one action this crate calls through this
+  // model. Its loss is LOUD, as `model InvoiceItem`'s is: `find_many`
+  // authorises before the statement runs, so every render of an invoice paid
+  // out of band would be a `500`. `every_action_this_module_calls_has_an_allow_arm`
+  // in `vpay-db/src/invoices.rs` checks it with no container.
+  @@allow("read", auth().isSystem())
+
+  // GAP — `received_before_recorded` (`received_at <= created_at + 30s`) is
+  // multi-column, so neither expressible here nor visible to `migrate
+  // baseline`. `the_out_of_band_invariants_are_enforced_by_the_database_itself`
+  // writes the row it refuses.
 }
 
 // --- rate limiting (issue #79 item 2) -------------------------------------

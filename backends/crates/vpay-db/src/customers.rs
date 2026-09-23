@@ -1186,6 +1186,11 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 ///    rather than the payer: step 2 changes the bytes a pending delivery
 ///    would re-render, and the digest guard would dead-letter it. See
 ///    [`redact_stored_copies`].
+/// 7. since migration `0049` (2026-09-23), the out-of-band payment
+///    reference on this customer's invoices and every copy of it — the
+///    `manual_payments` row, the stored `invoice.*` bodies, their live
+///    deliveries' digests and excerpts, and the stored invoice responses.
+///    See [`redact_out_of_band_references`].
 ///
 /// A sweep over these afterwards would be a window in which "vpay erased this
 /// payer" is true of one table and false of five, on a promise a payer was
@@ -1368,8 +1373,9 @@ async fn hard_delete(
 /// Rewrites every copy of this payer's identifiers vpay keeps outside
 /// `customers`.
 ///
-/// Seven statements, and the set is closed by measurement rather than by
-/// intuition: `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+/// Seven statements here and five more in [`redact_out_of_band_references`]
+/// (migration `0049`'s payment reference and its copies, since 2026-09-23),
+/// and the set is closed by measurement rather than by intuition: `an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
 /// scans every `text`, `varchar` and `jsonb` column `information_schema`
 /// knows about, so a store added later fails that test rather than waiting
 /// to be noticed here.
@@ -1584,6 +1590,147 @@ async fn redact_stored_copies(
         .bind(customer_id)
         .bind(REDACTED)
         .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    redact_out_of_band_references(tx, customer_id, merchant_id).await
+}
+
+/// The out-of-band payment reference (migration `0049`, RFC-0004 § 6), and
+/// every copy of it — the three places a merchant's `out_of_band[reference]`
+/// lands, plus the two delivery columns the rewrite has to keep honest.
+///
+/// # Why a merchant's free text is redacted here and `invoices.description` is not
+///
+/// A reference exists to identify **how the payer paid**: a cheque carries
+/// the drawer's name and account number, and a bank transfer's reference
+/// routinely carries the payer's name. That is data about the payer rather
+/// than the merchant's note about their own bill, so the inventory classifies
+/// it `payment_reference`, `subject: payer`, `control: redact` — where
+/// `invoices.description` and `refunds.reason` are `merchant_note`,
+/// `control: none`, and are left alone for the reason
+/// [`redact_stored_copies`] gives for `refunds.reason`.
+///
+/// The marker replaces a value and a `NULL` stays `NULL`, the shape the
+/// `failure_raw` redactions use; `reference_length` admits the marker.
+///
+/// # The five statements
+///
+/// 1. `manual_payments.reference` for this customer's invoices;
+/// 2. `events.data`'s `out_of_band_payment.reference` in every stored
+///    `invoice.*` body of those invoices — `invoice.paid` carries it, and a
+///    stored event is kept for ever;
+/// 3. `webhook_deliveries.payload_sha256`, cleared on the live deliveries of
+///    those events, for statement 4 of [`redact_stored_copies`]' reason:
+///    statement 2 just changed the bytes a pending attempt would re-render;
+/// 4. `webhook_deliveries.response_excerpt` of those deliveries, the terminal
+///    ones included — [`redact_stored_copies`]' sixth statement's reason, on
+///    the `invoice.*` events that now carry payer detail;
+/// 5. the stored `POST /v1/invoices/{id}/pay` and `POST /v1/invoices/{id}`
+///    responses, through [`redact_stored_invoice_responses_in_tx`], which
+///    `crate::idempotency`'s `store` also runs on the other side of the
+///    issue-#111 race.
+///
+/// Statements 2–4 match only bodies whose `out_of_band_payment.reference` is
+/// a JSON **string**, so an invoice paid without a reference — or through a
+/// rail — is not touched, and a delivery's digest is cleared only where the
+/// body it signed actually changed.
+///
+/// All plain `&'static str`: nothing is interpolated, so none of them is an
+/// `AssertSqlSafe` site.
+async fn redact_out_of_band_references(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    customer_id: &str,
+    merchant_id: &str,
+) -> Result<(), DbError> {
+    let manual_payments = "UPDATE manual_payments SET reference = $2 \
+         WHERE reference IS NOT NULL \
+           AND invoice_id IN (SELECT id FROM invoices WHERE customer_id = $1)";
+    sqlx::query(manual_payments)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    let events = "UPDATE events SET data = jsonb_set(data, \
+             '{out_of_band_payment,reference}', to_jsonb($2::TEXT)) \
+         WHERE type LIKE 'invoice.%' \
+           AND object_id IN (SELECT id FROM invoices WHERE customer_id = $1) \
+           AND jsonb_typeof(data #> '{out_of_band_payment,reference}') = 'string'";
+    sqlx::query(events)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    let digests = "UPDATE webhook_deliveries SET payload_sha256 = NULL \
+         WHERE state IN ('pending', 'failed') \
+           AND event_id IN \
+               (SELECT id FROM events \
+                WHERE type LIKE 'invoice.%' \
+                  AND object_id IN (SELECT id FROM invoices WHERE customer_id = $1) \
+                  AND jsonb_typeof(data #> '{out_of_band_payment,reference}') = 'string')";
+    sqlx::query(digests)
+        .bind(customer_id)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    let excerpts = "UPDATE webhook_deliveries SET \
+             response_excerpt = CASE WHEN response_excerpt IS NULL THEN NULL ELSE $2 END \
+         WHERE event_id IN \
+               (SELECT id FROM events \
+                WHERE type LIKE 'invoice.%' \
+                  AND object_id IN (SELECT id FROM invoices WHERE customer_id = $1) \
+                  AND jsonb_typeof(data #> '{out_of_band_payment,reference}') = 'string')";
+    sqlx::query(excerpts)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .execute(&mut **tx)
+        .await
+        .map_err(classify_write)?;
+
+    redact_stored_invoice_responses_in_tx(tx, customer_id, merchant_id, None).await
+}
+
+/// Rewrites stored invoice responses whose `out_of_band_payment.reference`
+/// belongs to one of `customer_id`'s invoices — every one of this merchant's,
+/// or exactly one key's.
+///
+/// [`redact_stored_responses_in_tx`]'s shape and reason, for the other body
+/// that can carry payer detail since migration `0049`: an invoice paid out of
+/// band renders its reference, and `POST /v1/invoices/{id}/pay` and a
+/// bodiless `POST /v1/invoices/{id}` on it store that body for 24 hours to
+/// replay. Two callers — the erasure (`only_key = None`) and
+/// `crate::idempotency`'s `store` for a
+/// [`crate::ResponseSubject::OutOfBandInvoice`] body that lost the race to an
+/// erasure (`Some(key)`) — and one statement, so the two sides of the race
+/// cannot disagree about what a redacted body is.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the statement fails.
+pub(crate) async fn redact_stored_invoice_responses_in_tx(
+    tx: &mut sqlx::PgConnection,
+    customer_id: &str,
+    merchant_id: &str,
+    only_key: Option<&str>,
+) -> Result<(), DbError> {
+    let responses = "UPDATE idempotency_keys SET response_body = jsonb_set(response_body, \
+             '{out_of_band_payment,reference}', to_jsonb($2::TEXT)) \
+         WHERE merchant_id = $3 \
+           AND ($4::TEXT IS NULL OR idempotency_key = $4) \
+           AND response_body->>'object' = 'invoice' \
+           AND response_body->>'id' IN (SELECT id FROM invoices WHERE customer_id = $1) \
+           AND jsonb_typeof(response_body #> '{out_of_band_payment,reference}') = 'string'";
+    sqlx::query(responses)
+        .bind(customer_id)
+        .bind(REDACTED)
+        .bind(merchant_id)
+        .bind(only_key)
+        .execute(&mut *tx)
         .await
         .map_err(classify_write)?;
 

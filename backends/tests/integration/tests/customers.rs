@@ -1941,6 +1941,50 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     // erasure. What it is NOT findable in is `customers.address_latitude_microdeg`,
     // which is a BIGINT and outside this scan entirely — hence the direct
     // assertion further down.
+    // An invoice to this payer, paid OUT OF BAND with a reference that names
+    // them (migration `0049`, RFC-0004 § 6) — a cheque carries the drawer's
+    // name, and that is the shape a merchant types in. It lands in
+    // `manual_payments.reference`, in the `invoice.paid` body in
+    // `events.data`, and in the stored `pay` response. Through the shipping
+    // SDK, as every other write in this fixture is.
+    {
+        use vpay_sdk::invoices::{
+            CreateInvoiceItemParams, CreateInvoiceParams, OutOfBandMethod, OutOfBandParams,
+            PayInvoiceParams,
+        };
+        let invoice = sdk
+            .invoices()
+            .create(
+                CreateInvoiceParams::new(customer.id.clone(), "xaf"),
+                RequestOptions::new(),
+            )
+            .await
+            .expect("an invoice for this payer");
+        sdk.invoice_items()
+            .create(
+                CreateInvoiceItemParams::new(&invoice.id, "Hosting", 5_000),
+                RequestOptions::new(),
+            )
+            .await
+            .expect("a line");
+        sdk.invoices()
+            .finalize(&invoice.id, RequestOptions::new())
+            .await
+            .expect("it finalizes");
+        sdk.invoices()
+            .pay(
+                &invoice.id,
+                PayInvoiceParams::out_of_band(OutOfBandParams {
+                    method: Some(OutOfBandMethod::Cheque),
+                    reference: Some(format!("Cheque 0042 from {NAME}")),
+                    received_at: None,
+                }),
+                RequestOptions::new(),
+            )
+            .await
+            .expect("recorded as paid out of band");
+    }
+
     let latitude_digits = LATITUDE.to_string();
     let literals = [NAME, EMAIL, PHONE, STREET, latitude_digits.as_str()];
 
@@ -1969,6 +2013,8 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
         "refunds.failure_raw",
         "payment_intents.last_payment_error_message",
         "webhook_deliveries.response_excerpt",
+        // Migration `0049`: the out-of-band payment's reference (2026-09-23).
+        "manual_payments.reference",
         "idempotency_keys.response_body",
     ] {
         // `customers.address_latitude_microdeg` is deliberately NOT in this

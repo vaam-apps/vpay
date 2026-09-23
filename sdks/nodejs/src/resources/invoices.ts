@@ -257,16 +257,52 @@ export class InvoicesResource {
    *
    * A `500 checkout_not_configured` when this deployment serves no checkout
    * page.
+   *
+   * **With `outOfBand`** it records instead that the invoice was settled
+   * outside vpay (RFC-0004 § 6): `open` → `paid` on the merchant's word,
+   * `invoice.paid` emitted, no intent, no checkout, no URL, and nothing
+   * verified or posted to any ledger. While an intent that is not canceled is
+   * attached it is the same `409` as `void`; cancel the intent first. A URL
+   * beside `outOfBand` is refused with a `TypeError` before any request.
    */
   async pay(
     id: string,
     params: PayInvoiceParams,
     options?: RequestOptions,
   ): Promise<Invoice> {
+    const outOfBand = params.outOfBand;
+    if (outOfBand !== undefined) {
+      // The type forbids this; a plain-JS caller can still send it, and the
+      // server would answer a `400`. Refused here for parity with
+      // `sdks/rust`, which refuses the same combination as `InvalidParams`.
+      for (const param of ["success_url", "cancel_url"] as const) {
+        const value: unknown = (params as unknown as Record<string, unknown>)[
+          param
+        ];
+        if (value !== undefined && value !== "") {
+          throw new TypeError(
+            `${param} has no meaning when recording a payment made outside vpay (outOfBand is set)`,
+          );
+        }
+      }
+    }
+    // Field order is the wire order `sdks/rust` pins too: the flag, then
+    // `out_of_band[method]`, `[reference]`, `[received_at]`.
+    const body =
+      outOfBand !== undefined
+        ? {
+            paid_out_of_band: true,
+            out_of_band: {
+              method: outOfBand.method,
+              reference: outOfBand.reference,
+              received_at: outOfBand.receivedAt,
+            },
+          }
+        : { success_url: params.success_url, cancel_url: params.cancel_url };
     return this.#http.request<Invoice>(
       "POST",
       `/invoices/${encodeURIComponent(id)}/pay`,
-      { success_url: params.success_url, cancel_url: params.cancel_url },
+      body,
       options,
     );
   }

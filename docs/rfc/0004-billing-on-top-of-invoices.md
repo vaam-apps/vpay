@@ -16,9 +16,11 @@
 
 Nothing in this document is built. Every route, table, event type and
 capability below is a proposal; the Status sections of the flow documents
-remain the only statement of what exists. _(Corrected 2026-09-23: one piece
-is built — § 5's `customer` filter, on the three list routes that exist. The
-note in § 5 says what and where the evidence is. Everything else here is
+remain the only statement of what exists. _(Corrected 2026-09-23: two pieces
+are built — § 5's `customer` filter, on the three list routes that exist, and
+§ 6, invoices paid out of band. Each section's own dated note says what and
+where the evidence is. The status line records both as accepted through
+ADR-0024; everything else here is
 still a proposal.)_
 
 ## Problem
@@ -250,6 +252,23 @@ frozen one.
   written. It writes nothing and takes no number.
 
 ### 6. Manual (out-of-band) payments
+
+> **Built 2026-09-23** (step A; migration `0049_manual-payments.sql`),
+> as proposed below. [docs/flows/invoices.md](../flows/invoices.md)
+> § "Paid out of band" is the record of what exists — including the
+> decisions this section left open, all **accepted** in ADR-0024
+> (`docs/adr/0024-customer-filters-and-manual-payments.md`, D9–D19,
+> confirmed by the maintainer on 2026-09-23): the method optional and
+> defaulting to `other` (D11), a 500-character `reference` (D13), a
+> 30-second clock allowance on `received_at` and nothing before
+> `finalized_at` (D14, D11), a canceled intent staying attached (D15), a new
+> `paid_names_how` CHECK (D16), and a reference refused on an erased
+> customer's invoice (D17). Its Status carries the evidence: the
+> integration, repository and smoke suites against a real Postgres. The one
+> wire addition beyond this section is `out_of_band_payment`, the record's
+> four keys on the invoice beside Stripe's `paid_out_of_band` (D9). _(This
+> note said "five decisions this section left open" without their status
+> until the ADR was accepted the same day.)_
 
 The merchant records that an invoice was settled outside vpay: cash, cheque,
 bank transfer received directly, or anything else.

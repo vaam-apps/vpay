@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 48,
-        "all forty-eight migration files under backends/migrations should be recorded as applied \
+        applied, 49,
+        "all forty-nine migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -367,7 +367,15 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          nothing settles a pending refund, which is why \
          invoices.amount_refunded is still 0 in every deployment -- the \
          route being mounted changed the reason that column has no \
-         reachable writer, not the fact.)"
+         reachable writer, not the fact, \
+         and RFC-0004 section 6's 0049, manual (out-of-band) payments: \
+         invoices.paid_out_of_band, backfilled false with the DEFAULT dropped \
+         in the next statement (0042's device), and the manual_payments table, \
+         one row per invoice, with three multi-column CHECKs on invoices -- \
+         paid_out_of_band_means_paid, paid_names_how and \
+         paid_out_of_band_is_never_refunded -- and received_before_recorded \
+         on manual_payments. It posts nothing to any ledger: the row is a \
+         merchant's statement no rail witnessed.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -4865,7 +4873,60 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// releases' agreement on the absolute number for this schema is inherited
 /// rather than re-argued. **If CI (which has 0.12.0) disagrees, CI is the
 /// evidence and this constant is what must move.**
-const EXPECTED_DRIFT_CHANGES: u32 = 194;
+///
+/// **194 -> 199 on 2026-09-23 (migration 0049, RFC-0004 § 6) — derived
+/// first, then measured on-pin at cratestack 0.12.0.** The branch that wrote
+/// 0049 had to write this number before it could run the test (Docker on its
+/// host was wedged after the disk filled), so it derived the +5 line by line;
+/// when Docker came back the same day the report read `drift detected in 26
+/// table(s)/view(s) (199 change(s) total)`, and the `manual_payments:` block
+/// carried exactly the five lines below and nothing else, while the
+/// `invoices:` block gained nothing:
+///
+///   * `manual_payments` **+5**, one new relation. Four hand-named
+///     single-column CHECKs (`id_length`, `merchant_id_length`,
+///     `reference_length`, `amount_positive`), the class that has cost every
+///     table a line apiece since `currencies`; and the one permanent
+///     `[lossy] column method type differs (live: Scalar("String"), schema:
+///     Enum("ManualPaymentMethod"))` line that `invoices.status` also pays.
+///   * **zero** from `manual_payments_method_enum_check`, born under
+///     `naming.rs::check_name`'s spelling exactly as
+///     `invoices_status_enum_check` was; zero from
+///     `manual_payments_invoice_id_key`, born under
+///     `naming.rs::index_name_unique`'s spelling so `@unique` names it; zero
+///     from `created_at`'s `now()` default, which `invoices` already shows
+///     costs nothing; zero from the two undeclared foreign keys, which 0.12.0
+///     does not introspect.
+///   * `invoices` **+0**: `paid_out_of_band` is `BOOLEAN` with its backfill
+///     DEFAULT dropped and is declared as a plain `Boolean`
+///     (`staff_members.is_admin`'s shape, measured at zero on 2026-09-13), and
+///     all three new CHECKs on it — and `received_before_recorded` on
+///     `manual_payments` — are multi-column and invisible.
+///
+/// Every line of the derivation held, which is what makes it worth keeping
+/// rather than replacing with the measurement: it is the shape a table born
+/// with a model costs, predicted and then checked.
+///
+/// **199 -> 201 later on 2026-09-23**, when review asked the database to
+/// enforce that a payment record agrees with its invoice and `0049` (not yet
+/// shipped, so edited in place) grew a composite foreign key. Predicted +2
+/// while Docker was down again, then measured on 0.12.0 — `drift detected in
+/// 26 table(s)/view(s) (201 change(s) total)` — with exactly the two
+/// predicted lines and no other:
+///
+///   * `manual_payments`: `[safe] CHECK records_an_out_of_band_payment exists
+///     in the live database but is not declared in the schema` — the
+///     single-column `CHECK (paid_out_of_band)` on the new flag column. The
+///     column itself costs nothing: `model ManualPayment` declares it as a
+///     plain `Boolean` and it has no DEFAULT.
+///   * `invoices`: `[safe] index invoices_payment_record_key exists in the
+///     live database but is not declared in the schema` — the six-column
+///     UNIQUE the key references, undeclarable because a generated
+///     `@@unique` name over six columns is past Postgres's 63-byte limit.
+///
+/// The composite foreign key `manual_payments_agree_with_their_invoice`
+/// costs nothing, because 0.12.0 introspects no foreign key.
+const EXPECTED_DRIFT_CHANGES: u32 = 201;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -4948,7 +5009,11 @@ const EXPECTED_DRIFT_CHANGES: u32 = 194;
 /// the run it comes from was taken at cratestack **0.11.1**, not the pinned
 /// 0.12.0, controlled by re-measuring the withdrawn change with the same
 /// binary. CI runs 0.12.0 and is the evidence if it disagrees.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
+/// **25 -> 26 on 2026-09-23 (migration 0049), measured** (derived first, for
+/// the reason `EXPECTED_DRIFT_CHANGES`' newest note gives): `manual_payments`
+/// joins the list declared-and-differing, in the shape `rate_limit_windows`
+/// joined it in, and `invoices` stays one entry.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 26;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -5036,6 +5101,10 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 25;
 /// `EXPECTED_DRIFT_CHANGES` say the new column itself drifted by zero rather
 /// than say nothing at all about it. Same 0.11.1-not-0.12.0 caveat as the two
 /// constants above; see `EXPECTED_DRIFT_CHANGES`' note.
+/// **Still 19 after migration 0049 (2026-09-23), measured on 0.12.0:**
+/// `manual_payments` has no `jsonb`, `bytea` or `int2`/`int4`, and
+/// `invoices.paid_out_of_band` is `BOOLEAN`, so all eleven new columns are
+/// compared rather than excluded.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
@@ -5498,6 +5567,16 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // `two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused`
             // reaches through the settlement rather than one this report
             // could ever notice going missing.
+            ("invoices", "paid_names_how"),
+            // Migration `0049` (RFC-0004 § 6, 2026-09-23). The flag means
+            // the document is settled, and a document paid out of band had
+            // no intent for a rail refund to be recorded against. With
+            // `paid_names_how` above and `received_before_recorded` below,
+            // the four this migration adds; all invisible to the report, so
+            // `the_out_of_band_invariants_are_enforced_by_the_database_itself`
+            // in `invoices.rs` writes each forbidden row.
+            ("invoices", "paid_out_of_band_is_never_refunded"),
+            ("invoices", "paid_out_of_band_means_paid"),
             ("invoices", "refunded_at_most_paid"),
             ("jobs", "lock_is_paired"),
             // RFC-0003 § 4's pair rule, migration `0045`:
@@ -5514,6 +5593,9 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
                 "ledger_entries",
                 "ledger_entries_merchant_id_iff_merchant_payable",
             ),
+            // Migration `0049`: `received_at <= created_at + 30s` — a
+            // merchant cannot have received money after vpay recorded it.
+            ("manual_payments", "received_before_recorded"),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
             ("oauth_signing_keys", "expiry_after_creation"),
             ("payment_intents", "lpe_paired"),

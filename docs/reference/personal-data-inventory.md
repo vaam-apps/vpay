@@ -144,6 +144,11 @@ exactly ten statements (`vpay_db::customers`,
 `idempotency_keys.response_body`, `webhook_deliveries.payload_sha256`, and —
 added 2026-09-18 — `payment_intents.last_payment_error_code`/
 `last_payment_error_message` (NULLed together, forced by `lpe_paired`) and
+— added 2026-09-23 with migration `0049`, five more statements in
+`redact_out_of_band_references` / `redact_stored_invoice_responses_in_tx` —
+`manual_payments.reference` and its copies in `invoice.*` event bodies,
+their deliveries' digests and excerpts, and stored invoice responses (see
+`payment_reference` below), and
 `webhook_deliveries.response_excerpt` (the `[redacted]` marker when non-null).
 
 Of the five columns that used to be reached by **none** of those statements,
@@ -235,6 +240,35 @@ whose `subject` is a person are:
 | `merchant_metadata`       | `customers.metadata`, `payment_intents.metadata`/`description`, `refunds.metadata`, `invoices.metadata`                                                      | `none`   |
 | `stored_api_body`         | `events.data`, `idempotency_keys.response_body`                                                                                                              | `redact` |
 | `merchant_note`           | `refunds.reason`, `invoices.description`, `invoice_items.description`                                                                                        | `none`   |
+| `payment_reference`       | `manual_payments.reference` (migration `0049`, 2026-09-23)                                                                                                   | `redact` |
+
+**`payment_reference` is a merchant's free text and is still `subject: payer`,
+and that is the difference from `merchant_note`** (added 2026-09-23, RFC-0004
+§ 6). `out_of_band[reference]` exists to say _how the payer paid_ — a cheque
+number beside the drawer's name, a bank transfer's reference, which routinely
+carries the payer's name — so it is data about the payer that a merchant typed,
+where `invoices.description` is the merchant's note about their own bill. It is
+`control: redact` and the control **runs**: the customer erasure
+(`vpay_db::customers::redact_out_of_band_references`) writes the marker over
+the column and over every copy — the `invoice.paid` body in `events.data`, the
+live deliveries' `payload_sha256` (cleared, for the same re-render reason as
+the customer bodies) and `response_excerpt`, and the stored
+`POST /v1/invoices/{id}/pay` response in `idempotency_keys.response_body`, the
+last also on the far side of the issue-#111 race through
+`ResponseSubject::OutOfBandInvoice`. And after an erasure the API **refuses** a
+new reference on that customer's invoices (`400` naming
+`out_of_band[reference]`) rather than re-attach payer detail to a payer vpay
+has erased; a payment without one still records.
+`erasing_the_customer_redacts_the_out_of_band_reference_everywhere` (every
+copy, delivery digests and excerpts included),
+`an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference`,
+`a_touch_of_an_invoice_paid_out_of_band_replays_redacted_after_an_erasure`
+and `a_stored_invoice_response_written_after_an_erasure_is_redacted_as_it_lands`
+(`backends/tests/integration/tests/invoices.rs`), and the whole-database scan
+`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+(`customers.rs`), which now seeds an out-of-band reference naming the payer,
+are the evidence, all green against a real Postgres on 2026-09-23; see
+[../status/verification/2026-09-23-manual-payments.md](../status/verification/2026-09-23-manual-payments.md).
 
 Everything else is a `sys_*` element (`subject: none`) — identifiers, timestamps,
 statuses, amounts, tenancy references, configuration, worker state — classified
@@ -246,8 +280,9 @@ Two honesty notes on that sentence, both added on review, 2026-09-17:
 - **`oauth_signing_key` is in the table above and its `subject` is `system`**,
   not a person. It is listed there because its `control` is `forbid` and a
   reader looking for the protected columns should find it, not because a
-  signing key identifies anyone. The 16 elements the gate counts as
-  personal-data are the ones whose `subject` is `payer`, `staff` or `merchant`.
+  signing key identifies anyone. The 17 elements the gate counts as
+  personal-data are the ones whose `subject` is `payer`, `staff` or `merchant`
+  (16 until `payment_reference` joined them on 2026-09-23).
 - **`jobs.last_error` is `sys_job`, and that classification is the one this
   page is least sure of.** It stores
   `vpay_core::error::display_with_chain` of the worker's own error, bounded to
@@ -374,9 +409,13 @@ are `unresolved`, not guessed.
 
 **2026-09-16, amended 2026-09-17 on review.** The inventory exists and is
 machine-checked in both directions against `backends/migrations` by `cargo xtask
-verify-privacy-inventory`, wired into `just verify`. **295** database columns
-across 25 elements (16 personal-data), and 10 non-database surfaces, are
-registered.
+verify-privacy-inventory`, wired into `just verify`. **307** database columns
+across 26 elements (17 personal-data), and 10 non-database surfaces, are
+registered — the gate's own output on 2026-09-23, after migration `0049`
+added twelve columns (`invoices.paid_out_of_band` and the eleven of
+`manual_payments`, the last its always-`true` `paid_out_of_band`, classified
+`sys_status`) and the `payment_reference` element; it said 295 across 25 (16)
+until then, and 306 for the few hours `0049` had eleven.
 
 What is **not** done, and each of these keeps #144 open:
 

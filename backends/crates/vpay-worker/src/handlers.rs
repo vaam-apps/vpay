@@ -1930,12 +1930,20 @@ async fn invoice_snapshot(
     row.amount_remaining = 0;
     row.paid_at = Some(OffsetDateTime::now_utc());
 
-    let object = vpay_api::model::InvoiceObject::render(&row, &[], None).map_err(|error| {
-        poisoned(
-            job,
-            format!("invoice {} cannot be rendered: {error}", row.id),
-        )
-    })?;
+    // `None` for the out-of-band record, and that is exact rather than
+    // assumed: the row was read `open`, and `paid_out_of_band_means_paid`
+    // (migration 0049) makes an open invoice's flag `false`, so the
+    // settlement's `invoice.paid` body renders `"paid_out_of_band": false`
+    // and `"out_of_band_payment": null`. A merchant paid out of band while
+    // this read was in flight is refused by the settlement's own
+    // `status = 'open'` compare-and-swap, which then writes no event at all.
+    let object =
+        vpay_api::model::InvoiceObject::render(&row, &[], None, None).map_err(|error| {
+            poisoned(
+                job,
+                format!("invoice {} cannot be rendered: {error}", row.id),
+            )
+        })?;
 
     Ok(Some((ids::event_id(), encode(job, &object)?)))
 }

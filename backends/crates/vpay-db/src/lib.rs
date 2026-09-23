@@ -146,7 +146,7 @@ pub use idempotency::{
 };
 pub use invoices::{
     InvoiceItemPatch, InvoiceItemRow, InvoiceListPage, InvoicePatch, InvoiceRow, Invoices,
-    NewInvoice, NewInvoiceItem,
+    ManualPaymentRow, NewInvoice, NewInvoiceItem, NewManualPayment, OutOfBandPayment,
 };
 pub use jobs::{JobRow, Jobs};
 pub use ledger::Ledger;

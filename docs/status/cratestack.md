@@ -434,3 +434,38 @@ predicted. Measured to fail (`rows_affected: 1` on the first INSERT) with
 Gate evidence:
 [verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md).
 `just ci` was **not** run locally for it either; CI is the gate.
+
+## 2026-09-23 — `model ManualPayment`, and drift goes 194 → 199 → 201
+
+Migration `0049` (RFC-0004 § 6) is the fourth table born with a
+`schemas/vpay.cstack` model on the invoices side, shaped as `invoice_items`
+was so that every column is declared and compared: no `jsonb`, no `bytea`, no
+native enum, no `int4`, no DEFAULT a writer names. One method runs through it
+— `Invoices::manual_payment_for_invoice`, a `find_many` on `invoice_id` behind
+`@@allow("read", auth().isSystem())` — and the one write stays hand-written
+because it copies the amount off the invoice inside the statement.
+`manual_payments_method_enum_check` and `manual_payments_invoice_id_key` are
+born under CrateStack's own generated names, so `method ManualPaymentMethod`
+and `invoice_id … @unique` are the same objects to the diff engine.
+`model Invoice` gains `paid_out_of_band Boolean` with no `@default`, matching
+a column whose backfill DEFAULT is dropped in the next statement.
+
+**The +5 was derived before it could be measured, then measured on-pin at
+cratestack 0.12.0 the same day**: `EXPECTED_DRIFT_CHANGES` 194 → 199,
+`EXPECTED_DRIFTED_RELATIONS` 25 → 26, `EXPECTED_UNMAPPABLE_COLUMNS` unmoved at 19. Docker on the branch's host had died with a full disk, so the constants
+were written from the shape first; the report then read `drift detected in 26
+table(s)/view(s) (199 change(s) total)` with `manual_payments:` carrying
+exactly the five predicted lines — four hand-named single-column CHECKs and the
+permanent `method` type line — and `invoices:` carrying nothing new.
+**199 → 201 later the same day**, when review asked the database to enforce
+that a payment record agrees with its invoice and the unshipped `0049` grew a
+composite foreign key: one `[safe] CHECK records_an_out_of_band_payment` line
+on `manual_payments` (the single-column CHECK on its new always-`true` flag
+column, which `model ManualPayment` declares, so the column itself costs
+nothing) and one `[safe] index invoices_payment_record_key` line on
+`invoices` (the six-column UNIQUE the key references; a `@@unique` over six
+columns would generate a name past Postgres's 63-byte limit, so it cannot be
+declared). The foreign key itself costs nothing — 0.12.0 introspects none.
+Predicted while Docker was down, then measured: `drift detected in 26
+table(s)/view(s) (201 change(s) total)`, 19 unmappable. `just check-schema` passed (29 model/enum declarations). Evidence:
+[verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md).

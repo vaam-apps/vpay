@@ -38,12 +38,12 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and three times on 2026-09-23, when the super-linter
-page, the stale-claims page and then the customer-filters page did: the
-directory holds 63 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 40 of them. This is a hand-maintained list, not a generated one,
+plugin's page landed, and four times on 2026-09-23, when the super-linter
+page, the stale-claims page, the customer-filters page and the manual-payments
+page did: the directory holds 64 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 41 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38 and then 62/39 on 2026-09-23; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39 and then 63/40 on 2026-09-23; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -61,11 +61,15 @@ rather than trusting this list to be exhaustive.
 - [verification/2026-09-23-customer-filters.md](verification/2026-09-23-customer-filters.md) —
   RFC-0004 § 5's first bullet: `customer=` on the intent, session and refund
   lists, in both SDKs. Which column each list compares and why (a session's
-  own, a refund's intent's), the three container-backed cases and the three
-  mutations that turned them red. It says plainly what did **not** run: the
-  host disk filled mid-branch and Docker did not come back, so the full
-  integration suites, `vpay-db`'s tests, the `EXPLAIN` the brief asked for
-  and `just ci` are all owed.
+  own, a refund's intent's), the container-backed cases and the mutations that
+  turned them red, the `/dash/v1` refusal, and the `EXPLAIN` measurements. Its
+  first section records what could not run while the host disk and then Docker
+  were down; its second records the full suites once they could.
+- [verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md) —
+  RFC-0004 § 6, invoices paid out of band (migration `0049`): the gate output,
+  every suite's passed and ignored counts, the drift constants derived and then
+  measured, two mutations, and the lock-order and fixture checks asked for on
+  review.
 - [verification/2026-09-23-stale-claims.md](verification/2026-09-23-stale-claims.md) —
   fourteen claims found stale while writing the vpay-docs site against
   `v0.4.1`, each re-checked on `master` and corrected in place with its date:

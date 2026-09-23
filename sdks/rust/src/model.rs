@@ -740,13 +740,79 @@ pub struct InvoiceStatusTransitions {
     pub marked_uncollectible_at: Option<i64>,
 }
 
+/// How a merchant says an invoice paid out of band was settled (RFC-0004
+/// § 6) — the closed vocabulary of `out_of_band[method]`.
+///
+/// vpay's own words: Stripe keeps `paid_out_of_band` as a bare flag with no
+/// method. `sdks/nodejs` spells the same four as a string union.
+///
+/// ```
+/// use vpay_sdk::invoices::OutOfBandMethod;
+///
+/// assert_eq!(OutOfBandMethod::BankTransfer.as_wire_str(), "bank_transfer");
+/// let decoded: OutOfBandMethod = serde_json::from_str("\"cheque\"")?;
+/// assert_eq!(decoded, OutOfBandMethod::Cheque);
+/// # Ok::<(), serde_json::Error>(())
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OutOfBandMethod {
+    /// Notes and coins.
+    Cash,
+    /// A cheque.
+    Cheque,
+    /// A transfer the merchant received directly into their own account.
+    BankTransfer,
+    /// Anything else — so a merchant paid in a way vpay has no label for
+    /// still records it rather than picking a false one.
+    Other,
+}
+
+impl OutOfBandMethod {
+    /// The exact string this method is named by on the wire —
+    /// [`InvoiceStatus::as_wire_str`]'s reason: it is also what
+    /// [`crate::invoices::OutOfBandParams`] puts in a form body, which never
+    /// goes through `serde`.
+    #[must_use]
+    pub fn as_wire_str(self) -> &'static str {
+        match self {
+            OutOfBandMethod::Cash => "cash",
+            OutOfBandMethod::Cheque => "cheque",
+            OutOfBandMethod::BankTransfer => "bank_transfer",
+            OutOfBandMethod::Other => "other",
+        }
+    }
+}
+
+/// `invoice.out_of_band_payment` — the merchant's own statement that the
+/// invoice was settled outside vpay, echoed back.
+///
+/// **Nothing in vpay verified it**: no rail saw the money and nothing was
+/// posted to the ledger. Four keys and no `object`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OutOfBandPayment {
+    /// `mp_…`.
+    pub id: String,
+    /// How the merchant says the money arrived.
+    pub method: OutOfBandMethod,
+    /// The merchant's reference, or `None`. The literal `[redacted]` once the
+    /// invoice's customer has been erased — a reference routinely names the
+    /// payer.
+    pub reference: Option<String>,
+    /// Unix **seconds**: when the merchant says the money arrived.
+    pub received_at: i64,
+}
+
 /// An `invoice` (S4b): a merchant's bill to one customer.
 ///
-/// Nineteen keys, the count `vpay_api`'s
-/// `the_invoice_object_is_the_documented_nineteen_keys` pins on the server
-/// side; `an_invoice_decodes_every_documented_key_and_its_lines` is this
+/// Twenty-one keys, the count `vpay_api`'s
+/// `the_invoice_object_is_the_documented_twenty_one_keys` pins on the server
+/// side; `create_invoice_sends_the_documented_body_and_decodes_every_key` and
+/// `an_invoice_paid_out_of_band_decodes_its_flag_and_its_record` are this
 /// crate's half. It was eighteen until migration `0042` added
-/// [`Self::amount_refunded`] (issue #91, D5).
+/// [`Self::amount_refunded`] (issue #91, D5), and nineteen until migration
+/// `0049` added [`Self::paid_out_of_band`] and [`Self::out_of_band_payment`]
+/// (RFC-0004 § 6, 2026-09-23).
 ///
 /// # `lines` is always expanded, and always unpaged
 ///
@@ -811,6 +877,20 @@ pub struct Invoice {
     /// server that predates migration `0042`, where the key is absent.
     #[serde(default)]
     pub amount_refunded: i64,
+    /// Stripe's key: `true` exactly when the merchant recorded that this
+    /// invoice was settled outside vpay, with
+    /// [`crate::invoices::PayInvoiceParams::out_of_band`]. Always `false` on a
+    /// bill a payer paid through a rail.
+    ///
+    /// `#[serde(default)]` so a client of this version keeps decoding a
+    /// server that predates migration `0049`, where the key is absent.
+    #[serde(default)]
+    pub paid_out_of_band: bool,
+    /// The record behind [`Self::paid_out_of_band`], or `None` — present
+    /// exactly when the flag is `true`. `#[serde(default)]` for the flag's
+    /// reason.
+    #[serde(default)]
+    pub out_of_band_payment: Option<OutOfBandPayment>,
     /// Unix **seconds**, or `None`.
     ///
     /// **Advisory**: nothing in vpay reads it. There is no dunning, no

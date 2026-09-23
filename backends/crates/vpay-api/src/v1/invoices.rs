@@ -207,7 +207,7 @@ async fn create_once(
         created_at,
     };
 
-    let row = write_with_event(
+    let (row, _) = write_with_event(
         repositories,
         EVENT_CREATED,
         InvoiceWrite::Create(Box::new(new.clone())),
@@ -293,35 +293,62 @@ pub(crate) async fn update(
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = update_once(&post, repositories.as_ref(), &config, &scope, &id).await;
+    let (outcome, payer) = update_once(&post, repositories.as_ref(), &config, &scope, &id).await;
     post.finish(
         repositories.as_ref(),
         &scope,
         claim_id,
         outcome,
-        ResponseSubject::Verbatim,
+        subject_for(payer.as_deref()),
     )
     .await
 }
 
 /// The update itself. See [`update`].
+///
+/// Hands back the invoice's customer when the invoice was paid out of band,
+/// because the one body this route answers for such an invoice — the
+/// bodiless "touch" below — renders its payment reference, which can name
+/// the payer. See [`subject_for`].
 async fn update_once(
     post: &PostRequest,
     repositories: &dyn Repositories,
     config: &ResourceConfig,
     scope: &MerchantScope,
     id: &str,
-) -> Result<Response, ApiError> {
-    let params: UpdateParams = post.form().await?;
+) -> (Result<Response, ApiError>, Option<String>) {
+    let params: UpdateParams = match post.form().await {
+        Ok(params) => params,
+        Err(error) => return (Err(error), None),
+    };
 
     // Scoped, so a foreign invoice is indistinguishable from a missing one.
     // Read for the *merge* — `metadata` is merged key-wise against the stored
     // map, which is what Stripe's contract says and what needs the stored
     // value. The status is checked by the `UPDATE`, not here.
-    let current = Invoices::get_for_merchant(repositories, scope.merchant_id(), id)
-        .await?
-        .ok_or_else(|| not_found(id))?;
+    let current = match Invoices::get_for_merchant(repositories, scope.merchant_id(), id).await {
+        Ok(Some(current)) => current,
+        Ok(None) => return (Err(not_found(id)), None),
+        Err(error) => return (Err(error.into()), None),
+    };
+    let payer = current
+        .paid_out_of_band
+        .then(|| current.customer_id.clone());
+    (
+        update_after_read(params, repositories, config, scope, id, &current).await,
+        payer,
+    )
+}
 
+/// [`update_once`] past the read.
+async fn update_after_read(
+    params: UpdateParams,
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    scope: &MerchantScope,
+    id: &str,
+    current: &InvoiceRow,
+) -> Result<Response, ApiError> {
     let patch = InvoicePatch {
         description: patch_description(params.description)?,
         due_date: match params.due_date {
@@ -342,7 +369,7 @@ async fn update_once(
         // invoice, deliberately: nothing is being changed, so there is
         // nothing to refuse, and a `409` for a no-op would break the
         // "touch this object" call every SDK makes.
-        return invoice_response(StatusCode::OK, repositories, config, &current).await;
+        return invoice_response(StatusCode::OK, repositories, config, current).await;
     }
 
     let row = Invoices::update_draft(
@@ -758,7 +785,7 @@ async fn transition_once(
     let row = write_with_event(repositories, event_type, write).await?;
 
     match row {
-        Some(row) => invoice_response(StatusCode::OK, repositories, config, &row).await,
+        Some((row, _)) => invoice_response(StatusCode::OK, repositories, config, &row).await,
         None => {
             let refused = match which {
                 Transition::Finalize => RefusedBy::NotADraft,
@@ -821,6 +848,15 @@ async fn transition_once(
 /// canceled, this answers `409`; cancel the intent and try again. See
 /// `vpay_db::invoices`' `NO_LIVE_INTENT` for why the condition is `canceled`
 /// and not "not processing".
+///
+/// # `paid_out_of_band=true`: the second writer of `open -> paid`
+///
+/// With Stripe's `paid_out_of_band=true` and vpay's `out_of_band[method]`
+/// (`cash|cheque|bank_transfer|other`), `[reference]` and `[received_at]`,
+/// the route records instead that the merchant was paid outside vpay
+/// (RFC-0004 § 6): no intent, no session, no URL — see
+/// [`pay_out_of_band_once`]. The fork is taken before URL resolution, so the
+/// path neither needs `merchant_clients[].invoices` nor accepts a URL.
 pub(crate) async fn pay(
     State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
@@ -834,33 +870,83 @@ pub(crate) async fn pay(
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = pay_once(&post, repositories.as_ref(), &config, &scope, &id).await;
+    let (outcome, payer) = pay_once(&post, repositories.as_ref(), &config, &scope, &id).await;
     post.finish(
         repositories.as_ref(),
         &scope,
         claim_id,
         outcome,
-        ResponseSubject::Verbatim,
+        subject_for(payer.as_deref()),
     )
     .await
 }
 
+/// The idempotency subject of an invoice response: `OutOfBandInvoice` when
+/// the body may carry an out-of-band reference, which can name the payer,
+/// and `Verbatim` otherwise.
+///
+/// `payer` is the invoice's `cus_…`, known only once the invoice has been
+/// read — which is why [`pay_once`] and [`update_once`] hand it back beside
+/// their outcome rather than the route deciding it up front.
+fn subject_for(payer: Option<&str>) -> ResponseSubject<'_> {
+    payer.map_or(ResponseSubject::Verbatim, |customer_id| {
+        ResponseSubject::OutOfBandInvoice { customer_id }
+    })
+}
+
 /// `POST /v1/invoices/{id}/pay`'s fields.
+///
+/// `paid_out_of_band` is Stripe's own parameter; `out_of_band[…]` is vpay's
+/// (RFC-0004 § 6) and is bracket-encoded exactly as `metadata[…]` is. Text
+/// for [`CreateParams`]' reason, so every refusal names the parameter.
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct PayParams {
     success_url: Option<String>,
     cancel_url: Option<String>,
+    paid_out_of_band: Option<String>,
+    out_of_band: Option<BTreeMap<String, String>>,
 }
 
+/// The three `out_of_band[…]` keys, and the only three: an unknown one is a
+/// `400` naming it, so `out_of_band[refrence]` is a typo a merchant hears
+/// about rather than a reference silently never stored.
+const OUT_OF_BAND_KEYS: [&str; 3] = ["method", "reference", "received_at"];
+
+/// `out_of_band[reference]`'s ceiling — migration `0049`'s `reference_length`,
+/// at the boundary where it can name the parameter.
+///
+/// 500, the bound on one `metadata` value: a reference is one value a merchant
+/// attaches (a cheque number, a transfer reference), not a note on a document,
+/// which is what `description`'s 1000 is for.
+pub(crate) const OUT_OF_BAND_REFERENCE_MAX_CHARS: usize = 500;
+
+/// How far into the future `out_of_band[received_at]` may be, in seconds.
+///
+/// Thirty: one TOTP step (`crate::staff_auth::totp`), the only tolerance this
+/// codebase grants a caller's clock. A merchant cannot have received money
+/// later than vpay recorded that they had; a merchant whose clock runs a few
+/// seconds fast must not be refused for it. Migration `0049`'s
+/// `received_before_recorded` is the same bound in the database.
+const RECEIVED_AT_SKEW_SECONDS: i64 = 30;
+
+/// The `type` of the event paying an invoice emits — the settlement's
+/// `vpay_db::invoices::EVENT_INVOICE_PAID`, spelled here for the second
+/// writer (RFC-0004 § 6). See [`EVENT_CREATED`] for why it is a constant.
+const EVENT_PAID: &str = "invoice.paid";
+
 /// The payment itself. See [`pay`].
+///
+/// Returns the invoice's customer beside the outcome when the request asked
+/// to record an out-of-band payment, so [`pay`] can store the response under
+/// [`ResponseSubject::OutOfBandInvoice`] — see [`subject_for`].
 async fn pay_once(
     post: &PostRequest,
     repositories: &dyn Repositories,
     config: &ResourceConfig,
     scope: &MerchantScope,
     id: &str,
-) -> Result<Response, ApiError> {
+) -> (Result<Response, ApiError>, Option<String>) {
     // The invoice is resolved **before** the body is validated, deliberately.
     // Another merchant's `in_…` must answer the uniform `404` whatever the
     // body says: a request with no `success_url` that came back `400` for a
@@ -868,12 +954,85 @@ async fn pay_once(
     // two apart with a body they knew was incomplete.
     // `another_merchants_invoice_is_byte_identical_to_one_that_never_existed`
     // posts to this route with an empty body for exactly that reason.
-    let current = Invoices::get_for_merchant(repositories, scope.merchant_id(), id)
-        .await?
-        .ok_or_else(|| not_found(id))?;
+    let current = match Invoices::get_for_merchant(repositories, scope.merchant_id(), id).await {
+        Ok(Some(current)) => current,
+        Ok(None) => return (Err(not_found(id)), None),
+        Err(error) => return (Err(error.into()), None),
+    };
 
-    let params: PayParams = post.form().await?;
-    let (success_url, cancel_url) = forward_urls(&params, config, scope.merchant_id())?;
+    let params: PayParams = match post.form().await {
+        Ok(params) => params,
+        Err(error) => return (Err(error), None),
+    };
+
+    // THE FORK, and it comes before URL resolution on purpose. An
+    // out-of-band payment creates no checkout session, so it has nowhere to
+    // send anybody: it must neither need `merchant_clients[].invoices` nor be
+    // refused for lacking it. `forward_urls` therefore runs on the hosted
+    // path only. `paying_out_of_band_needs_no_configured_urls` sends one for
+    // merchant B, who has none configured.
+    match paid_out_of_band(params.paid_out_of_band.as_deref()) {
+        Err(error) => return (Err(error), None),
+        Ok(true) => {
+            let payer = current.customer_id.clone();
+            let outcome =
+                pay_out_of_band_once(repositories, config, scope, &current, &params).await;
+            return (outcome, Some(payer));
+        }
+        Ok(false) => {}
+    }
+
+    (
+        pay_hosted_once(repositories, config, scope, &current, &params).await,
+        None,
+    )
+}
+
+/// `paid_out_of_band`, as Stripe spells it: `true` or `false`. Absent and
+/// blank are `false`; anything else is a `400` naming it, because a
+/// `paid_out_of_band=yes` read as `false` would mint a checkout for a bill the
+/// merchant meant to mark settled.
+fn paid_out_of_band(raw: Option<&str>) -> Result<bool, ApiError> {
+    match raw.map(str::trim).filter(|value| !value.is_empty()) {
+        None | Some("false") => Ok(false),
+        Some("true") => Ok(true),
+        Some(_) => Err(ApiError::invalid_param(
+            "paid_out_of_band",
+            "`paid_out_of_band` must be `true` or `false`.",
+        )),
+    }
+}
+
+/// The hosted-checkout payment: mint an intent and a session, attach. The
+/// body of [`pay`] as it stood before RFC-0004 § 6, unchanged but for the
+/// refusal of `out_of_band[…]` at its head.
+async fn pay_hosted_once(
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    scope: &MerchantScope,
+    current: &InvoiceRow,
+    params: &PayParams,
+) -> Result<Response, ApiError> {
+    let id = current.id.as_str();
+
+    // `out_of_band[…]` without `paid_out_of_band=true` is a request that
+    // described a payment it did not ask to record. Refused rather than
+    // ignored: ignoring it would mint a checkout link for a bill the
+    // merchant believes they just marked settled.
+    if let Some(key) = params
+        .out_of_band
+        .as_ref()
+        .and_then(|sent| sent.keys().next())
+    {
+        return Err(ApiError::invalid_param(
+            out_of_band_param(key),
+            "`out_of_band[…]` describes a payment recorded outside vpay and is only accepted \
+             with `paid_out_of_band=true`.",
+        ));
+    }
+
+    let (success_url, cancel_url) = forward_urls(params, config, scope.merchant_id())?;
+    let current = current.clone();
 
     if current.status != InvoiceStatus::Open.as_wire_str() {
         return Err(not_open(&current));
@@ -927,6 +1086,249 @@ async fn pay_once(
         })?;
 
     invoice_response(StatusCode::OK, repositories, config, &row).await
+}
+
+/// `out_of_band[<key>]`, as the `param` of a refusal.
+///
+/// The three known keys are spelled as `&'static str`s because that is what
+/// [`ApiError::invalid_param`] takes; an unknown key is named by the family
+/// rather than echoed, so a caller's arbitrary text never becomes the `param`
+/// of an envelope.
+fn out_of_band_param(key: &str) -> &'static str {
+    match key {
+        "method" => "out_of_band[method]",
+        "reference" => "out_of_band[reference]",
+        "received_at" => "out_of_band[received_at]",
+        _ => "out_of_band",
+    }
+}
+
+/// Records that an **open** invoice was settled outside vpay (RFC-0004 § 6).
+///
+/// # What is refused, in this order
+///
+/// 1. every `400` the body alone decides: a forwarding URL sent with it
+///    (there is nowhere to forward anybody), an unknown `out_of_band[…]`
+///    key, an unknown `method` (an absent one is `other`), an over-long
+///    `reference`, and a
+///    `received_at` that is not a timestamp, is in the future past
+///    [`RECEIVED_AT_SKEW_SECONDS`], or is before the invoice was issued;
+/// 2. the `409`s the other transitions give: not `open` (naming the status),
+///    and an intent attached that is not `canceled` (naming the intent) —
+///    so a merchant cannot record cash while a payer may still be paying
+///    through the hosted link, and cancelling the intent is the way back,
+///    exactly as for `void`;
+/// 3. the compare-and-swap itself, inside the transaction, which is what
+///    actually enforces (2); the read above only words the refusal.
+///
+/// `received_at` is compared with `finalized_at` from the read, and that read
+/// is authoritative rather than a race: `finalized_at` is written once, by
+/// the `draft -> open` statement, and no statement moves it afterwards.
+///
+/// # What it does not do
+///
+/// It posts **nothing** to the ledger — no money crossed `payer_clearing`,
+/// and under pass-through vpay has no account it could have arrived in — and
+/// it does not touch the attached intent, which is already `canceled` or
+/// absent. `invoice.paid` is emitted inside the same transaction, the second
+/// writer of that type beside the settlement.
+async fn pay_out_of_band_once(
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    scope: &MerchantScope,
+    current: &InvoiceRow,
+    params: &PayParams,
+) -> Result<Response, ApiError> {
+    for (param, sent) in [
+        ("success_url", &params.success_url),
+        ("cancel_url", &params.cancel_url),
+    ] {
+        if present(sent.clone()).is_some() {
+            return Err(ApiError::invalid_param(
+                param,
+                format!(
+                    "`{param}` has no meaning with `paid_out_of_band=true`: recording a payment \
+                     made outside vpay creates no checkout page to forward a payer from."
+                ),
+            ));
+        }
+    }
+
+    let empty = BTreeMap::new();
+    let sent = params.out_of_band.as_ref().unwrap_or(&empty);
+    if let Some(unknown) = sent
+        .keys()
+        .find(|key| !OUT_OF_BAND_KEYS.contains(&key.as_str()))
+    {
+        return Err(ApiError::invalid_param(
+            out_of_band_param(unknown),
+            "`out_of_band` accepts `method`, `reference` and `received_at` only.",
+        ));
+    }
+
+    // OPTIONAL, defaulting to `other`, so a Stripe-shaped client that sends
+    // only `paid_out_of_band=true` succeeds (ADR-0024 D11, which D5 required). A value
+    // that IS sent is still held to the four labels: a typo read as `other`
+    // would be a merchant's statement silently rewritten.
+    let method = match present(sent.get("method").cloned()) {
+        None => crate::model::OutOfBandMethod::Other,
+        Some(raw) => crate::model::OutOfBandMethod::from_wire(&raw).ok_or_else(|| {
+            ApiError::invalid_param(
+                "out_of_band[method]",
+                "`out_of_band[method]` must be one of `cash`, `cheque`, `bank_transfer` or \
+                 `other` (the default when it is omitted).",
+            )
+        })?,
+    };
+
+    let reference = present(sent.get("reference").cloned());
+    if let Some(reference) = reference.as_deref()
+        && reference.chars().count() > OUT_OF_BAND_REFERENCE_MAX_CHARS
+    {
+        return Err(ApiError::invalid_param(
+            "out_of_band[reference]",
+            format!(
+                "`out_of_band[reference]` must be at most {OUT_OF_BAND_REFERENCE_MAX_CHARS} \
+                 characters."
+            ),
+        ));
+    }
+
+    let now = OffsetDateTime::now_utc();
+    let received_at = checked_received_at(
+        sent.get("received_at").map(String::as_str),
+        current.finalized_at,
+        now,
+    )?;
+
+    if current.status != InvoiceStatus::Open.as_wire_str() {
+        return Err(not_open(current));
+    }
+    refuse_if_being_paid(repositories, current, "marked paid out of band").await?;
+    if current.amount_remaining <= 0 {
+        return Err(ApiError::Conflict {
+            message: "This invoice has nothing left to pay.".to_owned(),
+        });
+    }
+
+    let new = vpay_db::NewManualPayment {
+        id: ids::manual_payment_id(),
+        merchant_id: scope.merchant_id().to_owned(),
+        invoice_id: current.id.clone(),
+        method: method.as_wire_str().to_owned(),
+        reference,
+        received_at,
+        recorded_at: now,
+    };
+
+    match write_with_event(
+        repositories,
+        EVENT_PAID,
+        InvoiceWrite::PayOutOfBand(Box::new(new)),
+    )
+    .await?
+    {
+        Some((row, record)) => json_response(
+            StatusCode::OK,
+            &rendered_with(repositories, config, &row, record.as_ref()).await?,
+        ),
+        None => Err(out_of_band_refusal(repositories, scope, &current.id).await),
+    }
+}
+
+/// Words a refused out-of-band compare-and-swap — [`refusal_reason`] with the
+/// one cause it cannot name.
+///
+/// The statement refuses on **two** conditions, `status = 'open'` and
+/// `NO_LIVE_INTENT`, and a `pay` that attached an intent between this
+/// request's read and its write leaves the invoice `open`: `not_open` would
+/// then say "this invoice is `open`, not `open`". So the re-read asks both
+/// questions, in the order the statement does. As with [`refusal_reason`],
+/// the read diagnoses a refusal that already happened and never decides a
+/// write.
+async fn out_of_band_refusal(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+) -> ApiError {
+    let row = match Invoices::get_for_merchant(repositories, scope.merchant_id(), id).await {
+        Ok(Some(row)) => row,
+        Ok(None) => return not_found(id),
+        Err(error) => return ApiError::from(error),
+    };
+    if row.status != InvoiceStatus::Open.as_wire_str() {
+        return not_open(&row);
+    }
+    match refuse_if_being_paid(repositories, &row, "marked paid out of band").await {
+        Err(error) => error,
+        Ok(()) => ApiError::Conflict {
+            message: "This invoice changed while it was being marked paid. Retrieve it and try \
+                      again."
+                .to_owned(),
+        },
+    }
+}
+
+/// `out_of_band[received_at]` as unix **seconds**, defaulting to `now`.
+///
+/// Refused, naming the parameter, when it is not an integer, not a
+/// representable instant, more than [`RECEIVED_AT_SKEW_SECONDS`] ahead of
+/// `now`, or before `finalized_at` — money cannot have been received against
+/// a bill before the bill was issued. A `None` `finalized_at` (a draft)
+/// skips the last check; the `409` for the status follows.
+///
+/// # Both comparisons are to the second, and that is chosen
+///
+/// The wire carries whole unix seconds, and `status_transitions.finalized_at`
+/// is rendered as the second `finalized_at` falls in (floored). So the
+/// bound is `received_at >= floor(finalized_at)`: a merchant who echoes back
+/// the `finalized_at` they were shown is accepted, even though that instant
+/// is up to 999 ms earlier than the stored `finalized_at`. Comparing at full
+/// precision would refuse exactly that echo, which is the one value a
+/// careful client is most likely to send. The future bound is
+/// `received_at <= floor(now) + 30 s`, which is never later than the
+/// database's `received_before_recorded` (`received_at <= created_at +
+/// 30 s`, with `created_at = now`).
+fn checked_received_at(
+    raw: Option<&str>,
+    finalized_at: Option<OffsetDateTime>,
+    now: OffsetDateTime,
+) -> Result<OffsetDateTime, ApiError> {
+    const PARAM: &str = "out_of_band[received_at]";
+    let Some(raw) = raw.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(now);
+    };
+    let seconds: i64 = raw.parse().map_err(|_error| {
+        ApiError::invalid_param(
+            PARAM,
+            "`out_of_band[received_at]` must be a Unix timestamp in seconds.",
+        )
+    })?;
+    let at = OffsetDateTime::from_unix_timestamp(seconds).map_err(|_error| {
+        ApiError::invalid_param(
+            PARAM,
+            "`out_of_band[received_at]` is not a representable instant.",
+        )
+    })?;
+    if at.unix_timestamp()
+        > now
+            .unix_timestamp()
+            .saturating_add(RECEIVED_AT_SKEW_SECONDS)
+    {
+        return Err(ApiError::invalid_param(
+            PARAM,
+            "`out_of_band[received_at]` is in the future.",
+        ));
+    }
+    if let Some(finalized_at) = finalized_at
+        && at.unix_timestamp() < finalized_at.unix_timestamp()
+    {
+        return Err(ApiError::invalid_param(
+            PARAM,
+            "`out_of_band[received_at]` is before this invoice was finalized.",
+        ));
+    }
+    Ok(at)
 }
 
 /// The payment intent [`pay`] mints for an invoice.
@@ -1050,7 +1452,13 @@ enum InvoiceWrite {
         /// The invoice to cancel.
         id: String,
     },
+    /// `POST /v1/invoices/{id}/pay` with `paid_out_of_band=true`.
+    PayOutOfBand(Box<vpay_db::NewManualPayment>),
 }
+
+/// What a [`write_with_event`] committed: the invoice as written and, for an
+/// out-of-band payment, the record written beside it.
+type Written = (InvoiceRow, Option<vpay_db::ManualPaymentRow>);
 
 /// Runs one invoice write inside a transaction and appends its event beside
 /// it.
@@ -1079,28 +1487,48 @@ async fn write_with_event(
     repositories: &dyn Repositories,
     event_type: &'static str,
     write: InvoiceWrite,
-) -> Result<Option<InvoiceRow>, ApiError> {
-    let outcome: TxOutcome<Option<InvoiceRow>> = repositories
+) -> Result<Option<Written>, ApiError> {
+    let outcome: TxOutcome<Option<Written>> = repositories
         .transaction(move |tx| {
             let write = write.clone();
             Box::pin(async move {
                 let now = OffsetDateTime::now_utc();
-                let row = match write {
-                    InvoiceWrite::Create(new) => Some(tx.insert_invoice_in_tx(&new).await?),
+                let written: Option<Written> = match write {
+                    InvoiceWrite::Create(new) => Some((tx.insert_invoice_in_tx(&new).await?, None)),
                     InvoiceWrite::Finalize {
                         merchant_id,
                         id,
                         prefix,
-                    } => {
-                        tx.finalize_invoice_in_tx(&merchant_id, &id, &prefix, now)
-                            .await?
-                    }
-                    InvoiceWrite::Void { merchant_id, id } => {
-                        tx.void_invoice_in_tx(&merchant_id, &id, now).await?
+                    } => tx
+                        .finalize_invoice_in_tx(&merchant_id, &id, &prefix, now)
+                        .await?
+                        .map(|row| (row, None)),
+                    InvoiceWrite::Void { merchant_id, id } => tx
+                        .void_invoice_in_tx(&merchant_id, &id, now)
+                        .await?
+                        .map(|row| (row, None)),
+                    InvoiceWrite::PayOutOfBand(new) => {
+                        match tx.pay_invoice_out_of_band_in_tx(&new).await? {
+                            vpay_db::OutOfBandPayment::Paid(paid) => {
+                                let (row, record) = *paid;
+                                Some((row, Some(record)))
+                            }
+                            vpay_db::OutOfBandPayment::Refused => None,
+                            // An `Err` rolls the transaction back, and nothing
+                            // was written before this was decided anyway.
+                            vpay_db::OutOfBandPayment::CustomerErased => {
+                                return Err(ApiError::invalid_param(
+                                    "out_of_band[reference]",
+                                    "This invoice's customer has been erased, so vpay will not \
+                                     store a payment reference that may identify them. Record \
+                                     the payment without `out_of_band[reference]`.",
+                                ));
+                            }
+                        }
                     }
                 };
 
-                let Some(row) = row else {
+                let Some((row, record)) = written else {
                     return Ok::<_, ApiError>(TxOutcome::Abandon(None));
                 };
 
@@ -1121,7 +1549,14 @@ async fn write_with_event(
                 // invoice's own fields with `lines.data` empty, and a
                 // merchant who needs the lines reads
                 // `GET /v1/invoices/{id}`.
-                let object = InvoiceObject::render(&row, &[], None)?;
+                //
+                // The out-of-band record is **not** a second query: it is the
+                // row this same transaction just inserted, handed back by the
+                // statement that wrote it. So an `invoice.paid` written here
+                // carries `out_of_band_payment` in full, and the lock
+                // argument above does not arise (no sequence row is held on
+                // this path either).
+                let object = InvoiceObject::render(&row, &[], None, record.as_ref())?;
                 let data =
                     serde_json::to_value(&object).map_err(ApiError::internal_serialization)?;
 
@@ -1135,7 +1570,7 @@ async fn write_with_event(
                 })
                 .await?;
 
-                Ok(TxOutcome::Commit(Some(row)))
+                Ok(TxOutcome::Commit(Some((row, record))))
             })
         })
         .await?;
@@ -1159,6 +1594,27 @@ async fn rendered(
     config: &ResourceConfig,
     row: &InvoiceRow,
 ) -> Result<InvoiceObject, ApiError> {
+    // The third read, and only for an invoice that has something to read:
+    // the flag is what says a record exists, and `InvoiceObject::render`
+    // refuses the two disagreeing, so this read cannot quietly return a
+    // record the object would then not show.
+    let record = if row.paid_out_of_band {
+        Invoices::manual_payment_for_invoice(repositories, &row.id).await?
+    } else {
+        None
+    };
+    rendered_with(repositories, config, row, record.as_ref()).await
+}
+
+/// [`rendered`], with the out-of-band record already in hand — the path
+/// [`pay_out_of_band_once`] takes, since the transaction that paid the
+/// invoice returned the record it wrote.
+async fn rendered_with(
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    row: &InvoiceRow,
+    record: Option<&vpay_db::ManualPaymentRow>,
+) -> Result<InvoiceObject, ApiError> {
     let lines = Invoices::items_for_invoice(repositories, &row.id).await?;
 
     let hosted_invoice_url = match row.payment_intent_id.as_deref() {
@@ -1170,7 +1626,7 @@ async fn rendered(
             }),
     };
 
-    InvoiceObject::render(row, &lines, hosted_invoice_url)
+    InvoiceObject::render(row, &lines, hosted_invoice_url, record)
 }
 
 /// [`rendered`], as a response.
@@ -1641,6 +2097,8 @@ mod tests {
             &PayParams {
                 success_url: success_url.map(str::to_owned),
                 cancel_url: cancel_url.map(str::to_owned),
+                paid_out_of_band: None,
+                out_of_band: None,
             },
             &resource_config,
             MERCHANT,
@@ -1830,6 +2288,105 @@ mod tests {
                 .expect("the epoch is a date")
                 .is_some()
         );
+    }
+
+    /// `paid_out_of_band` is `true` or `false` and nothing else; absent and
+    /// blank are `false`, and a near-miss is a `400` naming it rather than a
+    /// hosted checkout minted for a bill the merchant meant to mark settled.
+    #[test]
+    fn paid_out_of_band_is_true_false_or_a_four_hundred() {
+        use super::paid_out_of_band;
+
+        assert!(!paid_out_of_band(None).expect("absent"));
+        assert!(!paid_out_of_band(Some(" ")).expect("blank"));
+        assert!(!paid_out_of_band(Some("false")).expect("false"));
+        assert!(paid_out_of_band(Some("true")).expect("true"));
+        for wrong in ["yes", "1", "TRUE", "on"] {
+            assert_eq!(
+                paid_out_of_band(Some(wrong))
+                    .expect_err("only Stripe's two spellings")
+                    .param(),
+                Some("paid_out_of_band"),
+                "for {wrong}"
+            );
+        }
+    }
+
+    /// `out_of_band[received_at]` defaults to now, allows thirty seconds of a
+    /// merchant's clock running fast and not thirty-one, and refuses anything
+    /// before the invoice was finalized — each naming the parameter.
+    #[test]
+    fn received_at_defaults_to_now_and_is_bounded_on_both_sides() {
+        use super::{RECEIVED_AT_SKEW_SECONDS, checked_received_at};
+
+        let now = time::OffsetDateTime::from_unix_timestamp(1_800_000_000).expect("an instant");
+        let finalized = time::OffsetDateTime::from_unix_timestamp(1_700_000_000).ok();
+        const PARAM: Option<&str> = Some("out_of_band[received_at]");
+
+        assert_eq!(
+            checked_received_at(None, finalized, now).expect("default"),
+            now
+        );
+        assert_eq!(
+            checked_received_at(Some(""), finalized, now).expect("blank"),
+            now
+        );
+
+        let at_the_edge = (1_800_000_000 + RECEIVED_AT_SKEW_SECONDS).to_string();
+        assert!(checked_received_at(Some(&at_the_edge), finalized, now).is_ok());
+        let past_it = (1_800_000_001 + RECEIVED_AT_SKEW_SECONDS).to_string();
+        assert_eq!(
+            checked_received_at(Some(&past_it), finalized, now)
+                .expect_err("the future")
+                .param(),
+            PARAM
+        );
+
+        assert!(checked_received_at(Some("1700000000"), finalized, now).is_ok());
+        assert_eq!(
+            checked_received_at(Some("1699999999"), finalized, now)
+                .expect_err("before the bill existed")
+                .param(),
+            PARAM
+        );
+        for wrong in ["2026-09-23", "1.5", "soon"] {
+            assert_eq!(
+                checked_received_at(Some(wrong), finalized, now)
+                    .expect_err("seconds only")
+                    .param(),
+                PARAM,
+                "for {wrong}"
+            );
+        }
+
+        // TO THE SECOND. A `finalized_at` 900 ms into its second: the second
+        // it falls in — which is what `status_transitions.finalized_at`
+        // renders — is accepted though it is 900 ms earlier, and the second
+        // before is refused. See `checked_received_at`'s doc for why.
+        let fractional =
+            time::OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_900_000_000).ok();
+        assert!(
+            checked_received_at(Some("1700000000"), fractional, now).is_ok(),
+            "the rendered finalized_at, echoed back, is accepted"
+        );
+        assert_eq!(
+            checked_received_at(Some("1699999999"), fractional, now)
+                .expect_err("the second before finalize")
+                .param(),
+            PARAM
+        );
+    }
+
+    /// An unknown `out_of_band[…]` key is named by the family, never echoed:
+    /// a caller's arbitrary text must not become an envelope's `param`.
+    #[test]
+    fn an_unknown_out_of_band_key_is_named_by_the_family() {
+        use super::out_of_band_param;
+
+        assert_eq!(out_of_band_param("method"), "out_of_band[method]");
+        assert_eq!(out_of_band_param("reference"), "out_of_band[reference]");
+        assert_eq!(out_of_band_param("received_at"), "out_of_band[received_at]");
+        assert_eq!(out_of_band_param("<script>"), "out_of_band");
     }
 
     /// The metadata bounds refuse at the boundary and not one past it.
