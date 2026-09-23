@@ -367,8 +367,11 @@ rail.** `POST …/confirm` calls a real adapter over real HTTP, so:
   tests (`a_declines_severity_follows_the_failure_codes_own_policy`,
   `an_unsupported_operation_answers_409_but_is_logged_as_our_bug`).
 
-**Still not implemented, and not implied by anything above:** no job loop
-exists to call `JobError::decision()`. Every rail response that produced a
+**Still not implemented, and not implied by anything above:** ~~no job loop
+exists to call `JobError::decision()`.~~ _(Struck 2026-09-23: wrong since
+Step 4 (2026-09-03), when `vpay_worker::run_loop` became that loop. It calls
+`decision()` on every job whose handler returns an `Err`, as "Worker" under Boundaries above
+and [reconciler.md](reconciler.md) say.)_ Every rail response that produced a
 `charge_declined` or a `502` above came from a **WireMock** host, not from
 MTN or Orange — the codes are real, the rails behind them are stubs. And
 `Category::NotImplemented`/`501` is no longer what `confirm` answers, and

@@ -1,10 +1,21 @@
 //! vpay: one binary, three modes.
 //!
-//! With no subcommand it is the **API server**: it writes rows and returns,
-//! and it never calls a payment rail — that is the worker's job, and it is
-//! what makes the system crash-safe. `vpay-server worker` is that worker (see
-//! [`worker`]), and `vpay-server staff add` is the operator command that
-//! creates a dashboard account.
+//! With no subcommand it is the **API server**. It does call a payment rail —
+//! `confirm` submits the charge, a refund instructs the rail, and an
+//! account-holder lookup asks the rail for a name — but a call that can move
+//! money is made only after the row naming it is committed: write first,
+//! network second, which is what makes the system crash-safe
+//! (`docs/flows/crash-safety.md`). What the API server never does is decide a
+//! payment's outcome. The authenticated status query that settles a charge
+//! runs in `vpay-server worker` (see [`worker`]), which also recovers stuck
+//! submissions and delivers webhooks. `vpay-server staff add` is the operator
+//! command that creates a dashboard account.
+//!
+//! _(This said "it writes rows and returns, and it never calls a payment rail
+//! — that is the worker's job" until 2026-09-23. The sentence came from the
+//! 2026-08-09 scaffold and had been wrong since Step 3 (2026-09-03), when
+//! `confirm` began awaiting `adapter.submit` in
+//! `vpay_api::v1::payment_intents::submit_to_rail`.)_
 //!
 //! It was two packages and two images until 2026-09-07 (issue #77):
 //! `vpay-server` and `vpay-worker-bin`, built from one `cargo` invocation

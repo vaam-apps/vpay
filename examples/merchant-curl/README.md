@@ -3,14 +3,21 @@
 > **What runs, and what does not.** Every call below — including **confirm**
 > — executes against a running `vpay-server`. Confirm reaches the rail over
 > HTTP and, when the rail accepts, moves the intent to `processing` (push) or
-> `requires_action` (redirect). What is _not_ built is everything after that:
-> nothing asks the rail whether the payer approved, so an intent that reaches
-> `processing` stays there until a human looks. The reconciler is a later
-> step — see ../../docs/status.md and
+> `requires_action` (redirect). ~~What is _not_ built is everything after
+> that: nothing asks the rail whether the payer approved, so an intent that
+> reaches `processing` stays there until a human looks. The reconciler is a
+> later step.~~ _(Struck 2026-09-23: wrong since Step 4 (2026-09-03). The
+> worker's authenticated status query drives the intent to `succeeded` or
+> back to `requires_payment_method`, so poll
+> `GET /v1/payment_intents/{id}` or take the webhook; see
+> [the reconciler flow](../../docs/flows/reconciler.md).)_ See
+> ../../docs/status.md and
 > [ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md).
 >
-> `POST /v1/refunds` and `GET /v1/balance` are not routed at all and answer
-> the honest `404 unknown_route`. `GET /v1/events`, `GET /v1/events/{id}` and
+> `GET /v1/balance` is not routed at all and answers the honest
+> `404 unknown_route`. _(This line also named `POST /v1/refunds` until
+> 2026-09-23. That route has been mounted since 2026-09-16, and a refund it
+> creates stays `pending`, because nothing settles one.)_ `GET /v1/events`, `GET /v1/events/{id}` and
 > — since 2026-09-05 (issue #45) — `GET /v1/refunds/{id}` **are** served. This
 > line said all three of `/v1/refunds`, `/v1/balance` and `/v1/events` were
 > unrouted; it had been wrong about `/v1/events` since Step 5 (2026-09-03).

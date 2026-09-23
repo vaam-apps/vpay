@@ -121,11 +121,18 @@ by a bare `401` on every `/v1` call if it does not).
 **Success response** (`authkestra_op::handlers::token::TokenResponse`):
 
 ```json
-{ "access_token": "…", "token_type": "Bearer", "expires_in": 300, "scope": "…" }
+{ "access_token": "…", "token_type": "Bearer", "expires_in": 900, "scope": "…" }
 ```
 
 No `refresh_token` on this grant, by the OP's own `client_credentials`
-handler and by ADR-0010. `expires_in` is `OpConfig::access_token_ttl_secs`.
+handler and by ADR-0010. `expires_in` is `OpConfig::access_token_ttl_secs`,
+which `vpay_api::op` fills from `ACCESS_TOKEN_TTL_SECS` (900, deliberately not
+configurable). _(The example read `"expires_in": 300` until 2026-09-23. It
+was wrong from the day it was written, 2026-09-02, when the constant landed at
+900 in the same change;
+[examples/merchant-curl](../../examples/merchant-curl/README.md) and
+[rotate-signing-key.md](../runbooks/rotate-signing-key.md) had the right
+number.)_
 
 **Error response** (`TokenErrorResponse`, HTTP 400/401):
 
@@ -482,24 +489,39 @@ work does not close them.
   writes no fee: nothing in this repository has ever had one to write. The
   clause naming a token on **both** rails was true for part of the same day
   and is not now.)_
-- **No scheduled idempotency sweep.** See the Idempotency section above.
+- ~~**No scheduled idempotency sweep.** See the Idempotency section above.~~
+  _(Struck 2026-09-23: wrong since Step 4 (2026-09-03). The worker's hourly
+  `sweep_expired` job calls `Idempotency::sweep_expired`
+  (`vpay_worker::handlers::sweep_expired`); see
+  [merchant-auth/resource-contract.md](merchant-auth/resource-contract.md).)_
 - **No rate limit on `/token`.** [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
   leaves it to Kubernetes ingress. The endpoint is public and
   unauthenticated by necessity (the credential is the request body), and
   nothing in this repository verifies that ingress actually limits it.
-- **No cleanup job for spent `jti`s.** `vpay-server` sweeps expired rows
+- ~~**No cleanup job for spent `jti`s.** `vpay-server` sweeps expired rows
   once at boot (`vpay_db::delete_expired_client_assertion_jtis`), which is a
   stopgap and labelled one; there is no timer, because the worker's job loop
-  does not exist. A long-lived process grows that table monotonically.
+  does not exist. A long-lived process grows that table monotonically.~~
+  _(Struck 2026-09-23: wrong since Step 4 (2026-09-03). The same hourly
+  `sweep_expired` job also calls `delete_expired_client_assertion_jtis`, so a
+  long-lived deployment's table is bounded by an hour's worth of expired rows.
+  The delete itself is pinned by
+  `expired_client_assertion_jtis_are_swept_and_live_ones_are_kept`
+  (`backends/tests/integration/tests/client_store.rs`); no test asserts that
+  the job runs it.)_
 - **No runtime key rotation.** One key per process; rotating means
   restarting with a new Secret. A rollback to a retired `kid` is refused
   rather than silently accepted.
 - **The signing-key PEM is not zeroized.** Key bytes may linger in freed
   heap; `vpay_api::op::keys`'s module docs state this deliberately.
-- **`sdks/nodejs` has still never spoken to a vpay.** All 126 of its tests
+- ~~**`sdks/nodejs` has still never spoken to a vpay.** All 126 of its tests
   run against its own `node:http` stub, and the integration suite above uses
-  the Rust SDK. `just sdk-conformance-node` remains a manual recipe outside
-  `just ci`.
+  the Rust SDK.~~ _(Struck 2026-09-23: wrong since 2026-09-10, when
+  `sdks/nodejs/src/invoices.live.test.ts` began driving a real `vpay-server`
+  over a socket, joined by `refunds.live.test.ts` on 2026-09-16. CI's `e2e`
+  job runs both through `pnpm --filter @vaam-apps/vpay-sdk test:live`, and
+  every such run starts with this SDK's own `client_credentials` handshake.)_
+  `just sdk-conformance-node` remains a manual recipe outside `just ci`.
 
 What the SDKs themselves prove is unchanged by any of this:
 

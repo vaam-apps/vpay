@@ -3,13 +3,16 @@
 A Stripe.js-shaped browser client for vpay's payer surface. Zero runtime
 dependencies, ESM, TypeScript strict.
 
-**Not yet on the registry.** `npm view @vaam-apps/vpay-stripe-js` answered
-`E404` on 2026-09-05 and no workflow in this repository publishes anything;
-the manifest stopped saying `"private": true` on that date so that a release
-can happen without editing it. Once published:
+**On the registry since 2026-09-19.** `release.yml`'s `publish-stripe-js-sdk`
+job (added 2026-09-18) publishes it on every `v*` tag, and `npm view
+@vaam-apps/vpay-stripe-js versions` listed `0.2.1` (the first, 2026-09-19)
+through `0.4.1` on 2026-09-23. _(This read "Not yet on the registry … `E404`
+on 2026-09-05 and no workflow in this repository publishes anything" until
+2026-09-23. The workflow half was wrong from 2026-09-18, and the registry half
+from 2026-09-19.)_
 
 ```bash
-pnpm add @vaam-apps/vpay-stripe-js   # not yet published — see above
+pnpm add @vaam-apps/vpay-stripe-js
 ```
 
 Inside this workspace it is a `workspace:*` dependency, built with
@@ -184,12 +187,22 @@ parameters are **absent**. A page handling the return trip must carry its own
 state — put the `client_secret` in the `return_url` you supply, or key on your
 own order id — and then call `retrievePaymentIntent` to learn the outcome.
 
-**Step 5c ships push-only** (decision D4). `confirmPayment` returns the rail's
-real `redirect_to_url` and will navigate to it, but the _return_ trip is not
-wired: vpay has no `/provider/{code}/callback` route, so a redirect rail sends
-the payer to a URL that does not exist yet. Do not ship a redirect-rail
-checkout on this package until that route lands. `next_action.redirect_to_url.return_url`
-is echoed back as a label; nothing redirects to it.
+~~**Step 5c ships push-only** (decision D4). `confirmPayment` returns the
+rail's real `redirect_to_url` and will navigate to it, but the _return_ trip is
+not wired: vpay has no `/provider/{code}/callback` route, so a redirect rail
+sends the payer to a URL that does not exist yet. Do not ship a redirect-rail
+checkout on this package until that route lands.
+`next_action.redirect_to_url.return_url` is echoed back as a label; nothing
+redirects to it.~~ **Corrected 2026-09-23.** This paragraph had been wrong
+since 2026-09-04, and "Status" below already said so. Step 8 mounted
+`/provider/{code}/callback`, and Step 9 made the rail send the payer back to a
+per-charge `return_url`. With a Checkout Session, that is vpay's own return
+page, and a real browser has walked the whole Orange round trip
+(`shop-hosted.cy.ts`). Without a session, the payer lands on **your**
+`return_url` and you learn the outcome by calling `retrievePaymentIntent`,
+never from the fact that they came back.
+[`docs/flows/browser-checkout.md`](../../docs/flows/browser-checkout.md)
+§ "The redirect gap (D4) — closed 2026-09-04" is the record.
 
 ## Checkout (vpay's own)
 

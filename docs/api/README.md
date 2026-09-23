@@ -159,11 +159,18 @@ would let it answer a different question from the one the webhook asked. The
 ```
 
 `created` is unix **seconds**, like every other `created` on this surface.
-`type` is one of the thirteen in [../flows/webhooks.md](../flows/webhooks.md);
-only `payment_intent.succeeded`, `payment_intent.payment_failed`,
-`checkout.session.expired`, `customer.deleted` and the four `invoice.*` types
-are ever written today, and the CHECK `type_is_a_documented_event` (migrations
-`0018`, `0029`, `0034` and `0036`) closes the vocabulary at the database. `livemode` comes off the stored row, not from
+`type` is one of the fifteen in [../flows/webhooks.md](../flows/webhooks.md),
+and thirteen of them have a writer: every type except
+`payment_intent.created` and `payment_intent.processing`, which nothing emits
+([../flows/webhooks.md](../flows/webhooks.md) § "Which of them is written, and
+by what" names each writer). The CHECK `type_is_a_documented_event`
+(migrations `0018`, `0029`, `0034`, `0036` and `0039`) closes the vocabulary
+at the database. _(This read "one of the thirteen", named eight types as the
+only ones ever written, and listed the CHECK's migrations up to `0036` until
+2026-09-23. It had been wrong since 2026-09-10, when `payment_intent.canceled`
+gained a writer and migration `0039` added `customer.created` and
+`customer.updated` with theirs. The two refund types gained writers on
+2026-09-16.)_ `livemode` comes off the stored row, not from
 configuration read at render time, so redeploying does not change what a
 delivered event says about itself.
 
@@ -322,11 +329,15 @@ updated or attached to a new payment — both are a `409`.
 
 ### The `invoice` object (S4b)
 
-A merchant's bill to one customer. **Eighteen keys**, counted from the
+A merchant's bill to one customer. **Nineteen keys**, counted from the
 rendering rather than from this list and pinned by
-`the_invoice_object_is_the_documented_eighteen_keys` — it said _seventeen_
+`the_invoice_object_is_the_documented_nineteen_keys` — it said _seventeen_
 until the S4b review on 2026-09-07, when the count was measured and no test of
-any name existed to hold it. Like the customer, this is the object whose
+any name existed to hold it. _(And it said **eighteen**, naming the test
+`…_documented_eighteen_keys`, until 2026-09-23. It had been wrong since
+2026-09-10, when migration `0042` added `amount_refunded` and the test was
+renamed with it; see [../flows/invoices.md](../flows/invoices.md). The
+example below gained that key the same day this was corrected.)_ Like the customer, this is the object whose
 _rules_ matter more than its shape;
 [../flows/invoices.md](../flows/invoices.md) is the whole of them.
 
@@ -336,6 +347,7 @@ _rules_ matter more than its shape;
   "customer": "cus_…", "currency": "xaf",
   "status": "open", "number": "A7K3M9QP-000001",
   "amount_due": 11000, "amount_paid": 0, "amount_remaining": 11000,
+  "amount_refunded": 0,
   "due_date": null, "description": "September hosting",
   "metadata": { "order_id": "1234" },
   "payment_intent": null, "hosted_invoice_url": null,
@@ -614,7 +626,15 @@ branch on. Recorded in `ApiError::IdempotencyKeyInFlight`'s own doc comment.
 `transfer` call was written, so `cargo xtask verify-status` now prints **zero**
 and **no shipping code can produce a `501` at all**. That says nothing about
 whether MTN refunds work — the call has never been made; see
-[../status.md](../status.md).)_
+[../status.md](../status.md).)_ _(~~Zero~~ and ~~no `501` at all~~ were wrong
+from the day they were written, 2026-09-16, and are struck 2026-09-23.
+`orange_money::refund` had become a `NotImplemented` token on 2026-09-15
+(RFC-0003 § 5), so `verify-status` prints **1**, and an Orange refund answers
+the merchant `not_implemented` (**501**), as "Not served — the honest 404 stands" below says
+(`an_unbuilt_rail_refund_fails_and_releases_its_reservation`,
+`backends/tests/integration/tests/refunds.rs`). That makes
+`not_implemented` (501) a code a `/v1` caller can receive again, from
+`POST /v1/refunds` on Orange and nowhere else.)_
 Every one is derived from a `Category`; see
 [../flows/errors.md](../flows/errors.md). `Category::Conflict` now carries
 three codes rather than its default alone — `invalid_state`,

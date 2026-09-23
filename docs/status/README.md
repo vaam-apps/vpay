@@ -37,13 +37,15 @@ appended to `docs/status.md` in the order branches landed, which is not always
 the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
-try to be.** Re-measured 2026-09-20, and again 2026-09-22 when the Tauri
-plugin's page landed: the directory holds 60 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 37 of them. This is a hand-maintained list, not a generated one,
+try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri plugin's
+page landed, and again 2026-09-23 when the stale-claims page did: the
+directory holds 61 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 38 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22; both moved by one and only one page was added, so the
-23 is unchanged — the arithmetic is stated because the "23" is the only one of
-the three numbers no gate measures.) Most of the 23 are
+named until 2026-09-22, and 60 and 37 until 2026-09-23; each time both moved
+by one and only one page was added, so the 23 is unchanged — the arithmetic is
+stated because the "23" is the only one of the three numbers no gate
+measures.) Most of the 23 are
 still findable: they are linked individually from the area page whose
 section they verify (for example
 `verification/2026-09-13-adr-0018-admin-role-review.md` from
@@ -55,6 +57,16 @@ hand-maintained list is exactly how this gap happened; browse
 [verification/](verification/) directly for the complete, current file set
 rather than trusting this list to be exhaustive.
 
+- [verification/2026-09-23-stale-claims.md](verification/2026-09-23-stale-claims.md) —
+  fourteen claims found stale while writing the vpay-docs site against
+  `v0.4.1`, each re-checked on `master` and corrected in place with its date:
+  the API server "never calls a payment rail", a lifecycle edge the code never
+  takes, three "MTN's real sandbox has never been called", a `200 OK` the
+  callback route has never answered, "no job loop" and "no fan-out" a
+  fortnight after both landed, event, invoice-key and `501` counts,
+  `"expires_in": 300` against a 900-second constant, and READMEs that still
+  said the dashboard had no login and the SDKs were not on npm. Documents and
+  one doc comment only; no behaviour changed.
 - [verification/2026-09-22-tauri-plugin.md](verification/2026-09-22-tauri-plugin.md) —
   the Tauri v2 checkout plugin, built in parallel lanes: what each lane
   measured (the Rust crate's 19 tests + 1 doctest and its clippy/`cargo doc`
