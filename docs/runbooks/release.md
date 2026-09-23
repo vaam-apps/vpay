@@ -72,6 +72,11 @@ the tags, and signs each manifest-list digest with cosign.
 
 There is deliberately no `latest`. A real deployment pins a digest (§4).
 
+**A `v*` tag also announces itself to the human documentation site.**
+[`notify-docs.yml`](../../.github/workflows/notify-docs.yml) is a separate
+workflow on the same tag push. It tells vaam-apps/vpay-docs a release landed,
+and it cannot block or fail the release. See §9.
+
 **A `v*` tag does not stop at images.** It also publishes `deploy/helm/vpay`
 itself, as an OCI artifact of its own that the table above does not show,
 because it is not "per image" and it is not produced on a `master` merge at
@@ -612,3 +617,37 @@ there is no chart tag to point at.
 **Two real runs exist: the first failed, the second succeeded.** `v0.2.2`
 (run `35491807158`) pushed and then failed to sign; `v0.3.0` (run
 `35492982589`) published and signed cleanly. See §6.
+
+## 9. Telling vpay-docs a release landed
+
+The human documentation at [vpay-oss.vaam.store](https://vpay-oss.vaam.store)
+([vaam-apps/vpay-docs](https://github.com/vaam-apps/vpay-docs)) is pinned to a
+vpay **release tag**. Its `release-parity` workflow compares that pin with each
+new release. When the release changed a page's sources, or added a vpay page
+the site has no page for, it opens **one draft PR per release** in vpay-docs.
+That PR moves the pin to the new tag, clears the "verified" dates, and fails
+its own CI with the list of pages to re-read. A person does the re-reading and
+signs the pin off; nothing in either repository does that automatically.
+
+[`notify-docs.yml`](../../.github/workflows/notify-docs.yml) is the fast path
+into that. On a `v*` tag push it mints a `vaam-apps` App token scoped to
+**vpay-docs only**, with `contents: write`, and sends a `repository_dispatch`
+of type `vpay-release` carrying the tag. vpay-docs also polls every 3 hours,
+so a failed or skipped dispatch costs latency and nothing else.
+
+What it deliberately is not:
+
+- **Not a job in `release.yml`.** It is a separate workflow with no `needs:`,
+  no shared concurrency group and no permissions of its own, so nothing it
+  does can hold up images, the chart or the SDKs.
+- **Not a gate on vpay.** A release that makes the docs stale still ships. The
+  signal is the draft PR in vpay-docs.
+- **Not proven yet.** It has not run on a real tag. Written 2026-09-23; the
+  first release after it merges is its first run. `workflow_dispatch` with a
+  `tag` input re-sends an announcement by hand.
+
+To re-announce a release, for example after vpay-docs was down:
+
+```bash
+gh workflow run notify-docs.yml -R vaam-apps/vpay -f tag=vX.Y.Z
+```
