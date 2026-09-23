@@ -1,6 +1,7 @@
 # RFC-0004: Billing on top of invoices — catalog, subscriptions, collection, payment methods and documents
 
-- **Status:** Draft
+- **Status:** Draft, except § 5's `customer` filters and § 6 (manual
+  payments), **accepted 2026-09-23 → [ADR-0024](../adr/0024-customer-filters-and-manual-payments.md)**
 - **Author:** vpay maintainers
 - **Date:** 2026-09-23
 - **Related:** [docs/flows/invoices.md](../flows/invoices.md),
