@@ -127,10 +127,14 @@ them.
   configured.
 - `out_of_band[…]` without `paid_out_of_band=true` is a `400`.
 
-**D11. `out_of_band[method]` is required; `received_at` is bounded.** It
-defaults to now, and is refused in the future or before the invoice's
-`finalized_at`. An undated or future-dated record of cash received is a
-bookkeeping error the API can catch at no cost.
+**D11. `out_of_band[method]` is optional, defaulting to `other`.
+`received_at` is bounded.** It defaults to now, and is refused in the future
+or before the invoice's `finalized_at`. An undated or future-dated record of
+cash received is a bookkeeping error the API can catch at no cost. _(This read
+"`out_of_band[method]` is required" until the 2026-09-23 review. That
+contradicted D5, which is accepted: a Stripe-shaped client sending only
+`paid_out_of_band=true` must reach the same state, and a required vpay-native
+field would give it a `400`. D5 wins, so a missing method records `other`.)_
 
 ### Proposed — taken during implementation where the brief was silent
 
@@ -182,10 +186,15 @@ Erasure and `POST /v1/customers/{id}` take `FOR UPDATE` on the customer
 before any invoice, so there is one lock-acquisition order.
 
 **D19. Unknown `out_of_band[…]` keys are a `400` naming `out_of_band`**, never
-echoing the caller's key, and the Rust SDK's `PayInvoiceParams` gains two
-public fields. That is a source-breaking change for callers who build it as a
-struct literal without `..Default::default()`. `PayInvoiceParams::new` is
-unaffected.
+echoing the caller's key. **Both SDKs take one optional `out_of_band` object**
+(Rust `Option<OutOfBandParams>` on `PayInvoiceParams`, Node `outOfBand?`).
+Its presence puts `paid_out_of_band=true` and the `out_of_band[…]` fields on
+the wire, so the combinations the server refuses cannot be expressed. The
+Rust change is **source-breaking** for callers who build `PayInvoiceParams` as
+a struct literal without `..Default::default()`, and the change says so
+where SDK changes are recorded. `PayInvoiceParams::new` is unaffected.
+_(The first implementation had a separate flag and fields. The 2026-09-23
+review replaced them with one object.)_
 
 ## Alternatives considered
 
