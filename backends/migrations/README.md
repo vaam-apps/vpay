@@ -70,6 +70,10 @@ and `docs/flows/adapter-mtn-momo.md` are the current record for all three rows.
 
 1. Write `NNNN_short-name.sql`, numbered one above the current highest.
 2. `just migrations-manifest` — appends its SHA-256 to `MANIFEST.sha256`.
+   It runs on Linux and macOS alike (it uses `find … -exec basename`, and
+   `sha256sum` or else `shasum -a 256`), so the line is never appended by
+   hand. _(Until 2026-09-23 it used GNU-only `find -printf` and failed on
+   macOS, and that day's `0049` line was appended by hand for that reason.)_
 3. Commit the `.sql` file and `MANIFEST.sha256` **in the same commit**.
 
 `MANIFEST.sha256` is what makes rule 1 enforceable: `cargo xtask
@@ -84,6 +88,8 @@ The manifest's SHA-256 is not the checksum sqlx stores; it is the digest
 
 ```bash
 sha256sum backends/migrations/0028_create-checkout-sessions.sql
+# or, on a macOS without sha256sum:
+shasum -a 256 backends/migrations/0028_create-checkout-sessions.sql
 ```
 
 The SHA-384 values sqlx actually stores, and the one-off repair for a database
