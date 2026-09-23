@@ -142,6 +142,13 @@ pub enum DbError {
     /// answered twice. Hence `Category::Internal` — it pages, rather than
     /// being reported to a merchant as their mistake.
     ///
+    /// Since ADR-0025 (2026-09-23) a third site raises it:
+    /// `checkout_sessions::claim_intent_customer`, when its compare-and-swap
+    /// on a customer-less intent matched nothing and the re-read still finds
+    /// the intent customer-less. The predicate would have matched that row
+    /// and nothing writes `customer_id` back to `NULL`, so it is the same
+    /// kind of broken invariant.
+    ///
     /// `idempotency::store` deliberately does **not** raise this when the
     /// row has been reclaimed by a later request or swept: that is a
     /// legitimate consequence of the 24-hour window rather than a bug, and
@@ -285,6 +292,38 @@ pub enum DbError {
         payment_intent_id: String,
         /// The code stored on the intent. Never a secret — an ISO-4217 code.
         intent_currency: String,
+    },
+
+    /// A checkout session named a customer, and its payment intent is already
+    /// for a **different** one (ADR-0025, 2026-09-23).
+    ///
+    /// Raised by [`crate::CheckoutSessions::create`], inside the transaction
+    /// that inserts the session, after the compare-and-swap that writes the
+    /// session's customer onto a customer-less intent matched no row. That is
+    /// the losing side of a race: two sessions naming two customers were
+    /// created at once for one intent that had none, and the other one wrote
+    /// its customer first. `vpay_api` checks the same rule before the write,
+    /// against a read that can be stale by now; this is the check that
+    /// cannot be.
+    ///
+    /// Its own variant rather than an `Ok(None)` for [`Self::OverRefund`]'s
+    /// reason: it is a rule the database decides in normal operation, on a
+    /// request a merchant sent, and the caller has to be able to answer it in
+    /// the words the pre-check uses rather than as a storage failure.
+    ///
+    /// `Category::InvalidRequest`, which is what the API's own refusal is (a
+    /// `400` naming `customer`): the merchant named a payer the intent is not
+    /// for, and re-sending the same request can never succeed.
+    #[error(
+        "payment intent {payment_intent_id} is already for customer {on_intent}; a checkout \
+         session cannot name a different one"
+    )]
+    IntentCustomerConflict {
+        /// The `pi_…` the session was for.
+        payment_intent_id: String,
+        /// The `cus_…` the intent carries. The merchant's own id, never a
+        /// secret, and named in the refusal so they can see which it is.
+        on_intent: String,
     },
 
     /// A `currencies` row already exists with a different `exponent` than
@@ -578,7 +617,13 @@ impl vpay_core::Classify for DbError {
             Self::UniqueViolation { .. } | Self::OverRefund { .. } => Category::Conflict,
             // The request named a currency, provider or object that does not
             // exist. Nothing about retrying it unchanged can succeed.
-            Self::ForeignKeyViolation { .. } => Category::InvalidRequest,
+            //
+            // A session naming a customer its intent is not for is the same
+            // answer: the API's pre-check refuses it as a `400` naming
+            // `customer`, and this is that refusal decided by the write.
+            Self::ForeignKeyViolation { .. } | Self::IntentCustomerConflict { .. } => {
+                Category::InvalidRequest
+            }
             // Nobody outside vpay can cause this, and no retry fixes it:
             // a compare-and-swap this crate's own caller was supposed to
             // have set up matched nothing.
@@ -653,6 +698,7 @@ impl vpay_core::Classify for DbError {
             // apart is the difference between "seed the currency" and "find
             // the writer".
             Self::RefundCurrencyMismatch { .. } => "refund_currency_mismatch",
+            Self::IntentCustomerConflict { .. } => "intent_customer_conflict",
             Self::Persistence(error) => error.code(),
             // `ledger_unbalanced` / `ledger_degenerate`, from the leaf. Not a
             // `database_…` code, deliberately: nothing about the database
@@ -743,6 +789,24 @@ mod tests {
                 "public messages name nothing internal: {public}"
             );
         }
+    }
+
+    /// A session that lost the race to name its intent's customer
+    /// (ADR-0025) is the merchant's `400` and never a retry — the answer the
+    /// API's pre-check gives the same request when it arrives second.
+    #[test]
+    fn a_lost_intent_customer_race_is_the_callers_request_not_a_storage_outage() {
+        let error = DbError::IntentCustomerConflict {
+            payment_intent_id: "pi_0123456789abcdefghjkmnpq".to_owned(),
+            on_intent: "cus_0123456789abcdefghjkmnpq".to_owned(),
+        };
+        assert_eq!(error.category(), Category::InvalidRequest);
+        assert_eq!(error.category().http_status(), 400);
+        assert_eq!(error.retry(), Retry::Never);
+        assert_eq!(error.code(), "intent_customer_conflict");
+        let text = error.to_string();
+        assert!(text.contains("pi_0123456789abcdefghjkmnpq"), "{text}");
+        assert!(text.contains("cus_0123456789abcdefghjkmnpq"), "{text}");
     }
 
     /// A compare-and-swap that matched nothing pages rather than being

@@ -266,14 +266,17 @@ pub struct ListPaymentIntentsParams {
     /// and not a `404`, so the filter cannot tell you which customers exist
     /// under some other account.
     ///
-    /// **A checkout session's customer is not seen here.** A session created
-    /// with `customer` on an intent that has none stores that customer on
-    /// the session only, and this filter reads the intent's own `customer`
-    /// — so the payment that session collects is **not** in this list, and
-    /// only [`ListCheckoutSessionsParams::customer`] finds it. Whether the
-    /// session's customer should be written onto such an intent is open
-    /// question 3 of ADR-0024
-    /// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+    /// **A checkout session's customer is seen here, from 2026-09-23 on.**
+    /// A session created with `customer` on an intent that has none now
+    /// writes that customer onto the intent (ADR-0025,
+    /// `docs/adr/0025-session-customer-onto-intent.md`), so the payment it
+    /// collects is in this list. **Historical rows are not:** a session
+    /// created that way before the change, or against a server without it,
+    /// stored the customer on the session only, those intents were not
+    /// backfilled, and only [`ListCheckoutSessionsParams::customer`] finds
+    /// their payment. _(Until ADR-0025 this said the session's customer was
+    /// never seen here, and called the question open question 3 of
+    /// ADR-0024.)_
     ///
     /// **Needs a vpay server that has this filter**: no release up to and
     /// including 0.5.0 has it (as of 2026-09-23). A
@@ -334,9 +337,19 @@ pub struct CreateCheckoutSessionParams {
     /// intent's customer — see [`crate::model::CheckoutSession::customer`]
     /// for the inheritance rule this SDK does not duplicate.
     ///
-    /// Refused `409` naming `customer` when the session's `PaymentIntent`
+    /// Refused `400` naming `customer` when the session's `PaymentIntent`
     /// already names a *different* customer; the server never lets the two
-    /// disagree.
+    /// disagree. _(This said `409` until 2026-09-23. The server has always
+    /// answered `400` (`invalid_param`), which
+    /// `a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction`
+    /// in `backends/tests/integration/tests/customers.rs` asserts.)_
+    ///
+    /// When the intent has **no** customer, a server with ADR-0025
+    /// (2026-09-23, `docs/adr/0025-session-customer-onto-intent.md`) writes
+    /// this one onto the intent, in the same transaction as the session. So
+    /// the intent's own `customer` and the intent and refund list filters
+    /// see it, and a later session on that intent cannot name somebody else.
+    /// A server without it stores the customer on the session only.
     pub customer: Option<String>,
 }
 
@@ -393,13 +406,16 @@ pub struct ListCheckoutSessionsParams {
     /// under some other account.
     ///
     /// This is the **session's** customer, and it includes a session created
-    /// with `customer` on an intent that has none. That customer is on the
-    /// session only, so the payment such a session collects is found here
-    /// but **not** by [`ListPaymentIntentsParams::customer`] or
-    /// [`ListRefundsParams::customer`], which read the intent's. Whether the
-    /// session's customer should be written onto such an intent is open
-    /// question 3 of ADR-0024
-    /// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+    /// with `customer` on an intent that has none. From 2026-09-23 on such a
+    /// session also writes its customer onto the intent (ADR-0025,
+    /// `docs/adr/0025-session-customer-onto-intent.md`), so
+    /// [`ListPaymentIntentsParams::customer`] and
+    /// [`ListRefundsParams::customer`] find its payment too. A session
+    /// created that way **before** the change, or against a server without
+    /// it, has its customer on the session only; its intent was not
+    /// backfilled, and this filter is the only one that finds its payment.
+    /// _(Until ADR-0025 this said that of every such session, and called the
+    /// question open question 3 of ADR-0024.)_
     ///
     /// **Needs a vpay server that has this filter**: no release up to and
     /// including 0.5.0 has it (as of 2026-09-23). A
@@ -1375,13 +1391,16 @@ pub struct ListRefundsParams {
     /// and not a `404`, so the filter cannot tell you which customers exist
     /// under some other account.
     ///
-    /// **A checkout session's customer is not seen here.** A session created
-    /// with `customer` on an intent that has none stores that customer on
-    /// the session only, and this filter reads the refund's intent's
-    /// `customer` — so refunds of the payment that session collected are
-    /// **not** in this list. Whether the session's customer should be written
-    /// onto such an intent is open question 3 of ADR-0024
-    /// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+    /// **A checkout session's customer is seen here, from 2026-09-23 on.**
+    /// A session created with `customer` on an intent that has none now
+    /// writes that customer onto the intent (ADR-0025,
+    /// `docs/adr/0025-session-customer-onto-intent.md`), and this filter
+    /// reads the refund's intent's `customer`, so refunds of its payment are
+    /// in this list. **Historical rows are not:** a session created that way
+    /// before the change, or against a server without it, stored the
+    /// customer on the session only, and those intents were not backfilled.
+    /// _(Until ADR-0025 this said the session's customer was never seen
+    /// here, and called the question open question 3 of ADR-0024.)_
     ///
     /// **Needs a vpay server that has this filter**: no release up to and
     /// including 0.5.0 has it (as of 2026-09-23). A
