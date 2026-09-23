@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "deps": "pnpm --filter @vaam-apps/vpay-tauri-checkout build",
-    "dev": "vite",
+    "dev": "pnpm run deps && vite",
     "build": "pnpm run deps && tsc --noEmit -p tsconfig.json && vite build",
     "typecheck": "pnpm run deps && tsc --noEmit -p tsconfig.json",
     "lint": "pnpm run deps && eslint . --max-warnings 0",
