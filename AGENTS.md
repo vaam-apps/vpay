@@ -355,6 +355,15 @@ because those are what make the page worth trusting.
 - Something an on-call person must do → a runbook.
 - What an **agent** must know before it changes this repository → a skill in
   [vaam-apps/vpay-skills](https://github.com/vaam-apps/vpay-skills), below.
+- What a **person** evaluating, integrating or operating vpay should read first
+  → the human documentation at
+  [vpay-oss.vaam.store](https://vpay-oss.vaam.store), built from
+  [vaam-apps/vpay-docs](https://github.com/vaam-apps/vpay-docs). It is pinned
+  to a vpay **release tag** rather than to `master`, and checks itself: its
+  `release-parity` workflow opens one issue per release listing the pages that
+  release made stale, and never blocks the release. So a change here does not
+  need a vpay-docs PR alongside it the way it may need a vpay-skills one. The
+  gap surfaces there at the next tag.
 
 ### Docs↔skills parity
 
