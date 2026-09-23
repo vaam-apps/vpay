@@ -42,6 +42,11 @@
 //! 10. `customer=` on the list (RFC-0004 § 5, 2026-09-23) filters by the
 //!     **session's own** customer, pages inside the filtered set, and is not
 //!     an existence oracle for another merchant's customers.
+//! 11. a session created with `customer=` on an intent that has none writes
+//!     that customer onto the intent in the insert's own transaction
+//!     (ADR-0025, 2026-09-23), so the intent and refund filters find its
+//!     payment; of two concurrent sessions naming two customers exactly one
+//!     is created; and another merchant's customer still writes nothing.
 //!
 //! # No test doubles
 //!
@@ -3763,10 +3768,23 @@ async fn session_page(
 /// `GET /v1/invoices`' own `400`; blank is absent; and an erased customer's
 /// sessions are still found by its id.
 ///
-/// **What `s2` also shows, and this test does not decide:** the payment `s2`
-/// collects is found here and not by the intent or refund list's `customer`,
-/// which read the intent's column. That is ADR-0024's open question 3
-/// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+/// **`s2` is a pre-ADR-0025 row, staged.** Since ADR-0025 (2026-09-23) a
+/// session created with `customer=X` on a customer-less intent writes `X`
+/// onto the intent, so the API can no longer produce `s2`'s shape. Rows
+/// written before that were not backfilled and still have it, which is why
+/// the filter still reads the session's own column. So the test creates `s2`
+/// through the API and then puts its intent back to `customer_id = NULL` in
+/// SQL — the only way to reach the historical state, and the state this
+/// column choice exists for.
+///
+/// **What `s2` also shows:** the payment such a historical session collects
+/// is found here and not by the intent or refund list's `customer`, which
+/// read the intent's column. That was ADR-0024's open question 3
+/// (`docs/adr/0024-customer-filters-and-manual-payments.md`); ADR-0025
+/// (`docs/adr/0025-session-customer-onto-intent.md`) answers it for sessions
+/// created from then on, and
+/// `a_session_naming_a_customer_writes_it_onto_a_customer_less_intent` below
+/// is the present-day half.
 #[tokio::test]
 async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracle()
 -> anyhow::Result<()> {
@@ -3782,6 +3800,15 @@ async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracl
     let s1 = session_on(&h, CLIENT_A, &intent_1, None).await?;
     let intent_2 = create_intent_with_customer(&h, CLIENT_A, None).await?;
     let s2 = session_on(&h, CLIENT_A, &intent_2, Some(&x)).await?;
+    // Back to the pre-ADR-0025 shape — see the doc. The session keeps X; its
+    // intent has nobody, as every such intent written before 2026-09-23 does.
+    let staged = sqlx::query("UPDATE payment_intents SET customer_id = NULL WHERE id = $1")
+        .bind(&intent_2)
+        .execute(&h.pool)
+        .await
+        .context("staging a pre-ADR-0025 intent")?
+        .rows_affected();
+    assert_eq!(staged, 1);
     let intent_3 = create_intent_with_customer(&h, CLIENT_A, Some(&y)).await?;
     let s3 = session_on(&h, CLIENT_A, &intent_3, None).await?;
     let intent_4 = create_intent_with_customer(&h, CLIENT_A, None).await?;
@@ -3936,3 +3963,420 @@ async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracl
 /// `GET /v1/invoices` has always answered.
 const MALFORMED_CUSTOMER: &str =
     "`customer` must be a Customer id — `cus_` followed by 24 characters.";
+
+// ------------------------------------------------------------------ claim 11
+
+/// The `customer` an intent renders on `GET /v1/payment_intents/{id}`.
+///
+/// Never the body in a failure message: the merchant read renders the
+/// intent's `client_secret` — [`error_code`]'s reason.
+async fn intent_customer(h: &Harness, intent_id: &str) -> anyhow::Result<Option<String>> {
+    let (status, body) = retrieve_intent(h, intent_id).await?;
+    anyhow::ensure!(
+        status == 200,
+        "retrieving {intent_id} answered {status} ({})",
+        error_code_or_none(&body)
+    );
+    Ok(body
+        .get("customer")
+        .and_then(Value::as_str)
+        .map(str::to_owned))
+}
+
+/// The ids on one page of a `/v1` list, as merchant A.
+async fn list_ids(h: &Harness, path: &str) -> anyhow::Result<Vec<String>> {
+    let (status, body) = get_raw(h, CLIENT_A, path).await?;
+    anyhow::ensure!(status == 200, "GET {path} answered {status}");
+    let body: Value = serde_json::from_str(&body)?;
+    body.get("data")
+        .and_then(Value::as_array)
+        .context("`data`")?
+        .iter()
+        .map(|item| field(item, "id"))
+        .collect()
+}
+
+/// A hosted session's form for `intent_id`, naming `customer` when given.
+fn session_fields<'a>(intent_id: &'a str, customer: Option<&'a str>) -> Vec<(&'a str, &'a str)> {
+    let mut fields = vec![
+        ("payment_intent", intent_id),
+        ("success_url", SUCCESS_URL),
+        ("cancel_url", CANCEL_URL),
+    ];
+    if let Some(customer) = customer {
+        fields.push(("customer", customer));
+    }
+    fields
+}
+
+/// The refusal a session naming `sent` gets on an intent that is already for
+/// `on_intent` — spelled out here rather than read back from the server, so
+/// "the loser gets the same refusal" is compared against the sentence the
+/// pre-check has always answered and not merely against itself.
+fn contradiction_message(on_intent: &str, sent: &str) -> String {
+    format!(
+        "This session's PaymentIntent is already for customer {on_intent}. Omit `customer` to \
+         use it, or create a new PaymentIntent for {sent}."
+    )
+}
+
+/// How many sessions an intent has, whatever their status.
+async fn sessions_on(pool: &PgPool, intent_id: &str) -> anyhow::Result<i64> {
+    sqlx::query_scalar("SELECT count(*) FROM checkout_sessions WHERE payment_intent_id = $1")
+        .bind(intent_id)
+        .fetch_one(pool)
+        .await
+        .context("counting an intent's sessions")
+}
+
+/// Claim 11 — **ADR-0025**: a session created with `customer=X` on an intent
+/// that has no customer writes `X` onto the intent, in the session insert's
+/// own transaction.
+///
+/// So the payment the session collects is found by all three `customer`
+/// filters rather than by the session list alone (ADR-0024 D12's
+/// consequence, and its question 3), and a later session on the same intent
+/// cannot name somebody else.
+///
+/// **The mutation this reads:** delete `claim_intent_customer`'s call from
+/// `vpay_db::CheckoutSessions::create` and the first assertion after the
+/// create goes red — the intent still says nobody.
+#[tokio::test]
+async fn a_session_naming_a_customer_writes_it_onto_a_customer_less_intent() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let x = create_customer_for(&h, CLIENT_A, "Xavier").await?;
+    let y = create_customer_for(&h, CLIENT_A, "Yvonne").await?;
+    let intent = create_intent_with_customer(&h, CLIENT_A, None).await?;
+    assert_eq!(
+        intent_customer(&h, &intent).await?,
+        None,
+        "it starts with nobody"
+    );
+    assert!(
+        !list_ids(&h, &format!("/v1/payment_intents?customer={x}"))
+            .await?
+            .contains(&intent)
+    );
+
+    let (status, body) = create_session(&h, CLIENT_A, &session_fields(&intent, Some(&x))).await?;
+    assert_eq!(status, 201, "the session ({})", error_code_or_none(&body));
+    assert_eq!(field(&body, "customer")?, x);
+    let first = field(&body, "id")?;
+
+    // THE CHANGE: the intent now names X.
+    assert_eq!(
+        intent_customer(&h, &intent).await?,
+        Some(x.clone()),
+        "a session naming a customer on a customer-less intent writes it onto the intent"
+    );
+    // …and it was written by the session's own transaction, not beside it:
+    // the two rows carry the same creating transaction id.
+    let (intent_xmin, session_xmin): (String, String) = sqlx::query_as(
+        "SELECT (SELECT xmin::TEXT FROM payment_intents WHERE id = $1), \
+                (SELECT xmin::TEXT FROM checkout_sessions WHERE id = $2)",
+    )
+    .bind(&intent)
+    .bind(&first)
+    .fetch_one(&h.pool)
+    .await
+    .context("reading both rows' xmin")?;
+    assert_eq!(
+        intent_xmin, session_xmin,
+        "the intent's customer and the session must commit as one transaction"
+    );
+
+    // So the intent list finds it by X, as the session list does.
+    assert!(
+        list_ids(&h, &format!("/v1/payment_intents?customer={x}"))
+            .await?
+            .contains(&intent),
+        "GET /v1/payment_intents?customer=X now finds the intent"
+    );
+    assert_eq!(
+        list_ids(&h, &format!("/v1/checkout/sessions?customer={x}")).await?,
+        vec![first.clone()]
+    );
+
+    // A SECOND SESSION on the same intent cannot name somebody else any more.
+    // Before ADR-0025 this was a `201` with `customer: Y` on an intent the
+    // first session had already offered to X.
+    let (status, body) = expire_session(&h, &first).await?;
+    assert_eq!(
+        status,
+        200,
+        "expiring the first ({})",
+        error_code_or_none(&body)
+    );
+    let (status, body) = create_session(&h, CLIENT_A, &session_fields(&intent, Some(&y))).await?;
+    assert_eq!(status, 400, "{body:#}");
+    assert_eq!(
+        body.pointer("/error/param").and_then(Value::as_str),
+        Some("customer"),
+        "{body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/message").and_then(Value::as_str),
+        Some(contradiction_message(&x, &y).as_str()),
+        "{body:#}"
+    );
+    assert_eq!(intent_customer(&h, &intent).await?, Some(x.clone()));
+
+    // A session naming nobody inherits X, exactly as for an intent created
+    // with one.
+    let (status, body) = create_session(&h, CLIENT_A, &session_fields(&intent, None)).await?;
+    assert_eq!(
+        status,
+        201,
+        "the inheriting session ({})",
+        error_code_or_none(&body)
+    );
+    assert_eq!(field(&body, "customer")?, x);
+    let second = Session {
+        id: field(&body, "id")?,
+        secret: field(&body, "client_secret")?,
+        intent_id: intent.clone(),
+        url: field(&body, "url")?,
+    };
+
+    // Pay through it, for real, so the refund below is of a payment that
+    // happened.
+    let intent_secret = intent_secret_of(&h, &second).await?;
+    assert_eq!(browser_confirm(&h, &intent, &intent_secret).await?, 200);
+    assert!(drain_worker(&h).await? > 0, "the confirm enqueued a poll");
+    let status: String =
+        sqlx::query_scalar("SELECT status::TEXT FROM payment_intents WHERE id = $1")
+            .bind(&intent)
+            .fetch_one(&h.pool)
+            .await?;
+    assert_eq!(status, "succeeded");
+
+    // A refund of it. Seeded rather than created through `POST /v1/refunds`,
+    // exactly as `refunds.rs`' own `customer` case seeds them: this harness
+    // configures no refund rail, and what is under test is the list's join,
+    // which reads the intent's `customer_id` and nothing on the refund.
+    let refund = vpay_core::ids::refund_id();
+    sqlx::query(
+        "INSERT INTO refunds (id, payment_intent_id, amount, currency_code, status, metadata) \
+         VALUES ($1, $2, 1000, 'XAF', 'pending', '{}'::JSONB)",
+    )
+    .bind(&refund)
+    .bind(&intent)
+    .execute(&h.pool)
+    .await
+    .context("seeding a refund of the payment")?;
+    assert_eq!(
+        list_ids(&h, &format!("/v1/refunds?customer={x}")).await?,
+        vec![refund],
+        "GET /v1/refunds?customer=X now finds the refund of the payment X's session collected"
+    );
+    assert!(
+        list_ids(&h, &format!("/v1/refunds?customer={y}"))
+            .await?
+            .is_empty()
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 11, the race: two sessions naming **two different customers** for
+/// one customer-less intent, at once. Exactly one is created; the other gets
+/// the refusal a session naming a customer different from an intent's gets,
+/// byte for byte.
+///
+/// # How the race is made to happen every time
+///
+/// A test transaction holds the intent's row `FOR UPDATE` while both creates
+/// run. Neither is blocked by it until the compare-and-swap: every read in
+/// `prepare_create` is a plain `SELECT`, so both pass all of them — the
+/// intent is `requires_payment_method`, has no charge, no open session, and
+/// **no customer** — and then both queue on the `UPDATE`. The test waits
+/// until Postgres reports both waiting (`pg_stat_activity`), then commits,
+/// and the two are released in order onto a row that still has no customer.
+/// Without the hold the second often arrives after the first commits and is
+/// refused by the pre-check instead, which is a different code path; the
+/// unforced rounds at the end take whatever interleaving they get.
+///
+/// **The mutation this reads:** drop `AND customer_id IS NULL` from
+/// `claim_intent_customer` and the second `UPDATE` overwrites the first's
+/// customer, reaches the insert, and is refused by
+/// `checkout_sessions_one_open_per_intent` — a `409`, not this `400`.
+#[tokio::test]
+async fn two_sessions_naming_two_customers_for_one_intent_make_one_session_and_one_refusal()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let x = create_customer_for(&h, CLIENT_A, "Xavier").await?;
+    let y = create_customer_for(&h, CLIENT_A, "Yvonne").await?;
+    let intent = create_intent_with_customer(&h, CLIENT_A, None).await?;
+
+    let mut hold = h.pool.begin().await.context("the holding transaction")?;
+    sqlx::query("SELECT 1 FROM payment_intents WHERE id = $1 FOR UPDATE")
+        .bind(&intent)
+        .execute(&mut *hold)
+        .await
+        .context("holding the intent's row")?;
+
+    let for_x = session_fields(&intent, Some(&x));
+    let for_y = session_fields(&intent, Some(&y));
+    let release = async {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        loop {
+            let waiting: i64 = sqlx::query_scalar(
+                "SELECT count(*) FROM pg_stat_activity \
+                 WHERE wait_event_type = 'Lock' \
+                   AND query LIKE 'UPDATE payment_intents SET customer_id%'",
+            )
+            .fetch_one(&h.pool)
+            .await
+            .context("reading pg_stat_activity")?;
+            if waiting >= 2 {
+                break;
+            }
+            // Dropping `hold` rolls it back and releases both, so a timeout
+            // fails the test rather than hanging it.
+            anyhow::ensure!(
+                Instant::now() < deadline,
+                "both creates should have queued on the compare-and-swap; {waiting} did"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        hold.commit().await.context("releasing the intent's row")?;
+        Ok::<_, anyhow::Error>(())
+    };
+    let (with_x, with_y, released) = tokio::join!(
+        create_session(&h, CLIENT_A, &for_x),
+        create_session(&h, CLIENT_A, &for_y),
+        release,
+    );
+    released?;
+    let (status_x, body_x) = with_x?;
+    let (status_y, body_y) = with_y?;
+
+    let mut statuses = [status_x, status_y];
+    statuses.sort_unstable();
+    assert_eq!(
+        statuses,
+        [201, 400],
+        "exactly one session, and one refusal ({} / {})",
+        error_code_or_none(&body_x),
+        error_code_or_none(&body_y)
+    );
+    let (won, lost, loser_body) = if status_x == 201 {
+        (&x, &y, body_y)
+    } else {
+        (&y, &x, body_x)
+    };
+
+    assert_eq!(
+        intent_customer(&h, &intent).await?,
+        Some(won.clone()),
+        "the intent names the winner's customer, and only the winner's"
+    );
+    assert_eq!(
+        sessions_on(&h.pool, &intent).await?,
+        1,
+        "one session, not two"
+    );
+    assert_eq!(
+        loser_body.pointer("/error/message").and_then(Value::as_str),
+        Some(contradiction_message(won, lost).as_str()),
+        "{loser_body:#}"
+    );
+
+    // Byte for byte the refusal a session arriving AFTER the winner gets.
+    // The winner's session is expired first, because an open one would be
+    // refused by the one-open-session pre-check before the customer is looked
+    // at, and that is a different sentence.
+    let winner_session: String =
+        sqlx::query_scalar("SELECT id FROM checkout_sessions WHERE payment_intent_id = $1")
+            .bind(&intent)
+            .fetch_one(&h.pool)
+            .await?;
+    let (status, body) = expire_session(&h, &winner_session).await?;
+    assert_eq!(status, 200, "({})", error_code_or_none(&body));
+    let (status, sequential) =
+        create_session(&h, CLIENT_A, &session_fields(&intent, Some(lost))).await?;
+    assert_eq!(status, 400, "{sequential:#}");
+    assert_eq!(
+        loser_body, sequential,
+        "the loser of the race and a session arriving after it must get the same refusal"
+    );
+
+    // UNFORCED rounds: whatever interleaving the scheduler gives. The loser
+    // is refused either by the compare-and-swap (the `400` above) or, when it
+    // arrives after the winner committed, by the one-open-session pre-check
+    // (`409`) — and in every round the intent names exactly the winner's
+    // customer.
+    for round in 0..5 {
+        let intent = create_intent_with_customer(&h, CLIENT_A, None).await?;
+        let for_x = session_fields(&intent, Some(&x));
+        let for_y = session_fields(&intent, Some(&y));
+        let (with_x, with_y) = tokio::join!(
+            create_session(&h, CLIENT_A, &for_x),
+            create_session(&h, CLIENT_A, &for_y),
+        );
+        let ((status_x, body_x), (status_y, body_y)) = (with_x?, with_y?);
+        let won = match (status_x, status_y) {
+            (201, 400 | 409) => &x,
+            (400 | 409, 201) => &y,
+            other => panic!(
+                "round {round}: exactly one must win, got {other:?} ({} / {})",
+                error_code_or_none(&body_x),
+                error_code_or_none(&body_y)
+            ),
+        };
+        assert_eq!(
+            intent_customer(&h, &intent).await?,
+            Some(won.clone()),
+            "round {round}"
+        );
+        assert_eq!(sessions_on(&h.pool, &intent).await?, 1, "round {round}");
+    }
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Claim 11, the tenancy half: a session naming **another merchant's**
+/// customer on a customer-less intent is refused exactly as before
+/// ADR-0025 — the same `400` a customer that never existed gets — and
+/// nothing is written onto the intent.
+///
+/// The customer is resolved, scoped, before the transaction that would write
+/// it (`resolve_for_attachment`), so the compare-and-swap never sees a
+/// foreign id; this case pins that the new write did not move ahead of the
+/// check.
+#[tokio::test]
+async fn a_session_naming_another_merchants_customer_writes_nothing_onto_the_intent()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let theirs = create_customer_for(&h, CLIENT_B, "Zita").await?;
+    let intent = create_intent_with_customer(&h, CLIENT_A, None).await?;
+
+    let mut refusals = Vec::new();
+    for candidate in [theirs.as_str(), "cus_00000000000000000000000x"] {
+        let (status, body) =
+            create_session(&h, CLIENT_A, &session_fields(&intent, Some(candidate))).await?;
+        assert_eq!(status, 400, "{candidate}: {body:#}");
+        refusals.push(body);
+    }
+    let [foreign, missing] =
+        <[Value; 2]>::try_from(refusals).expect("exactly two requests were made above");
+    assert_eq!(
+        foreign, missing,
+        "another merchant's customer must be indistinguishable from one that never existed"
+    );
+    assert_eq!(
+        foreign.pointer("/error/param").and_then(Value::as_str),
+        Some("customer")
+    );
+    assert_eq!(
+        intent_customer(&h, &intent).await?,
+        None,
+        "nothing was written"
+    );
+    assert_eq!(sessions_on(&h.pool, &intent).await?, 0);
+
+    h.shutdown().await;
+    Ok(())
+}

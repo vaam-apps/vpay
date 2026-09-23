@@ -163,6 +163,16 @@ struct CreateParams {
     /// one that *disagrees* with the intent's is refused, because a session
     /// and the intent it drives naming two different payers is a
     /// contradiction vpay would otherwise store.
+    ///
+    /// Since ADR-0025 (2026-09-23) the case where the intent has none also
+    /// writes this customer onto the intent, in the session insert's own
+    /// transaction. So the intent and refund lists' `customer` filters find
+    /// the payment this session collects, and a later session on the same
+    /// intent cannot name somebody else. Of two concurrent sessions naming
+    /// two customers, exactly one is created. The other gets the same `400`
+    /// as a session that disagrees with an intent's customer, or, if it
+    /// read the intent after the winner committed, the one-open-session
+    /// `409` that check has always answered first.
     customer: Option<String>,
 }
 
@@ -331,7 +341,7 @@ pub(crate) async fn create(
     // anyway: the *method* is what says which table was touched.
     let outcome = CheckoutSessions::create(repositories.as_ref(), &new)
         .await
-        .map_err(|error| create_error(error, &new.payment_intent_id))
+        .map_err(|error| create_error(error, &new.payment_intent_id, new.customer_id.as_deref()))
         .and_then(|row| {
             // The one response that carries the credential a merchant hands
             // to a payer — through the `url` for hosted, through
@@ -462,20 +472,34 @@ async fn prepare_create(
                 (intent.customer_id.as_deref(), resolved.as_deref())
                 && on_intent != sent
             {
-                return Err(ApiError::invalid_param(
-                    "customer",
-                    format!(
-                        "This session's PaymentIntent is already for customer {on_intent}. \
-                         Omit `customer` to use it, or create a new PaymentIntent for \
-                         {sent}."
-                    ),
-                ));
+                return Err(customer_contradiction(on_intent, sent));
             }
+            // An intent with no customer gets this one, in the insert's own
+            // transaction (ADR-0025) — `CheckoutSessions::create`. This read
+            // can be stale by then, and the write is what decides a race.
             resolved
         }
     };
 
     Ok((validated, base_url))
+}
+
+/// The `400` for a session naming a customer its intent is not for.
+///
+/// One function because two places answer it and the answer must be the same
+/// bytes: [`prepare_create`], against its read of the intent, and
+/// [`create_error`], when the insert's compare-and-swap (ADR-0025) finds that
+/// a concurrent session wrote a different customer onto the intent first. A
+/// merchant who lost that race is told exactly what one who arrived second
+/// is told, because to them it is the same situation.
+fn customer_contradiction(on_intent: &str, sent: &str) -> ApiError {
+    ApiError::invalid_param(
+        "customer",
+        format!(
+            "This session's PaymentIntent is already for customer {on_intent}. Omit `customer` \
+             to use it, or create a new PaymentIntent for {sent}."
+        ),
+    )
 }
 
 /// Every rule that can be decided from the request alone.
@@ -830,8 +854,18 @@ fn open_session_conflict(existing_id: &str) -> ApiError {
 /// The id of the winning session is not looked up: doing so would be a second
 /// query on a path that has just lost a race, and the merchant's next step —
 /// retrieve the intent's session — is the same either way.
-fn create_error(error: vpay_db::DbError, payment_intent_id: &str) -> ApiError {
+///
+/// The [`vpay_db::DbError::IntentCustomerConflict`] arm is the other race
+/// (ADR-0025): two sessions naming two customers for one customer-less
+/// intent, and the other one wrote its customer first. It answers
+/// [`customer_contradiction`], the refusal [`prepare_create`] gives a
+/// session that arrives after the winner, for the same reason. `sent` is the
+/// customer this session named — the only one the compare-and-swap runs for.
+fn create_error(error: vpay_db::DbError, payment_intent_id: &str, sent: Option<&str>) -> ApiError {
     match error {
+        vpay_db::DbError::IntentCustomerConflict { on_intent, .. } => {
+            customer_contradiction(&on_intent, sent.unwrap_or_default())
+        }
         vpay_db::DbError::UniqueViolation { constraint, .. }
             if constraint == "checkout_sessions_one_open_per_intent" =>
         {
@@ -894,7 +928,8 @@ pub(crate) struct ListParams {
 /// never a `404`. `customer` is compared against the **session's own**
 /// `customer` — the one this list renders — not its intent's; see
 /// `vpay_db::SessionListPage::customer` for the one case where the two
-/// differ. Its malformed-id `400` is `GET /v1/invoices`', byte for byte.
+/// differ, which since ADR-0025 (2026-09-23) only rows older than that can
+/// be in. Its malformed-id `400` is `GET /v1/invoices`', byte for byte.
 ///
 /// **No `client_secret` and no `url` on any row**, and that is the whole
 /// reason [`CheckoutSessionWithSecret`] is a separate type: one page would

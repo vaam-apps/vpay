@@ -1155,6 +1155,77 @@ async fn the_two_terminal_transitions_and_the_transitions_they_refuse() -> anyho
     Ok(())
 }
 
+/// `pay`'s checkout session writes nothing onto the intent `pay` minted
+/// (ADR-0025, 2026-09-23).
+///
+/// Since ADR-0025, `vpay_db::CheckoutSessions::create` writes a session's
+/// customer onto its intent when the intent has none. `pay` mints the intent
+/// **with** the invoice's customer and the session with the same one, so the
+/// compare-and-swap matches no row and the re-read finds the same customer:
+/// nothing about this path may change. Proven three ways: the three rows name
+/// one customer; the intent row was last written by the transaction that
+/// inserted it, not by the session's (`xmin`); and both list filters find
+/// the payment.
+#[tokio::test]
+async fn paying_an_invoice_writes_nothing_onto_its_intent_through_the_session() -> anyhow::Result<()>
+{
+    let harness = harness().await?;
+    let invoice = harness.draft_with_a_line(CLIENT_A).await?;
+    harness
+        .post(CLIENT_A, &format!("/v1/invoices/{invoice}/finalize"), &[])
+        .await?;
+    let (status, paying) = harness
+        .post(
+            CLIENT_A,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paying}");
+    let customer = field(&paying, "customer")
+        .as_str()
+        .expect("an invoice has a customer")
+        .to_owned();
+    let intent = field(&paying, "payment_intent")
+        .as_str()
+        .expect("pay attaches an intent")
+        .to_owned();
+
+    let (session_customer, session_xmin, intent_customer, intent_xmin): (
+        Option<String>,
+        String,
+        Option<String>,
+        String,
+    ) = sqlx::query_as(
+        "SELECT s.customer_id, s.xmin::TEXT, p.customer_id, p.xmin::TEXT \
+         FROM checkout_sessions s JOIN payment_intents p ON p.id = s.payment_intent_id \
+         WHERE s.payment_intent_id = $1",
+    )
+    .bind(&intent)
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the session and its intent")?;
+    assert_eq!(intent_customer.as_deref(), Some(customer.as_str()));
+    assert_eq!(session_customer.as_deref(), Some(customer.as_str()));
+    assert_ne!(
+        intent_xmin, session_xmin,
+        "the session's transaction must not have rewritten the intent `pay` minted with the \
+         invoice's customer already on it"
+    );
+
+    for list in ["payment_intents", "checkout/sessions"] {
+        let (status, page) = harness
+            .get(CLIENT_A, &format!("/v1/{list}?customer={customer}"))
+            .await?;
+        assert_eq!(status, 200, "{list}: {page}");
+        let data = field(&page, "data").as_array().expect("a list");
+        assert_eq!(data.len(), 1, "{list}: {page}");
+    }
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 /// An invoice with a live payment intent cannot be voided, written off, or
 /// paid a second time — and cancelling the intent is the way back.
 ///

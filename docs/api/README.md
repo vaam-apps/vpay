@@ -155,13 +155,31 @@ ADR-0024 (D12 for sessions):
 - **sessions:** their **own** `customer`, the one they render;
 - **refunds:** their intent's `customer`, because a refund has none.
 
-**So one payment can be in one list and not the others.** A session created
-with `customer=X` on an intent that has no customer stores `X` on the session
-only. The payment that session collects is listed by
+**For sessions created from 2026-09-23 on, the three lists agree
+([ADR-0025](../adr/0025-session-customer-onto-intent.md)).** A session created
+with `customer=X` on an intent that has no customer now writes `X` onto the
+intent, in the same transaction as the session. So the payment it collects is
+listed by all three filters. A later session on that intent that names
+another customer gets the `400` naming `customer`. Of two sessions created at
+once for one such intent that name two customers, exactly one is created.
+
+**Historical rows can still be in one list and not the others.** Intents whose
+session named a customer before this change were not backfilled. They keep no
+customer, so their payment is listed by
 `GET /v1/checkout/sessions?customer=X` and **not** by
 `GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`.
-Whether a session's customer should be written onto such an intent is
-ADR-0024's **open question 3** (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+ADR-0025 § No backfill says why: a backfill would have to choose between
+sessions that named different customers.
+
+_(Until ADR-0025 on 2026-09-23 this paragraph read: "**So one payment can be
+in one list and not the others.** A session created with `customer=X` on an
+intent that has no customer stores `X` on the session only. The payment that
+session collects is listed by `GET /v1/checkout/sessions?customer=X` and
+**not** by `GET /v1/payment_intents?customer=X` or
+`GET /v1/refunds?customer=X`. Whether a session's customer should be written
+onto such an intent is ADR-0024's **open question 3**." That is still true of
+historical rows, as above.)_
+
 A server at vpay 0.5.0 or older ignores `customer` and answers the whole
 list. `GET /dash/v1/payment_intents` refuses it with a `400`.
 

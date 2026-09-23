@@ -74,6 +74,16 @@ intent it drives naming two different payers is a contradiction, not a
 preference between two answers, and the merchant is the only one who knows
 which they meant.
 
+**Added 2026-09-23 ([ADR-0025](../../adr/0025-session-customer-onto-intent.md)):**
+a session that names a customer for an intent that has **none** also writes
+that customer onto the intent, in the same transaction as the session insert
+and as a compare-and-swap on `customer_id IS NULL`. The contradiction above
+can therefore no longer arise through a second session: once one session has
+named `X`, the intent says `X`, and a later session naming `Y` is refused.
+Of two such sessions created at once, exactly one is created. Intents written
+before 2026-09-23 were not backfilled, so a historical session can still name
+a customer its intent does not.
+
 The id is rendered, never the expanded object. `expand` is not implemented,
 and rendering the customer unasked would put a payer's name, email and phone
 number into every `payment_intent.*` webhook body.
