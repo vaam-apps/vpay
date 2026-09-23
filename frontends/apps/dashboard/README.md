@@ -69,13 +69,26 @@ the `staff_sessions` row on that request — the bearer never leaves this
 process — but they are an authenticated surface a script on this origin can
 call, which the app did not have before.
 
-**Nothing calls them.** No page, no component, no test but their own. They
-exist so that a client-side data layer has a transport when one is written, and
+~~**Nothing calls them.** No page, no component, no test but their own.~~
+**Corrected 2026-09-23:** wrong since 2026-09-12
+([#138](https://github.com/vaam-apps/vpay/pull/138)). Two screens now call
+them, and only after their first render. The payments list and the payment
+detail are Refine screens whose data provider (`dashDataProvider("/api/dash")`
+in `app/(dash)/layout.tsx`) sends their _later_ reads, paging and refetches,
+through `/api/dash/payment_intents` and `/api/dash/payment_intents/{id}`.
+Their first render is still read on the server and handed to Refine as
+`initialData` (`app/(dash)/payments/page.tsx`). And there are **six**
+handlers, not two: `refunds`, `deliveries`, `customers` and `checkouts` were
+added on 2026-09-14. Those four are still called by no page, because those
+four screens render on the server and use no client data layer. They
+exist so that a client-side data layer has a transport, and
 **whether this app should have such a surface at all is the maintainer's
 decision, not this code's** — it is RD5 in
 [the Refine plan](../../../docs/plans/exp55-refine-seam-bff-notes/refine-plan.md)
-§8, and it reverses a stated property of the app's security model. Deleting the
-two files under `app/api/` and `src/server/bff.ts` breaks nothing else.
+§8, and it reverses a stated property of the app's security model. ~~Deleting the
+two files under `app/api/` and `src/server/bff.ts` breaks nothing else.~~
+_(Struck 2026-09-23: since 2026-09-12 it would break the payments screens'
+paging and refetches, per the correction above.)_
 
 What they do about it, each written as a mutation in `src/server/bff.test.ts`:
 
@@ -400,12 +413,17 @@ other case stays green.
   is RD5.~~ _(Struck 2026-09-23: wrong since 2026-09-12 (#138), when
   `app/(dash)/layout.tsx` wired `dashDataProvider("/api/dash")`. The screens
   read through the BFF, which now has six handlers, one per list plus the
-  payment detail.)_ ~~They are exercised by `src/server/bff.test.ts` and by no browser
+  payment detail.)_ _(Narrowed later the same day: "the screens read through
+  the BFF" overstated it. Only the payments list and the payment detail do,
+  and only for reads after their first render. See "The BFF, which is a new
+  browser-reachable surface" above.)_ ~~They are exercised by `src/server/bff.test.ts` and by no browser
   and no Cypress spec … that a real browser's `Sec-Fetch-Site` and cookie
   arrive as this code expects them to is not proven here.~~ **They are
   exercised by a browser since 2026-09-11 (exp56):** five cases in
   `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts` drive them from Chrome
   against the real stack, and the measured headers are in
   [`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md). The browser
-  agreed with the code on every assumption. What is still true is the first
-  sentence: **no page and no component in this app calls them.**
+  agreed with the code on every assumption. ~~What is still true is the first
+  sentence: **no page and no component in this app calls them.**~~ _(Struck
+  2026-09-23: the payments screens have called them since 2026-09-12, for
+  their later reads.)_

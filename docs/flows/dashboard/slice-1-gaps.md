@@ -249,17 +249,34 @@ the exp28 review. It forgets the cookie only for a top-level navigation
   empty list and read as data having been lost.
 - **A status this build cannot name renders as text, not as a coloured pill.**
   A green badge on an unfamiliar status is a claim.
-- **The timeline says what is missing from it.** `events.type` is constrained
-  to eight documented types (migration `0018`, extended by `0029`) and **five
-  of them are written by nothing at all** (`../status.md`, "Events written by
-  the worker"): only `payment_intent.succeeded`,
+- **The timeline says what is missing from it.** ~~`events.type` is
+  constrained to eight documented types (migration `0018`, extended by `0029`)
+  and **five of them are written by nothing at all** (`../status.md`, "Events
+  written by the worker"): only `payment_intent.succeeded`,
   `payment_intent.payment_failed` and `checkout.session.expired` are ever
   emitted, by settlement and by the housekeeping sweep. So a succeeded
-  payment's timeline is one line — and a section headed "Timeline" with one
+  payment's timeline is one line~~ — and a section headed "Timeline" with one
   line on it reads as everything that happened to that payment, which is the
   same failure as an empty table that means "the read was refused". The page
-  therefore names the five missing types under the section, on screen rather
+  therefore names the missing types under the section, on screen rather
   than only here, and `payment-detail.test.tsx` pins the sentence.
+
+  **Corrected 2026-09-23.** The struck count had been wrong since 2026-09-10.
+  The vocabulary is fifteen types (migrations `0018` through `0039`), and only
+  **two** are written by nothing: `payment_intent.created` and
+  `payment_intent.processing`. `payment_intent.canceled`, `customer.created`
+  and `customer.updated` gained writers on 2026-09-10, and `charge.refunded`
+  and `charge.refund.updated` gained theirs on 2026-09-16
+  ([../webhooks.md](../webhooks.md) names each writer). The on-screen note and
+  its test now say two, and the test also refuses the three payment types that
+  have a writer, so the drift cannot recur silently. **One more thing, read
+  from the code on 2026-09-23 and not yet tested:** the refund writer
+  (`vpay_api::v1::refunds::refund_event`) stores the refund's own `re_…` id as
+  `object_id`, and the detail read asks `Events::list_for_objects` only for the
+  intent's and the charge's. If that holds, a real refund's events do not reach
+  this timeline. The integration test that says they do seeds its
+  `charge.refunded` row by hand with the charge's id, a shape no code path
+  writes.
 
 **Configuration is read at container start and fails closed.** The API base
 URL, the dashboard `client_id`, its `redirect_uri` and its scope come from the
