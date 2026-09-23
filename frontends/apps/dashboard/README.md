@@ -384,14 +384,23 @@ other case stays green.
   at the boundary, before the router matches — no re-poll, no replay, no
   refund, no annotation, and therefore no `audit_log`, because there is nothing
   yet to audit.
-- **Any other slice.** Webhooks, checkout sessions, balances, settings and rail
-  health are not built, and the nav gate fails if it ever links to them.
+- **Any other slice.** Balances, settings, rail health and webhook **retries
+  and signature replay** are not built, and the nav gate fails if it ever
+  links to them. _(This read "Webhooks, checkout sessions, balances, settings
+  and rail health are not built" until 2026-09-23. It had been wrong about
+  webhooks since 2026-09-13, when the read-only deliveries list landed, and
+  about checkout sessions since 2026-09-14, when the checkouts screen and its
+  nav entry did. [docs/flows/dashboard.md](../../../docs/flows/dashboard.md)
+  recorded both on 2026-09-20.)_
 - **Contrast checking.** jsdom computes no paint, and no `cypress-axe` pass
   against a real browser exists.
-- **Anything through the BFF.** The two handlers under `app/api/dash/` are
+- ~~**Anything through the BFF.** The two handlers under `app/api/dash/` are
   real and tested, and **nothing in this app calls them** — there is no
   client-side data layer yet, and whether there should be one on this origin
-  is RD5. ~~They are exercised by `src/server/bff.test.ts` and by no browser
+  is RD5.~~ _(Struck 2026-09-23: wrong since 2026-09-12 (#138), when
+  `app/(dash)/layout.tsx` wired `dashDataProvider("/api/dash")`. The screens
+  read through the BFF, which now has six handlers, one per list plus the
+  payment detail.)_ ~~They are exercised by `src/server/bff.test.ts` and by no browser
   and no Cypress spec … that a real browser's `Sec-Fetch-Site` and cookie
   arrive as this code expects them to is not proven here.~~ **They are
   exercised by a browser since 2026-09-11 (exp56):** five cases in

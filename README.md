@@ -77,10 +77,14 @@ and [`sdks/nodejs`](sdks/nodejs/) (`@vaam-apps/vpay-sdk`) — plus a browser
 client, [`sdks/stripe-js`](sdks/stripe-js/) (`@vaam-apps/vpay-stripe-js`), for
 the payer-facing surface. The Rust SDK is what
 [`examples/merchant-demo`](examples/merchant-demo/) and `just demo` drive
-against a running `vpay-server`. **No test inside `sdks/nodejs` itself has ever
-spoken to a vpay** — every server in that package's own tests is a `node:http`
-stub; what has driven a live stack from Node is `sdks/stripe-compat` and
-[`examples/shop`](examples/shop/). The two merchant SDKs are held to the same
+against a running `vpay-server`. ~~**No test inside `sdks/nodejs` itself has
+ever spoken to a vpay** — every server in that package's own tests is a
+`node:http` stub~~ _(struck 2026-09-23: wrong since 2026-09-10)_. Most of that
+package's tests still answer themselves through a `node:http` stub, but
+`sdks/nodejs/src/invoices.live.test.ts` (2026-09-10) and
+`refunds.live.test.ts` (2026-09-16) drive a real `vpay-server` over a socket,
+and CI's `e2e` job runs them. Beyond the SDK's own tests, `sdks/stripe-compat`
+and [`examples/shop`](examples/shop/) also drive a live stack from Node. The two merchant SDKs are held to the same
 capability matrix, machine-checked in both directions on every `just verify` —
 see [`docs/sdks/parity.md`](docs/sdks/parity.md)
 ([ADR-0015](docs/adr/0015-sdk-parity.md)) for where they agree and the dated,
@@ -210,7 +214,7 @@ frontends/
   packages/     @vpay/tokens · @vpay/api-client · @vpay/config
                 (@vpay/ui, the in-repo design system, deleted 2026-09-12 —
                  both apps compose the published @vaam-apps/ui instead)
-  apps/         checkout (the payment page vpay serves) · dashboard (a scaffold, see below)
+  apps/         checkout (the payment page vpay serves) · dashboard (the staff console, read-only; see below)
   tests/        e2e (Cypress)
 sdks/
   rust/         vpay-sdk                   — merchant SDK (workspace crate)
@@ -284,10 +288,12 @@ removes the containers and their volumes.
 It generates a throwaway RS256 key for the server's OAuth provider and a second
 one for a demo merchant (`.e2e/`, git-ignored, both discarded with the stack),
 registers the merchant's **public** JWK in a `demo` profile overlay, and brings
-up **eight** services with `up --wait` rather than a sleep: Postgres, both
+up **nine** services with `up --wait` rather than a sleep: Postgres, both
 WireMock rail stubs, the WireMock webhook receiver, `vpay-server`,
-`vpay-worker`, `vpay-checkout` (the payment page) and `vpay-shop` (the demo
-merchant's storefront). It then runs
+`vpay-worker`, `vpay-checkout` (the payment page), `vpay-shop` (the demo
+merchant's storefront) and `dashboard` (the staff console). _(This said
+**eight**, without `dashboard`, until 2026-09-23; the justfile's
+`demo_services` has named nine since exp28 on 2026-09-07.)_ It then runs
 [`examples/merchant-demo`](examples/merchant-demo/), a Rust binary built on the
 real merchant SDK.
 
@@ -344,16 +350,21 @@ not: **MTN's real sandbox rejects XAF**, which is why
 `application-sandbox.yml` inherits it. Configuration either way — never a code
 branch.
 
-**The dashboard is the one service of the demo file set that stays down**, and
-that is a statement rather than an optimisation: it renders a scaffold notice
-and a status-badge reference, makes no call to `vpay-server` and has no login,
-so there is no screen that could show the six payments the walkthrough just
-made. `/dash/v1`'s two read routes and staff sign-in do exist and are proven
-over HTTP against a real Postgres
-(`backends/tests/integration/tests/dashboard_read_surface.rs`,
-`…/staff_sign_in.rs`) — nothing in the app calls them yet. `docker compose -f
-compose.yml -f compose.e2e.yml up` still starts the scaffold if you want to
-look at it.
+~~**The dashboard is the one service of the demo file set that stays down**,
+and that is a statement rather than an optimisation: it renders a scaffold
+notice and a status-badge reference, makes no call to `vpay-server` and has no
+login, so there is no screen that could show the six payments the walkthrough
+just made.~~ **Corrected 2026-09-23:** wrong since exp28 (2026-09-07), when the
+dashboard gained staff sign-in and joined `demo_services`. It starts with the
+rest of the demo: a staff member signs in with a password and TOTP (`just
+demo-staff` creates one) and reads **one** merchant's payments, refunds,
+deliveries, customers and checkout sessions through `/dash/v1`. It shows the
+**shop's** tenant, not the walkthrough's, on purpose.
+[docs/runbooks/demo/dashboard-sign-in.md](docs/runbooks/demo/dashboard-sign-in.md)
+is how to get in and why. It is read-only, and it has never run in a
+deployment. ~~`/dash/v1`'s two read routes and staff sign-in … nothing in the
+app calls them yet.~~ The app has called them since 2026-09-12, through its
+server-side BFF under `app/api/dash/`.
 
 **Running two demos on one machine** is what the `just` variables are for:
 `demo_project` picks the Compose project (so different containers, network and

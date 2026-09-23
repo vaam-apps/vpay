@@ -5,12 +5,14 @@ The Node.js merchant SDK for vpay's `/v1` API. Implements the wire contract in
 `private_key_jwt` client assertions, `client_credentials` token exchange and
 caching, the form-encoded resource calls, and outbound-webhook verification.
 
-**Not yet on the registry.** `npm view @vaam-apps/vpay-sdk` answered `E404` on
-2026-09-05 and no workflow in this repository publishes anything. What changed
-on that date is only that the manifest stopped saying `"private": true`, so a
-release can happen without editing it; the release workflow that would do the
-publishing does not exist yet. See "Status" below for what the server it talks
-to actually serves.
+**On the registry since 2026-09-19.** `release.yml`'s `publish-node-sdk` job
+(added 2026-09-18) publishes it on every `v*` tag, and `npm view
+@vaam-apps/vpay-sdk versions` listed `0.2.1` (the first, 2026-09-19) through
+`0.4.1` on 2026-09-23. _(This paragraph read "Not yet on the registry …
+`E404` on 2026-09-05 and no workflow in this repository publishes anything"
+until 2026-09-23. The workflow half was wrong from 2026-09-18, and the
+registry half from 2026-09-19.)_ Publishing it proves nothing about what the
+server it talks to serves; see "Status" below.
 
 ## Install
 
@@ -20,10 +22,10 @@ Inside this workspace:
 pnpm --filter @vaam-apps/vpay-sdk build
 ```
 
-From a registry, once a release workflow exists and has run:
+From the registry:
 
 ```bash
-pnpm add @vaam-apps/vpay-sdk   # not yet published — see above
+pnpm add @vaam-apps/vpay-sdk
 ```
 
 Requires Node.js `>=22.11.0`.

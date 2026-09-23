@@ -182,15 +182,21 @@ the other seven claims the same sweep corrected:
 ### Adapters
 
 Both rails' wire calls are implemented and **proven against a real
-`wiremock/wiremock` container**, never against MTN or Orange. The column
+`wiremock/wiremock` container**. Since 2026-09-15 MTN's **charge path** —
+the Collections token, `submit` and `query_status` — has also run against
+MTN's real sandbox, on one day, settling one charge
+([verification/2026-09-15.md](verification/2026-09-15.md)); nothing else on
+either rail has met a real endpoint. _(This read "never against MTN or Orange"
+until 2026-09-23, and the matrix below marked MTN's real sandbox "⛔ never
+called"; both had been wrong since 2026-09-15.)_ The column
 split below is the whole point of this section: ✅ means a conformance case
 would fail if the behaviour broke; 🟡 means the code is real and its only
 witness is a stub; ⛔ means not built.
 
-| Rail                      | Capabilities           | Wire calls (vs. WireMock)                                               | Real sandbox    | Callbacks                                                   | Refunds                                         |
-| ------------------------- | ---------------------- | ----------------------------------------------------------------------- | --------------- | ----------------------------------------------------------- | ----------------------------------------------- |
-| `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | ⛔ never called | 🟡 parsed, routed, never received                           | 🟡 `transfer` written, **product never called** |
-| `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called | 🟡 parsed, routed, never received; `notif_token` unverified | ⛔ `NotImplemented("orange_money::refund")`     |
+| Rail                      | Capabilities           | Wire calls (vs. WireMock)                                               | Real sandbox                                               | Callbacks                                                   | Refunds                                         |
+| ------------------------- | ---------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------- |
+| `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | 🟡 charge path on 2026-09-15 only; lookup and refund never | 🟡 parsed, routed, never received                           | 🟡 `transfer` written, **product never called** |
+| `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called                                            | 🟡 parsed, routed, never received; `notif_token` unverified | ⛔ `NotImplemented("orange_money::refund")`     |
 
 **Each rail parses its own refund destination (2026-09-15, RFC-0003 open
 question 4).** Both adapters implement `ProviderAdapter::parse_destination`,

@@ -38,13 +38,24 @@ case. This is the payoff for not lying about finality at minute 15.
 
 A callback never changes state. It only enqueues a status query.
 
-```
+```text
 POST /provider/{code}/callback
+  → no adapter for {code}                     → 404, the router's own fallback
   → adapter.parse_callback() extracts identifiers ONLY
-  → validate the reference exists
-  → INSERT job (poll_charge, dedupe_key='poll:<ref>') ON CONFLICT DO NOTHING
-  → 200 OK
+      not a notification this rail could send → 400
+  → the reference names no charge here        → 202, nothing enqueued
+  → one transaction: INSERT job (poll_charge, dedupe_key='poll:<ref>')
+      ON CONFLICT DO NOTHING, then pull that poll forward unless it is
+      already due within PULL_FORWARD_FLOOR
+  → 202 Accepted
 ```
+
+_(Corrected 2026-09-23. The sketch ended `→ 200 OK` and showed one path.
+`vpay_api::provider_callback`, mounted in Step 8 (2026-09-04), has answered
+`202` since that day, and answers `202` for an unknown reference too. The two
+are indistinguishable on purpose: a rail retries anything that is not a 2xx,
+and an unauthenticated route must not say which references exist. Its module
+docs, "The four answers", are the authority.)_
 
 Mobile-money callbacks are typically unauthenticated and unsigned, unreliable,
 and sometimes duplicated. The authenticated status query is the only thing that
@@ -212,9 +223,12 @@ NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
   "check your phone" UI has nothing to turn off. Deferred deliberately in Step
   4 (decision 6 of `docs/plans/2026-09-03-step4-worker.md`); it is a coherent
   unit with the fan-out in Step 5.
-- **No fan-out.** The `events` rows this document's late success writes are
+- ~~**No fan-out.** The `events` rows this document's late success writes are
   inserted with `fanout_state = 'pending'` and nothing reads them —
-  see [webhooks.md](webhooks.md).
+  see [webhooks.md](webhooks.md).~~ **Corrected 2026-09-23:** wrong since
+  Step 5 (2026-09-03). The worker fans each `pending` event out to the
+  merchant's endpoints and delivers it on the seven-rung ladder
+  (`vpay_worker::webhooks`); [webhooks.md](webhooks.md) is the whole of it.
 - **The `contradiction` classifier is wired but its call sites are untested.**
   A rail that reports the opposite of a settled charge raises
   `error!(alert = true, …)` and changes nothing; the classifier's table is unit

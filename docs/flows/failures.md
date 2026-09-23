@@ -140,7 +140,13 @@ real response path** — an unmapped string arrives as `provider_error`
 carrying the raw reason rather than being guessed at
 ([runbooks/provider-error-rate.md](../runbooks/provider-error-rate.md)).
 **What none of this proves** is that the tables are faithful to the _rails_:
-every decline above came from WireMock, and neither rail's real sandbox has
-ever been called. Orange in particular documents no error vocabulary for
+every decline above came from WireMock, and no real rail has ever declined a
+vpay charge. MTN's real sandbox has been called on one day, 2026-09-15: three
+runs, the first two stopped at the token mint by adapter bugs and the third
+settled its charge, so no rail-reported decline came out of it
+([../status/verification/2026-09-15.md](../status/verification/2026-09-15.md)).
+Orange's has never been called. _(This read "neither rail's real sandbox has
+ever been called" until 2026-09-23, and had been wrong about MTN since
+2026-09-15.)_ Orange in particular documents no error vocabulary for
 `webpayment` and no sub-reasons for `FAILED`, so both land in the
 "unmapped, alert on it" bucket by design. See [../status.md](../status.md).

@@ -90,10 +90,18 @@ error's `Category` and `Category::Idempotency` is `400`; splitting one
 Stripe `type` across two statuses is an ADR-level change, left as a
 maintainer decision. Branch on `code`, which is distinct either way.
 
-**Not built:** nothing sweeps the table on a schedule.
+~~**Not built:** nothing sweeps the table on a schedule.
 `vpay_db::Idempotency::sweep_expired` exists and `vpay-server` calls it once
 at boot as a stopgap; there is no worker job loop, so a long-lived
-deployment grows `idempotency_keys` monotonically between restarts.
+deployment grows `idempotency_keys` monotonically between restarts.~~
+**Corrected 2026-09-23:** wrong since Step 4 (2026-09-03). The worker's
+hourly housekeeping job, `vpay_worker::handlers::sweep_expired`, calls
+`Idempotency::sweep_expired` (and the spent-`jti` delete) on every pass, so
+the table holds at most an hour of expired keys. No test asserts that the job
+deletes an idempotency key. The job itself is driven by
+`the_housekeeping_sweep_expires_a_stale_session_and_spares_a_paying_one`
+(`backends/tests/integration/tests/checkout_sessions.rs`), which asserts only
+on sessions.
 
 ### Resources
 

@@ -337,7 +337,12 @@ a default. [Verification log](../status/verification/2026-09-13-adr-0018-admin-r
 5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
    untouched. `TokenManager` holds one key for the life of the process,
    rotation is restart-based, and nothing re-reads the key file.
-6. **The rate limit is per replica** — see "Every refusal is one answer".
+6. ~~**The rate limit is per replica** — see "Every refusal is one answer".~~
+   _(Struck 2026-09-23: wrong since 2026-09-10 (issue #79 item 2), when
+   `rate_limit_windows` (migration `0038`) made the sign-in budget the
+   deployment's. `two_replicas_share_one_sign_in_budget` pins it; see
+   "Added 2026-09-10" above and
+   [dashboard-auth/rate-limiting.md](dashboard-auth/rate-limiting.md).)_
 
 **What the two blockers this document recorded turned out to be:**
 

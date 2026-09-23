@@ -33,12 +33,15 @@ this one is run by neither: nothing in the `justfile`, in
 `.github/workflows/` or in `.xtask/` names `examples/tauri-checkout` at all,
 so every count it has ever produced came from somebody running it by hand.
 `merchant-curl` and `merchant-node` still describe the _intended_ API as
-pinned down by [`docs/flows/merchant-auth.md`](../docs/flows/merchant-auth.md),
-and their balance call and their _refund creation_ still reach a
-`404 unknown_route`, because those routes are deliberately not mounted.
-`/v1/events` **is** served as of Step 5, and `GET /v1/refunds/{id}` as of
-2026-09-05 (issue #45) — creating a refund is what has no route, because no
-rail can refund. `webhook-receiver` describes a delivery vpay now really
+pinned down by [`docs/flows/merchant-auth.md`](../docs/flows/merchant-auth.md).
+`GET /v1/balance` still reaches a `404 unknown_route`, because that route is
+deliberately not mounted. `/v1/events` **is** served as of Step 5, and
+`GET /v1/refunds/{id}` as of 2026-09-05 (issue #45). ~~Creating a refund is
+what has no route, because no rail can refund.~~ _(Struck 2026-09-23: wrong
+since 2026-09-16, when `POST /v1/refunds` was mounted. It creates a `pending`
+refund and instructs the rail, and nothing settles it; see
+[`docs/api/README.md`](../docs/api/README.md). This paragraph also said both
+examples make a balance call and a refund call. Neither does.)_ `webhook-receiver` describes a delivery vpay now really
 sends: the worker signs and POSTs it, and a delivered one has been verified
 both with `@vaam-apps/vpay-sdk` and with the official `stripe` package's
 `constructEvent`. An intent reaches `succeeded` too — `vpay-worker` polls the

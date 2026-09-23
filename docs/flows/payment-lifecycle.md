@@ -24,8 +24,8 @@ stateDiagram-v2
     requires_payment_method --> canceled : cancel
     requires_payment_method --> processing : confirm on a push rail
     requires_payment_method --> requires_action : confirm on a redirect rail
-    requires_action --> processing : payer redirected, token durable
-    requires_action --> failed : submit response lost, payer never redirected
+    requires_action --> succeeded : rail says succeeded
+    requires_action --> failed : rail says failed
     processing --> processing : timers only
     processing --> succeeded : rail says succeeded
     processing --> failed : rail says failed
@@ -35,6 +35,19 @@ stateDiagram-v2
     canceled --> [*]
     failed --> [*]
 ```
+
+_(Corrected 2026-09-23. Until then the diagram drew
+`requires_action --> processing : payer redirected, token durable` and
+`requires_action --> failed : submit response lost, payer never redirected`,
+both from the 2026-08-09 scaffold. Neither is a transition the code makes,
+and both had been wrong since Step 4 (2026-09-03), when the settlement
+transaction first moved a redirect intent at all. `vpay_core::next_status`
+gives `requires_action` no outgoing edge, and `vpay_db::payment_intents`'
+`SETTLEABLE_STATUSES` settles or fails an intent straight from
+`requires_action`, as it does from `processing`. A redirect submit whose
+response is lost never reaches `requires_action` in the first place: the
+charge stays `submitting`, the intent stays `requires_payment_method`, and
+[crash-safety.md](crash-safety.md) says to abandon that order.)_
 
 ## What each transition means
 
