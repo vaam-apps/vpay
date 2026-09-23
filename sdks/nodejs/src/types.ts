@@ -385,6 +385,11 @@ export interface CheckoutSession {
    * The `cus_…` this session is for, or `null` (S4a). Copied from the
    * session's intent at create when the intent has one. The id, never the
    * expanded object — {@link PaymentIntent.customer}'s reason, unchanged.
+   *
+   * The other direction, from 2026-09-23 (ADR-0025): a session created with
+   * a customer for an intent that had none wrote it onto the intent too, so
+   * the two agree. A session created that way before then, or by a server
+   * without ADR-0025, may name a customer its intent does not.
    */
   customer?: string | null;
   /** Unix seconds. 24 h from create. */
@@ -527,14 +532,16 @@ export type ListPaymentIntentsParams = {
    * `404`, so the filter cannot tell you which customers exist under some
    * other account.
    *
-   * **A checkout session's customer is not seen here.** A session created
-   * with `customer` on an intent that has none stores that customer on the
-   * session only, and this filter reads the intent's own `customer` — so the
-   * payment that session collects is **not** in this list, and only
-   * {@link ListCheckoutSessionsParams}' `customer` finds it. Whether the
-   * session's customer should be written onto such an intent is open
-   * question 3 of ADR-0024
-   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   * **A checkout session's customer is seen here, from 2026-09-23 on.** A
+   * session created with `customer` on an intent that has none now writes
+   * that customer onto the intent (ADR-0025,
+   * `docs/adr/0025-session-customer-onto-intent.md`), so the payment it
+   * collects is in this list. **Historical rows are not:** a session created
+   * that way before the change, or against a server without it, stored the
+   * customer on the session only, those intents were not backfilled, and
+   * only {@link ListCheckoutSessionsParams}' `customer` finds their payment.
+   * _(Until ADR-0025 this said the session's customer was never seen here,
+   * and called the question open question 3 of ADR-0024.)_
    *
    * **Needs a vpay server that has this filter**: no release up to and
    * including 0.5.0 has it (as of 2026-09-23). A
@@ -1259,8 +1266,19 @@ export interface CreateCheckoutSessionParams {
    * The `cus_…` this session is for (issue #70), or omit to inherit the
    * intent's customer — see {@link CheckoutSession.customer}.
    *
-   * Refused `409` naming `customer` when the session's PaymentIntent already
+   * Refused `400` naming `customer` when the session's PaymentIntent already
    * names a *different* customer; the server never lets the two disagree.
+   * _(This said `409` until 2026-09-23. The server has always answered
+   * `400` (`invalid_param`), which
+   * `a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction` in
+   * `backends/tests/integration/tests/customers.rs` asserts.)_
+   *
+   * When the intent has **no** customer, a server with ADR-0025 (2026-09-23,
+   * `docs/adr/0025-session-customer-onto-intent.md`) writes this one onto
+   * the intent, in the same transaction as the session. So the intent's own
+   * `customer` and the intent and refund list filters see it, and a later
+   * session on that intent cannot name somebody else. A server without it
+   * stores the customer on the session only.
    */
   customer?: string | undefined;
 }
@@ -1286,13 +1304,15 @@ export type ListCheckoutSessionsParams = {
    * other account.
    *
    * This is the **session's** customer, and it includes a session created
-   * with `customer` on an intent that has none. That customer is on the
-   * session only, so the payment such a session collects is found here but
-   * **not** by {@link ListPaymentIntentsParams}' or
-   * {@link ListRefundsParams}' `customer`, which read the intent's. Whether
-   * the session's customer should be written onto such an intent is open
-   * question 3 of ADR-0024
-   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   * with `customer` on an intent that has none. From 2026-09-23 on such a
+   * session also writes its customer onto the intent (ADR-0025,
+   * `docs/adr/0025-session-customer-onto-intent.md`), so
+   * {@link ListPaymentIntentsParams}' and {@link ListRefundsParams}'
+   * `customer` find its payment too. A session created that way **before**
+   * the change, or against a server without it, has its customer on the
+   * session only; its intent was not backfilled, and this filter is the only
+   * one that finds its payment. _(Until ADR-0025 this said that of every such
+   * session, and called the question open question 3 of ADR-0024.)_
    *
    * **Needs a vpay server that has this filter**: no release up to and
    * including 0.5.0 has it (as of 2026-09-23). A
@@ -1470,13 +1490,16 @@ export type ListRefundsParams = {
    * `404`, so the filter cannot tell you which customers exist under some
    * other account.
    *
-   * **A checkout session's customer is not seen here.** A session created
-   * with `customer` on an intent that has none stores that customer on the
-   * session only, and this filter reads the refund's intent's `customer` — so
-   * refunds of the payment that session collected are **not** in this list.
-   * Whether the session's customer should be written onto such an intent is
-   * open question 3 of ADR-0024
-   * (`docs/adr/0024-customer-filters-and-manual-payments.md`).
+   * **A checkout session's customer is seen here, from 2026-09-23 on.** A
+   * session created with `customer` on an intent that has none now writes
+   * that customer onto the intent (ADR-0025,
+   * `docs/adr/0025-session-customer-onto-intent.md`), and this filter reads
+   * the refund's intent's `customer`, so refunds of its payment are in this
+   * list. **Historical rows are not:** a session created that way before the
+   * change, or against a server without it, stored the customer on the
+   * session only, and those intents were not backfilled. _(Until ADR-0025
+   * this said the session's customer was never seen here, and called the
+   * question open question 3 of ADR-0024.)_
    *
    * **Needs a vpay server that has this filter**: no release up to and
    * including 0.5.0 has it (as of 2026-09-23). A

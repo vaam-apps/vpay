@@ -3216,6 +3216,28 @@ async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() 
             .context("reading the session's customer_id")?;
     assert_eq!(stored.as_deref(), Some(y.as_str()));
 
+    // Since ADR-0025 (2026-09-23) the session also wrote Y onto the intent,
+    // which had none. Case 5 needs a customer that a session names and **no
+    // intent** does — a shape only rows older than ADR-0025 can have, since
+    // they were not backfilled — so the intent is put back to that shape
+    // here, in SQL, the only way left to reach it.
+    let on_intent: Option<String> =
+        sqlx::query_scalar("SELECT customer_id FROM payment_intents WHERE id = $1")
+            .bind(&bare)
+            .fetch_one(&h.pool)
+            .await
+            .context("reading the intent's customer_id")?;
+    assert_eq!(
+        on_intent.as_deref(),
+        Some(y.as_str()),
+        "the session's customer is written onto a customer-less intent (ADR-0025)"
+    );
+    sqlx::query("UPDATE payment_intents SET customer_id = NULL WHERE id = $1")
+        .bind(&bare)
+        .execute(&h.pool)
+        .await
+        .context("staging a pre-ADR-0025 intent")?;
+
     // 3. A CONTRADICTION. The intent says X, the request says Y.
     let also_x = intent(&sdk, Some(&x)).await;
     let (status, body) = create_session(

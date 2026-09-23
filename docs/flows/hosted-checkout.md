@@ -214,16 +214,45 @@ against a real Postgres, in both SDKs by the `checkout.sessions.list` row of
 [../sdks/parity.md](../sdks/parity.md); evidence in
 [../status/verification/2026-09-23-customer-filters.md](../status/verification/2026-09-23-customer-filters.md).
 
-**One consequence, recorded rather than decided.** A checkout session
-created with `customer=X` on an intent that has no customer stores `X` on
-the session only. The payment it collects is therefore listed by
+**Resolved for sessions created from 2026-09-23 on, by
+[ADR-0025](../adr/0025-session-customer-onto-intent.md).** A checkout
+session created with `customer=X` on an intent that has no customer now
+writes `X` onto the intent in the same transaction as the session insert. It
+is a compare-and-swap on `customer_id IS NULL`
+(`vpay_db::checkout_sessions::claim_intent_customer`). So its payment is
+listed by all three filters, and a later session on that intent naming
+another customer gets the `400` naming `customer`. Of two concurrent sessions
+naming two customers for one such intent, exactly one is created. The other
+gets the `400` a session naming a customer different from its intent's has
+always got, byte for byte, or the one-open-session `409` if it read the
+intent after the winner committed. Proven against a real Postgres by
+`a_session_naming_a_customer_writes_it_onto_a_customer_less_intent`,
+`two_sessions_naming_two_customers_for_one_intent_make_one_session_and_one_refusal`
+and `a_session_naming_another_merchants_customer_writes_nothing_onto_the_intent`
+(`checkout_sessions.rs`), and, for `POST /v1/invoices/{id}/pay`, by
+`paying_an_invoice_writes_nothing_onto_its_intent_through_the_session`
+(`invoices.rs`). Evidence:
+[../status/verification/2026-09-23-session-customer-onto-intent.md](../status/verification/2026-09-23-session-customer-onto-intent.md).
+
+**Still true of historical rows.** Intents whose session named a customer
+before this change were **not** backfilled, so they keep no customer. Their
+payment is listed by `GET /v1/checkout/sessions?customer=X` and not by
+`GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`, and
+that customer's erasure does not reach the charge's `payer_ref`. ADR-0025
+§ No backfill says why: a backfill would have to choose between sessions
+that named different customers.
+
+_(Until ADR-0025, the same day, this paragraph read: "**One consequence,
+recorded rather than decided.** A checkout session created with `customer=X`
+on an intent that has no customer stores `X` on the session only. The
+payment it collects is therefore listed by
 `GET /v1/checkout/sessions?customer=X` and **not** by
-`GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`,
-which read the intent's column. The column each list compares is accepted
-in ADR-0024 (D12 for sessions); whether a session's customer should be
-written onto a customer-less intent is its **open question 3**
+`GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`, which
+read the intent's column. The column each list compares is accepted in
+ADR-0024 (D12 for sessions); whether a session's customer should be written
+onto a customer-less intent is its **open question 3**
 (`docs/adr/0024-customer-filters-and-manual-payments.md`, not yet on
-`master`). Nothing here changes until that is answered.
+`master`). Nothing here changes until that is answered.")_
 
 Built and merged 2026-09-04 (Step 9). Proven in a real browser by
 `frontends/tests/e2e/cypress/e2e/shop-hosted.cy.ts` (3 tests, both rails,

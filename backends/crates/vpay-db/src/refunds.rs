@@ -268,6 +268,12 @@ pub struct RefundListPage {
     /// is fixed at creation and an intent's customer is never rewritten, so
     /// "this customer's refunds" cannot drift from what the intent says.
     ///
+    /// _(Since ADR-0025, 2026-09-23, an intent's customer can be **written
+    /// once**, from none to the customer a checkout session names. It is
+    /// still never rewritten from one customer to another, and it cannot
+    /// happen under a refund: a session is refused on an intent that has a
+    /// charge, and a refund needs one.)_
+    ///
     /// Not validated for existence, for [`Self::payment_intent`]'s reason:
     /// another merchant's customer, an unknown one, and one of this
     /// merchant's with no refunds are all the same empty page.
