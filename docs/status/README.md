@@ -38,12 +38,12 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and five times on 2026-09-23, when the super-linter
+plugin's page landed, and six times on 2026-09-23, when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
-page and the migrations-manifest page did: the directory holds 65 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 42 of them. This is a hand-maintained list, not a generated one,
+page, the migrations-manifest page and the skills-reverification page did: the directory holds 66 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 43 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40 and then 64/41 on 2026-09-23; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41 and then 65/42 on 2026-09-23; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -76,6 +76,15 @@ rather than trusting this list to be exhaustive.
   Debian output byte-identical to the committed manifest and to each other on
   an appended line, the old recipe's output matched under GNU tools, and both
   refusals re-checked.
+- [verification/2026-09-23-skills-reverification.md](verification/2026-09-23-skills-reverification.md) —
+  fourteen claims a re-verification of the agent skills found stale, thirteen
+  of them real: the route-probe test that had missed `manual_payments` (now
+  checked against the schema's own model list, with the mutation that turns it
+  red), a theme test title from before the `light` theme, a nine-method port
+  documented as six, a thirteen-key object called twelve, "the only `DELETE`",
+  a `draft → void` edge that never existed, "FIVE models" of fourteen, a
+  two-leaf exit-code chain of four, and "both binaries" sixteen days after
+  there was one. And the one that was not real, and why.
 - [verification/2026-09-23-stale-claims.md](verification/2026-09-23-stale-claims.md) —
   fourteen claims found stale while writing the vpay-docs site against
   `v0.4.1`, each re-checked on `master` and corrected in place with its date:

@@ -88,8 +88,16 @@ pub enum RefundStatus {
 ///
 /// ```text
 /// draft ──finalize──> open ──> paid | void | uncollectible
-///   └────void────> void        (also: DELETE, which removes it entirely)
+///   └────DELETE────> (gone: a draft is removed, never voided)
 /// ```
+///
+/// _The second line drew `draft ──void──> void` until 2026-09-23, an edge
+/// that has never existed: `vpay_db::invoices::void_in_tx`'s `WHERE` names
+/// `status = 'open'` alone, and migration `0036`'s
+/// `number_is_assigned_at_finalize` would refuse a voided draft anyway,
+/// because a non-draft invoice must carry a number and a draft has none.
+/// `DELETE /v1/invoices/{id}` is the only way out of `draft` other than
+/// `finalize`._
 ///
 /// There is deliberately **no** `can_transition_to` on this type. A method
 /// here would be a second copy of a rule that has to be enforced in the

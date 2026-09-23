@@ -17,8 +17,20 @@
  * so — it is the only theme the package compiles), so the decisive mutation
  * and the reasoning are unchanged in substance: a `data-theme` that does not
  * say `dark` still compiles no styling at all. Only the theme's name moved.
+ *
+ * **Corrected 2026-09-23:** the paragraph above, and this file's first case
+ * title ("the only theme @vaam-apps/ui actually compiles"), had been wrong
+ * since `@vaam-apps/ui@0.1.2` (2026-09-12) — the same release that made
+ * `styling-gate.test.ts` stop hardcoding one `--color-base-100`. The package
+ * (0.2.4 today) registers **two** themes in `dist/styles/theme.css`: `dark`,
+ * with `default: true`, and an opt-in `light`, which the shell's
+ * `ThemeSwitcher` writes. A `data-theme="light"` compiles; a `data-theme`
+ * naming neither still compiles no styling at all, which is the regression
+ * this file guards. The first case now reads the set of registered names off
+ * the package's own `theme.css` rather than asserting there is one.
  */
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,11 +48,25 @@ function markup(): string {
 }
 
 describe("the root layout", () => {
-  it("sets the dark theme — the only theme @vaam-apps/ui actually compiles", () => {
+  it("sets the dark theme — @vaam-apps/ui's default, and one of the two it compiles", () => {
+    const themeCss = readFileSync(
+      createRequire(import.meta.url).resolve("@vaam-apps/ui/styles/theme.css"),
+      "utf8",
+    );
+    const registered = [
+      ...themeCss.matchAll(
+        /@plugin\s+"daisyui\/theme"\s*\{[^}]*?name:\s*"([^"]+)"/g,
+      ),
+    ].map((m) => m[1]);
+    expect(registered.sort()).toEqual(["dark", "light"]);
+
     const html = markup();
     expect(html).toContain('data-theme="dark"');
-    expect(html).not.toContain('data-theme="corporate"');
-    expect(html).not.toContain('data-theme="bumblebee"');
+    const pinned = [...html.matchAll(/data-theme="([^"]*)"/g)].map((m) => m[1]);
+    expect(pinned).toEqual(["dark"]);
+    for (const name of pinned) {
+      expect(registered).toContain(name);
+    }
   });
 
   it("renders no <h1> of its own — the brand moved to the signed-in rail", () => {

@@ -2,6 +2,37 @@
 
 _Moved out of [docs/reference/vpay-db.md](../vpay-db.md) on 2026-09-11 by exp57, which split a 3 330-line reference into pages a person can read. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the relative links gained a `../` because the file moved one directory down._
 
+> **A dated snapshot, not today's list (added 2026-09-23).** The registry
+> below is the one measured on **2026-09-10** — thirty-two statements over
+> twelve tables — and the page title's "today" is that day's. It is kept
+> as written, because the account of how the previous version of it was
+> wrong is part of what it records. Re-measured on 2026-09-23 by the same
+> rule (every builder chain in non-test `vpay-db` code ending in one
+> `.run(..)` or `.run_in_tx(..)`, attributed to the delegate accessor it
+> starts from): **36 statements over fourteen tables, fourteen of the
+> schema's twenty models.** What moved since the table below:
+>
+> - `credentials` (migration `0044`) — **four**, all new: `create` (`create`),
+>   `find_for_staff_member` (`find_many().where_(staff_member_id).where_(kind).limit(1)`),
+>   `advance_counter` (`update_many().where_(id).where_(counter.lt(..))`) and
+>   `replace_material` (`update_many().where_(id)`).
+> - `manual_payments` (migration `0049`, #251) — **one**, new:
+>   `manual_payment_for_invoice` (`find_many().where_(invoice_id)`).
+> - `staff_members` — **seven → five**. `enrol_totp`, `record_totp_step` and
+>   `set_password` are gone from this table (the second factor and the
+>   password now live on `credentials`); `delete` (`delete_many().where_(id)`)
+>   is new.
+> - `staff_sessions` — **six → seven**: `delete_others`
+>   (`delete_many().where_(staff_id).where_(id.ne(keep_id))`) is new.
+> - `customers` — still two, but the row below named `delete` with
+>   `.run(ctx)`; the method is now `hard_delete`, and it runs `run_in_tx`.
+>
+> The six models with no generated statement are `PaymentIntent`, `Charge`,
+> `Refund`, `LedgerTransaction`, `LedgerEntry` and `RateLimitWindow`. The
+> same figures, per model, are in `schemas/vpay.cstack`'s header box, which
+> is the copy to re-measure next; the evidence is
+> [2026-09-23-skills-reverification.md](../../status/verification/2026-09-23-skills-reverification.md).
+
 ### What runs through it today
 
 **Thirty-two statements, twelve tables, twelve models** — the whole list,

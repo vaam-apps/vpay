@@ -1,8 +1,10 @@
 // vpay — CrateStack schema
 //
 // ┌──────────────────────────────────────────────────────────────────────────┐
-// │ STATUS: PARTLY COMPILED SINCE 2026-09-06 — ONE MODEL IS REAL, THE        │
-// │ REST IS A DESIGN SKETCH                                                  │
+// │ STATUS: COMPILED SINCE 2026-09-06 — FOURTEEN OF TWENTY MODELS ARE        │
+// │ QUERIED, SIX ARE COMPILED AND UNUSED                                     │
+// │ (this line said "ONE MODEL IS REAL, THE REST IS A DESIGN SKETCH" until   │
+// │ 2026-09-23)                                                              │
 // │                                                                          │
 // │ This file used to say "NOT WIRED IN" and "EXCLUDED FROM THE BUILD        │
 // │ GRAPH". Both stopped being true on 2026-09-06:                           │
@@ -15,8 +17,19 @@
 // │ verify-repositories` fails if that changes).                             │
 // │                                                                          │
 // │ Compiled is not the same as used, and the difference matters more        │
-// │ than usual here. FIVE models have queries running through them, all      │
-// │ of them since 2026-09-06: `DisabledClient` (all three methods —          │
+// │ than usual here. FOURTEEN of the twenty models have queries running      │
+// │ through them — 36 generated statements in non-test `vpay-db` code,       │
+// │ counted 2026-09-23 as every `.run(..)`/`.run_in_tx(..)` on a delegate:   │
+// │ CheckoutSession 4, Credential 4, Currency 2, Customer 2, DisabledClient  │
+// │ 3, Event 1, Invoice 1, InvoiceItem 1, ManualPayment 1,                   │
+// │ OauthAuthorizationCode 3, Provider 1, StaffMember 5, StaffSession 7,     │
+// │ WebhookDelivery 1. The six with none: PaymentIntent, Charge, Refund,     │
+// │ LedgerTransaction, LedgerEntry, RateLimitWindow — their SQL is           │
+// │ hand-written. (This said "FIVE models" until 2026-09-23 and had been     │
+// │ stale since the staff, customers, checkout-sessions, credentials and     │
+// │ invoice passes moved; the five it named, and how, follow unchanged.)     │
+// │ The first five, all of them since 2026-09-06: `DisabledClient` (all      │
+// │ three methods —                                                          │
 // │ `find_unique(...).run(ctx)`, `upsert(...).run(ctx)` and                  │
 // │ `delete_many().where_(...).run(ctx)`), `Currency`                        │
 // │ (`find_unique(...).for_update()` then `upsert(...)`, both `run_in_tx`    │
@@ -25,11 +38,11 @@
 // │ model), plus `WebhookDelivery` and `Event` (the outbox: `upsert(...)     │
 // │ .do_nothing()` and `update_many(...)`, both `run_in_tx` on the fan-out   │
 // │ transaction — see those models). This box said "exactly ONE model"       │
-// │ until the currencies, providers and outbox passes moved. Every other     │
-// │ model below is still a design                                            │
-// │ sketch that happens to be type-checked by a compiler as well as by the   │
-// │ CLI; no code reads or writes through any of them, and several do not     │
-// │ match the live table at all (see the drift list). docs/status.md is      │
+// │ until the currencies, providers and outbox passes moved. The six         │
+// │ unqueried models are compiled and used for nothing else: no code reads   │
+// │ or writes through any of them, and several do not match the live table   │
+// │ at all (see the drift list). (Until 2026-09-23 this sentence said the    │
+// │ same of "every other model below" — i.e. fifteen.) docs/status.md is     │
 // │ the authoritative done/not-done list.                                    │
 // │                                                                          │
 // │ The content was rewritten against the real grammar in 2026-09, field     │
@@ -2432,7 +2445,8 @@ type PaymentIntentListFilter {
 // `validate/procedure_handler_collisions.rs`.) Every model in this file
 // generates `handle_{list,create}_<plural>` and `handle_{get,update,
 // delete}_<singular>` whether or not anything routes them, so those five
-// stems are taken for all nineteen models — `getPaymentIntent`,
+// stems are taken for every model (twenty since `ManualPayment`, #251; this
+// said "all nineteen" until 2026-09-23) — `getPaymentIntent`,
 // `createCharge` and `deleteCustomer` are unavailable for the same reason.
 procedure searchPaymentIntents(page: PageInput, filter: PaymentIntentListFilter): Page<PaymentIntentSummary>
   @allow(auth() != null)

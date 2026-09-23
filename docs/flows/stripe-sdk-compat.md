@@ -194,7 +194,12 @@ predictable consequence of the header, not because anything observed it.
   unusable from the SDKs this work exists to support. `setup_future_usage`,
   `confirmation_method`, `receipt_email`, `statement_descriptor`, `customer`,
   `expand` and `metadata` all leave the payment exactly as requested
-  (`metadata` is stored; the rest are dropped).
+  (`metadata` and `customer` are stored; the rest are dropped). _(This said
+  "`metadata` is stored; the rest are dropped" until 2026-09-23. `customer`
+  has been stored and rendered on the intent since 2026-09-06 (S4a,
+  `0fc5dcf`, migration `0034`), and a `cus_…` that is not this merchant's is a
+  `400` naming `customer` — so it is no longer merely accepted either; see
+  [customers.md](customers.md).)_
 - **`expand` is ignored**, not refused. Nothing is expandable, so the response
   simply has no expanded field — an absence visible in the response itself,
   which is the line between this list's two halves.

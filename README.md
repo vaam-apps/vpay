@@ -233,15 +233,19 @@ deploy/         helm/vpay   (rendered and schema-validated; never applied to a c
 
 `schemas/vpay.cstack` is no longer outside the build: `vpay-db` compiles it
 (`include_server_schema!`) and `just check-schema` runs `cratestack check`
-against the pinned CLI inside `just verify`. **Thirteen of the file's
-nineteen models carry statements `vpay-server` actually runs** — `currencies`, `providers`,
+against the pinned CLI inside `just verify`. **Fourteen of the file's
+twenty models carry statements `vpay-server` actually runs** — `currencies`, `providers`,
 `disabled_clients`, `customers`, `events`, `webhook_deliveries`,
-`checkout_sessions`, `invoices`, `invoice_items`, `staff_members`,
+`checkout_sessions`, `invoices`, `invoice_items`, `manual_payments`, `staff_members`,
 `staff_sessions`, `oauth_authorization_codes` and `credentials`; the six that do not are
 `payment_intents`, `charges`, `refunds`, `ledger_transactions` and
 `ledger_entries`, plus `rate_limit_windows`, whose SQL remains hand-written.
 _(Measured 2026-09-16 by counting `@@allow` arms; this said "nine of thirteen"
-and had been stale since S4b and S5 added four models and moved five tables.)_ `backends/migrations` remains the
+and had been stale since S4b and S5 added four models and moved five tables.
+Re-measured 2026-09-23 by counting the `.run(..)`/`.run_in_tx(..)` calls
+themselves — 36 in non-test `vpay-db` code, over these fourteen; it said
+"thirteen of nineteen" until then, one merge behind `model ManualPayment`,
+#251.)_ `backends/migrations` remains the
 authoritative schema, and this file has diverged from it on constraints
 CrateStack's grammar cannot express. See
 [`docs/reference/vpay-db.md`](docs/reference/vpay-db.md#cratestack).
@@ -411,10 +415,12 @@ helm-check`).
 
 ### Running the binaries directly
 
-Both binaries take a `clap`-based CLI where every option auto-resolves from an
-environment variable, with an explicit flag beating its env var
-(`backends/crates/vpay-config/src/cli.rs`). Run `--help` on either to see the
-live flag set — that is more trustworthy than any doc if the two disagree:
+Every mode of the one binary takes a `clap`-based CLI where every option
+auto-resolves from an environment variable, with an explicit flag beating its
+env var (`backends/crates/vpay-config/src/cli.rs`). Run `--help` on a mode to
+see the live flag set — that is more trustworthy than any doc if the two
+disagree. _(This said "Both binaries … on either" until 2026-09-23, sixteen
+days after the two became one.)_
 
 ```bash
 cargo run -p vpay-server -- --help
@@ -465,7 +471,8 @@ Every one of those flags has an env var — `VPAY_CONFIG`, `DATABASE_URL`,
 `compose.e2e.yml` drives the same binary; a test fails if one is renamed or
 dropped. The Postgres those URLs point at is the one `just up` starts.
 
-**Both binaries call a payment rail.** `vpay-server` calls one when a merchant
+**Both modes call a payment rail** (this said "both binaries" until
+2026-09-23; there has been one binary since 2026-09-07). `vpay-server` calls one when a merchant
 confirms an intent; `vpay-server worker` runs the job loop
 (`vpay_worker::run_loop`) that claims the `poll_charge` job the confirm
 committed, asks the rail for the charge's status on a poll ladder, and commits
@@ -498,7 +505,8 @@ removed on 2026-09-03, so a deployment that sets it now fails to start rather
 than being silently ignored.
 
 `--observability-bind` (`VPAY_OBSERVABILITY_BIND`, default `0.0.0.0:9090`) is a
-second listener on **both** binaries, serving `GET /livez` (a static `ok`, the
+second listener in **both** `serve` and `worker` modes (this said "both
+binaries" until 2026-09-23), serving `GET /livez` (a static `ok`, the
 liveness probe) and `GET /metrics` (Prometheus text). Neither is on the
 `--bind` port, because that one is fronted by an Ingress and `/metrics` is an
 operational map of the deployment. `/healthz` stays on 8080 and stays the

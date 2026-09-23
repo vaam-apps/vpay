@@ -83,7 +83,8 @@ mod search_checkout_sessions;
 ///
 /// **`procedure_router`, never `router()`.** The generated `router()`
 /// merges `model_router(...)` — the CRUD CrateStack generates for every one
-/// of this schema's nineteen models, creates/updates/deletes included,
+/// of this schema's twenty models (nineteen until `ManualPayment`, #251),
+/// creates/updates/deletes included,
 /// whether or not anything routes it — with `procedure_router(...)`
 /// (`cratestack-macros-0.12.0/src/include/server/axum_module/router_fn.rs`).
 /// `procedure_router` is the same generated function with that merge
@@ -323,25 +324,33 @@ mod tests {
         );
     }
 
-    /// Walks candidate paths for every one of the nineteen models' generated
+    /// Walks candidate paths for every one of the twenty models' generated
     /// CRUD, proving none of them is mounted through
     /// [`super::dashboard_procedure_router`] — the mechanical version of
     /// `DASH_ROUTES`' own doc's reason for keeping a route table at all:
     /// axum 0.8 cannot enumerate a built `Router`, so this probes it instead
-    /// of trying to inspect it.
+    /// of trying to inspect it. _(This said "nineteen" until 2026-09-23, and
+    /// the list below carried nineteen, while `schemas/vpay.cstack` had
+    /// declared a twentieth, `model ManualPayment`, since #251. The list is
+    /// now checked against the schema's own `cratestack_schema::MODELS`
+    /// first, so that gap fails this test instead of hiding in it.)_
     ///
     /// **Decisive.** Changing `super::dashboard_procedure_router`'s call
     /// from `cratestack_schema::axum::procedure_router(...)` to
     /// `cratestack_schema::axum::router(...)` (the merged form that also
-    /// mounts `model_router`) turns every one of the seventy-six assertions
-    /// below red at once, because every model's `list`/`create` path
+    /// mounts `model_router`) turns every one of the 160 route assertions
+    /// below red at once — twenty models, two paths each, four methods per
+    /// path. _(This said "seventy-six" until 2026-09-23, which is nineteen
+    /// times four and forgets the two paths; it said "seventy-two", eighteen
+    /// times four, on the day it was written. Neither count was ever the
+    /// loop's.)_ Every model's `list`/`create` path
     /// (`/{plural}`) and `get`/`update`/`delete` path (`/{plural}/{id}`)
     /// would start answering `405` (a route matched, the method did not)
     /// instead of this crate's honest `404` (no route matched at all) —
     /// `cratestack-macros-0.12.0/src/axum/model/routes.rs` is where those
     /// paths and that four-method set come from, and
     /// `docs/reference/vpay-db/cratestack.md`'s "the table name is decided
-    /// by the model name" is why the nineteen strings below are the same
+    /// by the model name" is why the twenty table strings below are the same
     /// ones `backends/migrations/*.sql` names as tables.
     #[tokio::test]
     async fn no_generated_model_route_is_mounted_only_the_one_procedure_is() {
@@ -349,7 +358,7 @@ mod tests {
 
         // A pool that never connects, exactly like every other test in this
         // module. Every probed request below is refused before a statement
-        // could run: the nineteen models' paths never match any route at
+        // could run: the twenty models' paths never match any route at
         // all, and the one real procedure is asked with a method it does
         // not serve (`GET`, never `POST`) so this test proves routing
         // without needing the lazy pool to answer anything.
@@ -358,33 +367,57 @@ mod tests {
             |_: &::cratestack::axum::http::Extensions| Some("acme-cameroon-tenant".to_owned()),
         ));
 
-        const MODEL_TABLES: [&str; 19] = [
-            "currencies",
-            "providers",
-            "payment_intents",
-            "charges",
-            "refunds",
-            "checkout_sessions",
-            "ledger_transactions",
-            "ledger_entries",
-            "disabled_clients",
-            "events",
-            "webhook_deliveries",
-            "customers",
-            "staff_members",
-            "staff_sessions",
-            "oauth_authorization_codes",
+        // `(model, table)`. The model column is checked against
+        // `cratestack_schema::MODELS` — the macro's own list of every
+        // `model` in `schemas/vpay.cstack`, as rustc compiled it — before a
+        // request is sent, in both directions: a model the schema declares
+        // and this list lacks is one whose generated CRUD this test would
+        // never probe, and a name here the schema no longer declares is a
+        // probe of nothing. Until 2026-09-23 this was a hand-kept
+        // `[&str; 19]` of table names with no such check.
+        const MODEL_TABLES: [(&str, &str); 20] = [
+            ("Currency", "currencies"),
+            ("Provider", "providers"),
+            ("PaymentIntent", "payment_intents"),
+            ("Charge", "charges"),
+            ("Refund", "refunds"),
+            ("CheckoutSession", "checkout_sessions"),
+            ("LedgerTransaction", "ledger_transactions"),
+            ("LedgerEntry", "ledger_entries"),
+            ("DisabledClient", "disabled_clients"),
+            ("Event", "events"),
+            ("WebhookDelivery", "webhook_deliveries"),
+            ("Customer", "customers"),
+            ("StaffMember", "staff_members"),
+            ("StaffSession", "staff_sessions"),
+            ("OauthAuthorizationCode", "oauth_authorization_codes"),
             // Nineteenth, added when this branch's `model Credential`
             // (migration 0044) merged with Lane C's transport: a model
             // declared after this list was written is exactly the one whose
             // generated CRUD nobody has yet proved is unmounted.
-            "credentials",
-            "invoices",
-            "invoice_items",
-            "rate_limit_windows",
+            ("Credential", "credentials"),
+            ("Invoice", "invoices"),
+            ("InvoiceItem", "invoice_items"),
+            // Twentieth, 2026-09-23 — the case the comment above warns
+            // about, and it happened: `model ManualPayment` (migration 0049,
+            // #251) was declared without being added here, and nothing
+            // noticed until a skills re-verification did.
+            ("ManualPayment", "manual_payments"),
+            ("RateLimitWindow", "rate_limit_windows"),
         ];
 
-        for table in MODEL_TABLES {
+        let mut listed: Vec<&str> = MODEL_TABLES.iter().map(|(model, _)| *model).collect();
+        let mut declared: Vec<&str> = cratestack_schema::MODELS.to_vec();
+        listed.sort_unstable();
+        declared.sort_unstable();
+        assert_eq!(
+            listed, declared,
+            "MODEL_TABLES and schemas/vpay.cstack's models disagree. Add or remove the \
+             `(model, table)` pair; the table is `pluralize(to_snake_case(model))`, the name \
+             the migrations create"
+        );
+
+        for (_, table) in MODEL_TABLES {
             for path in [format!("/{table}"), format!("/{table}/some_id")] {
                 for method in ["GET", "POST", "PATCH", "DELETE"] {
                     let router = super::dashboard_procedure_router(cs.clone(), auth.clone());
