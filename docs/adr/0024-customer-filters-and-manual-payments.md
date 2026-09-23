@@ -15,9 +15,9 @@
     maintainer's confirmation", from the ADR's first draft until that
     confirmation.)_
 - **Implementation:** RFC-0004 step A's implementation pull request, which
-  carries both slices. This ADR landed first, alone, in #248. That PR's `docs/status/` rows, flow pages and verification
-  pages are the statement of what is built, and this ADR records decisions, not
-  capability. _(This line read "not merged, and nothing in this ADR is built on
+  carries both slices. This ADR landed first, alone, in #248. That PR's
+  `docs/status/` rows, flow pages and verification pages are the statement of
+  what is built, and this ADR records decisions, not capability. _(This line read "not merged, and nothing in this ADR is built on
   `master` … two unpushed branches … blocked by a local Docker failure" while
   the ADR travelled alone in #248. That was true then, and stopped being the
   whole story once the implementation followed it.)_
