@@ -7,6 +7,15 @@
 # binary; nothing in `sdks/tauri/tauri-plugin-vpay-checkout` can do that on
 # its own. See ../README.md § Status for what has and has not been run.
 #
+# `cargo build` here needs the front end built FIRST. `../src-tauri`'s
+# `tauri.conf.json` sets `frontendDist = "../dist"`, `../.gitignore` ignores
+# `/dist`, and `tauri-codegen` reads that directory while this crate
+# compiles — so on a clean checkout a bare `cargo build` fails before it
+# compiles anything. `beforeBuildCommand = "pnpm build"` does not cover it:
+# the Tauri CLI runs that hook, cargo does not. Run
+# `pnpm --filter @vpay/example-tauri-checkout build` first, or drive the
+# build through `pnpm exec tauri build`.
+#
 # Like the plugin's own manifest, this one carries its OWN `[workspace]`
 # table, and for the same load-bearing reason: it keeps `tauri`'s dependency
 # graph (wry, tao, objc2, webkit2gtk on Linux) out of the repository root's

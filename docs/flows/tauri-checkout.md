@@ -123,12 +123,12 @@ its own signature-verified webhook, not on this.
 
 ## Per platform
 
-| Host                          | Window                                                      | Dismissal signal                                | `stopUrlReached`                                                       |
-| ----------------------------- | ----------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------- |
-| Android                       | partial Custom Tab, 90 % height, adjustable, close at START | yes — the tab closing                           | wired (App Link → exported forwarding Activity), unverified end to end |
-| iOS                           | `SFSafariViewController`, `.pageSheet` + `.large()` detent  | yes — Done **and** swipe-away                   | **unreachable** — see T6                                               |
-| Desktop (macOS/Windows/Linux) | the payer's **default browser**, via `open::that_detached`  | **none** — `dismiss()` only                     | not implemented at all                                                 |
-| Plain browser (no Tauri)      | `window.open` popup, address bar visible                    | yes — the popup's `closed`, polled every 500 ms | n/a — a cross-origin popup's location is unreadable from the opener    |
+| Host                          | Window                                                                                                              | Dismissal signal                                | `stopUrlReached`                                                       |
+| ----------------------------- | ------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ---------------------------------------------------------------------- |
+| Android                       | partial Custom Tab **requested** (90 % height, adjustable, close at START) — the browser may decline it; see Status | yes — the tab closing                           | wired (App Link → exported forwarding Activity), unverified end to end |
+| iOS                           | `SFSafariViewController`, `.pageSheet` + `.large()` detent                                                          | yes — Done **and** swipe-away                   | **unreachable** — see T6                                               |
+| Desktop (macOS/Windows/Linux) | the payer's **default browser**, via `open::that_detached`                                                          | **none** — `dismiss()` only                     | not implemented at all                                                 |
+| Plain browser (no Tauri)      | `window.open` popup, address bar visible                                                                            | yes — the popup's `closed`, polled every 500 ms | n/a — a cross-origin popup's location is unreadable from the opener    |
 
 `stopUrls` and `allowInsecureUrl` are documented as **inapplicable** in the
 plain-browser host rather than silently ignored.
@@ -225,7 +225,11 @@ guest-JS package, a Kotlin Android host and a Swift iOS host.
   declined the 90 % sheet the plugin requests via
   `setInitialActivityHeightPx`; the request does reach the platform, and
   honouring it is the browser's choice. Every "partial Custom Tab" on this
-  page is describing a request.
+  page is describing a request. **Corrected 2026-09-23:** § "Per platform"'s
+  Android row said "partial Custom Tab" flat, with the caveat only here,
+  several screens down — a reader consulting the table alone got the wrong
+  answer. It now carries "requested … the browser may decline it; see
+  Status" inline, matching the plugin README's equivalent table.
 - **No window has ever closed itself.** Both successful checkouts ended
   because a human closed the sheet and the poll then decided — correct by
   D1/D4, and the reason an unfired `stopUrlReached` costs latency rather

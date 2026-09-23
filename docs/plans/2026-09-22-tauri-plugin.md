@@ -4,9 +4,22 @@
 - **Requested by the maintainer**, verbatim: _"Please create a SDK for
   andoid+ios+web for tauri v2"_ [sic], then: _"use opus sub agents to fan out
   the biggest work and you, play only the orchestrator role"_.
-- **Status: built, unproven in every place that matters.** The code exists
+- ~~**Status: built, unproven in every place that matters.** The code exists
   and its own unit suites pass; nothing here has spoken to a running vpay, a
-  real rail, a device or a simulator. What _is_ measured is on
+  real rail, a device or a simulator.~~ **Narrowed the same day by Lane D2,
+  and the header is corrected 2026-09-23 so that a reader who stops here is
+  not misled** — § "What will not be true when this ships" below has carried
+  the strikethroughs since; this bullet had not. **Status: built, driven for
+  real on two simulators, and still unproven where it matters most.** The
+  plugin has spoken to a **running vpay** (`ghcr.io/vaam-apps/vpay-*:edge`,
+  not a build of this tree), on an **iOS Simulator and an Android
+  emulator**, and took two payments through vpay's own hosted page to
+  `succeeded`. What stands, unchanged: **no real rail** — every rail this
+  repository has ever driven is a WireMock container, so no money has moved;
+  **no physical device**; **no desktop run of any kind**, so
+  `open::that_detached` has still never executed; and **the plugin's own
+  suites open no socket** — every count in `sdks/tauri/` is a unit suite
+  against a scripted `fetch`. What _is_ measured is on
   [`../status/verification/2026-09-22-tauri-plugin.md`](../status/verification/2026-09-22-tauri-plugin.md),
   and what is still missing is on
   [`../status/mobile-tauri-plugin.md`](../status/mobile-tauri-plugin.md).
@@ -283,6 +296,38 @@ include this package with no recipe change; `fmt-check` runs
 job. **`.github/workflows/ci.yml` needed no edit for any of this.** What no
 job anywhere compiles is `src/*.rs`, `android/**/*.kt` and
 `ios/**/*.swift`.
+
+**And the same question about `examples/tauri-checkout`, which this section
+stopped one sentence short of — added 2026-09-23.** The plugin crate's
+exclusion from `just ci` is written down in five places; the example's was
+written down in none, and it is the **more dangerous** of the two, because
+the example is the only thing in this repository that can compile the
+Kotlin and the Swift at all. The honest split, measured on `dd1a48b`:
+
+- **Gated.** `pnpm-workspace.yaml` globs `examples/*`, so the example is a
+  pnpm workspace member exactly as the plugin package is. Its `typecheck`,
+  `lint` and `test` scripts therefore run inside `just ci` through
+  `lint-web`'s `pnpm -r typecheck` / `pnpm -r lint` and `test-web`'s
+  `pnpm -r test` — and each of those chains `pnpm run deps` first, so the
+  guest-JS package is **built** in CI too. "Nothing builds the example" is
+  wrong and would be a worse sentence than none.
+- **Ungated, and it is exactly two things.** `src-tauri/` — the Rust, and
+  with it every route to `android/**/*.kt` and `ios/**/*.swift` — plus any
+  script `pnpm -r` never calls, which today is **`dev`**. That pair is
+  precisely what #241 had to repair, and the maintainer found both on real
+  hardware rather than any gate finding them.
+- **Root cause.** `examples/tauri-checkout/src-tauri/Cargo.toml` carries its
+  **own `[workspace]` table**, so T2's isolation applies a second time: no
+  root cargo command — `cargo nextest run --workspace`, `just clippy`,
+  `cargo deny`, `verify-no-mocks`'s `cargo metadata` — ever resolves it.
+  `examples/tauri-checkout` appears in **0** justfile recipes, **0** files
+  under `.github/workflows/` and **0** places in `.xtask/src/`.
+
+A gate for it (`cargo check --locked` in `src-tauri/`) is **deliberately not
+added here**: it would move the machine-checked `count:verify-gates` figure,
+and the justfile is explicit that putting Tauri Rust into CI is a
+runner-image change and the maintainer's call. This is the flag, not the
+decision.
 
 ## What will not be true when this ships
 
