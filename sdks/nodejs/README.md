@@ -727,8 +727,21 @@ manual check, run on demand — it needs a Rust toolchain, it is not part of
 it having been run.
 
 What this does **not** prove: that any of this works against a real vpay
-deployment. Nothing in this package has been run against `vpay-server`; the
+deployment. ~~Nothing in this package has been run against `vpay-server`; the
 `issuer`/`tokenEndpoint` defaults agree with `vpay_api::op::issuer_for` by
 inspection, not by a test in this repository that exercises them together,
 and the resource routes every method here calls do not exist server-side at
-all — see [`docs/status.md`](../../docs/status.md).
+all~~ — see [`docs/status.md`](../../docs/status.md).
+
+_(Struck 2026-09-23. All three clauses had gone stale. **Run against
+`vpay-server`:** since 2026-09-10, `src/invoices.live.test.ts`, joined by
+`src/refunds.live.test.ts` on 2026-09-16, drives a real `vpay-server` over a
+socket, and CI's `e2e` job runs them (`pnpm --filter @vaam-apps/vpay-sdk
+test:live`). **The defaults:** those suites' preflight
+(`src/testing/live-preflight.ts`) builds its client from `baseUrl` alone, so
+every live run exercises the default `issuer` and `tokenEndpoint` against the
+server's own OP. **The routes:** every method's route is mounted except
+`balance.retrieve`, which answers `404` by design
+([`docs/sdks/parity.md`](../../docs/sdks/parity.md)). What still stands is the
+sentence this paragraph opens with. That stack is a compose stack with
+WireMock rails, not a deployment.)_

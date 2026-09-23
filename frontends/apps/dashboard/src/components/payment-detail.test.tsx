@@ -114,11 +114,10 @@ describe("the payment detail", () => {
 
 describe("the timeline", () => {
   it("says which documented event types nothing writes", () => {
-    // A section headed "Timeline" showing one line reads as the whole history
-    // of a payment. Five of the eight types the schema allows are written by
-    // nothing (`docs/status.md`), so the page says so where the person who
-    // needs to know is looking. Named individually, so the day one of them is
-    // written this assertion is what finds the sentence.
+    // A section headed "Timeline" reads as the whole history of a payment.
+    // Two of the documented types are written by nothing
+    // (`docs/flows/webhooks.md`), so the page says so where the person who
+    // needs to know is looking.
     render(<PaymentDetailView detail={DETAIL} />);
     const note = screen.getByTestId("timeline-gap");
     // Scoped to the note rather than the document: `DETAIL` puts event rows
@@ -127,11 +126,20 @@ describe("the timeline", () => {
     for (const type of [
       "payment_intent.created",
       "payment_intent.processing",
+    ]) {
+      expect(note, type).toHaveTextContent(type);
+    }
+    // And the types that HAVE a writer must not be named as written by
+    // nothing. Until 2026-09-23 this test checked presence only, so the note
+    // went on naming these three for a fortnight after each gained a writer
+    // (`payment_intent.canceled` on 2026-09-10, the refund types on
+    // 2026-09-16) and nothing failed.
+    for (const type of [
       "payment_intent.canceled",
       "charge.refunded",
       "charge.refund.updated",
     ]) {
-      expect(note, type).toHaveTextContent(type);
+      expect(note, type).not.toHaveTextContent(type);
     }
     expect(note).toHaveTextContent("is not the whole history of a payment");
   });
