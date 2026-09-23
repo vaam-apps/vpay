@@ -275,7 +275,8 @@ pub struct ListPaymentIntentsParams {
     /// question 3 of ADR-0024
     /// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
     ///
-    /// **Needs vpay 0.6.0 or later**, the first release after 0.5.0. A
+    /// **Needs a vpay server that has this filter**: no release up to and
+    /// including 0.5.0 has it (as of 2026-09-23). A
     /// self-hosted server at 0.5.0 or earlier does not know this parameter:
     /// it ignores it and answers the **unfiltered** list — every customer's
     /// rows, with no error. Check the server's version before relying on it.
@@ -400,7 +401,8 @@ pub struct ListCheckoutSessionsParams {
     /// question 3 of ADR-0024
     /// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
     ///
-    /// **Needs vpay 0.6.0 or later**, the first release after 0.5.0. A
+    /// **Needs a vpay server that has this filter**: no release up to and
+    /// including 0.5.0 has it (as of 2026-09-23). A
     /// self-hosted server at 0.5.0 or earlier does not know this parameter:
     /// it ignores it and answers the **unfiltered** list — every customer's
     /// rows, with no error. Check the server's version before relying on it.
@@ -1265,7 +1267,8 @@ pub struct ListRefundsParams {
     /// onto such an intent is open question 3 of ADR-0024
     /// (`docs/adr/0024-customer-filters-and-manual-payments.md`).
     ///
-    /// **Needs vpay 0.6.0 or later**, the first release after 0.5.0. A
+    /// **Needs a vpay server that has this filter**: no release up to and
+    /// including 0.5.0 has it (as of 2026-09-23). A
     /// self-hosted server at 0.5.0 or earlier does not know this parameter:
     /// it ignores it and answers the **unfiltered** list — every customer's
     /// rows, with no error. Check the server's version before relying on it.

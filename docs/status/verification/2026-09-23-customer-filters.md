@@ -186,10 +186,12 @@ used for every run.
    case `the_customer_parameter_is_refused_and_not_ignored` and by a new
    assertion in
    `dashboard_read_surface::the_status_filter_narrows_the_page_and_refuses_an_unknown_status`.
-   Both SDKs' `customer` doc comments also state the minimum server: **vpay
-   0.6.0**, the first release after 0.5.0 (release-please's
-   `bump-minor-pre-major` makes both this `feat` and its breaking footer a
-   minor bump). A self-hosted server at 0.5.0 or earlier ignores the
+   Both SDKs' `customer` doc comments also state that the filter needs a
+   server that has it: no release up to and including 0.5.0 does. _(The
+   comments first named "vpay 0.6.0". That is release-please's next minor
+   under `bump-minor-pre-major`, but it is only true if nothing else releases
+   before this merges, so the coordinating session reworded it on
+   2026-09-23.)_ A self-hosted server at 0.5.0 or earlier ignores the
    parameter and answers the unfiltered list.
 3. **Status rows** are ✅ only for what the runs below proved.
 4. **Performance**: see the next subsection.

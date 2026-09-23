@@ -443,9 +443,9 @@ literal naming every field and no `..Default::default()` no longer compiles
 `..Default::default()`. `ListPaymentIntentsParams { .. }` literals were the
 likeliest to break, because that struct had only three fields and naming
 all three was natural. Code using `Default::default()`, field assignment
-or `..Default::default()` is unaffected. The filter itself needs vpay
-0.6.0 or later; an older server ignores it and answers the unfiltered
-list.
+or `..Default::default()` is unaffected. The filter itself needs a vpay
+server that has it (no release up to and including 0.5.0 does, as of
+2026-09-23); an older server ignores it and answers the unfiltered list.
 
 **The server side of this contract is partial, not absent.** `vpay-server`
 mounts the merchant OP — `POST /v1/oauth/token`, `GET /v1/oauth/jwks.json`,
