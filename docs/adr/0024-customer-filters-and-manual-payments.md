@@ -1,18 +1,19 @@
 # ADR-0024: Customer filters on list endpoints, and manual (out-of-band) invoice payments
 
-- **Status:** Accepted in part.
-  - **D1–D8 are accepted.** They are RFC-0004 § 5 (first bullet) and § 6 as
-    that RFC was merged on 2026-09-23 (#244). The maintainer then directed,
-    the same day, that step A be built ("Start on RFC-0004 step A: customer
-    filters and manual payments") and that this ADR be written ("yes, write an
-    ADR for step A").
-  - **D9–D19 are proposed and need the maintainer's confirmation.** None
-    appears in any document the maintainer read before directing the work.
-    D9–D11 were added while briefing it; D12–D19 were taken by the
-    implementing agents where the brief was silent. Their reasons are
-    recorded here; the implementation, which is not part of this change,
-    records them again in `docs/flows/invoices.md` when it lands. Each is
-    marked where it stands.
+- **Status:** Accepted, all of D1–D19.
+  - **D1–D8** are RFC-0004 § 5 (first bullet) and § 6 as that RFC was merged
+    on 2026-09-23 (#244). The maintainer directed, the same day, that step A be
+    built ("Start on RFC-0004 step A: customer filters and manual payments")
+    and that this ADR be written ("yes, write an ADR for step A").
+  - **D9–D19** appeared in no document the maintainer read before directing
+    the work. D9–D11 were added while briefing it; D12–D19 were taken by the
+    implementing agents where the brief was silent. **The maintainer confirmed
+    all eleven on 2026-09-23**, verbatim: "Confirm D9–D19 as proposed". Their
+    reasons are recorded here. The implementation, which is not part of this
+    change, records them again in `docs/flows/invoices.md` when it lands.
+  - _(This read "Accepted in part", with D9–D19 "proposed and need the
+    maintainer's confirmation", from the ADR's first draft until that
+    confirmation.)_
 - **Implementation:** **not merged, and nothing in this ADR is built on
   `master`**, as of 2026-09-23. The code is on two unpushed branches,
   `feat/rfc-0004-customer-filters` and `feat/rfc-0004-manual-payments`. Their
@@ -20,8 +21,9 @@
   later pull request, which moves `docs/status/` and the flow pages. This ADR
   records decisions, not capability.
 - **Date:** 2026-09-23
-- **Deciders:** the vpay maintainer (D1–D8, by directing RFC-0004 step A to be
-  built); the implementing agents (D9–D19, pending the maintainer)
+- **Deciders:** the vpay maintainer. D1–D8 by directing RFC-0004 step A to be
+  built; D9–D19 by confirming them as proposed, after the implementing agents
+  drafted them
 - **Implements:** [RFC-0004](../rfc/0004-billing-on-top-of-invoices.md) § 5
   (the `customer` filters only; not the invoice preview, and not
   `/v1/subscriptions`, which does not exist) and § 6. The rest of RFC-0004
@@ -115,7 +117,7 @@ all-or-nothing.**
   merchant's behalf needs [ADR-0008](0008-dashboard-scope.md)'s unbuilt
   dashboard writes and their audit log.
 
-### Proposed — added while briefing the implementation, pending the maintainer
+### Added while briefing the implementation — confirmed 2026-09-23
 
 **D9. The invoice object gains two keys, not one:** `paid_out_of_band`
 (bool, Stripe's) and `out_of_band_payment` (`null`, or `{id, method,
@@ -143,7 +145,7 @@ contradicted D5, which is accepted: a Stripe-shaped client sending only
 `paid_out_of_band=true` must reach the same state, and a required vpay-native
 field would give it a `400`. D5 wins, so a missing method records `other`.)_
 
-### Proposed — taken during implementation where the brief was silent
+### Taken during implementation where the brief was silent — confirmed 2026-09-23
 
 **D12. Checkout sessions filter on the session's own `customer_id`**, not on
 its intent's. The two differ when a session is created with `customer=` on an
@@ -244,23 +246,25 @@ review replaced them with one object.)_
     inventory, not here.
 - **Both SDKs** gain the list `customer` parameter and the `pay`
   parameters, with parity rows in the same change (ADR-0015).
-- `docs/flows/customers.md`'s "no lookup by customer" gap, and
-  `docs/flows/invoices.md`'s "cash can only be voided" consequence, each close
-  with a dated correction saying what the page said before.
+- `docs/flows/invoices.md`'s "cash can only be voided" consequence closes
+  with a dated correction saying what the page said before. _(This bullet also
+  named a "no lookup by customer" gap in `docs/flows/customers.md` until
+  2026-09-23. The page carries no such gap, so there is nothing there to
+  close.)_
 - RFC-0004's status line records §§ 5–6 as accepted through this ADR. The
   rest of the RFC stays Draft, and nothing here decides any of its open
   questions.
 
 ## Left to the maintainer
 
-1. **Confirm or reverse D9–D19.** Each is reversible before the
-   implementation merges, and costs a schema or wire change after.
-2. **Should the out-of-band path accept `received_at` before `finalized_at`**
-   at all? A merchant may have been paid before issuing the document. D11
-   refuses it, as the stricter default.
-
-3. **Should creating a checkout session with `customer=` write that customer
-   onto an intent that has none** (D12's consequence)? That would make all
-   three filters agree, and would stop one intent from gaining two payers
-   across two sessions. It changes checkout-session creation, which this ADR
-   does not.
+1. ~~**Confirm or reverse D9–D19.**~~ **Confirmed as proposed, 2026-09-23.**
+2. ~~**Should the out-of-band path accept `received_at` before
+   `finalized_at`** at all?~~ **Settled by confirming D11 as proposed, on
+   2026-09-23: it does not.** A merchant paid before issuing the document
+   records `received_at` as the finalize time or later. The API refuses any
+   earlier value to the second, as D11 and the implementation state.
+3. **Still open: should creating a checkout session with `customer=` write
+   that customer onto an intent that has none** (D12's consequence)? That
+   would make all three filters agree, and would stop one intent from gaining
+   two payers across two sessions. It changes checkout-session creation,
+   which this ADR does not, and D9–D19's confirmation did not decide it.
