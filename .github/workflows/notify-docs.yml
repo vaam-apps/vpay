@@ -1,0 +1,90 @@
+name: notify-docs
+
+# When a release tag lands, tell vaam-apps/vpay-docs, the human
+# documentation site (https://vpay-oss.vaam.store), so its `release-parity`
+# workflow checks the new release NOW rather than at its next 3-hourly poll.
+# If the release changed any page's sources, that workflow opens a draft
+# parity PR in vpay-docs; see docs/runbooks/release.md §9.
+#
+# ---------------------------------------------------------------------------
+# Why this is its own workflow and not a job in release.yml
+# ---------------------------------------------------------------------------
+# It must never be able to block, fail or delay a release. A separate workflow
+# on the same `push: tags` event shares nothing with release.yml's jobs: no
+# `needs:`, no concurrency group, no permissions. If it fails, the release is
+# already published and vpay-docs' poll still finds the tag within 3 hours.
+#
+# ---------------------------------------------------------------------------
+# The token
+# ---------------------------------------------------------------------------
+# `repository_dispatch` into another repository cannot use GITHUB_TOKEN, which
+# is scoped to this one. The token comes from the org's `vaam-apps` GitHub App
+# — the one release-please.yml already mints from, through the same org
+# secrets RELEASE_PLEASE_APP_CLIENT_ID / RELEASE_PLEASE_APP_PRIVATE_KEY — and
+# is minted for **vaam-apps/vpay-docs only**, with `contents: write` and
+# nothing else, which is the one permission a dispatch needs. The workflow's
+# own GITHUB_TOKEN gets no permissions at all.
+#
+# The tag push that triggers this is made by release-please with that same
+# App's token; that is what makes it an event at all (release-please.yml's
+# header explains why GITHUB_TOKEN would not have been).
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to announce (vX.Y.Z)"
+        required: true
+
+permissions: {}
+
+jobs:
+  dispatch:
+    name: tell vpay-docs a release landed
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Resolve the tag
+        id: tag
+        env:
+          # Via env, never inlined: a ref name and an input are caller text.
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if ! [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::notice::'$tag' is not a vX.Y.Z release tag; nothing to announce"
+            echo "announce=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "announce=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mint a token for vaam-apps/vpay-docs only
+        id: app-token
+        if: steps.tag.outputs.announce == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ secrets.RELEASE_PLEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_PLEASE_APP_PRIVATE_KEY }}
+          owner: vaam-apps
+          repositories: vpay-docs
+          permission-contents: write
+
+      - name: Send repository_dispatch vpay-release
+        if: steps.tag.outputs.announce == 'true'
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          gh api repos/vaam-apps/vpay-docs/dispatches \
+            -f event_type=vpay-release -f "client_payload[tag]=${TAG}"
+          {
+            echo "### Told vaam-apps/vpay-docs that $TAG landed"
+            echo "Its \`release-parity\` run: https://github.com/vaam-apps/vpay-docs/actions/workflows/release-parity.yml"
+          } >> "$GITHUB_STEP_SUMMARY"
