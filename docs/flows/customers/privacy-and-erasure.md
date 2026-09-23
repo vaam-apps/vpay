@@ -163,6 +163,28 @@ silently left: `provider_requests.error_kind` above, and `staff_members.email`,
 which is a **staff** subject — the customer erasure structurally cannot reach
 it, and a staff erasure is a separate concern, issue #145.
 
+**Added 2026-09-23, a copy a merchant writes: the out-of-band payment
+reference** (migration `0049`, RFC-0004 § 6). When a merchant records that an
+invoice was paid outside vpay, `out_of_band[reference]` — a cheque number
+beside the drawer's name, a transfer reference carrying the payer's — lands in
+`manual_payments.reference`, in the `invoice.paid` body in `events.data`, and
+in the stored `pay` response in `idempotency_keys.response_body`. The erasure
+now writes the marker over all three for every invoice the payer was billed
+on, clears the live deliveries' `payload_sha256` of those `invoice.*` events
+(the same re-render reason as for the customer bodies) and marks their
+`response_excerpt` — `redact_out_of_band_references`, in the same transaction.
+The idempotency store's issue-#111 exception grew a second variant,
+`ResponseSubject::OutOfBandInvoice`, for the same race on this body. And a
+**new** reference on an erased payer's invoice is refused with a `400` naming
+`out_of_band[reference]`: the payment may still be recorded, only not with
+text that re-attaches payer detail to a payer vpay has erased. The payment
+takes `FOR SHARE` on the customer row before anything else, the erasure takes
+`FOR UPDATE` on it first, so the two serialise on that row; see
+[../invoices.md](../invoices.md) § "Paid out of band". The inventory
+classifies the column `payment_reference`, `subject: payer`, `control:
+redact` — unlike `invoices.description`, which is the merchant's note about
+their own bill and stays.
+
 **The two `failure_raw` columns were added to that list on 2026-09-11, by the
 review, after they survived an erasure in a test.** They are not identifier
 columns, which is why the enumeration that produced this table — an

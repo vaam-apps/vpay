@@ -811,33 +811,120 @@ impl ListInvoicesParams {
 /// method; vpay has none, so this mints a payment intent for
 /// [`crate::Invoice::amount_remaining`] and answers the invoice with
 /// [`crate::Invoice::hosted_invoice_url`] set — a page to send the payer to.
+///
+/// # Or: record a payment made outside vpay
+///
+/// [`PayInvoiceParams::out_of_band`] sends Stripe's `paid_out_of_band=true`
+/// with vpay's `out_of_band[…]` instead (RFC-0004 § 6): the invoice becomes
+/// `paid` on the merchant's word, with no intent, no checkout and **nothing
+/// verified or posted to any ledger**. No URL is sent on that path — the
+/// server refuses one — and none needs configuring.
 #[derive(Debug, Clone, Default)]
 pub struct PayInvoiceParams {
-    /// Where a paying payer is forwarded.
+    /// Where a paying payer is forwarded. Omitted from the body when empty,
+    /// which is how [`Self::out_of_band`] sends none.
     pub success_url: String,
-    /// Where a payer who gave up is forwarded.
+    /// Where a payer who gave up is forwarded. Omitted when empty, as
+    /// [`Self::success_url`] is.
     pub cancel_url: String,
+    /// Stripe's `paid_out_of_band`. Sent only when `true`.
+    pub paid_out_of_band: bool,
+    /// What the merchant says about the payment, sent as `out_of_band[…]`.
+    /// Required by the server when [`Self::paid_out_of_band`] is `true`, and
+    /// refused by it otherwise.
+    pub out_of_band: Option<OutOfBandParams>,
+}
+
+/// `out_of_band[…]` on `POST /v1/invoices/{id}/pay` (RFC-0004 § 6).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OutOfBandParams {
+    /// How the money arrived. Required.
+    pub method: crate::model::OutOfBandMethod,
+    /// A cheque number, a transfer reference; at most 500 characters.
+    ///
+    /// **Treat it as personal data**: vpay does, because a reference
+    /// routinely names the payer, and replaces it with `[redacted]` when the
+    /// invoice's customer is erased — and refuses one outright on an erased
+    /// customer's invoice.
+    pub reference: Option<String>,
+    /// Unix **seconds**. The server defaults it to now, and refuses one in
+    /// the future (past 30 seconds of clock allowance) or before the invoice
+    /// was finalized.
+    pub received_at: Option<i64>,
+}
+
+impl OutOfBandParams {
+    /// Just the method; no reference, received now.
+    #[must_use]
+    pub fn new(method: crate::model::OutOfBandMethod) -> Self {
+        Self {
+            method,
+            reference: None,
+            received_at: None,
+        }
+    }
+
+    fn to_form(&self) -> FormValue {
+        FormValue::Object(vec![
+            (
+                "method".to_string(),
+                FormValue::from(self.method.as_wire_str()),
+            ),
+            (
+                "reference".to_string(),
+                FormValue::from(self.reference.clone()),
+            ),
+            ("received_at".to_string(), FormValue::from(self.received_at)),
+        ])
+    }
 }
 
 impl PayInvoiceParams {
-    /// The two required URLs.
+    /// The two URLs of a hosted-checkout payment.
     #[must_use]
     pub fn new(success_url: impl Into<String>, cancel_url: impl Into<String>) -> Self {
         Self {
             success_url: success_url.into(),
             cancel_url: cancel_url.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Records the invoice as settled outside vpay — `paid_out_of_band=true`
+    /// and `out_of_band[…]`, with no URL.
+    #[must_use]
+    pub fn out_of_band(details: OutOfBandParams) -> Self {
+        Self {
+            paid_out_of_band: true,
+            out_of_band: Some(details),
+            ..Self::default()
         }
     }
 
     pub(crate) fn to_form(&self) -> FormValue {
+        let url = |value: &str| {
+            if value.is_empty() {
+                FormValue::Skip
+            } else {
+                FormValue::from(value)
+            }
+        };
         FormValue::Object(vec![
+            ("success_url".to_string(), url(&self.success_url)),
+            ("cancel_url".to_string(), url(&self.cancel_url)),
             (
-                "success_url".to_string(),
-                FormValue::from(self.success_url.as_str()),
+                "paid_out_of_band".to_string(),
+                if self.paid_out_of_band {
+                    FormValue::from(true)
+                } else {
+                    FormValue::Skip
+                },
             ),
             (
-                "cancel_url".to_string(),
-                FormValue::from(self.cancel_url.as_str()),
+                "out_of_band".to_string(),
+                self.out_of_band
+                    .as_ref()
+                    .map_or(FormValue::Skip, OutOfBandParams::to_form),
             ),
         ])
     }

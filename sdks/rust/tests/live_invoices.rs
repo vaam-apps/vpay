@@ -219,7 +219,7 @@ async fn live_invoice_lifecycle() {
     // `#[serde(default)]`, so an absent key decodes to `0` and this assertion
     // passes either way. The key's presence on the server's object is pinned
     // by `vpay_api::model`'s
-    // `the_invoice_object_is_the_documented_nineteen_keys`; that the field is
+    // `the_invoice_object_is_the_documented_twenty_one_keys`; that the field is
     // read off the wire rather than defaulted is pinned by this crate's
     // `an_invoices_amount_refunded_is_read_from_the_wire_and_defaults_only_when_absent`;
     // and the Node SDK's live case observes presence at runtime, because a
@@ -361,5 +361,108 @@ async fn an_invoice_create_with_no_currency_is_refused_by_the_server() {
     assert!(
         message.contains("currency"),
         "the refusal names the parameter: {message}"
+    );
+}
+
+/// **An invoice paid out of band** (RFC-0004 § 6), against a running server:
+/// `paid_out_of_band=true` with `out_of_band[method]` moves an open invoice to
+/// `paid` with no intent, no checkout and no URL, and the record comes back.
+///
+/// It sends no `success_url`/`cancel_url` on purpose — the server refuses
+/// either on this path and needs none configured — so this case also proves
+/// the demo stack's merchant can record one whatever its `merchant_clients[]`
+/// entry says.
+#[tokio::test]
+async fn an_invoice_is_marked_paid_out_of_band_and_carries_its_record() {
+    use vpay_sdk::invoices::{OutOfBandMethod, OutOfBandParams};
+
+    let client = live_client().await;
+
+    let customer = client
+        .customers()
+        .create(
+            CreateCustomerParams {
+                phone: Some("+237670000003".to_owned()),
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect("a customer is created");
+    let draft = client
+        .invoices()
+        .create(
+            CreateInvoiceParams::new(customer.id.clone(), "xaf"),
+            RequestOptions::new(),
+        )
+        .await
+        .expect("a draft");
+    client
+        .invoice_items()
+        .create(
+            CreateInvoiceItemParams::new(&draft.id, "Paid in cash at the counter", 7_500),
+            RequestOptions::new(),
+        )
+        .await
+        .expect("a line");
+    let open = client
+        .invoices()
+        .finalize(&draft.id, RequestOptions::new())
+        .await
+        .expect("it finalizes");
+    assert!(!open.paid_out_of_band);
+    assert_eq!(open.out_of_band_payment, None);
+
+    let paid = client
+        .invoices()
+        .pay(
+            &draft.id,
+            PayInvoiceParams::out_of_band(OutOfBandParams {
+                method: OutOfBandMethod::Cash,
+                reference: Some("Receipt 0007".to_owned()),
+                received_at: None,
+            }),
+            RequestOptions::new(),
+        )
+        .await
+        .expect("an open invoice with no intent is recorded as paid out of band");
+
+    assert_eq!(paid.status, InvoiceStatus::Paid);
+    assert!(paid.paid_out_of_band);
+    assert_eq!(paid.amount_paid, 7_500);
+    assert_eq!(paid.amount_remaining, 0);
+    assert_eq!(paid.payment_intent, None, "no intent was minted");
+    assert_eq!(paid.hosted_invoice_url, None, "no checkout was created");
+    assert!(paid.status_transitions.paid_at.is_some());
+    let record = paid
+        .out_of_band_payment
+        .clone()
+        .expect("the record is on the object");
+    assert!(record.id.starts_with("mp_"), "{}", record.id);
+    assert_eq!(record.method, OutOfBandMethod::Cash);
+    assert_eq!(record.reference.as_deref(), Some("Receipt 0007"));
+
+    // It reads back identically, through the render path's third read.
+    let read = client
+        .invoices()
+        .retrieve(&draft.id)
+        .await
+        .expect("it reads back");
+    assert_eq!(read.out_of_band_payment, Some(record));
+
+    // And a second one is the same `409` a paid invoice gives any
+    // transition.
+    let error = client
+        .invoices()
+        .pay(
+            &draft.id,
+            PayInvoiceParams::out_of_band(OutOfBandParams::new(OutOfBandMethod::Cash)),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a paid invoice cannot be paid again");
+    assert!(
+        error.to_string().contains("paid"),
+        "the refusal names the status: {error}"
     );
 }

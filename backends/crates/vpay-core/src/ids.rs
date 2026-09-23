@@ -1,5 +1,5 @@
 //! The public ids vpay's objects are named by — `pi_…`, `ch_…`, `re_…`,
-//! `evt_…`, `cs_…`, `cus_…`, `in_…`, `ii_…` — and the two payer credentials
+//! `evt_…`, `cs_…`, `cus_…`, `in_…`, `ii_…`, `mp_…` — and the two payer credentials
 //! that ride in URLs: the
 //! `client_secret` a browser presents, and the `return_token` a redirect
 //! rail's bounce carries back.
@@ -106,6 +106,20 @@ pub const INVOICE_PREFIX: &str = "in_";
 /// [`is_well_formed`] relies on: a line id and an invoice id arrive on the
 /// same routes and must never be mistaken for one another.
 pub const INVOICE_ITEM_PREFIX: &str = "ii_";
+
+/// The prefix on a ManualPayment id (RFC-0004 § 6) — the record of a
+/// merchant's statement that an invoice was settled outside vpay.
+///
+/// `mp_`, two letters like `in_` and `ii_`, and vpay's own spelling: Stripe
+/// has no object for this (its `paid_out_of_band` is a flag on the invoice
+/// and nothing more), so there is no Stripe prefix to match. `mp` is the
+/// leading pair of no other prefix here, which
+/// `no_prefix_is_the_leading_characters_of_another` pins, so a near-miss
+/// cannot pass [`is_well_formed`] as another kind of id.
+///
+/// It is rendered on `/v1` as `invoice.out_of_band_payment.id`, and it is the
+/// row an operator reads when a merchant disputes a payment they recorded.
+pub const MANUAL_PAYMENT_PREFIX: &str = "mp_";
 
 /// The prefix on a ledger transaction id (RFC-0003 § 4).
 ///
@@ -452,6 +466,24 @@ pub fn ledger_transaction_id() -> String {
     new_id(LEDGER_TRANSACTION_PREFIX)
 }
 
+/// A new ManualPayment id, `mp_…` (RFC-0004 § 6).
+///
+/// Minted by `vpay_api` before the transaction that writes the row, exactly
+/// as every other id here is minted before its row.
+///
+/// ```
+/// use vpay_core::ids::{self, INVOICE_PREFIX, MANUAL_PAYMENT_PREFIX};
+///
+/// let id = ids::manual_payment_id();
+/// assert!(ids::is_well_formed(MANUAL_PAYMENT_PREFIX, &id));
+/// // It names the statement, not the invoice it settles.
+/// assert!(!ids::is_well_formed(INVOICE_PREFIX, &id));
+/// ```
+#[must_use]
+pub fn manual_payment_id() -> String {
+    new_id(MANUAL_PAYMENT_PREFIX)
+}
+
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
 /// Public because it is a **wire contract**: `@vaam-apps/vpay-stripe-js` splits a
@@ -598,7 +630,7 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 9] = [
+    const GENERATORS: [Generator; 12] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
@@ -608,6 +640,9 @@ mod tests {
         (staff_id, STAFF_PREFIX),
         (credential_id, CREDENTIAL_PREFIX),
         (ledger_transaction_id, LEDGER_TRANSACTION_PREFIX),
+        (invoice_id, INVOICE_PREFIX),
+        (invoice_item_id, INVOICE_ITEM_PREFIX),
+        (manual_payment_id, MANUAL_PAYMENT_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than
@@ -805,6 +840,36 @@ mod tests {
                 assert!(
                     c.is_ascii_lowercase() || c.is_ascii_digit(),
                     "{id}: {c:?} is outside [a-z0-9]"
+                );
+            }
+        }
+    }
+
+    /// No prefix is the leading characters of another, and no two share the
+    /// letters before their `_`.
+    ///
+    /// [`is_well_formed`] compares whole prefixes, so `stf_` and `cs_` could
+    /// never be mistaken for each other — but a prefix that was the *start*
+    /// of another (`c_` beside `cus_`) would make a human reading an id off a
+    /// screen, and any log grep, ambiguous. Written when `mp_` was added
+    /// (RFC-0004 § 6), because "does `mp_` collide with anything" was a
+    /// question answered by reading the list, and a list is what a test can
+    /// read instead.
+    #[test]
+    fn no_prefix_is_the_leading_characters_of_another() {
+        for (_, left) in GENERATORS {
+            for (_, right) in GENERATORS {
+                if left == right {
+                    continue;
+                }
+                assert!(
+                    !right.starts_with(left),
+                    "`{right}` starts with `{left}`: one prefix is the head of another"
+                );
+                assert_ne!(
+                    left.trim_end_matches('_'),
+                    right.trim_end_matches('_'),
+                    "two generators own one prefix"
                 );
             }
         }

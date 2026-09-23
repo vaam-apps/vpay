@@ -491,3 +491,49 @@ The five multi-column CHECKs contribute **nothing in either direction**, like
 the fifteen before them, which is why
 `the_invoice_invariants_are_enforced_by_the_database_itself` writes the row
 each one refuses against a real Postgres.
+
+### Migration 0049: paying out of band, and why the second writer of `paid` is three statements
+
+**Added 2026-09-23 (RFC-0004 § 6).** `pay_out_of_band_in_tx` is reached only
+through `TxRepositories::pay_invoice_out_of_band_in_tx`, for create's reason:
+`vpay-api` renders the row it returns and appends `invoice.paid` beside it in
+the same transaction. It runs three statements, and the order is the design:
+
+1. **`SELECT … FROM customers WHERE id = (SELECT customer_id FROM invoices …)
+FOR SHARE`.** The erasure's lock, taken first. Every customer erasure takes
+   `FOR UPDATE` on that row as its own first statement, so the two serialise
+   there: either the erasure commits first and this sees `anonymized_at` —
+   and refuses a reference ([`OutOfBandPayment::CustomerErased`]) — or this
+   commits first and the erasure's `redact_out_of_band_references` then finds
+   the reference and replaces it. `FOR SHARE` applies to `customers` only; the
+   sub-select over `invoices` takes no lock. No other transaction holds an
+   invoice or `manual_payments` lock and then asks for a customer lock, so no
+   lock-order cycle exists — see `docs/flows/invoices.md` § "Paid out of band".
+2. **The compare-and-swap**, `open -> paid` with `NO_LIVE_INTENT`, setting
+   `amount_paid = amount_due` from the row's own column — the fourth call site
+   of that condition, and one that can carry it, since it is hand-written.
+3. **`INSERT INTO manual_payments … SELECT … FROM invoices WHERE id = $2 AND
+paid_out_of_band`.** The record's amount, currency, tenant and mode are
+   copied off the row statement 2 wrote, under its lock. That is the
+   guarantee migration `0049` cannot state as a CHECK, and it is `add_item`'s
+   device (copy off the parent in the statement that writes) applied to money.
+   A zero-row answer here after statement 2 matched is impossible and is an
+   error, not a success, so a regression aborts rather than committing a paid
+   invoice with no record.
+
+**The read goes through CrateStack; the write cannot.** `model ManualPayment`
+declares every column, so `manual_payment_for_invoice` is a generated
+`find_many` — the third method of this module on the generated layer. The
+insert is hand-written for a reason that is none of the three above: a
+generated `create` takes values, and taking the amount as a value would be the
+read-then-write the whole design avoids.
+
+**The refund counter learned one clause.** `add_refund_for_intent_in_tx` now
+carries `AND NOT paid_out_of_band`, because an invoice paid out of band may
+still name a **canceled** intent (the attempt it abandoned), and nothing a
+rail refunds against that intent was ever collected for this document.
+Migration `0049`'s `paid_out_of_band_is_never_refunded` is the backstop.
+
+**Cost to the drift report: predicted +5, one relation, not measured** — see
+`postgres_smoke.rs`' `EXPECTED_DRIFT_CHANGES` note for the line-by-line
+derivation and why it could not be measured on the day.

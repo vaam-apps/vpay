@@ -15,7 +15,9 @@
 
 Nothing in this document is built. Every route, table, event type and
 capability below is a proposal; the Status sections of the flow documents
-remain the only statement of what exists.
+remain the only statement of what exists. _(**Except § 6, built 2026-09-23**
+— see its own dated note. The status line stays Draft: the rest of the RFC is
+still a proposal.)_
 
 ## Problem
 
@@ -232,6 +234,17 @@ frozen one.
   written. It writes nothing and takes no number.
 
 ### 6. Manual (out-of-band) payments
+
+> **Built 2026-09-23** (step A; migration `0049_manual-payments.sql`),
+> as proposed below. [docs/flows/invoices.md](../flows/invoices.md)
+> § "Paid out of band" is the record of what exists — including five
+> decisions this section left open (a 500-character `reference`, a 30-second
+> clock allowance on `received_at`, a canceled intent staying attached, a new
+> `paid_names_how` CHECK, and a reference refused on an erased customer's
+> invoice) — and its Status carries the evidence: the integration,
+> repository and smoke suites against a real Postgres. The one wire
+> addition beyond this section is `out_of_band_payment`, the record's
+> four keys on the invoice beside Stripe's `paid_out_of_band`.
 
 The merchant records that an invoice was settled outside vpay: cash, cheque,
 bank transfer received directly, or anything else.

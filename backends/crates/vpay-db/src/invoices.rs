@@ -22,9 +22,11 @@
 //!
 //! # The split between CrateStack and hand-written SQL, and what decides it
 //!
-//! Two of the twelve methods below run through `schemas/vpay.cstack`'s
-//! `model Invoice` / `model InvoiceItem` ([`Invoices::mark_uncollectible`],
-//! [`Invoices::items_for_invoice`]); the rest are hand-written `sqlx`.
+//! Three of the thirteen methods below run through `schemas/vpay.cstack`'s
+//! `model Invoice` / `model InvoiceItem` / `model ManualPayment`
+//! ([`Invoices::mark_uncollectible`], [`Invoices::items_for_invoice`],
+//! [`Invoices::manual_payment_for_invoice`] — the third since migration
+//! `0049`, on a table born with its model); the rest are hand-written `sqlx`.
 //! `schemas/vpay.cstack`'s own "invoices (S4b)" section carries the argument
 //! in full — the short form is three separate blockers, and each method's
 //! doc names the one that applies to it:
@@ -39,8 +41,9 @@
 //!
 //! # Where the transactions are opened, and why not all of them are here
 //!
-//! The three transitions that emit an event — create, finalize, void — are
-//! **not** methods on [`Invoices`]. They are [`crate::TxRepositories`]
+//! The four transitions that emit an event — create, finalize, void, and
+//! (since migration `0049`) paying out of band — are **not** methods on
+//! [`Invoices`]. They are [`crate::TxRepositories`]
 //! methods, so `vpay-api` opens the transaction, gets the written row back,
 //! renders the wire object *from that row*, and appends the event beside it.
 //!
@@ -70,11 +73,14 @@ const INVOICE_MODEL: &str = "Invoice";
 /// The `.cstack` model [`Invoices::items_for_invoice`] names.
 const INVOICE_ITEM_MODEL: &str = "InvoiceItem";
 
+/// The `.cstack` model [`Invoices::manual_payment_for_invoice`] names.
+const MANUAL_PAYMENT_MODEL: &str = "ManualPayment";
+
 /// Every column of `invoices`, in one place so the statements below cannot
 /// drift on the shape they decode into [`InvoiceRow`].
 const COLUMNS: &str = "id, seq, merchant_id, livemode, customer_id, currency_code, status, number, \
-                       amount_due, amount_paid, amount_remaining, amount_refunded, due_date, \
-                       description, metadata, \
+                       amount_due, amount_paid, amount_remaining, amount_refunded, \
+                       paid_out_of_band, due_date, description, metadata, \
                        payment_intent_id, finalized_at, paid_at, voided_at, \
                        marked_uncollectible_at, created_at, updated_at";
 
@@ -91,7 +97,7 @@ const COLUMNS: &str = "id, seq, merchant_id, livemode, customer_id, currency_cod
 const QUALIFIED_COLUMNS: &str = "invoices.id, invoices.seq, invoices.merchant_id, invoices.livemode, invoices.customer_id, \
      invoices.currency_code, invoices.status, invoices.number, invoices.amount_due, \
      invoices.amount_paid, invoices.amount_remaining, invoices.amount_refunded, \
-     invoices.due_date, invoices.description, \
+     invoices.paid_out_of_band, invoices.due_date, invoices.description, \
      invoices.metadata, invoices.payment_intent_id, invoices.finalized_at, invoices.paid_at, \
      invoices.voided_at, invoices.marked_uncollectible_at, invoices.created_at, \
      invoices.updated_at";
@@ -99,6 +105,10 @@ const QUALIFIED_COLUMNS: &str = "invoices.id, invoices.seq, invoices.merchant_id
 /// Every column of `invoice_items`, for [`InvoiceItemRow`].
 const ITEM_COLUMNS: &str = "id, seq, invoice_id, merchant_id, livemode, description, quantity, \
                             unit_amount, amount, currency_code, created_at, updated_at";
+
+/// Every column of `manual_payments`, for [`ManualPaymentRow`].
+const MANUAL_PAYMENT_COLUMNS: &str = "id, merchant_id, livemode, invoice_id, method, reference, \
+                                      received_at, amount, currency_code, created_at";
 
 /// The guard that makes an issued document immutable, shared by the three
 /// `invoice_items` writes so they cannot drift.
@@ -218,6 +228,16 @@ pub struct InvoiceRow {
     /// nowhere, so nothing reaches [`crate::Refunds::create`] and no rail has
     /// ever executed a refund (`docs/status.md`).
     pub amount_refunded: i64,
+    /// Whether this invoice was paid **out of band** — the merchant's
+    /// statement, recorded by [`crate::TxRepositories::pay_invoice_out_of_band_in_tx`],
+    /// that it was settled outside vpay (migration `0049`, RFC-0004 § 6).
+    ///
+    /// `true` implies `status = 'paid'` and exactly one
+    /// [`ManualPaymentRow`] for this invoice
+    /// ([`Invoices::manual_payment_for_invoice`]). The first half is a CHECK
+    /// (`paid_out_of_band_means_paid`); the second is one transaction, and
+    /// migration `0049`'s header says why it cannot be a CHECK.
+    pub paid_out_of_band: bool,
     /// When the merchant says this is due, or `None`. **Advisory**: nothing
     /// in vpay reads it. See migration `0036`'s column comment.
     pub due_date: Option<OffsetDateTime>,
@@ -275,6 +295,147 @@ pub struct InvoiceItemRow {
     pub created_at: OffsetDateTime,
     /// When it last changed.
     pub updated_at: OffsetDateTime,
+}
+
+/// One `manual_payments` row, exactly as stored (migration `0049`,
+/// RFC-0004 § 6): a merchant's statement that an invoice was settled outside
+/// vpay.
+///
+/// **A record of what a merchant said, and nothing more.** No money crossed a
+/// rail vpay talks to, nothing in vpay can verify it, and nothing is posted
+/// to the ledger for it.
+///
+/// `Debug` is hand-written, and that is a decision about [`Self::reference`]:
+/// it is classified personal data (`schemas/privacy-inventory.yaml`,
+/// `payment_reference`), so a derived `Debug` would put a payer's cheque or
+/// transfer reference in any log that printed the row. It prints the
+/// reference's length instead, [`crate::CustomerRow`]'s device.
+#[derive(Clone, PartialEq, sqlx::FromRow)]
+pub struct ManualPaymentRow {
+    /// Public `mp_…` id, minted before the insert.
+    pub id: String,
+    /// Copied from the invoice by the insert, never supplied.
+    pub merchant_id: String,
+    /// Copied from the invoice by the insert.
+    pub livemode: bool,
+    /// The `in_…` this settles. At most one row per invoice
+    /// (`manual_payments_invoice_id_key`).
+    pub invoice_id: String,
+    /// `cash`, `cheque`, `bank_transfer` or `other`, as stored —
+    /// `manual_payments_method_enum_check` closes the vocabulary. A `String`
+    /// for [`InvoiceRow::status`]' reason.
+    pub method: String,
+    /// The merchant's free-text reference, or `None`. Personal data; the
+    /// customer erasure replaces it with [`crate::REDACTED`].
+    pub reference: Option<String>,
+    /// When the merchant says the money arrived.
+    pub received_at: OffsetDateTime,
+    /// Integer minor units, copied from `invoices.amount_paid` by the insert.
+    pub amount: i64,
+    /// ISO-4217, copied from the invoice.
+    pub currency_code: String,
+    /// When vpay recorded the statement.
+    pub created_at: OffsetDateTime,
+}
+
+/// `[N chars redacted]` or `None` — how both manual-payment `Debug` impls
+/// print a reference.
+fn redacted_reference(reference: Option<&String>) -> String {
+    reference.map_or_else(
+        || "None".to_owned(),
+        |value| format!("[{} chars redacted]", value.chars().count()),
+    )
+}
+
+impl std::fmt::Debug for ManualPaymentRow {
+    /// Every field but [`ManualPaymentRow::reference`], which is rendered as
+    /// its length — see the struct doc.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManualPaymentRow")
+            .field("id", &self.id)
+            .field("merchant_id", &self.merchant_id)
+            .field("livemode", &self.livemode)
+            .field("invoice_id", &self.invoice_id)
+            .field("method", &self.method)
+            .field(
+                "reference",
+                &format_args!("{}", redacted_reference(self.reference.as_ref())),
+            )
+            .field("received_at", &self.received_at)
+            .field("amount", &self.amount)
+            .field("currency_code", &self.currency_code)
+            .field("created_at", &self.created_at)
+            .finish()
+    }
+}
+
+/// What a caller supplies to record an out-of-band payment:
+/// [`ManualPaymentRow`] minus everything the invoice decides.
+///
+/// There is no `amount`, no `currency_code`, no `livemode` and no tenant
+/// column to fill in, and none of them is an omission: the insert copies all
+/// four off the invoice it has just paid, in the same statement. A parameter
+/// for any of them would be a way to record a payment of a different amount
+/// from the bill — the one mismatch migration `0049` cannot express as a
+/// CHECK, closed instead by nobody being able to say it.
+#[derive(Clone, PartialEq)]
+pub struct NewManualPayment {
+    /// Public `mp_…` id, from `vpay_core::ids::manual_payment_id`.
+    pub id: String,
+    /// The authenticated tenant. In the statement's `WHERE`, never compared
+    /// in Rust.
+    pub merchant_id: String,
+    /// The invoice being settled.
+    pub invoice_id: String,
+    /// One of the four labels `manual_payments_method_enum_check` admits,
+    /// already checked by `vpay-api`.
+    pub method: String,
+    /// The merchant's reference, bounded by `vpay-api` to 500 characters.
+    pub reference: Option<String>,
+    /// When the merchant says the money arrived; `vpay-api` defaults it to
+    /// [`Self::recorded_at`] and bounds it on both sides.
+    pub received_at: OffsetDateTime,
+    /// The request's `now`: `paid_at` and `updated_at` on the invoice, and
+    /// `created_at` on the payment record.
+    pub recorded_at: OffsetDateTime,
+}
+
+impl std::fmt::Debug for NewManualPayment {
+    /// [`ManualPaymentRow`]'s `Debug`, for its reason.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NewManualPayment")
+            .field("id", &self.id)
+            .field("merchant_id", &self.merchant_id)
+            .field("invoice_id", &self.invoice_id)
+            .field("method", &self.method)
+            .field(
+                "reference",
+                &format_args!("{}", redacted_reference(self.reference.as_ref())),
+            )
+            .field("received_at", &self.received_at)
+            .field("recorded_at", &self.recorded_at)
+            .finish()
+    }
+}
+
+/// What [`crate::TxRepositories::pay_invoice_out_of_band_in_tx`] found.
+///
+/// An enum rather than an `Option`, because one of the two refusals is not a
+/// refusal of the *transition*: an erased customer's invoice may still be
+/// recorded as paid, only not with a reference that would attach payer
+/// detail to them again.
+#[derive(Debug, Clone, PartialEq)]
+pub enum OutOfBandPayment {
+    /// The invoice moved `open -> paid` and the record was written. The
+    /// event is the caller's to append, in the same transaction.
+    Paid(Box<(InvoiceRow, ManualPaymentRow)>),
+    /// The compare-and-swap matched no row: not this merchant's, not `open`,
+    /// or an intent that is not `canceled` is attached. Nothing was written.
+    Refused,
+    /// The invoice's customer has been erased and the request carried a
+    /// reference. Nothing was written; `vpay-api` answers a `400` naming
+    /// `out_of_band[reference]`.
+    CustomerErased,
 }
 
 /// The columns a caller supplies when creating an invoice: [`InvoiceRow`]
@@ -621,6 +782,32 @@ pub trait Invoices: Send + Sync {
     /// the model's own comment.
     async fn items_for_invoice(&self, invoice_id: &str) -> Result<Vec<InvoiceItemRow>, DbError>;
 
+    /// The out-of-band payment record for one invoice, if it has one.
+    ///
+    /// # Why this goes through CrateStack
+    ///
+    /// Every column of `manual_payments` is declared on
+    /// `model ManualPayment` (migration `0049` shaped the table so it could
+    /// be), so the generated row carries the whole record —
+    /// [`Invoices::items_for_invoice`]'s reason, on the table born beside it.
+    ///
+    /// # Unscoped, and named for it
+    ///
+    /// [`Invoices::items_for_invoice`]'s argument verbatim: the caller holds
+    /// an invoice it already resolved through
+    /// [`Invoices::get_for_merchant`], and `vpay-api` reads this only for an
+    /// invoice whose [`InvoiceRow::paid_out_of_band`] is `true`.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`] wrapping [`crate::PersistenceError::Denied`]
+    /// if `model ManualPayment` loses its `@@allow("read", …)` — loud, as
+    /// `model InvoiceItem`'s is.
+    async fn manual_payment_for_invoice(
+        &self,
+        invoice_id: &str,
+    ) -> Result<Option<ManualPaymentRow>, DbError>;
+
     /// Reads one line *for this merchant*. `None` means "no such line for
     /// you".
     ///
@@ -935,6 +1122,30 @@ impl Invoices for crate::repository::PgRepositories {
         Ok(rows.into_iter().map(InvoiceItemRow::from).collect())
     }
 
+    async fn manual_payment_for_invoice(
+        &self,
+        invoice_id: &str,
+    ) -> Result<Option<ManualPaymentRow>, DbError> {
+        // THROUGH CRATESTACK, `items_for_invoice`'s shape. `find_many` and
+        // not `find_unique`: `invoice_id` is unique but it is not the key,
+        // and `find_unique` takes the primary key.
+        use crate::schema::cratestack_schema as cs;
+
+        let rows = self
+            .cs
+            .manual_payment()
+            .find_many()
+            .where_(cs::manual_payment::invoice_id().eq(invoice_id.to_owned()))
+            .run(&system_context())
+            .await
+            .map_err(|error| {
+                DbError::from(classify_cratestack(MANUAL_PAYMENT_MODEL, "read", error))
+            })?;
+
+        // `manual_payments_invoice_id_key` makes this zero rows or one.
+        Ok(rows.into_iter().next().map(ManualPaymentRow::from))
+    }
+
     async fn get_item_for_merchant(
         &self,
         merchant_id: &str,
@@ -1187,15 +1398,16 @@ pub(crate) async fn insert_in_tx(
     conn: &mut PgConnection,
     new: &NewInvoice,
 ) -> Result<InvoiceRow, DbError> {
-    // `status`, `number` and the three amounts are literals rather than
-    // parameters: a new invoice is a draft with no number and no money on it,
-    // always. See `NewInvoice`'s own doc.
+    // `status`, `number`, the amounts and `paid_out_of_band` are literals
+    // rather than parameters: a new invoice is a draft with no number and no
+    // money on it, always. See `NewInvoice`'s own doc. `paid_out_of_band` has
+    // no DEFAULT (migration 0049), so this literal is what a new row gets.
     let sql = format!(
         "INSERT INTO invoices \
             (id, merchant_id, livemode, customer_id, currency_code, status, number, \
-             amount_due, amount_paid, amount_remaining, amount_refunded, due_date, \
-             description, metadata, created_at, updated_at) \
-         VALUES ($1, $2, $3, $4, $5, 'draft', NULL, 0, 0, 0, 0, $6, $7, $8, $9, $9) \
+             amount_due, amount_paid, amount_remaining, amount_refunded, paid_out_of_band, \
+             due_date, description, metadata, created_at, updated_at) \
+         VALUES ($1, $2, $3, $4, $5, 'draft', NULL, 0, 0, 0, 0, false, $6, $7, $8, $9, $9) \
          RETURNING {COLUMNS}"
     );
 
@@ -1402,6 +1614,139 @@ pub(crate) async fn void_in_tx(
         .map_err(classify_write)
 }
 
+/// Records that an **open** invoice was settled outside vpay, inside the
+/// caller's transaction: `open -> paid` on the invoice, and its one
+/// `manual_payments` row (migration `0049`, RFC-0004 § 6).
+///
+/// The second writer of `open -> paid`, beside [`mark_paid_for_intent_in_tx`].
+/// The event is the caller's — `vpay-api` renders the returned row and
+/// appends `invoice.paid` beside it, as create, finalize and void do.
+///
+/// # Three statements, in this order, and why each
+///
+/// 1. **`SELECT … FROM customers … FOR SHARE`** on the invoice's customer.
+///    The share lock conflicts with the `FOR UPDATE` every customer erasure
+///    takes first, so the two serialise: a reference this transaction writes
+///    either commits before an erasure starts — and the erasure's
+///    `redact_stored_copies` then sees it and replaces it — or waits until
+///    the erasure has committed, and then this statement sees the customer is
+///    erased. `crate::customers::erased_under_share_lock`'s argument (issue
+///    #111), applied to a second table. With a reference on an erased
+///    customer's invoice the answer is [`OutOfBandPayment::CustomerErased`]
+///    and nothing is written: a merchant may still record the payment, only
+///    without re-attaching payer detail to a payer vpay has erased.
+/// 2. **The compare-and-swap.** `WHERE merchant_id AND id AND status =
+///    'open' AND` [`NO_LIVE_INTENT`](self) — the same condition `void`,
+///    `mark_uncollectible` and a second `pay` refuse on, so a payer cannot
+///    pay through the hosted link after the merchant recorded cash, and a
+///    merchant cannot record cash while a payer may still be paying. It sets
+///    `amount_paid = amount_due` and `amount_remaining = 0` **from the row's
+///    own columns**, exactly as the settlement does.
+/// 3. **`INSERT … SELECT … FROM invoices WHERE id = $2 AND
+///    paid_out_of_band`.** `amount`, `currency_code`, `merchant_id` and
+///    `livemode` are copied off the invoice statement 2 just wrote, under the
+///    row lock statement 2 still holds, so the record cannot disagree with
+///    its bill — the one invariant migration `0049` cannot state as a CHECK.
+///
+/// Statement 3 matching nothing after statement 2 matched is impossible (the
+/// same transaction, the same row, a lock held); it is answered as an error
+/// rather than a success, so a future change that broke it aborts the
+/// transaction instead of committing a paid invoice with no record.
+///
+/// # A canceled intent stays attached
+///
+/// `payment_intent_id` is not cleared. An invoice whose attempt was canceled
+/// and was then paid in cash keeps naming that attempt, exactly as a voided
+/// one does (migration `0036`: "the payment record survives the document").
+/// Every CHECK admits the row — `only_a_live_invoice_has_an_intent` only
+/// forbids an intent on a draft — and nothing can act on the pair afterwards:
+/// the settlement's flip needs `status = 'open'`, a canceled intent never
+/// settles, and the refund counter carries `AND NOT paid_out_of_band`.
+/// `paying_out_of_band_keeps_the_canceled_intent_and_nothing_can_move_it_again`
+/// in `tests/repositories.rs` pins all three.
+///
+/// # Errors
+///
+/// [`DbError::Query`] for any statement that fails, including
+/// `reference_length`, `manual_payments_method_enum_check` and
+/// `received_before_recorded` — each of which `vpay-api` refuses first with
+/// a `400` naming the parameter — and `manual_payments_invoice_id_key`,
+/// which the compare-and-swap makes unreachable.
+pub(crate) async fn pay_out_of_band_in_tx(
+    conn: &mut PgConnection,
+    new: &NewManualPayment,
+) -> Result<OutOfBandPayment, DbError> {
+    // 1. The erasure's lock. `FOR SHARE` applies to `customers` alone — the
+    //    sub-select is not locked — and a missing invoice selects nothing,
+    //    which is fine: statement 2 then matches nothing either.
+    let erased: Option<bool> = sqlx::query_scalar(
+        "SELECT anonymized_at IS NOT NULL FROM customers \
+         WHERE id = (SELECT customer_id FROM invoices WHERE merchant_id = $1 AND id = $2) \
+         FOR SHARE",
+    )
+    .bind(&new.merchant_id)
+    .bind(&new.invoice_id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(DbError::Query)?;
+
+    if erased == Some(true) && new.reference.is_some() {
+        return Ok(OutOfBandPayment::CustomerErased);
+    }
+
+    // 2. The compare-and-swap.
+    let sql = format!(
+        "UPDATE invoices SET \
+            status = 'paid', \
+            amount_paid = amount_due, \
+            amount_remaining = 0, \
+            paid_out_of_band = true, \
+            paid_at = $3, \
+            updated_at = $3 \
+         WHERE merchant_id = $1 AND id = $2 AND status = 'open' AND {NO_LIVE_INTENT} \
+         RETURNING {COLUMNS}"
+    );
+    let invoice = sqlx::query_as::<_, InvoiceRow>(AssertSqlSafe(sql))
+        .bind(&new.merchant_id)
+        .bind(&new.invoice_id)
+        .bind(new.recorded_at)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(classify_write)?;
+
+    let Some(invoice) = invoice else {
+        return Ok(OutOfBandPayment::Refused);
+    };
+
+    // 3. The record, copied off the row statement 2 wrote.
+    let sql = format!(
+        "INSERT INTO manual_payments \
+            (id, merchant_id, livemode, invoice_id, method, reference, received_at, amount, \
+             currency_code, created_at) \
+         SELECT $1, invoices.merchant_id, invoices.livemode, invoices.id, $3, $4, $5, \
+                invoices.amount_paid, invoices.currency_code, $6 \
+         FROM invoices \
+         WHERE invoices.id = $2 AND invoices.paid_out_of_band \
+         RETURNING {MANUAL_PAYMENT_COLUMNS}"
+    );
+    let payment = sqlx::query_as::<_, ManualPaymentRow>(AssertSqlSafe(sql))
+        .bind(&new.id)
+        .bind(&invoice.id)
+        .bind(&new.method)
+        .bind(new.reference.as_deref())
+        .bind(new.received_at)
+        .bind(new.recorded_at)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(classify_write)?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "manual_payments",
+            key: invoice.id.clone(),
+        })?;
+
+    Ok(OutOfBandPayment::Paid(Box::new((invoice, payment))))
+}
+
 /// Marks the invoice an intent was paying as paid, **inside the settlement
 /// transaction**.
 ///
@@ -1489,6 +1834,16 @@ pub(crate) async fn mark_paid_for_intent_in_tx(
 /// the transaction — including the refund row's own `pending` -> `succeeded`
 /// flip — rolls back.
 ///
+/// # Never against an invoice paid out of band
+///
+/// `AND NOT paid_out_of_band`. Such an invoice may still name an intent — a
+/// **canceled** one, left from an attempt abandoned before the merchant
+/// recorded cash (migration `0049`) — and a canceled intent has no succeeded
+/// charge to refund. The clause makes that a property of the statement
+/// rather than of the lifecycle, and migration `0049`'s
+/// `paid_out_of_band_is_never_refunded` is the backstop: money the rail
+/// never collected for this document cannot be recorded as given back on it.
+///
 /// # What it deliberately does not do
 ///
 /// It does not change `status`, `amount_paid`, `amount_remaining` or
@@ -1519,7 +1874,7 @@ pub(crate) async fn add_refund_for_intent_in_tx(
         "UPDATE invoices SET \
             amount_refunded = amount_refunded + $2, \
             updated_at = $3 \
-         WHERE payment_intent_id = $1 AND status = 'paid' \
+         WHERE payment_intent_id = $1 AND status = 'paid' AND NOT paid_out_of_band \
          RETURNING {COLUMNS}"
     );
 
@@ -1596,6 +1951,26 @@ impl From<crate::schema::cratestack_schema::InvoiceItem> for InvoiceItemRow {
     }
 }
 
+impl From<crate::schema::cratestack_schema::ManualPayment> for ManualPaymentRow {
+    /// The generated row, as this crate's own — [`InvoiceItemRow`]'s
+    /// conversion, for its reason. `method` crosses as the enum's own wire
+    /// spelling (`as_str`), which is the label the CHECK admitted.
+    fn from(row: crate::schema::cratestack_schema::ManualPayment) -> Self {
+        Self {
+            id: row.id,
+            merchant_id: row.merchant_id,
+            livemode: row.livemode,
+            invoice_id: row.invoice_id,
+            method: row.method.as_str().to_owned(),
+            reference: row.reference,
+            received_at: from_chrono(row.received_at),
+            amount: row.amount,
+            currency_code: row.currency_code,
+            created_at: from_chrono(row.created_at),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! No database. Everything here is either a render of a statement
@@ -1648,6 +2023,10 @@ mod tests {
             amount_paid: 0,
             amount_remaining: 0,
             amount_refunded: 0,
+            // Migration 0049. A required field of the generated input, since
+            // `model Invoice` declares it with no `@default(...)` — which is
+            // what keeps it out of the drift report.
+            paid_out_of_band: false,
             due_date: None,
             description: None,
             payment_intent_id: None,
@@ -1695,7 +2074,9 @@ mod tests {
     /// only a container test can see is still an hour of somebody's day.
     #[test]
     fn every_action_this_module_calls_has_an_allow_arm() {
-        use crate::schema::cratestack_schema::models::{INVOICE_ITEM_MODEL, INVOICE_MODEL};
+        use crate::schema::cratestack_schema::models::{
+            INVOICE_ITEM_MODEL, INVOICE_MODEL, MANUAL_PAYMENT_MODEL,
+        };
 
         assert!(
             !INVOICE_MODEL.update_allow_policies.is_empty(),
@@ -1711,6 +2092,51 @@ mod tests {
              `find_many` authorises before the statement runs, so `items_for_invoice` would \
              return Forbidden and every read of an invoice would be a 500"
         );
+        assert!(
+            !MANUAL_PAYMENT_MODEL.read_allow_policies.is_empty(),
+            "`@@allow(\"read\", auth().isSystem())` is missing from `model ManualPayment`: \
+             `find_many` authorises before the statement runs, so `manual_payment_for_invoice` \
+             would return Forbidden and every read of an invoice paid out of band would be a 500"
+        );
+    }
+
+    /// A manual payment's `Debug` never prints its reference.
+    ///
+    /// `payment_reference` is classified personal data
+    /// (`schemas/privacy-inventory.yaml`): a cheque or transfer reference
+    /// routinely names the payer. A derived `Debug` is one `tracing` field
+    /// away from a log line carrying it.
+    #[test]
+    fn a_manual_payments_debug_never_prints_its_reference() {
+        let at = time::OffsetDateTime::UNIX_EPOCH;
+        let row = super::ManualPaymentRow {
+            id: "mp_0123456789abcdefghjkmnpq".to_owned(),
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            livemode: false,
+            invoice_id: "in_0123456789abcdefghjkmnpq".to_owned(),
+            method: "cheque".to_owned(),
+            reference: Some("Cheque 0042 from Zzyzx Quibblewort".to_owned()),
+            received_at: at,
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            created_at: at,
+        };
+        let printed = format!("{row:?}");
+        assert!(!printed.contains("Quibblewort"), "{printed}");
+        assert!(printed.contains("[34 chars redacted]"), "{printed}");
+
+        let new = super::NewManualPayment {
+            id: row.id.clone(),
+            merchant_id: row.merchant_id.clone(),
+            invoice_id: row.invoice_id.clone(),
+            method: row.method.clone(),
+            reference: row.reference.clone(),
+            received_at: at,
+            recorded_at: at,
+        };
+        let printed = format!("{new:?}");
+        assert!(!printed.contains("Quibblewort"), "{printed}");
+        assert!(printed.contains("[34 chars redacted]"), "{printed}");
     }
 
     /// The two patch types agree with their own `is_empty`.

@@ -67,8 +67,8 @@ pub use model::{
     AccountHolder, Address, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,
     CheckoutSessionStatus, CheckoutUiMode, Customer, DeletedCustomer, DeletedInvoice,
     DeletedInvoiceItem, Event, EventData, IntentStatus, Invoice, InvoiceLine, InvoiceStatus,
-    InvoiceStatusTransitions, KnownEventType, LastPaymentError, List, NextAction, PaymentIntent,
-    PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
+    InvoiceStatusTransitions, KnownEventType, LastPaymentError, List, NextAction, OutOfBandMethod,
+    OutOfBandPayment, PaymentIntent, PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
 };
 pub use resources::{
     AccountHoldersResource, AddressParams, BalanceResource, CheckoutResource,
@@ -76,9 +76,10 @@ pub use resources::{
     CreateCustomerParams, CreateInvoiceItemParams, CreateInvoiceParams, CreatePaymentIntentParams,
     CreateRefundParams, CustomersResource, EventsResource, InvoiceItemsResource, InvoicesResource,
     ListCheckoutSessionsParams, ListCustomersParams, ListEventsParams, ListInvoicesParams,
-    ListPaymentIntentsParams, ListRefundsParams, PayInvoiceParams, PaymentIntentsResource,
-    RefundDestination, RefundsResource, RequestOptions, RetrieveAccountHolderParams,
-    UpdateCustomerParams, UpdateInvoiceItemParams, UpdateInvoiceParams, UpdateRefundParams,
+    ListPaymentIntentsParams, ListRefundsParams, OutOfBandParams, PayInvoiceParams,
+    PaymentIntentsResource, RefundDestination, RefundsResource, RequestOptions,
+    RetrieveAccountHolderParams, UpdateCustomerParams, UpdateInvoiceItemParams,
+    UpdateInvoiceParams, UpdateRefundParams,
 };
 
 /// See [`payment_intents`]. The account-holder lookup (issue #47): a
@@ -131,11 +132,12 @@ pub mod customers {
 pub mod invoices {
     pub use crate::model::{
         DeletedInvoice, DeletedInvoiceItem, Invoice, InvoiceLine, InvoiceStatus,
-        InvoiceStatusTransitions,
+        InvoiceStatusTransitions, OutOfBandMethod, OutOfBandPayment,
     };
     pub use crate::resources::{
         CreateInvoiceItemParams, CreateInvoiceParams, InvoiceItemsResource, InvoicesResource,
-        ListInvoicesParams, PayInvoiceParams, UpdateInvoiceItemParams, UpdateInvoiceParams,
+        ListInvoicesParams, OutOfBandParams, PayInvoiceParams, UpdateInvoiceItemParams,
+        UpdateInvoiceParams,
     };
 }
 

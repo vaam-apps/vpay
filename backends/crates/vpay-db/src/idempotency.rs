@@ -62,8 +62,12 @@
 //!
 //! # The one thing this store knows about another resource
 //!
-//! [`Idempotency::store`] takes a [`ResponseSubject`], and one of its two
-//! variants names `/v1/customers`. That is a deliberate exception in a store
+//! [`Idempotency::store`] takes a [`ResponseSubject`], and one of its
+//! variants names `/v1/customers`. (A third, `OutOfBandInvoice`, joined it on
+//! 2026-09-23 for the one invoice body that can carry payer detail — the
+//! reference of a payment recorded out of band, migration `0049` — and is the
+//! same exception keyed on the invoice's customer; this said "one of its two
+//! variants" until then.) That is a deliberate exception in a store
 //! that is otherwise indifferent to what it is keeping, and it is here
 //! because the alternative was worse rather than because it is tidy.
 //!
@@ -193,10 +197,13 @@ pub struct StoredResponse<'a> {
 /// year.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResponseSubject<'a> {
-    /// Store the body exactly as given. Every route but `/v1/customers` —
-    /// an intent, a session, an invoice and an invoice item carry a
+    /// Store the body exactly as given. Every route but `/v1/customers` and
+    /// the two invoice writes [`ResponseSubject::OutOfBandInvoice`] names —
+    /// an intent, a session, an ordinary invoice and an invoice item carry a
     /// `cus_…` at most, never a payer's identifiers, and the erasure has
-    /// nothing to redact in them.
+    /// nothing to redact in them. (This said "an invoice" without the
+    /// qualifier until migration `0049` gave an invoice paid out of band a
+    /// reference that can name the payer, 2026-09-23.)
     Verbatim,
     /// `/v1/customers`' shaped exception: this body renders the customer
     /// `id`, so the write must lose to an erasure of that customer rather
@@ -210,6 +217,24 @@ pub enum ResponseSubject<'a> {
     Customer {
         /// The `cus_…` this response is about.
         id: &'a str,
+    },
+    /// An invoice body that may carry an out-of-band payment reference
+    /// (migration `0049`) — the second body since issue #111 that can hold
+    /// payer detail. `vpay-api` passes it for `POST /v1/invoices/{id}/pay`
+    /// with `paid_out_of_band=true`, and for a `POST /v1/invoices/{id}` on an
+    /// invoice already paid out of band; every other invoice write stays
+    /// [`ResponseSubject::Verbatim`], because no other invoice body renders a
+    /// reference.
+    ///
+    /// Same mechanism as [`ResponseSubject::Customer`], applied to the
+    /// invoice's **customer**: the store takes that payer's row under a share
+    /// lock, and if they have since been erased it rewrites the reference in
+    /// the body it just stored, through
+    /// `crate::customers::redact_stored_invoice_responses_in_tx`.
+    OutOfBandInvoice {
+        /// The `cus_…` the invoice bills — the payer an erasure would be
+        /// about.
+        customer_id: &'a str,
     },
 }
 
@@ -332,6 +357,10 @@ pub trait Idempotency: Send + Sync {
     /// statement — the shape every route but `/v1/customers` gets, and the
     /// reason the compare-and-swap above reads a row back only when it
     /// matched none.
+    ///
+    /// [`ResponseSubject::OutOfBandInvoice`] is the same mechanism keyed on
+    /// the invoice's customer, with the invoice body's redaction (only the
+    /// out-of-band reference) in place of the customer body's.
     ///
     /// [`ResponseSubject::Customer`] adds a transaction around that statement
     /// and two things inside it: the payer's row is read under a **share
@@ -598,15 +627,22 @@ impl Idempotency for crate::repository::PgRepositories {
             });
         };
 
-        let ResponseSubject::Customer { id } = subject else {
-            // One statement, on the pool, for every route that is not
-            // `/v1/customers`.
-            let affected =
-                complete_claim(&self.pool, merchant_id, key, claim_id, status, body, retry).await?;
-            if affected == 0 {
-                return diagnose_empty_store(&self.pool, merchant_id, key, claim_id).await;
+        // Which payer, if any, an erasure racing this write could be about —
+        // and so which redaction to run if it won.
+        let (id, is_invoice) = match subject {
+            ResponseSubject::Verbatim => {
+                // One statement, on the pool, for every body that cannot
+                // carry payer detail.
+                let affected =
+                    complete_claim(&self.pool, merchant_id, key, claim_id, status, body, retry)
+                        .await?;
+                if affected == 0 {
+                    return diagnose_empty_store(&self.pool, merchant_id, key, claim_id).await;
+                }
+                return Ok(IdempotencyStoreOutcome::Stored);
             }
-            return Ok(IdempotencyStoreOutcome::Stored);
+            ResponseSubject::Customer { id } => (id, false),
+            ResponseSubject::OutOfBandInvoice { customer_id } => (customer_id, true),
         };
 
         // The shaped exception. A transaction, because the question "has this
@@ -634,8 +670,25 @@ impl Idempotency for crate::repository::PgRepositories {
             // this module's opinion of it — scoped to `key`, because the row
             // this write created is the only one it can have put the payer
             // back into. See that function's `only_key` section.
-            crate::customers::redact_stored_responses_in_tx(&mut tx, id, merchant_id, Some(key))
+            if is_invoice {
+                // The invoice body's own redaction: only the out-of-band
+                // reference is payer detail on it (migration `0049`).
+                crate::customers::redact_stored_invoice_responses_in_tx(
+                    &mut tx,
+                    id,
+                    merchant_id,
+                    Some(key),
+                )
                 .await?;
+            } else {
+                crate::customers::redact_stored_responses_in_tx(
+                    &mut tx,
+                    id,
+                    merchant_id,
+                    Some(key),
+                )
+                .await?;
+            }
         }
 
         tx.commit().await.map_err(DbError::Query)?;

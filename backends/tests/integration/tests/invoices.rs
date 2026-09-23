@@ -1602,6 +1602,21 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
     harness
         .post(CLIENT_A, &format!("/v1/invoices/{invoice}/finalize"), &[])
         .await?;
+    // Since migration `0049`, a `paid` row must also say HOW it was paid
+    // (`paid_names_how`: an intent, or `paid_out_of_band`). The two `paid`
+    // rows below were written with neither until then, so on their own they
+    // would now be refused for the WRONG reason — the refusal below would
+    // pass while proving nothing about `paid_means_nothing_remaining`, and
+    // the storable row after it would fail. The invoice therefore names the
+    // intent this case created above, which is the shape the settlement
+    // produces, and each refusal is pinned to the constraint that must
+    // produce it.
+    sqlx::query("UPDATE invoices SET payment_intent_id = $2 WHERE id = $1")
+        .bind(&invoice)
+        .bind(&intent_id)
+        .execute(&harness.pool)
+        .await
+        .context("an open invoice may name an intent")?;
     let refused = sqlx::query(
         "UPDATE invoices SET status = 'paid', amount_paid = 1, amount_remaining = 4999 \
          WHERE id = $1",
@@ -1609,8 +1624,9 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
     .bind(&invoice)
     .execute(&harness.pool)
     .await;
-    assert!(
-        refused.is_err(),
+    assert_eq!(
+        refused_by(refused),
+        Some("paid_means_nothing_remaining".to_owned()),
         "`paid` means paid in full; partial payments are out of scope and this is where that \
          stops being a sentence in a document"
     );
@@ -1641,8 +1657,9 @@ async fn the_invoice_invariants_are_enforced_by_the_database_itself() -> anyhow:
         .bind(&invoice)
         .execute(&harness.pool)
         .await;
-    assert!(
-        refused.is_err(),
+    assert_eq!(
+        refused_by(refused),
+        Some("refunded_at_most_paid".to_owned()),
         "a merchant cannot give back more than was collected"
     );
     let refused = sqlx::query("UPDATE invoices SET amount_refunded = -1 WHERE id = $1")
@@ -2211,6 +2228,825 @@ async fn paying_uses_the_merchants_configured_urls_and_a_passed_one_still_wins()
         .await?;
     assert_eq!(field(&unchanged, "status").as_str(), Some("open"));
     assert_eq!(field(&unchanged, "payment_intent").as_str(), None);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------- out-of-band payments (RFC-0004 § 6)
+
+/// The constraint a refused statement tripped, or `None` if it was not
+/// refused by a constraint at all.
+///
+/// Every multi-column CHECK case below asserts **which** constraint refused
+/// the row, not merely that something did: since migration `0049` a `paid`
+/// row can be refused by `paid_names_how` as well as by the constraint a case
+/// is about, and an `is_err()` would pass for the wrong one.
+fn refused_by(result: Result<sqlx::postgres::PgQueryResult, sqlx::Error>) -> Option<String> {
+    result.err().and_then(|error| {
+        error
+            .as_database_error()
+            .and_then(|database| database.constraint().map(str::to_owned))
+    })
+}
+
+/// `(ledger_transactions, ledger_entries)` row counts — an out-of-band
+/// payment must leave both at zero.
+async fn ledger_rows(pool: &PgPool) -> anyhow::Result<(i64, i64)> {
+    sqlx::query_as(
+        "SELECT (SELECT COUNT(*) FROM ledger_transactions), (SELECT COUNT(*) FROM ledger_entries)",
+    )
+    .fetch_one(pool)
+    .await
+    .context("counting ledger rows")
+}
+
+/// How many `manual_payments` rows one invoice has.
+async fn manual_payment_count(pool: &PgPool, invoice: &str) -> anyhow::Result<i64> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM manual_payments WHERE invoice_id = $1")
+        .bind(invoice)
+        .fetch_one(pool)
+        .await
+        .context("counting the invoice's payment records")
+}
+
+/// A raw `manual_payments` insert for the CHECK cases — straight past the
+/// API and the repository, which is the whole point.
+async fn insert_manual_payment(
+    pool: &PgPool,
+    id: &str,
+    invoice: &str,
+    method: &str,
+    reference: Option<&str>,
+    amount: i64,
+    received_after_recording_seconds: i32,
+) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO manual_payments \
+            (id, merchant_id, livemode, invoice_id, method, reference, received_at, amount, \
+             currency_code, created_at) \
+         VALUES ($1, $2, false, $3, $4, $5, now() + make_interval(secs => $6::INT), $7, 'XAF', \
+                 now())",
+    )
+    .bind(id)
+    .bind(MERCHANT_B)
+    .bind(invoice)
+    .bind(method)
+    .bind(reference)
+    .bind(received_after_recording_seconds)
+    .bind(amount)
+    .execute(pool)
+    .await
+}
+
+/// **The happy path**, for a merchant with **no** configured invoice URLs
+/// and no publishable key: `open -> paid`, the amounts, `paid_at`, the flag
+/// and the record on the object, `invoice.paid` written exactly once with the
+/// record inside it, and **nothing** on the ledger.
+///
+/// Merchant B is the point of the fixture. `pay`'s hosted path resolves
+/// `merchant_clients[].invoices` and needs a publishable key; B has neither,
+/// so a fork taken *after* URL resolution would answer this case with the
+/// `400` naming both URLs — the decisive mutation is moving the
+/// `paid_out_of_band` fork below `forward_urls` in `pay_once`.
+#[tokio::test]
+async fn paying_out_of_band_needs_no_configured_urls_and_posts_nothing() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_B).await?;
+    let (_, open) = harness
+        .get(CLIENT_B, &format!("/v1/invoices/{invoice}"))
+        .await?;
+    let finalized_at = at(&open, &["status_transitions", "finalized_at"])
+        .as_i64()
+        .expect("an open invoice was finalized");
+    let received_at = finalized_at.to_string();
+
+    let (status, paid) = harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[method]", "bank_transfer"),
+                ("out_of_band[reference]", "AFB 2026/0917"),
+                ("out_of_band[received_at]", &received_at),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paid}");
+
+    assert_eq!(field(&paid, "status"), "paid");
+    assert_eq!(field(&paid, "amount_due"), 5000);
+    assert_eq!(field(&paid, "amount_paid"), 5000);
+    assert_eq!(field(&paid, "amount_remaining"), 0);
+    assert_eq!(field(&paid, "paid_out_of_band"), true);
+    assert_eq!(
+        field(&paid, "payment_intent"),
+        &Value::Null,
+        "no intent was minted"
+    );
+    assert_eq!(field(&paid, "hosted_invoice_url"), &Value::Null);
+    assert!(
+        at(&paid, &["status_transitions", "paid_at"])
+            .as_i64()
+            .is_some(),
+        "paid_at is stamped: {paid}"
+    );
+    let record = field(&paid, "out_of_band_payment").clone();
+    let record_id = field(&record, "id").as_str().unwrap_or_default().to_owned();
+    assert!(record_id.starts_with("mp_"), "{record}");
+    assert_eq!(
+        record,
+        serde_json::json!({
+            "id": record_id,
+            "method": "bank_transfer",
+            "reference": "AFB 2026/0917",
+            "received_at": finalized_at,
+        })
+    );
+    assert_eq!(
+        paid.as_object().map(serde_json::Map::len),
+        Some(21),
+        "the invoice object is the documented twenty-one keys: {paid}"
+    );
+
+    // A fresh read renders the same record, through the third read.
+    let (_, read) = harness
+        .get(CLIENT_B, &format!("/v1/invoices/{invoice}"))
+        .await?;
+    assert_eq!(field(&read, "out_of_band_payment"), &record);
+
+    // `invoice.paid` exactly once, carrying the record — rendered from the
+    // row the transaction wrote, so its body is the object the merchant got.
+    let events = harness.events_of("invoice.paid").await?;
+    let (object_id, data) = only(&events, "invoice.paid event");
+    assert_eq!(object_id, &invoice);
+    assert_eq!(field(data, "paid_out_of_band"), true);
+    assert_eq!(field(data, "out_of_band_payment"), &record);
+
+    // The stored record: the invoice's own amount, currency and tenant.
+    let (amount, currency, merchant): (i64, String, String) = sqlx::query_as(
+        "SELECT amount, currency_code, merchant_id FROM manual_payments WHERE invoice_id = $1",
+    )
+    .bind(&invoice)
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!(
+        (amount, currency.as_str(), merchant.as_str()),
+        (5000, "XAF", MERCHANT_B)
+    );
+
+    assert_eq!(
+        ledger_rows(&harness.pool).await?,
+        (0, 0),
+        "no money crossed payer_clearing, so nothing is posted"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Every malformed out-of-band request is a `400` **naming its parameter**,
+/// and none of them writes anything.
+#[tokio::test]
+async fn each_malformed_out_of_band_request_is_a_four_hundred_naming_its_parameter()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_C).await?;
+    let path = format!("/v1/invoices/{invoice}/pay");
+    let long = "r".repeat(501);
+    let future = (time::OffsetDateTime::now_utc().unix_timestamp() + 3600).to_string();
+    let flag = ("paid_out_of_band", "true");
+    let cash = ("out_of_band[method]", "cash");
+
+    let cases: Vec<(Vec<(&str, &str)>, &str)> = vec![
+        (vec![flag], "out_of_band[method]"),
+        (
+            vec![flag, ("out_of_band[method]", "barter")],
+            "out_of_band[method]",
+        ),
+        (
+            vec![flag, cash, ("out_of_band[refrence]", "typo")],
+            "out_of_band",
+        ),
+        (
+            vec![flag, cash, ("out_of_band[reference]", long.as_str())],
+            "out_of_band[reference]",
+        ),
+        (
+            vec![flag, cash, ("out_of_band[received_at]", "yesterday")],
+            "out_of_band[received_at]",
+        ),
+        (
+            vec![flag, cash, ("out_of_band[received_at]", future.as_str())],
+            "out_of_band[received_at]",
+        ),
+        // Before the invoice was finalized.
+        (
+            vec![flag, cash, ("out_of_band[received_at]", "1")],
+            "out_of_band[received_at]",
+        ),
+        // Merchant C HAS configured URLs, so these two cannot be the
+        // "neither sent nor configured" refusal: they are refused for being
+        // SENT with a flag that gives them no meaning.
+        (
+            vec![flag, cash, ("success_url", SUCCESS_URL)],
+            "success_url",
+        ),
+        (vec![flag, cash, ("cancel_url", CANCEL_URL)], "cancel_url"),
+        // `out_of_band[…]` without the flag: a payment described and not
+        // asked to be recorded — refused rather than a checkout minted.
+        (vec![cash], "out_of_band[method]"),
+        (vec![("paid_out_of_band", "yes")], "paid_out_of_band"),
+    ];
+
+    for (form, param) in &cases {
+        let (status, body) = harness.post(CLIENT_C, &path, form).await?;
+        assert_eq!(status, 400, "{form:?}: {body}");
+        assert_eq!(
+            at(&body, &["error", "param"]).as_str(),
+            Some(*param),
+            "{form:?}: {body}"
+        );
+    }
+
+    let (_, still) = harness
+        .get(CLIENT_C, &format!("/v1/invoices/{invoice}"))
+        .await?;
+    assert_eq!(field(&still, "status"), "open");
+    assert_eq!(
+        field(&still, "payment_intent"),
+        &Value::Null,
+        "no checkout was minted by any of them"
+    );
+    assert_eq!(manual_payment_count(&harness.pool, &invoice).await?, 0);
+    assert_eq!(harness.events_of("invoice.paid").await?.len(), 0);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// While an intent that is not `canceled` is attached, an out-of-band payment
+/// is the same `409` naming the intent that `void` gives — a merchant cannot
+/// record cash while a payer may still be paying through the hosted link —
+/// and once the intent is canceled it succeeds, **keeping** the canceled
+/// intent on the invoice (the decision `docs/flows/invoices.md` records).
+#[tokio::test]
+async fn paying_out_of_band_is_refused_while_an_intent_is_live_and_allowed_once_it_is_canceled()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_A).await?;
+    let path = format!("/v1/invoices/{invoice}/pay");
+
+    let (status, paying) = harness
+        .post(
+            CLIENT_A,
+            &path,
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paying}");
+    let intent = field(&paying, "payment_intent")
+        .as_str()
+        .expect("an intent")
+        .to_owned();
+
+    let cash = [
+        ("paid_out_of_band", "true"),
+        ("out_of_band[method]", "cash"),
+    ];
+    let (status, body) = harness.post(CLIENT_A, &path, &cash).await?;
+    assert_eq!(status, 409, "{body}");
+    assert!(
+        at(&body, &["error", "message"])
+            .as_str()
+            .is_some_and(|message| message.contains(&intent)),
+        "the refusal names the intent to cancel: {body}"
+    );
+    assert_eq!(manual_payment_count(&harness.pool, &invoice).await?, 0);
+
+    let (status, body) = harness
+        .post(
+            CLIENT_A,
+            &format!("/v1/payment_intents/{intent}/cancel"),
+            &[],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, paid) = harness.post(CLIENT_A, &path, &cash).await?;
+    assert_eq!(
+        status, 200,
+        "a canceled intent releases the invoice: {paid}"
+    );
+    assert_eq!(field(&paid, "status"), "paid");
+    assert_eq!(field(&paid, "paid_out_of_band"), true);
+    assert_eq!(
+        field(&paid, "payment_intent").as_str(),
+        Some(intent.as_str()),
+        "the abandoned attempt stays on the document, as it does on a voided one"
+    );
+    // …and so does its session's URL, exactly as on a voided invoice: the
+    // renderer derives it from the attached intent and does not ask whether
+    // that intent is still payable. Recorded, not endorsed — see
+    // `docs/flows/invoices.md` § "Paid out of band", decision 3.
+    assert!(field(&paid, "hosted_invoice_url").is_string(), "{paid}");
+    assert_eq!(field(&paid, "amount_paid"), 5000);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Every status but `open` refuses it with the same `409` naming the status
+/// the other transitions give — `draft`, `void`, `uncollectible`, and `paid`
+/// (a second out-of-band payment included).
+#[tokio::test]
+async fn paying_out_of_band_is_refused_from_every_status_but_open() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let cash = [
+        ("paid_out_of_band", "true"),
+        ("out_of_band[method]", "cash"),
+    ];
+
+    let draft = harness.draft_with_a_line(CLIENT_B).await?;
+    let voided = open_invoice(&harness, CLIENT_B).await?;
+    harness
+        .post(CLIENT_B, &format!("/v1/invoices/{voided}/void"), &[])
+        .await?;
+    let written_off = open_invoice(&harness, CLIENT_B).await?;
+    harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{written_off}/mark_uncollectible"),
+            &[],
+        )
+        .await?;
+    let paid = open_invoice(&harness, CLIENT_B).await?;
+    let (status, body) = harness
+        .post(CLIENT_B, &format!("/v1/invoices/{paid}/pay"), &cash)
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    for (invoice, label) in [
+        (&draft, "draft"),
+        (&voided, "void"),
+        (&written_off, "uncollectible"),
+        (&paid, "paid"),
+    ] {
+        let (status, body) = harness
+            .post(CLIENT_B, &format!("/v1/invoices/{invoice}/pay"), &cash)
+            .await?;
+        assert_eq!(status, 409, "{label}: {body}");
+        let expected = format!("`{label}`, not `open`");
+        assert!(
+            at(&body, &["error", "message"])
+                .as_str()
+                .is_some_and(|message| message.contains(&expected)),
+            "the refusal names the status: {body}"
+        );
+    }
+    assert_eq!(
+        harness.events_of("invoice.paid").await?.len(),
+        1,
+        "only the one that succeeded wrote an event"
+    );
+    assert_eq!(manual_payment_count(&harness.pool, &paid).await?, 1);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// An `Idempotency-Key` replays an out-of-band payment's response and records
+/// nothing twice; the same key with a different body is the `400`
+/// `idempotency_key_in_use`.
+#[tokio::test]
+async fn an_out_of_band_payment_replays_under_its_idempotency_key() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_B).await?;
+    let path = format!("/v1/invoices/{invoice}/pay");
+    let key = fresh_key();
+    let form = [
+        ("paid_out_of_band", "true"),
+        ("out_of_band[method]", "cheque"),
+        ("out_of_band[reference]", "Cheque 0042"),
+    ];
+
+    let (first_status, first) = harness.post_with_key(CLIENT_B, &path, &form, &key).await?;
+    assert_eq!(first_status, 200, "{first}");
+    let (again_status, again) = harness.post_with_key(CLIENT_B, &path, &form, &key).await?;
+    assert_eq!(again_status, 200, "{again}");
+    assert_eq!(first, again, "a replay answers what the original did");
+
+    let (status, body) = harness
+        .post_with_key(
+            CLIENT_B,
+            &path,
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[method]", "cash"),
+            ],
+            &key,
+        )
+        .await?;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(at(&body, &["error", "code"]), "idempotency_key_in_use");
+
+    assert_eq!(manual_payment_count(&harness.pool, &invoice).await?, 1);
+    assert_eq!(harness.events_of("invoice.paid").await?.len(), 1);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// A hosted `pay` and an out-of-band `pay` racing on one invoice have
+/// **exactly one winner**, five rounds over.
+///
+/// Either order is legal and each leaves one coherent story: the hosted pay
+/// wins (the invoice is `open` with its intent, and there is no record and no
+/// `invoice.paid`), or the out-of-band pay wins (the invoice is `paid` with a
+/// record, and whatever intent the loser minted is unattached). Both
+/// compare-and-swaps carry `NO_LIVE_INTENT` and `status = 'open'`, so under
+/// `READ COMMITTED` the loser re-evaluates against the winner's committed row
+/// and matches nothing.
+#[tokio::test]
+async fn a_hosted_pay_and_an_out_of_band_pay_racing_have_exactly_one_winner() -> anyhow::Result<()>
+{
+    let harness = harness().await?;
+    let hosted = [("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)];
+    let cash = [
+        ("paid_out_of_band", "true"),
+        ("out_of_band[method]", "cash"),
+    ];
+
+    for round in 0..5 {
+        let invoice = open_invoice(&harness, CLIENT_A).await?;
+        let path = format!("/v1/invoices/{invoice}/pay");
+        let (left, right) = tokio::join!(
+            harness.post(CLIENT_A, &path, &hosted),
+            harness.post(CLIENT_A, &path, &cash),
+        );
+        let (hosted_status, hosted_body) = left?;
+        let (cash_status, cash_body) = right?;
+        let mut statuses = [hosted_status.as_u16(), cash_status.as_u16()];
+        statuses.sort_unstable();
+        assert_eq!(
+            statuses,
+            [200, 409],
+            "round {round}: one winner: {hosted_body} | {cash_body}"
+        );
+
+        let (_, now) = harness
+            .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
+            .await?;
+        let records = manual_payment_count(&harness.pool, &invoice).await?;
+        if cash_status == 200 {
+            assert_eq!(field(&now, "status"), "paid", "round {round}: {now}");
+            assert_eq!(records, 1);
+        } else {
+            assert_eq!(field(&now, "status"), "open", "round {round}: {now}");
+            assert_eq!(field(&now, "paid_out_of_band"), false);
+            assert_eq!(
+                field(&now, "payment_intent"),
+                field(&hosted_body, "payment_intent"),
+                "round {round}: the hosted winner's intent is the one attached"
+            );
+            assert_eq!(records, 0);
+        }
+    }
+
+    let paid_events = i64::try_from(harness.events_of("invoice.paid").await?.len())?;
+    let records: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM manual_payments")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(
+        paid_events, records,
+        "one invoice.paid per record, and none for a hosted winner"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Migration `0049`'s multi-column CHECKs, the single-column ones on the new
+/// table and its unique index, written **straight past the API** — the drift
+/// report cannot see the multi-column ones at all.
+///
+/// Each refusal is pinned to the constraint that must produce it
+/// ([`refused_by`]). **The decisive mutation:** delete any one of them from
+/// `0049` and the matching assertion reads `None` or another name.
+#[tokio::test]
+async fn the_out_of_band_invariants_are_enforced_by_the_database_itself() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let open = open_invoice(&harness, CLIENT_B).await?;
+
+    // `paid_out_of_band_means_paid` — an open bill claiming it was settled.
+    let refused = sqlx::query("UPDATE invoices SET paid_out_of_band = true WHERE id = $1")
+        .bind(&open)
+        .execute(&harness.pool)
+        .await;
+    assert_eq!(
+        refused_by(refused),
+        Some("paid_out_of_band_means_paid".to_owned())
+    );
+
+    // `paid_names_how` — a settled bill with neither an intent nor the flag.
+    let refused = sqlx::query(
+        "UPDATE invoices SET status = 'paid', amount_paid = amount_due, amount_remaining = 0, \
+         paid_at = now() WHERE id = $1",
+    )
+    .bind(&open)
+    .execute(&harness.pool)
+    .await;
+    assert_eq!(refused_by(refused), Some("paid_names_how".to_owned()));
+
+    // A real out-of-band payment, to build the remaining rows against.
+    let paid = open_invoice(&harness, CLIENT_B).await?;
+    let (status, body) = harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{paid}/pay"),
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[method]", "cash"),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    // `paid_out_of_band_is_never_refunded` — a rail refund on a bill no rail
+    // collected.
+    let refused = sqlx::query("UPDATE invoices SET amount_refunded = 1 WHERE id = $1")
+        .bind(&paid)
+        .execute(&harness.pool)
+        .await;
+    assert_eq!(
+        refused_by(refused),
+        Some("paid_out_of_band_is_never_refunded".to_owned())
+    );
+
+    let pool = &harness.pool;
+    // `manual_payments_invoice_id_key` — a second statement about one bill.
+    assert_eq!(
+        refused_by(insert_manual_payment(pool, "mp_second", &paid, "cash", None, 5000, 0).await),
+        Some("manual_payments_invoice_id_key".to_owned())
+    );
+
+    // The single-column ones on the record, against an invoice with none.
+    let other = open_invoice(&harness, CLIENT_B).await?;
+    assert_eq!(
+        refused_by(insert_manual_payment(pool, "mp_barter", &other, "barter", None, 5000, 0).await),
+        Some("manual_payments_method_enum_check".to_owned())
+    );
+    assert_eq!(
+        refused_by(
+            insert_manual_payment(pool, "mp_empty", &other, "cash", Some(""), 5000, 0).await
+        ),
+        Some("reference_length".to_owned())
+    );
+    let long = "r".repeat(501);
+    assert_eq!(
+        refused_by(
+            insert_manual_payment(pool, "mp_long", &other, "cash", Some(&long), 5000, 0).await
+        ),
+        Some("reference_length".to_owned())
+    );
+    assert_eq!(
+        refused_by(insert_manual_payment(pool, "mp_zero", &other, "cash", None, 0, 0).await),
+        Some("amount_positive".to_owned())
+    );
+    // `received_before_recorded` — multi-column: money received after vpay
+    // recorded it. Thirty seconds of allowance, and not thirty-one.
+    assert_eq!(
+        refused_by(insert_manual_payment(pool, "mp_later", &other, "cash", None, 5000, 31).await),
+        Some("received_before_recorded".to_owned())
+    );
+    assert_eq!(
+        refused_by(insert_manual_payment(pool, "mp_edge", &other, "cash", None, 5000, 29).await),
+        None,
+        "inside the allowance is storable"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// **Erasing the invoice's customer redacts the out-of-band reference
+/// everywhere it was copied** — the record, the stored `invoice.paid` body,
+/// the stored idempotent response — and afterwards a reference on that
+/// customer's invoice is refused while a payment without one still records.
+///
+/// The reference is classified `payment_reference`, `subject: payer`,
+/// `control: redact` (`schemas/privacy-inventory.yaml`): a cheque or transfer
+/// reference routinely names the payer, which is what the fixture's literal
+/// does.
+#[tokio::test]
+async fn erasing_the_customer_redacts_the_out_of_band_reference_everywhere() -> anyhow::Result<()> {
+    const WHO: &str = "Zzyzx Quibblewort";
+    let harness = harness().await?;
+    let paid = open_invoice(&harness, CLIENT_B).await?;
+    let later = open_invoice(&harness, CLIENT_B).await?;
+    let (_, invoice) = harness
+        .get(CLIENT_B, &format!("/v1/invoices/{paid}"))
+        .await?;
+    let customer = field(&invoice, "customer")
+        .as_str()
+        .expect("a customer")
+        .to_owned();
+    // `draft_with_a_line` creates a customer per invoice; bind the second
+    // invoice to the same payer so the erasure is about both.
+    sqlx::query("UPDATE invoices SET customer_id = $2 WHERE id = $1")
+        .bind(&later)
+        .bind(&customer)
+        .execute(&harness.pool)
+        .await?;
+
+    let key = fresh_key();
+    let reference = format!("Cheque 0042 from {WHO}");
+    let form = [
+        ("paid_out_of_band", "true"),
+        ("out_of_band[method]", "cheque"),
+        ("out_of_band[reference]", reference.as_str()),
+    ];
+    let path = format!("/v1/invoices/{paid}/pay");
+    let (status, body) = harness.post_with_key(CLIENT_B, &path, &form, &key).await?;
+    assert_eq!(status, 200, "{body}");
+
+    let everywhere = "SELECT \
+         (SELECT COUNT(*) FROM manual_payments WHERE reference LIKE '%' || $1 || '%') \
+       + (SELECT COUNT(*) FROM events WHERE data::text LIKE '%' || $1 || '%') \
+       + (SELECT COUNT(*) FROM idempotency_keys WHERE response_body::text LIKE '%' || $1 || '%')";
+    let before: i64 = sqlx::query_scalar(everywhere)
+        .bind(WHO)
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(
+        before, 3,
+        "the record, the invoice.paid body and the stored response all carry it"
+    );
+
+    let (status, body) = harness
+        .delete(CLIENT_B, &format!("/v1/customers/{customer}"))
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let after: i64 = sqlx::query_scalar(everywhere)
+        .bind(WHO)
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(after, 0, "no copy of the reference survives the erasure");
+
+    let (_, read) = harness
+        .get(CLIENT_B, &format!("/v1/invoices/{paid}"))
+        .await?;
+    assert_eq!(
+        at(&read, &["out_of_band_payment", "reference"]).as_str(),
+        Some(vpay_db::REDACTED)
+    );
+    let (_, replayed) = harness.post_with_key(CLIENT_B, &path, &form, &key).await?;
+    assert_eq!(
+        at(&replayed, &["out_of_band_payment", "reference"]).as_str(),
+        Some(vpay_db::REDACTED),
+        "a replay after an erasure answers the redacted body"
+    );
+    let events = harness.events_of("invoice.paid").await?;
+    let (_, data) = only(&events, "invoice.paid event");
+    assert_eq!(
+        at(data, &["out_of_band_payment", "reference"]).as_str(),
+        Some(vpay_db::REDACTED)
+    );
+
+    // The erased payer's other invoice: a reference would re-attach payer
+    // detail, so it is refused — naming the parameter — and nothing is
+    // written; without one, the payment records.
+    let later_path = format!("/v1/invoices/{later}/pay");
+    let (status, body) = harness
+        .post(
+            CLIENT_B,
+            &later_path,
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[method]", "cash"),
+                ("out_of_band[reference]", "Receipt 7"),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 400, "{body}");
+    assert_eq!(
+        at(&body, &["error", "param"]).as_str(),
+        Some("out_of_band[reference]")
+    );
+    assert_eq!(manual_payment_count(&harness.pool, &later).await?, 0);
+    let (status, body) = harness
+        .post(
+            CLIENT_B,
+            &later_path,
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[method]", "cash"),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// An erasure and an out-of-band payment with a reference, **racing** on one
+/// payer: neither deadlocks, and no reference survives either order.
+///
+/// The lock-order argument (`vpay_db::invoices`' `pay_out_of_band_in_tx`):
+/// the payment takes `FOR SHARE` on the customer **before** it touches the
+/// invoice or `manual_payments`, and the erasure takes `FOR UPDATE` on the
+/// customer before it touches anything, so both acquire the customer row
+/// first and serialise on it; neither holds a lock the other wants second.
+/// This case is the empirical half: a `40P01` would surface as a `500`, and a
+/// reference that slipped past the erasure would be found by the final scan.
+#[tokio::test]
+async fn an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    for round in 0..5 {
+        let invoice = open_invoice(&harness, CLIENT_B).await?;
+        let (_, read) = harness
+            .get(CLIENT_B, &format!("/v1/invoices/{invoice}"))
+            .await?;
+        let customer = field(&read, "customer")
+            .as_str()
+            .expect("a customer")
+            .to_owned();
+        let pay_path = format!("/v1/invoices/{invoice}/pay");
+        let erase_path = format!("/v1/customers/{customer}");
+        let reference = format!("Transfer from Quibblewort round {round}");
+        let form = [
+            ("paid_out_of_band", "true"),
+            ("out_of_band[method]", "bank_transfer"),
+            ("out_of_band[reference]", reference.as_str()),
+        ];
+        let (paying, erasing) = tokio::join!(
+            harness.post(CLIENT_B, &pay_path, &form),
+            harness.delete(CLIENT_B, &erase_path),
+        );
+        let (pay_status, pay_body) = paying?;
+        let (erase_status, erase_body) = erasing?;
+        assert_eq!(erase_status, 200, "round {round}: {erase_body}");
+        assert!(
+            pay_status == 200 || pay_status == 400,
+            "round {round}: the payment either won or was refused for the reference: \
+             {pay_status} {pay_body}"
+        );
+    }
+
+    let surviving: i64 = sqlx::query_scalar(
+        "SELECT \
+           (SELECT COUNT(*) FROM manual_payments WHERE reference LIKE '%Quibblewort%') \
+         + (SELECT COUNT(*) FROM events WHERE data::text LIKE '%Quibblewort%') \
+         + (SELECT COUNT(*) FROM idempotency_keys \
+            WHERE response_body::text LIKE '%Quibblewort%')",
+    )
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!(
+        surviving, 0,
+        "whichever won, no reference outlived its payer"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Another merchant's `in_…` answers an out-of-band payment with the same
+/// `404` as an id that never existed — before the body is looked at.
+#[tokio::test]
+async fn an_out_of_band_payment_on_another_merchants_invoice_is_the_uniform_not_found()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let theirs = open_invoice(&harness, CLIENT_A).await?;
+    let cash = [
+        ("paid_out_of_band", "true"),
+        ("out_of_band[method]", "cash"),
+    ];
+
+    let (their_status, their_body) = harness
+        .post(CLIENT_B, &format!("/v1/invoices/{theirs}/pay"), &cash)
+        .await?;
+    let (missing_status, missing_body) = harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{MISSING_INVOICE_ID}/pay"),
+            &cash,
+        )
+        .await?;
+    assert_eq!((their_status.as_u16(), missing_status.as_u16()), (404, 404));
+    assert_eq!(
+        their_body.to_string().replace(&theirs, "<ID>"),
+        missing_body.to_string().replace(MISSING_INVOICE_ID, "<ID>"),
+    );
+    let (_, still) = harness
+        .get(CLIENT_A, &format!("/v1/invoices/{theirs}"))
+        .await?;
+    assert_eq!(field(&still, "status"), "open");
 
     harness.shutdown().await;
     Ok(())

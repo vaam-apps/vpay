@@ -151,6 +151,54 @@ describe("invoices against a running vpay", () => {
   });
 
   /**
+   * **An invoice paid out of band** (RFC-0004 § 6): `open` → `paid` on the
+   * merchant's word, with no intent, no checkout and no URL sent — the
+   * stack's merchant needs none configured — and the record comes back on
+   * both the answer and a fresh read. A second attempt is the `409` a paid
+   * invoice gives any transition.
+   */
+  it("records an invoice as paid out of band and reads its record back", async () => {
+    const draft = await client.invoices.create({
+      customer: customer.id,
+      currency: "xaf",
+    });
+    await client.invoiceItems.create({
+      invoice: draft.id,
+      description: "Paid by cheque",
+      unit_amount: 7_500,
+    });
+    const open = await client.invoices.finalize(draft.id);
+    expect(open.paid_out_of_band).toBe(false);
+    expect(open.out_of_band_payment).toBeNull();
+
+    const paid = await client.invoices.pay(draft.id, {
+      paid_out_of_band: true,
+      out_of_band: { method: "cheque", reference: "Cheque 0042" },
+    });
+    expect(paid.status).toBe("paid");
+    expect(paid.paid_out_of_band).toBe(true);
+    expect(paid.amount_paid).toBe(7_500);
+    expect(paid.amount_remaining).toBe(0);
+    expect(paid.payment_intent).toBeNull();
+    expect(paid.hosted_invoice_url).toBeNull();
+    const record = paid.out_of_band_payment;
+    expect(record?.id).toMatch(/^mp_/);
+    expect(record?.method).toBe("cheque");
+    expect(record?.reference).toBe("Cheque 0042");
+    expect(record?.received_at).toEqual(expect.any(Number));
+
+    const read = await client.invoices.retrieve(draft.id);
+    expect(read.out_of_band_payment).toEqual(paid.out_of_band_payment);
+
+    await expect(
+      client.invoices.pay(draft.id, {
+        paid_out_of_band: true,
+        out_of_band: { method: "cash" },
+      }),
+    ).rejects.toThrow(/paid/);
+  });
+
+  /**
    * **`currency` is required**, which is the claim both SDKs documented the
    * other way round until 2026-09-08 — "omitted from the body entirely when
    * absent, so the server applies this deployment's own default". There is no

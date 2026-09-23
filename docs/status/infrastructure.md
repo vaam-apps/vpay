@@ -95,6 +95,26 @@ Measured, 2026-09-16.)_
 
 ## Migrations
 
+**49 as of 2026-09-23.** `0049_manual-payments.sql` (RFC-0004 § 6) adds
+`invoices.paid_out_of_band` — `BOOLEAN NOT NULL`, backfilled `false` by the
+ADD's own DEFAULT and the DEFAULT dropped in the next statement, `0042`'s
+device — the `manual_payments` table (one row per invoice,
+`manual_payments_invoice_id_key`; `manual_payments_method_enum_check` born
+under CrateStack's generated name), three multi-column CHECKs on `invoices`
+(`paid_out_of_band_means_paid`, `paid_names_how`,
+`paid_out_of_band_is_never_refunded`) and one on `manual_payments`
+(`received_before_recorded`). It is additive: every existing row satisfies all
+three new `invoices` CHECKs, because before it the settlement was the only
+writer of `paid` and always matched on an intent. `postgres_smoke.rs`'
+`schema_migrates_cleanly_on_an_empty_database` records 49 applied; see
+[verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md).
+`MANIFEST.sha256`'s line was appended by hand with `shasum -a 256`, because
+`just migrations-manifest` uses GNU `find -printf` and fails on macOS
+(`find: -printf: unknown primary or operator`); `verify-migrations` accepts
+the line. _(The paragraph below said "47" and was one behind from
+2026-09-16, when `0048_refunds-comments-post-v1-refunds-is-routed.sql` — a
+second comment-only migration — landed without moving it.)_
+
 **47 as of 2026-09-15.** `0047_refunds-comments-mtn-refund-is-written.sql` is a
 comment-only migration on `0020`'s precedent: it corrects `0017`'s
 `COMMENT ON TABLE refunds` and `0042`'s

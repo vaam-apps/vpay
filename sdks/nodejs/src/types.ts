@@ -822,7 +822,8 @@ export interface InvoiceStatusTransitions {
 }
 
 /**
- * An `invoice` (S4b): a merchant's bill to one customer. **Eighteen keys.**
+ * An `invoice` (S4b): a merchant's bill to one customer. **Twenty-one keys** (this
+ * said "Eighteen" through two additions; corrected 2026-09-23).
  *
  * # `lines` is always expanded, and always unpaged
  *
@@ -884,6 +885,16 @@ export interface Invoice {
    * a server that predates migration `0042`, where the key is absent.
    */
   amount_refunded?: number;
+  /**
+   * Stripe's key: `true` exactly when the merchant recorded that this invoice
+   * was settled outside vpay (`client.invoices.pay` with
+   * `paid_out_of_band: true`). Always `false` on a bill a payer paid through
+   * a rail. Optional in the type so a client of this version keeps compiling
+   * against a server that predates migration `0049`.
+   */
+  paid_out_of_band?: boolean;
+  /** The record behind `paid_out_of_band`, or `null`. Present exactly when the flag is `true`. */
+  out_of_band_payment?: OutOfBandPayment | null;
   /**
    * Unix **seconds**, or `null`. **Advisory**: nothing in vpay reads it —
    * there is no dunning, no reminder and no automatic transition.
@@ -1029,10 +1040,66 @@ export type ListInvoicesParams = {
  * carry the literal `{CHECKOUT_SESSION_ID}` — and this SDK deliberately does
  * not duplicate them, for {@link CreateCheckoutSessionParams}' reason.
  */
-export type PayInvoiceParams = {
+export type PayInvoiceParams =
+  HostedPayInvoiceParams | OutOfBandPayInvoiceParams;
+
+/** The hosted-checkout payment: both URLs, and no `out_of_band`. */
+export interface HostedPayInvoiceParams {
   success_url: string;
   cancel_url: string;
-};
+  paid_out_of_band?: false | undefined;
+  out_of_band?: undefined;
+}
+
+/**
+ * Records the invoice as settled **outside vpay** (RFC-0004 § 6) — Stripe's
+ * `paid_out_of_band=true` plus vpay's `out_of_band[…]`. The invoice becomes
+ * `"paid"` on the merchant's word, with no intent and no checkout, and
+ * **nothing is verified or posted to any ledger**. No URL may be sent — the
+ * server refuses one — and none needs configuring.
+ */
+export interface OutOfBandPayInvoiceParams {
+  paid_out_of_band: true;
+  out_of_band: OutOfBandParams;
+  success_url?: undefined;
+  cancel_url?: undefined;
+}
+
+/** How a merchant says an out-of-band payment arrived. vpay's own words. */
+export type OutOfBandMethod = "cash" | "cheque" | "bank_transfer" | "other";
+
+/** `out_of_band[…]` on `POST /v1/invoices/{id}/pay`. */
+export interface OutOfBandParams {
+  /** Required. */
+  method: OutOfBandMethod;
+  /**
+   * A cheque number, a transfer reference; at most 500 characters. **Treat
+   * it as personal data**: vpay does — a reference routinely names the payer
+   * — and replaces it with `[redacted]` when the invoice's customer is
+   * erased, and refuses one on an erased customer's invoice.
+   */
+  reference?: string | undefined;
+  /**
+   * Unix **seconds**. The server defaults it to now, and refuses one in the
+   * future (past 30 seconds of clock allowance) or before the invoice was
+   * finalized.
+   */
+  received_at?: number | undefined;
+}
+
+/**
+ * `invoice.out_of_band_payment` — the merchant's own statement, echoed back.
+ * **Nothing in vpay verified it.** Four keys and no `object`.
+ */
+export interface OutOfBandPayment {
+  /** `mp_…`. */
+  id: string;
+  method: OutOfBandMethod;
+  /** `null`, or `"[redacted]"` once the invoice's customer has been erased. */
+  reference: string | null;
+  /** Unix **seconds**: when the merchant says the money arrived. */
+  received_at: number;
+}
 
 /**
  * `POST /v1/invoice_items` request fields (S4b).

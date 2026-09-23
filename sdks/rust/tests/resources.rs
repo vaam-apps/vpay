@@ -2522,7 +2522,8 @@ fn the_customer_created_and_updated_event_types_are_known_and_their_payloads_dec
 // never that a real vpay answers them.
 
 /// `invoices.create` sends the documented body, and the decoded object
-/// carries **every one of the eighteen keys** — including the two that come
+/// carries **every one of the twenty-one keys** (this said "eighteen" through
+/// two additions; corrected 2026-09-23) — including the two that come
 /// from somewhere other than the row (`lines`, `hosted_invoice_url`).
 ///
 /// The decode half is not decoration. This object is the `data.object` of
@@ -2565,6 +2566,8 @@ async fn create_invoice_sends_the_documented_body_and_decodes_every_key() {
     assert_eq!(invoice.amount_paid, 0);
     assert_eq!(invoice.amount_remaining, 11_000);
     assert_eq!(invoice.amount_refunded, 0);
+    assert!(!invoice.paid_out_of_band);
+    assert_eq!(invoice.out_of_band_payment, None);
     assert_eq!(invoice.due_date, None);
     assert_eq!(invoice.description.as_deref(), Some("September hosting"));
     assert_eq!(
@@ -2999,6 +3002,143 @@ async fn pay_sends_both_urls_and_decodes_the_intent_and_hosted_url() {
         header_value(&request, "idempotency-key").as_deref(),
         Some("idem_pay")
     );
+}
+
+/// `pay` with [`PayInvoiceParams::out_of_band`] sends Stripe's
+/// `paid_out_of_band=true` and vpay's `out_of_band[…]` — **and no URL** — and
+/// decodes the paid invoice's flag and record (RFC-0004 § 6).
+///
+/// The absence of `success_url` and `cancel_url` is asserted by the string
+/// equality: the server refuses either one on this path with a `400`, so an
+/// SDK that sent an empty `success_url=` would be relying on the server's
+/// blank-is-absent rule to be let through.
+#[tokio::test]
+async fn pay_out_of_band_sends_the_flag_and_the_record_and_no_url() {
+    use vpay_sdk::invoices::{OutOfBandMethod, OutOfBandParams};
+
+    let (server, client) = fixture().await;
+    let mut paid = support::invoice_json("in_1");
+    paid["status"] = json!("paid");
+    paid["amount_paid"] = json!(11_000);
+    paid["amount_remaining"] = json!(0);
+    paid["paid_out_of_band"] = json!(true);
+    paid["out_of_band_payment"] = json!({
+        "id": "mp_1",
+        "method": "bank_transfer",
+        "reference": "AFB 2026/0917",
+        "received_at": 1_753_401_900_i64,
+    });
+    paid["status_transitions"]["paid_at"] = json!(1_753_488_000_i64);
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_1/pay"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(paid))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let invoice = client
+        .invoices()
+        .pay(
+            "in_1",
+            PayInvoiceParams::out_of_band(OutOfBandParams {
+                method: OutOfBandMethod::BankTransfer,
+                reference: Some("AFB 2026/0917".to_owned()),
+                received_at: Some(1_753_401_900),
+            }),
+            RequestOptions::new().with_idempotency_key("idem_oob"),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(invoice.status, InvoiceStatus::Paid);
+    assert!(invoice.paid_out_of_band);
+    let record = invoice
+        .out_of_band_payment
+        .expect("a paid-out-of-band invoice carries its record");
+    assert_eq!(record.id, "mp_1");
+    assert_eq!(record.method, OutOfBandMethod::BankTransfer);
+    assert_eq!(record.reference.as_deref(), Some("AFB 2026/0917"));
+    assert_eq!(record.received_at, 1_753_401_900);
+
+    let request = only_request(&server, "/v1/invoices/in_1/pay").await;
+    assert_eq!(
+        body_string(&request),
+        "paid_out_of_band=true&out_of_band[method]=bank_transfer\
+         &out_of_band[reference]=AFB%202026%2F0917&out_of_band[received_at]=1753401900"
+    );
+    assert_eq!(
+        header_value(&request, "idempotency-key").as_deref(),
+        Some("idem_oob")
+    );
+}
+
+/// The minimal out-of-band body is the method alone — no reference and no
+/// `received_at` are sent when none is given, so the server's own default
+/// (now) applies rather than one this SDK computed.
+#[tokio::test]
+async fn pay_out_of_band_with_only_a_method_sends_only_the_method() {
+    use vpay_sdk::invoices::{OutOfBandMethod, OutOfBandParams};
+
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_1/pay"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_json("in_1")))
+        .mount(&server)
+        .await;
+
+    client
+        .invoices()
+        .pay(
+            "in_1",
+            PayInvoiceParams::out_of_band(OutOfBandParams::new(OutOfBandMethod::Cash)),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/invoices/in_1/pay").await;
+    assert_eq!(
+        body_string(&request),
+        "paid_out_of_band=true&out_of_band[method]=cash"
+    );
+}
+
+/// An invoice paid out of band decodes its flag and its record, and an
+/// invoice from a server that predates migration `0049` — neither key —
+/// still decodes, reading `false` and `None`.
+///
+/// Both halves for `an_invoices_amount_refunded_is_read_from_the_wire_and_defaults_only_when_absent`'s
+/// reason: the fields are `#[serde(default)]`, so a fixture carrying the
+/// defaults cannot tell a renamed key from a present one.
+#[test]
+fn an_invoice_paid_out_of_band_decodes_its_flag_and_its_record() {
+    let mut carried = support::invoice_json("in_oob");
+    carried["paid_out_of_band"] = json!(true);
+    carried["out_of_band_payment"] = json!({
+        "id": "mp_2",
+        "method": "other",
+        "reference": null,
+        "received_at": 1_753_401_600_i64,
+    });
+    let invoice: vpay_sdk::Invoice =
+        serde_json::from_value(carried).expect("an invoice paid out of band decodes");
+    assert!(invoice.paid_out_of_band);
+    let record = invoice.out_of_band_payment.expect("the record decodes");
+    assert_eq!(record.method, vpay_sdk::OutOfBandMethod::Other);
+    assert_eq!(record.reference, None);
+
+    let mut older = support::invoice_json("in_old");
+    let object = older.as_object_mut().expect("the fixture is an object");
+    object
+        .remove("paid_out_of_band")
+        .expect("the fixture carries it");
+    object
+        .remove("out_of_band_payment")
+        .expect("the fixture carries it");
+    let invoice: vpay_sdk::Invoice =
+        serde_json::from_value(older).expect("a pre-0049 server's invoice still decodes");
+    assert!(!invoice.paid_out_of_band);
+    assert_eq!(invoice.out_of_band_payment, None);
 }
 
 /// `invoice_items.create` sends the documented body and decodes a
