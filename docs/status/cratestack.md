@@ -435,7 +435,7 @@ Gate evidence:
 [verification/2026-09-15-refunds-write-path.md](verification/2026-09-15-refunds-write-path.md).
 `just ci` was **not** run locally for it either; CI is the gate.
 
-## 2026-09-23 — `model ManualPayment`, and drift goes 194 → 199
+## 2026-09-23 — `model ManualPayment`, and drift goes 194 → 199 → 201
 
 Migration `0049` (RFC-0004 § 6) is the fourth table born with a
 `schemas/vpay.cstack` model on the invoices side, shaped as `invoice_items`
@@ -457,5 +457,15 @@ were written from the shape first; the report then read `drift detected in 26
 table(s)/view(s) (199 change(s) total)` with `manual_payments:` carrying
 exactly the five predicted lines — four hand-named single-column CHECKs and the
 permanent `method` type line — and `invoices:` carrying nothing new.
-`just check-schema` passed (29 model/enum declarations). Evidence:
+**199 → 201 later the same day**, when review asked the database to enforce
+that a payment record agrees with its invoice and the unshipped `0049` grew a
+composite foreign key: one `[safe] CHECK records_an_out_of_band_payment` line
+on `manual_payments` (the single-column CHECK on its new always-`true` flag
+column, which `model ManualPayment` declares, so the column itself costs
+nothing) and one `[safe] index invoices_payment_record_key` line on
+`invoices` (the six-column UNIQUE the key references; a `@@unique` over six
+columns would generate a name past Postgres's 63-byte limit, so it cannot be
+declared). The foreign key itself costs nothing — 0.12.0 introspects none.
+Predicted while Docker was down, then measured: `drift detected in 26
+table(s)/view(s) (201 change(s) total)`, 19 unmappable. `just check-schema` passed (29 model/enum declarations). Evidence:
 [verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md).

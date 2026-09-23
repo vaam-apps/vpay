@@ -3041,7 +3041,7 @@ async fn pay_out_of_band_sends_the_flag_and_the_record_and_no_url() {
         .pay(
             "in_1",
             PayInvoiceParams::out_of_band(OutOfBandParams {
-                method: OutOfBandMethod::BankTransfer,
+                method: Some(OutOfBandMethod::BankTransfer),
                 reference: Some("AFB 2026/0917".to_owned()),
                 received_at: Some(1_753_401_900),
             }),
@@ -3100,6 +3100,70 @@ async fn pay_out_of_band_with_only_a_method_sends_only_the_method() {
     assert_eq!(
         body_string(&request),
         "paid_out_of_band=true&out_of_band[method]=cash"
+    );
+}
+
+/// An **empty** `OutOfBandParams` is Stripe's bare `paid_out_of_band=true` —
+/// no `out_of_band[…]` at all — which the server records as `other`
+/// (ADR-0024 D11). The presence of the object is the flag.
+#[tokio::test]
+async fn pay_out_of_band_with_nothing_else_sends_only_the_flag() {
+    use vpay_sdk::invoices::OutOfBandParams;
+
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/invoices/in_1/pay"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::invoice_json("in_1")))
+        .mount(&server)
+        .await;
+
+    client
+        .invoices()
+        .pay(
+            "in_1",
+            PayInvoiceParams::out_of_band(OutOfBandParams::default()),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/invoices/in_1/pay").await;
+    assert_eq!(body_string(&request), "paid_out_of_band=true");
+}
+
+/// A URL set beside `out_of_band` is refused **before any request**, naming
+/// the URL: the server would answer the same `400`, and this SDK does not
+/// send bytes it knows are wrong. Nothing reaches the stub.
+#[tokio::test]
+async fn pay_out_of_band_with_a_url_is_refused_before_any_request() {
+    use vpay_sdk::invoices::OutOfBandParams;
+
+    let (server, client) = fixture().await;
+    let error = client
+        .invoices()
+        .pay(
+            "in_1",
+            PayInvoiceParams {
+                success_url: "https://shop.example/ok".to_owned(),
+                out_of_band: Some(OutOfBandParams::default()),
+                ..PayInvoiceParams::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a URL has no meaning on an out-of-band payment");
+    assert!(
+        matches!(error, Error::InvalidParams { ref param, .. } if param == "success_url"),
+        "{error:?}"
+    );
+    assert!(
+        server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .all(|request| request.url.path() != "/v1/invoices/in_1/pay"),
+        "nothing was sent"
     );
 }
 

@@ -172,8 +172,7 @@ describe("invoices against a running vpay", () => {
     expect(open.out_of_band_payment).toBeNull();
 
     const paid = await client.invoices.pay(draft.id, {
-      paid_out_of_band: true,
-      out_of_band: { method: "cheque", reference: "Cheque 0042" },
+      outOfBand: { method: "cheque", reference: "Cheque 0042" },
     });
     expect(paid.status).toBe("paid");
     expect(paid.paid_out_of_band).toBe(true);
@@ -191,10 +190,7 @@ describe("invoices against a running vpay", () => {
     expect(read.out_of_band_payment).toEqual(paid.out_of_band_payment);
 
     await expect(
-      client.invoices.pay(draft.id, {
-        paid_out_of_band: true,
-        out_of_band: { method: "cash" },
-      }),
+      client.invoices.pay(draft.id, { outOfBand: { method: "cash" } }),
     ).rejects.toThrow(/paid/);
   });
 

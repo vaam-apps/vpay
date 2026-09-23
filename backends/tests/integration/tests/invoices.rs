@@ -2270,33 +2270,57 @@ async fn manual_payment_count(pool: &PgPool, invoice: &str) -> anyhow::Result<i6
         .context("counting the invoice's payment records")
 }
 
-/// A raw `manual_payments` insert for the CHECK cases — straight past the
-/// API and the repository, which is the whole point.
-async fn insert_manual_payment(
-    pool: &PgPool,
-    id: &str,
-    invoice: &str,
-    method: &str,
-    reference: Option<&str>,
+/// One raw `manual_payments` row for the constraint cases — written straight
+/// past the API and the repository, which is the whole point. Every field
+/// defaults to a row that agrees with a 5,000 XAF invoice of merchant B's
+/// paid out of band; each case changes the one thing it is about.
+struct RawRecord<'a> {
+    id: &'a str,
+    invoice: &'a str,
+    merchant: &'a str,
+    livemode: bool,
+    method: &'a str,
+    reference: Option<&'a str>,
     amount: i64,
     received_after_recording_seconds: i32,
-) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO manual_payments \
-            (id, merchant_id, livemode, invoice_id, method, reference, received_at, amount, \
-             currency_code, created_at) \
-         VALUES ($1, $2, false, $3, $4, $5, now() + make_interval(secs => $6::INT), $7, 'XAF', \
-                 now())",
-    )
-    .bind(id)
-    .bind(MERCHANT_B)
-    .bind(invoice)
-    .bind(method)
-    .bind(reference)
-    .bind(received_after_recording_seconds)
-    .bind(amount)
-    .execute(pool)
-    .await
+    paid_out_of_band: bool,
+}
+
+impl<'a> RawRecord<'a> {
+    fn new(id: &'a str, invoice: &'a str) -> Self {
+        Self {
+            id,
+            invoice,
+            merchant: MERCHANT_B,
+            livemode: false,
+            method: "cash",
+            reference: None,
+            amount: 5000,
+            received_after_recording_seconds: 0,
+            paid_out_of_band: true,
+        }
+    }
+
+    async fn insert(&self, pool: &PgPool) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
+        sqlx::query(
+            "INSERT INTO manual_payments \
+                (id, merchant_id, livemode, invoice_id, method, reference, received_at, \
+                 amount, currency_code, created_at, paid_out_of_band) \
+             VALUES ($1, $2, $3, $4, $5, $6, now() + make_interval(secs => $7::INT), $8, \
+                     'XAF', now(), $9)",
+        )
+        .bind(self.id)
+        .bind(self.merchant)
+        .bind(self.livemode)
+        .bind(self.invoice)
+        .bind(self.method)
+        .bind(self.reference)
+        .bind(self.received_after_recording_seconds)
+        .bind(self.amount)
+        .bind(self.paid_out_of_band)
+        .execute(pool)
+        .await
+    }
 }
 
 /// **The happy path**, for a merchant with **no** configured invoice URLs
@@ -2406,6 +2430,38 @@ async fn paying_out_of_band_needs_no_configured_urls_and_posts_nothing() -> anyh
     Ok(())
 }
 
+/// **A Stripe-shaped client sending only `paid_out_of_band=true` succeeds**,
+/// and the record says `other` — Stripe's `pay` has the flag and nothing
+/// else, so a client written against Stripe knows no `out_of_band[…]` at all.
+///
+/// Until the review of 2026-09-23 this was a `400` naming
+/// `out_of_band[method]`; ADR-0024's D11 (accepted 2026-09-23, because D5 required it)
+/// made the method optional. **The decisive mutation:** make the method
+/// required again and this case is a `400`.
+#[tokio::test]
+async fn paid_out_of_band_alone_is_recorded_with_the_method_other() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_B).await?;
+    let (status, paid) = harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[("paid_out_of_band", "true")],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paid}");
+    assert_eq!(field(&paid, "status"), "paid");
+    assert_eq!(at(&paid, &["out_of_band_payment", "method"]), "other");
+    assert_eq!(
+        at(&paid, &["out_of_band_payment", "reference"]),
+        &Value::Null
+    );
+    assert_eq!(harness.events_of("invoice.paid").await?.len(), 1);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 /// Every malformed out-of-band request is a `400` **naming its parameter**,
 /// and none of them writes anything.
 #[tokio::test]
@@ -2420,7 +2476,6 @@ async fn each_malformed_out_of_band_request_is_a_four_hundred_naming_its_paramet
     let cash = ("out_of_band[method]", "cash");
 
     let cases: Vec<(Vec<(&str, &str)>, &str)> = vec![
-        (vec![flag], "out_of_band[method]"),
         (
             vec![flag, ("out_of_band[method]", "barter")],
             "out_of_band[method]",
@@ -2787,43 +2842,137 @@ async fn the_out_of_band_invariants_are_enforced_by_the_database_itself() -> any
     let pool = &harness.pool;
     // `manual_payments_invoice_id_key` — a second statement about one bill.
     assert_eq!(
-        refused_by(insert_manual_payment(pool, "mp_second", &paid, "cash", None, 5000, 0).await),
+        refused_by(RawRecord::new("mp_second", &paid).insert(pool).await),
         Some("manual_payments_invoice_id_key".to_owned())
     );
 
     // The single-column ones on the record, against an invoice with none.
+    // CHECKs are evaluated before the foreign key, so each names itself even
+    // though every one of these rows would also fail the key below.
     let other = open_invoice(&harness, CLIENT_B).await?;
-    assert_eq!(
-        refused_by(insert_manual_payment(pool, "mp_barter", &other, "barter", None, 5000, 0).await),
-        Some("manual_payments_method_enum_check".to_owned())
-    );
-    assert_eq!(
-        refused_by(
-            insert_manual_payment(pool, "mp_empty", &other, "cash", Some(""), 5000, 0).await
-        ),
-        Some("reference_length".to_owned())
-    );
     let long = "r".repeat(501);
+    for (row, constraint) in [
+        (
+            RawRecord {
+                method: "barter",
+                ..RawRecord::new("mp_barter", &other)
+            },
+            "manual_payments_method_enum_check",
+        ),
+        (
+            RawRecord {
+                reference: Some(""),
+                ..RawRecord::new("mp_empty", &other)
+            },
+            "reference_length",
+        ),
+        (
+            RawRecord {
+                reference: Some(&long),
+                ..RawRecord::new("mp_long", &other)
+            },
+            "reference_length",
+        ),
+        (
+            RawRecord {
+                amount: 0,
+                ..RawRecord::new("mp_zero", &other)
+            },
+            "amount_positive",
+        ),
+        // `received_before_recorded` — multi-column: money received after
+        // vpay recorded it. Thirty seconds of allowance, and not thirty-one.
+        (
+            RawRecord {
+                received_after_recording_seconds: 31,
+                ..RawRecord::new("mp_later", &other)
+            },
+            "received_before_recorded",
+        ),
+        // `records_an_out_of_band_payment` — the flag column must be `true`.
+        (
+            RawRecord {
+                paid_out_of_band: false,
+                ..RawRecord::new("mp_unflagged", &other)
+            },
+            "records_an_out_of_band_payment",
+        ),
+    ] {
+        assert_eq!(
+            refused_by(row.insert(pool).await),
+            Some(constraint.to_owned()),
+            "{}",
+            row.id
+        );
+    }
+
+    // `manual_payments_agree_with_their_invoice`, the composite foreign key.
+    // A row that passes every CHECK — inside the clock allowance, too — is
+    // still refused when its invoice is not flagged `paid_out_of_band`. This
+    // row was STORABLE until the key existed.
     assert_eq!(
         refused_by(
-            insert_manual_payment(pool, "mp_long", &other, "cash", Some(&long), 5000, 0).await
+            RawRecord {
+                received_after_recording_seconds: 29,
+                ..RawRecord::new("mp_edge", &other)
+            }
+            .insert(pool)
+            .await
         ),
-        Some("reference_length".to_owned())
+        Some("manual_payments_agree_with_their_invoice".to_owned()),
+        "a record for an invoice nobody marked paid out of band is unstorable"
     );
+
+    // …and against a flagged invoice with no record yet, every disagreement
+    // on amount, tenant or mode is refused by the same key, and only the
+    // agreeing row is storable. The invoice is flagged straight past the API
+    // (the flag satisfies `paid_names_how`), which is the state a writer that
+    // forgot to insert the record would leave.
+    let flagged = open_invoice(&harness, CLIENT_B).await?;
+    sqlx::query(
+        "UPDATE invoices SET status = 'paid', amount_paid = amount_due, amount_remaining = 0, \
+         paid_at = now(), paid_out_of_band = true WHERE id = $1",
+    )
+    .bind(&flagged)
+    .execute(pool)
+    .await
+    .context("flagging an invoice with no record")?;
+    for row in [
+        RawRecord {
+            amount: 4999,
+            ..RawRecord::new("mp_short", &flagged)
+        },
+        RawRecord {
+            merchant: MERCHANT_A,
+            ..RawRecord::new("mp_tenant", &flagged)
+        },
+        RawRecord {
+            livemode: true,
+            ..RawRecord::new("mp_mode", &flagged)
+        },
+    ] {
+        assert_eq!(
+            refused_by(row.insert(pool).await),
+            Some("manual_payments_agree_with_their_invoice".to_owned()),
+            "{}",
+            row.id
+        );
+    }
     assert_eq!(
-        refused_by(insert_manual_payment(pool, "mp_zero", &other, "cash", None, 0, 0).await),
-        Some("amount_positive".to_owned())
-    );
-    // `received_before_recorded` — multi-column: money received after vpay
-    // recorded it. Thirty seconds of allowance, and not thirty-one.
-    assert_eq!(
-        refused_by(insert_manual_payment(pool, "mp_later", &other, "cash", None, 5000, 31).await),
-        Some("received_before_recorded".to_owned())
-    );
-    assert_eq!(
-        refused_by(insert_manual_payment(pool, "mp_edge", &other, "cash", None, 5000, 29).await),
+        refused_by(RawRecord::new("mp_agrees", &flagged).insert(pool).await),
         None,
-        "inside the allowance is storable"
+        "the record that agrees with its invoice is storable"
+    );
+
+    // `NO ACTION` on update: once a record exists, its invoice's referenced
+    // columns are frozen.
+    let refused = sqlx::query("UPDATE invoices SET livemode = true WHERE id = $1")
+        .bind(&flagged)
+        .execute(pool)
+        .await;
+    assert_eq!(
+        refused_by(refused),
+        Some("manual_payments_agree_with_their_invoice".to_owned())
     );
 
     harness.shutdown().await;
@@ -2871,23 +3020,77 @@ async fn erasing_the_customer_redacts_the_out_of_band_reference_everywhere() -> 
     let (status, body) = harness.post_with_key(CLIENT_B, &path, &form, &key).await?;
     assert_eq!(status, 200, "{body}");
 
+    // Two deliveries of the `invoice.paid` event, seeded as the worker would
+    // leave them: one still `pending` (its first attempt recorded a digest)
+    // and one `succeeded`, both with a merchant endpoint's response that
+    // echoed the payload back. The erasure has to clear the live one's digest
+    // — the body it would re-render has changed — keep the terminal one's as
+    // forensics, and mark both excerpts. Without these rows the two
+    // statements that do that could be deleted with this case green.
+    let (paid_event,): (String,) =
+        sqlx::query_as("SELECT id FROM events WHERE type = 'invoice.paid' AND object_id = $1")
+            .bind(&paid)
+            .fetch_one(&harness.pool)
+            .await
+            .context("the invoice.paid event")?;
+    for (endpoint, state) in [("whk_live", "pending"), ("whk_done", "succeeded")] {
+        sqlx::query(
+            "INSERT INTO webhook_deliveries \
+                (event_id, endpoint_id, url, state, payload_sha256, response_excerpt) \
+             VALUES ($1, $2, 'https://merchant.example.invalid/hook', $3, repeat('a', 64), $4)",
+        )
+        .bind(&paid_event)
+        .bind(endpoint)
+        .bind(state)
+        .bind(format!("{{\"echo\":\"{reference}\"}}"))
+        .execute(&harness.pool)
+        .await
+        .context("seeding a delivery of invoice.paid")?;
+    }
+
     let everywhere = "SELECT \
          (SELECT COUNT(*) FROM manual_payments WHERE reference LIKE '%' || $1 || '%') \
        + (SELECT COUNT(*) FROM events WHERE data::text LIKE '%' || $1 || '%') \
-       + (SELECT COUNT(*) FROM idempotency_keys WHERE response_body::text LIKE '%' || $1 || '%')";
+       + (SELECT COUNT(*) FROM idempotency_keys WHERE response_body::text LIKE '%' || $1 || '%') \
+       + (SELECT COUNT(*) FROM webhook_deliveries WHERE response_excerpt LIKE '%' || $1 || '%')";
     let before: i64 = sqlx::query_scalar(everywhere)
         .bind(WHO)
         .fetch_one(&harness.pool)
         .await?;
     assert_eq!(
-        before, 3,
-        "the record, the invoice.paid body and the stored response all carry it"
+        before, 5,
+        "the record, the invoice.paid body, the stored response and both excerpts carry it"
     );
 
     let (status, body) = harness
         .delete(CLIENT_B, &format!("/v1/customers/{customer}"))
         .await?;
     assert_eq!(status, 200, "{body}");
+
+    let deliveries: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT state, payload_sha256, response_excerpt FROM webhook_deliveries \
+         WHERE event_id = $1 ORDER BY endpoint_id",
+    )
+    .bind(&paid_event)
+    .fetch_all(&harness.pool)
+    .await?;
+    assert_eq!(
+        deliveries,
+        vec![
+            (
+                "succeeded".to_owned(),
+                Some("a".repeat(64)),
+                Some(vpay_db::REDACTED.to_owned())
+            ),
+            (
+                "pending".to_owned(),
+                None,
+                Some(vpay_db::REDACTED.to_owned())
+            ),
+        ],
+        "the live delivery's digest is cleared so its next attempt re-signs the redacted body; \
+         the terminal one's is kept as forensics; both excerpts are marked"
+    );
 
     let after: i64 = sqlx::query_scalar(everywhere)
         .bind(WHO)
@@ -2953,21 +3156,39 @@ async fn erasing_the_customer_redacts_the_out_of_band_reference_everywhere() -> 
 }
 
 /// An erasure and an out-of-band payment with a reference, **racing** on one
-/// payer: neither deadlocks, and no reference survives either order.
+/// payer: neither deadlocks, no reference survives either order, and the
+/// payment's **stored idempotent response** is redacted too.
 ///
 /// The lock-order argument (`vpay_db::invoices`' `pay_out_of_band_in_tx`):
 /// the payment takes `FOR SHARE` on the customer **before** it touches the
 /// invoice or `manual_payments`, and the erasure takes `FOR UPDATE` on the
 /// customer before it touches anything, so both acquire the customer row
 /// first and serialise on it; neither holds a lock the other wants second.
-/// This case is the empirical half: a `40P01` would surface as a `500`, and a
-/// reference that slipped past the erasure would be found by the final scan.
+/// This case is the empirical half: a `40P01` would surface as a `500`.
+///
+/// # It records who won, and refuses to pass vacuously
+///
+/// Each round sends an `Idempotency-Key`. A `200` means the payment committed
+/// first and **wrote** a reference, which the erasure then had to redact —
+/// in the record, the event, and in the response the idempotency store kept
+/// (whether that store landed before the erasure, which rewrites it, or after,
+/// which is the `ResponseSubject::OutOfBandInvoice` late-write path). A `400`
+/// naming `out_of_band[reference]` means the erasure committed first. The
+/// erasure's start is staggered by a growing delay so the rounds sweep the
+/// collision window; rounds run until **both** outcomes have been seen (at
+/// least five, at most thirty), and the case fails if no round wrote a
+/// reference: a race the erasure always wins would prove nothing about
+/// redaction.
 #[tokio::test]
 async fn an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference()
 -> anyhow::Result<()> {
     let harness = harness().await?;
+    let (mut payment_first, mut erasure_first) = (0_u32, 0_u32);
 
-    for round in 0..5 {
+    for round in 0_u32..30 {
+        if payment_first > 0 && erasure_first > 0 && round >= 5 {
+            break;
+        }
         let invoice = open_invoice(&harness, CLIENT_B).await?;
         let (_, read) = harness
             .get(CLIENT_B, &format!("/v1/invoices/{invoice}"))
@@ -2984,19 +3205,66 @@ async fn an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_t
             ("out_of_band[method]", "bank_transfer"),
             ("out_of_band[reference]", reference.as_str()),
         ];
+        let key = fresh_key();
         let (paying, erasing) = tokio::join!(
-            harness.post(CLIENT_B, &pay_path, &form),
-            harness.delete(CLIENT_B, &erase_path),
+            harness.post_with_key(CLIENT_B, &pay_path, &form, &key),
+            async {
+                // A head start that grows by 3 ms a round, so the rounds sweep
+                // the window in which the two collide rather than sampling
+                // one point of it. Measured 2026-09-23: with no stagger the
+                // erasure won 30 rounds of 30 — the pay request does three
+                // reads before its transaction opens — and this case could
+                // not see a payment-first round at all.
+                tokio::time::sleep(std::time::Duration::from_millis(u64::from(round) * 3)).await;
+                harness.delete(CLIENT_B, &erase_path).await
+            },
         );
         let (pay_status, pay_body) = paying?;
         let (erase_status, erase_body) = erasing?;
         assert_eq!(erase_status, 200, "round {round}: {erase_body}");
-        assert!(
-            pay_status == 200 || pay_status == 400,
-            "round {round}: the payment either won or was refused for the reference: \
-             {pay_status} {pay_body}"
-        );
+
+        match pay_status.as_u16() {
+            200 => {
+                payment_first += 1;
+                // The reference WAS written — it is what the payer's
+                // statement said — and every copy of it is now the marker.
+                let (stored,): (Option<String>,) =
+                    sqlx::query_as("SELECT reference FROM manual_payments WHERE invoice_id = $1")
+                        .bind(&invoice)
+                        .fetch_one(&harness.pool)
+                        .await?;
+                assert_eq!(
+                    stored.as_deref(),
+                    Some(vpay_db::REDACTED),
+                    "round {round}: the record's reference"
+                );
+                let (_, replayed) = harness
+                    .post_with_key(CLIENT_B, &pay_path, &form, &key)
+                    .await?;
+                assert_eq!(
+                    at(&replayed, &["out_of_band_payment", "reference"]).as_str(),
+                    Some(vpay_db::REDACTED),
+                    "round {round}: the stored idempotent response replays redacted: {replayed}"
+                );
+            }
+            400 => {
+                erasure_first += 1;
+                assert_eq!(
+                    at(&pay_body, &["error", "param"]).as_str(),
+                    Some("out_of_band[reference]"),
+                    "round {round}: {pay_body}"
+                );
+                assert_eq!(manual_payment_count(&harness.pool, &invoice).await?, 0);
+            }
+            other => panic!("round {round}: neither order produced {other}: {pay_body}"),
+        }
     }
+
+    assert!(
+        payment_first > 0,
+        "no round let the payment commit first ({erasure_first} erasure-first rounds), so no \
+         round wrote a reference for the erasure to redact — the case would prove nothing"
+    );
 
     let surviving: i64 = sqlx::query_scalar(
         "SELECT \
@@ -3009,7 +3277,153 @@ async fn an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_t
     .await?;
     assert_eq!(
         surviving, 0,
-        "whichever won, no reference outlived its payer"
+        "whichever won ({payment_first} payment-first, {erasure_first} erasure-first), no \
+         reference outlived its payer"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// The bodiless `POST /v1/invoices/{id}` "touch" on an invoice paid out of
+/// band answers the object — reference included — and that stored response
+/// is redacted by an erasure: touch, erase, replay the touch → `[redacted]`.
+///
+/// This is the second body `update` now stores as
+/// `ResponseSubject::OutOfBandInvoice`. Over HTTP the touch's store has
+/// committed before the erasure starts, so what this proves is the erasure's
+/// rewrite of stored invoice responses reaching a touch; the store's own
+/// late-write branch is proven by
+/// `a_stored_invoice_response_written_after_an_erasure_is_redacted_as_it_lands`.
+#[tokio::test]
+async fn a_touch_of_an_invoice_paid_out_of_band_replays_redacted_after_an_erasure()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_B).await?;
+    let (status, body) = harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[reference]", "Cheque from Quibblewort"),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "{body}");
+    let customer = field(&body, "customer")
+        .as_str()
+        .expect("a customer")
+        .to_owned();
+
+    let touch = format!("/v1/invoices/{invoice}");
+    let key = fresh_key();
+    let (status, touched) = harness.post_with_key(CLIENT_B, &touch, &[], &key).await?;
+    assert_eq!(status, 200, "{touched}");
+    assert_eq!(
+        at(&touched, &["out_of_band_payment", "reference"]).as_str(),
+        Some("Cheque from Quibblewort"),
+        "the touch answers the object as it stands"
+    );
+
+    let (status, body) = harness
+        .delete(CLIENT_B, &format!("/v1/customers/{customer}"))
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    let (status, replayed) = harness.post_with_key(CLIENT_B, &touch, &[], &key).await?;
+    assert_eq!(status, 200, "{replayed}");
+    assert_eq!(
+        at(&replayed, &["out_of_band_payment", "reference"]).as_str(),
+        Some(vpay_db::REDACTED),
+        "the replayed touch answers the redacted body: {replayed}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// The idempotency store's **late write**: a response naming an invoice paid
+/// out of band, stored under `ResponseSubject::OutOfBandInvoice` **after**
+/// its customer was erased, is redacted as it lands — the branch the race
+/// above can only hit by chance, driven here through the repository seam in
+/// the order the race produces (claim, commit, erasure, store).
+///
+/// **The decisive mutation:** store it as `ResponseSubject::Verbatim` (what
+/// `update` and the out-of-band `pay` stored before 2026-09-23) and the
+/// replay carries the payer's reference for 24 hours after their erasure.
+#[tokio::test]
+async fn a_stored_invoice_response_written_after_an_erasure_is_redacted_as_it_lands()
+-> anyhow::Result<()> {
+    use vpay_db::{Idempotency, IdempotencyClaim, ResponseSubject, StoredResponse};
+
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_B).await?;
+    let (status, paid) = harness
+        .post(
+            CLIENT_B,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[
+                ("paid_out_of_band", "true"),
+                ("out_of_band[reference]", "Cheque from Quibblewort"),
+            ],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paid}");
+    let customer = field(&paid, "customer")
+        .as_str()
+        .expect("a customer")
+        .to_owned();
+
+    // A request that has done its work and not yet stored its answer.
+    let key = fresh_key();
+    let claim = Idempotency::claim(
+        harness.repositories.as_ref(),
+        MERCHANT_B,
+        &key,
+        "POST",
+        &format!("/v1/invoices/{invoice}"),
+        &[7_u8; 32],
+    )
+    .await?;
+    let IdempotencyClaim::Fresh { claim_id } = claim else {
+        panic!("a fresh key is a fresh claim: {claim:?}");
+    };
+
+    // The erasure lands in between.
+    let (status, body) = harness
+        .delete(CLIENT_B, &format!("/v1/customers/{customer}"))
+        .await?;
+    assert_eq!(status, 200, "{body}");
+
+    // And then the store, with the body rendered before the erasure.
+    Idempotency::store(
+        harness.repositories.as_ref(),
+        MERCHANT_B,
+        &key,
+        claim_id,
+        StoredResponse {
+            status: 200,
+            body: &paid,
+            retry: None,
+            subject: ResponseSubject::OutOfBandInvoice {
+                customer_id: &customer,
+            },
+        },
+    )
+    .await?;
+
+    let stored: Value = sqlx::query_scalar(
+        "SELECT response_body FROM idempotency_keys WHERE merchant_id = $1 AND idempotency_key = $2",
+    )
+    .bind(MERCHANT_B)
+    .bind(&key)
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!(
+        at(&stored, &["out_of_band_payment", "reference"]).as_str(),
+        Some(vpay_db::REDACTED),
+        "the late write lost to the erasure: {stored}"
     );
 
     harness.shutdown().await;

@@ -1120,7 +1120,8 @@ fn out_of_band_param(key: &str) -> &'static str {
 ///
 /// 1. every `400` the body alone decides: a forwarding URL sent with it
 ///    (there is nowhere to forward anybody), an unknown `out_of_band[…]`
-///    key, a missing or unknown `method`, an over-long `reference`, and a
+///    key, an unknown `method` (an absent one is `other`), an over-long
+///    `reference`, and a
 ///    `received_at` that is not a timestamp, is in the future past
 ///    [`RECEIVED_AT_SKEW_SECONDS`], or is before the invoice was issued;
 /// 2. the `409`s the other transitions give: not `open` (naming the status),
@@ -1176,15 +1177,20 @@ async fn pay_out_of_band_once(
         ));
     }
 
-    let method = present(sent.get("method").cloned())
-        .and_then(|raw| crate::model::OutOfBandMethod::from_wire(&raw))
-        .ok_or_else(|| {
+    // OPTIONAL, defaulting to `other`, so a Stripe-shaped client that sends
+    // only `paid_out_of_band=true` succeeds (ADR-0024 D11, which D5 required). A value
+    // that IS sent is still held to the four labels: a typo read as `other`
+    // would be a merchant's statement silently rewritten.
+    let method = match present(sent.get("method").cloned()) {
+        None => crate::model::OutOfBandMethod::Other,
+        Some(raw) => crate::model::OutOfBandMethod::from_wire(&raw).ok_or_else(|| {
             ApiError::invalid_param(
                 "out_of_band[method]",
-                "`out_of_band[method]` is required with `paid_out_of_band=true` and must be one \
-                 of `cash`, `cheque`, `bank_transfer` or `other`.",
+                "`out_of_band[method]` must be one of `cash`, `cheque`, `bank_transfer` or \
+                 `other` (the default when it is omitted).",
             )
-        })?;
+        })?,
+    };
 
     let reference = present(sent.get("reference").cloned());
     if let Some(reference) = reference.as_deref()
@@ -1281,6 +1287,19 @@ async fn out_of_band_refusal(
 /// `now`, or before `finalized_at` — money cannot have been received against
 /// a bill before the bill was issued. A `None` `finalized_at` (a draft)
 /// skips the last check; the `409` for the status follows.
+///
+/// # Both comparisons are to the second, and that is chosen
+///
+/// The wire carries whole unix seconds, and `status_transitions.finalized_at`
+/// is rendered as the second `finalized_at` falls in (floored). So the
+/// bound is `received_at >= floor(finalized_at)`: a merchant who echoes back
+/// the `finalized_at` they were shown is accepted, even though that instant
+/// is up to 999 ms earlier than the stored `finalized_at`. Comparing at full
+/// precision would refuse exactly that echo, which is the one value a
+/// careful client is most likely to send. The future bound is
+/// `received_at <= floor(now) + 30 s`, which is never later than the
+/// database's `received_before_recorded` (`received_at <= created_at +
+/// 30 s`, with `created_at = now`).
 fn checked_received_at(
     raw: Option<&str>,
     finalized_at: Option<OffsetDateTime>,
@@ -2350,6 +2369,23 @@ mod tests {
                 "for {wrong}"
             );
         }
+
+        // TO THE SECOND. A `finalized_at` 900 ms into its second: the second
+        // it falls in — which is what `status_transitions.finalized_at`
+        // renders — is accepted though it is 900 ms earlier, and the second
+        // before is refused. See `checked_received_at`'s doc for why.
+        let fractional =
+            time::OffsetDateTime::from_unix_timestamp_nanos(1_700_000_000_900_000_000).ok();
+        assert!(
+            checked_received_at(Some("1700000000"), fractional, now).is_ok(),
+            "the rendered finalized_at, echoed back, is accepted"
+        );
+        assert_eq!(
+            checked_received_at(Some("1699999999"), fractional, now)
+                .expect_err("the second before finalize")
+                .param(),
+            PARAM
+        );
     }
 
     /// An unknown `out_of_band[…]` key is named by the family, never echoed:

@@ -4906,7 +4906,27 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// Every line of the derivation held, which is what makes it worth keeping
 /// rather than replacing with the measurement: it is the shape a table born
 /// with a model costs, predicted and then checked.
-const EXPECTED_DRIFT_CHANGES: u32 = 199;
+///
+/// **199 -> 201 later on 2026-09-23**, when review asked the database to
+/// enforce that a payment record agrees with its invoice and `0049` (not yet
+/// shipped, so edited in place) grew a composite foreign key. Predicted +2
+/// while Docker was down again, then measured on 0.12.0 — `drift detected in
+/// 26 table(s)/view(s) (201 change(s) total)` — with exactly the two
+/// predicted lines and no other:
+///
+///   * `manual_payments`: `[safe] CHECK records_an_out_of_band_payment exists
+///     in the live database but is not declared in the schema` — the
+///     single-column `CHECK (paid_out_of_band)` on the new flag column. The
+///     column itself costs nothing: `model ManualPayment` declares it as a
+///     plain `Boolean` and it has no DEFAULT.
+///   * `invoices`: `[safe] index invoices_payment_record_key exists in the
+///     live database but is not declared in the schema` — the six-column
+///     UNIQUE the key references, undeclarable because a generated
+///     `@@unique` name over six columns is past Postgres's 63-byte limit.
+///
+/// The composite foreign key `manual_payments_agree_with_their_invoice`
+/// costs nothing, because 0.12.0 introspects no foreign key.
+const EXPECTED_DRIFT_CHANGES: u32 = 201;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes

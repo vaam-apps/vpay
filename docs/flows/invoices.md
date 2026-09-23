@@ -314,10 +314,19 @@ bank transfer received directly, or anything else:
 ```text
 POST /v1/invoices/{id}/pay
 paid_out_of_band=true
-out_of_band[method]=cash|cheque|bank_transfer|other   required
+out_of_band[method]=cash|cheque|bank_transfer|other   optional, default other
 out_of_band[reference]=…                               optional, ≤ 500 chars
 out_of_band[received_at]=<unix seconds>                optional, default now
 ```
+
+**`paid_out_of_band=true` alone is enough.** Stripe's `pay` has that flag and
+nothing else, so a client written against Stripe sends no `out_of_band[…]` at
+all; vpay records it with the method `other`. A method that **is** sent is
+still held to the four labels. (Until the review of 2026-09-23 the method was
+required and its absence a `400`, which contradicted ADR-0024's D5 — a
+Stripe-shaped client must reach the same state — so D11 was reversed to make
+it optional; `paid_out_of_band_alone_is_recorded_with_the_method_other` pins
+it.)
 
 The invoice moves `open → paid` with `amount_paid = amount_due`,
 `amount_remaining = 0`, `status_transitions.paid_at` and
@@ -333,10 +342,11 @@ pass-through (RFC-0001) vpay has no account it could have arrived in.
 ledger tables stay empty.
 
 **What refuses it, and in what order.** Every `400` names its parameter:
-`out_of_band[method]` missing or unknown; an `out_of_band[…]` key that is not
+an unknown `out_of_band[method]` (an absent one is `other`); an `out_of_band[…]` key that is not
 one of the three (named as `out_of_band`, never echoed); `reference` over 500
 characters; `received_at` that is not a timestamp, is more than 30 seconds in
-the future, or is before the invoice's `finalized_at`; `success_url` or
+the future, or is earlier than the second the invoice's `finalized_at` falls
+in — both comparisons are **to the second**, see decision 2; `success_url` or
 `cancel_url` sent with the flag (there is nowhere to forward anybody);
 `out_of_band[…]` sent **without** the flag (a payment described and not asked
 to be recorded, refused rather than a checkout minted); and a
@@ -354,45 +364,86 @@ fork in `pay_once` is taken **before** `forward_urls` resolves
 nor needs a publishable key. The case that proves it pays out of band as a
 merchant that has neither.
 
-**The amount cannot disagree with the bill, and it is not a CHECK.** A CHECK
-sees one row of one table. What guarantees `manual_payments.amount =
-invoices.amount_paid` is that no caller supplies it: the insert is `INSERT …
-SELECT invoices.amount_paid, invoices.currency_code, invoices.merchant_id,
-invoices.livemode FROM invoices WHERE id = $2 AND paid_out_of_band`, in the
-same transaction as the compare-and-swap and under the row lock that statement
-took. `paying_out_of_band_records_the_invoices_own_amount_and_posts_nothing`
-(`vpay-db`'s `tests/repositories.rs`) is the evidence.
+**The record cannot disagree with its bill, and the database says so.** A
+CHECK sees one row of one table, so this is a **composite foreign key**:
+`manual_payments_agree_with_their_invoice`, from `manual_payments (invoice_id,
+merchant_id, livemode, currency_code, amount, paid_out_of_band)` onto
+`invoices_payment_record_key`, a `UNIQUE (id, merchant_id, livemode,
+currency_code, amount_paid, paid_out_of_band)` on `invoices` that exists only to
+be its target. With `manual_payments.paid_out_of_band` pinned `true` by
+`records_an_out_of_band_payment`, a record can exist only for an invoice
+flagged `paid_out_of_band`, and only with that invoice's amount, tenant, mode
+and currency; `NO ACTION` on update freezes those columns of the invoice once
+the record exists. The writer is built so it never needs the key — no caller
+supplies any of them; the insert is `INSERT … SELECT invoices.amount_paid, …
+FROM invoices WHERE id = $2 AND paid_out_of_band`, in the transaction whose
+compare-and-swap just paid the invoice — and the key is the guard that
+survives a writer who does not. (This paragraph said "it is not a CHECK" and
+that the database could not state it, until the review of 2026-09-23 pointed
+out that a composite foreign key can; migration `0049` had not shipped, so it
+was edited rather than followed by a `0050`.) The extra index costs one btree
+entry per invoice insert and per non-HOT update, and makes no update non-HOT
+that was HOT before — every write that changes `amount_paid` or
+`paid_out_of_band` also changes the already-indexed `status` — and it is one
+undeclared-index line in the drift report, because a `@@unique` over six
+columns would generate a name past Postgres's 63-byte limit.
+`paying_out_of_band_records_the_invoices_own_amount_and_posts_nothing`
+(`vpay-db`'s `tests/repositories.rs`) is the writer's evidence and
+`the_out_of_band_invariants_are_enforced_by_the_database_itself` the key's.
 
-**The CHECKs** (all multi-column, all invisible to `migrate baseline`, all
-written straight past the API by
-`the_out_of_band_invariants_are_enforced_by_the_database_itself`):
-`paid_out_of_band_means_paid`; `paid_names_how` (a `paid` row was paid by an
-intent or out of band — it had been storable with neither);
-`paid_out_of_band_is_never_refunded`; and, on `manual_payments`,
-`received_before_recorded`. One record per invoice is
-`manual_payments_invoice_id_key`.
+**The constraints** (the multi-column ones invisible to `migrate baseline`,
+all written straight past the API by
+`the_out_of_band_invariants_are_enforced_by_the_database_itself`, each refusal
+pinned to its constraint's name): `paid_out_of_band_means_paid`;
+`paid_names_how` (a `paid` row was paid by an intent or out of band — it had
+been storable with neither); `paid_out_of_band_is_never_refunded`; on
+`manual_payments`, `received_before_recorded` and
+`records_an_out_of_band_payment`; the composite foreign key above; and one
+record per invoice, `manual_payments_invoice_id_key`.
 
-#### The decisions this made, and why (2026-09-23)
+#### The decisions this made, and why — ACCEPTED in ADR-0024 (2026-09-23)
 
-The brief left these open; each is recorded here for ADR-0024 to carry.
+Every decision below is **accepted** in ADR-0024
+(`docs/adr/0024-customer-filters-and-manual-payments.md`, PR #248; the path is
+written as code rather than a link because the ADR is not on this branch).
+The maintainer confirmed D9–D19 "as proposed" on 2026-09-23. The ADR's own
+numbers are given beside each item, and the reasons are kept here beside the
+behaviour they explain. _(This heading read "PROPOSED, not accepted", and the
+paragraph said none was settled until the ADR was accepted, until that
+confirmation the same day.)_ Beside the items below the ADR also records D9
+(the two new keys on the invoice object), D10 (no redirect URLs on this path,
+and none needed) and D19 (unknown `out_of_band[…]` keys are a `400` naming
+`out_of_band`; both SDKs take one optional `out_of_band` object). Its open
+question 2 — whether `received_at` may precede `finalized_at` — is **settled
+by D11: it may not**, to the second, as item 2 describes.
 
-1. **`out_of_band[reference]` is bounded at 500 characters.** The ceiling
+0. **`out_of_band[method]` is optional and defaults to `other`** (D11): a
+   Stripe-shaped client sending only `paid_out_of_band=true` must succeed,
+   because D5 commits to Stripe's spelling on the existing route.
+
+1. **`out_of_band[reference]` is bounded at 500 characters** (D13). The ceiling
    one `metadata` value has: a reference is one value a merchant attaches — a
    cheque number, a transfer reference — not a note on a document, which is
    what `description`'s 1000 is for. `reference_length` in the database is
    the backstop; the API refuses first, naming the parameter.
-2. **`received_at` may be up to 30 seconds in the future.** One TOTP step
+2. **`received_at` may be up to 30 seconds in the future** (D14), **and
+   no earlier than the invoice's `finalized_at`** (D11). One TOTP step
    (`vpay_api::staff_auth::totp`'s `SKEW_STEPS`) is the only tolerance this
    codebase grants a caller's clock, and a merchant whose clock runs a few
    seconds fast must not be refused for it; anything later is money received
    after vpay recorded that it had been. The same bound is
-   `received_before_recorded` in the database. It may be as early as
-   `finalized_at` and no earlier — the read of `finalized_at` is authoritative
-   rather than a race, because no statement moves it once set.
-3. **A canceled intent stays attached.** An invoice whose hosted attempt was
+   `received_before_recorded` in the database. At the other end it may be as
+   early as **the second `finalized_at` falls in** and no earlier: both
+   comparisons are to the second, because the wire carries whole unix seconds
+   and `status_transitions.finalized_at` is rendered floored, so a merchant
+   who echoes back the `finalized_at` they were shown — up to 999 ms earlier
+   than the stored instant — is accepted. The read of `finalized_at` is
+   authoritative rather than a race, because no statement moves it once set.
+   `received_at_defaults_to_now_and_is_bounded_on_both_sides` tests both
+   boundaries against a `finalized_at` 900 ms into its second.
+3. **A canceled intent stays attached** (D15). An invoice whose hosted attempt was
    canceled and which was then paid in cash keeps naming that attempt in
-   `payment_intent` (and `hosted_invoice_url` still renders that attempt's
-   checkout session), exactly as a voided invoice keeps its intent —
+   `payment_intent`, exactly as a voided invoice keeps its intent —
    migration `0036`: "the payment record survives the document". Every CHECK
    admits the row: `only_a_live_invoice_has_an_intent` forbids an intent on a
    draft and nothing else. Nothing can act on the pair afterwards: the
@@ -401,8 +452,14 @@ The brief left these open; each is recorded here for ADR-0024 to carry.
    `AND NOT paid_out_of_band` with `paid_out_of_band_is_never_refunded` behind
    it. `paying_out_of_band_keeps_the_canceled_intent_and_nothing_can_move_it_again`
    pins all of it. The alternative — clearing `payment_intent_id` — would
-   erase the record of an attempt a payer may have seen.
-4. **`paid_names_how`.** Before `0049` the settlement was the only writer of
+   erase the record of an attempt a payer may have seen. **One visible
+   consequence, recorded rather than changed:** `hosted_invoice_url` on such an
+   invoice keeps pointing at the canceled attempt's checkout session, because
+   the renderer derives it from the attached intent and does not ask whether
+   that intent is still payable. A payer following it meets a session for a
+   canceled intent on a bill that is already `paid`; the same is true of a
+   voided invoice today.
+4. **`paid_names_how`** (D16). Before `0049` the settlement was the only writer of
    `paid` and always matched on an intent, so "paid with neither an intent nor
    the flag" was unreachable and unguarded. A second writer made it worth a
    CHECK: a settled bill nobody can account for is exactly the broken state
@@ -413,7 +470,8 @@ The brief left these open; each is recorded here for ADR-0024 to carry.
    the case still asserts `paid_means_nothing_remaining` and
    `refunded_at_most_paid` rather than being refused by the new CHECK for the
    wrong reason.
-5. **A reference is refused on an erased customer's invoice.** The reference
+5. **A reference is refused on an erased customer's invoice** (D17; the
+   lock order that makes it race-free is D18). The reference
    is classified personal data (`payment_reference`, `subject: payer`): a
    cheque or a transfer reference routinely names the payer. Once the payer is
    erased, storing new text about how they paid would re-attach them. The
@@ -438,7 +496,15 @@ the condition under which two lock-takers cannot form a cycle; the settlement,
 all, and `POST /v1/invoices`' foreign-key check takes `FOR KEY SHARE`, which
 does not conflict with `FOR SHARE`. That is an argument from the statements,
 and `an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference`
-is its empirical half (a `40P01` would surface as a `500`).
+is its empirical half: a `40P01` would surface as a `500`; each round sends an
+`Idempotency-Key` and records which side won; the case fails unless at least
+one round let the payment write its reference first; and in every such round
+the record, the event and the replayed idempotent response carry the marker.
+The store's late-write branch — a response stored **after** the erasure —
+is driven directly through the repository seam by
+`a_stored_invoice_response_written_after_an_erasure_is_redacted_as_it_lands`,
+and the bodiless touch by
+`a_touch_of_an_invoice_paid_out_of_band_replays_redacted_after_an_erasure`.
 
 ---
 
@@ -656,37 +722,44 @@ settlement flips only the invoice its own intent is bound to, and from
 module pins the wire object's **nineteen** keys.
 
 **Manual (out-of-band) payments — built and proven against a real Postgres
-and the shipping router, 2026-09-23 (RFC-0004 § 6, migration `0049`).**
-`invoices.rs` is now **twenty-six** cases, 26 passed, 0 ignored — the sixteen
-above plus ten for this: the happy path for a merchant with no configured URLs
-and no publishable key, with no ledger rows; eleven `400`s each naming its
-parameter; the live-intent `409` and success after cancelling it; refusal from
-every other status; an idempotent replay; a hosted-vs-out-of-band race with
-one winner, five rounds; the four new CHECKs, the record's own and its unique
-index written straight past the API; the erasure of the reference everywhere
-it was copied; an erasure racing a payment; and the cross-merchant `404`.
-`tests/repositories.rs` adds **two** (twelve on invoices): the record's
-amount is the invoice's own and nothing reaches the ledger, and the canceled
-intent stays attached and inert. `postgres_smoke.rs`' migration count, its
-multi-column CHECK inventory and its drift constants moved (194 → 199 over 26
-relations, derived first and then measured); `vpay-api`'s `model` module pins
-**twenty-one** keys (`the_invoice_object_is_the_documented_twenty_one_keys`)
-and a flag/record disagreement in both directions. Two mutations were run
-against the suite: resolving `merchant_clients[].invoices` **before** the
-`paid_out_of_band` fork turns seven of the ten new cases red, and removing the
-intent the rewritten `the_invoice_invariants_are_enforced_by_the_database_itself`
-fixture now attaches turns it red on `paid_names_how`. The two live SDK suites
-each gained a case (`an_invoice_is_marked_paid_out_of_band_and_carries_its_record`,
-`records an invoice as paid out of band and reads its record back`) —
-both compile and **neither has run against a stack**: `just sdk-live` hung
-for over half an hour pulling `wiremock/wiremock:3.9.2` into the freshly
-restarted Docker and was stopped, so the live half of this change is a gap
-the next `just sdk-live` (or CI's `e2e` job) closes.
+and the shipping router, 2026-09-23 (RFC-0004 § 6, migration `0049`), then
+reworked the same day on review.** `invoices.rs` is now **twenty-nine**
+cases, 29 passed, 0 ignored — the sixteen above plus thirteen for this: the
+happy path for a merchant with no configured URLs and no publishable key,
+with no ledger rows; the bare Stripe flag recorded as `other`; ten `400`s each
+naming its parameter; the live-intent `409` and success after cancelling it;
+refusal from every other status; an idempotent replay; a hosted-vs-out-of-band
+race with one winner, five rounds; every new constraint written straight past
+the API and pinned by name, the composite foreign key included; the erasure of
+the reference everywhere it was copied, webhook deliveries' digests and
+excerpts included; an erasure racing a payment, staggered so the rounds must
+include one where the payment wrote a reference first; a touch replayed
+redacted after an erasure; a stored response that lands after an erasure;
+and the cross-merchant `404`. `customers.rs`' whole-database erasure scan
+(24 cases, 24 passed, 0 ignored) now seeds a paid-out-of-band invoice whose
+reference names the payer. `tests/repositories.rs` adds **two** (twelve on
+invoices): the record's amount is the invoice's own and nothing reaches the
+ledger, and the canceled intent stays attached and inert. `postgres_smoke.rs`'
+migration count, its multi-column CHECK inventory and its drift constants
+moved (194 → 199 → **201** over 26 relations, each step derived first and then
+measured); `vpay-api`'s `model` module pins **twenty-one** keys
+(`the_invoice_object_is_the_documented_twenty_one_keys`) and a flag/record
+disagreement in both directions. Two mutations were run against the suite:
+resolving `merchant_clients[].invoices` **before** the `paid_out_of_band` fork
+turns seven of the new cases red, and removing the intent the rewritten
+`the_invoice_invariants_are_enforced_by_the_database_itself` fixture now
+attaches turns it red on `paid_names_how`. **Both live SDK suites ran green
+against a compose stack** (`just sdk-live`: `sdks/rust` 5 passed, 0 skipped;
+`sdks/nodejs` 6 passed), each with its new case —
+`an_invoice_is_marked_paid_out_of_band_and_carries_its_record` and `records
+an invoice as paid out of band and reads its record back`.
 [../status/verification/2026-09-23-manual-payments.md](../status/verification/2026-09-23-manual-payments.md)
-has the gate output and every count. _(The branch first recorded all of the
-container evidence here as "written but not yet run", because Docker on its
-host had died with a full disk; it was restarted the same day and the suites
-ran before the branch was committed.)_
+has the gate output and every count. _(Twice that day this paragraph had to
+record container evidence as not yet run, because the host's Docker died
+with a full disk and then again behind a "running" status; both times it was
+restarted and every suite here ran before the branch was committed. The live
+suites were recorded as "not run against a stack" in the first commit for the
+same reason.)_
 
 **The top-level [`README.md`](../../README.md)'s `/v1` route table did not
 list any of these eight routes until 2026-09-13**, although this page's own
@@ -700,8 +773,8 @@ sixteen cases in `tests/resources.rs` (164 in the crate, 0 ignored) and
 skipped), asserting the exact bytes each of the thirteen methods puts on the
 wire and the decode of all **nineteen** keys (eighteen until migration `0042`
 added `amount_refunded` on 2026-09-10; **twenty-one** since migration `0049`
-on 2026-09-23, when `sdks/rust` gained three out-of-band cases — 181 in the
-crate, 0 skipped — and `sdks/nodejs` two — 224 in the package, 0 skipped).
+on 2026-09-23, when `sdks/rust` gained five out-of-band cases — 183 in the
+crate, 0 skipped — and `sdks/nodejs` four — 226 in the package, 0 skipped).
 Both are stub-backed, deliberately:
 what proves the _server_ is `invoices.rs`, and what these prove is that a
 merchant's client sends what the server documents. **Since the exp33 review
@@ -776,6 +849,12 @@ green while a settlement paid an invoice it was never bound to.
   `payment_intent.payment_failed`, which they already receive.
 - **`invoice.*` webhook bodies carry empty `lines`.** See
   [Events](#events). The `/v1` object always carries them.
+- **Recording an out-of-band payment does not stamp the customer's
+  `last_used_at`** (2026-09-23), so it does not restart their twelve-month
+  retention clock. Hosted `pay` does not either — only creating the invoice
+  does, through `resolve_for_attachment` — so this is the existing gap, not a
+  new one; it is listed because paying is the most recent use of a payer a
+  merchant has.
 - **Partial payments.** One intent at a time, and `paid` means paid in full.
   A merchant taking a deposit issues two invoices. An out-of-band payment is
   all-or-nothing too (one `manual_payments` row per invoice, 2026-09-23).

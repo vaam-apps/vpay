@@ -103,7 +103,7 @@ device — the `manual_payments` table (one row per invoice,
 under CrateStack's generated name), three multi-column CHECKs on `invoices`
 (`paid_out_of_band_means_paid`, `paid_names_how`,
 `paid_out_of_band_is_never_refunded`) and one on `manual_payments`
-(`received_before_recorded`). It is additive: every existing row satisfies all
+(`received_before_recorded`), plus `records_an_out_of_band_payment` on a new always-`true` `manual_payments.paid_out_of_band` column and the composite foreign key `manual_payments_agree_with_their_invoice` onto a new `invoices_payment_record_key` UNIQUE — the database's own guarantee that a record agrees with its invoice (added on review the same day, while `0049` was still unshipped, so the file was edited and its manifest line re-derived). It is additive: every existing row satisfies all
 three new `invoices` CHECKs, because before it the settlement was the only
 writer of `paid` and always matched on an intent. `postgres_smoke.rs`'
 `schema_migrates_cleanly_on_an_empty_database` records 49 applied; see

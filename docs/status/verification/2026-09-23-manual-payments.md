@@ -24,6 +24,64 @@ than a measurement. The daemon was restarted the same day, and **every
 container-backed suite below ran after that, before the branch was
 committed.** The derivation held line for line (below).
 
+## The review round (second commit, 2026-09-23)
+
+An independent review of `471d9b7` found no blocker and asked for fixes; the
+maintainer then accepted ADR-0024 (`docs/adr/0024-customer-filters-and-manual-payments.md`,
+PR #248, D9–D19 "as proposed"). What the second commit changed:
+
+- `out_of_band[method]` is optional, defaulting to `other` (D11), so Stripe's
+  bare `paid_out_of_band=true` succeeds;
+- both SDKs take one optional `out_of_band` object (Rust
+  `Option<OutOfBandParams>`, Node `outOfBand`) — **source-breaking in
+  `sdks/rust`** for struct-literal callers without `..Default::default()`;
+- migration `0049` (unshipped, so edited; manifest line re-derived) gained
+  `invoices_payment_record_key`, a `manual_payments.paid_out_of_band` column
+  with `records_an_out_of_band_payment`, and the composite foreign key
+  `manual_payments_agree_with_their_invoice`;
+- `received_at` against `finalized_at` is documented and tested **to the
+  second**;
+- the erasure, idempotency-race and touch cases the review found missing.
+
+Docker failed a second time during this round (the Desktop VM had died behind
+a "running" status) and was restarted before any of the runs below.
+
+### Suites at the second commit
+
+| Suite                                                                     | Passed | Failed | Ignored |
+| ------------------------------------------------------------------------- | ------ | ------ | ------- |
+| `vpay-tests-integration --test invoices` (real Postgres, shipping router) | 29     | 0      | 0       |
+| `vpay-tests-integration --test customers`                                 | 24     | 0      | 0       |
+| `vpay-tests-integration --test postgres_smoke`                            | 54     | 0      | 0       |
+| `vpay-db`, all targets                                                    | 246    | 0      | 0       |
+| `vpay-core` lib                                                           | 74     | 0      | 0       |
+| `vpay-api` lib                                                            | 401    | 0      | 0       |
+| `vpay-worker` lib                                                         | 75     | 0      | 0       |
+| `vpay-sdk` (`sdks/rust`, without `live-stack`)                            | 183    | 0      | 0       |
+| `@vaam-apps/vpay-sdk` (`sdks/nodejs`, `pnpm test`)                        | 226    | 0      | 0       |
+| `just sdk-live`: `sdks/rust` `live_invoices` + `live_refunds`             | 5      | 0      | 0       |
+| `just sdk-live`: `sdks/nodejs` live project                               | 6      | 0      | 0       |
+| Doctests, `cargo test --doc --workspace`                                  | 124    | 0      | 1       |
+
+**The live suites ran**, against the compose demo stack `just sdk-live`
+brings up (torn down afterwards with `just demo_project=vpay-demo
+demo-down`); both new live cases passed and are now in the parity row's ✅
+cells.
+
+**Drift, measured:** `drift detected in 26 table(s)/view(s) (201 change(s)
+total)`, 19 unmappable. The two new lines, both predicted before Docker came
+back: `manual_payments: [safe] CHECK records_an_out_of_band_payment …` and
+`invoices: [safe] index invoices_payment_record_key …`. The composite foreign
+key costs nothing, as 0.12.0 introspects no foreign key.
+
+**The race case found its own blind spot.** Its first version, with a
+`payment_first > 0` assertion added as the review asked, failed: the erasure
+won 30 rounds of 30, because the pay request does three reads before its
+transaction opens. The erasure's start is now staggered by 3 ms a round, so
+the rounds sweep the collision window, and the case passes with at least one
+round in which the payment wrote its reference first and every copy of it —
+the replayed idempotent response included — came back as the marker.
+
 ## Gates
 
 `just verify` before the change (on `d98fdaf`): all fifteen gates ok.
@@ -58,7 +116,7 @@ the pre-existing body of `pay_once` moved into a function).
 was appended with `shasum -a 256`, the same digest `sha256sum` writes, and
 `verify-migrations` accepts it.
 
-## Suites
+## Suites at the first commit (`471d9b7`)
 
 | Suite                                                                     | Passed  | Failed | Ignored |
 | ------------------------------------------------------------------------- | ------- | ------ | ------- |
@@ -87,7 +145,7 @@ and `cargo clippy -p vpay-sdk --features live-stack --test live_invoices -- -D
 warnings` — all clean. `sdks/nodejs`: `tsc -p tsconfig.json --noEmit` and
 `eslint . --max-warnings 0` clean. `just fmt` run.
 
-**Not run: the two SDK live suites.** `just sdk-live` sat at `Image
+**Not run at the first commit: the two SDK live suites** (they ran in the review round, above). `just sdk-live` sat at `Image
 wiremock/wiremock:3.9.2 Pulling` for over thirty minutes against the
 restarted daemon (Docker Hub answered a direct `curl` with its usual `401`, so
 the network was up; the daemon's pull was not moving) and was stopped. The
@@ -162,6 +220,8 @@ CrateStack's generated names.
    reach while the store holds the share lock. One acquisition order, so no
    cycle. The empirical half,
    `an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference`,
-   passed (five rounds; a `40P01` would have surfaced as a `500`). It does not
-   record which side won each round, so it proves "no deadlock and no
-   surviving reference", not that both orderings were exercised.
+   passed (a `40P01` would have surfaced as a `500`). _(At the first commit it
+   did not record which side won, so it proved "no deadlock and no surviving
+   reference" only. Since the review round it records the winner of every round
+   and fails unless at least one round let the payment write its reference
+   first — see "The race case found its own blind spot" above.)_

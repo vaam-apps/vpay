@@ -887,8 +887,8 @@ export interface Invoice {
   amount_refunded?: number;
   /**
    * Stripe's key: `true` exactly when the merchant recorded that this invoice
-   * was settled outside vpay (`client.invoices.pay` with
-   * `paid_out_of_band: true`). Always `false` on a bill a payer paid through
+   * was settled outside vpay (`client.invoices.pay` with `outOfBand`).
+   * Always `false` on a bill a payer paid through
    * a rail. Optional in the type so a client of this version keeps compiling
    * against a server that predates migration `0049`.
    */
@@ -1043,24 +1043,27 @@ export type ListInvoicesParams = {
 export type PayInvoiceParams =
   HostedPayInvoiceParams | OutOfBandPayInvoiceParams;
 
-/** The hosted-checkout payment: both URLs, and no `out_of_band`. */
+/** The hosted-checkout payment: both URLs, and no `outOfBand`. */
 export interface HostedPayInvoiceParams {
   success_url: string;
   cancel_url: string;
-  paid_out_of_band?: false | undefined;
-  out_of_band?: undefined;
+  outOfBand?: undefined;
 }
 
 /**
- * Records the invoice as settled **outside vpay** (RFC-0004 § 6) — Stripe's
- * `paid_out_of_band=true` plus vpay's `out_of_band[…]`. The invoice becomes
- * `"paid"` on the merchant's word, with no intent and no checkout, and
- * **nothing is verified or posted to any ledger**. No URL may be sent — the
- * server refuses one — and none needs configuring.
+ * Records the invoice as settled **outside vpay** (RFC-0004 § 6). The
+ * presence of `outOfBand` is the flag: it puts Stripe's
+ * `paid_out_of_band=true` plus vpay's `out_of_band[…]` on the wire. The
+ * invoice becomes `"paid"` on the merchant's word, with no intent and no
+ * checkout, and **nothing is verified or posted to any ledger**. No URL may
+ * go with it — the type forbids one, and `client.invoices.pay` refuses one at
+ * runtime for a caller the type did not reach — and none needs configuring.
+ *
+ * `outOfBand` and its keys are camelCase, unlike the snake_case URL fields
+ * beside them, by the maintainer's decision of 2026-09-23 (ADR-0024).
  */
 export interface OutOfBandPayInvoiceParams {
-  paid_out_of_band: true;
-  out_of_band: OutOfBandParams;
+  outOfBand: OutOfBandParams;
   success_url?: undefined;
   cancel_url?: undefined;
 }
@@ -1068,23 +1071,28 @@ export interface OutOfBandPayInvoiceParams {
 /** How a merchant says an out-of-band payment arrived. vpay's own words. */
 export type OutOfBandMethod = "cash" | "cheque" | "bank_transfer" | "other";
 
-/** `out_of_band[…]` on `POST /v1/invoices/{id}/pay`. */
+/**
+ * What the merchant says about a payment made outside vpay. Every key is
+ * optional: `{}` is Stripe's bare `paid_out_of_band=true`, which the server
+ * records with the method `"other"`.
+ */
 export interface OutOfBandParams {
-  /** Required. */
-  method: OutOfBandMethod;
+  /** Sent as `out_of_band[method]`; omitted, the server records `"other"`. */
+  method?: OutOfBandMethod | undefined;
   /**
-   * A cheque number, a transfer reference; at most 500 characters. **Treat
-   * it as personal data**: vpay does — a reference routinely names the payer
-   * — and replaces it with `[redacted]` when the invoice's customer is
-   * erased, and refuses one on an erased customer's invoice.
+   * Sent as `out_of_band[reference]`. A cheque number, a transfer reference;
+   * at most 500 characters. **Treat it as personal data**: vpay does — a
+   * reference routinely names the payer — and replaces it with `[redacted]`
+   * when the invoice's customer is erased, and refuses one on an erased
+   * customer's invoice.
    */
   reference?: string | undefined;
   /**
-   * Unix **seconds**. The server defaults it to now, and refuses one in the
-   * future (past 30 seconds of clock allowance) or before the invoice was
-   * finalized.
+   * Sent as `out_of_band[received_at]`, unix **seconds**. The server defaults
+   * it to now, and refuses one more than 30 seconds in the future or earlier
+   * than the second the invoice was finalized in.
    */
-  received_at?: number | undefined;
+  receivedAt?: number | undefined;
 }
 
 /**

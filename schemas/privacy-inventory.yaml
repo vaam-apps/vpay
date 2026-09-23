@@ -383,6 +383,9 @@ elements:
         table: manual_payments
         column: method
       - kind: column
+        table: manual_payments
+        column: paid_out_of_band
+      - kind: column
         table: oauth_authorization_codes
         column: nonce
       - kind: column

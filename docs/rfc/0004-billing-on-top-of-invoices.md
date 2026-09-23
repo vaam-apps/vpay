@@ -237,14 +237,20 @@ frozen one.
 
 > **Built 2026-09-23** (step A; migration `0049_manual-payments.sql`),
 > as proposed below. [docs/flows/invoices.md](../flows/invoices.md)
-> § "Paid out of band" is the record of what exists — including five
-> decisions this section left open (a 500-character `reference`, a 30-second
-> clock allowance on `received_at`, a canceled intent staying attached, a new
-> `paid_names_how` CHECK, and a reference refused on an erased customer's
-> invoice) — and its Status carries the evidence: the integration,
-> repository and smoke suites against a real Postgres. The one wire
-> addition beyond this section is `out_of_band_payment`, the record's
-> four keys on the invoice beside Stripe's `paid_out_of_band`.
+> § "Paid out of band" is the record of what exists — including the
+> decisions this section left open, all **accepted** in ADR-0024
+> (`docs/adr/0024-customer-filters-and-manual-payments.md`, D9–D19,
+> confirmed by the maintainer on 2026-09-23): the method optional and
+> defaulting to `other` (D11), a 500-character `reference` (D13), a
+> 30-second clock allowance on `received_at` and nothing before
+> `finalized_at` (D14, D11), a canceled intent staying attached (D15), a new
+> `paid_names_how` CHECK (D16), and a reference refused on an erased
+> customer's invoice (D17). Its Status carries the evidence: the
+> integration, repository and smoke suites against a real Postgres. The one
+> wire addition beyond this section is `out_of_band_payment`, the record's
+> four keys on the invoice beside Stripe's `paid_out_of_band` (D9). _(This
+> note said "five decisions this section left open" without their status
+> until the ADR was accepted the same day.)_
 
 The merchant records that an invoice was settled outside vpay: cash, cheque,
 bank transfer received directly, or anything else.

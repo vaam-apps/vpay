@@ -2160,10 +2160,10 @@ model InvoiceItem {
 // hand-written `sqlx`, for a reason that is new rather than one of
 // `model Invoice`'s three: `INSERT … SELECT invoices.amount_paid,
 // invoices.currency_code, … FROM invoices WHERE …` copies four columns off
-// the invoice inside the statement, which is the whole guarantee that a
-// payment record's amount is its invoice's (migration 0049's header). A
-// generated `create` takes values, and a value the caller read first is the
-// read-then-write this crate does not do.
+// the invoice inside the statement, so no caller ever supplies the amount;
+// migration 0049's composite foreign key is the database's guard behind it.
+// A generated `create` takes values, and a value the caller read first is
+// the read-then-write this crate does not do.
 //
 // `invoice_id` carries `@unique` because the live index is named
 // `manual_payments_invoice_id_key` — `naming.rs::index_name_unique`'s own
@@ -2198,6 +2198,16 @@ model ManualPayment {
   amount Int
   currency_code String @length(min: 3, max: 3)
   created_at DateTime @default(now())
+  // Always `true` (`records_an_out_of_band_payment`): the sixth column of the
+  // composite foreign key `manual_payments_agree_with_their_invoice`, which
+  // is how the database says a record exists only for an invoice flagged
+  // `paid_out_of_band` and agrees with it on amount, tenant, mode and
+  // currency. Neither the key nor the invoices-side
+  // `invoices_payment_record_key` is expressible here — 0.12.0 introspects no
+  // foreign key, and a six-column `@@unique`'s generated name is past
+  // Postgres's 63-byte limit. `ManualPaymentRow` does not carry it: a column
+  // that can hold one value says nothing a reader needs.
+  paid_out_of_band Boolean
 
   // `read`, and NOTHING else — the one action this crate calls through this
   // model. Its loss is LOUD, as `model InvoiceItem`'s is: `find_many`

@@ -375,9 +375,9 @@ impl std::fmt::Debug for ManualPaymentRow {
 /// There is no `amount`, no `currency_code`, no `livemode` and no tenant
 /// column to fill in, and none of them is an omission: the insert copies all
 /// four off the invoice it has just paid, in the same statement. A parameter
-/// for any of them would be a way to record a payment of a different amount
-/// from the bill — the one mismatch migration `0049` cannot express as a
-/// CHECK, closed instead by nobody being able to say it.
+/// for any of them would be a way to ask for a payment of a different amount
+/// from the bill — which migration `0049`'s composite foreign key would then
+/// refuse; nobody being able to say it is the first guard, the key the second.
 #[derive(Clone, PartialEq)]
 pub struct NewManualPayment {
     /// Public `mp_…` id, from `vpay_core::ids::manual_payment_id`.
@@ -1646,7 +1646,10 @@ pub(crate) async fn void_in_tx(
 ///    paid_out_of_band`.** `amount`, `currency_code`, `merchant_id` and
 ///    `livemode` are copied off the invoice statement 2 just wrote, under the
 ///    row lock statement 2 still holds, so the record cannot disagree with
-///    its bill — the one invariant migration `0049` cannot state as a CHECK.
+///    its bill. Migration `0049`'s composite foreign key
+///    `manual_payments_agree_with_their_invoice` is the guard behind this
+///    statement: it refuses any record that disagrees with its invoice on
+///    those four columns or names an invoice not flagged `paid_out_of_band`.
 ///
 /// Statement 3 matching nothing after statement 2 matched is impossible (the
 /// same transaction, the same row, a lock held); it is answered as an error
@@ -1722,9 +1725,9 @@ pub(crate) async fn pay_out_of_band_in_tx(
     let sql = format!(
         "INSERT INTO manual_payments \
             (id, merchant_id, livemode, invoice_id, method, reference, received_at, amount, \
-             currency_code, created_at) \
+             currency_code, created_at, paid_out_of_band) \
          SELECT $1, invoices.merchant_id, invoices.livemode, invoices.id, $3, $4, $5, \
-                invoices.amount_paid, invoices.currency_code, $6 \
+                invoices.amount_paid, invoices.currency_code, $6, invoices.paid_out_of_band \
          FROM invoices \
          WHERE invoices.id = $2 AND invoices.paid_out_of_band \
          RETURNING {MANUAL_PAYMENT_COLUMNS}"

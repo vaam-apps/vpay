@@ -22,7 +22,13 @@ import {
   isInvoiceEvent,
   isPaymentIntentEvent,
 } from "./types.js";
-import type { Event, KnownEventType, PaymentIntent, Refund } from "./types.js";
+import type {
+  Event,
+  KnownEventType,
+  PayInvoiceParams,
+  PaymentIntent,
+  Refund,
+} from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
 const { privateKey, privateKeyPem, publicKey } = generateTestRsaKeyPair();
@@ -3309,11 +3315,10 @@ describe("invoices", () => {
     const invoice = await client.invoices.pay(
       "in_123",
       {
-        paid_out_of_band: true,
-        out_of_band: {
+        outOfBand: {
           method: "bank_transfer",
           reference: "AFB 2026/0917",
-          received_at: 1_753_401_900,
+          receivedAt: 1_753_401_900,
         },
       },
       { idempotencyKey: "idem_oob" },
@@ -3345,15 +3350,50 @@ describe("invoices", () => {
     });
     const client = makeClient(server);
 
-    await client.invoices.pay("in_123", {
-      paid_out_of_band: true,
-      out_of_band: { method: "cash" },
-    });
+    await client.invoices.pay("in_123", { outOfBand: { method: "cash" } });
 
     const req = server.requests.find(
       (r) => r.url === "/v1/invoices/in_123/pay",
     )!;
     expect(req.body).toBe("paid_out_of_band=true&out_of_band[method]=cash");
+  });
+
+  // An empty `outOfBand` is Stripe's bare flag, which the server records as
+  // `other` (ADR-0024 D11). Byte-identical to `sdks/rust`'s
+  // `pay_out_of_band_with_nothing_else_sends_only_the_flag`.
+  it("invoices.pay out of band with nothing else sends only the flag", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    await client.invoices.pay("in_123", { outOfBand: {} });
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/invoices/in_123/pay",
+    )!;
+    expect(req.body).toBe("paid_out_of_band=true");
+  });
+
+  // The type forbids a URL beside `outOfBand`; a plain-JS caller the type
+  // did not reach is refused at runtime, before any request, as `sdks/rust`
+  // refuses the same combination (`InvalidParams`).
+  it("invoices.pay out of band with a url is refused before any request", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: sampleInvoice() }),
+    });
+    const client = makeClient(server);
+
+    const smuggled = {
+      outOfBand: {},
+      success_url: "https://shop.example/ok",
+    } as unknown as PayInvoiceParams;
+    await expect(client.invoices.pay("in_123", smuggled)).rejects.toThrow(
+      /success_url/,
+    );
+    expect(
+      server.requests.some((r) => r.url === "/v1/invoices/in_123/pay"),
+    ).toBe(false);
   });
 
   it("invoiceItems.create: exact body, and no currency or amount in it", async () => {

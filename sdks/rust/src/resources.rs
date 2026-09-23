@@ -814,32 +814,47 @@ impl ListInvoicesParams {
 ///
 /// # Or: record a payment made outside vpay
 ///
-/// [`PayInvoiceParams::out_of_band`] sends Stripe's `paid_out_of_band=true`
-/// with vpay's `out_of_band[…]` instead (RFC-0004 § 6): the invoice becomes
-/// `paid` on the merchant's word, with no intent, no checkout and **nothing
-/// verified or posted to any ledger**. No URL is sent on that path — the
-/// server refuses one — and none needs configuring.
+/// Set [`PayInvoiceParams::out_of_band`] — most easily with
+/// [`PayInvoiceParams::out_of_band`] the constructor — and the request is
+/// instead Stripe's `paid_out_of_band=true` plus vpay's `out_of_band[…]`
+/// (RFC-0004 § 6): the invoice becomes `paid` on the merchant's word, with no
+/// intent, no checkout and **nothing verified or posted to any ledger**. Its
+/// presence is the flag; there is no separate boolean to disagree with it.
+///
+/// No URL goes with it, and the server refuses one. [`crate::InvoicesResource::pay`]
+/// refuses the combination **before any request** — an
+/// [`crate::Error::InvalidParams`] naming `success_url` or `cancel_url` —
+/// rather than sending bytes it knows will be a `400`.
+///
+/// # Source-breaking since 2026-09-23
+///
+/// The `out_of_band` field is new, so a caller who built this with a struct
+/// literal naming only `success_url` and `cancel_url` — with no
+/// `..Default::default()` — no longer compiles. [`PayInvoiceParams::new`] and
+/// any literal ending in `..Default::default()` are unaffected, and the bytes
+/// a hosted payment sends are unchanged.
 #[derive(Debug, Clone, Default)]
 pub struct PayInvoiceParams {
-    /// Where a paying payer is forwarded. Omitted from the body when empty,
-    /// which is how [`Self::out_of_band`] sends none.
+    /// Where a paying payer is forwarded. Omitted from the body when empty.
     pub success_url: String,
     /// Where a payer who gave up is forwarded. Omitted when empty, as
     /// [`Self::success_url`] is.
     pub cancel_url: String,
-    /// Stripe's `paid_out_of_band`. Sent only when `true`.
-    pub paid_out_of_band: bool,
-    /// What the merchant says about the payment, sent as `out_of_band[…]`.
-    /// Required by the server when [`Self::paid_out_of_band`] is `true`, and
-    /// refused by it otherwise.
+    /// `Some` records a payment made outside vpay: `paid_out_of_band=true`
+    /// and `out_of_band[…]` go on the wire, and both URLs must be empty.
+    /// `None` is a hosted-checkout payment, exactly as before this field
+    /// existed.
     pub out_of_band: Option<OutOfBandParams>,
 }
 
-/// `out_of_band[…]` on `POST /v1/invoices/{id}/pay` (RFC-0004 § 6).
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// `out_of_band[…]` on `POST /v1/invoices/{id}/pay` (RFC-0004 § 6). Every
+/// field is optional: an empty `OutOfBandParams` is Stripe's bare
+/// `paid_out_of_band=true`, which the server records with the method `other`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct OutOfBandParams {
-    /// How the money arrived. Required.
-    pub method: crate::model::OutOfBandMethod,
+    /// How the money arrived. `None` is omitted from the body and the server
+    /// records `other`.
+    pub method: Option<crate::model::OutOfBandMethod>,
     /// A cheque number, a transfer reference; at most 500 characters.
     ///
     /// **Treat it as personal data**: vpay does, because a reference
@@ -847,9 +862,9 @@ pub struct OutOfBandParams {
     /// invoice's customer is erased — and refuses one outright on an erased
     /// customer's invoice.
     pub reference: Option<String>,
-    /// Unix **seconds**. The server defaults it to now, and refuses one in
-    /// the future (past 30 seconds of clock allowance) or before the invoice
-    /// was finalized.
+    /// Unix **seconds**. The server defaults it to now, and refuses one more
+    /// than 30 seconds in the future or earlier than the second the invoice
+    /// was finalized in.
     pub received_at: Option<i64>,
 }
 
@@ -858,9 +873,8 @@ impl OutOfBandParams {
     #[must_use]
     pub fn new(method: crate::model::OutOfBandMethod) -> Self {
         Self {
-            method,
-            reference: None,
-            received_at: None,
+            method: Some(method),
+            ..Self::default()
         }
     }
 
@@ -868,7 +882,7 @@ impl OutOfBandParams {
         FormValue::Object(vec![
             (
                 "method".to_string(),
-                FormValue::from(self.method.as_wire_str()),
+                FormValue::from(self.method.map(crate::model::OutOfBandMethod::as_wire_str)),
             ),
             (
                 "reference".to_string(),
@@ -895,37 +909,52 @@ impl PayInvoiceParams {
     #[must_use]
     pub fn out_of_band(details: OutOfBandParams) -> Self {
         Self {
-            paid_out_of_band: true,
             out_of_band: Some(details),
             ..Self::default()
         }
     }
 
-    pub(crate) fn to_form(&self) -> FormValue {
-        let url = |value: &str| {
-            if value.is_empty() {
-                FormValue::Skip
-            } else {
-                FormValue::from(value)
+    /// Refuses a URL sent beside [`Self::out_of_band`], before any request.
+    ///
+    /// # Errors
+    /// [`crate::Error::InvalidParams`] naming the URL.
+    pub(crate) fn check(&self) -> Result<(), crate::Error> {
+        if self.out_of_band.is_none() {
+            return Ok(());
+        }
+        for (param, value) in [
+            ("success_url", &self.success_url),
+            ("cancel_url", &self.cancel_url),
+        ] {
+            if !value.is_empty() {
+                return Err(crate::Error::InvalidParams {
+                    param: param.to_string(),
+                    message: "has no meaning when recording a payment made outside vpay \
+                              (out_of_band is set): there is no checkout to forward a payer from"
+                        .to_string(),
+                });
             }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn to_form(&self) -> FormValue {
+        let Some(details) = self.out_of_band.as_ref() else {
+            let url = |value: &str| {
+                if value.is_empty() {
+                    FormValue::Skip
+                } else {
+                    FormValue::from(value)
+                }
+            };
+            return FormValue::Object(vec![
+                ("success_url".to_string(), url(&self.success_url)),
+                ("cancel_url".to_string(), url(&self.cancel_url)),
+            ]);
         };
         FormValue::Object(vec![
-            ("success_url".to_string(), url(&self.success_url)),
-            ("cancel_url".to_string(), url(&self.cancel_url)),
-            (
-                "paid_out_of_band".to_string(),
-                if self.paid_out_of_band {
-                    FormValue::from(true)
-                } else {
-                    FormValue::Skip
-                },
-            ),
-            (
-                "out_of_band".to_string(),
-                self.out_of_band
-                    .as_ref()
-                    .map_or(FormValue::Skip, OutOfBandParams::to_form),
-            ),
+            ("paid_out_of_band".to_string(), FormValue::from(true)),
+            ("out_of_band".to_string(), details.to_form()),
         ])
     }
 }
@@ -1908,13 +1937,20 @@ impl InvoicesResource<'_> {
     /// See [`enum@crate::Error`]. A `409` when it is not open or an intent is
     /// already live, a `400` for a URL the server refuses, and a `500`
     /// `checkout_not_configured` when this deployment serves no checkout
-    /// page.
+    /// page. [`crate::Error::InvalidParams`], before any request, for a URL
+    /// set beside [`PayInvoiceParams::out_of_band`].
+    ///
+    /// With [`PayInvoiceParams::out_of_band`] set it records instead that the
+    /// invoice was paid outside vpay: `open` → `paid`, `invoice.paid`
+    /// emitted, no intent and no checkout, nothing verified and nothing posted
+    /// to any ledger.
     pub async fn pay(
         &self,
         id: &str,
         params: PayInvoiceParams,
         opts: RequestOptions,
     ) -> Result<Invoice, crate::Error> {
+        params.check()?;
         post(
             self.client,
             &format!("/invoices/{}/pay", path_segment(id)),

@@ -418,7 +418,7 @@ async fn an_invoice_is_marked_paid_out_of_band_and_carries_its_record() {
         .pay(
             &draft.id,
             PayInvoiceParams::out_of_band(OutOfBandParams {
-                method: OutOfBandMethod::Cash,
+                method: Some(OutOfBandMethod::Cash),
                 reference: Some("Receipt 0007".to_owned()),
                 received_at: None,
             }),

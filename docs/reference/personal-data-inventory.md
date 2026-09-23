@@ -259,10 +259,15 @@ last also on the far side of the issue-#111 race through
 new reference on that customer's invoices (`400` naming
 `out_of_band[reference]`) rather than re-attach payer detail to a payer vpay
 has erased; a payment without one still records.
-`erasing_the_customer_redacts_the_out_of_band_reference_everywhere` and
-`an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference`
-(`backends/tests/integration/tests/invoices.rs`) are the evidence, both green
-against a real Postgres on 2026-09-23; see
+`erasing_the_customer_redacts_the_out_of_band_reference_everywhere` (every
+copy, delivery digests and excerpts included),
+`an_erasure_racing_an_out_of_band_payment_neither_deadlocks_nor_leaves_the_reference`,
+`a_touch_of_an_invoice_paid_out_of_band_replays_redacted_after_an_erasure`
+and `a_stored_invoice_response_written_after_an_erasure_is_redacted_as_it_lands`
+(`backends/tests/integration/tests/invoices.rs`), and the whole-database scan
+`an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table`
+(`customers.rs`), which now seeds an out-of-band reference naming the payer,
+are the evidence, all green against a real Postgres on 2026-09-23; see
 [../status/verification/2026-09-23-manual-payments.md](../status/verification/2026-09-23-manual-payments.md).
 
 Everything else is a `sys_*` element (`subject: none`) — identifiers, timestamps,
@@ -404,12 +409,13 @@ are `unresolved`, not guessed.
 
 **2026-09-16, amended 2026-09-17 on review.** The inventory exists and is
 machine-checked in both directions against `backends/migrations` by `cargo xtask
-verify-privacy-inventory`, wired into `just verify`. **306** database columns
+verify-privacy-inventory`, wired into `just verify`. **307** database columns
 across 26 elements (17 personal-data), and 10 non-database surfaces, are
 registered — the gate's own output on 2026-09-23, after migration `0049`
-added eleven columns (`invoices.paid_out_of_band` and the ten of
-`manual_payments`) and the `payment_reference` element; it said 295 across 25
-(16) until then.
+added twelve columns (`invoices.paid_out_of_band` and the eleven of
+`manual_payments`, the last its always-`true` `paid_out_of_band`, classified
+`sys_status`) and the `payment_reference` element; it said 295 across 25 (16)
+until then, and 306 for the few hours `0049` had eleven.
 
 What is **not** done, and each of these keeps #144 open:
 

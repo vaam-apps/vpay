@@ -514,9 +514,15 @@ FOR SHARE`.** The erasure's lock, taken first. Every customer erasure takes
    of that condition, and one that can carry it, since it is hand-written.
 3. **`INSERT INTO manual_payments … SELECT … FROM invoices WHERE id = $2 AND
 paid_out_of_band`.** The record's amount, currency, tenant and mode are
-   copied off the row statement 2 wrote, under its lock. That is the
-   guarantee migration `0049` cannot state as a CHECK, and it is `add_item`'s
-   device (copy off the parent in the statement that writes) applied to money.
+   copied off the row statement 2 wrote, under its lock — `add_item`'s device
+   (copy off the parent in the statement that writes) applied to money. The
+   database states the same fact independently: the composite foreign key
+   `manual_payments_agree_with_their_invoice` onto
+   `invoices_payment_record_key` refuses a record that disagrees with its
+   invoice on amount, tenant, mode or currency, or that names an invoice not
+   flagged `paid_out_of_band`. (This item said the guarantee "cannot be stated
+   as a CHECK" and was the only one until the review of 2026-09-23 added the
+   key; a CHECK still cannot, a foreign key can.)
    A zero-row answer here after statement 2 matched is impossible and is an
    error, not a success, so a regression aborts rather than committing a paid
    invoice with no record.
