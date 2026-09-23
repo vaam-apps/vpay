@@ -745,7 +745,9 @@ async fn a_callback_settles_the_charge_before_the_ladders_next_rung_would_have_f
     );
 
     let first_rung_at = poll_run_at(&harness.pool, &charge.id).await?;
-    let now = time::OffsetDateTime::now_utc();
+    // The database's clock, because `run_at` was written by its `now()`
+    // (`support::db_now`); this host's would compare two clocks.
+    let now = support::db_now(&harness.pool).await?;
     assert!(
         first_rung_at - now >= time::Duration::seconds(8),
         "{rail}: the ladder should have parked the poll about {FIRST_RUNG:?} out; run_at is \
@@ -755,7 +757,7 @@ async fn a_callback_settles_the_charge_before_the_ladders_next_rung_would_have_f
     // Out to the third rung, which is where a callback is worth something.
     park_the_poll_at_a_later_rung(&harness.pool, &charge.id).await?;
     let parked_at = poll_run_at(&harness.pool, &charge.id).await?;
-    let now = time::OffsetDateTime::now_utc();
+    let now = support::db_now(&harness.pool).await?;
     assert!(
         parked_at - now >= time::Duration::seconds(25),
         "{rail}: the poll should be parked about {LATER_RUNG:?} out; run_at is {parked_at} \
@@ -787,7 +789,7 @@ async fn a_callback_settles_the_charge_before_the_ladders_next_rung_would_have_f
 
     let pulled_to = poll_run_at(&harness.pool, &charge.id).await?;
     assert!(
-        pulled_to <= time::OffsetDateTime::now_utc(),
+        pulled_to <= support::db_now(&harness.pool).await?,
         "{rail}: the callback must make the poll claimable now; run_at is still {pulled_to}"
     );
 
@@ -1045,7 +1047,7 @@ async fn an_unparseable_callback_body_is_refused_and_moves_no_job(
     harness.step_one().await?;
     let before = queue_snapshot(&harness.pool).await?;
     assert!(
-        poll_run_at(&harness.pool, &charge.id).await? > time::OffsetDateTime::now_utc(),
+        poll_run_at(&harness.pool, &charge.id).await? > support::db_now(&harness.pool).await?,
         "{rail}: the poll must be parked in the future for this assertion to mean anything"
     );
 

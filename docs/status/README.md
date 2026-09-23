@@ -38,12 +38,12 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and four times on 2026-09-23, when the super-linter
-page, the stale-claims page, the customer-filters page and the manual-payments
-page did: the directory holds 64 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 41 of them. This is a hand-maintained list, not a generated one,
+plugin's page landed, and five times on 2026-09-23, when the super-linter
+page, the stale-claims page, the customer-filters page, the manual-payments
+page and the test-clock-skew page did: the directory holds 65 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 42 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39 and then 63/40 on 2026-09-23; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40 and then 64/41 on 2026-09-23; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -92,6 +92,16 @@ rather than trusting this list to be exhaustive.
   after, and the reason the two exclusions are exclusions — a file
   `cargo build` regenerates on every run, and TypeScript's own
   comment-bearing config format.
+- [verification/2026-09-23-test-clock-skew.md](verification/2026-09-23-test-clock-skew.md) —
+  the `webhooks.rs` "the fan-out job is claimable" failures after a Docker
+  Desktop restart, and every other test fixture that stamped a job with this
+  host's clock and then claimed it on Postgres' `now()`, or held a
+  database-written instant against this host's clock. Each now reads the
+  database's clock. The failure mode is demonstrated with a simulated 200 ms
+  skew; the flake itself was **not** reproduced, and the page says so. Ten
+  production sites with the same two clocks are listed and deliberately not
+  changed: in production they cost a delay equal to the skew, not a failure.
+  Test code only.
 - [verification/2026-09-22-tauri-plugin.md](verification/2026-09-22-tauri-plugin.md) —
   the Tauri v2 checkout plugin, built in parallel lanes: what each lane
   measured (the Rust crate's 19 tests + 1 doctest and its clippy/`cargo doc`
