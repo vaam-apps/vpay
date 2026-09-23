@@ -357,6 +357,11 @@ pub struct CheckoutSession {
     /// The `cus_…` this session is for, or `None` (S4a). Copied from the
     /// session's intent at create when the intent has one.
     ///
+    /// The other direction, from 2026-09-23 (ADR-0025): a session created
+    /// with a customer for an intent that had none wrote it onto the intent
+    /// too, so the two agree. A session created that way before then, or by
+    /// a server without ADR-0025, may name a customer its intent does not.
+    ///
     /// The id, never the expanded object —
     /// [`PaymentIntent::customer`]'s reason, unchanged.
     #[serde(default)]
