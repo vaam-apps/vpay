@@ -161,22 +161,31 @@ two deliberate creates are two customers.
 
 **Updated 2026-09-23 ([ADR-0027](../adr/0027-erasure-reaches-through-checkout-sessions.md)):
 an erasure now reaches a payment whose only link to the payer is a checkout
-session.** Before vaam-apps/vpay#253, a session created with `customer=X` on
-a customer-less intent stored `X` on the session only. Erasing `X` therefore
-left that payment's `charges.payer_ref`, the rail's `failure_raw` on the
-charge and its refund, and the intent's decline text. vpay#253 stops new rows
-taking that shape and backfills nothing. The maintainer decided on 2026-09-23
-that erasure must reach those payments through `checkout_sessions.customer_id`
-as well. It does so, through `DELETE` and through the sweep, in the same
+session.** Before [ADR-0025](../adr/0025-session-customer-onto-intent.md)
+(vaam-apps/vpay#253), a session created with `customer=X` on a customer-less
+intent stored `X` on the session only. Erasing `X` therefore left that
+payment's `charges.payer_ref`, the rail's `failure_raw` on the charge and its
+refund, and the intent's decline text. ADR-0025 stops new rows taking that
+shape and backfills nothing. The maintainer decided on 2026-09-23 that
+erasure must reach those payments through `checkout_sessions.customer_id` as
+well. It does so, through `DELETE` and through the sweep, in the same
 transaction. **It never reaches an intent that names a different customer.**
 One consequence is stated rather than smoothed over: an old intent whose
-sessions named two payers is redacted by either payer's erasure. See
+sessions named two payers is redacted by either payer's erasure.
+
+Making erasure reach those intents exposed a lock-order conflict with
+ADR-0025's session create. The create locked the intent and then the
+customer, and erasure locks them the other way round. The two deadlocked on
+one intent, and that was reproduced against the merged code. **A session
+create now locks its customer (`FOR SHARE`) before it touches the intent**,
+and it refuses, with the pre-check's `409`, to write a customer erased in the
+meantime onto a customer-less intent. See
 [customers/privacy-and-erasure.md](customers/privacy-and-erasure.md) §
 "Added 2026-09-23, later the same day" and
 [the verification page](../status/verification/2026-09-23-erasure-through-checkout-sessions.md).
-`customers.rs` is **twenty-seven** cases now, three more than the
-twenty-four counted below, and the whole-database scan seeds the new shape.
-Nothing here changes the list filters in the paragraph that follows.
+`customers.rs` is **twenty-eight** cases now, four more than the twenty-four
+counted below, and the whole-database scan seeds the new shape. Nothing here
+changes the list filters in the paragraphs that follow.
 
 **Updated 2026-09-23 (RFC-0004 § 5): a customer's payments, sessions and
 refunds can be listed.** `customer=cus_…` filters
@@ -216,7 +225,11 @@ payment is listed by `GET /v1/checkout/sessions?customer=X` and not by
 `GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`, and
 that customer's erasure does not reach the charge's `payer_ref`. ADR-0025
 § No backfill says why: a backfill would have to choose between sessions
-that named different customers.
+that named different customers. _(**The erasure half is corrected
+2026-09-23 by [ADR-0027](../adr/0027-erasure-reaches-through-checkout-sessions.md):**
+erasure now reaches those charges through the session, and the Status
+paragraph at the top of this section has the details. The list-filter half
+is still true.)_
 
 _(Until ADR-0025, the same day, this paragraph read: "**One consequence,
 recorded rather than decided.** A checkout session created with `customer=X`

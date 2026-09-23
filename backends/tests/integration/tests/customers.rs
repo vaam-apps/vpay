@@ -2684,49 +2684,32 @@ async fn an_erasure_through_a_session_never_reaches_an_intent_that_names_another
     Ok(())
 }
 
-/// **An erasure takes no row lock on a session-reached intent it has nothing
-/// to erase on.**
+/// The intent both erasure and a session create want: customer-less, with an
+/// **expired** checkout session that named `historical_customer`, and the
+/// intent's own decline text set. Returns the intent id.
 ///
-/// # Why this is a property worth a case
+/// This is the historical shape ADR-0025 left without a backfill, and it is
+/// the one intent an erasure reaches through a session (ADR-0027) that a
+/// new session create can still target. The expired session lets a second
+/// session be created, and the missing customer lets that create's
+/// compare-and-swap write one.
 ///
-/// Erasure locks the customer first (`FOR UPDATE`) and only then writes the
-/// per-payment rows. vpay#253's session create works in the other order. It
-/// first `UPDATE`s a customer-less intent to name the session's customer, and
-/// then inserts the session, whose foreign key needs a share lock on that
-/// customer. If an erasure also wanted that intent's row lock, the two would
-/// deadlock. Postgres would abort one of them. The customer's erasure would
-/// roll back whole, which is safe, but it would still fail.
-///
-/// Such an intent has no charge, because a session is only created on one
-/// with no charge, and so it has no decline text. The erasure's
-/// `payment_intents` statement is filtered on `last_payment_error_code IS NOT
-/// NULL`, so it never matches that row and never waits for it. The
-/// `charges` and `refunds` statements lock charges and refunds, never an
-/// intent.
-///
-/// The test holds the intent's row lock itself, in its own transaction,
-/// standing in for the create that vpay#253 would run. That branch is not on
-/// `master`, so the real create is not what is run here. The `DELETE` must
-/// finish while the lock is held.
-///
-/// # The mutation
-///
-/// Drop `last_payment_error_code IS NOT NULL` from the statement in
-/// `vpay_db::customers::redact_stored_copies`. The `DELETE` then blocks
-/// behind the held lock and this case fails on its timeout. Measured
-/// 2026-09-23.
-#[tokio::test]
-async fn an_erasure_takes_no_lock_on_a_session_reached_intent_it_has_nothing_to_erase_on()
--> anyhow::Result<()> {
-    let h = harness().await?;
-    let sdk = h.a();
-
-    let customer = sdk
-        .customers()
-        .create(phone_only(), RequestOptions::new())
-        .await
-        .expect("the customer to erase")
-        .id;
+/// **The decline text is seeded without a charge**, in SQL. In production,
+/// `last_payment_error_*` is written only beside a failed charge
+/// (`persist_decline`, `settlement::apply_failed`), and a session create
+/// refuses an intent that has a charge, before its transaction. So an
+/// intent reaches the create's transaction carrying decline text only when a
+/// confirm fails between the create's pre-check and its transaction, and a
+/// test cannot pin that without a hook in the shipping code. The seeded
+/// state is the one the create's transaction would meet in that case, minus
+/// the charge its pre-check never saw. The text is there so that the
+/// erasure's `payment_intents` statement has something to rewrite on this
+/// intent. That is the write whose row lock the deadlock was about.
+async fn stage_contested_intent(
+    h: &Harness,
+    sdk: &vpay_sdk::Client,
+    historical_customer: &str,
+) -> anyhow::Result<String> {
     let intent = sdk
         .payment_intents()
         .create(create_intent_params(None), RequestOptions::new())
@@ -2734,7 +2717,7 @@ async fn an_erasure_takes_no_lock_on_a_session_reached_intent_it_has_nothing_to_
         .expect("a customer-less intent")
         .id;
     let (status, body) = create_session(
-        &h,
+        h,
         CLIENT_A,
         &[
             ("payment_intent", intent.as_str()),
@@ -2743,59 +2726,392 @@ async fn an_erasure_takes_no_lock_on_a_session_reached_intent_it_has_nothing_to_
         ],
     )
     .await?;
-    assert_eq!(status, 201, "the session is created: {body:#}");
-    let session = body
+    anyhow::ensure!(status == 201, "the historical session: {body:#}");
+    let old_session = body
         .get("id")
         .and_then(Value::as_str)
-        .expect("a session id")
+        .context("a session id")?
         .to_owned();
-    // The historical shape, in SQL: the session names the customer, the
-    // intent names nobody. See `stage_payment`.
+    let expired = raw_client()
+        .post(h.url(&format!("/v1/checkout/sessions/{old_session}/expire")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+        .send()
+        .await
+        .context("expiring the historical session")?;
+    anyhow::ensure!(
+        expired.status().is_success(),
+        "expiring the historical session: {}",
+        expired.status()
+    );
+
+    // The pre-ADR-0025 shape: the session named the customer, the intent
+    // names nobody.
     sqlx::query("UPDATE checkout_sessions SET customer_id = $2 WHERE id = $1")
-        .bind(&session)
-        .bind(&customer)
+        .bind(&old_session)
+        .bind(historical_customer)
         .execute(&h.pool)
         .await
-        .context("staging the session's customer")?;
-    sqlx::query("UPDATE payment_intents SET customer_id = NULL WHERE id = $1")
-        .bind(&intent)
-        .execute(&h.pool)
+        .context("staging the historical session's customer")?;
+    sqlx::query(
+        "UPDATE payment_intents SET customer_id = NULL, \
+         last_payment_error_code = 'invalid_payer', last_payment_error_message = $2 \
+         WHERE id = $1",
+    )
+    .bind(&intent)
+    .bind(CONTESTED_DECLINE)
+    .execute(&h.pool)
+    .await
+    .context("staging the contested intent")?;
+    Ok(intent)
+}
+
+/// The decline text [`stage_contested_intent`] seeds.
+const CONTESTED_DECLINE: &str = "The payer's account could not be charged.";
+
+/// `POST /v1/checkout/sessions` for `intent` naming `customer`, as a
+/// `'static` future a test can spawn and leave blocked on a lock.
+fn spawn_session_create(
+    h: &Harness,
+    intent: &str,
+    customer: &str,
+) -> tokio::task::JoinHandle<anyhow::Result<(u16, Value)>> {
+    let pending = raw_client()
+        .post(h.url("/v1/checkout/sessions"))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+        .form(&[
+            ("payment_intent", intent),
+            ("customer", customer),
+            ("success_url", SUCCESS_URL),
+            ("cancel_url", CANCEL_URL),
+        ])
+        .send();
+    tokio::spawn(async move {
+        let response = pending.await.context("creating the session")?;
+        let status = response.status().as_u16();
+        Ok((status, response.json().await.context("the session body")?))
+    })
+}
+
+/// `DELETE /v1/customers/{customer}`, spawned for the same reason.
+fn spawn_erasure(
+    h: &Harness,
+    customer: &str,
+) -> tokio::task::JoinHandle<anyhow::Result<(u16, Value)>> {
+    let pending = raw_client()
+        .delete(h.url(&format!("/v1/customers/{customer}")))
+        .bearer_auth(h.bearer(CLIENT_A))
+        .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
+        .send();
+    tokio::spawn(async move {
+        let response = pending.await.context("erasing the customer")?;
+        let status = response.status().as_u16();
+        Ok((status, response.json().await.context("the erasure body")?))
+    })
+}
+
+/// Awaits a spawned request, failing rather than hanging if it never ends.
+async fn settled(
+    handle: tokio::task::JoinHandle<anyhow::Result<(u16, Value)>>,
+    what: &str,
+) -> anyhow::Result<(u16, Value)> {
+    tokio::time::timeout(std::time::Duration::from_secs(20), handle)
         .await
-        .context("staging a customer-less intent")?;
+        .map_err(|_| anyhow::anyhow!("{what} did not finish within 20 s"))?
+        .context("the request task")?
+}
+
+/// `pg_stat_database.deadlocks` for this database: how many transactions
+/// Postgres has aborted with `40P01` since the container started.
+///
+/// A backend reports its statistics when it next goes idle, at most once a
+/// second (Postgres 16, the image `support::migrated_postgres` runs). So the
+/// counter can lag an abort by about a second. [`deadlocks_after`] waits for
+/// that.
+async fn deadlocks(pool: &PgPool) -> anyhow::Result<i64> {
+    // A fresh snapshot, so a value read earlier in this session is not served
+    // again.
+    sqlx::query("SELECT pg_stat_clear_snapshot()")
+        .execute(pool)
+        .await
+        .context("clearing the statistics snapshot")?;
+    sqlx::query_scalar("SELECT deadlocks FROM pg_stat_database WHERE datname = current_database()")
+        .fetch_one(pool)
+        .await
+        .context("reading the deadlock counter")
+}
+
+/// How many deadlocks Postgres has counted since `before`, read after the
+/// statistics have had time to be reported (up to 2 s, and returning as soon
+/// as one appears).
+async fn deadlocks_after(pool: &PgPool, before: i64) -> anyhow::Result<i64> {
+    for _ in 0..20 {
+        let now = deadlocks(pool).await?;
+        if now > before {
+            return Ok(now - before);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    Ok(deadlocks(pool).await? - before)
+}
+
+/// The intent's `(customer_id, last_payment_error_message)`, and how many
+/// sessions name it.
+async fn contested_state(
+    pool: &PgPool,
+    intent: &str,
+) -> anyhow::Result<(Option<String>, Option<String>, i64)> {
+    sqlx::query_as(
+        "SELECT customer_id, last_payment_error_message, \
+                (SELECT COUNT(*) FROM checkout_sessions WHERE payment_intent_id = $1) \
+         FROM payment_intents WHERE id = $1",
+    )
+    .bind(intent)
+    .fetch_one(pool)
+    .await
+    .context("reading the contested intent")
+}
+
+/// **A session create naming `X` and an erasure of `X` serialise on `X`, in
+/// either order, and neither deadlocks** (ADR-0027 D4, against ADR-0025's
+/// real `CheckoutSessions::create`).
+///
+/// # The deadlock this is about
+///
+/// Until this change the create locked the intent first, with ADR-0025's
+/// compare-and-swap `UPDATE … WHERE customer_id IS NULL`. It locked the
+/// customer only afterwards, through the session insert's foreign key
+/// (`FOR KEY SHARE`). Erasure locks the customer first (`FOR UPDATE`) and
+/// then, since ADR-0027, rewrites the intents it reaches through a checkout
+/// session, including the contested one ([`stage_contested_intent`]). Each
+/// held what the other wanted. The create now takes `FOR SHARE` on the
+/// customer before it touches the intent, so there is one order: the
+/// customer, then the intent.
+///
+/// # Both orders, each forced with a lock this test holds
+///
+/// 1. **The create first.** The test holds the contested intent's row lock.
+///    The create takes its share lock on `X` and blocks on the intent. The
+///    erasure is then sent, and blocks on `X` behind the create. Releasing
+///    the intent lets the create commit, and then the erasure runs. Expected:
+///    session `201` and erasure `200`. The intent names `X` (the create wrote
+///    it), and the erasure reached it through that column and NULLed its
+///    decline text.
+/// 2. **The erasure first.** The test holds the row lock on a charge of `X`'s
+///    other payment. The erasure takes `X`, anonymises it, and blocks on the
+///    charge. The create is then sent. It read `X` before the erasure
+///    committed, so its pre-check passes, and it then blocks behind the
+///    erasure's lock on `X`. Releasing the charge lets the erasure commit.
+///    Expected: erasure `200` and session `409`, the byte-identical refusal an
+///    attachment of an erased customer gets. The intent still names nobody,
+///    no session was added, and the erasure reached the intent through the
+///    old session.
+///
+/// In both orders every per-payment copy of `X`'s other payment is erased.
+///
+/// # The mutation
+///
+/// Remove the `erased_under_share_lock` call from `CheckoutSessions::create`
+/// (pass `false` to `claim_intent_customer`), which is the order before this
+/// change. Order 1 then deadlocks: Postgres aborts one side with `40P01`, and
+/// that side answers `503`. Order 2 then creates the session (`201`) and
+/// writes the erased `X` onto the intent. Measured 2026-09-23.
+#[tokio::test]
+async fn a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    for (order, phone) in [
+        ("create first", "237600000801"),
+        ("erasure first", "237600000802"),
+    ] {
+        let x = sdk
+            .customers()
+            .create(
+                CreateCustomerParams {
+                    phone: Some(phone.to_owned()),
+                    ..Default::default()
+                },
+                RequestOptions::new(),
+            )
+            .await
+            .expect("the customer both sides name")
+            .id;
+        let other = stage_payment(&h, &sdk, None, &x, phone).await?;
+        let contested = stage_contested_intent(&h, &sdk, &x).await?;
+        let deadlocks_before = deadlocks(&h.pool).await?;
+
+        let mut holder = h.pool.begin().await.context("the lock holder")?;
+        let (create, erasure) = if order == "create first" {
+            sqlx::query("SELECT id FROM payment_intents WHERE id = $1 FOR UPDATE")
+                .bind(&contested)
+                .fetch_one(&mut *holder)
+                .await
+                .context("holding the contested intent")?;
+            let create = spawn_session_create(&h, &contested, &x);
+            wait_for_blocked(&h.pool, 1, "the create to block on the intent").await?;
+            let erasure = spawn_erasure(&h, &x);
+            wait_for_blocked(&h.pool, 2, "the erasure to block too").await?;
+            (create, erasure)
+        } else {
+            sqlx::query("SELECT id FROM charges WHERE id = $1 FOR UPDATE")
+                .bind(&other.charge)
+                .fetch_one(&mut *holder)
+                .await
+                .context("holding the other payment's charge")?;
+            let erasure = spawn_erasure(&h, &x);
+            wait_for_blocked(&h.pool, 1, "the erasure to block on the charge").await?;
+            let create = spawn_session_create(&h, &contested, &x);
+            wait_for_blocked(&h.pool, 2, "the create to block behind the erasure").await?;
+            (create, erasure)
+        };
+        holder.rollback().await.context("releasing the held lock")?;
+
+        let (create_status, create_body) = settled(create, "the session create").await?;
+        let (erase_status, erase_body) = settled(erasure, "the erasure").await?;
+        // Read first, so a failure below can say whether it was a deadlock.
+        let deadlocked = deadlocks_after(&h.pool, deadlocks_before).await?;
+        assert_eq!(
+            deadlocked, 0,
+            "{order}: Postgres aborted {deadlocked} transaction(s) with 40P01. The session \
+             create answered {create_status}, the erasure {erase_status}: {create_body:#} \
+             {erase_body:#}"
+        );
+        assert_eq!(
+            erase_status, 200,
+            "{order}: the erasure must commit: {erase_body:#}"
+        );
+
+        let (on_intent, decline, sessions) = contested_state(&h.pool, &contested).await?;
+        if order == "create first" {
+            assert_eq!(
+                create_status, 201,
+                "{order}: the create commits first — a 503 here is a deadlock (40P01): \
+                 {create_body:#}"
+            );
+            assert_eq!(on_intent.as_deref(), Some(x.as_str()), "{order}");
+            assert_eq!(sessions, 2, "{order}: the old session and the new one");
+        } else {
+            assert_eq!(
+                create_status, 409,
+                "{order}: a create that read X before its erasure committed must not attach \
+                 the erased X to an intent: {create_body:#}"
+            );
+            // Byte for byte the refusal the pre-check gives the same request
+            // once the erasure has committed, so a merchant cannot tell from
+            // the answer which of the two checks caught it.
+            let (sequential_status, sequential_body) = settled(
+                spawn_session_create(&h, &contested, &x),
+                "the same create, sent after the erasure",
+            )
+            .await?;
+            assert_eq!(sequential_status, 409, "{sequential_body:#}");
+            assert_eq!(
+                create_body.get("error"),
+                sequential_body.get("error"),
+                "{order}: the lock's refusal and the pre-check's must be the same bytes"
+            );
+            assert_eq!(
+                on_intent, None,
+                "{order}: nothing was written onto the intent"
+            );
+            assert_eq!(sessions, 1, "{order}: only the old session");
+        }
+        assert_eq!(
+            decline, None,
+            "{order}: the erasure reached the contested intent and NULLed its decline text"
+        );
+        assert_eq!(
+            payment_copies(&h.pool, &other).await?,
+            erased_copies(),
+            "{order}: X's other payment kept a copy of the payer"
+        );
+        let (after, _) = scan_for(&h.pool, &[phone]).await?;
+        assert!(
+            after.is_empty(),
+            "{order}: X's MSISDN survived the erasure: {after:?}"
+        );
+    }
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// **A session create naming `Y` that commits while an erasure of `X` waits
+/// on the same intent leaves that intent alone** (ADR-0027 D2, under
+/// concurrency).
+///
+/// The contested intent ([`stage_contested_intent`]) names nobody, and its
+/// old session names `X`, so `X`'s erasure reaches it through the session. A
+/// create naming `Y` takes it first and writes `Y` onto it. The test holds
+/// the intent's row lock so that the erasure's `payment_intents` statement
+/// is already waiting on the intent when the create commits. Under `READ
+/// COMMITTED` that statement then re-checks its `WHERE` against the
+/// committed row. It re-reads only the target row, not the sub-select in
+/// `PAYERS_INTENTS`, and to the sub-select the intent still names nobody.
+/// The `customer_id IS NULL OR customer_id = $1` on the written row is what
+/// sees `Y` and stops the erasure.
+///
+/// Erasing `X` never waits on `Y` and `Y`'s create never waits on `X`, so
+/// there is no deadlock to avoid here. What is at stake is the guard alone.
+///
+/// # The mutation
+///
+/// Drop `(customer_id IS NULL OR customer_id = $1)` from the `payment_intents`
+/// statement in `redact_stored_copies`. The erasure then NULLs the decline
+/// text on an intent that names `Y`. Measured 2026-09-23.
+#[tokio::test]
+async fn an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let sdk = h.a();
+
+    let mut ids = Vec::new();
+    for phone in ["237600000811", "237600000812"] {
+        ids.push(
+            sdk.customers()
+                .create(
+                    CreateCustomerParams {
+                        phone: Some(phone.to_owned()),
+                        ..Default::default()
+                    },
+                    RequestOptions::new(),
+                )
+                .await
+                .expect("a customer")
+                .id,
+        );
+    }
+    let [x, y] = <[String; 2]>::try_from(ids).expect("two customers were created");
+    let contested = stage_contested_intent(&h, &sdk, &x).await?;
 
     let mut holder = h.pool.begin().await.context("the lock holder")?;
     sqlx::query("SELECT id FROM payment_intents WHERE id = $1 FOR UPDATE")
-        .bind(&intent)
+        .bind(&contested)
         .fetch_one(&mut *holder)
         .await
-        .context("holding the intent's row lock")?;
+        .context("holding the contested intent")?;
+    let create = spawn_session_create(&h, &contested, &y);
+    wait_for_blocked(&h.pool, 1, "Y's create to block on the intent").await?;
+    let erasure = spawn_erasure(&h, &x);
+    wait_for_blocked(&h.pool, 2, "X's erasure to block on the intent too").await?;
+    holder.rollback().await.context("releasing the intent")?;
 
-    let erasure = raw_client()
-        .delete(h.url(&format!("/v1/customers/{customer}")))
-        .bearer_auth(h.bearer(CLIENT_A))
-        .header("Idempotency-Key", "erase-past-a-held-intent")
-        .send();
-    let response = tokio::time::timeout(std::time::Duration::from_secs(10), erasure)
-        .await
-        .map_err(|_| {
-            anyhow::anyhow!(
-                "the erasure waited on a row lock held on a customer-less intent it had nothing \
-                 to erase on — the lock a session create takes before it waits on the \
-                 customer, which is a deadlock"
-            )
-        })?
-        .context("erasing the customer")?;
-    assert_eq!(response.status().as_u16(), 200);
+    let (create_status, create_body) = settled(create, "Y's session create").await?;
+    let (erase_status, erase_body) = settled(erasure, "X's erasure").await?;
+    assert_eq!(create_status, 201, "{create_body:#}");
+    assert_eq!(erase_status, 200, "{erase_body:#}");
 
-    holder.rollback().await.context("releasing the lock")?;
-
-    let anonymized: bool =
-        sqlx::query_scalar("SELECT anonymized_at IS NOT NULL FROM customers WHERE id = $1")
-            .bind(&customer)
-            .fetch_one(&h.pool)
-            .await
-            .context("the erased customer")?;
-    assert!(anonymized, "the erasure committed");
+    let (on_intent, decline, _) = contested_state(&h.pool, &contested).await?;
+    assert_eq!(on_intent.as_deref(), Some(y.as_str()));
+    assert_eq!(
+        decline.as_deref(),
+        Some(CONTESTED_DECLINE),
+        "X's erasure rewrote an intent that names Y by the time it wrote. An old session \
+         naming X does not make Y's intent X's"
+    );
 
     h.shutdown().await;
     Ok(())

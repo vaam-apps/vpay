@@ -1163,6 +1163,13 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 /// `an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer`
 /// is the test.
 ///
+/// A guard in a sub-select is evaluated against the statement's snapshot.
+/// It is not re-checked when the statement waits on a row that a session
+/// create is concurrently giving to `Y`. So the `payment_intents` statement
+/// repeats it on the row it writes (see that statement's comment), and
+/// `an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`
+/// is that test.
+///
 /// # A `UNION ALL`, not an `OR EXISTS`
 ///
 /// Both branches start from one of migration `0034`'s partial indexes,
@@ -1636,24 +1643,32 @@ async fn redact_stored_copies(
     // `0037`) rejects a text marker like `[redacted]`. NULL is legal for both,
     // so the redaction is an absence, exactly as it is for the coordinate.
     //
-    // `last_payment_error_code IS NOT NULL` is not a filter for speed. It
-    // limits the intent rows this statement **locks** to the ones that carry
-    // decline text. `lpe_paired` makes the code a sound proxy for the pair.
-    // Every other statement here locks charges, refunds, events, deliveries
-    // or stored responses, never an intent. So an erasure takes a row lock on
-    // an intent only where there is something to erase, and that is an intent
-    // with a charge outcome, which nothing re-opens (one charge per intent).
-    // Until 2026-09-23 this statement locked every intent naming the
-    // customer. Since the session path, an unfiltered version would also lock
-    // a customer-less intent a live session create may be writing. vpay#253's
-    // create updates the intent first and only then inserts the session,
-    // whose foreign key waits on this erasure's `FOR UPDATE` on the customer.
-    // That is an intent-then-customer order, and this filter keeps the
-    // erasure from waiting on it.
+    // `customer_id IS NULL OR customer_id = $1` repeats `PAYERS_INTENTS`'
+    // guard on the row being **written**, and that is not redundant.
+    // Suppose this statement waits on an intent's row lock. Under `READ
+    // COMMITTED`, Postgres then re-checks the `WHERE` against the row as the
+    // other transaction committed it, but only the target row's own columns.
+    // The sub-select's copy of `payment_intents` is not re-read. The one
+    // write that can change an intent's customer while an erasure runs is a
+    // session create writing `Y` onto a customer-less intent (ADR-0025).
+    // That intent is reached here through an old session naming the erased
+    // customer, and the create commits while this statement waits on it.
+    // Without this predicate the erasure would then rewrite an intent that
+    // now names `Y`. `an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`
+    // is the test. The `charges` and `refunds` statements above need no
+    // equivalent: an intent's customer can only change while the intent has
+    // no charge, and so no refund either.
+    //
+    // This statement may wait on an intent a session create is writing, and
+    // that cannot deadlock. The create takes `FOR SHARE` on its customer
+    // before it touches the intent (`CheckoutSessions::create`, ADR-0027 D4).
+    // So a create naming this customer is already queued behind this
+    // erasure's `FOR UPDATE`, and a create naming anyone else never waits on
+    // anything this transaction holds.
     let sql = format!(
         "UPDATE payment_intents SET \
              last_payment_error_code = NULL, last_payment_error_message = NULL \
-         WHERE last_payment_error_code IS NOT NULL \
+         WHERE (customer_id IS NULL OR customer_id = $1) \
            AND id IN ({PAYERS_INTENTS})"
     );
     sqlx::query(AssertSqlSafe(sql))

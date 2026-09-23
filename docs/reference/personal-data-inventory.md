@@ -166,6 +166,9 @@ customer. No column and no classification moved, so
 that the `payer_msisdn` and `rail_failure_text` controls run on those rows:
 `an_erasure_reaches_a_payment_whose_only_link_to_the_payer_is_a_checkout_session`,
 `an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer`,
+`a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`
+(a create can no longer attach an erased customer to a payment),
+`an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`,
 and the whole-database scan, which now seeds that shape
 (`backends/tests/integration/tests/customers.rs`; see
 [../status/verification/2026-09-23-erasure-through-checkout-sessions.md](../status/verification/2026-09-23-erasure-through-checkout-sessions.md)).

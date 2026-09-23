@@ -194,10 +194,11 @@ checkout session created with `customer=` on an intent with no customer
 stored the customer on the session row only. Erasing that customer left the
 charge collected through the session untouched: its `payer_ref`, the rail's
 `failure_raw` on it and on its refund, and the intent's decline text.
-vaam-apps/vpay#253 (open on this date) writes the session's customer onto
-the intent for new sessions and backfills nothing, so the rows written before
-it keep this shape. The maintainer decided on 2026-09-23 that erasure must
-reach those payments too.
+[ADR-0025](../../adr/0025-session-customer-onto-intent.md) (vaam-apps/vpay#253,
+merged the same day) writes the session's customer onto the intent for new
+sessions and backfills nothing, so the rows written before it keep this
+shape. The maintainer decided on 2026-09-23 that erasure must reach those
+payments too.
 
 The three per-payment statements (`charges`, `refunds`, `payment_intents`)
 now find their intents through one constant, `PAYERS_INTENTS`. It covers the
@@ -210,23 +211,38 @@ that somebody else, and its charge carries their MSISDN.
 Three things follow, and none of them is hidden:
 
 - **An intent with sessions that named two payers is redacted by either
-  erasure.** Nothing recorded which of them paid, so the error goes toward
-  erasure. The cost is vpay's own record of which number paid, and nothing
-  is disclosed. ADR-0027 names the alternative and why it was not chosen.
-- The erasure's statement on `payment_intents` locks only intents that have
-  decline text. An intent a new session could be created on is never one of
-  them, so the erasure cannot deadlock with vpay#253's create, which writes
-  the intent before it waits on the customer.
-- Nothing is written onto the intent. After the erasure it still names
-  nobody, the session still names the customer, and the list filters return
-  what they returned before.
+  erasure.** Exactly: erasing `X` reaches an intent that names `X`, or one
+  that names nobody and has at least one session naming `X`. Nothing recorded
+  which of the two payers paid, so the error goes toward erasure. The cost is
+  vpay's own record of which number paid, and nothing is disclosed. Only
+  intents whose sessions were all created before ADR-0025 was deployed can
+  have this shape with a charge. ADR-0027 names the alternative and why it
+  was not chosen.
+- **A session create now locks the customer before the intent.** ADR-0025's
+  create locked the intent first. Erasure locks the customer first and now
+  also writes intents an old session names. On one intent reached both ways
+  the two deadlocked, and that was reproduced (`40P01`, a `503`). The create
+  now takes `FOR SHARE` on the customer first, so the two serialise on the
+  customer. The create also refuses to write an erased customer onto an
+  intent, with the same `409` as the pre-check. That closes the case where
+  a create read the customer before its erasure committed. Before this, such
+  a create attached the erased payer to a payment that no later erasure
+  would visit.
+- The erasure's `payment_intents` statement re-checks the guard on the row
+  it writes. The sub-select's check sees the statement's snapshot, and a
+  session create can give the intent to someone else while the erasure
+  waits on it.
+- Nothing is written onto the intent by the erasure. After it, the intent
+  still names nobody, the session still names the customer, and the list
+  filters return what they returned before.
 
-The evidence is four cases in `backends/tests/integration/tests/customers.rs`,
+The evidence is five cases in `backends/tests/integration/tests/customers.rs`,
 against a real Postgres, and each one went red under the mutation it names:
 `an_erasure_reaches_a_payment_whose_only_link_to_the_payer_is_a_checkout_session`
 (through `DELETE` and through the sweep),
 `an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer`,
-`an_erasure_takes_no_lock_on_a_session_reached_intent_it_has_nothing_to_erase_on`,
+`a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`,
+`an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`,
 and the whole-database scan below, which now seeds a session-only payment
 carrying a sixth literal. See
 [../../status/verification/2026-09-23-erasure-through-checkout-sessions.md](../../status/verification/2026-09-23-erasure-through-checkout-sessions.md).
