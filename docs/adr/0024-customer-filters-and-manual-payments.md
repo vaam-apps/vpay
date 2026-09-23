@@ -6,13 +6,15 @@
     the same day, that step A be built ("Start on RFC-0004 step A: customer
     filters and manual payments") and that this ADR be written ("yes, write an
     ADR for step A").
-  - **D9–D11 are proposed and need the maintainer's confirmation.** They were
-    added by the implementing agent while briefing the work, and appear in no
-    document the maintainer read before directing it. Each is marked where it
-    stands.
+  - **D9–D19 are proposed and need the maintainer's confirmation.** None
+    appears in any document the maintainer read before directing the work.
+    D9–D11 were added while briefing it; D12–D19 were taken by the
+    implementing agents where the brief was silent, and are recorded with
+    their reasons in `docs/flows/invoices.md` § "Paid out of band". Each is
+    marked where it stands.
 - **Date:** 2026-09-23
 - **Deciders:** the vpay maintainer (D1–D8, by directing RFC-0004 step A to be
-  built); the implementing agent (D9–D11, pending the maintainer)
+  built); the implementing agents (D9–D19, pending the maintainer)
 - **Implements:** [RFC-0004](../rfc/0004-billing-on-top-of-invoices.md) § 5
   (the `customer` filters only; not the invoice preview, and not
   `/v1/subscriptions`, which does not exist) and § 6. The rest of RFC-0004
@@ -130,6 +132,61 @@ defaults to now, and is refused in the future or before the invoice's
 `finalized_at`. An undated or future-dated record of cash received is a
 bookkeeping error the API can catch at no cost.
 
+### Proposed — taken during implementation where the brief was silent
+
+**D12. Checkout sessions filter on the session's own `customer_id`**, not on
+its intent's. The two differ when a session is created with `customer=` on an
+intent that has none. The session's value is what the session object renders,
+so filtering through the intent would hide a session that visibly names the
+customer. Refunds have no customer column and filter through their intent's
+`customer_id` inside the join the query already makes.
+
+**D13. `out_of_band[reference]` is 1–500 characters**, the bound on a
+metadata value, because a reference is one value and not a paragraph
+(`description` allows 1 000).
+
+**D14. `received_at` may be up to 30 seconds in the future**, for clock skew
+between the merchant and vpay. The precedent is the one TOTP step
+`vpay_api::staff_auth::totp` tolerates. Migration `0049`'s
+`received_before_recorded` CHECK (`received_at <= created_at + 30 s`) is the
+database half.
+
+**D15. A canceled intent stays attached** to an invoice paid out of band, as
+it already does on a voided invoice. Every existing CHECK admits that row, and
+nothing can act on it afterwards:
+
+- the settlement and `attach_intent` both require `open`;
+- the refund counter skips an out-of-band-paid invoice;
+- a new CHECK, `paid_out_of_band_is_never_refunded`, is the database half.
+
+**D16. `paid_names_how`: a `paid` invoice names how it was paid** — an intent,
+or `paid_out_of_band`. It is a new multi-column CHECK in migration `0049`, and
+it changes one existing test's fixture, which now attaches the intent it
+already created before writing `paid` rows.
+
+**D17. Erasure redacts `reference` in every stored copy**, and a reference on
+an erased customer's invoice is refused:
+
+- the copies are the `manual_payments` row, stored `invoice.*` event bodies
+  and their deliveries, and stored idempotent responses;
+- a new response subject, `OutOfBandInvoice`, closes the race #111 closed for
+  customers;
+- an out-of-band payment **with** a reference on an anonymised customer's
+  invoice is a `400` naming `out_of_band[reference]`, because the reference
+  would be a new copy of personal data about someone erased. Without a
+  reference it succeeds.
+
+**D18. The pay transaction takes `FOR SHARE` on the invoice's customer first.**
+That is what makes D17's refusal race-free against a concurrent erasure.
+Erasure and `POST /v1/customers/{id}` take `FOR UPDATE` on the customer
+before any invoice, so there is one lock-acquisition order.
+
+**D19. Unknown `out_of_band[…]` keys are a `400` naming `out_of_band`**, never
+echoing the caller's key, and the Rust SDK's `PayInvoiceParams` gains two
+public fields. That is a source-breaking change for callers who build it as a
+struct literal without `..Default::default()`. `PayInvoiceParams::new` is
+unaffected.
+
 ## Alternatives considered
 
 - **A separate route** (`POST /v1/invoices/{id}/mark_paid`). It is clearer to
@@ -170,7 +227,7 @@ bookkeeping error the API can catch at no cost.
 
 ## Left to the maintainer
 
-1. **Confirm or reverse D9–D11.** Each is reversible before the
+1. **Confirm or reverse D9–D19.** Each is reversible before the
    implementation merges, and costs a schema or wire change after.
 2. **Should the out-of-band path accept `received_at` before `finalized_at`**
    at all? A merchant may have been paid before issuing the document. D11
