@@ -241,3 +241,21 @@ allowBuilds:
   cypress: true
   esbuild: true
   prisma: true
+
+# ---------------------------------------------------------------------------
+# minimumReleaseAgeExclude
+# ---------------------------------------------------------------------------
+# pnpm 11 defaults `minimumReleaseAge` to 1440 (24h): a package version has
+# to sit on the registry for a day before pnpm will install it, as a
+# supply-chain guard against an account-takeover publish getting pulled
+# before anyone notices. `@vaam-apps/ui@0.2.4` published 2026-09-23T17:28Z -
+# same day as this bump, requested directly by the maintainer right after
+# they published it - so the default window would have failed this
+# install outright rather than just warned.
+#
+# REMOVE WHEN: 2026-09-24T17:28Z has passed (the version has cleared the
+# 24h window on its own) or the next @vaam-apps/ui bump lands, whichever is
+# first - at that point this entry matches nothing and installing does not
+# need it.
+minimumReleaseAgeExclude:
+  - "@vaam-apps/ui@0.2.4"
