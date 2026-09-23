@@ -118,3 +118,41 @@ a human deciding the underlying data is fixed.
 (ADR-0011's amendment) — `ProviderError::Transport` keeps the `reqwest` error as
 a `#[source]`, so the column would otherwise say "the request to the rail
 failed" and never "operation timed out".
+
+### One clock: the database's (added 2026-09-23, ADR-0026)
+
+_Added after the move above, so not part of the verbatim text._
+
+Every instant `jobs` holds is written and judged by Postgres' own `now()`.
+`claim` asks `run_at <= now()`; `reschedule` writes `now() + delay`;
+`pull_forward_in_tx` writes `now()` behind `run_at > now() + floor`;
+`reap_expired_leases` asks `locked_at < now() - lease`. Until 2026-09-23 the
+one exception was the write that creates most rows: `enqueue_in_tx` took a
+`run_at` instant, and every caller computed it from its own host's
+`OffsetDateTime::now_utc()`, so an API or worker host whose clock disagreed
+with the database's made every new job due early or late by the difference —
+the asymmetry
+[2026-09-23-test-clock-skew.md](../../status/verification/2026-09-23-test-clock-skew.md)
+found in the test fixtures and listed, unchanged, in production.
+
+`enqueue_in_tx` now takes a `std::time::Duration` and the insert computes
+`now() + delay`. `Duration::ZERO` is "due now, on the clock that decides", and
+an unsigned duration cannot name the past, so there is no parameter left
+through which a second clock reaches `run_at`.
+[ADR-0026](../../adr/0026-the-database-clock-schedules-jobs.md) records the
+rule, why a delay rather than a `SELECT now()` passed back in, and why
+`now()` (the transaction's start) rather than `clock_timestamp()`.
+
+The same day `oldest_runnable_run_at` became `oldest_runnable_age`, which
+subtracts in SQL — `now() - min(run_at)` as microseconds — so the gauge is on
+the claim's clock too. The section above that names `oldest_runnable_run_at`
+is the verbatim original and keeps the old name.
+
+What proves it:
+`a_job_is_due_at_the_databases_now_plus_its_delay_and_a_zero_delay_claims_at_once`
+(`vpay-db/tests/repositories.rs`) asserts `run_at - created_at` equals the
+delay to the microsecond — both ends are the one `now()` of the one `INSERT`
+— and claims a zero-delay job with the next statement; mutating the insert
+to `clock_timestamp()` fails it by 0.6 ms. What it cannot prove is behaviour
+on a skewed host, because nothing here can set a testcontainer's clock; that
+half rests on the signature.

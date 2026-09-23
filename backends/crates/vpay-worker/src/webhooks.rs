@@ -515,11 +515,13 @@ async fn fan_out_one(
                     let Some(delivery_id) = delivery_id else {
                         continue;
                     };
+                    // Due now on the database's clock, the one
+                    // `Jobs::claim` reads (ADR-0026).
                     tx.enqueue_in_tx(
                         JobKind::DeliverWebhook.as_wire_str(),
                         &webhook_dedupe_key(delivery_id),
                         &encode(job, &DeliverWebhookPayload::new(delivery_id))?,
-                        OffsetDateTime::now_utc(),
+                        Duration::ZERO,
                     )
                     .await?;
                     created = created.saturating_add(1);
@@ -616,7 +618,6 @@ async fn scan_deliveries_pass(
     let mut enqueued = 0_usize;
     let mut untouched: Vec<String> = Vec::new();
     if !outstanding.is_empty() {
-        let now = OffsetDateTime::now_utc();
         (enqueued, untouched) = repositories
             .transaction(|tx| {
                 // Borrowed, not moved: the log lines below read `outstanding`.
@@ -631,7 +632,7 @@ async fn scan_deliveries_pass(
                                 JobKind::DeliverWebhook.as_wire_str(),
                                 &dedupe_key,
                                 &encode(job, &DeliverWebhookPayload::new(delivery.id))?,
-                                now,
+                                Duration::ZERO,
                             )
                             .await?;
                         if inserted {
@@ -1101,24 +1102,14 @@ async fn record_failure(
 ) -> Result<Outcome, JobError> {
     let ladder_index = u32::try_from(delivery.attempt).unwrap_or(u32::MAX);
     let delay = crate::delivery_delay(ladder_index);
-    let next_attempt_at = delay.and_then(|delay| {
-        // `time::Duration::try_from` refuses a `std::time::Duration` too wide
-        // for it; no rung of the ladder is, so the `None` arm is unreachable
-        // and means "do not claim a next attempt we cannot express".
-        time::Duration::try_from(delay)
-            .ok()
-            .map(|delay| OffsetDateTime::now_utc().saturating_add(delay))
-    });
 
+    // The rung, not an instant: `next_attempt_at` is written as the
+    // database's `now() + delay`, the clock the delivery backstop compares it
+    // with (ADR-0026). Until 2026-09-23 it was this host's clock plus the
+    // rung, so the backstop's view of a delivery ran early or late by the
+    // skew between the two.
     repositories
-        .record_attempt(
-            delivery.id,
-            status,
-            excerpt,
-            sha,
-            next_attempt_at,
-            delay.is_none(),
-        )
+        .record_attempt(delivery.id, status, excerpt, sha, delay, delay.is_none())
         .await?;
     // After that write commits (a single `UPDATE`, autocommitted): the
     // ladder index already decided which of the two outcomes this attempt

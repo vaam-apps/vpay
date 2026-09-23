@@ -15,11 +15,21 @@
 //! that moves money." Both rails sign nothing and send no shared secret
 //! (`docs/flows/adapter-mtn-momo.md` §"The callback is unsigned and
 //! unauthenticated"), so anyone who can reach this URL can post anything to
-//! it. What this handler is therefore allowed to do is exactly one thing:
-//! **bring an already-queued `poll_charge` job forward to now**, so the
-//! worker asks the rail — over an authenticated status query — immediately
-//! rather than at the poll ladder's next rung
+//! it. What this handler is therefore allowed to touch is exactly one row:
+//! **the charge's `poll_charge` job**, which it enqueues if none is queued
+//! and then brings forward to now — one transaction, two statements, the
+//! enqueue `ON CONFLICT DO NOTHING` so an existing job is untouched by it —
+//! so the worker asks the rail, over an authenticated status query,
+//! immediately rather than at the poll ladder's next rung
 //! (`vpay_worker::poll_delay(0)` is ten seconds).
+//!
+//! _(Corrected 2026-09-23. This paragraph said the handler could only "bring
+//! an already-queued `poll_charge` job forward to now". It has also enqueued
+//! the job when none was queued since it was mounted in Step 8 — step 4 of
+//! `callback`'s own docs, a job an operator deleted or one already
+//! finished. The enqueue is due at Postgres' own `now()` since the same day
+//! (ADR-0026); it was this host's clock until then. The pull-forward always
+//! was the database's.)_
 //!
 //! # What an anonymous caller can and cannot get out of it
 //!
@@ -92,7 +102,6 @@ use axum::extract::{Path, State};
 use axum::http::{Method, StatusCode, Uri};
 use axum::routing::post;
 use serde_json::json;
-use time::OffsetDateTime;
 use vpay_db::{Repositories, TxOutcome, UnitOfWork as _};
 use vpay_provider::ProviderAdapter;
 
@@ -292,7 +301,7 @@ async fn callback(
                     POLL_CHARGE_KIND,
                     dedupe_key,
                     &json!({ "charge_id": charge_id }),
-                    OffsetDateTime::now_utc(),
+                    std::time::Duration::ZERO,
                 )
                 .await?;
                 let pulled = tx

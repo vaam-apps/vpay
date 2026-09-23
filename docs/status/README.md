@@ -38,12 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and six times on 2026-09-23, when the super-linter
+plugin's page landed, and seven times on 2026-09-23, when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
-page, the migrations-manifest page and the test-clock-skew page did: the directory holds 66 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 43 of them. This is a hand-maintained list, not a generated one,
+page, the migrations-manifest page, the test-clock-skew page and the
+single-clock-scheduling page did: the directory holds 67 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 44 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41 and then 65/42 on 2026-09-23; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42 and then 66/43 on 2026-09-23; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -98,6 +99,14 @@ rather than trusting this list to be exhaustive.
   after, and the reason the two exclusions are exclusions — a file
   `cargo build` regenerates on every run, and TypeScript's own
   comment-bearing config format.
+- [verification/2026-09-23-single-clock-scheduling.md](verification/2026-09-23-single-clock-scheduling.md) —
+  ADR-0026: every job's `run_at`, a delivery's `next_attempt_at`, the
+  live-charge backstop's staleness window and the queue-age gauge computed on
+  Postgres' clock rather than the application host's. Every production site
+  and what it does now (the ten the test-clock-skew page listed, plus the
+  backstop cutoff it did not), what deliberately stays on the application's
+  clock and why, the new exact-equality test and the two mutations that turn
+  it red — and the one thing no test here can show, a genuinely skewed host.
 - [verification/2026-09-23-test-clock-skew.md](verification/2026-09-23-test-clock-skew.md) —
   the `webhooks.rs` "the fan-out job is claimable" failures after a Docker
   Desktop restart, and every other test fixture that stamped a job with this

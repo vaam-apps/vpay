@@ -172,7 +172,12 @@ makes for a rail.
 
 `exhausted` is the caller's decision, not this layer's: the retry ladder lives
 in `vpay_worker::delivery_delay` and `next_attempt_at` is the instant it
-produced. The write is guarded on `state = 'pending'`, so a second call after
+produced. _(Amended 2026-09-23, ADR-0026: the caller passes the ladder's
+**rung**, `retry_after: Option<Duration>`, and the statement writes
+`next_attempt_at = now() + retry_after` — the same `now()` it stamps
+`sent_at` with, and the clock `pending_due` compares against. It took the
+instant, computed on the worker host's clock, until then.)_ The write is
+guarded on `state = 'pending'`, so a second call after
 exhaustion changes nothing and a replayed job cannot walk `attempt` past the end
 of the ladder.
 

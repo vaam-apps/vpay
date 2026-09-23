@@ -141,6 +141,14 @@ The worker's charge-age decisions already read `db_now` off the same
 statement as the row (`vpay-db/src/charges.rs:604`); that is the precedent a
 decision here would follow.
 
+_(Added the same day, by the change stacked on this one: the decision was
+taken — [ADR-0026](../../adr/0026-the-database-clock-schedules-jobs.md) — and
+all ten sites above now schedule on the database's clock, plus an eleventh
+this table did not list, `scan_live_charges`' staleness cutoff
+(`handlers.rs`, compared with the Postgres-written `charges.updated_at`).
+[2026-09-23-single-clock-scheduling.md](2026-09-23-single-clock-scheduling.md)
+is that change's evidence. The table above is left as it was measured.)_
+
 ## Evidence
 
 macOS 26.5.1, `rustc 1.98.0`, `cargo-nextest 0.9.146`, Docker 29.1.3. Every

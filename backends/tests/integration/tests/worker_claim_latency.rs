@@ -181,22 +181,24 @@ const WORKER: &str = "claim-latency-suite";
 /// as any other job.
 async fn enqueue_round(
     repositories: &dyn Repositories,
-    pool: &PgPool,
     round: usize,
 ) -> anyhow::Result<(Vec<String>, Instant)> {
     let keys: Vec<String> = (0..BACKLOG)
         .map(|index| format!("claim-latency-probe:{round}:{index}"))
         .collect();
     let payload = serde_json::Value::Object(serde_json::Map::new());
-    // The database's `now()`, read before the transaction opens, so every
-    // probe is already due on the clock the claim and [`still_claimable`]
-    // both read by the time the commit makes it visible. A host-clock
+    // Due at `Duration::ZERO`: the transaction's own `now()` on the
+    // database's clock, which is earlier than the commit that makes the rows
+    // visible, so every probe is already due on the clock the claim and
+    // [`still_claimable`] both read the moment it can be seen. A host-clock
     // `run_at` would put the database's clock back into the measurement
     // this file's header says it is kept out of: a container behind this
     // host would leave the rows unclaimable for the width of the skew, and
     // [`claim_curve`] — which counts a row that is not yet due as already
-    // claimed — would record that as an instant claim.
-    let run_at = support::db_now(pool).await?;
+    // claimed — would record that as an instant claim. This read
+    // `support::db_now` before the transaction until 2026-09-23; since
+    // ADR-0026 the enqueue takes a delay and no instant, so no clock is read
+    // here at all.
 
     repositories
         .transaction(|tx| {
@@ -205,7 +207,12 @@ async fn enqueue_round(
             Box::pin(async move {
                 for key in keys {
                     let inserted = tx
-                        .enqueue_in_tx(JobKind::ScanLiveCharges.as_wire_str(), key, payload, run_at)
+                        .enqueue_in_tx(
+                            JobKind::ScanLiveCharges.as_wire_str(),
+                            key,
+                            payload,
+                            std::time::Duration::ZERO,
+                        )
                         .await?;
                     assert!(inserted, "the probe key `{key}` was already taken");
                 }
@@ -383,7 +390,7 @@ async fn measure_backlog_latency(concurrency: usize) -> anyhow::Result<()> {
     let mut rounds: Vec<Round> = Vec::with_capacity(ROUNDS);
     let mut curves: Vec<Vec<Duration>> = Vec::with_capacity(ROUNDS);
     for round in 0..ROUNDS {
-        let (keys, committed) = enqueue_round(repositories.as_ref(), &pool, round).await?;
+        let (keys, committed) = enqueue_round(repositories.as_ref(), round).await?;
         let curve = claim_curve(&pool, &keys, committed).await?;
         rounds.push(Round::of(&curve));
         curves.push(curve);

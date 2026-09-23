@@ -164,13 +164,13 @@ mod one_tx {
         kind: &str,
         dedupe_key: &str,
         payload: &serde_json::Value,
-        run_at: time::OffsetDateTime,
+        delay: std::time::Duration,
     ) -> Result<bool, DbError> {
         repositories
             .transaction(|tx| {
                 Box::pin(async move {
                     Ok::<_, DbError>(TxOutcome::Commit(
-                        tx.enqueue_in_tx(kind, dedupe_key, payload, run_at).await?,
+                        tx.enqueue_in_tx(kind, dedupe_key, payload, delay).await?,
                     ))
                 })
             })
@@ -5076,8 +5076,20 @@ async fn live_charge(
 /// *caller* enqueueing outside the transaction that creates the work is the
 /// bug that module exists to prevent. A test setting up a queue has no such
 /// work to be in step with.
+///
+/// **Through the shipping enqueue, then placed at `run_at`.** Since
+/// 2026-09-23 (ADR-0026) no repository method accepts an instant — the
+/// enqueue takes a delay from the database's own `now()` and cannot name the
+/// past — so a fixture that needs rows at chosen points around that `now()`
+/// (two runnable rows in a known order, one an hour out) inserts through
+/// `TxRepositories::enqueue_in_tx` at `Duration::ZERO` and then writes
+/// `run_at` directly. Only a row this call inserted is moved, so a refused
+/// duplicate leaves the original row exactly where it was. Every `run_at`
+/// handed in is derived from [`db_now`], so the placement is on the clock the
+/// claim reads.
 async fn enqueue(
     repositories: &dyn Repositories,
+    pool: &PgPool,
     kind: &str,
     dedupe_key: &str,
     run_at: time::OffsetDateTime,
@@ -5087,10 +5099,18 @@ async fn enqueue(
         kind,
         dedupe_key,
         &json!({ "charge_id": "ch_x" }),
-        run_at,
+        std::time::Duration::ZERO,
     )
     .await
     .context("enqueueing must succeed")?;
+    if inserted {
+        sqlx::query("UPDATE jobs SET run_at = $2 WHERE dedupe_key = $1")
+            .bind(dedupe_key)
+            .bind(run_at)
+            .execute(pool)
+            .await
+            .context("placing the fixture job at its run_at must succeed")?;
+    }
     Ok(inserted)
 }
 
@@ -5144,6 +5164,7 @@ async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> an
 
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:newer",
         now - time::Duration::seconds(10),
@@ -5151,6 +5172,7 @@ async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> an
     .await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:older",
         now - time::Duration::seconds(60),
@@ -5158,6 +5180,7 @@ async fn claim_takes_the_earliest_runnable_job_and_leaves_the_future_one() -> an
     .await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:future",
         now + time::Duration::hours(1),
@@ -5197,6 +5220,7 @@ async fn eight_concurrent_claims_over_one_job_yield_exactly_one_claim() -> anyho
     let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:contended",
         db_now(&pool).await?,
@@ -5247,6 +5271,7 @@ async fn eight_concurrent_claims_over_eight_jobs_take_eight_distinct_jobs() -> a
     for n in 0..WORKERS {
         enqueue(
             repositories.as_ref(),
+            &pool,
             "poll_charge",
             &format!("poll:{n}"),
             now - time::Duration::seconds(i64::try_from(n).unwrap_or(0)),
@@ -5299,6 +5324,7 @@ async fn a_leased_job_is_invisible_to_claim() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "sweep_expired",
         "sweep:expired",
         db_now(&pool).await?,
@@ -5341,6 +5367,7 @@ async fn finish_with_the_wrong_worker_id_deletes_nothing() -> anyhow::Result<()>
     let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:aba",
         db_now(&pool).await?,
@@ -5385,6 +5412,7 @@ async fn reschedule_clears_the_lease_and_moves_run_at_into_the_future() -> anyho
     let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:ladder",
         db_now(&pool).await?,
@@ -5461,12 +5489,20 @@ async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> 
     let now = db_now(&pool).await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:stale",
         now - time::Duration::seconds(60),
     )
     .await?;
-    enqueue(repositories.as_ref(), "poll_charge", "poll:fresh", now).await?;
+    enqueue(
+        repositories.as_ref(),
+        &pool,
+        "poll_charge",
+        "poll:fresh",
+        now,
+    )
+    .await?;
 
     let stale = Jobs::claim(repositories.as_ref(), "worker-dead")
         .await?
@@ -5519,26 +5555,36 @@ async fn reap_expired_leases_frees_only_the_stale_lease() -> anyhow::Result<()> 
 /// The gauge's queue-age number: the oldest job that anything could actually
 /// claim.
 ///
-/// Three exclusions, and each one is a way the number could lie to whoever is
+/// Two exclusions, and each one is a way the number could lie to whoever is
 /// watching for a backlog. A **leased** job is being worked on, not waiting.
-/// A **future-dated** job is on the poll ladder, which is the ladder working
-/// correctly rather than a queue falling behind. A **parked** job
-/// (`run_at = 'infinity'`) is not backlog at all — counting it would peg the
-/// gauge at "infinitely behind" from the first dead letter onwards and, more
-/// bluntly, `'infinity'` has no `OffsetDateTime`, so decoding one fails the
-/// query instead of answering it.
+/// A **parked** job (`run_at = 'infinity'`) is not backlog at all — counting
+/// it would peg the gauge at "infinitely behind" from the first dead letter
+/// onwards and, more bluntly, `now() - 'infinity'` is no finite interval, so
+/// answering with one fails the query.
+///
+/// _(Corrected 2026-09-23. This said "three exclusions" and named a
+/// **future-dated** job as the third. The statement has never excluded one:
+/// `min(run_at)` over the unleased, unparked rows includes the future, and
+/// this test never looked at a queue whose only row was in the future. It
+/// does now, and the answer is a negative age — the queue is ahead of
+/// itself — which is what the gauge has always published for that case.)_
+///
+/// Since the same day (ADR-0026) the subtraction is the database's, and the
+/// bracket below is what shows it: the age falls between two readings of
+/// Postgres' clock, with no reading of this host's anywhere in it.
 ///
 /// The empty answer is `None` and not zero, because "the queue is empty" and
 /// "the queue is zero seconds behind" are different facts and an operator
 /// acts differently on each.
 #[tokio::test]
-async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyhow::Result<()> {
+async fn oldest_runnable_age_ignores_leased_and_parked_jobs_and_is_the_databases_subtraction()
+-> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
     let now = db_now(&pool).await?;
 
     assert_eq!(
         repositories
-            .oldest_runnable_run_at()
+            .oldest_runnable_age()
             .await
             .context("an empty queue must be readable, not an error")?,
         None,
@@ -5550,6 +5596,7 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
     let runnable_at = now - time::Duration::hours(1);
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:parked",
         parked_at,
@@ -5557,6 +5604,7 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
     .await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:leased",
         leased_at,
@@ -5564,6 +5612,7 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
     .await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:runnable",
         runnable_at,
@@ -5571,6 +5620,7 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
     .await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:later",
         now + time::Duration::hours(1),
@@ -5597,31 +5647,125 @@ async fn oldest_runnable_run_at_ignores_leased_future_and_parked_jobs() -> anyho
         .context("the next job must be claimable")?;
     assert_eq!(leased.dedupe_key, "poll:leased");
 
-    let oldest = repositories
-        .oldest_runnable_run_at()
+    // Bracketed by two readings of the database's own clock, taken on the
+    // same pool the gauge reads through: the age the statement subtracted
+    // must be `now() - run_at` for some `now()` between them. That is what
+    // "subtracted on the database's clock" means, and it needs no tolerance
+    // for this host's clock because this host's clock is not in it.
+    let before = db_now(&pool).await? - runnable_at;
+    let age = repositories
+        .oldest_runnable_age()
         .await
         .context("reading the queue age must succeed")?
         .context("three of the four rows are excluded, but `poll:runnable` is not")?;
-    // Compared with a tolerance, not for equality: `timestamptz` is
-    // microsecond-precision and `OffsetDateTime` is nanosecond, so a
-    // round-trip truncates. An hour of slack would hide the bug; a
-    // millisecond cannot.
+    let after = db_now(&pool).await? - runnable_at;
+    // A microsecond of slack on each side: `timestamptz` is microsecond
+    // precision and `OffsetDateTime` nanosecond, so `runnable_at` as written
+    // here and as stored differ by the truncation.
+    let micro = time::Duration::microseconds(1);
     assert!(
-        (oldest - runnable_at).abs() < time::Duration::milliseconds(1),
-        "the age must come from the oldest job nothing is doing and nothing has parked; \
-         got {oldest} for a row written at {runnable_at}"
+        before - micro <= age && age <= after + micro,
+        "the age must be the database's now() minus the oldest job nothing is doing and \
+         nothing has parked: {age} is outside [{before}, {after}]"
+    );
+
+    // A future-dated job is *not* excluded, and the answer says so by its
+    // sign: with only `poll:later` left unleased and unparked, the queue is
+    // an hour ahead of itself — caught up — rather than behind.
+    sqlx::query("DELETE FROM jobs WHERE dedupe_key = 'poll:runnable'")
+        .execute(&pool)
+        .await
+        .context("removing the runnable row must succeed")?;
+    let ahead = repositories
+        .oldest_runnable_age()
+        .await?
+        .context("the future-dated row is still counted")?;
+    assert!(
+        ahead < -time::Duration::minutes(59),
+        "a queue whose earliest job is an hour out reads about an hour negative: {ahead}"
     );
 
     // And a queue whose only rows are excluded is indistinguishable from an
     // empty one, which is the honest answer: there is no backlog.
-    sqlx::query("DELETE FROM jobs WHERE dedupe_key IN ('poll:runnable', 'poll:later')")
+    sqlx::query("DELETE FROM jobs WHERE dedupe_key = 'poll:later'")
         .execute(&pool)
         .await
-        .context("removing the claimable rows must succeed")?;
+        .context("removing the future-dated row must succeed")?;
     assert_eq!(
-        repositories.oldest_runnable_run_at().await?,
+        repositories.oldest_runnable_age().await?,
         None,
         "a parked job and a leased one are not a backlog"
+    );
+
+    Ok(())
+}
+
+/// ADR-0026: a job's `run_at` is the **database's** `now()` plus the delay the
+/// caller passed, and a zero delay is claimable by the very next statement.
+///
+/// Three facts, each checked against the database rather than argued:
+///
+/// * `run_at - created_at` is **exactly** the delay, to the microsecond, for
+///   a zero delay and for ten seconds. `created_at` is the column's
+///   `DEFAULT now()`, so both ends are the one `now()` of the one `INSERT`;
+///   an instant read off any other clock would have to agree with Postgres'
+///   to the microsecond to pass, which two machines — or one process and a
+///   container — do not;
+/// * the zero-delay job is claimed by the first `claim` after the commit,
+///   with no retry and no fixture moving it — the shape #254's
+///   `claim_fanout_job` panicked on when the enqueue took this host's
+///   instant and the container ran behind it;
+/// * the ten-second job is not claimed, so "due" still means due.
+///
+/// What this does **not** show, stated plainly: that a skewed host is
+/// harmless, by running one. Nothing here can set a testcontainer's clock
+/// apart from this host's. That half rests on the signatures — no method of
+/// `Jobs` or `TxRepositories` that schedules a job accepts an instant any
+/// more, so there is no parameter through which this host's clock could
+/// reach `run_at` — and on this test showing the value that does reach it is
+/// the database's own.
+#[tokio::test]
+async fn a_job_is_due_at_the_databases_now_plus_its_delay_and_a_zero_delay_claims_at_once()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    for (key, delay) in [
+        ("poll:due_now", std::time::Duration::ZERO),
+        ("poll:due_later", std::time::Duration::from_secs(10)),
+    ] {
+        assert!(
+            one_tx::enqueue_in_tx(
+                repositories.as_ref(),
+                "poll_charge",
+                key,
+                &json!({ "charge_id": "ch_x" }),
+                delay,
+            )
+            .await?,
+            "{key} is new"
+        );
+        let (run_at, created_at): (time::OffsetDateTime, time::OffsetDateTime) =
+            sqlx::query_as("SELECT run_at, created_at FROM jobs WHERE dedupe_key = $1")
+                .bind(key)
+                .fetch_one(&pool)
+                .await
+                .context("the enqueued row must be readable")?;
+        assert_eq!(
+            run_at - created_at,
+            time::Duration::try_from(delay)?,
+            "{key}: run_at is the INSERT's own now() plus the delay, exactly"
+        );
+    }
+
+    let claimed = Jobs::claim(repositories.as_ref(), "worker-db-clock")
+        .await?
+        .context("a zero-delay job is due on the clock the claim reads, at once")?;
+    assert_eq!(claimed.dedupe_key, "poll:due_now");
+    assert!(
+        Jobs::claim(repositories.as_ref(), "worker-db-clock")
+            .await?
+            .is_none(),
+        "the ten-second job is not due yet"
     );
 
     Ok(())
@@ -5636,7 +5780,14 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
     let later = db_now(&pool).await? + time::Duration::hours(1);
 
     assert!(
-        enqueue(repositories.as_ref(), "poll_charge", "poll:ch_once", later).await?,
+        enqueue(
+            repositories.as_ref(),
+            &pool,
+            "poll_charge",
+            "poll:ch_once",
+            later
+        )
+        .await?,
         "the first enqueue inserts"
     );
 
@@ -5645,7 +5796,7 @@ async fn enqueue_in_tx_dedupes_on_dedupe_key() -> anyhow::Result<()> {
         "resubmit_charge",
         "poll:ch_once",
         &json!({ "charge_id": "ch_other" }),
-        db_now(&pool).await?,
+        std::time::Duration::ZERO,
     )
     .await
     .context("a duplicate enqueue must not error")?;
@@ -5697,6 +5848,7 @@ async fn pull_forward_moves_a_job_past_the_floor_and_leaves_near_leased_parked_a
 
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:ch_rung",
         a_few_rungs_out,
@@ -5705,16 +5857,25 @@ async fn pull_forward_moves_a_job_past_the_floor_and_leaves_near_leased_parked_a
     // Inside the floor: the queue is about to ask anyway.
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:ch_soon",
         now + time::Duration::seconds(5),
     )
     .await?;
     // Already claimable: nothing to do.
-    enqueue(repositories.as_ref(), "poll_charge", "poll:ch_due", now).await?;
+    enqueue(
+        repositories.as_ref(),
+        &pool,
+        "poll_charge",
+        "poll:ch_due",
+        now,
+    )
+    .await?;
     // A worker is running this one right now.
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:ch_leased",
         a_few_rungs_out,
@@ -5728,6 +5889,7 @@ async fn pull_forward_moves_a_job_past_the_floor_and_leaves_near_leased_parked_a
     // Parked by `dead_letter`: `run_at = 'infinity'`, lease cleared.
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:ch_parked",
         a_few_rungs_out,
@@ -7512,7 +7674,7 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
                                 "not_a_job_kind",
                                 "poll:ch_rolled_back",
                                 &json!({ "charge_id": "ch_rolled_back" }),
-                                time::OffsetDateTime::now_utc(),
+                                std::time::Duration::ZERO,
                             )
                             .await;
             assert!(
@@ -7559,7 +7721,7 @@ fn a_rolled_back_charge_insert_counts_nothing_and_a_committed_one_counts_once() 
                             "poll_charge",
                             "poll:ch_committed",
                             &json!({ "charge_id": "ch_committed" }),
-                            time::OffsetDateTime::now_utc(),
+                            std::time::Duration::ZERO,
                         )
                         .await?;
                         Ok::<_, anyhow::Error>(TxOutcome::Commit(charge))
@@ -8212,8 +8374,10 @@ async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() ->
         .context("backdating the charge must succeed")?;
     }
 
-    let cutoff = time::OffsetDateTime::now_utc() - time::Duration::minutes(10);
-    let stale = repositories.live_charges_stale_since(cutoff, 10).await?;
+    // A window, not an instant: measured back from the database's `now()`,
+    // the clock that wrote `updated_at` (ADR-0026).
+    let window = std::time::Duration::from_secs(10 * 60);
+    let stale = repositories.live_charges_stale_since(window, 10).await?;
 
     assert_eq!(
         stale,
@@ -8223,7 +8387,7 @@ async fn live_charges_stale_since_honours_the_cutoff_and_the_live_state_set() ->
     );
 
     assert_eq!(
-        repositories.live_charges_stale_since(cutoff, 1).await?,
+        repositories.live_charges_stale_since(window, 1).await?,
         vec!["ch_stale_older".to_owned()],
         "the limit bounds the page"
     );
@@ -8334,6 +8498,7 @@ async fn set_payload_writes_only_for_the_lease_holder() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
     enqueue(
         repositories.as_ref(),
+        &pool,
         "poll_charge",
         "poll:streak",
         db_now(&pool).await?,
@@ -8496,7 +8661,14 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
 
     for kind in ["fan_out_events", "deliver_webhook"] {
         assert!(
-            enqueue(repositories.as_ref(), kind, &format!("dedupe:{kind}"), now).await?,
+            enqueue(
+                repositories.as_ref(),
+                &pool,
+                kind,
+                &format!("dedupe:{kind}"),
+                now
+            )
+            .await?,
             "0022 must make {kind} enqueueable — the handlers land in this step"
         );
     }
@@ -8504,6 +8676,7 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
     assert!(
         enqueue(
             repositories.as_ref(),
+            &pool,
             "poll_charge",
             "poll:ch_still_ok",
             now
@@ -8516,7 +8689,7 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
         "deliver_webhooks",
         "webhook:typo",
         &json!({}),
-        now,
+        std::time::Duration::ZERO,
     )
     .await;
     assert!(
@@ -8609,12 +8782,13 @@ async fn migration_0022_reopens_the_job_kinds_and_closes_the_delivery_states() -
 #[tokio::test]
 async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() -> anyhow::Result<()>
 {
-    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let (_container, repositories, pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     assert!(
         enqueue(
             repositories.as_ref(),
+            &pool,
             "scan_deliveries",
             "scan:deliveries",
             now
@@ -8633,6 +8807,7 @@ async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() 
         assert!(
             enqueue(
                 repositories.as_ref(),
+                &pool,
                 kind,
                 &format!("still-known:{kind}"),
                 now
@@ -8647,7 +8822,7 @@ async fn migration_0023_opens_scan_deliveries_and_keeps_the_vocabulary_closed() 
         "scan_delivery",
         "scan:deliveries:typo",
         &json!({}),
-        now,
+        std::time::Duration::ZERO,
     )
     .await;
     assert!(
@@ -9272,7 +9447,7 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
     // A receiver answering 500 with a long, multi-byte error page: the
     // excerpt has to survive as *something*, bounded to `excerpt_length`.
     let overlong = "é".repeat(2500);
-    let due = time::OffsetDateTime::now_utc() + time::Duration::seconds(10);
+    let rung = std::time::Duration::from_secs(10);
     assert!(
         repositories
             .record_attempt(
@@ -9280,7 +9455,7 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
                 Some(500),
                 Some(&overlong),
                 Some("sha-first"),
-                Some(due),
+                Some(rung),
                 false,
             )
             .await?,
@@ -9310,9 +9485,24 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
     let scheduled = row
         .next_attempt_at
         .context("the next attempt must be scheduled")?;
-    assert!(
-        (scheduled - due).abs() < time::Duration::seconds(1),
-        "next_attempt_at is the caller's instant, not one this layer invented: {scheduled} vs {due}"
+    // **Exactly** the rung after the statement's own `sent_at`, to the
+    // microsecond: both are the one `now()` of the one `UPDATE`, so the
+    // interval between them is the delay the caller passed and nothing
+    // else. Until 2026-09-23 the caller passed an instant off its own host's
+    // clock, and this compared it with a second reading of that clock within
+    // a second; an instant from any clock but the database's could not land
+    // on `sent_at + 10 s` exactly (ADR-0026).
+    let sent_at: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT sent_at FROM webhook_deliveries WHERE id = $1")
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .context("reading sent_at must succeed")?;
+    assert_eq!(
+        scheduled - sent_at,
+        time::Duration::seconds(10),
+        "next_attempt_at is the database's now() plus the caller's rung: {scheduled} vs sent at \
+         {sent_at}"
     );
     let (sent, responded, _) = delivery_timestamps(&pool, id).await?;
     assert!(
@@ -9323,7 +9513,7 @@ async fn record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts() 
     // A transport failure: the request went out, nothing came back.
     assert!(
         repositories
-            .record_attempt(id, None, None, Some("sha-second"), Some(due), false,)
+            .record_attempt(id, None, None, Some("sha-second"), Some(rung), false,)
             .await?
     );
     let row = delivery(repositories.as_ref(), id).await?;
@@ -9395,7 +9585,6 @@ async fn record_success_settles_a_delivery_once_and_a_second_call_writes_nothing
     .context("the delivery must be created")?;
 
     // One failure first, so the success has something to clear.
-    let due = time::OffsetDateTime::now_utc() + time::Duration::seconds(10);
     assert!(
         repositories
             .record_attempt(
@@ -9403,7 +9592,7 @@ async fn record_success_settles_a_delivery_once_and_a_second_call_writes_nothing
                 Some(503),
                 Some("busy"),
                 Some("sha-body"),
-                Some(due),
+                Some(std::time::Duration::from_secs(10)),
                 false,
             )
             .await?
@@ -9508,7 +9697,6 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
         &fixture_event("evt_due", "merchant_a"),
     )
     .await?;
-    let now = time::OffsetDateTime::now_utc();
     // `RecoveryPolicy::lease`'s five minutes, transcribed: this crate cannot
     // see `vpay-worker`, and the caller passes exactly that value.
     let lease = std::time::Duration::from_secs(5 * 60);
@@ -9540,14 +9728,17 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
             .context("fixture delivery must exist")
     };
 
-    // Due an hour ago.
+    // Due at once, on the database's clock: a zero rung is `now()` of the
+    // write, and the scan's `now()` is later. Since 2026-09-23 (ADR-0026)
+    // `record_attempt` takes a rung rather than an instant, so this row was
+    // "due an hour ago" by an instant off this host's clock until then.
     repositories
         .record_attempt(
             id_of("ep_due")?,
             Some(500),
             None,
             Some("sha"),
-            Some(now - time::Duration::hours(1)),
+            Some(std::time::Duration::ZERO),
             false,
         )
         .await?;
@@ -9558,7 +9749,7 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
             Some(500),
             None,
             Some("sha"),
-            Some(now + time::Duration::hours(1)),
+            Some(std::time::Duration::from_secs(60 * 60)),
             false,
         )
         .await?;
@@ -9571,7 +9762,7 @@ async fn pending_due_returns_the_deliveries_nothing_is_driving() -> anyhow::Resu
             Some(500),
             None,
             Some("sha"),
-            Some(now - time::Duration::hours(1)),
+            Some(std::time::Duration::ZERO),
             false,
         )
         .await?;

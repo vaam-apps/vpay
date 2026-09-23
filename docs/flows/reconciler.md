@@ -70,7 +70,8 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 **Changed 2026-09-03 (Step 4): the loop exists, and it settles payments.
 Extended 2026-09-12 (issue #100) with the queue's own claim latency, measured
 and bounded — see the fourth bullet below; nothing in the loop changed,
-because the bound was met.**
+because the bound was met. Amended 2026-09-23: every job is scheduled on the
+database's clock (ADR-0026, the bullet after the claim latency's).**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at
@@ -123,6 +124,25 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   time, so a slow handler ahead of an arrival delays it by its whole duration)
   are in
   [../status/verification/2026-09-12-worker-claim-latency.md](../status/verification/2026-09-12-worker-claim-latency.md).
+- **One clock for the queue: Postgres' (2026-09-23,
+  [ADR-0026](../adr/0026-the-database-clock-schedules-jobs.md)).** The rung
+  above was always on the database's clock; the _first_ `run_at` of most jobs
+  was not. The confirm's poll, every poll the `scan:live` backstop
+  re-enqueues, the `resubmit_charge` job and the poll a resubmission commits,
+  every fan-out's and the delivery backstop's `deliver_webhook` jobs, the five
+  singletons a worker seeds at boot, and the callback route's enqueue all
+  stamped `run_at` with their own host's `now_utc()` while `Jobs::claim`
+  judged it with `now()`, so every one of them ran early or late by the skew
+  between the two. `TxRepositories::enqueue_in_tx` now takes a delay, and
+  the statement computes `now() + delay`; the backstop's "stale for ten
+  minutes" is measured back from `now()` too
+  (`Settlement::live_charges_stale_since`), because `charges.updated_at` is
+  written by it. The queue-age gauge is subtracted in SQL
+  (`Jobs::oldest_runnable_age`). No rung, interval or ordering changed.
+  `a_job_is_due_at_the_databases_now_plus_its_delay_and_a_zero_delay_claims_at_once`
+  (`vpay-db`) and the housekeeping case in `worker_recovery.rs` are the
+  evidence; what they cannot show — a genuinely skewed host — is in
+  [the verification page](../status/verification/2026-09-23-single-clock-scheduling.md).
 - **The callback endpoint exists.** `POST /provider/{code}/callback`
   (`vpay_api::provider_callback`) is the route the section above describes,
   built 2026-09-04. It never changes state: it enqueues the charge's

@@ -887,11 +887,13 @@ async fn commit_resubmission(
                         submitted.redirect_url.as_deref(),
                     )
                     .await?;
+                // Due now on the database's clock, the one `Jobs::claim`
+                // reads (ADR-0026).
                 tx.enqueue_in_tx(
                     JobKind::PollCharge.as_wire_str(),
                     &dedupe_key,
                     &payload,
-                    OffsetDateTime::now_utc(),
+                    Duration::ZERO,
                 )
                 .await?;
                 Ok::<_, DbError>(TxOutcome::Commit(submitted_charge))
@@ -1262,14 +1264,18 @@ async fn erase_one_customer(
 /// charges written before the queue existed, and a job lost to operator error.
 /// Every insert is `ON CONFLICT (dedupe_key) DO NOTHING`, so a charge that
 /// already has a poll job is untouched, including one scheduled an hour out.
+///
+/// No instant is read here. "Stale" is `SCAN_INTERVAL` back from the
+/// database's `now()` — the clock that stamped `charges.updated_at` — and a
+/// re-enqueued poll is due at the database's `now()` (ADR-0026). Until
+/// 2026-09-23 both were this host's clock, so a skewed worker's backstop
+/// fired early or late by the skew.
 async fn scan_live_charges(
     repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
-    let now = OffsetDateTime::now_utc();
-    let cutoff = now - stale_after();
     let charge_ids = repositories
-        .live_charges_stale_since(cutoff, SCAN_BATCH)
+        .live_charges_stale_since(SCAN_INTERVAL, SCAN_BATCH)
         .await?;
 
     let mut enqueued = 0_usize;
@@ -1286,7 +1292,7 @@ async fn scan_live_charges(
                                 JobKind::PollCharge.as_wire_str(),
                                 &poll_dedupe_key(charge_id),
                                 &poll_payload(job, charge_id)?,
-                                now,
+                                Duration::ZERO,
                             )
                             .await?;
                         if inserted {
@@ -1709,7 +1715,7 @@ async fn schedule_resubmit(
                         JobKind::ResubmitCharge.as_wire_str(),
                         &resubmit_dedupe_key(&charge.id),
                         &encode(job, &ResubmitPayload::new(charge.id.clone()))?,
-                        OffsetDateTime::now_utc(),
+                        Duration::ZERO,
                     )
                     .await?;
                 Ok::<_, JobError>(TxOutcome::Commit(enqueued))
@@ -2172,12 +2178,6 @@ fn poisoned(job: &vpay_db::JobRow, reason: String) -> JobError {
         job_id: job.id,
         reason,
     }
-}
-
-/// [`SCAN_INTERVAL`] as the `time` crate spells durations, for comparing
-/// against a column.
-fn stale_after() -> time::Duration {
-    time::Duration::try_from(SCAN_INTERVAL).unwrap_or(time::Duration::MAX)
 }
 
 /// Logs a job failure at the level its classification implies, and counts it.

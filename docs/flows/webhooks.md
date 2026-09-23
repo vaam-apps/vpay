@@ -227,6 +227,15 @@ Stripe's behaviour too, and it is deliberate — a `404` from a receiver that is
 mid-deploy is indistinguishable from one that means "stop", and stopping early
 on the wrong one loses the event.
 
+**Every rung is measured on the database's clock** (since 2026-09-23,
+[ADR-0026](../adr/0026-the-database-clock-schedules-jobs.md)). The job's
+reschedule always was — `run_at = now() + delay` — but the delivery's own
+`next_attempt_at`, which the dashboard shows and the delivery backstop
+compares with `now()`, was the worker host's clock plus the rung, and every
+fan-out's first `deliver_webhook` job was due at the worker host's "now".
+Both are the database's `now()` plus the rung now, so a skewed worker moves
+no rung. The ladder itself is unchanged.
+
 **Delivery is at-least-once, and its order is not guaranteed.** Merchants must
 dedupe by `event.id`, and must **not** assume that two events for one merchant
 arrive in the order they happened. The fan-out preserves `seq` order when it
