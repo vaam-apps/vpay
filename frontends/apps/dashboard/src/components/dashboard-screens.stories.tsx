@@ -81,8 +81,8 @@ function refusedAction(message: string, requestId: string): FormAction {
  * The viewports stories here are tested at. The filter row and the loading
  * skeletons use two: a phone, where the row stacks, and a desktop, where it
  * is one line. The `Shell` stories use all four, one per shape of
- * `SideNav`'s: the phone bar (375), the vertical rail at the narrow and
- * the wide end of its band (700 and 1100), and the sidebar (1280).
+ * `SideNav`'s: the phone bar (375), the vertical rail either side of `lg`
+ * (1024px) in its 640–1279px band (700 and 1100), and the sidebar (1280).
  * `@storybook/addon-vitest` resizes the test browser to a story's
  * `globals.viewport` before running it; every story that sets none keeps
  * its 1200×900 default.
@@ -1007,17 +1007,22 @@ async function railGutterHolds(canvasElement: HTMLElement) {
     const start =
       (main as HTMLElement).getBoundingClientRect().left +
       Number.parseFloat(getComputedStyle(main as HTMLElement).paddingLeft);
-    const railEnd = (rail as Element).getBoundingClientRect().right;
-    await expect(start - railEnd).toBeGreaterThanOrEqual(16);
+    const railBox = (rail as Element).getBoundingClientRect();
+    // A hidden element measures 0 wide at x=0, and the gutter below would
+    // then pass without measuring anything, e.g. if the selector ever
+    // matched the phone bar (hidden from 640px) instead of the rail.
+    await expect(railBox.width).toBeGreaterThan(0);
+    await expect(start - railBox.right).toBeGreaterThanOrEqual(16);
   } finally {
     body.style.padding = padding;
   }
 }
 
 /**
- * The vertical rail at 1100×800, the wide end of its band, where
- * vaam-apps/ui#16's second `Primary` landmark was measured. Same checks
- * as `ShellRail`, and the identity is on screen in `<main>` without a tap.
+ * The vertical rail at 1100×800, above `lg` in its band. On 0.3.0 this
+ * width exposed vaam-apps/ui#16's second `Primary` landmark, as every width
+ * from 375 to 1279px did. Same checks as `ShellRail`, and the identity is on
+ * screen in `<main>` without a tap.
  */
 export const ShellLaptop: Story = {
   render: () => shellStory(),
