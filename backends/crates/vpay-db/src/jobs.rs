@@ -12,6 +12,12 @@
 //! `locked_by` guard is ABA protection rather than decoration, why claiming
 //! ignores lease expiry, and why a dead letter is parked rather than deleted
 //! or given a column of its own.
+//!
+//! **One clock.** Every instant a statement here writes or compares is
+//! Postgres' own `now()`; no statement takes an instant from its caller, only
+//! a [`Duration`] relative to that `now()`
+//! ([ADR-0026](../../../../docs/adr/0026-the-database-clock-schedules-jobs.md),
+//! since 2026-09-23).
 
 use std::time::Duration;
 
@@ -94,6 +100,18 @@ pub struct JobRow {
 /// nothing: the normal answer for the backstop scan and for a re-enqueue after
 /// a crash, **not** an error.
 ///
+/// # `delay`, not an instant
+///
+/// The job becomes claimable at **the database's** `now() + delay`, and
+/// [`Jobs::claim`] judges it with the same `now()`
+/// ([ADR-0026](../../../../docs/adr/0026-the-database-clock-schedules-jobs.md)).
+/// Until 2026-09-23 this took a `run_at` the caller had read off its own
+/// host's clock, so a worker or API host whose clock disagreed with
+/// Postgres' delayed or advanced every job by the difference. There is no
+/// parameter left through which a second clock can reach the column:
+/// `Duration::ZERO` is "due now, on the clock that decides", and a
+/// [`Duration`] cannot name the past.
+///
 /// # Errors
 ///
 /// [`DbError::Query`] if the write fails — including a `kind` outside
@@ -104,17 +122,17 @@ pub(crate) async fn enqueue_in_tx(
     kind: &str,
     dedupe_key: &str,
     payload: &serde_json::Value,
-    run_at: OffsetDateTime,
+    delay: Duration,
 ) -> Result<bool, DbError> {
     let inserted = sqlx::query(
         "INSERT INTO jobs (kind, dedupe_key, payload, run_at) \
-         VALUES ($1, $2, $3, $4) \
+         VALUES ($1, $2, $3, now() + ($4::BIGINT * INTERVAL '1 microsecond')) \
          ON CONFLICT (dedupe_key) DO NOTHING",
     )
     .bind(kind)
     .bind(dedupe_key)
     .bind(payload)
-    .bind(run_at)
+    .bind(as_micros(delay))
     .execute(&mut *tx)
     .await
     .map_err(classify_write)?
@@ -216,7 +234,7 @@ pub(crate) async fn pull_forward_in_tx(
 /// because of one is a job left leased until the reaper finds it. Rounding
 /// down to the microsecond is invisible to a poll ladder measured in
 /// seconds; refusing the write is not.
-fn as_micros(duration: Duration) -> i64 {
+pub(crate) fn as_micros(duration: Duration) -> i64 {
     i64::try_from(duration.as_micros()).unwrap_or(i64::MAX)
 }
 
@@ -408,25 +426,36 @@ pub trait Jobs: Send + Sync {
     /// Returns [`DbError::Query`] if the read fails.
     async fn parked_dedupe_keys(&self, keys: &[String]) -> Result<Vec<String>, DbError>;
 
-    /// When the oldest *runnable* job becomes claimable, or `None` if the queue
-    /// holds none.
+    /// How far behind the queue is: the database's `now()` minus the earliest
+    /// `run_at` of any unleased, unparked job, or `None` if there is none.
     ///
     /// The one number the worker's periodic gauge line cannot count in process:
     /// claimed/succeeded/rescheduled are this worker's own tallies, but "how far
     /// behind is the queue" is a property of the table and of every worker
-    /// against it. A value drifting into the past is the backlog signal — the
-    /// queue has work whose time has come and nobody is taking it.
+    /// against it. A value growing positive is the backlog signal — the queue
+    /// has work whose time has come and nobody is taking it. It is negative
+    /// when the earliest job is still in the future, which is a queue that is
+    /// caught up.
+    ///
+    /// **Subtracted in SQL, on the clock [`Jobs::claim`] reads**
+    /// ([ADR-0026](../../../../docs/adr/0026-the-database-clock-schedules-jobs.md)).
+    /// Until 2026-09-23 this was `oldest_runnable_run_at`, which returned the
+    /// bare `min(run_at)` for the worker to subtract from its own host's
+    /// clock, so the gauge read off by exactly the skew between the two: a
+    /// worker a minute fast reported a minute of backlog no claim would ever
+    /// see.
     ///
     /// `run_at < 'infinity'` excludes parked rows for two reasons. They are not
     /// backlog, so counting them would peg the gauge at "infinitely behind" from
-    /// the first dead letter onwards; and `'infinity'` has no [`OffsetDateTime`]
-    /// representation, so decoding one would fail the query rather than answer
-    /// it.
+    /// the first dead letter onwards; and `now() - 'infinity'` is no finite
+    /// interval, so answering with one would fail the read.
+    ///
+    /// Microsecond precision, the column's own.
     ///
     /// # Errors
     ///
     /// Returns [`DbError::Query`] if the read fails.
-    async fn oldest_runnable_run_at(&self) -> Result<Option<OffsetDateTime>, DbError>;
+    async fn oldest_runnable_age(&self) -> Result<Option<time::Duration>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -582,14 +611,19 @@ impl Jobs for crate::repository::PgRepositories {
         .map_err(DbError::Query)
     }
 
-    async fn oldest_runnable_run_at(&self) -> Result<Option<OffsetDateTime>, DbError> {
-        sqlx::query_scalar::<_, Option<OffsetDateTime>>(
-            "SELECT min(run_at) FROM jobs \
+    async fn oldest_runnable_age(&self) -> Result<Option<time::Duration>, DbError> {
+        // `EXTRACT(EPOCH FROM interval)` is `numeric` since Postgres 14, so
+        // scaling to microseconds is exact and the cast drops nothing the
+        // column carried. No float crosses the wire (ADR-0007).
+        let micros = sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT (EXTRACT(EPOCH FROM (now() - min(run_at))) * 1000000)::BIGINT FROM jobs \
          WHERE locked_at IS NULL AND run_at < 'infinity'::TIMESTAMPTZ",
         )
         .fetch_one(&self.pool)
         .await
-        .map_err(DbError::Query)
+        .map_err(DbError::Query)?;
+
+        Ok(micros.map(time::Duration::microseconds))
     }
 }
 

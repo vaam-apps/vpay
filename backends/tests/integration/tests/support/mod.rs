@@ -720,37 +720,38 @@ pub(crate) async fn crashed_charge(
         .transaction(|tx| {
             let id = &id;
             Box::pin(async move {
-                let charge = tx
-                    .insert_for_intent(&vpay_db::NewCharge {
-                        id: id.clone(),
-                        payment_intent_id: payment_intent_id.to_owned(),
-                        provider_code: rail.to_owned(),
-                        provider_reference_id: reference,
-                        provider_ref_extra: None,
-                        redirect_url: None,
-                        return_url: None,
-                        state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
-                        amount,
-                        currency_code: currency.to_owned(),
-                        payer_ref: payer_ref.map(str::to_owned),
-                        payer_ref_masked: None,
-                    })
-                    .await
-                    .context("inserting the charge")?;
+                tx.insert_for_intent(&vpay_db::NewCharge {
+                    id: id.clone(),
+                    payment_intent_id: payment_intent_id.to_owned(),
+                    provider_code: rail.to_owned(),
+                    provider_reference_id: reference,
+                    provider_ref_extra: None,
+                    redirect_url: None,
+                    return_url: None,
+                    state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+                    amount,
+                    currency_code: currency.to_owned(),
+                    payer_ref: payer_ref.map(str::to_owned),
+                    payer_ref_masked: None,
+                })
+                .await
+                .context("inserting the charge")?;
                 // In the same transaction, exactly as `vpay_api`'s
                 // `insert_charge` does it — that atomicity is the property
                 // these suites exist to exercise.
                 //
-                // Due at the charge's own `created_at`, which Postgres' `now()`
-                // wrote a statement ago in this transaction, rather than at
-                // this host's clock: every case that drives this fixture then
-                // claims the job, and the claim asks `run_at <= now()` on the
-                // database's clock (see `db_now`).
+                // Due at once: `Duration::ZERO` is the database's `now()` of
+                // this transaction — the same instant it stamped the charge's
+                // `created_at` with — and the claim asks `run_at <= now()` on
+                // that clock. Since 2026-09-23 (ADR-0026) the enqueue takes a
+                // delay and no instant, so there is no host clock left for
+                // this fixture to get wrong; until then it passed
+                // `charge.created_at` for exactly this reason.
                 tx.enqueue_in_tx(
                     vpay_worker::JobKind::PollCharge.as_wire_str(),
                     &vpay_worker::jobs::poll_dedupe_key(id),
                     &json!({ "charge_id": id }),
-                    charge.created_at,
+                    std::time::Duration::ZERO,
                 )
                 .await
                 .context("enqueueing the poll job")?;

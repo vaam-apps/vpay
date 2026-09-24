@@ -22,7 +22,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
-use time::OffsetDateTime;
 use tokio::sync::watch;
 use tokio::task::JoinHandle;
 use uuid::Uuid;
@@ -477,11 +476,17 @@ fn log_disposition(settled: &Settled) {
 /// This is **not** where lease recovery happens — see
 /// `docs/reference/vpay-worker.md` §"Two lease reapers, on purpose".
 ///
+/// Every seed is due at `Duration::ZERO` — the database's `now()`, the clock
+/// `Jobs::claim` judges it by (ADR-0026). Until 2026-09-23 it was this host's
+/// `OffsetDateTime::now_utc()`, so a worker whose clock ran ahead of
+/// Postgres' seeded five jobs its own claim could not see until the database
+/// caught up.
+///
 /// # Errors
 ///
 /// [`DbError`] if the write or the commit fails.
 pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbError> {
-    let now = OffsetDateTime::now_utc();
+    let due_now = Duration::ZERO;
     let empty = serde_json::Value::Object(serde_json::Map::new());
 
     repositories
@@ -491,17 +496,17 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                     JobKind::SweepExpired.as_wire_str(),
                     SWEEP_DEDUPE_KEY,
                     &empty,
-                    now,
+                    due_now,
                 )
                 .await?;
                 tx.enqueue_in_tx(
                     JobKind::ScanLiveCharges.as_wire_str(),
                     SCAN_DEDUPE_KEY,
                     &empty,
-                    now,
+                    due_now,
                 )
                 .await?;
-                // The outbox drain. `run_at = now` rather than a delay: an
+                // The outbox drain. Due now rather than after a delay: an
                 // event written before this process started is already
                 // waiting, and the first thing a freshly-booted worker should
                 // do about a settled payment nobody was told about is tell
@@ -510,7 +515,7 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                     JobKind::FanOutEvents.as_wire_str(),
                     FANOUT_DEDUPE_KEY,
                     &empty,
-                    now,
+                    due_now,
                 )
                 .await?;
                 // The delivery backstop (migration 0023). Seeded here rather
@@ -523,7 +528,7 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                     JobKind::ScanDeliveries.as_wire_str(),
                     SCAN_DELIVERIES_DEDUPE_KEY,
                     &empty,
-                    now,
+                    due_now,
                 )
                 .await?;
                 // The twelve-month customer retention sweep (S4a, migration
@@ -531,7 +536,7 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                 // absence is *invisible*: a deployment that dropped this seed
                 // keeps every customer for ever, which looks exactly like a
                 // healthy deployment and is a promise to a payer that vpay
-                // has stopped keeping. `run_at = now` for `fan_out_events`'
+                // has stopped keeping. Due now for `fan_out_events`'
                 // reason — a customer already twelve months idle when this
                 // process starts has been waiting, and the first pass finds
                 // it rather than an hour's worth of new ones.
@@ -539,7 +544,7 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                     JobKind::SweepIdleCustomers.as_wire_str(),
                     SWEEP_CUSTOMERS_DEDUPE_KEY,
                     &empty,
-                    now,
+                    due_now,
                 )
                 .await?;
                 Ok::<_, DbError>(TxOutcome::Commit(()))
@@ -936,9 +941,10 @@ async fn reap_leases(repositories: &dyn Repositories, lease: Duration, worker_id
 /// a line loses nothing, and they carry `worker_id` because every field but
 /// the queue age is *this process's* — two replicas' lines sum into a number
 /// that describes neither. The age comes from
-/// [`vpay_db::Jobs::oldest_runnable_run_at`] because it is a property of the
-/// table and of every worker against it; an age drifting steadily into the
-/// past is the backlog signal `--worker-concurrency` exists to move.
+/// [`vpay_db::Jobs::oldest_runnable_age`] because it is a property of the
+/// table and of every worker against it, and is subtracted on the database's
+/// clock (ADR-0026); an age growing steadily is
+/// the backlog signal `--worker-concurrency` exists to move.
 ///
 /// Two field names deliberately differ from the Step 4 design's:
 /// `finished` rather than "succeeded", because [`Disposition::Finished`]
@@ -957,15 +963,15 @@ async fn gauge_loop(
     loop {
         ticker.tick().await;
         let (claimed, finished, rescheduled, dead_lettered, lost) = counters.snapshot();
-        let read = match repositories.oldest_runnable_run_at().await {
-            Ok(Some(run_at)) => QueueAgeRead::Oldest(run_at),
+        let read = match repositories.oldest_runnable_age().await {
+            Ok(Some(age)) => QueueAgeRead::Behind(age),
             Ok(None) => QueueAgeRead::Empty,
             Err(error) => {
                 tracing::warn!(error = %error, "could not read the job queue's age");
                 QueueAgeRead::Unknown
             }
         };
-        let (behind_seconds, gauge_value) = queue_age(read, OffsetDateTime::now_utc());
+        let (behind_seconds, gauge_value) = queue_age(read);
         if let Some(value) = gauge_value {
             metrics::gauge!(JOBS_OLDEST_CLAIMABLE_AGE_SECONDS).set(value);
         }
@@ -982,14 +988,15 @@ async fn gauge_loop(
     }
 }
 
-/// What `vpay_db::jobs::oldest_runnable_run_at` said this pass — three
+/// What `vpay_db::Jobs::oldest_runnable_age` said this pass — three
 /// states, because the log line and the metric treat them differently and a
 /// `Result<Option<_>, _>` threaded through both would have to be matched
 /// twice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QueueAgeRead {
-    /// The oldest claimable row's `run_at`.
-    Oldest(OffsetDateTime),
+    /// The database's `now()` minus the oldest claimable row's `run_at`,
+    /// subtracted in SQL so no second clock enters it (ADR-0026).
+    Behind(time::Duration),
     /// Nothing runnable at all.
     Empty,
     /// The read itself failed.
@@ -998,10 +1005,10 @@ enum QueueAgeRead {
 
 /// `(the log field, the gauge value)` for one queue-age reading.
 ///
-/// A pure function of the reading and of `now`, so the one place the log and
-/// the metric *disagree* is testable without a database, a clock or a
-/// 60-second wait. That disagreement is deliberate and is the whole reason
-/// this is not inlined:
+/// A pure function of the reading, so the one place the log and the metric
+/// *disagree* is testable without a database, a clock or a 60-second wait.
+/// That disagreement is deliberate and is the whole reason this is not
+/// inlined:
 ///
 /// * **an empty queue logs `null` and publishes `0`.** "Nothing to do" and
 ///   "caught up to the second" are different facts and the log says so. A
@@ -1015,12 +1022,13 @@ enum QueueAgeRead {
 ///   and a warning has already been logged by the caller. Writing `0` here
 ///   would silence a real backlog every time Postgres hiccupped.
 ///
-/// `now` is a parameter rather than `OffsetDateTime::now_utc()` inside so a
-/// test can pin an exact age instead of asserting a range.
-fn queue_age(read: QueueAgeRead, now: OffsetDateTime) -> (Option<i64>, Option<f64>) {
+/// It took a `now` from this host's clock until 2026-09-23 and subtracted
+/// the row's `run_at` from it — two clocks in one number, off by the skew
+/// between them. The age now arrives already subtracted, on the database's
+/// clock, so there is no `now` left to pass.
+fn queue_age(read: QueueAgeRead) -> (Option<i64>, Option<f64>) {
     match read {
-        QueueAgeRead::Oldest(run_at) => {
-            let behind = now - run_at;
+        QueueAgeRead::Behind(behind) => {
             (Some(behind.whole_seconds()), Some(behind.as_seconds_f64()))
         }
         QueueAgeRead::Empty => (None, Some(0.0)),
@@ -1043,13 +1051,11 @@ mod tests {
     /// after a backlog clears, because a gauge holds its last value.
     #[test]
     fn an_empty_queue_logs_nothing_and_publishes_zero_while_a_failed_read_publishes_neither() {
-        let now = OffsetDateTime::UNIX_EPOCH + Duration::from_secs(1_000);
-
-        let (logged, gauge) = queue_age(QueueAgeRead::Oldest(now - Duration::from_secs(90)), now);
+        let (logged, gauge) = queue_age(QueueAgeRead::Behind(time::Duration::seconds(90)));
         assert_eq!(logged, Some(90), "the log field is whole seconds behind");
         assert_eq!(gauge, Some(90.0), "the gauge carries the same age");
 
-        let (logged, gauge) = queue_age(QueueAgeRead::Empty, now);
+        let (logged, gauge) = queue_age(QueueAgeRead::Empty);
         assert_eq!(
             logged, None,
             "an empty queue is not `0 seconds behind`, and the log says so"
@@ -1061,7 +1067,7 @@ mod tests {
              series forever and pages an on-call after it cleared"
         );
 
-        let (logged, gauge) = queue_age(QueueAgeRead::Unknown, now);
+        let (logged, gauge) = queue_age(QueueAgeRead::Unknown);
         assert_eq!(logged, None);
         assert_eq!(
             gauge, None,
@@ -1153,7 +1159,7 @@ mod tests {
             kind: JobKind::PollCharge.as_wire_str().to_owned(),
             dedupe_key: "poll:ch_x".to_owned(),
             payload: serde_json::Value::Object(serde_json::Map::new()),
-            run_at: OffsetDateTime::UNIX_EPOCH,
+            run_at: time::OffsetDateTime::UNIX_EPOCH,
             attempts: 1,
             locked_by: Some("w".to_owned()),
             last_error: None,

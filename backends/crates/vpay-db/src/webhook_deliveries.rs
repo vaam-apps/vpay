@@ -392,6 +392,14 @@ pub trait WebhookDeliveries: Send + Sync {
     /// [`WebhookDeliveries::record_success`], with the same meaning for
     /// `Ok(false)`.
     ///
+    /// `retry_after` is the ladder rung, and `next_attempt_at` is written as
+    /// **the database's** `now() + retry_after` — the same `now()` this
+    /// statement stamps `sent_at` with, and the clock
+    /// [`WebhookDeliveries::pending_due`] compares it against. It took an
+    /// instant the worker had read off its own host's clock until 2026-09-23
+    /// (ADR-0026), which moved every backstop decision about the delivery by
+    /// the skew between the two. `None` writes `NULL`: nothing is owed.
+    ///
     /// # Errors
     ///
     /// Returns [`DbError::Query`] if the write fails.
@@ -401,7 +409,7 @@ pub trait WebhookDeliveries: Send + Sync {
         status: Option<i32>,
         excerpt: Option<&str>,
         sha: Option<&str>,
-        next_attempt_at: Option<OffsetDateTime>,
+        retry_after: Option<Duration>,
         exhausted: bool,
     ) -> Result<bool, DbError>;
 
@@ -489,9 +497,11 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
         status: Option<i32>,
         excerpt: Option<&str>,
         sha: Option<&str>,
-        next_attempt_at: Option<OffsetDateTime>,
+        retry_after: Option<Duration>,
         exhausted: bool,
     ) -> Result<bool, DbError> {
+        // `NULL * INTERVAL` is `NULL`, so `None` clears the column in the
+        // same expression that schedules `Some`.
         let updated = sqlx::query(
             "UPDATE webhook_deliveries \
          SET attempt = attempt + 1, \
@@ -501,14 +511,14 @@ impl WebhookDeliveries for crate::repository::PgRepositories {
              payload_sha256 = COALESCE(payload_sha256, $4), \
              sent_at = now(), \
              responded_at = CASE WHEN $2::INT IS NULL THEN NULL ELSE now() END, \
-             next_attempt_at = $5 \
+             next_attempt_at = now() + ($5::BIGINT * INTERVAL '1 microsecond') \
          WHERE id = $1 AND state = 'pending'",
         )
         .bind(id)
         .bind(status)
         .bind(bounded_excerpt(excerpt))
         .bind(sha)
-        .bind(next_attempt_at)
+        .bind(retry_after.map(crate::jobs::as_micros))
         .bind(exhausted)
         .execute(&self.pool)
         .await

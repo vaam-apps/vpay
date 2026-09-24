@@ -285,23 +285,27 @@ async fn insert_event(
 /// claims it — so the `JobRow` handed to `handle_fan_out` is a real row with
 /// a real lease, not a struct literal.
 ///
-/// `run_at` is the **database's** `now()`, not this host's. `Jobs::claim`
-/// asks `run_at <= now()` on the container's clock, and on Docker Desktop
-/// that clock is a VM's: a row stamped with this process's "now" is not due
-/// until the VM catches up, so a container even milliseconds behind made the
-/// claim below come back empty (2026-09-23 — 1 and then 5 cases of this file,
-/// in two full-workspace runs straight after a Docker Desktop restart).
-/// `support::db_now` says why that is the one clock to use.
-async fn claim_fanout_job(
-    repositories: &dyn Repositories,
-    pool: &PgPool,
-) -> anyhow::Result<JobRow> {
-    let run_at = support::db_now(pool).await?;
+/// Due at the **database's** `now()`, not this host's. `Jobs::claim` asks
+/// `run_at <= now()` on the container's clock, and on Docker Desktop that
+/// clock is a VM's: a row stamped with this process's "now" was not due until
+/// the VM caught up, so a container even milliseconds behind made the claim
+/// below come back empty (2026-09-23 — 1 and then 5 cases of this file, in
+/// two full-workspace runs straight after a Docker Desktop restart). This
+/// helper read `support::db_now` to avoid that; since the same day
+/// (ADR-0026) the enqueue takes a delay from the database's clock and no
+/// instant, so `Duration::ZERO` is the whole fix and there is nothing left to
+/// read.
+async fn claim_fanout_job(repositories: &dyn Repositories) -> anyhow::Result<JobRow> {
     repositories
         .transaction(|tx| {
             Box::pin(async move {
-                tx.enqueue_in_tx("fan_out_events", FANOUT_DEDUPE_KEY, &json!({}), run_at)
-                    .await?;
+                tx.enqueue_in_tx(
+                    "fan_out_events",
+                    FANOUT_DEDUPE_KEY,
+                    &json!({}),
+                    Duration::ZERO,
+                )
+                .await?;
                 Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
             })
         })
@@ -311,7 +315,7 @@ async fn claim_fanout_job(
         .await?
         .context("the fan-out job is claimable")?;
     // `claim` takes whichever job is due, and the fan-out handler enqueues
-    // `deliver_webhook` rows at the worker's own clock. A claim that grabbed
+    // `deliver_webhook` rows due at once. A claim that grabbed
     // one of those would hand `handle_fan_out` the wrong row and fail
     // somewhere unrelated, so say so here instead.
     anyhow::ensure!(
@@ -513,7 +517,7 @@ async fn fan_out_creates_one_delivery_and_one_job_per_endpoint_and_is_idempotent
         "an event is born pending or nothing would ever deliver it"
     );
 
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     let outcome = handle_fan_out(h.repositories.as_ref(), &h.endpoints, &job)
@@ -584,7 +588,7 @@ async fn an_event_for_a_merchant_with_no_endpoints_is_still_fanned_out() {
         .await
         .expect("an event");
 
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &h.endpoints, &job)
@@ -622,7 +626,7 @@ async fn deliver_one(
     let event = insert_event(h.repositories.as_ref(), MERCHANT_A, object_id)
         .await
         .expect("an event");
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), endpoints, &job)
@@ -887,7 +891,7 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
     let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_flaky")
         .await
         .expect("an event");
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &endpoints, &fanout)
@@ -912,7 +916,12 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
         let job = claim_delivery_job(&h.pool, delivery_id)
             .await
             .expect("the delivery job");
-        let before = OffsetDateTime::now_utc();
+        // The database's clock, because `next_attempt_at` is written on it
+        // since 2026-09-23 (ADR-0026): a host-clock `before` would put the
+        // skew between the two into `delta` below.
+        let before = support::db_now(&h.pool)
+            .await
+            .expect("the database's clock");
         let outcome = handle_deliver(h.repositories.as_ref(), delivery_egress(), &endpoints, &job)
             .await
             .expect("the handler ran");
@@ -942,8 +951,8 @@ async fn the_ladder_walks_delivery_delay_and_then_succeeds() {
             "rung {rung}: the receiver's own words reach the runbook column"
         );
 
-        // `next_attempt_at` is `now + delivery_delay(rung)`, allowing for
-        // the wall-clock the handler itself took.
+        // `next_attempt_at` is the database's `now() + delivery_delay(rung)`,
+        // allowing for the time the handler itself took.
         let scheduled = row
             .next_attempt_at
             .expect("a pending row names its next attempt");
@@ -1033,7 +1042,7 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
     let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_exhausted")
         .await
         .expect("an event");
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &endpoints, &fanout)
@@ -1496,7 +1505,7 @@ async fn a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver(
     // other type does: same fan-out pass, same delivery handler, same
     // signature, read back out of the receiver.
     let endpoints = h.registry_with_secrets(&[SECRET]);
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
@@ -1852,7 +1861,7 @@ async fn a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver()
     // the same signature, read back out of the receiver's own journal — the
     // step `docs/flows/webhooks.md` recorded as an argument until this case.
     let endpoints = h.registry_with_secrets(&[SECRET]);
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
@@ -2205,7 +2214,7 @@ async fn one_merchants_unfannable_event_does_not_block_another_merchants() {
         "the failing event must come first in the page, or this proves nothing"
     );
 
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     let outcome = handle_fan_out(h.repositories.as_ref(), &endpoints, &job)
@@ -2365,7 +2374,7 @@ async fn a_permanently_unfannable_event_is_abandoned_after_five_passes_and_alert
         .await
         .expect("an event");
 
-    let job = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let job = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     for pass in 1..=vpay_worker::FANOUT_MAX_ATTEMPTS {
@@ -2540,7 +2549,7 @@ async fn the_backstop_re_enqueues_a_delivery_whose_job_vanished() {
         .await
         .expect("an event");
 
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &h.endpoints, &fanout)
@@ -2689,7 +2698,7 @@ async fn a_dead_lettered_delivery_job_is_not_resurrected_by_the_scan() {
     let event = insert_event(h.repositories.as_ref(), MERCHANT_A, "pi_parked")
         .await
         .expect("an event");
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &h.endpoints, &fanout)
@@ -2800,7 +2809,7 @@ async fn claim_scan_deliveries_job(
                     "scan_deliveries",
                     vpay_worker::jobs::SCAN_DELIVERIES_DEDUPE_KEY,
                     &json!({}),
-                    OffsetDateTime::now_utc(),
+                    Duration::ZERO,
                 )
                 .await?;
                 Ok::<_, anyhow::Error>(TxOutcome::Commit(()))
@@ -2983,7 +2992,7 @@ async fn a_delivery_with_no_configured_endpoint_records_a_failure_and_no_digest(
     // Fanned out while the endpoint is configured, so the delivery row is a
     // real one; then the registry stops describing it, which is what a
     // rollout that briefly serves an older configuration looks like.
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &h.endpoints, &fanout)
@@ -3076,7 +3085,7 @@ async fn delivery_job_for(
         .execute(&h.pool)
         .await
         .expect("the singleton's lease is released, as the loop would");
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), endpoints, &fanout)
@@ -3692,7 +3701,7 @@ async fn an_erasure_mid_ladder_redelivers_the_redacted_body_instead_of_dead_lett
         .into_inner();
 
     let flaky = h.flaky_registry();
-    let fanout = claim_fanout_job(h.repositories.as_ref(), &h.pool)
+    let fanout = claim_fanout_job(h.repositories.as_ref())
         .await
         .expect("the fan-out job");
     handle_fan_out(h.repositories.as_ref(), &flaky, &fanout)

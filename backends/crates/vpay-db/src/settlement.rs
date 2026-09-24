@@ -809,8 +809,14 @@ pub trait Settlement: Send + Sync {
     /// Returns [`DbError::Query`] if the read fails.
     async fn latest_submit_attempt(&self, charge_id: &str) -> Result<Option<AttemptRow>, DbError>;
 
-    /// The ids of live charges that have not moved since `cutoff`, oldest first,
-    /// at most `limit` of them.
+    /// The ids of live charges that have not moved for `stale_after`, oldest
+    /// first, at most `limit` of them.
+    ///
+    /// The window is measured back from **the database's** `now()`, because
+    /// `charges.updated_at` is written by the database's `now()` on every
+    /// transition. It took a `cutoff` instant from the worker's host clock
+    /// until 2026-09-23 (ADR-0026), which moved every backstop decision by
+    /// the skew between the two.
     ///
     /// The `scan_live_charges` backstop, and **only** a backstop: the poll job
     /// for a charge is enqueued in the same transaction that opens the charge,
@@ -833,7 +839,7 @@ pub trait Settlement: Send + Sync {
     /// Returns [`DbError::Query`] if the read fails.
     async fn live_charges_stale_since(
         &self,
-        cutoff: OffsetDateTime,
+        stale_after: std::time::Duration,
         limit: i64,
     ) -> Result<Vec<String>, DbError>;
 }
@@ -1173,19 +1179,20 @@ impl Settlement for crate::repository::PgRepositories {
 
     async fn live_charges_stale_since(
         &self,
-        cutoff: OffsetDateTime,
+        stale_after: std::time::Duration,
         limit: i64,
     ) -> Result<Vec<String>, DbError> {
         let limit = limit.max(1);
         let sql = format!(
             "SELECT id FROM charges \
-         WHERE state IN ({LIVE_CHARGE_STATES}) AND updated_at < $1 \
+         WHERE state IN ({LIVE_CHARGE_STATES}) \
+           AND updated_at < now() - ($1::BIGINT * INTERVAL '1 microsecond') \
          ORDER BY updated_at \
          LIMIT $2"
         );
 
         sqlx::query_scalar::<_, String>(AssertSqlSafe(sql))
-            .bind(cutoff)
+            .bind(crate::jobs::as_micros(stale_after))
             .bind(limit)
             .fetch_all(&self.pool)
             .await

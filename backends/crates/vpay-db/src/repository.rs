@@ -363,10 +363,16 @@ pub trait TxRepositories: Send {
         new: &crate::NewManualPayment,
     ) -> Result<crate::OutOfBandPayment, DbError>;
 
-    /// `jobs`: enqueues work, `ON CONFLICT (dedupe_key) DO NOTHING`.
+    /// `jobs`: enqueues work, due at the database's `now() + delay`,
+    /// `ON CONFLICT (dedupe_key) DO NOTHING`.
     ///
     /// `false` means the key was already taken and nothing was written,
     /// which is a normal outcome and never an error.
+    ///
+    /// A delay rather than an instant since 2026-09-23 (ADR-0026): the claim
+    /// that decides whether the job is due reads Postgres' clock, so the
+    /// instant is computed on that clock too. [`crate::jobs::enqueue_in_tx`]
+    /// says what the instant parameter used to cost.
     ///
     /// # Errors
     ///
@@ -376,7 +382,7 @@ pub trait TxRepositories: Send {
         kind: &str,
         dedupe_key: &str,
         payload: &serde_json::Value,
-        run_at: time::OffsetDateTime,
+        delay: std::time::Duration,
     ) -> Result<bool, DbError>;
 
     /// `jobs`: brings an already-queued job's `run_at` forward to now, so a
@@ -759,9 +765,9 @@ impl TxRepositories for PendingTransaction {
         kind: &str,
         dedupe_key: &str,
         payload: &serde_json::Value,
-        run_at: time::OffsetDateTime,
+        delay: std::time::Duration,
     ) -> Result<bool, DbError> {
-        crate::jobs::enqueue_in_tx(self.conn(), kind, dedupe_key, payload, run_at).await
+        crate::jobs::enqueue_in_tx(self.conn(), kind, dedupe_key, payload, delay).await
     }
 
     async fn pull_forward_in_tx(
@@ -1196,7 +1202,7 @@ mod closure_shape {
                                 "poll_charge",
                                 "poll:ch_1",
                                 &serde_json::json!({}),
-                                time::OffsetDateTime::now_utc(),
+                                std::time::Duration::ZERO,
                             )
                             .await?;
                         if enqueued {

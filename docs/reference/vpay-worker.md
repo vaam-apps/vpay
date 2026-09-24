@@ -479,6 +479,14 @@ attempt count dead-letters — and it is recorded here rather than clamped
 `queue_age` gauge subtracts Postgres-written `run_at`s from the host clock:
 observability only, decides nothing, and a drifted fleet would report a false
 backlog on exactly the metric an operator would use to notice the drift.
+_(Fixed 2026-09-23, ADR-0026: the subtraction moved into SQL,
+`vpay_db::Jobs::oldest_runnable_age`, and `queue_age` no longer takes a
+`now`. The same change put every job's first `run_at` on the database's
+clock — the seeds, the backstop scans' re-enqueues, a resubmission's poll and
+job, every fan-out's delivery jobs, and a delivery's `next_attempt_at` — so
+no decision in this crate reads this host's clock against a
+Postgres-written instant any more. `docs/adr/0026-the-database-clock-schedules-jobs.md`
+§ D6 names the instants that deliberately stay on it, and why.)_
 
 Three things about that shape are deliberate:
 

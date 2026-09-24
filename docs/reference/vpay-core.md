@@ -565,6 +565,14 @@ only queued work is the hourly `sweep_expired`, this reads about `-3500`: the
 next job is nearly an hour away. Observed directly on `just demo`
 (`vpay_jobs_oldest_claimable_age_seconds -540.01`).
 
+_(Amended 2026-09-23, ADR-0026: the method is now
+`vpay_db::Jobs::oldest_runnable_age`, and the subtraction happens in that
+statement — `now() - min(run_at)` over the same rows — rather than in the
+worker against its own host's clock, so the value is no longer off by the
+skew between the two. The sign and everything below are unchanged;
+`oldest_runnable_age_ignores_leased_and_parked_jobs_and_is_the_databases_subtraction`
+in `vpay-db` now asserts the negative case, which no test had.)_
+
 The name is transcribed verbatim from the Step 6 design and is not changed, but
 "age of the oldest claimable row" is the wrong reading of it. The right one is
 **"seconds until (negative) or since (positive) the next piece of queued work

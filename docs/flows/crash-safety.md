@@ -17,7 +17,7 @@ So the payer's handset starts buzzing before you learn whether your request
 succeeded. Generate the reference in memory, call the rail, crash before writing
 it down, and you have created a payment you can never observe.
 
-```
+```text
 BEGIN;
   INSERT INTO charges (…, provider_reference_id, state='submitting');
 COMMIT;                        -- the reference is now durable
@@ -87,7 +87,7 @@ same function ([../reference/vpay-worker.md](../reference/vpay-worker.md)
 
 The ordering is reversed, and it is safe for a reason worth stating plainly.
 
-```
+```text
 INSERT charge (state='submitting', provider_reference_id = order_id);  COMMIT
 POST /webpayment  →  { pay_token, payment_url }
 UPDATE charge SET provider_ref_extra = {pay_token…}, state='submitted';  COMMIT
@@ -217,7 +217,8 @@ with **two** SIGTERM scenarios, one per arm of `Drain`, which are the first
 automated cases in this repository that signal a shipping process holding
 outstanding work; amended 2026-09-16 — step 2's `poll_charge` job is still
 committed with the charge, and is no longer _claimable_ while the confirm that
-wrote it is still running.**
+wrote it is still running; amended again 2026-09-23 — every job's `run_at` is
+computed on the database's clock (ADR-0026), and no ordering moved.**
 
 **The 2026-09-16 amendment changed no ordering on this page.** Every
 write-before-network rule, every compare-and-swap and every kill point are what
@@ -415,6 +416,20 @@ milliseconds later and nothing asked the rail about it for another minute.
 Measured against a real stack on 2026-09-16 at 56 s of dead time per payment
 (`docs/status/verification/2026-09-16-confirm-poll-job-latency.md`).
 
+**Amended 2026-09-23 ([ADR-0026](../adr/0026-the-database-clock-schedules-jobs.md)):
+that `now()` is Postgres', at both ends.** Until then step 2 wrote
+`run_at` as _the API host's_ clock plus `POLL_AFTER_CONFIRM_GRACE`, and the
+claim judged it with the database's, so an API host behind the database ate
+that much of the grace and one ahead of it lengthened it. `enqueue_in_tx`
+now takes the grace as a delay and the statement computes
+`now() + grace`; the pull-forward at step 5 was already `now()`. No ordering
+on this page moved, and no kill point changed: the job is still committed
+with the charge, in the same transaction, before the network call. What is
+different is only which machine's clock says when it becomes claimable — and
+the same is true of every other job the worker schedules, including the
+`Wait` that parks a young `submitting` charge, whose delay was already
+measured on the database's clock (`Charges::get_by_id_as_of`, above).
+
 The redirect half is unchanged too: the merchant's `return_url` is committed on
 the charge row at step 2 (`charges.return_url`, migration `0019`), and the
 rail's `pay_token` + `redirect_url` are committed at step 5 in **one**
@@ -513,7 +528,9 @@ transaction and uses the commit path as its control).
 - ~~**No callback route**, so a rail that tries to tell us about a charge is
   ignored~~ — **retired 2026-09-04 (Step 8, lane C): a rail that tells us about
   a charge is now heard.** The callback route pulls that charge's poll forward
-  instead of leaving it to the ladder's next rung. It changes nothing about
+  instead of leaving it to the ladder's next rung — enqueueing the poll first
+  if none is queued _(added 2026-09-23; it always has, and this sentence did
+  not say so)_. It changes nothing about
   recovery — the authenticated status query is still the only thing that settles
   anything, and every kill point above resolves identically whether a callback
   arrives or not. What is still missing is a rail that has actually called it.

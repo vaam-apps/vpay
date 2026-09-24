@@ -27,6 +27,16 @@ not been claimed yet. So a delivery whose job was **deleted**, or lost to a
 (`the_backstop_re_enqueues_a_delivery_whose_job_vanished`,
 `pending_due_returns_the_deliveries_nothing_is_driving`).
 
+_(Added 2026-09-23, [ADR-0026](../../adr/0026-the-database-clock-schedules-jobs.md).
+Both arms compare with Postgres' `now()`, and until that day the first arm's
+`next_attempt_at` was written as the worker host's clock plus the rung, so
+the backstop saw a delivery as due early or late by the skew between the two.
+`WebhookDeliveries::record_attempt` now takes the rung and writes
+`now() + rung` in the same statement that stamps `sent_at`;
+`record_attempt_bounds_the_excerpt_moves_the_ladder_and_then_exhausts`
+asserts `next_attempt_at - sent_at` equals the rung to the microsecond, and
+the job the backstop re-enqueues is due at the database's `now()` too.)_
+
 **It does not recover a delivery whose job was _dead-lettered_, and that is
 deliberate.** `vpay_db::Jobs::dead_letter` parks the job at
 `run_at = 'infinity'` and keeps its `dedupe_key`, so the scan's

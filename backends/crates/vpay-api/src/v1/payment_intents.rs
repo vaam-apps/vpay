@@ -1957,11 +1957,17 @@ async fn insert_charge(
                 // there — it simply is not claimable while this very confirm
                 // is still inside the rail call. `persist_submitted` pulls it
                 // to `now()` the moment the confirm is done with the charge.
+                //
+                // A delay, not an instant: the grace is added to the
+                // database's `now()`, the clock `Jobs::claim` reads
+                // (ADR-0026). Until 2026-09-23 it was added to this host's,
+                // so an API host a few seconds behind Postgres ate that much
+                // of the grace and one ahead of it lengthened it.
                 tx.enqueue_in_tx(
                     POLL_CHARGE_KIND,
                     &poll_dedupe_key(&charge.id),
                     &serde_json::json!({ "charge_id": charge.id }),
-                    OffsetDateTime::now_utc() + POLL_AFTER_CONFIRM_GRACE,
+                    POLL_AFTER_CONFIRM_GRACE,
                 )
                 .await?;
 
