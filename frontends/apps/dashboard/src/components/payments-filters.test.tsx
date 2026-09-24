@@ -23,7 +23,9 @@ const EMPTY = { status: "", createdFrom: "", createdTo: "" };
  * `defaultMonth` (`date-picker.js`), so seeding `from` is the only thing
  * that makes a day cell nameable — "Thursday, September 10th, 2026" is a
  * button that exists on any day of any year with this seed, and is not on
- * screen at all without it.
+ * screen at all without it. Still true on 0.3.0 for the docked picker, the
+ * one these cases click (see `dockedSeptember`); the full-screen one stacks
+ * the 12 months either side of the same `from`.
  */
 const SEPTEMBER = {
   status: "",
@@ -36,16 +38,58 @@ function clickApply(): void {
 }
 
 /**
- * The date range's trigger button.
+ * The date range's trigger button, by its accessible name.
  *
- * Queried by its accessible name. The trigger has an `aria-label` of
- * "Created between", and the displayed range (if any) appears as content
- * inside it, so the accessible name stays "Created between" at all times.
- * This simplifies the query since the name no longer changes based on the
- * range value.
+ * On `@vaam-apps/ui` 0.2.x this had to take the current range, because the
+ * name was the shown text followed by an `sr-only` copy of the placeholder
+ * (`"2026-09-01 → 2026-09-07 Created between"`) and changed with the range.
+ * Since 0.3.0 the component names the trigger with `aria-label`, the shown
+ * range moves to its description, and the name is `"Created between"` in
+ * every state — so a range-seeded case that finds it by that name is also
+ * what fails when the `aria-label` goes (the component's module doc has the
+ * mutation). Exact match, so "Clear the dates" beside it is no competitor.
  */
 function dateTrigger(): HTMLElement {
   return screen.getByRole("button", { name: "Created between" });
+}
+
+/**
+ * The docked picker's September 2026 grid, once the picker is open.
+ *
+ * **Why not `screen.getByRole("button", { name: /September 10th/ })`:**
+ * `DatePickerContent` renders two trees — the docked picker (from 640 px
+ * up) and the full-screen range picker (below) — and hides one by CSS media
+ * query. jsdom applies no CSS, so both are in the accessibility tree here:
+ * 27 grids (the docked picker's September and October, then the full-screen
+ * picker's 25 stacked months, September 2025 to September 2027), two of each
+ * September day, and two Save buttons. Both trees render the same staged
+ * pick, so clicking either is the same pick; the docked tree comes first in
+ * the DOM, and scoping to its grid both makes the choice explicit and keeps
+ * the day query off the ~800 other buttons (measured: 3 ms scoped against
+ * ~250 ms unscoped, per query, on this suite's jsdom).
+ */
+function dockedSeptember(): HTMLElement {
+  const [docked] = within(screen.getByRole("dialog")).getAllByRole("grid", {
+    name: "September 2026",
+  });
+  // `getAllByRole` throws when nothing matches, so this `!` cannot hide a
+  // missing grid — only `noUncheckedIndexedAccess`'s `| undefined`.
+  return docked!;
+}
+
+/** Press a day in the docked picker's September. */
+function pickSeptember(day: RegExp): void {
+  fireEvent.click(within(dockedSeptember()).getByRole("button", { name: day }));
+}
+
+/**
+ * Press Save — the one press that commits a staged range on 0.3.0.
+ *
+ * The first of the two (docked before full-screen in the DOM, as above);
+ * `getAllByRole` throws when there are none, so the `!` hides nothing.
+ */
+function clickSave(): void {
+  fireEvent.click(screen.getAllByRole("button", { name: "Save" })[0]!);
 }
 
 /**
@@ -136,28 +180,49 @@ describe("the payments filters", () => {
     // dates keep coming back out of every other case in this file.
     // Measured: that mutation left all five of the original cases green.
     //
-    // **In 0.3.0, a tap on a complete range starts a new one.** The old picker
-    // extended the range from its start, so clicking Sept 10 and then Sept 18
-    // on a Sept 1-7 range would extend to Sept 18. The new rule: tapping
-    // anywhere starts fresh. So this test now sets Sept 10 → Sept 18 instead
-    // of Sept 1 → Sept 18. The picker needs an explicit Save click to commit.
+    // **`created_from` stayed at the seed on 0.2.x, and that was
+    // `react-day-picker`'s measured behaviour, not a requirement of ours.**
+    // Clicking a later day on a range that was already complete EXTENDED it
+    // — the end moved, the start did not — so these two clicks on the
+    // 1–7 September seed gave 2026-09-01 → 2026-09-18, and an operator who
+    // wanted a different start had to Clear first. It was recorded here so
+    // that a package bump changing it would say so out loud rather than
+    // quietly re-point the filter at a different range.
+    //
+    // **0.3.0 is that bump.** Its range rule is M3's: a tap on a whole range
+    // starts a new one, and the next tap on or after it sets the end — so
+    // the same two taps now give 2026-09-10 → 2026-09-18, and no Clear is
+    // needed. And a pick is only staged until Save: `onValueChange` fires
+    // there and nowhere else, so without `clickSave()` the seed would come
+    // back out exactly as it does with `onValueChange` deleted.
     render(<PaymentsFilters values={SEPTEMBER} />);
     fireEvent.click(dateTrigger());
-    const dayButtons = screen.getAllByRole("button", {
-      name: /Thursday, September 10th, 2026/,
-    });
-    fireEvent.click(dayButtons[0]!);
-    const endDayButtons = screen.getAllByRole("button", {
-      name: /Friday, September 18th, 2026/,
-    });
-    fireEvent.click(endDayButtons[0]!);
-    // Confirm the range selection — click the first Save button (from the picker)
-    const saveButtons = screen.getAllByRole("button", { name: "Save" });
-    fireEvent.click(saveButtons[0]!);
+    pickSeptember(/Thursday, September 10th, 2026/);
+    pickSeptember(/Friday, September 18th, 2026/);
+    clickSave();
     clickApply();
     const url = pushedUrl();
     expect(url.searchParams.get("created_from")).toBe("2026-09-10");
     expect(url.searchParams.get("created_to")).toBe("2026-09-18");
+  });
+
+  it("carries a start with no end as `created_from` alone", () => {
+    // New on 0.3.0, and reachable in two presses: the first tap of a range
+    // is a start with an OPEN end (0.2.x made it a one-day range), and Save
+    // commits it as `{ from, to: undefined }` — which the package documents
+    // as a value, not a validation error. So "from 10 September on" is now a
+    // filter an operator can set by accident as easily as on purpose, and
+    // `apply()` has to carry the half it has rather than drop the pair: a
+    // version that only sent dates when both were set would pass every
+    // other case in this file.
+    render(<PaymentsFilters values={SEPTEMBER} />);
+    fireEvent.click(dateTrigger());
+    pickSeptember(/Thursday, September 10th, 2026/);
+    clickSave();
+    clickApply();
+    const url = pushedUrl();
+    expect(url.searchParams.get("created_from")).toBe("2026-09-10");
+    expect(url.searchParams.has("created_to")).toBe(false);
   });
 
   it("drops both dates when the range is cleared", () => {
@@ -165,9 +230,7 @@ describe("the payments filters", () => {
     // URL too, or an operator who removes a date filter gets the list they
     // were already looking at and no sign that the control did nothing.
     render(<PaymentsFilters values={SEPTEMBER} />);
-    fireEvent.click(
-      screen.getByRole("button", { name: "Clear the dates" }),
-    );
+    fireEvent.click(screen.getByRole("button", { name: "Clear the dates" }));
     clickApply();
     const url = pushedUrl();
     expect(url.searchParams.has("created_from")).toBe(false);
