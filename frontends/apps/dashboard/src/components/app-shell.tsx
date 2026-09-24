@@ -236,17 +236,37 @@ export function AppShell({
         nothing here reserves room for `FloatingRailPortal`'s pill, which
         is `position: fixed` and portaled to `document.body`, outside this
         flex row entirely. Measured on the same real render with no padding
-        here: the bottom pill (`<640px`) sits at `left 135–241, top
-        830–888` inside a 375×900 viewport, inside `main`'s own box; the
-        vertical pill (`640–1279px`) sits at `left 12–64`, to the left of
-        `main`'s content, which starts at `x=16`. Both genuinely overlap
-        `main`.
+        here, on `@vaam-apps/ui` 0.2.x: the bottom pill (`<640px`) sat at
+        `left 135–241, top 830–888` inside a 375×900 viewport, inside
+        `main`'s own box; the vertical pill (`640–1279px`) at `left 12–64`,
+        to the left of `main`'s content, which starts at `x=16`. Both
+        genuinely overlap `main`.
 
-        `pb-20` (80px) clears the bottom pill's height (58px) plus its
-        `bottom-3` offset (12px) below `sm`; `sm:pl-24` (96px) clears the
-        vertical pill's right edge with room to spare from `sm` up
-        to `xl`, where the real in-flow sidebar takes over and `xl:pl-0`
-        gives the padding back.
+        **0.3.0 moved both rails** (M3 Expressive's floating toolbar: 64px
+        across, 16px from the edge — its release notes: "the floating rails
+        end 80px from their edge … content columns need `sm:pl-24` instead
+        of `sm:pl-20`"). Re-measured 2026-09-24 in the built Storybook
+        `Shell` story (the rails are `fixed` to the viewport, so the
+        story's own padding does not move them): the bottom bar is 288px
+        wide and 64px tall, `left 43.5–331.5, top 732–796` at 375×812 —
+        five destinations are four slots and an overflow button, which is
+        the full 288px the release notes tell a caller to clear — and the
+        vertical rail is `left 16–80`.
+
+        `sm:pl-24` (96px) clears the vertical rail's right edge (`x=80`)
+        from `sm` up to `xl`, where the real in-flow sidebar takes over and
+        `xl:pl-0` gives the padding back. Below `sm`, `pb-40` (160px)
+        clears the whole bottom stack — the bar (16px offset + 64px) and
+        the Menu pill lifted above it (see the next comment: its top is
+        160px up) — so the last row of a screen can be scrolled clear of
+        both; the column's own `p-6` is the spare. It was `pb-20` (80px)
+        against 0.2.x's 58px pill at a 12px offset.
+
+        The bar also adds `env(safe-area-inset-bottom)` to its offset since
+        0.3.0. That is 0 here, and deliberately not added to `pb-40`: this
+        app sets no `viewport-fit=cover` (`app/layout.tsx` exports no
+        `viewport`), so the browser keeps the page out of the unsafe area
+        itself and the inset never reaches the page.
       */}
       {/*
         The menu floats WITH the rail below `xl`, rather than sitting at the
@@ -258,27 +278,60 @@ export function AppShell({
         sibling pinned to the same corner rather than a child of the rail,
         and it is styled by `Button` so it reads as part of that cluster.
 
-        It is its OWN pill rather than a bare button: same `rounded-full
-        border border-edge bg-surface-2/90` and the same `backdrop-blur-md`
-        the package gives its rails, so the two read as one cluster instead
+        It is its OWN pill rather than a bare button, dressed as the
+        package dresses its rails, so the two read as one cluster instead
         of a stray control parked near one. A single item, because the nav
         tree it opens is the drawer's job and the rail beside it already
-        lists the destinations.
+        lists the destinations. Since 0.3.0 that dress is M3's floating
+        toolbar — `rounded-full bg-surface-2 p-2`, opaque, no border, no
+        blur, no shadow (`side-nav.tsx`'s `TOOLBAR_CONTAINER` and its
+        `standard` palette) — so this pill is exactly that around one 48px
+        target: 64px, the rail's own width. It was `border border-edge
+        bg-surface-2/90 backdrop-blur-md p-1.5`, 0.2.x's rail, until the
+        bump; left as it was it sat under the new rail 4px out of line and
+        6px narrower, bordered where the rail is not.
 
-        `left-3 bottom-3` is the rail's own geometry, not a guess: the
-        vertical rail is `fixed top-1/2 left-3 w-[52px]` and the sub-640px
-        pill is `fixed bottom-3 left-1/2 -translate-x-1/2`, so the
-        bottom-left corner is empty at every width below `xl`. The icon-only
-        trigger is ~44px wide, which fits inside the 96px gutter `<main>`
-        already reserves with `sm:pl-24` — a labelled one would not, and
-        would overlap the first column of the screen it navigates away from.
+        `left-4` is the rail's own geometry, not a guess: the vertical
+        rail is `fixed top-1/2 left-4 w-16`, so from `sm` up `sm:bottom-4`
+        puts the pill in the rail's column, at M3's 16px screen offset, in
+        the bottom-left corner the vertically-centred rail leaves empty.
+        The icon-only trigger fits inside the 96px gutter `<main>` already
+        reserves with `sm:pl-24` — a labelled one would not, and would
+        overlap the first column of the screen it navigates away from.
+
+        **Below `sm` it sits ABOVE the bottom bar (`bottom-24`), not beside
+        it.** That corner stopped being empty in 0.3.0: the bar is 288px
+        wide for this app's five destinations, and its release notes say
+        it outright — "anything pinned beside the bottom bar must clear its
+        288px width". Measured in the built `Shell` story before this line
+        changed, with the pill still at `bottom-3 left-3`: the bar drew
+        over it by 26.5px at 375px, 34px at 360px, 8px at 412px and 54px
+        of its 58px at 320px — the Menu button, the only route below `sm`
+        to the theme control and the full-label nav tree, half-hidden under
+        the Payments slot. A 375px phone leaves 43.5px beside a 288px bar,
+        less than this pill's 64px plus the 16px offset, so "beside" is not
+        available at any phone width that matters. `bottom-24` (96px)
+        stacks it 16px above the bar's top edge (80px), the same 16px the
+        bar keeps from the screen edge.
+
+        Measured after, same story: the pill is 64×64 at `left 16–80` at
+        every width from 320 to 1279px, the rail's column and the rail's
+        fill (both `rgb(22, 24, 29)` in the dark theme), overlapping
+        neither rail at 320, 360, 375, 412, 640, 700 or 1024px. With the
+        payments screen composed inside the shell and scrolled to its end
+        at 375×812, the last row ends at y=628, 24px (the `p-6`) above the
+        pill's top at 652; and the full-screen date picker, opened from the
+        filter row, covers both the pill and the bar. **Nothing in CI
+        measures this** — jsdom has no layout, and neither the Storybook
+        suite (1200px) nor `dashboard.cy.ts` (1000px) runs below `sm` — so
+        a regression here shows up only to someone who looks at a phone.
 
         Hidden from `xl` up: there the in-flow sidebar carries the nav tree,
         the account block and the theme control, so a trigger would open a
         drawer that repeats the page.
       */}
-      <div className="fixed bottom-3 left-3 z-40 backdrop-blur-md xl:hidden">
-        <div className="rounded-full border border-edge bg-surface-2/90 p-1.5">
+      <div className="fixed bottom-24 left-4 z-40 sm:bottom-4 xl:hidden">
+        <div className="rounded-full bg-surface-2 p-2">
           <MoreMenu
             email={email}
             merchantId={merchantId}
@@ -288,7 +341,7 @@ export function AppShell({
           />
         </div>
       </div>
-      <main className="min-w-0 flex-1 pb-20 sm:pb-0 sm:pl-24 xl:pl-0">
+      <main className="min-w-0 flex-1 pb-40 sm:pb-0 sm:pl-24 xl:pl-0">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
           {/*
             `SignedInBar` stays here, unconditionally — see the module doc

@@ -29,8 +29,8 @@ export interface MoreMenuProps {
    * `<main>` carries `sm:pl-24`, a 96px gutter the vertical rail occupies,
    * and a labelled button is wider than that — it would sit on top of the
    * first column of the screen it is meant to navigate away from. The icon
-   * alone is ~44px, which is both inside the gutter and the minimum touch
-   * target the rail's own rows use.
+   * alone is 48px, which is both inside the gutter and the touch target
+   * the rail's own items use (M3's 48dp, since `@vaam-apps/ui` 0.3.0).
    *
    * The accessible name is unchanged, so every test and every screen reader
    * still finds one control named "Menu".
@@ -158,20 +158,26 @@ export function MoreMenu({
           aria-label="Menu"
           title="Menu"
           /*
-            `h-11 w-11` is 44px, and it is measured rather than chosen:
-            `SideNav`'s floating rail renders its rows at exactly 44x44
-            inside 6px of padding, giving a 58px pill. This trigger was
-            42x32 in a 46px pill, so the two sat side by side at visibly
-            different heights. Matching the row size matches the pill,
-            because both are `p-1.5` around their one item.
+            `h-12 w-12` is 48px, and it is read off the rail rather than
+            chosen: `@vaam-apps/ui` 0.3.0's floating toolbar renders every
+            item as a 48px target inside 8px of padding (`side-nav.tsx`'s
+            `toolbarItemClasses` and `TOOLBAR_CONTAINER`), giving a 64px
+            rail, and `app-shell.tsx` wraps this trigger in the same `p-2`,
+            so matching the item size matches the rail. Icons there render
+            at 24, so this one does too.
 
-            44px is also the rail's own touch-target floor, so this is not
-            only a visual match.
+            It was `h-11 w-11` with a 20px icon until the 0.3.0 bump, for
+            the same reason against 0.2.x's rail: 44x44 rows in 6px of
+            padding, a 58px pill. Before that it was 42x32 in a 46px pill,
+            and the two sat side by side at visibly different heights.
+
+            48px is also M3's touch-target floor, so this is not only a
+            visual match.
           */
-          className="h-11 w-11"
+          className="h-12 w-12"
           onClick={() => setOpen(true)}
         >
-          <Menu size={20} aria-hidden="true" />
+          <Menu size={24} aria-hidden="true" />
         </Button>
       ) : (
         <Button

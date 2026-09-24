@@ -325,6 +325,13 @@ export const MoreMenuOpen: Story = {
  * release carrying the fix is picked up; `a11y-gate.test.ts` pins the
  * rule id, so removing it here without removing it there fails the gate.
  *
+ * **Re-measured on 0.3.0 (2026-09-24), and still needed.** 0.3.0 rewrote
+ * the rails as M3 floating toolbars but not this: the same
+ * `axe.run(document, { runOnly: ["landmark-unique"] })` against the built
+ * story returns one violation at 375, 640, 1023, 1200 and 1279 and none at
+ * 1280 and 1440, and below 1280 the in-flow `<nav>` still computes
+ * `display: block`. vaam-apps/ui#16 is still open.
+ *
  * **What changed on review (2026-09-13):** these two stories carried
  * `a11y: { test: "todo" }`, which switches the addon off ENTIRELY for the
  * story. Measured: a `#3a3a3a`-on-`#0a0b0d` probe placed inside `Shell`
