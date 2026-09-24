@@ -151,6 +151,30 @@ their deliveries' digests and excerpts, and stored invoice responses (see
 `payment_reference` below), and
 `webhook_deliveries.response_excerpt` (the `[redacted]` marker when non-null).
 
+_(**Added 2026-09-23, [ADR-0027](../adr/0027-erasure-reaches-through-checkout-sessions.md):
+no statement was added, but three reach further.** The erasure's `charges`
+statement (`payer_ref`, `payer_ref_masked`, `failure_raw`), its `refunds`
+statement (`failure_raw`) and its `payment_intents` statement
+(`last_payment_error_*`) used to find a payment only through
+`payment_intents.customer_id`. They now find it through
+`vpay_db::customers::PAYERS_INTENTS`. That constant also covers a
+customer-less intent that one of the customer's checkout sessions names,
+which is the shape a session created with `customer=` on such an intent left
+before vaam-apps/vpay#253. It never covers an intent that names another
+customer. No column and no classification moved, so
+`schemas/privacy-inventory.yaml` is unchanged. What moved is the evidence
+that the `payer_msisdn` and `rail_failure_text` controls run on those rows:
+`an_erasure_reaches_a_payment_whose_only_link_to_the_payer_is_a_checkout_session`,
+`an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer`,
+`a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`
+(a create can no longer attach an erased customer to a payment),
+`an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`,
+and the whole-database scan, which now seeds that shape
+(`backends/tests/integration/tests/customers.rs`; see
+[../status/verification/2026-09-23-erasure-through-checkout-sessions.md](../status/verification/2026-09-23-erasure-through-checkout-sessions.md)).
+The line references in the paragraph above are from 2026-09-18 and are now
+out of date. Search for the function names instead.)_
+
 Of the five columns that used to be reached by **none** of those statements,
 the erasure now covers three. Two remain, each a documented maintainer decision
 that is **not taken**:
