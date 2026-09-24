@@ -224,7 +224,7 @@ Full detail, every gate's real numbers, the six-case mutation table and the
 adversarial review's own findings are in
 [../../status/verification/2026-09-13-dashboard-storybook.md](../../status/verification/2026-09-13-dashboard-storybook.md).
 
-**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and three things an operator
+**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and four things an operator
 will notice.** The package bump replaced the date-range picker with compound
 parts and moved `SideNav`'s rails to M3's floating toolbar. What changed on
 this app's screens, each seen in a real browser (the built Storybook, headless
@@ -236,24 +236,38 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   extend it, so a new start needed Clear first), and a single tap then Save
   is an open-ended range, which reaches the URL as `created_from` alone —
   "from that day on", where the first click used to be a one-day range.
-  Below 640px the picker is M3's full-screen range picker. The trigger now
-  fills the row's remaining width rather than sitting at ~262px. Its name
-  for a screen reader is "Created between" whether or not a range is set,
-  with the dates read as its description; there is still no _visible_
-  label once a range is picked, and a visible label is now possible
-  (`DatePickerTrigger` takes an `id`) but not adopted — that is a decision
-  about the filter row, not about the bump.
+  Below 640px the picker is M3's full-screen range picker.
+- **The date filter has a visible "Created between" label**, above the
+  field as "Status" is above its select, and the label is what names the
+  field for a screen reader; the dates, or "Any time" while none are set,
+  are read as its description. The empty field says "Any time" rather than
+  repeating the label. Clicking the label focuses the field and opens
+  nothing, as clicking "Status" does. The field is a fixed width, the
+  longest value it can show — `YYYY-MM-DD → YYYY-MM-DD` in the mono face,
+  the calendar icon and the Clear button's gutter — so it neither clips a
+  range nor shifts the row when one is picked or cleared: 265.9px in
+  headless Chromium (DejaVu Sans Mono), against the ~262px it had before
+  0.3.0. The Status select is now the date field's 40px tall, so the two
+  labels and the two controls line up. This was chosen on this PR's review;
+  the bump's first revision had kept the field unlabelled, as it was on
+  0.2.x, named it with an `aria-label`, and let it fill the row.
 - **Below 640px the Menu button sits above the bottom navigation bar**,
   not beside it. The bar is now 288px wide and drew over the old button by
   26.5px at 375px (54px of 58px at 320px); the button is now a 64px pill
   16px above the bar, and the content column's bottom padding grew from
   80px to 160px so the last row still scrolls clear of both. From 640px up
-  it sits in the vertical rail's column and matches its dress.
+  it sits in the vertical rail's column and matches its dress. The pill is
+  an interim: it exists because the library's toolbar cannot reach the
+  account block below `lg`, and goes once vaam-apps/ui#36 is fixed and
+  picked up.
 - **The Menu drawer's phone header sits ~19px lower**, under a drag handle
   that is now visible (the package's change; nothing here depends on it).
 
 `app-shell.tsx`, `more-menu.tsx` and `payments-filters.tsx` carry the
-measurements. What is still not measured by anything in CI: phone geometry.
-jsdom has no layout, the Storybook suite runs at 1200px and `dashboard.cy.ts`
-at 1000px, so the bottom-bar clearance above is evidenced by the review's
+measurements. The date field's width and the two labels' alignment are
+checked in a real browser by the `FiltersWithRange` story's `play` function,
+including with the row squeezed to a 375px phone's content width. What is
+still not measured by anything in CI: the shell's phone geometry. jsdom has
+no layout, the Storybook suite runs at 1200px and `dashboard.cy.ts` at
+1000px, so the bottom-bar clearance above is evidenced by the review's
 screenshots, not by a gate.
