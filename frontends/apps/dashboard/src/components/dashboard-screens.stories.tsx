@@ -184,10 +184,54 @@ export const FiltersLight: Story = {
   globals: { theme: "light" },
 };
 
+/** The one range both `FiltersWithRange` stories render. */
+const FILTERED = {
+  status: "",
+  createdFrom: "2026-09-01",
+  createdTo: "2026-09-07",
+};
+
 /**
- * The filters with a range set: the date field at its longest value, and
- * the only one of these three stories whose trigger carries a description
- * and a Clear button.
+ * The two viewports the filter row's layout is tested at, either side of
+ * its `sm` (640px) breakpoint. `@storybook/addon-vitest` resizes the test
+ * browser to a story's `globals.viewport` before running it; every other
+ * story keeps its 1200×900 default.
+ */
+const FILTER_VIEWPORTS = {
+  phone: {
+    name: "Phone, 375 × 812",
+    styles: { width: "375px", height: "812px" },
+    type: "mobile",
+  },
+  desktop: {
+    name: "Desktop, 1280 × 800",
+    styles: { width: "1280px", height: "800px" },
+    type: "desktop",
+  },
+} as const;
+
+/** Round a box's top edge, so "on the same line" is an equality. */
+function top(element: Element): number {
+  return Math.round(element.getBoundingClientRect().top);
+}
+
+/**
+ * The date field's trigger, found by the name its visible label gives it,
+ * and the span that shows its value.
+ */
+async function dateField(canvasElement: HTMLElement) {
+  const trigger = within(canvasElement).getByRole("button", {
+    name: "Created between",
+  });
+  const value = trigger.querySelector("span");
+  await expect(value).not.toBeNull();
+  return { trigger, value: value as HTMLSpanElement };
+}
+
+/**
+ * The filters with a range set, at 1280×800: the date field at its longest
+ * value, and the only `Filters` story at `sm` and up whose trigger carries a
+ * description and a Clear button.
  *
  * The `play` function checks, in a real Chromium and against computed
  * geometry rather than class strings, what `payments-filters.tsx`'s module
@@ -198,33 +242,26 @@ export const FiltersLight: Story = {
  *   (it leaves ~4px: the root's tracking, which `ch` does not see);
  * - "Status" and "Created between" share a top edge, and so do their
  *   controls;
- * - squeezed to a 375px phone's content width, the row stays one line and
- *   scrolls, and the field neither narrows nor truncates;
+ * - squeezed to 496px, the narrowest the row gets from `sm` up (the app
+ *   shell's content column at a 640px window), the three controls stay on
+ *   one line and the row scrolls, and the field neither narrows nor
+ *   truncates;
  * - cleared, the field keeps its width, so picking or clearing a range
  *   does not move the row.
  *
  * The mutations that fail it, each alone, are listed in that module doc.
  */
 export const FiltersWithRange: Story = {
-  render: () => (
-    <PaymentsFilters
-      values={{
-        status: "",
-        createdFrom: "2026-09-01",
-        createdTo: "2026-09-07",
-      }}
-    />
-  ),
+  render: () => <PaymentsFilters values={FILTERED} />,
+  parameters: { viewport: { options: FILTER_VIEWPORTS } },
+  globals: { viewport: { value: "desktop", isRotated: false } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    const trigger = canvas.getByRole("button", { name: "Created between" });
+    const { trigger, value } = await dateField(canvasElement);
     await expect(trigger).toHaveAccessibleDescription(
       "2026-09-01 → 2026-09-07",
     );
 
-    const shown = trigger.querySelector("span");
-    await expect(shown).not.toBeNull();
-    const value = shown as HTMLSpanElement;
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     const text = canvasElement.ownerDocument.createRange();
     text.selectNodeContents(value);
@@ -233,8 +270,6 @@ export const FiltersWithRange: Story = {
     await expect(unused).toBeGreaterThanOrEqual(0);
     await expect(unused).toBeLessThanOrEqual(8);
 
-    const top = (element: Element) =>
-      Math.round(element.getBoundingClientRect().top);
     const status = canvas.getByText("Status", { selector: "label" });
     const created = canvas.getByText("Created between", { selector: "label" });
     await expect(top(status)).toBe(top(created));
@@ -244,8 +279,9 @@ export const FiltersWithRange: Story = {
     const width = trigger.getBoundingClientRect().width;
     const row = canvasElement.firstElementChild as HTMLElement;
     const apply = canvas.getByRole("button", { name: "Apply" });
-    canvasElement.style.width = "343px";
+    canvasElement.style.width = "496px";
     await expect(row.scrollWidth).toBeGreaterThan(row.clientWidth);
+    await expect(top(trigger)).toBe(top(select));
     await expect(top(apply)).toBe(top(select));
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     await expect(trigger.getBoundingClientRect().width).toBe(width);
@@ -256,6 +292,48 @@ export const FiltersWithRange: Story = {
     );
     await expect(trigger).toHaveAccessibleDescription("Any time");
     await expect(trigger.getBoundingClientRect().width).toBe(width);
+  },
+};
+
+/**
+ * The same filters at 375×812, below `sm`, where the row wraps rather than
+ * scrolling: a filter an operator has to scroll sideways to discover is
+ * worse on a phone than a short stack.
+ *
+ * The `play` function checks it at the story's own width and squeezed to
+ * the app shell's content column at a 375px and a 320px window (327px and
+ * 272px): the row does not scroll sideways and neither does the page, no
+ * control ends past the row's right edge, the date field sits on a line
+ * below Status, and the range is not truncated. Removing the row's
+ * `max-sm:flex-wrap` fails it; `FiltersWithRange` fails if the row wraps at
+ * every width.
+ */
+export const FiltersWithRangePhone: Story = {
+  render: () => <PaymentsFilters values={FILTERED} />,
+  parameters: { viewport: { options: FILTER_VIEWPORTS } },
+  globals: { viewport: { value: "phone", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const { trigger, value } = await dateField(canvasElement);
+    const select = canvas.getByRole("combobox", { name: "Status" });
+    const apply = canvas.getByRole("button", { name: "Apply" });
+    const row = canvasElement.firstElementChild as HTMLElement;
+    const page = canvasElement.ownerDocument.documentElement;
+
+    for (const width of ["", "327px", "272px"]) {
+      canvasElement.style.width = width;
+      await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+      await expect(page.scrollWidth).toBeLessThanOrEqual(page.clientWidth);
+      const edge = row.getBoundingClientRect().right;
+      for (const control of [select, trigger, apply]) {
+        await expect(control.getBoundingClientRect().right).toBeLessThanOrEqual(
+          edge,
+        );
+      }
+      await expect(top(trigger)).toBeGreaterThan(top(select));
+      await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
+    }
+    canvasElement.style.width = "";
   },
 };
 

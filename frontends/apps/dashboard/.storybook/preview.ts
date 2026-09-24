@@ -115,14 +115,14 @@ const preview: Preview = {
         not belt-and-braces: the store latches `loaded` after its first read
         and refreshes only on a `storage` event, which the DOM never fires in
         the tab that made the write — and `@storybook/addon-vitest` runs all
-        26 stories in ONE page, so without this the second story onward would
+        27 stories in ONE page, so without this the second story onward would
         keep the first one's resolved theme.
       */
       try {
         window.localStorage.setItem("vaam-ui:theme", theme);
       } catch {
         // Storage blocked: the `setAttribute` below still holds for every
-        // story that mounts no `ThemeSwitcher`, which is 23 of the 26.
+        // story that mounts no `ThemeSwitcher`, which is 24 of the 27.
       }
       window.dispatchEvent(
         new StorageEvent("storage", {

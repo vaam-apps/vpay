@@ -224,7 +224,7 @@ Full detail, every gate's real numbers, the six-case mutation table and the
 adversarial review's own findings are in
 [../../status/verification/2026-09-13-dashboard-storybook.md](../../status/verification/2026-09-13-dashboard-storybook.md).
 
-**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and four things an operator
+**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and five things an operator
 will notice.** The package bump replaced the date-range picker with compound
 parts and moved `SideNav`'s rails to M3's floating toolbar. What changed on
 this app's screens, each seen in a real browser (the built Storybook, headless
@@ -251,6 +251,14 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   labels and the two controls line up. This was chosen on this PR's review;
   the bump's first revision had kept the field unlabelled, as it was on
   0.2.x, named it with an `aria-label`, and let it fill the row.
+- **Below 640px the payments filters stack instead of scrolling sideways.**
+  Status, the date field and Apply each take a line (or share one where
+  they fit); nothing is off-screen and nothing scrolls sideways at 320px or
+  375px. From 640px up they stay one line, which scrolls inside itself when
+  the column is too narrow for it — in the app shell, windows from 640px to
+  725px. Before, the row was one line at every width, and at 375px the date
+  field started 231px into a row that had to be scrolled to find it and
+  Apply. Also chosen on this PR's review.
 - **Below 640px the Menu button sits above the bottom navigation bar**,
   not beside it. The bar is now 288px wide and drew over the old button by
   26.5px at 375px (54px of 58px at 320px); the button is now a 64px pill
@@ -264,10 +272,11 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   that is now visible (the package's change; nothing here depends on it).
 
 `app-shell.tsx`, `more-menu.tsx` and `payments-filters.tsx` carry the
-measurements. The date field's width and the two labels' alignment are
-checked in a real browser by the `FiltersWithRange` story's `play` function,
-including with the row squeezed to a 375px phone's content width. What is
-still not measured by anything in CI: the shell's phone geometry. jsdom has
+measurements. The date field's width, the two labels' alignment and the
+filter row's layout either side of 640px are checked in a real browser by
+the `play` functions of `FiltersWithRange` (1280×800) and
+`FiltersWithRangePhone` (375×812). What is still not measured by anything in
+CI: the shell's phone geometry. jsdom has
 no layout, the Storybook suite runs at 1200px and `dashboard.cy.ts` at
 1000px, so the bottom-bar clearance above is evidenced by the review's
 screenshots, not by a gate.

@@ -55,7 +55,8 @@ function rangeFromValues(
 }
 
 /**
- * The status and date-range filters, as one row above the table.
+ * The status and date-range filters above the table: one row from `sm`
+ * (640 px) up, and a short stack below it.
  *
  * **Was a plain `method="get"` `<form>`** — a screenshot from the e2e run
  * showed it four rows tall, one control per line, and the redesign asked for
@@ -111,12 +112,13 @@ function rangeFromValues(
  *
  * What holds each part, measured by mutation: dropping the trigger's `id`,
  * or pointing `htmlFor` anywhere else, fails the four
- * `payments-filters.test.tsx` cases that find the field by name, and the
- * `FiltersWithRange` story; putting `aria-label="Created between"` back in
+ * `payments-filters.test.tsx` cases that find the field by name, and both
+ * `FiltersWithRange` stories; putting `aria-label="Created between"` back in
  * the label's place fails only the case asserting that a `<label>` names it,
  * because the two names read the same to `getByRole`; changing or dropping
- * the placeholder fails the "Any time" case and the story, which clears the
- * range and reads the description; and dropping the `id` and the
+ * the placeholder fails the "Any time" case and the `FiltersWithRange`
+ * story, which clears the range and reads the description; and dropping
+ * the `id` and the
  * placeholder together also makes axe's `button-name` fire, in
  * `a11y.test.tsx` and in the `Filters` and `FiltersLight` stories.
  *
@@ -153,9 +155,9 @@ function rangeFromValues(
  * the same height. They were not: the native `<select>` renders 24 px tall
  * with nothing on it and `DatePickerTrigger`'s `.input` 40 px, so "Status"
  * sat 16 px below "Created between" (label tops at y=32 and y=16, measured).
- * `h-10` gives the select the trigger's 40 px: both labels at y=16, both
- * controls and Apply at y=42–82, and a 40 px target for the select where it
- * had 24 px. That ties it to the field height at the package's default,
+ * `h-10` gives the select the trigger's 40 px: on one line, both labels at
+ * y=16, both controls and Apply at y=42–82, and a 40 px target for the
+ * select where it had 24 px. That ties it to the field height at the package's default,
  * compact density, which this app never changes.
  *
  * **The date field is as wide as its longest value, and no wider.** Inside
@@ -193,35 +195,63 @@ function rangeFromValues(
  * had before 0.3.0.
  *
  * The `FiltersWithRange` story checks all of this in a real browser, and
- * each of these mutations fails it alone: the width class removed (cleared,
- * the field shrinks to 104.6 px), the width at `20ch` (190 px of text in a
- * 169 px slot), `font-mono text-prose` removed (`ch` then comes from the
- * sans face: 20.7 px unused), the select's `h-10` removed (the labels 16 px
- * apart), and `flex-wrap` on the row (at 343 px it wraps instead of
- * scrolling).
+ * each of these mutations fails it on its own: the width class removed
+ * (cleared, the field shrinks to 104.6 px), the width at `20ch` (190 px of
+ * text in a 169 px slot), `font-mono text-prose` removed (`ch` then comes
+ * from the sans face: 20.7 px unused), and the select's `h-10` removed (the
+ * labels 16 px apart). The `20ch` and sans-face mutations fail
+ * `FiltersWithRangePhone` too. The wrap's own mutations are in the next
+ * paragraph.
  *
- * **One line, and `overflow-x-auto` is what makes that true rather than
- * merely literal.** `flex` with no `flex-wrap` guarantees the controls never
- * go to a second row — but on 0.2.x nothing here shrank, and that was
- * measured rather than reasoned: rendered against this app's own compiled
- * `globals.css` in a real browser, the three controls were 211 px, 262 px
- * and 71 px at *every* container width from 1104 px down to 320 px. The
- * `<select>`'s intrinsic minimum is its widest option
- * (`requires_payment_method`), and the picker's `truncate` never engaged
- * because its trigger sat in a block wrapper the row could not squeeze. So
- * below ~568 px of content width the row simply spilled, and — being a
- * direct child of `ScreenStack`, whose own `min-w-0` protects the column and
- * not its children — it took the whole document into horizontal scroll with
- * it. That is the failure `ScreenStack`'s doc names in as many words, and
- * `PaymentsTable` is already wrapped against it the same way. `min-w-0` lets
- * the row be narrower than its contents; `overflow-x-auto` keeps the spill
- * inside the row's own box. Measured after: at 375 px the document's
- * `scrollWidth` equals its `clientWidth`; at 1280 px nothing changes at all,
- * because there is nothing to scroll. Measured again with both fields
- * labelled and the date field at its fixed width (2026-09-24): at 375 px the
- * row's content is 582 px in a 343 px box (327 px inside the app shell) and
- * scrolls inside itself, the date field starting 231 px in; the document
- * stays at `scrollWidth` 375.
+ * **One scrolling line from `sm` up; a stack below it (2026-09-24).** Below
+ * 640 px the row wraps (`max-sm:flex-wrap`): Status, the date field and
+ * Apply each take a line at their own width, or share one where they fit.
+ * A filter an operator has to scroll sideways to discover is worse on a
+ * phone than a short stack — the one-line rule came from a desktop
+ * redesign — and the maintainer decided so on vaam-apps/vpay#258's review.
+ * From `sm` up the row stays one line, and `overflow-auto` keeps any spill
+ * inside the row's own box rather than the document's.
+ *
+ * Measured in the built Storybook, headless Chromium, 2026-09-24, with the
+ * payments screen composed inside `AppShell`: at 320 and 375 px the row is
+ * three lines and 196 px tall in a 272 px and a 327 px column, the date
+ * field (265.9 px) fits the narrower one, nothing ends past the row's edge,
+ * and neither the row nor the document scrolls sideways. At 639 px the row
+ * may wrap but does not need to: the three fit one 591 px line. At 640 px
+ * it is `nowrap`, and the shell's content column is only 496 px, so the
+ * row's 582 px scroll inside it; the column is 144 px narrower than the
+ * window (`sm:pl-24` and the `p-6`), so that lasts until a 726 px window.
+ * At 1280 px, one line with nothing to scroll. `FiltersWithRangePhone`
+ * (375×812) fails when `max-sm:flex-wrap` is removed (the row's 582 px
+ * scroll in its 375 px box), and `FiltersWithRange` (1280×800, squeezed to
+ * that 496 px column) fails when the row wraps at every width.
+ *
+ * `overflow-auto` and not `overflow-x-auto`, only for `verify-ui`'s
+ * 60-character class budget: the two compute the same, because
+ * `overflow-x: auto` forces `overflow-y` from `visible` to `auto` (read back
+ * in Chromium: `auto`/`auto` for both).
+ *
+ * _History: why the row is a scroll container at all._ `flex` with no
+ * `flex-wrap` guaranteed the controls never went to a second row — but on
+ * 0.2.x nothing here shrank, and that was measured rather than reasoned:
+ * rendered against this app's own compiled `globals.css` in a real browser,
+ * the three controls were 211 px, 262 px and 71 px at *every* container
+ * width from 1104 px down to 320 px. The `<select>`'s intrinsic minimum is
+ * its widest option (`requires_payment_method`), and the picker's
+ * `truncate` never engaged because its trigger sat in a block wrapper the
+ * row could not squeeze. So below ~568 px of content width the row simply
+ * spilled, and — being a direct child of `ScreenStack`, whose own `min-w-0`
+ * protects the column and not its children — it took the whole document
+ * into horizontal scroll with it. That is the failure `ScreenStack`'s doc
+ * names in as many words, and `PaymentsTable` is already wrapped against it
+ * the same way. `min-w-0` lets the row be narrower than its contents;
+ * `overflow-x-auto` kept the spill inside the row's own box. Measured
+ * after: at 375 px the document's `scrollWidth` equalled its `clientWidth`.
+ * Measured again with both fields labelled and the date field at its fixed
+ * width (2026-09-24, before the wrap): at 375 px the row's content was
+ * 582 px in a 343 px box (327 px inside the app shell) and scrolled inside
+ * itself, the date field starting 231 px in with its label cut off — the
+ * finding that led to the wrap.
  *
  * _History: 0.3.0's width, before the label._ 0.3.0 removed the block
  * wrapper 0.2.x put around the trigger, so `DatePickerTrigger`'s own
@@ -281,7 +311,7 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
   }
 
   return (
-    <div className="flex min-w-0 items-end gap-3 overflow-x-auto">
+    <div className="flex min-w-0 items-end gap-3 overflow-auto max-sm:flex-wrap">
       <FormField label="Status" htmlFor="payments-filter-status">
         <select
           id="payments-filter-status"
