@@ -108,10 +108,11 @@ describe("the browser a11y suite is still a gate", () => {
    * stories file keeps the history) and kept `test: "error"` in force for
    * everything else, and this case pinned that pair and that rule.
    * `@vaam-apps/ui` 0.4.0 fixed the defect (vaam-apps/ui#39), the
-   * suppression went, and the pinned sets are now EMPTY: no story may
-   * disable a rule or carry a `parameters` override at all. Adding either
-   * back fails this in `just ci`; the lists below are where a reviewed
-   * exception would have to be written down.
+   * suppression went, and the pinned sets are now EMPTY: nothing in a
+   * story file may disable a rule — a story or `meta` — and no story may
+   * carry a `parameters` override at all. Adding either back fails this in
+   * `just ci`; the lists below are where a reviewed exception would have to
+   * be written down.
    */
   it("no story switches the a11y addon off, and the rule suppressions are the pinned set", () => {
     const dir = join(APP, "src/components");
@@ -128,9 +129,32 @@ describe("the browser a11y suite is still a gate", () => {
         `${file}: a story-level test:"off"/"todo" turns axe off for that story entirely`,
       ).not.toMatch(/test:\s*"(off|todo)"/);
 
-      const rules = [
-        ...src.matchAll(/id:\s*"([^"]+)"\s*,\s*enabled:\s*false/g),
-      ].map((m) => m[1]);
+      // Every rule the file switches off — on a story or on `meta` — in both
+      // shapes the addon accepts: an entry in `config.rules`
+      // (`{ id: "…", enabled: false }`, its keys in either order) and a key
+      // in axe's own `options.rules` (`"…": { enabled: false }`). Then
+      // counted against every `enabled: false` in the file, so a shape
+      // neither pattern reads fails closed rather than passing unseen.
+      //
+      // This matched `id: "…", enabled: false` in that order only until
+      // 2026-09-24 (vaam-apps/vpay#258's review). Measured then, with the
+      // pinned set already empty: `{ enabled: false, id: "landmark-unique" }`
+      // on `meta`, or `options: { rules: { "landmark-unique": { enabled:
+      // false } } }` there, switched the rule off for every story in the
+      // file and left this case green.
+      const inConfig = [...src.matchAll(/\{[^{}]*\benabled:\s*false[^{}]*\}/g)]
+        .map((m) => /\bid:\s*["']([^"']+)["']/.exec(m[0])?.[1])
+        .filter((id): id is string => id !== undefined);
+      const inOptions = [
+        ...src.matchAll(
+          /["']?([\w-]+)["']?\s*:\s*\{\s*enabled:\s*false\s*,?\s*\}/g,
+        ),
+      ].map((m) => m[1] ?? "");
+      const rules = [...inConfig, ...inOptions];
+      expect(
+        rules.length,
+        `${file}: every "enabled: false" names the axe rule it switches off`,
+      ).toBe([...src.matchAll(/\benabled:\s*false/g)].length);
       expect(
         rules.sort(),
         `${file}: the set of axe rules any story disables`,
