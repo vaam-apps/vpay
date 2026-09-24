@@ -143,14 +143,17 @@ describe("the payments filters", () => {
     // of Sept 1 → Sept 18. The picker needs an explicit Save click to commit.
     render(<PaymentsFilters values={SEPTEMBER} />);
     fireEvent.click(dateTrigger());
-    fireEvent.click(
-      screen.getByRole("button", { name: /Thursday, September 10th, 2026/ }),
-    );
-    fireEvent.click(
-      screen.getByRole("button", { name: /Friday, September 18th, 2026/ }),
-    );
-    // Confirm the range selection
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    const dayButtons = screen.getAllByRole("button", {
+      name: /Thursday, September 10th, 2026/,
+    });
+    fireEvent.click(dayButtons[0]);
+    const endDayButtons = screen.getAllByRole("button", {
+      name: /Friday, September 18th, 2026/,
+    });
+    fireEvent.click(endDayButtons[0]);
+    // Confirm the range selection — click the first Save button (from the picker)
+    const saveButtons = screen.getAllByRole("button", { name: "Save" });
+    fireEvent.click(saveButtons[0]);
     clickApply();
     const url = pushedUrl();
     expect(url.searchParams.get("created_from")).toBe("2026-09-10");
