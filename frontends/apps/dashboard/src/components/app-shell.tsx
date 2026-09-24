@@ -280,7 +280,11 @@ export function AppShell({
         0.3.0. That is 0 here, and deliberately not added to `pb-20`: this
         app sets no `viewport-fit=cover` (`app/layout.tsx` exports no
         `viewport`), so the browser keeps the page out of the unsafe area
-        itself and the inset never reaches the page.
+        itself and the inset never reaches the page. If the app ever opts
+        in, this padding must add `env(safe-area-inset-bottom)` as the bar
+        does: with a 34px inset forced through the DevTools protocol, the
+        bar overlapped the last row by 10px at a 16px root and 4px at a
+        20px root (vaam-apps/vpay#258's review, 2026-09-24).
       */}
       <main className="min-w-0 flex-1 pb-20 sm:pb-0 sm:pl-24 xl:pl-0">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">

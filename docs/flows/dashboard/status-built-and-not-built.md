@@ -332,10 +332,10 @@ built Storybook in headless Chromium at 320, 375, 640, 700, 1100 and 1280px:
   they sit under the sidebar's nav, as before. The phone bar is 288px wide
   (four destinations and More), and its sheet holds Customers, the one
   destination that does not fit, above the account block; the drawer lists
-  all five, labelled. Escape closes either and puts focus back on More (a
-  tap on the scrim closes it too, by the package's own e2e test; not
-  measured here), and Sign out and the theme switch work from inside by
-  pointer and by keyboard.
+  all five, labelled. Escape or a tap on the scrim closes either and puts
+  focus back on More, and Sign out and the theme switch work from inside by
+  pointer and by keyboard (the scrim and the focus return measured by
+  #258's review).
 - **The content column's bottom padding stays 80px on a phone**, as on
   `master` before this change; this change's branch had raised it to 160px
   to clear the 0.3.0 pill as well, and that never merged. Scrolled to the
