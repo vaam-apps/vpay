@@ -65,11 +65,37 @@ function refusedAction(message: string, requestId: string): FormAction {
   return () => Promise.resolve({ error: message, requestId });
 }
 
+/**
+ * The two viewports the filter row's layout is tested at, either side of
+ * its `sm` (640px) breakpoint. `@storybook/addon-vitest` resizes the test
+ * browser to a story's `globals.viewport` before running it; every story
+ * that sets none keeps its 1200×900 default.
+ *
+ * Declared on `meta` rather than on the two stories that use them, because
+ * `a11y-gate.test.ts` pins which stories may carry a `parameters` override
+ * at all (`Shell` and `ShellLight`, for their one axe suppression) and a
+ * viewport list is not a reason to widen that. Declaring them here also
+ * makes them this file's viewport menu in the Storybook toolbar.
+ */
+const FILTER_VIEWPORTS = {
+  phone: {
+    name: "Phone, 375 × 812",
+    styles: { width: "375px", height: "812px" },
+    type: "mobile",
+  },
+  desktop: {
+    name: "Desktop, 1280 × 800",
+    styles: { width: "1280px", height: "800px" },
+    type: "desktop",
+  },
+} as const;
+
 const meta = {
   title: "Dashboard/Screens",
   parameters: {
     layout: "padded",
     a11y: { config: { rules: [{ id: "color-contrast", enabled: true }] } },
+    viewport: { options: FILTER_VIEWPORTS },
   },
   tags: ["autodocs"],
 } satisfies Meta;
@@ -191,25 +217,6 @@ const FILTERED = {
   createdTo: "2026-09-07",
 };
 
-/**
- * The two viewports the filter row's layout is tested at, either side of
- * its `sm` (640px) breakpoint. `@storybook/addon-vitest` resizes the test
- * browser to a story's `globals.viewport` before running it; every other
- * story keeps its 1200×900 default.
- */
-const FILTER_VIEWPORTS = {
-  phone: {
-    name: "Phone, 375 × 812",
-    styles: { width: "375px", height: "812px" },
-    type: "mobile",
-  },
-  desktop: {
-    name: "Desktop, 1280 × 800",
-    styles: { width: "1280px", height: "800px" },
-    type: "desktop",
-  },
-} as const;
-
 /** Round a box's top edge, so "on the same line" is an equality. */
 function top(element: Element): number {
   return Math.round(element.getBoundingClientRect().top);
@@ -253,7 +260,6 @@ async function dateField(canvasElement: HTMLElement) {
  */
 export const FiltersWithRange: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
-  parameters: { viewport: { options: FILTER_VIEWPORTS } },
   globals: { viewport: { value: "desktop", isRotated: false } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
@@ -310,7 +316,6 @@ export const FiltersWithRange: Story = {
  */
 export const FiltersWithRangePhone: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
-  parameters: { viewport: { options: FILTER_VIEWPORTS } },
   globals: { viewport: { value: "phone", isRotated: false } },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
