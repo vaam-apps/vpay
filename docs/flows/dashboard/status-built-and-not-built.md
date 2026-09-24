@@ -247,8 +247,11 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   the calendar icon and the Clear button's gutter — so it neither clips a
   range nor shifts the row when one is picked or cleared: 265.9px in
   headless Chromium (DejaVu Sans Mono), against the ~262px it had before
-  0.3.0. The Status select is now the date field's 40px tall, so the two
-  labels and the two controls line up. This was chosen on this PR's review;
+  0.3.0. Its padding is in rem and its value a fixed 14px, so the width
+  grows with the browser's default font size and the whole range still
+  shows at Chrome's "Large" (20px) and "Very large" (24px). The Status
+  select is now the date field's 40px tall, so the two labels and the two
+  controls line up. This was chosen on this PR's review;
   the bump's first revision had kept the field unlabelled, as it was on
   0.2.x, named it with an `aria-label`, and let it fill the row.
 - **The payments filters wrap instead of scrolling sideways, at every
@@ -262,8 +265,10 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   out of view until the row was scrolled. Below a 314px window the date
   field is wider than the column, so it shrinks to fit and truncates its
   value rather than push the page sideways: at 280px it is 232px wide, and
-  a screen reader still hears the whole range. Also chosen on this PR's
-  review.
+  a screen reader still hears the whole range. The Status select is capped
+  the same way, which matters only at a larger default font size (at 20px
+  it is 268px, wider than a 280px window's column). Also chosen on this
+  PR's review.
 - **Below 640px the Menu button sits above the bottom navigation bar**,
   not beside it. The bar is now 288px wide and drew over the old button by
   26.5px at 375px (54px of 58px at 320px); the button is now a 64px pill
@@ -282,7 +287,6 @@ filter row's wrapping (one line at 1280px, wrapped with nothing off-screen
 in a 496px column and at phone widths) are checked in a real browser by the
 `play` functions of `FiltersWithRange` (1280×800) and
 `FiltersWithRangePhone` (375×812). What is still not measured by anything in
-CI: the shell's phone geometry. jsdom has
-no layout, the Storybook suite runs at 1200px and `dashboard.cy.ts` at
-1000px, so the bottom-bar clearance above is evidenced by the review's
-screenshots, not by a gate.
+CI: the shell's phone geometry. jsdom has no layout, every other story
+runs at 1200px and `dashboard.cy.ts` at 1000px, so the bottom-bar clearance
+above is evidenced by the review's screenshots, not by a gate.
