@@ -132,7 +132,7 @@ inferred** (`sdks/stripe-compat/src/errors.compat.test.ts`): stripe-node meets
 a non-JSON body by discarding everything it knows about the response and
 throwing
 
-```
+```text
 StripeAPIError: Invalid JSON received from the Stripe API
 ```
 
