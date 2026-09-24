@@ -35,7 +35,8 @@ import { AppShell } from "./app-shell";
 import { EnrolmentPanel } from "./enrolment-panel";
 import { FormAlert } from "./form-alert";
 import { PasswordForm } from "./password-form";
-import { PaymentDetailView } from "./payment-detail";
+import { PaymentDetailHeader, PaymentDetailView } from "./payment-detail";
+import { PaymentSkeleton } from "./payment-skeleton";
 import { PaymentsFilters } from "./payments-filters";
 import { PaymentsPager } from "./payments-pager";
 import { PAYMENTS_DESCRIPTION, PaymentsSkeleton } from "./payments-skeleton";
@@ -619,6 +620,145 @@ export const DetailWithoutCharge: Story = {
 export const DetailWithChargeLight: Story = {
   render: () => <PaymentDetailView detail={DETAIL} />,
   globals: { theme: "light" },
+};
+
+// ------------------------------------------------------------- PaymentSkeleton
+
+/**
+ * One payment's loading state above the loaded page it stands in for —
+ * `PaymentDetailHeader` and `PaymentDetailView` in a `ScreenStack`, as
+ * `payment-screen.tsx`'s loaded branch composes them.
+ */
+function PaymentSkeletonAbovePage() {
+  return (
+    <div className="flex flex-col gap-12">
+      <PaymentSkeleton />
+      <ScreenStack>
+        <PaymentDetailHeader />
+        <PaymentDetailView detail={DETAIL} />
+      </ScreenStack>
+    </div>
+  );
+}
+
+/**
+ * The boxes a payment's loading state claims, each as an offset from its
+ * own screen stack's top-left corner and a size: the header, the panel,
+ * the panel's title-and-caption block, its figure row, each figure, the
+ * Summary section's position and width (not its height: the rows under
+ * the heading are data), and the Summary heading.
+ *
+ * Both stacks are read by position, the same position in each: the page
+ * is `[header, view]` and the skeleton `[Loading…, header, view]`, where
+ * `view` is `[panel, Summary, …]`, `panel` is `[title and caption,
+ * figures]` and `Summary` is `[heading, rows]`.
+ */
+function pageBoxes(stack: Element, header: Element) {
+  const origin = stack.getBoundingClientRect();
+  const at = (element: Element | undefined, withHeight = true) => {
+    const box = (element as Element).getBoundingClientRect();
+    const edges = [
+      box.left - origin.left,
+      box.top - origin.top,
+      box.width,
+      box.height,
+    ];
+    return withHeight ? edges : edges.slice(0, 3);
+  };
+  const view = header.nextElementSibling as Element;
+  const [panel, summary] = [...view.children];
+  const [titled, figures] = [...(panel as Element).children];
+  return [
+    at(header),
+    at(panel),
+    at(titled),
+    at(figures),
+    ...[...(figures as Element).children].map((figure) => at(figure)),
+    at(summary, false),
+    at((summary as Element).firstElementChild as Element),
+  ];
+}
+
+/**
+ * The payment skeleton lands on the page: every claimed box within a
+ * pixel of the loaded one, at each column width given and then again at a
+ * 20px root. The canvas width and the root are restored in `finally`,
+ * since every later story in this page shares them.
+ */
+async function paymentSkeletonLandsOnThePage(
+  canvasElement: HTMLElement,
+  widths: readonly string[],
+) {
+  // Found by what they are, not by the layout classes under test.
+  const canvas = within(canvasElement);
+  const loading = canvasElement.querySelector(
+    '[role="status"][aria-busy="true"]',
+  );
+  const heading = canvas.getByRole("heading", { name: "Payment" });
+  const header = heading.parentElement as Element;
+  const page = header.parentElement as Element;
+  await expect(loading).not.toBeNull();
+  await expect(header.tagName).toBe("HEADER");
+  const skeletonHeader = (loading as Element).children[1] as Element;
+
+  const root = canvasElement.ownerDocument.documentElement;
+  try {
+    for (const rootSize of ["", "20px"]) {
+      root.style.fontSize = rootSize;
+      for (const width of widths) {
+        canvasElement.style.width = width;
+        const expected = pageBoxes(page, header);
+        const actual = pageBoxes(loading as Element, skeletonHeader);
+        const where = `root ${rootSize || "16px"}, column ${width || "full"}`;
+        await expect(actual.length, where).toBe(expected.length);
+        const off = actual.flatMap((box, i) =>
+          box.map((value, j) =>
+            Math.abs(value - (expected[i]?.[j] ?? Number.NaN)),
+          ),
+        );
+        await expect(
+          Math.max(...off),
+          `${where}: skeleton ${JSON.stringify(actual)}, page ${JSON.stringify(expected)}`,
+        ).toBeLessThanOrEqual(1);
+      }
+    }
+  } finally {
+    root.style.fontSize = "";
+    canvasElement.style.width = "";
+  }
+}
+
+/**
+ * One payment's loading state, at 1280×800, above the loaded header and
+ * view it stands in for.
+ *
+ * The `play` function is the guard on `PaymentSkeleton`: at the story's
+ * own width and squeezed to the app shell's content column at 1100 and
+ * 640px windows (956 and 496px), and again at a 20px root, the header,
+ * the panel and each of its parts, and the Summary heading are within a
+ * pixel of the loaded page's. The mutations that fail it are in
+ * `payment-skeleton.tsx`'s module doc.
+ */
+export const PaymentLoading: Story = {
+  render: () => <PaymentSkeletonAbovePage />,
+  globals: { viewport: { value: "desktop", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await paymentSkeletonLandsOnThePage(canvasElement, ["", "956px", "496px"]);
+  },
+};
+
+/**
+ * The same at 375×812, where the panel's caption is two lines and its
+ * three figures wrap: at the story's own width and squeezed to the
+ * shell's column at 375 and 320px windows (327 and 272px — two figure
+ * lines, then three), at both roots.
+ */
+export const PaymentLoadingPhone: Story = {
+  render: () => <PaymentSkeletonAbovePage />,
+  globals: { viewport: { value: "phone", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await paymentSkeletonLandsOnThePage(canvasElement, ["", "327px", "272px"]);
+  },
 };
 
 // ------------------------------------------------------------------ AppShell

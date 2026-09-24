@@ -13,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@vaam-apps/ui";
+import NextLink from "next/link";
 
 import { PaymentStatusPill } from "../payment-status";
 import {
@@ -27,6 +28,32 @@ import { TimelineGap } from "./timeline-gap";
 
 export interface PaymentDetailViewProps {
   detail: PaymentDetail;
+}
+
+/**
+ * The line under the "At a glance" panel's title. One string, used by the
+ * panel and by `PaymentSkeleton`'s placeholder for it, so the placeholder
+ * wraps where the caption will: one line on a desktop, two on a phone.
+ */
+export const AT_A_GLANCE_CAPTION =
+  "This payment only — vpay exposes no aggregates, so nothing here is a total.";
+
+/**
+ * The detail page's own header: its heading and the way back to the list.
+ *
+ * A plain `<h2>` — see `payments-screen.tsx` for why, and the 13 Cypress
+ * assertions that pin it. A component rather than markup in
+ * `payment-screen.tsx` so the `PaymentLoading` stories compare
+ * `PaymentSkeleton` with the header the page really renders, not with a
+ * copy of it that could drift.
+ */
+export function PaymentDetailHeader() {
+  return (
+    <header>
+      <h2>Payment</h2>
+      <NextLink href="/payments">Back to payments</NextLink>
+    </header>
+  );
 }
 
 /**
@@ -97,10 +124,7 @@ export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
         `muted` is what the panel renders its own caption at and is what the
         figures below use.
       */}
-      <InstrumentPanel
-        title="At a glance"
-        caption="This payment only — vpay exposes no aggregates, so nothing here is a total."
-      >
+      <InstrumentPanel title="At a glance" caption={AT_A_GLANCE_CAPTION}>
         <div className="flex flex-wrap gap-8" data-testid="at-a-glance">
           <div>
             <p className="text-caption text-muted-foreground">Amount</p>

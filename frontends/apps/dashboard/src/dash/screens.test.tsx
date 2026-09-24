@@ -30,6 +30,7 @@ const { PaymentsScreen } =
   await import("../../app/(dash)/payments/payments-screen");
 const { PaymentScreen } =
   await import("../../app/(dash)/payments/[id]/payment-screen");
+const { AT_A_GLANCE_CAPTION } = await import("../components/payment-detail");
 
 const INTENT = {
   id: "pi_test_0000000000000001",
@@ -157,6 +158,32 @@ describe("the payments screen", () => {
     await screen.findByText(/5,000|5 000/);
     expect(container.querySelector("h2")?.textContent).toBe("Payments");
     expect(container.querySelector("h1")).toBeNull();
+  });
+});
+
+describe("one payment's screen", () => {
+  it("shows the page's own skeleton while the read is in flight, and no heading or detail yet", () => {
+    // `PaymentSkeleton`, not `RouteSkeleton rows={10}`: the library's has a
+    // filter bar this page does not, and a header, rows and no panel where
+    // this page has a header, an instrument panel and a Summary, so
+    // everything moved when the payment arrived (`payment-skeleton.tsx`
+    // has the numbers, and the `PaymentLoading` stories hold the geometry
+    // in a real browser). The panel's caption, invisible, is what tells
+    // the two apart here: `RouteSkeleton` has no panel to caption. And no
+    // <h2> and no `detail-id`: `dashboard.cy.ts` waits on the second as
+    // the sign the payment has loaded.
+    const { container } = mountWith(
+      {
+        ...providerReturning(null),
+        getOne: () => new Promise(() => undefined),
+      },
+      <PaymentScreen id="pi_example_1" />,
+    );
+    const loading = screen.getByRole("status");
+    expect(loading).toHaveAttribute("aria-busy", "true");
+    expect(loading.textContent).toContain(AT_A_GLANCE_CAPTION);
+    expect(container.querySelector("h2")).toBeNull();
+    expect(screen.queryByTestId("detail-id")).toBeNull();
   });
 });
 
