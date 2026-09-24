@@ -224,7 +224,7 @@ Full detail, every gate's real numbers, the six-case mutation table and the
 adversarial review's own findings are in
 [../../status/verification/2026-09-13-dashboard-storybook.md](../../status/verification/2026-09-13-dashboard-storybook.md).
 
-**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and five things an operator
+**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and six things an operator
 will notice.** The package bump replaced the date-range picker with compound
 parts and moved `SideNav`'s rails to M3's floating toolbar. What changed on
 this app's screens, each seen in a real browser (the built Storybook, headless
@@ -269,6 +269,16 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   the same way, which matters only at a larger default font size (at 20px
   it is 268px, wider than a 280px window's column). Also chosen on this
   PR's review.
+- **The payments list's loading state is shaped like the list.** It was
+  `@vaam-apps/ui`'s `RouteSkeleton`, whose header and filter bar are other
+  heights than this screen's: the table started 50px lower than the
+  skeleton's rows at 1280px and 156px lower at 375px once the read
+  returned, and at 320px the skeleton pushed the page 24px sideways.
+  `PaymentsSkeleton` mirrors the heading, the description and the filter
+  row, wrapping included; measured inside the app shell at 320, 375, 640,
+  700, 726 and 1280px, at the default and a 20px root, every box of the
+  filter row lands where its placeholder was. The table rows below are
+  still placeholders of a fixed height. Also chosen on this PR's review.
 - **Below 640px the Menu button sits above the bottom navigation bar**,
   not beside it. The bar is now 288px wide and drew over the old button by
   26.5px at 375px (54px of 58px at 320px); the button is now a 64px pill
@@ -281,12 +291,14 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
 - **The Menu drawer's phone header sits ~19px lower**, under a drag handle
   that is now visible (the package's change; nothing here depends on it).
 
-`app-shell.tsx`, `more-menu.tsx` and `payments-filters.tsx` carry the
-measurements. The date field's width, the two labels' alignment and the
-filter row's wrapping (one line at 1280px, wrapped with nothing off-screen
-in a 496px column and at phone widths) are checked in a real browser by the
-`play` functions of `FiltersWithRange` (1280×800) and
-`FiltersWithRangePhone` (375×812). What is still not measured by anything in
-CI: the shell's phone geometry. jsdom has no layout, every other story
-runs at 1200px and `dashboard.cy.ts` at 1000px, so the bottom-bar clearance
-above is evidenced by the review's screenshots, not by a gate.
+`app-shell.tsx`, `more-menu.tsx`, `payments-filters.tsx` and
+`payments-skeleton.tsx` carry the measurements. The date field's width,
+the two labels' alignment and the filter row's wrapping (one line at
+1280px, wrapped with nothing off-screen in a 496px column and at phone
+widths) are checked in a real browser by the `play` functions of `FiltersWithRange` (1280×800) and
+`FiltersWithRangePhone` (375×812), and the loading skeleton against the
+loaded row by `PaymentsLoading` and `PaymentsLoadingPhone`. What is still
+not measured by anything in CI: the shell's phone geometry. jsdom has no
+layout, every other story runs at 1200px and `dashboard.cy.ts` at 1000px,
+so the bottom-bar clearance above is evidenced by the review's
+screenshots, not by a gate.
