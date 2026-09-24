@@ -915,8 +915,9 @@ async function moreSheetByKeyboard(body: HTMLElement) {
  * The `play` function scrolls to the end of twenty rows and checks the
  * last one ends at least 16px above the bar's top edge (it ends 24px
  * above: `<main>`'s `pb-20` clears the bar and the column's `p-6` is the
- * spare). The story's own `padded` layout would add 16px to that, so the
- * body's padding is zeroed for the measurement and restored after. Then
+ * spare). In the Storybook UI the story's `padded` layout adds 16px of
+ * body padding the app does not have, so the body's padding is zeroed for
+ * the measurement and restored after. Then
  * it opens the sheet by pointer and by keyboard (`moreSheetWorks`,
  * `moreSheetByKeyboard`), and axe runs over the open sheet.
  */
@@ -987,7 +988,10 @@ export const ShellRail: Story = {
 
 /**
  * `<main>`'s content box starts at least 16px past the vertical rail's
- * right edge.
+ * right edge. Measured with the body's padding zeroed, as `ShellPhone`'s
+ * clearance is: the rail is `fixed` to the viewport and does not move with
+ * it, so the Storybook UI's `padded` layout would hand `<main>` 16px the
+ * app does not have.
  */
 async function railGutterHolds(canvasElement: HTMLElement) {
   const body = canvasElement.ownerDocument.body;
@@ -997,11 +1001,17 @@ async function railGutterHolds(canvasElement: HTMLElement) {
   const main = canvasElement.querySelector("main");
   await expect(rail).not.toBeNull();
   await expect(main).not.toBeNull();
-  const start =
-    (main as HTMLElement).getBoundingClientRect().left +
-    Number.parseFloat(getComputedStyle(main as HTMLElement).paddingLeft);
-  const railEnd = (rail as Element).getBoundingClientRect().right;
-  await expect(start - railEnd).toBeGreaterThanOrEqual(16);
+  const padding = body.style.padding;
+  try {
+    body.style.padding = "0px";
+    const start =
+      (main as HTMLElement).getBoundingClientRect().left +
+      Number.parseFloat(getComputedStyle(main as HTMLElement).paddingLeft);
+    const railEnd = (rail as Element).getBoundingClientRect().right;
+    await expect(start - railEnd).toBeGreaterThanOrEqual(16);
+  } finally {
+    body.style.padding = padding;
+  }
 }
 
 /**
