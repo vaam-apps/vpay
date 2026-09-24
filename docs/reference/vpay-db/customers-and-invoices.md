@@ -111,6 +111,22 @@ half.
 
 ### The erasure is seven statements in one transaction, and six of them are not about `customers`
 
+_(**Corrected 2026-09-23: it is fourteen on this heading's counting, and
+fifteen with the branch `SELECT`.** The heading is left as written, like
+every dated claim here. "Seven" was right when it was written. It counted
+the row write and the six statements after it (the event, four redactions
+and the digest clear), and not the branch `SELECT` before them. #211
+(2026-09-19) added two statements and #251 (2026-09-23) added five for the
+out-of-band reference. `erase_in_tx`'s doc comment carries the current list.
+The same day,
+[ADR-0027](../../adr/0027-erasure-reaches-through-checkout-sessions.md)
+changed where three of the statements find a payment. The `charges`,
+`refunds` and `payment_intents` redactions now go through
+`PAYERS_INTENTS`, which also covers a customer-less intent that one of the
+customer's checkout sessions names. So "reachable from a customer only
+through an intent" below now means through that constant, not only through
+`payment_intents.customer_id`.)_
+
 `erase_in_tx` is the whole of issue #68, and the shape is what the issue got
 wrong. The issue asks for identifiers to be redacted "on retained intents and
 sessions"; an intent has never carried one. The copies that survived a

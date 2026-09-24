@@ -1129,6 +1129,66 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
      WHEN field.key = 'address' THEN $3::JSONB \
      ELSE field.value END";
 
+/// The payment intents an erasure of customer `$1` reaches: the one
+/// definition the three per-payment redactions in [`redact_stored_copies`]
+/// share (the `charges`, `refunds` and `payment_intents` statements).
+///
+/// # Two ways in, since 2026-09-23
+///
+/// An intent that **names** the customer, `payment_intents.customer_id = $1`.
+/// That was the only way in until 2026-09-23.
+///
+/// The second way is an intent that names **nobody**, where a checkout session
+/// names the customer. A session created with `customer=` on a customer-less
+/// intent stored the customer on the session row and never on the intent.
+/// Erasing that customer therefore left the payer's MSISDN in
+/// `charges.payer_ref` for any payment collected through that session, along
+/// with the rail's prose about them and the intent's decline text. vpay#253
+/// stops new rows taking that shape by writing the session's customer onto the
+/// intent. It backfills nothing, so **historical rows keep it**. The
+/// maintainer decided on 2026-09-23 that erasure must also reach payments
+/// through `checkout_sessions.customer_id`. The decision and its consequences
+/// are in `docs/adr/0027-erasure-reaches-through-checkout-sessions.md`.
+///
+/// # The guard is `p.customer_id IS NULL`
+///
+/// Only the session branch has this guard. Together with the first branch, a
+/// session can lead the erasure only to an intent whose own customer is
+/// **NULL or `$1`**. An intent that names a different customer `Y` belongs to
+/// `Y`. Its charge carries `Y`'s MSISDN, and erasing `X` must never redact
+/// `Y`'s data, however many sessions on that intent once named `X`. That
+/// shape is reachable. Before vpay#253, an intent with no customer could have
+/// an expired session naming `X`. Since vpay#253, a later session naming `Y`
+/// writes `Y` onto that intent. So the guard protects a real case, and
+/// `an_erasure_through_a_session_never_reaches_an_intent_that_names_another_customer`
+/// is the test.
+///
+/// A guard in a sub-select is evaluated against the statement's snapshot.
+/// It is not re-checked when the statement waits on a row that a session
+/// create is concurrently giving to `Y`. So the `payment_intents` statement
+/// repeats it on the row it writes (see that statement's comment), and
+/// `an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`
+/// is that test.
+///
+/// # A `UNION ALL`, not an `OR EXISTS`
+///
+/// Both branches start from one of migration `0034`'s partial indexes,
+/// `payment_intents_customer_idx` and `checkout_sessions_customer_idx`. The
+/// session branch then reaches the intent by primary key. An
+/// `OR EXISTS (…)` in one `WHERE` would put a sub-select under a
+/// disjunction. Postgres cannot pull that up into a join, so it would check
+/// every customer-less intent in the table on every erasure, three times.
+/// A duplicate row, when two sessions on one intent both name `$1`, does no
+/// harm under `IN`.
+///
+/// It binds `$1` and nothing else, so each statement that interpolates it
+/// keeps its own parameters from `$2` on.
+const PAYERS_INTENTS: &str = "SELECT id FROM payment_intents WHERE customer_id = $1 \
+     UNION ALL \
+     SELECT p.id FROM checkout_sessions s \
+     JOIN payment_intents p ON p.id = s.payment_intent_id \
+     WHERE s.customer_id = $1 AND p.customer_id IS NULL";
+
 /// Erases one customer that the caller has already read **under this
 /// transaction's row lock**, and writes the `customer.deleted` that tells its
 /// merchant so.
@@ -1161,36 +1221,54 @@ const REDACT_CUSTOMER_KEY: &str = "CASE \
 ///
 /// # What else is written, and why each one is here rather than in a sweep
 ///
-/// Six more statements, all in this transaction:
+/// **Thirteen more statements**, all in this transaction. That makes fifteen
+/// in all, with the branch's `SELECT` and the row's one write (the
+/// anonymising `UPDATE` or the generated `DELETE`). Counted by reading the
+/// code on 2026-09-23. _(This said "six more" from 2026-09-11, which was
+/// right until #211 (2026-09-19). #211 added the statements that are now
+/// items 7 and 8, but added them to neither this list nor the count. #251
+/// (2026-09-23) added item 9, which is five statements, to the list but not
+/// to the count. So the real figure was eight from 2026-09-19 and has been
+/// thirteen since 2026-09-23.)_
 ///
 /// 1. the `customer.deleted` event, whose body is the **redacted** object;
 /// 2. every stored `customer.*` event body for this object — see
 ///    [`REDACT_CUSTOMER_KEY`] — **including the one step 1 just wrote**, so
 ///    the invariant is "no `events` row holds this payer's identifiers" and
 ///    not "no `events` row except the newest one";
-/// 3. `charges.payer_ref` for every charge on this customer's intents,
-///    replaced by the marker, with `payer_ref_masked` cleared and the rail's
-///    verbatim `failure_raw` prose replaced too. `payer_ref` is the payer's
-///    MSISDN as the rail was given it and is reachable from a customer only
-///    through an intent, which is why nothing looking at `customers` alone
-///    ever found it; `failure_raw` is unbounded text a rail wrote *about*
-///    this payer and may quote their number back;
-/// 4. `refunds.failure_raw` for the refunds of those charges, for step 3's
-///    reason and reached the same way;
-/// 5. `idempotency_keys.response_body` for any stored `POST /v1/customers`
+/// 3. `idempotency_keys.response_body` for any stored `POST /v1/customers`
 ///    response naming this customer — the exact JSON that was answered, kept
 ///    for 24 hours to replay. A replay after an erasure now answers the
 ///    redacted object, which is the same thing a fresh `GET` answers;
-/// 6. `webhook_deliveries.payload_sha256`, cleared on the deliveries of those
-///    events that can still be attempted. This one protects a *delivery*
-///    rather than the payer: step 2 changes the bytes a pending delivery
-///    would re-render, and the digest guard would dead-letter it. See
-///    [`redact_stored_copies`].
-/// 7. since migration `0049` (2026-09-23), the out-of-band payment
-///    reference on this customer's invoices and every copy of it — the
-///    `manual_payments` row, the stored `invoice.*` bodies, their live
-///    deliveries' digests and excerpts, and the stored invoice responses.
-///    See [`redact_out_of_band_references`].
+/// 4. `charges.payer_ref` for every charge on the intents this customer
+///    reaches ([`PAYERS_INTENTS`]), replaced by the marker, with
+///    `payer_ref_masked` cleared and the rail's verbatim `failure_raw` prose
+///    replaced too. `payer_ref` is the payer's MSISDN as the rail was given
+///    it. A customer reaches it only through an intent, which is why nothing
+///    that looked at `customers` alone ever found it. `failure_raw` is
+///    unbounded text a rail wrote *about* this payer, and it may quote their
+///    number back;
+/// 5. `refunds.failure_raw` for the refunds of those charges, for step 4's
+///    reason and reached the same way;
+/// 6. `webhook_deliveries.payload_sha256`, cleared on the deliveries of this
+///    customer's `customer.*` events that can still be attempted. This one
+///    protects a *delivery* rather than the payer: step 2 changes the bytes a
+///    pending delivery would re-render, and the digest guard would
+///    dead-letter it. See [`redact_stored_copies`];
+/// 7. `payment_intents.last_payment_error_code` and `_message`, NULLed
+///    together on the same intents as step 4 (#211, 2026-09-19);
+/// 8. `webhook_deliveries.response_excerpt` of every delivery of those
+///    `customer.*` events, the terminal ones included (#211, 2026-09-19);
+/// 9. since migration `0049` (2026-09-23), the out-of-band payment
+///    reference on this customer's invoices and every copy of it. That is
+///    five statements: the `manual_payments` row, the stored `invoice.*`
+///    bodies, their live deliveries' digests, their excerpts, and the stored
+///    invoice responses. See [`redact_out_of_band_references`].
+///
+/// Steps 4, 5 and 7 are the only ones that reach a payment, and all three
+/// reach it through [`PAYERS_INTENTS`]. Since 2026-09-23 that includes a
+/// customer-less intent that one of this customer's checkout sessions names
+/// (ADR-0027).
 ///
 /// A sweep over these afterwards would be a window in which "vpay erased this
 /// payer" is true of one table and false of five, on a promise a payer was
@@ -1489,13 +1567,16 @@ async fn redact_stored_copies(
     // longer exists and `[redacted]` is already the value.
     //
     // Reached through the intents, which is the only path from a customer to
-    // a charge — and the reason this column survived every previous reading
-    // of "what does a customer deletion leave behind?".
-    let charges = "UPDATE charges SET payer_ref = $2, payer_ref_masked = NULL, \
+    // a charge. That is why this column survived every earlier reading of
+    // "what does a customer deletion leave behind?". Since 2026-09-23 "the
+    // intents" means [`PAYERS_INTENTS`], so it includes a customer-less
+    // intent that one of this customer's checkout sessions names (ADR-0027).
+    let sql = format!(
+        "UPDATE charges SET payer_ref = $2, payer_ref_masked = NULL, \
              failure_raw = CASE WHEN failure_raw IS NULL THEN NULL ELSE $2 END \
-         WHERE payment_intent_id IN \
-               (SELECT id FROM payment_intents WHERE customer_id = $1)";
-    sqlx::query(charges)
+         WHERE payment_intent_id IN ({PAYERS_INTENTS})"
+    );
+    sqlx::query(AssertSqlSafe(sql))
         .bind(customer_id)
         .bind(REDACTED)
         .execute(&mut **tx)
@@ -1506,13 +1587,13 @@ async fn redact_stored_copies(
     // which are reached through the intents. `failure_code` is untouched, so
     // `refunds.failure_paired` — "a code with no raw text is a half-written
     // failure" — still holds either way round.
-    let refunds = "UPDATE refunds SET \
+    let sql = format!(
+        "UPDATE refunds SET \
              failure_raw = CASE WHEN failure_raw IS NULL THEN NULL ELSE $2 END \
          WHERE charge_id IN \
-               (SELECT c.id FROM charges c \
-                JOIN payment_intents p ON p.id = c.payment_intent_id \
-                WHERE p.customer_id = $1)";
-    sqlx::query(refunds)
+               (SELECT id FROM charges WHERE payment_intent_id IN ({PAYERS_INTENTS}))"
+    );
+    sqlx::query(AssertSqlSafe(sql))
         .bind(customer_id)
         .bind(REDACTED)
         .execute(&mut **tx)
@@ -1547,7 +1628,7 @@ async fn redact_stored_copies(
         .map_err(classify_write)?;
 
     // `payment_intents.last_payment_error_message` is the intent's own decline
-    // text, reached directly through `customer_id`, the same path the charges
+    // text, reached through [`PAYERS_INTENTS`], the same path the charges
     // above use. It does not hold the rail's raw words today — every writer
     // stores the vpay-authored `public_message()` (the rail's prose lives in
     // `charges.failure_raw`, already redacted above), so NULLing this is
@@ -1561,10 +1642,36 @@ async fn redact_stored_copies(
     // both-set, and the code column's closed-vocabulary CHECK (migration
     // `0037`) rejects a text marker like `[redacted]`. NULL is legal for both,
     // so the redaction is an absence, exactly as it is for the coordinate.
-    let intents = "UPDATE payment_intents SET \
+    //
+    // `customer_id IS NULL OR customer_id = $1` repeats `PAYERS_INTENTS`'
+    // guard on the row being **written**, and that is not redundant.
+    // Suppose this statement waits on an intent's row lock. Under `READ
+    // COMMITTED`, Postgres then re-checks the `WHERE` against the row as the
+    // other transaction committed it, but only the target row's own columns.
+    // The sub-select's copy of `payment_intents` is not re-read. The one
+    // write that can change an intent's customer while an erasure runs is a
+    // session create writing `Y` onto a customer-less intent (ADR-0025).
+    // That intent is reached here through an old session naming the erased
+    // customer, and the create commits while this statement waits on it.
+    // Without this predicate the erasure would then rewrite an intent that
+    // now names `Y`. `an_erasure_and_a_session_create_naming_another_customer_leave_that_customers_intent_alone`
+    // is the test. The `charges` and `refunds` statements above need no
+    // equivalent: an intent's customer can only change while the intent has
+    // no charge, and so no refund either.
+    //
+    // This statement may wait on an intent a session create is writing, and
+    // that cannot deadlock. The create takes `FOR SHARE` on its customer
+    // before it touches the intent (`CheckoutSessions::create`, ADR-0027 D4).
+    // So a create naming this customer is already queued behind this
+    // erasure's `FOR UPDATE`, and a create naming anyone else never waits on
+    // anything this transaction holds.
+    let sql = format!(
+        "UPDATE payment_intents SET \
              last_payment_error_code = NULL, last_payment_error_message = NULL \
-         WHERE customer_id = $1";
-    sqlx::query(intents)
+         WHERE (customer_id IS NULL OR customer_id = $1) \
+           AND id IN ({PAYERS_INTENTS})"
+    );
+    sqlx::query(AssertSqlSafe(sql))
         .bind(customer_id)
         .execute(&mut **tx)
         .await

@@ -386,7 +386,18 @@ mod tests {
     /// `redact_stored_invoice_responses_in_tx`, and the read, which goes
     /// through CrateStack — every one of them a plain `&'static str` or no
     /// string at all.
-    const EXPECTED_ASSERT_SITES: usize = 71;
+    /// **71 → 74 on 2026-09-23** (ADR-0027, erasure through checkout
+    /// sessions). Three statements already existed and now build a string.
+    /// No statement was added. `redact_stored_copies`' `charges`, `refunds`
+    /// and `payment_intents` redactions were plain `&'static str` literals,
+    /// and each now interpolates `customers::PAYERS_INTENTS`: one definition
+    /// of "the intents this customer reaches", which since 2026-09-23 includes
+    /// a customer-less intent that one of the customer's checkout sessions
+    /// names. Writing that `UNION ALL` out three times would have kept the
+    /// three literals and this number. It would also have given three
+    /// spellings of a privacy rule that must agree. `PAYERS_INTENTS` binds
+    /// only `$1`, and the customer id and the marker stay bind parameters.
+    const EXPECTED_ASSERT_SITES: usize = 74;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

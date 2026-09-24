@@ -270,7 +270,10 @@ payment is listed by `GET /v1/checkout/sessions?customer=X` and not by
 `GET /v1/payment_intents?customer=X` or `GET /v1/refunds?customer=X`, and
 that customer's erasure does not reach the charge's `payer_ref`. ADR-0025
 § No backfill says why: a backfill would have to choose between sessions
-that named different customers.
+that named different customers. _(**The erasure half is corrected
+2026-09-23 by [ADR-0027](../adr/0027-erasure-reaches-through-checkout-sessions.md):**
+erasure now reaches those charges through the session; see
+[customers.md](customers.md) § Status. The list-filter half is still true.)_
 
 _(Until ADR-0025, the same day, this paragraph read: "**One consequence,
 recorded rather than decided.** A checkout session created with `customer=X`

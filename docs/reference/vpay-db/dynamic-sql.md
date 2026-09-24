@@ -179,6 +179,21 @@ updated_at = $4 … RETURNING {COLUMNS}`, with the tenant predicate an
 
 No new constant was added for any of the three.
 
+**Re-done 2026-09-23 for ADR-0027, where the count moved 71 → 74. Three
+existing statements now build a string, and no statement was added.** The
+customer erasure's `charges`, `refunds` and `payment_intents` redactions in
+`customers::redact_stored_copies` were plain `&'static str` literals. Each
+now interpolates one new crate constant, `customers::PAYERS_INTENTS`. It is a
+`UNION ALL` of the intents that name the customer and the customer-less
+intents one of the customer's checkout sessions names. It binds `$1` (the
+customer id) and nothing else, so every value the three statements write, the
+marker included, is still a bind parameter. It is a constant rather than
+three copies of the same sub-select because it is a privacy rule, and three
+spellings of it would be three chances for the erasure to disagree with
+itself about whose payment a charge is. (The 69 → 71 move of the same day,
+`invoices::pay_out_of_band_in_tx`, is recorded on `EXPECTED_ASSERT_SITES`
+itself and not here.)
+
 **No caller-supplied value reaches a statement string anywhere in this crate.**
 Every merchant id, intent id, cursor, limit, status, timestamp and payload is
 already a bind parameter — the `.bind(..)` calls immediately below each

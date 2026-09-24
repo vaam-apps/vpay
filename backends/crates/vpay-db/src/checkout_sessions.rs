@@ -574,29 +574,72 @@ pub(crate) async fn settle_for_intent(
 /// `updated_at` moves with the customer, because every writer of
 /// `payment_intents` maintains it and there is no trigger to do it instead.
 ///
+/// # Lock order: the customer before the intent (ADR-0027, 2026-09-23)
+///
+/// The caller has already taken `FOR SHARE` on the customer, in this
+/// transaction, through `crate::customers::erased_under_share_lock`, and
+/// `erased` is what that read answered. Until 2026-09-23 this function ran
+/// first, so the create locked the **intent** (this `UPDATE`) and only then
+/// the customer (the insert's foreign key, `FOR KEY SHARE`). Customer
+/// erasure works in the other order. It takes `FOR UPDATE` on the customer
+/// first and then, since ADR-0027, rewrites intents it reaches through a
+/// checkout session. When one intent was reached both ways, each held what
+/// the other wanted, and Postgres aborted one of them with `40P01`.
+/// `a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`
+/// in `tests/integration/tests/customers.rs` forces that interleaving.
+///
+/// **`FOR SHARE`, not `FOR KEY SHARE`.** Either lock conflicts with the
+/// erasure's `FOR UPDATE`, so either would remove the deadlock. `FOR KEY
+/// SHARE` does not conflict with a plain `UPDATE` of a non-key column, and
+/// `anonymized_at` is such a column. With it, the `erased` answer would stay
+/// true only for as long as every eraser keeps taking `FOR UPDATE` first.
+/// `FOR SHARE` makes the answer hold until this transaction ends, whatever
+/// the writer does. It is also the lock `POST /v1/invoices/{id}/pay` takes
+/// for the same reason (ADR-0024 D18), and the function is the one that
+/// `crate::idempotency` already uses. It blocks a concurrent `last_used_at`
+/// stamp or customer update for the few statements this transaction runs.
+/// Neither of those holds an intent lock, so they wait and cannot form a
+/// cycle.
+///
+/// # An erased customer is never written onto an intent
+///
+/// With `erased`, the compare-and-swap is not attempted. If the intent has no
+/// customer, the answer is [`DbError::CustomerErased`]: that is the request
+/// that read the customer before an erasure committed, and it gets the `409`
+/// `vpay_api` gives a request arriving after it. An intent that already names
+/// this customer (every invoice session, and a session that inherits its
+/// intent's) proceeds exactly as before. Nothing new is attached there, and
+/// paying an erased customer's invoice is not this change's to refuse.
+/// "Erased" includes a customer with no row, which is what a hard-deleted
+/// one leaves.
+///
 /// # Errors
 ///
 /// [`DbError::IntentCustomerConflict`] as above;
+/// [`DbError::CustomerErased`] as above;
 /// [`DbError::ForeignKeyViolation`] if `customer_id` names no customer;
 /// [`DbError::Query`] if either statement fails.
 async fn claim_intent_customer(
     tx: &mut sqlx::PgConnection,
     new: &NewCheckoutSession,
     customer_id: &str,
+    erased: bool,
 ) -> Result<(), DbError> {
-    let claimed = sqlx::query(
-        "UPDATE payment_intents SET customer_id = $3, updated_at = now() \
-         WHERE id = $1 AND merchant_id = $2 AND customer_id IS NULL",
-    )
-    .bind(&new.payment_intent_id)
-    .bind(&new.merchant_id)
-    .bind(customer_id)
-    .execute(&mut *tx)
-    .await
-    .map_err(classify_write)?
-    .rows_affected();
-    if claimed == 1 {
-        return Ok(());
+    if !erased {
+        let claimed = sqlx::query(
+            "UPDATE payment_intents SET customer_id = $3, updated_at = now() \
+             WHERE id = $1 AND merchant_id = $2 AND customer_id IS NULL",
+        )
+        .bind(&new.payment_intent_id)
+        .bind(&new.merchant_id)
+        .bind(customer_id)
+        .execute(&mut *tx)
+        .await
+        .map_err(classify_write)?
+        .rows_affected();
+        if claimed == 1 {
+            return Ok(());
+        }
     }
 
     let on_intent: Option<Option<String>> = sqlx::query_scalar(
@@ -615,6 +658,9 @@ async fn claim_intent_customer(
         Some(Some(on_intent)) => Err(DbError::IntentCustomerConflict {
             payment_intent_id: new.payment_intent_id.clone(),
             on_intent,
+        }),
+        Some(None) if erased => Err(DbError::CustomerErased {
+            customer_id: customer_id.to_owned(),
         }),
         Some(None) => Err(DbError::WriteMatchedNoRow {
             table: "payment_intents",
@@ -647,6 +693,12 @@ pub trait CheckoutSessions: Send + Sync {
     /// different customer — the losing side of two concurrent sessions
     /// naming two customers for one intent that had none, since the API
     /// refuses the sequential case before the write. Nothing is written.
+    ///
+    /// [`DbError::CustomerErased`] if the session would write its customer
+    /// onto a customer-less intent and that customer has been erased, which
+    /// is read under the `FOR SHARE` lock this transaction takes on the
+    /// customer **before** it touches the intent (ADR-0027). Nothing is
+    /// written.
     ///
     /// [`DbError::ForeignKeyViolation`] if `payment_intent_id` names no
     /// intent — which the API refuses first, with a `400` naming the
@@ -1023,7 +1075,13 @@ impl CheckoutSessions for crate::repository::PgRepositories {
         let mut tx = self.pool.begin().await.map_err(DbError::Query)?;
 
         if let Some(customer_id) = new.customer_id.as_deref() {
-            claim_intent_customer(&mut tx, new, customer_id).await?;
+            // THE CUSTOMER FIRST, then the intent (ADR-0027, 2026-09-23). See
+            // `claim_intent_customer`'s "Lock order" for the deadlock this
+            // order removes and why the lock is `FOR SHARE`.
+            let erased =
+                crate::customers::erased_under_share_lock(&mut tx, &new.merchant_id, customer_id)
+                    .await?;
+            claim_intent_customer(&mut tx, new, customer_id, erased).await?;
         }
 
         // `status` and `payment_status` are literals rather than binds: see
