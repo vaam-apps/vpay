@@ -260,8 +260,9 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   one line at every width and scrolled inside itself when the column was
   too narrow: at 375px the date field started 231px into it, and Apply was
   out of view until the row was scrolled. Below a 314px window the date
-  field is wider than the column and pushes the page 10px sideways at
-  280px, which the scrolling row used to contain. Also chosen on this PR's
+  field is wider than the column, so it shrinks to fit and truncates its
+  value rather than push the page sideways: at 280px it is 232px wide, and
+  a screen reader still hears the whole range. Also chosen on this PR's
   review.
 - **Below 640px the Menu button sits above the bottom navigation bar**,
   not beside it. The bar is now 288px wide and drew over the old button by

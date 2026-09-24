@@ -160,7 +160,8 @@ function rangeFromValues(
  * select where it had 24 px. That ties it to the field height at the package's default,
  * compact density, which this app never changes.
  *
- * **The date field is as wide as its longest value, and no wider.** Inside
+ * **The date field is as wide as its longest value, and no wider** (unless
+ * the column itself is narrower: see the 314 px paragraph below). Inside
  * a `FormField` it no longer fills the row (see the history below): the
  * `FormField` is a flex item sized to its content, so with no width of its
  * own the field hugs whatever it shows — 104.6 px empty, 187.6 px from an
@@ -199,8 +200,8 @@ function rangeFromValues(
  * (cleared, the field shrinks to 104.6 px), the width at `20ch` (190 px of
  * text in a 169 px slot), `font-mono text-prose` removed (`ch` then comes
  * from the sans face: 20.7 px unused), and the select's `h-10` removed (the
- * labels 16 px apart). The `20ch` and sans-face mutations fail
- * `FiltersWithRangePhone` too. The wrap's own mutations are below.
+ * labels 16 px apart). The `20ch` mutation fails `FiltersWithRangePhone`
+ * too. The wrap's and the cap's own mutations are below.
  *
  * **One line where it fits, wrapped where it does not (2026-09-24).** The
  * row is `flex-wrap` at every width and never scrolls: Status, the date
@@ -219,11 +220,22 @@ function rangeFromValues(
  * 640 px (the date field and Apply wrap together, in a 496 px column); three
  * at 320 and 375 px. At every one of those widths nothing ends past the
  * row's edge and neither the row nor the document scrolls sideways, and a
- * range picked and saved from the wrapped row reaches the field. The one
- * width it does not cover: below a 314 px window the date field (265.9 px)
- * is wider than the column, and at 280 px it pushes the document 10 px
- * sideways, a spill the scrolling row used to contain. Measured, and left
- * as it is.
+ * range picked and saved from the wrapped row reaches the field.
+ *
+ * **Below a 314 px window the date field is wider than the column, and it
+ * shrinks to fit and truncates rather than push the page sideways** — one
+ * field cut short is better than a whole screen that scrolls (the
+ * maintainer's call, same review). Without a cap, at 280 px its 265.9 px
+ * overflowed the 232 px column and the document scrolled 10 px, a spill the
+ * old scrolling row had contained. `max-w-full` caps the trigger at its
+ * `FormField`, and the `FormField` needs its own `max-w-full` to be capped
+ * at the row: measured, the trigger's alone changes nothing, because the
+ * `FormField` is a flex item and will not shrink below its content's
+ * 265.9 px. With both, at 280 px the field is 232 px, its value ends in an
+ * ellipsis, the dates stay whole in its description, and the document stays
+ * at 280 px; at 320 px and up the field is its full 265.9 px, unchanged.
+ * `FiltersWithRangePhone` checks the 232 px column, and dropping either
+ * `max-w-full` fails it.
  *
  * Mutations, each run on its own: the row back to the scrolling line
  * (`flex-nowrap` with `overflow-x-auto`) fails `FiltersWithRange`, which
@@ -336,11 +348,15 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
         </select>
       </FormField>
 
-      <FormField label="Created between" htmlFor="payments-filter-created">
+      <FormField
+        label="Created between"
+        htmlFor="payments-filter-created"
+        className="max-w-full"
+      >
         <DateRangePicker value={range} onValueChange={setRange}>
           <DatePickerTrigger
             id="payments-filter-created"
-            className="w-[calc(23ch+72px)] font-mono text-prose"
+            className="w-[calc(23ch+72px)] max-w-full font-mono text-prose"
           >
             <DatePickerValue placeholder="Any time" />
             <DatePickerClear />

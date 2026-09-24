@@ -334,6 +334,13 @@ export const FiltersWithRange: Story = {
  * page scrolls sideways, the date field sits on a line below Status, and
  * the range is not truncated. The row going back to one line that scrolls
  * (`flex-nowrap` with `overflow-x-auto`) fails it.
+ *
+ * Then at the column of a 280px window, 232px, narrower than the date
+ * field's own 265.9px: the field shrinks to the column and truncates its
+ * value rather than push the page sideways, so the same "nothing ends past
+ * the edge, nothing scrolls" holds, and the dates stay whole in the
+ * trigger's description. Dropping `max-w-full` from the trigger or from its
+ * `FormField` fails it.
  */
 export const FiltersWithRangePhone: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
@@ -350,6 +357,12 @@ export const FiltersWithRangePhone: Story = {
       await expect(top(trigger)).toBeGreaterThan(top(select));
       await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     }
+
+    canvasElement.style.width = "232px";
+    await nothingOffScreen(canvasElement, [select, trigger, apply]);
+    await expect(trigger).toHaveAccessibleDescription(
+      "2026-09-01 → 2026-09-07",
+    );
     canvasElement.style.width = "";
   },
 };
