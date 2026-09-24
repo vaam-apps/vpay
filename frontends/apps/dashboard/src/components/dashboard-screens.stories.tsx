@@ -23,19 +23,17 @@
  *
  * # The router problem
  *
- * `PaymentsFilters` and `AppShell` (and therefore `MoreMenu`) call
- * `next/navigation` hooks. `.storybook/main.ts` aliases that specifier to
+ * `PaymentsFilters` and `AppShell` call `next/navigation` hooks. `.storybook/main.ts` aliases that specifier to
  * `./next-navigation-mock.ts` — see that file's doc comment for what it
  * fixes and does not attempt.
  */
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { ScreenStack } from "@vaam-apps/ui";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { AppShell } from "./app-shell";
 import { EnrolmentPanel } from "./enrolment-panel";
 import { FormAlert } from "./form-alert";
-import { MoreMenu } from "./more-menu";
 import { PasswordForm } from "./password-form";
 import { PaymentDetailView } from "./payment-detail";
 import { PaymentsFilters } from "./payments-filters";
@@ -47,10 +45,21 @@ import { SignedInBar } from "./signed-in-bar";
 import { SignInForm } from "./sign-in-form";
 import { TimelineGap } from "./timeline-gap";
 import { TotpForm } from "./totp-form";
+import { NAV_ENTRIES } from "../dash/resources";
 import { DETAIL, INTENT, OTHER_INTENT } from "../testing/fixtures";
 import type { FormAction } from "../form-state";
 
 const NOOP_ASYNC = () => Promise.resolve();
+
+/**
+ * A sign-out that records its calls, for the `Shell*` viewport stories to
+ * prove a sign-out submits rather than only that it is there.
+ * Module-level because a story's `render` and `play` have to share it.
+ * Storybook's own loader restores every `fn()` spy before each story
+ * renders (`parameters.test.restoreMocks`, on unless a story turns it
+ * off), so each story's count starts at zero.
+ */
+const SIGN_OUT = fn(NOOP_ASYNC);
 
 /** A `FormAction` that never resolves — see the `Pending` stories below. */
 function hangingAction(): FormAction {
@@ -68,23 +77,37 @@ function refusedAction(message: string, requestId: string): FormAction {
 }
 
 /**
- * The two viewports the filter row's layout, and its loading skeleton's,
- * are tested at: a phone, where it stacks, and a desktop, where it is one
- * line. `@storybook/addon-vitest`
- * resizes the test browser to a story's `globals.viewport` before running
- * it; every story that sets none keeps its 1200×900 default.
+ * The viewports stories here are tested at. The filter row and the loading
+ * skeletons use two: a phone, where the row stacks, and a desktop, where it
+ * is one line. The `Shell` stories use all four, one per shape of
+ * `SideNav`'s: the phone bar (375), the vertical rail at the narrow and
+ * the wide end of its band (700 and 1100), and the sidebar (1280).
+ * `@storybook/addon-vitest` resizes the test browser to a story's
+ * `globals.viewport` before running it; every story that sets none keeps
+ * its 1200×900 default.
  *
- * Declared on `meta` rather than on the two stories that use them, because
+ * Declared on `meta` rather than on the stories that use them, because
  * `a11y-gate.test.ts` pins which stories may carry a `parameters` override
- * at all (`Shell` and `ShellLight`, for their one axe suppression) and a
- * viewport list is not a reason to widen that. Declaring them here also
- * makes them this file's viewport menu in the Storybook toolbar.
+ * at all (none, since the `Shell` stories' `landmark-unique` suppression
+ * went with `@vaam-apps/ui` 0.4.0) and a viewport list is not a reason to
+ * widen that. Declaring them here also makes them this file's viewport
+ * menu in the Storybook toolbar.
  */
-const FILTER_VIEWPORTS = {
+const VIEWPORTS = {
   phone: {
     name: "Phone, 375 × 812",
     styles: { width: "375px", height: "812px" },
     type: "mobile",
+  },
+  tablet: {
+    name: "Tablet, 700 × 1024",
+    styles: { width: "700px", height: "1024px" },
+    type: "tablet",
+  },
+  laptop: {
+    name: "Laptop, 1100 × 800",
+    styles: { width: "1100px", height: "800px" },
+    type: "desktop",
   },
   desktop: {
     name: "Desktop, 1280 × 800",
@@ -98,7 +121,7 @@ const meta = {
   parameters: {
     layout: "padded",
     a11y: { config: { rules: [{ id: "color-contrast", enabled: true }] } },
-    viewport: { options: FILTER_VIEWPORTS },
+    viewport: { options: VIEWPORTS },
   },
   tags: ["autodocs"],
 } satisfies Meta;
@@ -598,143 +621,288 @@ export const DetailWithChargeLight: Story = {
   globals: { theme: "light" },
 };
 
-// ---------------------------------------------------------------- MoreMenu
-
-export const MoreMenuClosed: Story = {
-  render: () => (
-    <MoreMenu
-      email="ops@example.test"
-      merchantId="acct_test"
-      signOut={NOOP_ASYNC}
-      currentPath="/payments"
-    />
-  ),
-};
-
-/**
- * The drawer OPEN — `a11y.test.tsx` covers this deliberately, because a
- * closed vaul drawer renders none of its children (not hidden, absent), so
- * a story that only mounted `MoreMenu` idle would assert against an empty
- * portal. `MoreDetailDrawer` portals to `document.body`, not to this
- * story's own root, so the `play` function queries `document.body` directly
- * — the same reason `a11y.test.tsx` asserts against `document.body` rather
- * than a render container.
- */
-export const MoreMenuOpen: Story = {
-  render: () => (
-    <MoreMenu
-      email="ops@example.test"
-      merchantId="acct_test"
-      signOut={NOOP_ASYNC}
-      currentPath="/payments"
-    />
-  ),
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
-    await userEvent.click(canvas.getByRole("button", { name: /^menu$/i }));
-    const body = within(canvasElement.ownerDocument.body);
-    await expect(await body.findByRole("dialog")).toHaveAccessibleName("Menu");
-  },
-};
-
 // ------------------------------------------------------------------ AppShell
 
 /**
- * **`landmark-unique` alone is turned off here, and nothing else** — a
- * measured defect in a published dependency, narrowed to the single rule it
- * affects so the rest of axe still gates this app's whole chrome.
- *
- * At this suite's own browser viewport — `@vitest/browser-playwright`'s
- * default, measured at **1200x900** (a temporary `play` function asserting
- * `window.innerWidth`/`innerHeight`, since neither vitest nor this config
- * states one) — axe fails `AppShell` with `landmark-unique`: **two** visible
- * elements answer `nav[aria-label="Primary"]` at once.
- *
- * Reproduced directly against the BUILT story with
- * `axe.run(document, { runOnly: ["landmark-unique"] })` at four widths:
- * 1200 and 1279 return this one violation, 1280 and 1440 return none. At
- * 1200 the in-flow sidebar computes `display: block` and the floating
- * vertical rail computes `display: flex` — both visible, both
- * `nav[aria-label="Primary"]`. At 1280 the sidebar is `flex` and the rail is
- * `none`.
- *
- * The markup is upstream, not this app's composition:
- * `@vaam-apps/ui@0.1.2`'s
- * `dist/components/primitives/side-nav.js:456` emits the in-flow sidebar's
- * className as `collapsed ? "hidden" : "xl:flex xl:h-full ... xl:py-4"` —
- * every utility `xl:`-prefixed and no UNPREFIXED `hidden` beside them, so
- * below 1280px the element keeps a `<nav>`'s default `display: block` while
- * the `hidden sm:flex xl:hidden` floating rail is also on. `app-shell.tsx`
- * passes `smallScreen`'s default (`"floating"`) and writes none of those
- * classes itself. It is a real defect that the shipped app has at every
- * width below 1280px, not a Storybook artefact — filing it upstream is the
- * fix; hiding it is not.
- *
- * **Filed 2026-09-13: vaam-apps/ui#16**, with the measurement below and a
- * suggested one-word fix (an unprefixed `hidden` beside the `xl:`
- * utilities). Re-measured across the full range when filing, and the gap
- * is WIDER than first recorded: two visible `nav[aria-label="Primary"]`
- * at **640, 1023, 1200 and 1279**, one at 1280 and 1440 — every width
- * below `xl`, not just the 1200-1279 band. Drop this suppression when a
- * release carrying the fix is picked up; `a11y-gate.test.ts` pins the
- * rule id, so removing it here without removing it there fails the gate.
- *
- * **Re-measured on 0.3.0 (2026-09-24), and still needed.** 0.3.0 rewrote
- * the rails as M3 floating toolbars but not this: the same
- * `axe.run(document, { runOnly: ["landmark-unique"] })` against the built
- * story returns one violation at 375, 640, 1023, 1200 and 1279 and none at
- * 1280 and 1440, and below 1280 the in-flow `<nav>` still computes
- * `display: block`. vaam-apps/ui#16 is still open.
- *
- * **What changed on review (2026-09-13):** these two stories carried
- * `a11y: { test: "todo" }`, which switches the addon off ENTIRELY for the
- * story. Measured: a `#3a3a3a`-on-`#0a0b0d` probe placed inside `Shell`
- * PASSED under `test: "todo"` — so `AppShell`, the chrome wrapped around
- * every screen in the app, was the one composition in this file with no
- * colour-contrast verdict at all. Disabling the single upstream rule keeps
- * `test: "error"` in force: the same probe FAILS at 1.73 against #0a0b0d
- * with the config below. `src/a11y-gate.test.ts` pins this exact set of two
- * stories and this exact rule id, so a third suppression cannot be added
- * without the gate failing.
+ * Twenty rows: taller than every viewport below, so the phone story's
+ * scroll to the end is a real scroll and the last row's clearance is a
+ * measurement rather than a page too short to reach the bar.
  */
-const SHELL_A11Y_UPSTREAM_LANDMARK = {
-  a11y: {
-    config: {
-      rules: [
-        // Re-stated because a story-level `rules` array REPLACES the meta's
-        // rather than merging into it.
-        { id: "color-contrast", enabled: true },
-        { id: "landmark-unique", enabled: false },
-      ],
-    },
-  },
-};
+const MANY_INTENTS = Array.from({ length: 20 }, (_, row) => ({
+  ...INTENT,
+  id: `pi_example_${row + 1}`,
+}));
 
-export const Shell: Story = {
-  render: () => (
+/** The shell as each viewport story renders it. */
+function shellStory() {
+  return (
     <AppShell
       email="ops@example.test"
       merchantId="acct_test"
-      signOut={NOOP_ASYNC}
+      signOut={SIGN_OUT}
     >
-      <PaymentsTable rows={[INTENT]} />
+      <PaymentsTable rows={MANY_INTENTS} />
     </AppShell>
-  ),
-  parameters: SHELL_A11Y_UPSTREAM_LANDMARK,
+  );
+}
+
+/**
+ * `AppShell` at the suite's own 1200×900, with nothing suppressed.
+ *
+ * **These two stories disabled axe's `landmark-unique` from 2026-09-13 to
+ * 2026-09-24**, narrowed to that one rule: below 1280px `@vaam-apps/ui`'s
+ * in-flow sidebar `<nav aria-label="Primary">` kept a `display: block` box
+ * beside whichever floating rail was showing, so axe saw two `Primary`
+ * landmarks at every width under `xl` (vaam-apps/ui#16, filed from this
+ * file with a four-width reproduction; still reproducing on 0.3.0 at 375,
+ * 640, 1023, 1200 and 1279). 0.4.0 fixed it upstream (vaam-apps/ui#39)
+ * and the suppression is gone: axe runs every rule here, and over the
+ * four `Shell*` viewport stories below, and `a11y-gate.test.ts` now pins
+ * the set of suppressions as empty.
+ *
+ * Before that, these carried `a11y: { test: "todo" }`, which switches the
+ * addon off entirely for the story; a `#3a3a3a`-on-`#0a0b0d` probe inside
+ * `Shell` passed under it and failed at 1.73 with the addon on (review,
+ * 2026-09-13). That is why a narrowed rule list replaced it, and why no
+ * story here may carry a `parameters` override at all now.
+ */
+export const Shell: Story = {
+  render: () => shellStory(),
 };
 
 export const ShellLight: Story = {
-  render: () => (
-    <AppShell
-      email="ops@example.test"
-      merchantId="acct_test"
-      signOut={NOOP_ASYNC}
-    >
-      <PaymentsTable rows={[INTENT]} />
-    </AppShell>
-  ),
+  render: () => shellStory(),
   globals: { theme: "light" },
-  parameters: SHELL_A11Y_UPSTREAM_LANDMARK,
+};
+
+/**
+ * What every width must hold: exactly one exposed `Primary` landmark, the
+ * given number of exposed sign-outs, and a page that does not scroll
+ * sideways. `queryAllByRole` leaves out what `display: none` or an
+ * `aria-hidden` ancestor hides, which is the point — jsdom cannot answer
+ * either count, because it applies no CSS and sees every copy.
+ *
+ * The sign-outs: none on a phone until the sheet opens (`<main>`'s copy is
+ * `hidden sm:block`), one from `sm` up (`<main>`'s, then the sidebar's
+ * from `xl`), and one with a sheet open, which hides the rest of the page.
+ * Never two.
+ */
+async function shellHolds(body: HTMLElement, signOuts: 0 | 1) {
+  const page = within(body);
+  await expect(
+    page.queryAllByRole("navigation", { name: "Primary" }),
+  ).toHaveLength(1);
+  await expect(
+    page.queryAllByRole("button", { name: /sign out/i }),
+  ).toHaveLength(signOuts);
+  const root = body.ownerDocument.documentElement;
+  await expect(root.scrollWidth).toBeLessThanOrEqual(root.clientWidth);
+}
+
+/**
+ * Close the open More sheet with Escape and wait for it to go: vaul keeps
+ * it mounted, `data-state="closed"`, through its exit animation, and the
+ * page stays hidden from the accessibility tree until it unmounts. Then
+ * focus is back on the control that opened it.
+ */
+async function closeSheet(body: HTMLElement, more: HTMLElement) {
+  await userEvent.keyboard("{Escape}");
+  await waitFor(() =>
+    expect(within(body).queryByRole("dialog", { name: "More" })).toBeNull(),
+  );
+  await expect(body.ownerDocument.activeElement).toBe(more);
+}
+
+/**
+ * Open the toolbar's More sheet with the pointer, check it holds the
+ * account block, switch the theme and sign out from inside it, then close
+ * it with Escape and check focus went back to More.
+ */
+async function moreSheetWorks(body: HTMLElement) {
+  const page = within(body);
+  const more = page.getByRole("button", { name: "More" });
+  await userEvent.click(more);
+  const sheet = await page.findByRole("dialog", { name: "More" });
+  const inSheet = within(sheet);
+  await expect(inSheet.getByText("ops@example.test")).toBeVisible();
+  // Modal: the rest of the page, rails and `<main>` included, has left the
+  // accessibility tree, so the sheet's sign-out is the only one exposed.
+  await expect(
+    page.queryAllByRole("button", { name: /sign out/i }),
+  ).toHaveLength(1);
+
+  // The theme, by pointer, and back — `html[data-theme]` is what the
+  // stylesheet keys on.
+  const root = body.ownerDocument.documentElement;
+  await userEvent.click(inSheet.getByRole("radio", { name: /light/i }));
+  await expect(root.dataset["theme"]).toBe("light");
+  await userEvent.click(inSheet.getByRole("radio", { name: /dark/i }));
+  await expect(root.dataset["theme"]).toBe("dark");
+
+  // Sign out, by pointer: the form's action runs.
+  const signOutButton = inSheet.getByRole("button", { name: /sign out/i });
+  await userEvent.click(signOutButton);
+  await expect(SIGN_OUT).toHaveBeenCalledTimes(1);
+
+  await closeSheet(body, more);
+}
+
+/**
+ * Open the sheet again from the keyboard (focus is already on More), reach
+ * sign-out with Tab and press it with Enter, and leave the sheet OPEN so
+ * the a11y addon's axe run, which follows `play`, covers its markup.
+ */
+async function moreSheetByKeyboard(body: HTMLElement) {
+  await userEvent.keyboard("{Enter}");
+  const sheet = await within(body).findByRole("dialog", { name: "More" });
+  const signOutButton = within(sheet).getByRole("button", {
+    name: /sign out/i,
+  });
+  for (let presses = 0; presses < 20; presses += 1) {
+    if (body.ownerDocument.activeElement === signOutButton) break;
+    await userEvent.tab();
+  }
+  await expect(body.ownerDocument.activeElement).toBe(signOutButton);
+  await userEvent.keyboard("{Enter}");
+  await expect(SIGN_OUT).toHaveBeenCalledTimes(2);
+}
+
+/**
+ * The phone bar, at 375×812. Below 640px the account block is behind the
+ * bar's "More" control, in a bottom sheet (`@vaam-apps/ui` 0.4.0), and
+ * this app no longer floats a Menu pill of its own above the bar.
+ *
+ * The `play` function scrolls to the end of twenty rows and checks the
+ * last one ends at least 16px above the bar's top edge (it ends 24px
+ * above: `<main>`'s `pb-20` clears the bar and the column's `p-6` is the
+ * spare). The story's own `padded` layout would add 16px to that, so the
+ * body's padding is zeroed for the measurement and restored after. Then
+ * it opens the sheet by pointer and by keyboard (`moreSheetWorks`,
+ * `moreSheetByKeyboard`), and axe runs over the open sheet.
+ */
+export const ShellPhone: Story = {
+  render: () => shellStory(),
+  globals: { viewport: { value: "phone", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const body = canvasElement.ownerDocument.body;
+    await shellHolds(body, 0);
+
+    const bar = body.querySelector('[data-floating-rail-axis="horizontal"]');
+    const rows = canvasElement.querySelectorAll("tbody tr");
+    const last = rows[rows.length - 1];
+    await expect(bar).not.toBeNull();
+    await expect(rows).toHaveLength(MANY_INTENTS.length);
+    const view = canvasElement.ownerDocument.defaultView as Window;
+    const padding = body.style.padding;
+    try {
+      body.style.padding = "0px";
+      view.scrollTo(0, body.ownerDocument.documentElement.scrollHeight);
+      const clearance =
+        (bar as Element).getBoundingClientRect().top -
+        (last as Element).getBoundingClientRect().bottom;
+      await expect(clearance).toBeGreaterThanOrEqual(16);
+    } finally {
+      body.style.padding = padding;
+      view.scrollTo(0, 0);
+    }
+
+    await moreSheetWorks(body);
+    await moreSheetByKeyboard(body);
+  },
+};
+
+/**
+ * The vertical rail at 700×1024, the narrow end of its 640–1279px band.
+ * Its "More" control opens a navigation drawer from the left edge holding
+ * every destination, labelled, then the account block.
+ *
+ * The `play` function checks `<main>`'s left padding ends at least 16px
+ * past the rail's right edge — `sm:pl-24` (96px) against a rail ending at
+ * x=80, the gutter 0.3.0's release notes asked for — then that the drawer
+ * lists every `NAV_ENTRIES` destination, in order, and works by pointer
+ * and keyboard.
+ */
+export const ShellRail: Story = {
+  render: () => shellStory(),
+  globals: { viewport: { value: "tablet", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const body = canvasElement.ownerDocument.body;
+    await shellHolds(body, 1);
+    await railGutterHolds(canvasElement);
+
+    const more = within(body).getByRole("button", { name: "More" });
+    await userEvent.click(more);
+    const sheet = await within(body).findByRole("dialog", { name: "More" });
+    await expect(
+      within(sheet)
+        .getAllByRole("link")
+        .map((link) => link.getAttribute("href")),
+    ).toEqual(NAV_ENTRIES.map((entry) => entry.href));
+    await closeSheet(body, more);
+
+    await moreSheetWorks(body);
+    await moreSheetByKeyboard(body);
+  },
+};
+
+/**
+ * `<main>`'s content box starts at least 16px past the vertical rail's
+ * right edge.
+ */
+async function railGutterHolds(canvasElement: HTMLElement) {
+  const body = canvasElement.ownerDocument.body;
+  const rail = body.querySelector(
+    '[data-floating-rail]:not([data-floating-rail-axis="horizontal"])',
+  );
+  const main = canvasElement.querySelector("main");
+  await expect(rail).not.toBeNull();
+  await expect(main).not.toBeNull();
+  const start =
+    (main as HTMLElement).getBoundingClientRect().left +
+    Number.parseFloat(getComputedStyle(main as HTMLElement).paddingLeft);
+  const railEnd = (rail as Element).getBoundingClientRect().right;
+  await expect(start - railEnd).toBeGreaterThanOrEqual(16);
+}
+
+/**
+ * The vertical rail at 1100×800, the wide end of its band, where
+ * vaam-apps/ui#16's second `Primary` landmark was measured. Same checks
+ * as `ShellRail`, and the identity is on screen in `<main>` without a tap.
+ */
+export const ShellLaptop: Story = {
+  render: () => shellStory(),
+  globals: { viewport: { value: "laptop", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const body = canvasElement.ownerDocument.body;
+    await shellHolds(body, 1);
+    await railGutterHolds(canvasElement);
+    const main = within(canvasElement.querySelector("main") as HTMLElement);
+    await expect(main.getByText("ops@example.test")).toBeVisible();
+
+    await moreSheetWorks(body);
+    await moreSheetByKeyboard(body);
+  },
+};
+
+/**
+ * The sidebar at 1280×800: the account block is in flow under the nav,
+ * no More control is exposed, and sign-out there submits.
+ */
+export const ShellDesktop: Story = {
+  render: () => shellStory(),
+  globals: { viewport: { value: "desktop", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    const body = canvasElement.ownerDocument.body;
+    await shellHolds(body, 1);
+    const page = within(body);
+    await expect(page.queryByRole("button", { name: "More" })).toBeNull();
+    const nav = page.getByRole("navigation", { name: "Primary" });
+    await expect(within(nav).getByText("ops@example.test")).toBeVisible();
+    await userEvent.click(
+      within(nav).getByRole("button", { name: /sign out/i }),
+    );
+    await expect(SIGN_OUT).toHaveBeenCalledTimes(1);
+  },
 };
 
 // ------------------------------------------------------------------ FormAlert

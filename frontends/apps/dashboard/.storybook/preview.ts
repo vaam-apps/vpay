@@ -18,7 +18,7 @@ import "../app/globals.css";
  * its default and `light` as opt-in since 0.1.2 (this said "0.1.2
  * registers" until 2026-09-23, by when the pin was 0.2.4), `app/layout.tsx` pins
  * `data-theme="dark"`, and this app has a real `ThemeSwitcher`
- * (`src/components/more-menu.tsx`, `src/components/app-shell.tsx`). So this
+ * (`src/components/app-shell.tsx`'s account block). So this
  * file adds a toolbar **globalType** (`theme`, `dark`/`light`, defaulting to
  * `dark` — the value the shipped layout pins) and a decorator that writes
  * `data-theme` from it, rather than hard-coding one value the way the
@@ -95,7 +95,9 @@ const preview: Preview = {
         `"system"`, resolves that through `matchMedia("(prefers-color-
         scheme: dark)")`, and then OVERWRITES `document.documentElement`'s
         `data-theme` on mount. `AppShell` mounts one in `accountSlot`, and
-        `MoreMenu`'s open drawer mounts a second.
+        `SideNav`'s open More sheet mounts a second. (Until `@vaam-apps/ui`
+        0.4.0 the second was `MoreMenu`'s drawer, deleted with it; the
+        measurement below was taken then.)
 
         Measured on the BUILT storybook, one fresh browser context per
         story, viewport 1200x900: with only the `setAttribute` below,
@@ -115,14 +117,14 @@ const preview: Preview = {
         not belt-and-braces: the store latches `loaded` after its first read
         and refreshes only on a `storage` event, which the DOM never fires in
         the tab that made the write — and `@storybook/addon-vitest` runs all
-        29 stories in ONE page, so without this the second story onward would
+        31 stories in ONE page, so without this the second story onward would
         keep the first one's resolved theme.
       */
       try {
         window.localStorage.setItem("vaam-ui:theme", theme);
       } catch {
         // Storage blocked: the `setAttribute` below still holds for every
-        // story that mounts no `ThemeSwitcher`, which is 26 of the 29.
+        // story that mounts no `ThemeSwitcher`, which is 25 of the 31.
       }
       window.dispatchEvent(
         new StorageEvent("storage", {

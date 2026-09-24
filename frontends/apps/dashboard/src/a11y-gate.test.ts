@@ -103,21 +103,23 @@ describe("the browser a11y suite is still a gate", () => {
    * probe inside `Shell` PASSED, so the chrome wrapped around every screen
    * in the app had no colour-contrast verdict at all.
    *
-   * Those two stories now disable exactly one axe rule
-   * (`landmark-unique`, an upstream `@vaam-apps/ui@0.1.2` `SideNav` defect —
-   * see the stories file for the four-viewport reproduction) and keep
-   * `test: "error"` in force for everything else. This case pins that:
-   * which stories are allowed a suppression, and which rule. A third one
-   * cannot be added, and neither of these two can be widened back to
-   * `test: "todo"`, without this failing in `just ci`.
+   * Those two stories then disabled exactly one axe rule
+   * (`landmark-unique`, an upstream `SideNav` defect, vaam-apps/ui#16 — the
+   * stories file keeps the history) and kept `test: "error"` in force for
+   * everything else, and this case pinned that pair and that rule.
+   * `@vaam-apps/ui` 0.4.0 fixed the defect (vaam-apps/ui#39), the
+   * suppression went, and the pinned sets are now EMPTY: no story may
+   * disable a rule or carry a `parameters` override at all. Adding either
+   * back fails this in `just ci`; the lists below are where a reviewed
+   * exception would have to be written down.
    */
   it("no story switches the a11y addon off, and the rule suppressions are the pinned set", () => {
     const dir = join(APP, "src/components");
     const files = readdirSync(dir).filter((f) => f.endsWith(".stories.tsx"));
     expect(files.length, "there are story files to check").toBeGreaterThan(0);
 
-    const SUPPRESSED_STORIES = ["Shell", "ShellLight"];
-    const SUPPRESSED_RULES = ["landmark-unique"];
+    const SUPPRESSED_STORIES: string[] = [];
+    const SUPPRESSED_RULES: string[] = [];
 
     for (const file of files) {
       const src = code(readFileSync(join(dir, file), "utf8"));
