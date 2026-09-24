@@ -287,7 +287,7 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   it sits in the vertical rail's column and matches its dress. The pill is
   an interim: it exists because the library's toolbar cannot reach the
   account block below `lg`, and goes once vaam-apps/ui#36 is fixed and
-  picked up.
+  picked up. _(It went the same evening, with 0.4.0: see the next entry.)_
 - **The Menu drawer's phone header sits ~19px lower**, under a drag handle
   that is now visible (the package's change; nothing here depends on it).
 
@@ -301,4 +301,53 @@ loaded row by `PaymentsLoading` and `PaymentsLoadingPhone`. What is still
 not measured by anything in CI: the shell's phone geometry. jsdom has no
 layout, every other story runs at 1200px and `dashboard.cy.ts` at 1000px,
 so the bottom-bar clearance above is evidenced by the review's
-screenshots, not by a gate.
+screenshots, not by a gate. _(Closed by the next entry's `Shell*` viewport
+stories.)_
+
+**Amended 2026-09-24, later the same day: `@vaam-apps/ui` 0.4.0 — the Menu
+pill is gone, and the payment page loads in its own shape.** 0.4.0 ends
+`SideNav`'s floating toolbars in a **More** control that opens a sheet
+holding the account block (vaam-apps/ui#36, fixed by vaam-apps/ui#40), and
+leaves one visible `Primary` landmark at every width (vaam-apps/ui#16, fixed
+by vaam-apps/ui#39). What changed on this app's screens, each seen in the
+built Storybook in headless Chromium at 320, 375, 640, 700, 1100 and 1280px:
+
+- **The Menu pill is gone.** Below 1280px who is signed in, Sign out and the
+  theme control are behind the toolbar's last control, More: a bottom sheet
+  on a phone, a drawer from the left edge from 640 to 1279px. From 1280px
+  they sit under the sidebar's nav, as before. The phone bar is 288px wide
+  (four destinations and More), and its sheet holds Customers, the one
+  destination that does not fit, above the account block; the drawer lists
+  all five, labelled. Escape or a tap on the scrim closes either and puts
+  focus back on More, and Sign out and the theme switch work from inside
+  by pointer and by keyboard.
+- **The content column's bottom padding is back to 80px on a phone**, from
+  the 160px that cleared the pill as well as the bar. Scrolled to the end,
+  the last row ends 24px above the bar at 375×812 and at 320×700.
+- **Below 640px there is no longer a full nav list with visible labels.**
+  The pill's drawer had one. The phone bar shows four destinations as
+  icons, named for a screen reader, and the sheet labels only the fifth;
+  from 640px the rail's drawer lists all five. This is the library's M3
+  toolbar as designed, recorded because the pill used to be the answer.
+- **From 640 to 1279px who is signed in stays on screen** in the content
+  column, as it was; the More drawer carries a second copy.
+- **The payment page's loading state is shaped like the page.** It was
+  `RouteSkeleton rows={10}`: a filter bar the page does not have and ten
+  flat rows where it has an instrument panel, so its rows began 136px above
+  the Summary section they stood in for at 1280×800 and 212px at 375×812.
+  `PaymentSkeleton` puts the header, the "At a glance" panel (its caption
+  and three figures included) and the Summary heading where the page does,
+  to the pixel, at 1280 and 375px and in 956, 496, 327 and 272px columns, at
+  a 16 and a 20px root. The Summary's rows are data and stay placeholders.
+
+`app-shell.tsx` and `payment-skeleton.tsx` carry the measurements. What CI
+now checks in a real browser: `Shell` and `ShellLight` run axe with no rule
+suppressed (`a11y-gate.test.ts` pins the set of suppressions as empty), and
+`ShellPhone`, `ShellRail`, `ShellLaptop` and `ShellDesktop` (375, 700, 1100
+and 1280px) assert one exposed `Primary` landmark, the number of exposed
+sign-outs, no sideways scroll, the last row clearing the phone bar, the
+gutter past the rail, and the More sheet by pointer and by keyboard.
+`PaymentLoading` and `PaymentLoadingPhone` hold the payment skeleton box by
+box. `dashboard.cy.ts` scopes its identity and sign-out queries to
+`<main>`, because the sidebar's hidden copy of the account block is back in
+the DOM ahead of it.
