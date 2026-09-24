@@ -268,11 +268,16 @@ async function nothingOffScreen(
  * - at 1280px the three controls are one line and nothing scrolls;
  * - the value is not truncated, and leaves at most 8px of its slot unused
  *   (it leaves ~4px: the root's tracking, which `ch` does not see);
+ * - with the root at 20px (Chrome's "Large" default font size), which grows
+ *   the trigger's rem-sized chrome and not its 14px value, the value is
+ *   still not truncated;
  * - "Status" and "Created between" share a top edge, and so do their
  *   controls;
  * - squeezed to 496px, too narrow for one line (the app shell's content
- *   column at a 640px window), the row wraps, nothing ends past its edge,
- *   nothing scrolls sideways, and the field neither narrows nor truncates;
+ *   column at a 640px window), the row wraps — Apply goes down; whether the
+ *   date field goes with it depends on the sans face, so that is not
+ *   asserted — nothing ends past its edge, nothing scrolls sideways, and
+ *   the field neither narrows nor truncates;
  * - cleared, the field keeps its width, so picking or clearing a range
  *   does not move the row.
  *
@@ -307,9 +312,18 @@ export const FiltersWithRange: Story = {
     const created = canvas.getByText("Created between", { selector: "label" });
     await expect(top(status)).toBe(top(created));
 
+    // Restored in `finally`: every later story in this page shares the root.
+    const root = canvasElement.ownerDocument.documentElement;
+    root.style.fontSize = "20px";
+    try {
+      await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
+    } finally {
+      root.style.fontSize = "";
+    }
+
     const width = trigger.getBoundingClientRect().width;
     canvasElement.style.width = "496px";
-    await expect(top(trigger)).toBeGreaterThan(top(select));
+    await expect(top(apply)).toBeGreaterThan(top(select));
     await nothingOffScreen(canvasElement, controls);
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     await expect(trigger.getBoundingClientRect().width).toBe(width);
@@ -341,6 +355,11 @@ export const FiltersWithRange: Story = {
  * the edge, nothing scrolls" holds, and the dates stay whole in the
  * trigger's description. Dropping `max-w-full` from the trigger or from its
  * `FormField` fails it.
+ *
+ * Last, the same 232px column with the root at 20px (Chrome's "Large"
+ * default font size), where the Status select's widest option outgrows the
+ * column too: capped by its `FormField`'s `max-w-full`, nothing ends past
+ * the edge. Dropping that `max-w-full` fails it.
  */
 export const FiltersWithRangePhone: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
@@ -363,7 +382,16 @@ export const FiltersWithRangePhone: Story = {
     await expect(trigger).toHaveAccessibleDescription(
       "2026-09-01 → 2026-09-07",
     );
-    canvasElement.style.width = "";
+
+    // Restored in `finally`: every later story in this page shares the root.
+    const root = canvasElement.ownerDocument.documentElement;
+    root.style.fontSize = "20px";
+    try {
+      await nothingOffScreen(canvasElement, [select, trigger, apply]);
+    } finally {
+      root.style.fontSize = "";
+      canvasElement.style.width = "";
+    }
   },
 };
 

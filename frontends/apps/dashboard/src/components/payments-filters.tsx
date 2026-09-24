@@ -118,9 +118,8 @@ function rangeFromValues(
  * because the two names read the same to `getByRole`; changing or dropping
  * the placeholder fails the "Any time" case and the `FiltersWithRange`
  * story, which clears the range and reads the description; and dropping
- * the `id` and the
- * placeholder together also makes axe's `button-name` fire, in
- * `a11y.test.tsx` and in the `Filters` and `FiltersLight` stories.
+ * the `id` and the placeholder together also makes axe's `button-name`
+ * fire, in `a11y.test.tsx` and in the `Filters` and `FiltersLight` stories.
  *
  * _History, kept because each step was a decision._ Until 0.3.0 the picker
  * took no `id`, so a `<label htmlFor>` would have pointed at nothing, and it
@@ -157,8 +156,8 @@ function rangeFromValues(
  * sat 16 px below "Created between" (label tops at y=32 and y=16, measured).
  * `h-10` gives the select the trigger's 40 px: on one line, both labels at
  * y=16, both controls and Apply at y=42–82, and a 40 px target for the
- * select where it had 24 px. That ties it to the field height at the package's default,
- * compact density, which this app never changes.
+ * select where it had 24 px. That ties it to the field height at the
+ * package's default, compact density, which this app never changes.
  *
  * **The date field is as wide as its longest value, and no wider** (unless
  * the column itself is narrower: see the 314 px paragraph below). Inside
@@ -166,13 +165,29 @@ function rangeFromValues(
  * `FormField` is a flex item sized to its content, so with no width of its
  * own the field hugs whatever it shows — 104.6 px empty, 187.6 px from an
  * open start, 261.8 px with a full range — and Apply jumps up to 157 px
- * sideways each time a range is picked or cleared. `w-[calc(23ch+72px)]`
- * fixes it at the longest of those: the 23 characters of
- * `YYYY-MM-DD → YYYY-MM-DD` in the value's mono face, plus 72 px of chrome
- * — the two 1 px borders, the 12 px left padding, the 14 px calendar icon
- * and its 8 px gap, and the 36 px the Clear button's tap target claims on
- * the right (`DatePickerTrigger`'s own `pr-[calc(2.25rem+…)]`, at compact
- * density).
+ * sideways each time a range is picked or cleared.
+ * `w-[calc(23ch+16px+3.5rem)]` fixes it at the longest of those: the 23
+ * characters of `YYYY-MM-DD → YYYY-MM-DD` in the value's mono face, plus the
+ * trigger's chrome in the units the package draws it in — 16 px for the two
+ * 1 px borders and the 14 px calendar icon, and 3.5 rem for the 0.75 rem
+ * left padding, the icon's 0.5 rem gap and the 2.25 rem the Clear button's
+ * tap target claims on the right (`DatePickerTrigger`'s own
+ * `pr-[calc(2.25rem+…)]`, at compact density). At the browser's default
+ * 16 px root that is 72 px of chrome.
+ *
+ * **Pixels and rems apart, not one `72px`, because they scale differently
+ * (found on review, 2026-09-24).** A browser's default font size (Chrome's
+ * Settings → Appearance → Font size: "Large" is 20 px, "Very large" 24 px)
+ * scales every rem in that chrome and nothing else — the value's
+ * `text-prose` is a fixed 14 px, so `ch` does not move. Written as `72px`,
+ * the field cut the range short at every window width once the root was
+ * 20 px (a 179.9 px slot for 188.8 px of text) or 24 px (165.9 px for
+ * 187.8 px). Split, the slot stays 193.9 px at both and the range fits,
+ * and at a 16 px root nothing changes. Measured in the built Storybook,
+ * headless Chromium, with the default font size set through CDP's
+ * `Page.setFontSizes`. Page zoom needs none of this: it scales pixels and
+ * rems alike, so a 200 % zoom of a 1280 px window lays out as the 640 px
+ * window below.
  *
  * `ch` and not pixels, because this app ships no mono face: `--font-mono`
  * is a stack (JetBrains Mono, `ui-monospace`, SF Mono, Cascadia Mono, Menlo,
@@ -180,8 +195,9 @@ function rangeFromValues(
  * operator's machine resolves, and `ch` is measured in that face. The
  * `font-mono text-prose` beside the width is there only so that `ch` is the
  * value's own face at the value's own 14 px: `className` lands on the
- * trigger's wrapper `div`, and neither of its visible children inherits the
- * font — the button sets its own `font-sans`, and Clear is an icon.
+ * trigger's wrapper `div`, the button sets its own `font-sans text-prose`,
+ * and Clear, which does inherit the two, draws only a 14 px icon — every
+ * box inside the wrapper measured the same with and without them.
  *
  * Measured in the built Storybook, headless Chromium, 2026-09-24, where the
  * face resolves to DejaVu Sans Mono (`CSS.getPlatformFontsForNode`): `ch`
@@ -201,7 +217,9 @@ function rangeFromValues(
  * text in a 169 px slot), `font-mono text-prose` removed (`ch` then comes
  * from the sans face: 20.7 px unused), and the select's `h-10` removed (the
  * labels 16 px apart). The `20ch` mutation fails `FiltersWithRangePhone`
- * too. The wrap's and the cap's own mutations are below.
+ * too. The story also sets the root to 20 px and checks the range is still
+ * whole, which the single `72px` fails. The wrap's and the cap's own
+ * mutations are below.
  *
  * **One line where it fits, wrapped where it does not (2026-09-24).** The
  * row is `flex-wrap` at every width and never scrolls: Status, the date
@@ -222,6 +240,16 @@ function rangeFromValues(
  * row's edge and neither the row nor the document scrolls sideways, and a
  * range picked and saved from the wrapped row reaches the field.
  *
+ * Which control goes down first at 640 px depends on the sans face, which
+ * this app does not ship either (`--font-sans` resolves through
+ * `system-ui`): the select is as wide as `requires_payment_method` in it —
+ * 219 px in Noto Sans, the face above, and the date field misses the first
+ * line by under a pixel; 207 px in Liberation Sans or 211 px in Ubuntu, and
+ * the date field stays up beside Status with only Apply wrapping. So the
+ * stories assert that Apply wraps in that 496 px column, which holds in
+ * every face measured (with the narrowest, Cantarell, one line still needs
+ * ~550 px), and not which line the date field lands on.
+ *
  * **Below a 314 px window the date field is wider than the column, and it
  * shrinks to fit and truncates rather than push the page sideways** — one
  * field cut short is better than a whole screen that scrolls (the
@@ -237,9 +265,26 @@ function rangeFromValues(
  * `FiltersWithRangePhone` checks the 232 px column, and dropping either
  * `max-w-full` fails it.
  *
+ * **Status is capped the same way, for the larger default font sizes above
+ * (found on review, 2026-09-24).** At a 16 px root its widest option makes
+ * the select 219 px, narrower than the column of any window down to 280 px,
+ * so nothing changes there. But its text is sized from the root, and at a
+ * 20 px root the select is 268 px: in a 280 px window (a 220 px column, the
+ * shell's gutter being rem too) that overflowed the column and scrolled the
+ * document 18 px sideways (298 px of `scrollWidth`); at a 24 px root,
+ * 318 px, it overflowed even a 375 px window's 303 px column.
+ * `max-w-full` on its `FormField` keeps it inside the column. The select
+ * needs none of its own, unlike the date trigger: it has no width of its
+ * own, so as the `FormField`'s flex-column child it stretches to the
+ * `FormField`'s width, capped or not, where the trigger's fixed width does
+ * not stretch (measured: the select's own `max-w-full` changed nothing). A
+ * native select clips its own shown option, and "Any status" fits either
+ * way. `FiltersWithRangePhone` repeats the 232 px check at a 20 px root,
+ * and dropping this `max-w-full` fails it.
+ *
  * Mutations, each run on its own: the row back to the scrolling line
  * (`flex-nowrap` with `overflow-x-auto`) fails `FiltersWithRange`, which
- * squeezed to that 496 px column finds one line where it expects two, and
+ * squeezed to that 496 px column finds Apply still on the first line, and
  * `FiltersWithRangePhone` (582 px of row in a 375 px box); wrapping below
  * `sm` only fails `FiltersWithRange` the same way; and always stacked
  * (`flex-col`) fails `FiltersWithRange` at 1280 px, where the date field
@@ -331,7 +376,11 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
 
   return (
     <div className="flex min-w-0 flex-wrap items-end gap-3">
-      <FormField label="Status" htmlFor="payments-filter-status">
+      <FormField
+        label="Status"
+        htmlFor="payments-filter-status"
+        className="max-w-full"
+      >
         <select
           id="payments-filter-status"
           name="status"
@@ -356,7 +405,7 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
         <DateRangePicker value={range} onValueChange={setRange}>
           <DatePickerTrigger
             id="payments-filter-created"
-            className="w-[calc(23ch+72px)] max-w-full font-mono text-prose"
+            className="w-[calc(23ch+16px+3.5rem)] max-w-full font-mono text-prose"
           >
             <DatePickerValue placeholder="Any time" />
             <DatePickerClear />
