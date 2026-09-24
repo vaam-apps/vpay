@@ -248,18 +248,26 @@ allowBuilds:
 # pnpm 11 defaults `minimumReleaseAge` to 1440 (24h): a package version has
 # to sit on the registry for a day before pnpm will install it, as a
 # supply-chain guard against an account-takeover publish getting pulled
-# before anyone notices. `@vaam-apps/ui@0.4.0` published 2026-09-24T20:21Z
-# (npm's `time` field - the later of the two times on record: the release
-# workflow logged its publish at 20:18:58Z, and the date below is counted
-# from the later one so it cannot come early) - same day as this bump,
-# requested directly by the maintainer right after they published it - so
-# the default window would have failed this install outright rather than
-# just warned. It replaces the `@vaam-apps/ui@0.3.0` entry the previous bump
-# added, which matches nothing once no importer asks for 0.3.0.
+# before anyone notices. pnpm dates `@vaam-apps/ui@0.4.0`
+# 2026-09-24T20:18:56Z, and that is the time it enforces: with this entry
+# removed, `pnpm install --frozen-lockfile` exits 1 with
+# ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION, "@vaam-apps/ui@0.4.0 was published
+# at 2026-09-24T20:18:56.000Z" (reproduced 2026-09-24, pnpm 11.18.0). npm's
+# `time` field says 20:21:35Z, and the release workflow logged "Published"
+# at 20:18:58Z. Same day as this bump, requested directly by the maintainer
+# right after they published it - so the default window would have failed
+# this install outright rather than just warned.
 #
-# REMOVE WHEN: 2026-09-25T20:21Z has passed (the version has cleared the
-# 24h window on its own) or the next @vaam-apps/ui bump lands, whichever is
-# first - at that point this entry matches nothing and installing does not
-# need it.
+# It replaces the `@vaam-apps/ui@0.3.0` entry the previous bump added, in
+# two steps: the install that moved the lockfile ran with both entries,
+# because pnpm re-verifies the lockfile's existing 0.3.0 first and, with
+# 0.4.0's entry alone, refuses it (ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION
+# naming 0.3.0, dated 16:39:45Z); then 0.3.0's entry went, since it matches
+# nothing once no importer asks for 0.3.0.
+#
+# REMOVE WHEN: 2026-09-25T20:21Z has passed (pnpm's window closes at
+# 20:18:56Z; this counts from npm's later time, so it cannot come early) or
+# the next @vaam-apps/ui bump lands, whichever is first - at that point this
+# entry matches nothing and installing does not need it.
 minimumReleaseAgeExclude:
   - "@vaam-apps/ui@0.4.0"
