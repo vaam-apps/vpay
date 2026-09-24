@@ -191,13 +191,16 @@ export function AppShell({
             sheet as well: with no account block the phone bar's overflow
             goes back to a menu of links and the rail gains no control at
             all. So the gate is gone, the hidden copy is back, and
-            `dashboard.cy.ts` scopes those two queries to `<main>`, which is
-            what the package's own guidance tells a test to do.
+            `dashboard.cy.ts` scopes its identity and sign-out queries to
+            `<main>` — the scoping the package's own guidance asks of a test
+            that finds the account block by its text.
 
             No hard-coded `id` anywhere in it: while the sheet is open the
             block is mounted twice (the sidebar's copy stays in the DOM
-            under `display: none`). `SignedInBar` and `ThemeSwitcher` render
-            none. And sign-out does not ask for confirmation; if it ever
+            under `display: none`). `SignedInBar` hard-codes none, and
+            `ThemeSwitcher`'s radio group generates its own; a hard-coded one
+            fails `a11y.test.tsx`'s open-sheet case on `duplicate-id`. And
+            sign-out does not ask for confirmation; if it ever
             does, that has to be `InlineConfirm`, not a `Dialog` — below
             1280px the block sits in a modal sheet, and a dialog opened from
             inside it opens under the sheet's scrim, out of a pointer's
