@@ -267,10 +267,19 @@ and logs at `severity()`. The loop does not inspect variants.
 anyhow::Result<()>` in which every fallible startup step gets
 `.context("what we were doing")`. On `Err`, `main` prints the full chain to
 stderr (`eprintln!("{e:#}")` — `tracing` may not be initialised yet when
-configuration fails), finds the first classifiable leaf in the chain
-(`find_in_chain::<ConfigError>` first, then `DbError` — a config naming a
-dead database is still a config problem), and exits with
-`category().exit_code()`, `Internal`/`1` if nothing matched.
+configuration fails), finds the first classifiable leaf in the chain, and
+exits with `category().exit_code()`, `Internal`/`1` if nothing matched.
+`vpay-server`'s `exit_code_for` tries four leaves, in this order:
+`StartupError` (a required flag missing or unusable — the binary's own
+enum), `vpay_config::ConfigError`, `vpay_api::op::keys::SigningKeyError`
+(the RS256 key file), then `DbError` last — a config naming a dead database
+is still a config problem. The first three are all `Category::Configuration`,
+exit `78`; `DbError` is the only one whose category, and so exit code, varies
+by variant (`DbError::SigningKeyRetired` is `78` from that same arm). [vpay-config.md § Exit codes](../reference/vpay-config.md#exit-codes)
+says why the order is load-bearing. _(This said "`find_in_chain::<ConfigError>`
+first, then `DbError`" until 2026-09-23 — a two-leaf chain written on
+2026-09-02, the same day Step 1 put `StartupError` in front of it and
+`SigningKeyError` between them.)_
 
 ## What can go wrong
 

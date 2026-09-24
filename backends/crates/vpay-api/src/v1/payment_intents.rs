@@ -747,7 +747,8 @@ fn charge_in_flight() -> ApiError {
 /// The event's `data` is the row the `UPDATE` returned — the intent as it now
 /// stands, `status: "canceled"` — rendered here rather than projected from
 /// what the request asked for, for `vpay_api::v1::invoices`' reason. It is
-/// the twelve-key [`PaymentIntentObject`] and carries no `client_secret`:
+/// the thirteen-key [`PaymentIntentObject`] (this said "twelve-key" until
+/// 2026-09-23) and carries no `client_secret`:
 /// [`SecretRendering::Omit`] is what `cancel` answers a merchant with, and an
 /// event body is stored, signed, delivered at-least-once and replayed on
 /// every rung of the retry ladder, so a payer credential in one would outlive
@@ -1708,7 +1709,7 @@ async fn persist_decline(
                         // still `requires_payment_method`, because the
                         // lifecycle has no `failed` status. Rendered from the
                         // row and never projected from the request, for
-                        // `vpay_api::v1::invoices`' reason; the twelve-key
+                        // `vpay_api::v1::invoices`' reason; the thirteen-key
                         // object, so no `client_secret` reaches a body that is
                         // stored, signed and replayed.
                         let object = PaymentIntentObject::try_from(&intent)?;
@@ -2312,7 +2313,7 @@ fn not_found(id: &str) -> ApiError {
 /// another's.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SecretRendering {
-    /// The twelve-key [`PaymentIntentObject`] — what the merchant surface's
+    /// The thirteen-key [`PaymentIntentObject`] — what the merchant surface's
     /// `confirm`, `cancel` and `list` answer with, and what
     /// `vpay_worker`'s `intent_snapshot` writes into `events.data`.
     Omit,

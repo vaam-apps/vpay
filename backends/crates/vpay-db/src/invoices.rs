@@ -1562,7 +1562,11 @@ pub(crate) async fn finalize_in_tx(
         .map_err(classify_write)
 }
 
-/// Voids a `draft` or `open` invoice inside the caller's transaction.
+/// Voids an `open` invoice inside the caller's transaction.
+///
+/// _This line said "a `draft` or `open` invoice" until 2026-09-23, which the
+/// statement below has never done: its `WHERE` names `'open'` alone, and a
+/// draft is deleted instead — see "Only an `open` invoice can be voided"._
 ///
 /// `Ok(None)` means this merchant has no such invoice in a voidable state, or
 /// it has a payment intent that has not been canceled — see

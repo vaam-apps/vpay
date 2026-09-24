@@ -275,8 +275,10 @@ status. The authenticated status query is the only thing that moves money.
   was deleted — both apps now compose the published `@vaam-apps/ui` instead.
   `@base-ui/react` leaves the repository entirely with it; `@vaam-apps/ui`'s
   behaviour comes from Headless UI (`@headlessui/react`) and Radix
-  (`@radix-ui/react-dialog`), and its one theme registers under daisyUI's
-  built-in name `dark`, not `bumblebee` — `frontends/apps/checkout` keeps a
+  (`@radix-ui/react-dialog`), and its themes register under daisyUI's
+  built-in names — `dark`, the default, not `bumblebee`, and since 0.1.2 an
+  opt-in `light` (this said "its one theme" until 2026-09-23) —
+  `frontends/apps/checkout` keeps a
   runtime brand-colour retarget on top of it (`src/config/theme.ts`), the
   dashboard does not. `class-variance-authority` remains a real dependency
   (of `@vaam-apps/ui` itself) but neither app calls it directly any more.

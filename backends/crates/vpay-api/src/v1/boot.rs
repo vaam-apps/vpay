@@ -326,10 +326,12 @@ pub fn load_config(path: Option<&Path>, profile: &str) -> Result<Config, ConfigE
 
 /// Opens the pool and applies every migration, in that order.
 ///
-/// Both binaries do this before they bind anything: a process that binds a port
-/// before proving the database is reachable and up to date would start
-/// accepting connections it cannot serve correctly, and `/healthz` runs a real
-/// `SELECT 1`.
+/// Every mode of `vpay-server` — `serve`, `worker` and `staff add` — does this
+/// first, and the two that bind a port do it before they bind anything: a
+/// process that binds a port before proving the database is reachable and up
+/// to date would start accepting connections it cannot serve correctly, and
+/// `/healthz` runs a real `SELECT 1`. (This said "both binaries" until
+/// 2026-09-23; there has been one binary since 2026-09-07, issue #77.)
 ///
 /// # Errors
 ///

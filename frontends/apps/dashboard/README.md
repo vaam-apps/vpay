@@ -54,12 +54,18 @@ that check in the wrong layer.
 
 ## The BFF, which is a new browser-reachable surface
 
-Two `GET` route handlers, added 2026-09-11:
+Six `GET` route handlers: two added 2026-09-11, three on 2026-09-13 and one
+on 2026-09-14. _(This said "Two `GET` route handlers, added 2026-09-11", and
+the table listed only those two, until 2026-09-23.)_
 
-| Route                            | What it does                                       |
-| -------------------------------- | -------------------------------------------------- |
-| `/api/dash/payment_intents`      | One page of this merchant's intents, as JSON       |
-| `/api/dash/payment_intents/{id}` | One payment's intent, charge, refunds and timeline |
+| Route                            | What it does                                       | Since      |
+| -------------------------------- | -------------------------------------------------- | ---------- |
+| `/api/dash/payment_intents`      | One page of this merchant's intents, as JSON       | 2026-09-11 |
+| `/api/dash/payment_intents/{id}` | One payment's intent, charge, refunds and timeline | 2026-09-11 |
+| `/api/dash/refunds`              | One page of refunds                                | 2026-09-13 |
+| `/api/dash/deliveries`           | One page of webhook deliveries                     | 2026-09-13 |
+| `/api/dash/customers`            | One page of customers                              | 2026-09-13 |
+| `/api/dash/checkouts`            | One page of checkout sessions                      | 2026-09-14 |
 
 **Read the paragraph before reaching for these.** Until they existed nothing in
 this app was reachable from a browser except a page and four Server Actions,
@@ -79,7 +85,8 @@ through `/api/dash/payment_intents` and `/api/dash/payment_intents/{id}`.
 Their first render is still read on the server and handed to Refine as
 `initialData` (`app/(dash)/payments/page.tsx`). And there are **six**
 handlers, not two: `refunds`, `deliveries`, `customers` and `checkouts` were
-added on 2026-09-14. Those four are still called by no page, because those
+added on 2026-09-14. _(Narrowed later on 2026-09-23: the first three on
+2026-09-13, `f9c7d2c`, and `checkouts` on 2026-09-14, `8be7850`.)_ Those four are still called by no page, because those
 four screens render on the server and use no client data layer. They
 exist so that a client-side data layer has a transport, and
 **whether this app should have such a surface at all is the maintainer's
@@ -197,18 +204,18 @@ are two different claims.
 
 ## How the code is laid out
 
-| Directory               | What lives there                                                                          |
-| ----------------------- | ----------------------------------------------------------------------------------------- |
-| `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone          |
-| `app/api/dash/`         | The BFF's two route handlers. Four lines each; `src/server/bff.ts` is the substance       |
-| `middleware.ts`         | The one file that is neither — Next reads a middleware only from the project root         |
-| `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`        |
-| `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself        |
-| `src/dash/`             | The `/dash/v1` read seam — `getList` / `getOne`, over `readDash`. No framework            |
-| `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once |
-| `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right              |
-| `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                         |
-| `src/testing/`          | Fixtures. Imported by tests and by nothing under `app/`                                   |
+| Directory               | What lives there                                                                                             |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone                             |
+| `app/api/dash/`         | The BFF's six route handlers ("two" until 2026-09-23). Four lines each; `src/server/bff.ts` is the substance |
+| `middleware.ts`         | The one file that is neither — Next reads a middleware only from the project root                            |
+| `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`                           |
+| `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself                           |
+| `src/dash/`             | The `/dash/v1` read seam — `getList` / `getOne`, over `readDash`. No framework                               |
+| `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once                    |
+| `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right                                 |
+| `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                                            |
+| `src/testing/`          | Fixtures. Imported by tests and by nothing under `app/`                                                      |
 
 The split between `src/server/` and `src/components/` is the one that matters:
 a component that fetched would be a component no test could render, and a
@@ -240,10 +247,13 @@ over 60 characters. `Table`, `Field`→`FormField`, `Input`, `Button`,
 (replacing `StatusBadge`) still come from `@vaam-apps/ui`.
 
 `data-theme` is `dark`, and `src/layout.test.tsx` pins it: `@vaam-apps/ui`
-registers its one theme under daisyUI's built-in name `dark`, so a
-`data-theme` that says anything else renders the page **completely
-unthemed** in a real browser with no error anywhere — the same guarantee as
-before, under the new package's theme.
+registers two themes under daisyUI's built-in names — `dark`, its default,
+and an opt-in `light` that the shell's `ThemeSwitcher` writes — so a
+`data-theme` that names neither renders the page **completely unthemed** in
+a real browser with no error anywhere — the same guarantee as before, under
+the new package's theme. _(This said "registers its one theme" until
+2026-09-23; the second, `light`, arrived in 0.1.2 on 2026-09-12, and the
+test now reads both names off the package's `theme.css`.)_
 
 ### Status colour comes from `@vpay/tokens`, always
 
