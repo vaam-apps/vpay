@@ -81,39 +81,58 @@ function rangeFromValues(
  * never be filterable but unrenderable, or the other way round. vpay answers
  * `400` naming `status` for a value outside its own vocabulary rather than an
  * empty list, which is the right answer and one this form cannot provoke.
+ * Its `h-10` is for the date field beside it: see "The two labelled fields
+ * line up" below.
  *
- * **No `FormField` around the date range — since `@vaam-apps/ui` 0.3.0 a
- * choice kept, no longer a constraint.** Until 0.3.0 the picker took no `id`,
- * so `FormField`'s `<label htmlFor>` would have pointed at nothing, and the
- * picker named itself by repeating `placeholder` in a `sr-only` span:
+ * **Both fields carry a visible label (2026-09-24).** The date range sits in
+ * a `FormField` labelled "Created between", as Status does beside it: the
+ * label's `htmlFor` is `DatePickerTrigger`'s `id` (`payments-filter-created`),
+ * and the trigger has no `aria-label` — the `<label for>` names it. The dates
+ * stay its description: the trigger points `aria-describedby` at
+ * `DatePickerValue`'s span once it finds a label pointing at it, so a screen
+ * reader hears "Created between, button, 2026-09-01 → 2026-09-07". Read off
+ * Chromium's own accessibility tree in the built Storybook: the name
+ * "Created between", from `labelfor`; the description the dates, or
+ * "Any time" while empty.
+ *
+ * The placeholder is "Any time", this field's "Any status": what an unset
+ * filter means. It was "Created between", the label's own words, and the
+ * shown text is the description: under the `aria-label` the empty trigger
+ * was already "Created between, button, Created between" (measured on
+ * `c562564b` in jsdom), and under a visible label the words would also have
+ * been drawn twice.
+ *
+ * Clicking the label focuses the trigger and opens nothing, which is what
+ * clicking "Status" does to the select. That is `FormField`'s `Label`, not
+ * the browser: it is Headless UI's, which cancels the native label click (on
+ * a `<button>` that would be a click, and would open the picker) and focuses
+ * the control instead; Enter then opens it. Measured in the built
+ * Storybook, and held in jsdom by `payments-filters.test.tsx`.
+ *
+ * What holds each part, measured by mutation: dropping the trigger's `id`,
+ * or pointing `htmlFor` anywhere else, fails the four
+ * `payments-filters.test.tsx` cases that find the field by name, and the
+ * `FiltersWithRange` story; putting `aria-label="Created between"` back in
+ * the label's place fails only the case asserting that a `<label>` names it,
+ * because the two names read the same to `getByRole`; changing or dropping
+ * the placeholder fails the "Any time" case and the story, which clears the
+ * range and reads the description; and dropping the `id` and the
+ * placeholder together also makes axe's `button-name` fire, in
+ * `a11y.test.tsx` and in the `Filters` and `FiltersLight` stories.
+ *
+ * _History, kept because each step was a decision._ Until 0.3.0 the picker
+ * took no `id`, so a `<label htmlFor>` would have pointed at nothing, and it
+ * named itself by repeating `placeholder` in a `sr-only` span:
  * `"Created between Created between"` empty and `"2026-09-01 → 2026-09-07
  * Created between"` with a range, read off a real render
- * (`docs/status/verification/2026-09-12-dashboard-refine.md`). 0.3.0 made
- * the picker compound parts, and its `DatePickerTrigger` takes an `id`, so a
- * visible `FormField` label is now possible. Adopting one changes what the
- * filter row shows, which is a decision above this file, so the 0.3.0
- * migration kept the row as it was and named the trigger with
- * `aria-label="Created between"` instead — the package's rule for a picker
- * outside a `FormField` (its skill, `primitives-input.md`).
- *
- * The name is now `"Created between"` whether a range is set or not, and the
- * shown range is added as the trigger's description (`aria-describedby` →
- * `DatePickerValue`'s span), so a screen reader hears the label, then the
- * dates. Measured, both in jsdom and in the built Storybook. `placeholder`
- * is what a sighted operator sees while the range is empty and names
- * nothing: removing it alone leaves every case in this app green. Removing
- * the `aria-label` fails `payments-filters.test.tsx`, which finds the
- * trigger by that name with a range set — the one state where nothing else
- * would name it `"Created between"`; removing both makes axe's `button-name`
- * fire in `a11y.test.tsx`.
- *
- * **The cost, stated rather than hidden:** once a range is picked, nothing
- * *visible* labels it as the "created" filter (only the Status field carries
- * a visible label). A sighted operator returning to a bookmarked filtered URL
- * sees two bare dates beside a labelled Status field. Fixing it needs either
- * a `FormField` label pointed at `DatePickerTrigger`'s `id` (possible since
- * 0.3.0) or a visible label this component owns, and both are decisions
- * above this file.
+ * (`docs/status/verification/2026-09-12-dashboard-refine.md`). The 0.3.0
+ * migration kept the row without a visible label and named the trigger with
+ * `aria-label="Created between"`, the package's rule for a picker outside a
+ * `FormField`, because adopting a label changed what the row shows — a
+ * decision above this file. Its cost was written here: once a range was
+ * picked, an operator returning to a bookmarked filtered URL saw two bare
+ * dates beside a labelled Status field. The maintainer took that decision on
+ * vaam-apps/vpay#258's review; the label above is it.
  *
  * **The range is committed on Save, not per click (0.3.0).** Tapping days
  * only stages a pick; `onValueChange` — `setRange` here — fires once, when
@@ -128,6 +147,58 @@ function rangeFromValues(
  * on a whole range starts a new one rather than extending it. While the
  * picker is open the rest of the page is inert, so Apply beside an open
  * picker takes two presses: the first only closes it.
+ *
+ * **The two labelled fields line up.** The row is `items-end`, so the
+ * controls' bottom edges meet, and the labels meet only if the controls are
+ * the same height. They were not: the native `<select>` renders 24 px tall
+ * with nothing on it and `DatePickerTrigger`'s `.input` 40 px, so "Status"
+ * sat 16 px below "Created between" (label tops at y=32 and y=16, measured).
+ * `h-10` gives the select the trigger's 40 px: both labels at y=16, both
+ * controls and Apply at y=42–82, and a 40 px target for the select where it
+ * had 24 px. That ties it to the field height at the package's default,
+ * compact density, which this app never changes.
+ *
+ * **The date field is as wide as its longest value, and no wider.** Inside
+ * a `FormField` it no longer fills the row (see the history below): the
+ * `FormField` is a flex item sized to its content, so with no width of its
+ * own the field hugs whatever it shows — 104.6 px empty, 187.6 px from an
+ * open start, 261.8 px with a full range — and Apply jumps up to 157 px
+ * sideways each time a range is picked or cleared. `w-[calc(23ch+72px)]`
+ * fixes it at the longest of those: the 23 characters of
+ * `YYYY-MM-DD → YYYY-MM-DD` in the value's mono face, plus 72 px of chrome
+ * — the two 1 px borders, the 12 px left padding, the 14 px calendar icon
+ * and its 8 px gap, and the 36 px the Clear button's tap target claims on
+ * the right (`DatePickerTrigger`'s own `pr-[calc(2.25rem+…)]`, at compact
+ * density).
+ *
+ * `ch` and not pixels, because this app ships no mono face: `--font-mono`
+ * is a stack (JetBrains Mono, `ui-monospace`, SF Mono, Cascadia Mono, Menlo,
+ * `monospace`) with no `@font-face` behind it, so the face is whatever the
+ * operator's machine resolves, and `ch` is measured in that face. The
+ * `font-mono text-prose` beside the width is there only so that `ch` is the
+ * value's own face at the value's own 14 px: `className` lands on the
+ * trigger's wrapper `div`, and neither of its visible children inherits the
+ * font — the button sets its own `font-sans`, and Clear is an icon.
+ *
+ * Measured in the built Storybook, headless Chromium, 2026-09-24, where the
+ * face resolves to DejaVu Sans Mono (`CSS.getPlatformFontsForNode`): `ch`
+ * is 8.42 px, so the field is 265.9 px; a full range needs 261.8 px of it
+ * (189.8 px of text), and at 261 px it truncates. The 4 px over is the
+ * root's `-0.011em` tracking (`theme.css`'s `html` rule, -0.176 px a glyph),
+ * which `ch` does not see. It is kept rather than subtracted, because it is
+ * also what absorbs a face without its own `→`: Ubuntu Mono draws that one
+ * glyph from DejaVu and still fits (a 252.3 px field, 248.9 px needed).
+ * Liberation Mono, Noto Mono and FreeMono: a 265.2 px field, ~261.2 px
+ * needed. On 0.2.x the trigger was ~262 px, so this is the width the row
+ * had before 0.3.0.
+ *
+ * The `FiltersWithRange` story checks all of this in a real browser, and
+ * each of these mutations fails it alone: the width class removed (cleared,
+ * the field shrinks to 104.6 px), the width at `20ch` (190 px of text in a
+ * 169 px slot), `font-mono text-prose` removed (`ch` then comes from the
+ * sans face: 20.7 px unused), the select's `h-10` removed (the labels 16 px
+ * apart), and `flex-wrap` on the row (at 343 px it wraps instead of
+ * scrolling).
  *
  * **One line, and `overflow-x-auto` is what makes that true rather than
  * merely literal.** `flex` with no `flex-wrap` guarantees the controls never
@@ -146,19 +217,19 @@ function rangeFromValues(
  * the row be narrower than its contents; `overflow-x-auto` keeps the spill
  * inside the row's own box. Measured after: at 375 px the document's
  * `scrollWidth` equals its `clientWidth`; at 1280 px nothing changes at all,
- * because there is nothing to scroll.
+ * because there is nothing to scroll. Measured again with both fields
+ * labelled and the date field at its fixed width (2026-09-24): at 375 px the
+ * row's content is 582 px in a 343 px box (327 px inside the app shell) and
+ * scrolls inside itself, the date field starting 231 px in; the document
+ * stays at `scrollWidth` 375.
  *
- * **0.3.0 changed the middle control's width, and not by anything written
- * here.** The block wrapper is gone: `DatePickerTrigger`'s own
- * `inline-flex w-full` box is now the row's flex item, so the trigger takes
- * whatever the row has left and shrinks before the row spills. Measured in
- * the built Storybook `Filters` story (the row alone, 2026-09-24): 932 px in
- * a 1248 px row, 352 px in a 668 px row, and at 375 px it gives way to
- * ~158 px empty before the row spills anyway (`scrollWidth` 473 against
- * `clientWidth` 343) — with the document still at `scrollWidth` 375, so the
- * wrapper above still does its job. Pinning the old width back is a
- * `className` on `DatePickerTrigger`, and a layout decision this migration
- * did not take.
+ * _History: 0.3.0's width, before the label._ 0.3.0 removed the block
+ * wrapper 0.2.x put around the trigger, so `DatePickerTrigger`'s own
+ * `inline-flex w-full` box became the row's flex item and took whatever the
+ * row had left: 932 px in a 1248 px row, 352 px in a 668 px row, and at
+ * 375 px ~158 px empty before the row spilled anyway (the built Storybook
+ * `Filters` story, 2026-09-24). The `FormField` around it ended that, and
+ * the width above replaced it.
  *
  * Safe with the calendar, checked and not assumed — and for a different
  * reason than before. 0.2.x portalled its panel (`PopoverPanel`'s `anchor`
@@ -170,7 +241,12 @@ function rangeFromValues(
  * `transform`, `filter`, `backdrop-filter`, `contain` or `will-change` —
  * nothing here or in `ScreenStack` does. Measured: at 1280 px the docked
  * panel is 714×398 px under a 50 px-tall row, and its Save button, ~370 px
- * below the row's bottom edge, took a real click.
+ * below the row's bottom edge, took a real click. Re-measured with the
+ * labels (2026-09-24, the payments screen composed inside `AppShell` at
+ * 1280×800): the row is 66 px tall, the panel is still 714×398 px, 4 px
+ * under the trigger, and its Save button, ~357 px below the row's bottom
+ * edge, took a real click; at 375×812 the full-screen picker covers the
+ * viewport (375×812) and its Save took one too.
  *
  * Applying always starts from the first page: the built URL never carries
  * `after`/`before`, because `starting_after`/`ending_before` name a row in
@@ -210,6 +286,7 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
         <select
           id="payments-filter-status"
           name="status"
+          className="h-10"
           value={status}
           onChange={(event) => setStatus(event.target.value)}
         >
@@ -222,13 +299,18 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
         </select>
       </FormField>
 
-      <DateRangePicker value={range} onValueChange={setRange}>
-        <DatePickerTrigger aria-label="Created between">
-          <DatePickerValue placeholder="Created between" />
-          <DatePickerClear />
-        </DatePickerTrigger>
-        <DatePickerContent />
-      </DateRangePicker>
+      <FormField label="Created between" htmlFor="payments-filter-created">
+        <DateRangePicker value={range} onValueChange={setRange}>
+          <DatePickerTrigger
+            id="payments-filter-created"
+            className="w-[calc(23ch+72px)] font-mono text-prose"
+          >
+            <DatePickerValue placeholder="Any time" />
+            <DatePickerClear />
+          </DatePickerTrigger>
+          <DatePickerContent />
+        </DateRangePicker>
+      </FormField>
 
       <Button type="button" variant="secondary" onClick={apply}>
         Apply

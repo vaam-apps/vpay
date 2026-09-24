@@ -277,6 +277,26 @@ describe("every screen this app renders", () => {
     expect(await violations(filters.container)).toEqual([]);
     filters.unmount();
 
+    // And with a range set, which the empty render above never reaches: the
+    // date field's trigger then points `aria-describedby` at the shown dates
+    // (`aria-valid-attr-value` checks the reference resolves), and the Clear
+    // button renders beside it (`button-name`). The empty render is the one
+    // that holds the trigger's own name: since 2026-09-24 that is the
+    // visible "Created between" label (`button-name` accepts a `<label for>`
+    // through axe's `explicit-label` check), with the "Any time" placeholder
+    // as visible text besides — so axe fires only when both are gone.
+    const filtered = render(
+      <PaymentsFilters
+        values={{
+          status: "",
+          createdFrom: "2026-09-01",
+          createdTo: "2026-09-07",
+        }}
+      />,
+    );
+    expect(await violations(filtered.container)).toEqual([]);
+    filtered.unmount();
+
     const bar = render(
       <SignedInBar
         email="ada@example.test"

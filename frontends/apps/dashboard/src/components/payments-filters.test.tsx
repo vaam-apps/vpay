@@ -38,18 +38,25 @@ function clickApply(): void {
 }
 
 /**
- * The date range's trigger button, by its accessible name.
+ * The date field — `DatePickerTrigger`'s button — found by the name its
+ * visible label gives it.
  *
- * On `@vaam-apps/ui` 0.2.x this had to take the current range, because the
- * name was the shown text followed by an `sr-only` copy of the placeholder
- * (`"2026-09-01 → 2026-09-07 Created between"`) and changed with the range.
- * Since 0.3.0 the component names the trigger with `aria-label`, the shown
- * range moves to its description, and the name is `"Created between"` in
- * every state — so a range-seeded case that finds it by that name is also
- * what fails when the `aria-label` goes (the component's module doc has the
- * mutation). Exact match, so "Clear the dates" beside it is no competitor.
+ * Since 2026-09-24 the range sits in a `FormField` labelled "Created
+ * between", whose `<label for>` points at the trigger's `id`; the trigger
+ * has no `aria-label`, and its own text is the dates, or "Any time" while
+ * empty. So the label is the only thing on the page that can name it
+ * "Created between", in every state, and every case that goes through here
+ * also fails when the label stops pointing at the trigger (the component's
+ * module doc has the mutation). Exact match, so "Clear the dates" beside it
+ * is no competitor.
+ *
+ * _History:_ on `@vaam-apps/ui` 0.2.x this took the current range, because
+ * the name was the shown text followed by an `sr-only` copy of the
+ * placeholder (`"2026-09-01 → 2026-09-07 Created between"`) and changed with
+ * the range; on 0.3.0, before the label, it was `dateTrigger()` and found
+ * the name an `aria-label` gave.
  */
-function dateTrigger(): HTMLElement {
+function dateFieldByLabel(): HTMLElement {
   return screen.getByRole("button", { name: "Created between" });
 }
 
@@ -172,6 +179,42 @@ describe("the payments filters", () => {
     expect(url.searchParams.get("created_to")).toBe("2026-09-07");
   });
 
+  it("names the date field by its visible label, and reads the dates as its description", () => {
+    // The label is a real `<label for>` on the trigger, not an `aria-label`
+    // that happens to say the same words: both satisfy `getByRole`'s name
+    // and `getByLabelText`, and only one of them is visible to a sighted
+    // operator returning to a bookmarked, filtered URL — which is what the
+    // label was added for.
+    render(<PaymentsFilters values={SEPTEMBER} />);
+    const trigger = dateFieldByLabel();
+    expect(trigger).not.toHaveAttribute("aria-label");
+    const label = screen.getByText("Created between", { selector: "label" });
+    expect((label as HTMLLabelElement).control).toBe(trigger);
+    // `DatePickerTrigger` moves the shown value into its description once
+    // it finds a `<label>` pointing at it (`labels`, read after mount), so a
+    // screen reader hears the label, then the dates.
+    expect(trigger).toHaveAccessibleDescription("2026-09-01 → 2026-09-07");
+    // Clicking the label focuses the field and opens nothing — the same
+    // thing clicking "Status" does to the select. `FormField`'s `Label` is
+    // Headless UI's, which cancels the native label click (on a button that
+    // would be a click, and would open the picker) and focuses instead.
+    fireEvent.click(label);
+    expect(trigger).toHaveFocus();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it('describes the empty date field as "Any time", not as its label again', () => {
+    // The placeholder is the field's "Any status": what an unset filter
+    // means. It was "Created between", the label's own words. Because the
+    // shown text is the trigger's description, that already made the empty
+    // trigger "Created between, button, Created between" under the
+    // `aria-label` this replaced (measured on that revision, `c562564b`, in
+    // jsdom), and beside a visible label it would draw them twice as well.
+    render(<PaymentsFilters values={EMPTY} />);
+    expect(dateFieldByLabel()).toHaveAccessibleDescription("Any time");
+  });
+
   it("carries the range an operator PICKS in the calendar", () => {
     // Same hole as the status case above, and the more dangerous half of
     // it: `DateRangePicker` is a *controlled* component, so `onValueChange`
@@ -196,7 +239,7 @@ describe("the payments filters", () => {
     // there and nowhere else, so without `clickSave()` the seed would come
     // back out exactly as it does with `onValueChange` deleted.
     render(<PaymentsFilters values={SEPTEMBER} />);
-    fireEvent.click(dateTrigger());
+    fireEvent.click(dateFieldByLabel());
     pickSeptember(/Thursday, September 10th, 2026/);
     pickSeptember(/Friday, September 18th, 2026/);
     clickSave();
@@ -216,7 +259,7 @@ describe("the payments filters", () => {
     // version that only sent dates when both were set would pass every
     // other case in this file.
     render(<PaymentsFilters values={SEPTEMBER} />);
-    fireEvent.click(dateTrigger());
+    fireEvent.click(dateFieldByLabel());
     pickSeptember(/Thursday, September 10th, 2026/);
     clickSave();
     clickApply();

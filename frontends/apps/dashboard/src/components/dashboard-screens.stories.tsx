@@ -184,6 +184,81 @@ export const FiltersLight: Story = {
   globals: { theme: "light" },
 };
 
+/**
+ * The filters with a range set: the date field at its longest value, and
+ * the only one of these three stories whose trigger carries a description
+ * and a Clear button.
+ *
+ * The `play` function checks, in a real Chromium and against computed
+ * geometry rather than class strings, what `payments-filters.tsx`'s module
+ * doc claims and jsdom cannot see:
+ *
+ * - the trigger is named by its visible label and described by the dates;
+ * - the value is not truncated, and leaves at most 8px of its slot unused
+ *   (it leaves ~4px: the root's tracking, which `ch` does not see);
+ * - "Status" and "Created between" share a top edge, and so do their
+ *   controls;
+ * - squeezed to a 375px phone's content width, the row stays one line and
+ *   scrolls, and the field neither narrows nor truncates;
+ * - cleared, the field keeps its width, so picking or clearing a range
+ *   does not move the row.
+ *
+ * The mutations that fail it, each alone, are listed in that module doc.
+ */
+export const FiltersWithRange: Story = {
+  render: () => (
+    <PaymentsFilters
+      values={{
+        status: "",
+        createdFrom: "2026-09-01",
+        createdTo: "2026-09-07",
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const trigger = canvas.getByRole("button", { name: "Created between" });
+    await expect(trigger).toHaveAccessibleDescription(
+      "2026-09-01 → 2026-09-07",
+    );
+
+    const shown = trigger.querySelector("span");
+    await expect(shown).not.toBeNull();
+    const value = shown as HTMLSpanElement;
+    await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
+    const text = canvasElement.ownerDocument.createRange();
+    text.selectNodeContents(value);
+    const unused =
+      value.getBoundingClientRect().width - text.getBoundingClientRect().width;
+    await expect(unused).toBeGreaterThanOrEqual(0);
+    await expect(unused).toBeLessThanOrEqual(8);
+
+    const top = (element: Element) =>
+      Math.round(element.getBoundingClientRect().top);
+    const status = canvas.getByText("Status", { selector: "label" });
+    const created = canvas.getByText("Created between", { selector: "label" });
+    await expect(top(status)).toBe(top(created));
+    const select = canvas.getByRole("combobox", { name: "Status" });
+    await expect(top(select)).toBe(top(trigger));
+
+    const width = trigger.getBoundingClientRect().width;
+    const row = canvasElement.firstElementChild as HTMLElement;
+    const apply = canvas.getByRole("button", { name: "Apply" });
+    canvasElement.style.width = "343px";
+    await expect(row.scrollWidth).toBeGreaterThan(row.clientWidth);
+    await expect(top(apply)).toBe(top(select));
+    await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
+    await expect(trigger.getBoundingClientRect().width).toBe(width);
+    canvasElement.style.width = "";
+
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Clear the dates" }),
+    );
+    await expect(trigger).toHaveAccessibleDescription("Any time");
+    await expect(trigger.getBoundingClientRect().width).toBe(width);
+  },
+};
+
 // -------------------------------------------------------------- PaymentsPager
 
 export const PagerMiddle: Story = {
