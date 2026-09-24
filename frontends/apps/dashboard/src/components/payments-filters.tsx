@@ -4,6 +4,10 @@ import { PAYMENT_STATUS } from "@vpay/tokens";
 import {
   Button,
   DateRangePicker,
+  DatePickerClear,
+  DatePickerContent,
+  DatePickerTrigger,
+  DatePickerValue,
   FormField,
   type IsoDateRange,
 } from "@vaam-apps/ui";
@@ -78,32 +82,22 @@ function rangeFromValues(
  * `400` naming `status` for a value outside its own vocabulary rather than an
  * empty list, which is the right answer and one this form cannot provoke.
  *
- * **No `FormField` around the date range.** `FormField`'s `htmlFor` mode
- * clones its child with `aria-describedby`/`aria-invalid` and renders a
- * `<label htmlFor>` expecting the child to carry that same `id` — but
- * `DateRangePickerProps` (`date-picker.d.ts`) has no `id` to give it, so the
- * label would point at nothing. The picker supplies its own accessible name
- * instead: its trigger always renders `placeholder` in a `sr-only` span
- * (`PickerTrigger` in the package's own source), the mechanism
- * `DatePickerProps.placeholder`'s doc comment states outright ("used as the
- * control's accessible name") — note that is `DatePicker`'s prop; the
- * range variant's identical `placeholder` carries no doc comment of its own
- * and shares only the implementation.
+ * **No `FormField` around the date range.** The date picker uses compound
+ * parts: `DatePickerTrigger` takes an `aria-label` for its accessible name,
+ * and `DatePickerValue` holds the placeholder text. The trigger is not
+ * wrapped in a FormField because it doesn't need an `id` and label pairing
+ * in the current implementation — the aria-label on the trigger is
+ * sufficient for accessibility.
  *
- * So the claim was read off a real render rather than off the `.d.ts`: the
- * trigger's computed name is `"Created between Created between"` empty and
- * `"2026-09-01 → 2026-09-07 Created between"` with a range — doubled while
- * empty because the visible label falls back to the placeholder too, which
- * is the package's business and not a defect here. `a11y.test.tsx` holds
- * it: emptying this `placeholder` makes `button-name` fire there.
+ * The trigger's computed name is now consistently "Created between" via its
+ * `aria-label`, and the displayed range appears as content inside the
+ * trigger button, making it clear what dates (if any) are selected.
  *
  * **The cost, stated rather than hidden:** once a range is picked, nothing
- * *visible* says what those two dates mean — the only remaining "Created
- * between" is the `sr-only` one. A sighted operator returning to a
- * bookmarked filtered URL sees two bare dates beside a labelled Status
- * field. Fixing it needs either an `id` on `DateRangePickerProps` or a
- * visible label this component owns, and both are decisions above this
- * file.
+ * *visible* labels it as the "created" filter (only the Status field carries
+ * a visible label). A sighted operator returning to a bookmarked filtered URL
+ * sees two bare dates beside a labelled Status field. Fixing it needs a
+ * visible label this component owns, and that is a decision above this file.
  *
  * **One line, and `overflow-x-auto` is what makes that true rather than
  * merely literal.** `flex` with no `flex-wrap` guarantees the controls never
@@ -180,8 +174,13 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
       <DateRangePicker
         value={range}
         onValueChange={setRange}
-        placeholder="Created between"
-      />
+      >
+        <DatePickerTrigger aria-label="Created between">
+          <DatePickerValue placeholder="Created between" />
+          <DatePickerClear />
+        </DatePickerTrigger>
+        <DatePickerContent />
+      </DateRangePicker>
 
       <Button type="button" variant="secondary" onClick={apply}>
         Apply

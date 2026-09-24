@@ -243,8 +243,8 @@ export function AppShell({
         `main`.
 
         `pb-20` (80px) clears the bottom pill's height (58px) plus its
-        `bottom-3` offset (12px) below `sm`; `sm:pl-20` (80px) clears the
-        vertical pill's right edge (`x=64`) with room to spare from `sm` up
+        `bottom-3` offset (12px) below `sm`; `sm:pl-24` (96px) clears the
+        vertical pill's right edge with room to spare from `sm` up
         to `xl`, where the real in-flow sidebar takes over and `xl:pl-0`
         gives the padding back.
       */}
@@ -269,8 +269,8 @@ export function AppShell({
         vertical rail is `fixed top-1/2 left-3 w-[52px]` and the sub-640px
         pill is `fixed bottom-3 left-1/2 -translate-x-1/2`, so the
         bottom-left corner is empty at every width below `xl`. The icon-only
-        trigger is ~44px wide, which fits inside the 80px gutter `<main>`
-        already reserves with `sm:pl-20` — a labelled one would not, and
+        trigger is ~44px wide, which fits inside the 96px gutter `<main>`
+        already reserves with `sm:pl-24` — a labelled one would not, and
         would overlap the first column of the screen it navigates away from.
 
         Hidden from `xl` up: there the in-flow sidebar carries the nav tree,
@@ -288,7 +288,7 @@ export function AppShell({
           />
         </div>
       </div>
-      <main className="min-w-0 flex-1 pb-20 sm:pb-0 sm:pl-20 xl:pl-0">
+      <main className="min-w-0 flex-1 pb-20 sm:pb-0 sm:pl-24 xl:pl-0">
         <div className="mx-auto flex w-full max-w-6xl flex-col gap-6 p-6">
           {/*
             `SignedInBar` stays here, unconditionally — see the module doc

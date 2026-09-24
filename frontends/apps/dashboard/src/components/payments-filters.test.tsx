@@ -38,15 +38,14 @@ function clickApply(): void {
 /**
  * The date range's trigger button.
  *
- * Queried by its *current* accessible name rather than a substring, because
- * a substring match also hits the "Clear Created between" button the picker
- * renders beside it once a range is set, and `getByRole` throws on two
- * matches. The name is the visible label followed by the `sr-only`
- * placeholder — see the component's module doc on where that name comes
- * from — so it changes as the range changes and must be re-queried.
+ * Queried by its accessible name. The trigger has an `aria-label` of
+ * "Created between", and the displayed range (if any) appears as content
+ * inside it, so the accessible name stays "Created between" at all times.
+ * This simplifies the query since the name no longer changes based on the
+ * range value.
  */
-function dateTrigger(label: string): HTMLElement {
-  return screen.getByRole("button", { name: `${label} Created between` });
+function dateTrigger(): HTMLElement {
+  return screen.getByRole("button", { name: "Created between" });
 }
 
 /**
@@ -137,24 +136,24 @@ describe("the payments filters", () => {
     // dates keep coming back out of every other case in this file.
     // Measured: that mutation left all five of the original cases green.
     //
-    // **`created_from` staying at the seed is `react-day-picker`'s measured
-    // behaviour, not a requirement of ours.** Clicking a later day on a
-    // range that is already complete EXTENDS it — the end moves, the start
-    // does not, whatever you click — so an operator who wants a different
-    // start has to Clear first (the case below). Recorded here because a
-    // package bump that changes it should say so out loud rather than
-    // quietly re-point the filter at a different month.
+    // **In 0.3.0, a tap on a complete range starts a new one.** The old picker
+    // extended the range from its start, so clicking Sept 10 and then Sept 18
+    // on a Sept 1-7 range would extend to Sept 18. The new rule: tapping
+    // anywhere starts fresh. So this test now sets Sept 10 → Sept 18 instead
+    // of Sept 1 → Sept 18. The picker needs an explicit Save click to commit.
     render(<PaymentsFilters values={SEPTEMBER} />);
-    fireEvent.click(dateTrigger("2026-09-01 → 2026-09-07"));
+    fireEvent.click(dateTrigger());
     fireEvent.click(
       screen.getByRole("button", { name: /Thursday, September 10th, 2026/ }),
     );
     fireEvent.click(
       screen.getByRole("button", { name: /Friday, September 18th, 2026/ }),
     );
+    // Confirm the range selection
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
     clickApply();
     const url = pushedUrl();
-    expect(url.searchParams.get("created_from")).toBe("2026-09-01");
+    expect(url.searchParams.get("created_from")).toBe("2026-09-10");
     expect(url.searchParams.get("created_to")).toBe("2026-09-18");
   });
 
@@ -164,7 +163,7 @@ describe("the payments filters", () => {
     // were already looking at and no sign that the control did nothing.
     render(<PaymentsFilters values={SEPTEMBER} />);
     fireEvent.click(
-      screen.getByRole("button", { name: "Clear Created between" }),
+      screen.getByRole("button", { name: "Clear the dates" }),
     );
     clickApply();
     const url = pushedUrl();

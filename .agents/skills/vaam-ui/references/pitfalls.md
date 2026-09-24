@@ -10,7 +10,7 @@ You are missing `@source "../node_modules/@vaam-apps/ui/dist"`. Tailwind
 v4 generates only what it can see and does not scan `node_modules`. No
 error, no warning.
 
-## The colours are _almost_ right
+## The colours are *almost* right
 
 You left daisyUI's built-in themes on. Use `@plugin "daisyui" { themes:
 false; }` — the built-ins outrank any custom theme block on `base-100`,
@@ -36,7 +36,7 @@ Two causes, both real:
 1. **Use `cn()`.** Plain concatenation puts your class in a string
    `tailwind-merge` then resolves — and it once deleted `btn-circle`
    because it conflated shape with size.
-2. **daisyUI emits into nested cascade layers**, and an _unlayered_
+2. **daisyUI emits into nested cascade layers**, and an *unlayered*
    Tailwind utility outranks a nested sublayer. If a daisyUI component
    class (`.btn-circle`, and similar) appears not to apply, this is why.
 
@@ -53,7 +53,11 @@ already steps its own caption up; do not push it back down.
 so they **cannot reserve their own space** — that is the trade that lets
 one layout serve every width. The content column's padding is yours:
 leave room on the left where the vertical rail floats, and at the bottom
-where the phone pill does.
+where the phone pill does. Both are M3's floating toolbar now and each
+ends 80px from its edge, so the numbers are `sm:pl-24` and `pb-24` —
+`sm:pl-20`, which was right for the old 52px rail, now leaves content
+flush against the toolbar. With `viewport-fit=cover` the bottom one also
+rises by `env(safe-area-inset-bottom)`; add it to your `pb-*` too.
 
 ## A tooltip is invisible or cut in half
 

@@ -18,7 +18,7 @@
     "@refinedev/core": "5.0.12",
     "@refinedev/nextjs-router": "7.0.5",
     "@tanstack/react-query": "^5.81.5",
-    "@vaam-apps/ui": "^0.2.4",
+    "@vaam-apps/ui": "^0.3.0",
     "@vpay/api-client": "workspace:*",
     "@vpay/config": "workspace:*",
     "@vpay/tokens": "workspace:*",

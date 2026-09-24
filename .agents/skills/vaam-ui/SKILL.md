@@ -6,8 +6,8 @@ description: Build operator-console screens with @vaam-apps/ui — the dark-firs
 # @vaam-apps/ui
 
 A dark-first React component library for operator consoles — screens where
-someone is answering _"what happened to this one record, and does anybody
-need to do something?"_ about one row out of a hundred thousand.
+someone is answering *"what happened to this one record, and does anybody
+need to do something?"* about one row out of a hundred thousand.
 
 Peer dependencies: `react` ^18.3 || ^19, `react-dom`, `tailwindcss` ^4.1,
 `daisyui` ^5.
@@ -73,8 +73,9 @@ Three orientation rules:
 
 - **Surfaces come in three registers** — diagnostic (a hairline; most of
   the library), floating (a shadow, because it overlaps a ground it does
-  not know), instrument (`InstrumentPanel` / `Card glow`, for data you
-  _scan_ rather than read).
+  not know — one exception: `SideNav`'s floating toolbar follows M3's
+  elevation level 0 and has none), instrument (`InstrumentPanel` / `Card glow`,
+  for data you *scan* rather than read).
 - **`cn()` is exported** and is the only correct way to merge classes onto
   these components — plain string concatenation loses to `tailwind-merge`
   in ways that delete classes silently. `references/utilities.md` has the

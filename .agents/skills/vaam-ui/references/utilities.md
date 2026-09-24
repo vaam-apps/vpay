@@ -19,7 +19,7 @@ only correct way to put a class on one of these components.**
 ### Why not a template string
 
 Every component in this package merges internally as `cn(base, className)`,
-so a class you pass wins over the component's own — _in call order_, which
+so a class you pass wins over the component's own — *in call order*, which
 is the order you can see. Join the strings yourself and both survive into
 the DOM, where the winner falls out of stylesheet order instead: two
 utilities of equal specificity are decided by whichever Tailwind happened to
@@ -42,7 +42,7 @@ function AmountCell({ className }: { className?: string }) {
 
 `clsx` alone has the same problem: it joins, it does not resolve. And in
 this package stylesheet order is worse than a coin flip, because daisyUI
-emits into nested cascade layers and an _unlayered_ Tailwind utility
+emits into nested cascade layers and an *unlayered* Tailwind utility
 outranks a daisyUI sublayer — an icon button's own `rounded-field` beat
 `.btn-circle`, so a control everything on the page called a circle shipped
 as a rounded square. Resolving in call order is how you keep that argument
@@ -72,7 +72,7 @@ conditional goes last:
 
 ### The two custom groups, and the bugs they fix
 
-Stock `tailwind-merge` knows Tailwind's _default_ theme and Tailwind's own
+Stock `tailwind-merge` knows Tailwind's *default* theme and Tailwind's own
 utilities. Both gaps produced the same failure here — a class that parses,
 looks right in the source, and is silently dropped — and both were found by
 checking merge output rather than by reading documentation.
@@ -99,7 +99,7 @@ cn("btn-sm", "btn-lg");         // "btn-lg"
 ```
 
 The same split exists for colour versus style, for the same reason, and it
-is the counter-intuitive one: daisyUI 5's `.btn-outline` _reads_ the
+is the counter-intuitive one: daisyUI 5's `.btn-outline` *reads* the
 `--btn-color` variable that `.btn-primary` sets, so `btn-primary btn-outline`
 is how you spell "a primary outline button".
 
@@ -113,7 +113,7 @@ cn("btn-primary-ish", "btn-primary"); // both — an unrelated class is not a mo
 `--text-*` steps in `theme.css` — `micro`, `caption`, `body`, `prose`,
 `title-sm`, `title`, `metric`, `metric-lg` — are theme keys stock
 `tailwind-merge` has never heard of, so it fell back to classifying
-`text-caption` as a _colour_ and dropped it as conflicting with the real
+`text-caption` as a *colour* and dropped it as conflicting with the real
 colour beside it:
 
 ```ts
@@ -151,11 +151,11 @@ cn("rounded-box", "rounded-none");  // "rounded-none"
 ### Two things worth knowing before you debug a merge
 
 - **Groups can be wider than they look.** `transition-colors` and
-  `transition-opacity` are the _same_ group, because both set
+  `transition-opacity` are the *same* group, because both set
   `transition-property` — measured, not assumed: `cn("transition-colors",
-"transition-opacity")` is `"transition-opacity"`. `CopyButton` uses the
+  "transition-opacity")` is `"transition-opacity"`. `CopyButton` uses the
   bare `transition` utility precisely because it animates both.
-- **`cn()`'s configuration is closed.** It knows _this_ package's scales. If
+- **`cn()`'s configuration is closed.** It knows *this* package's scales. If
   your application declares its own `--text-*` steps, `tailwind-merge` will
   mistake them for colours in exactly the way described above, and you need
   your own `extendTailwindMerge` for them — `cn()` will not learn them.

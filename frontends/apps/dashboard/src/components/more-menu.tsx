@@ -26,7 +26,7 @@ export interface MoreMenuProps {
    *
    * Used where the trigger floats beside `SideNav`'s own rails rather than
    * sitting in the content column. It has to be narrow there: below `xl`
-   * `<main>` carries `sm:pl-20`, an 80px gutter the vertical rail occupies,
+   * `<main>` carries `sm:pl-24`, a 96px gutter the vertical rail occupies,
    * and a labelled button is wider than that — it would sit on top of the
    * first column of the screen it is meant to navigate away from. The icon
    * alone is ~44px, which is both inside the gutter and the minimum touch
