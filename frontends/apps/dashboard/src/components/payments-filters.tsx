@@ -10,6 +10,7 @@ import {
   DatePickerValue,
   FormField,
   type IsoDateRange,
+  Skeleton,
 } from "@vaam-apps/ui";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
@@ -417,6 +418,84 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
       <Button type="button" variant="secondary" onClick={apply}>
         Apply
       </Button>
+    </div>
+  );
+}
+
+/**
+ * The filter row's loading placeholder, drawn to land exactly where the row
+ * will: `PaymentsSkeleton` renders it while the first read is in flight,
+ * and `PaymentsFilters` replaces it when the read returns.
+ *
+ * **Why not `RouteSkeleton`'s filter bar (2026-09-24, the maintainer's call
+ * on vaam-apps/vpay#258's review).** That bar is three unlabelled 36 px
+ * blocks, 256, 128 and 128 px wide, `items-center`, `gap-2`. The row above
+ * is two labelled 66 px fields and a 40 px button, `items-end`, `gap-3`,
+ * wrapping at its own widths. Measured in the built Storybook, headless
+ * Chromium, inside `AppShell`: the bar was 30 px short on one line at
+ * 726 and 1280 px windows, 82 px short at 700 px (one line against the
+ * row's two), 64 px at 640 px and 116 px at 320 and 375 px (two lines
+ * against three), and everything below it jumped down by as much when the
+ * rows arrived — more, with the header's own shortfall (`PaymentsSkeleton`
+ * has those numbers).
+ *
+ * So this is the row again, class for class — the same row, the same
+ * `FormField` column (`flex flex-col gap-1.5`, and the `max-w-full` both
+ * fields carry), the same `items-end` — with a `Skeleton` where each label
+ * and control sits. The label placeholders are `h-lh text-body`, one line
+ * of the label's own `text-body` (20 px at any root). The date field's is
+ * the trigger's own width expression, measured in the same
+ * `font-mono text-prose` (on its column here, to keep each class string
+ * inside `verify-ui`'s 60 characters).
+ *
+ * The select's and Apply's placeholders are sized by an invisible copy of
+ * the real control rather than by a number, because both widths come from
+ * the sans face this app does not ship: the select measured 207 px in
+ * Liberation Sans, 219 px in Noto Sans and 231 px in DejaVu Sans, and a
+ * fixed width would put this row's line breaks at other window widths than
+ * the real one's on some machines. `invisible` keeps them unpainted,
+ * unfocusable and out of the accessibility tree, and the `Skeleton`s
+ * around them are `aria-hidden` besides; the row is `aria-hidden` and
+ * `inert` too, so nothing in it is reachable even if `invisible` were
+ * lost. `PaymentsSkeleton` carries the `role="status"` that announces the
+ * wait.
+ *
+ * The `PaymentsLoading` stories render this and the real row one above
+ * the other and fail when their line counts differ or any box is more than
+ * a pixel off, at desktop and phone column widths and at a 20 px root; they
+ * also check the two copies stay unpainted and unfocusable. The literals
+ * here are copies, not shared constants, because `verify-ui` refuses a
+ * computed `className`; those stories are what keep the copies honest.
+ */
+export function PaymentsFiltersSkeleton() {
+  return (
+    <div
+      aria-hidden="true"
+      inert
+      className="flex min-w-0 flex-wrap items-end gap-3"
+    >
+      <div className="flex max-w-full flex-col gap-1.5">
+        <Skeleton className="h-lh w-12 text-body" />
+        <Skeleton>
+          <select className="invisible block h-10">
+            <option>Any status</option>
+            {PAYMENT_STATUS.map((paymentStatus) => (
+              <option key={paymentStatus}>{paymentStatus}</option>
+            ))}
+          </select>
+        </Skeleton>
+      </div>
+
+      <div className="flex max-w-full flex-col gap-1.5 font-mono text-prose">
+        <Skeleton className="h-lh w-28 text-body" />
+        <Skeleton className="h-10 w-[calc(23ch+16px+3.5rem)] max-w-full" />
+      </div>
+
+      <Skeleton className="flex">
+        <Button type="button" variant="secondary" className="invisible">
+          Apply
+        </Button>
+      </Skeleton>
     </div>
   );
 }

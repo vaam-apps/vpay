@@ -29,6 +29,7 @@
  * fixes and does not attempt.
  */
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { ScreenStack } from "@vaam-apps/ui";
 import { expect, userEvent, within } from "storybook/test";
 
 import { AppShell } from "./app-shell";
@@ -39,6 +40,7 @@ import { PasswordForm } from "./password-form";
 import { PaymentDetailView } from "./payment-detail";
 import { PaymentsFilters } from "./payments-filters";
 import { PaymentsPager } from "./payments-pager";
+import { PAYMENTS_DESCRIPTION, PaymentsSkeleton } from "./payments-skeleton";
 import { PaymentsTable } from "./payments-table";
 import { ReadFailure } from "./read-failure";
 import { SignedInBar } from "./signed-in-bar";
@@ -66,8 +68,9 @@ function refusedAction(message: string, requestId: string): FormAction {
 }
 
 /**
- * The two viewports the filter row's layout is tested at: a phone, where it
- * stacks, and a desktop, where it is one line. `@storybook/addon-vitest`
+ * The two viewports the filter row's layout, and its loading skeleton's,
+ * are tested at: a phone, where it stacks, and a desktop, where it is one
+ * line. `@storybook/addon-vitest`
  * resizes the test browser to a story's `globals.viewport` before running
  * it; every story that sets none keeps its 1200×900 default.
  *
@@ -392,6 +395,146 @@ export const FiltersWithRangePhone: Story = {
       root.style.fontSize = "";
       canvasElement.style.width = "";
     }
+  },
+};
+
+// ------------------------------------------------------------ PaymentsSkeleton
+
+/**
+ * The payments screen's loading state above the part of its loaded state
+ * the skeleton stands in for — the heading, the description and the filter
+ * row, composed as `payments-screen.tsx`'s loaded branch composes them.
+ */
+function SkeletonAboveScreen() {
+  return (
+    <div className="flex flex-col gap-12">
+      <PaymentsSkeleton />
+      <ScreenStack>
+        <h2>Payments</h2>
+        <p className="text-body text-muted-foreground">
+          {PAYMENTS_DESCRIPTION}
+        </p>
+        <PaymentsFilters
+          values={{ status: "", createdFrom: "", createdTo: "" }}
+        />
+      </ScreenStack>
+    </div>
+  );
+}
+
+/**
+ * Where a filter row's boxes sit in their own screen stack: the row and
+ * each of its three children, as offsets from the stack's top-left corner
+ * and sizes, and how many lines the row wrapped onto (its children are
+ * `items-end`, so one line is one shared bottom edge).
+ */
+function rowLayout(stack: Element, row: Element) {
+  const origin = stack.getBoundingClientRect();
+  const boxes = [row, ...row.children].map((element) => {
+    const box = element.getBoundingClientRect();
+    return [
+      box.left - origin.left,
+      box.top - origin.top,
+      box.width,
+      box.height,
+    ];
+  });
+  const bottoms = [...row.children].map((child) =>
+    Math.round(child.getBoundingClientRect().bottom),
+  );
+  return { lines: new Set(bottoms).size, boxes };
+}
+
+/**
+ * The skeleton's filter row lands on the real one: the same number of
+ * lines, and every box within a pixel, at each column width given and
+ * then again at a 20px root. The canvas width and the root are restored
+ * in `finally`, since every later story in this page shares them.
+ */
+async function skeletonLandsOnTheRow(
+  canvasElement: HTMLElement,
+  widths: readonly string[],
+) {
+  // Found by what they are, not by the layout classes under test.
+  const canvas = within(canvasElement);
+  const loading = canvasElement.querySelector('[role="status"]');
+  const skeleton = loading?.querySelector("[inert]");
+  const select = canvas.getByRole("combobox", { name: "Status" });
+  const stack = canvas.getByRole("heading", { name: "Payments" }).parentElement;
+  const row = [...(stack?.children ?? [])].find((child) =>
+    child.contains(select),
+  );
+  await expect(loading).not.toBeNull();
+  await expect(skeleton).not.toBeNull();
+  await expect(row).toBeDefined();
+
+  // The select and the button inside the skeleton are there to be measured,
+  // never seen or reached: unpainted, and focus does not land on them.
+  const copies = [...(skeleton?.querySelectorAll("select, button") ?? [])];
+  await expect(copies).toHaveLength(2);
+  for (const copy of copies) {
+    await expect(getComputedStyle(copy).visibility).toBe("hidden");
+    (copy as HTMLElement).focus();
+    await expect(copy.ownerDocument.activeElement).not.toBe(copy);
+  }
+  const root = canvasElement.ownerDocument.documentElement;
+  try {
+    for (const rootSize of ["", "20px"]) {
+      root.style.fontSize = rootSize;
+      for (const width of widths) {
+        canvasElement.style.width = width;
+        const expected = rowLayout(stack as Element, row as Element);
+        const actual = rowLayout(loading as Element, skeleton as Element);
+        const where = `root ${rootSize || "16px"}, column ${width || "full"}`;
+        await expect(actual.lines, where).toBe(expected.lines);
+        const off = actual.boxes.flatMap((box, i) =>
+          box.map((value, j) =>
+            Math.abs(value - (expected.boxes[i]?.[j] ?? 0)),
+          ),
+        );
+        await expect(
+          Math.max(...off),
+          `${where}: skeleton ${JSON.stringify(actual.boxes)}, row ${JSON.stringify(expected.boxes)}`,
+        ).toBeLessThanOrEqual(1);
+      }
+    }
+  } finally {
+    root.style.fontSize = "";
+    canvasElement.style.width = "";
+  }
+}
+
+/**
+ * The payments screen's loading state, at 1280×800, above the loaded
+ * heading, description and filter row it stands in for.
+ *
+ * The `play` function is the guard on `PaymentsSkeleton` and
+ * `PaymentsFiltersSkeleton`: at the story's own width and squeezed to the
+ * app shell's content column at 726, 700 and 640px windows (582, 556 and
+ * 496px: one line, then two with Apply wrapped, then two however the sans
+ * face breaks them), and again at a 20px root, the skeleton's filter row
+ * has as many lines as the real row and every box within a pixel of it.
+ * The mutations that fail it are in `payments-skeleton.tsx`'s module doc.
+ */
+export const PaymentsLoading: Story = {
+  render: () => <SkeletonAboveScreen />,
+  globals: { viewport: { value: "desktop", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await skeletonLandsOnTheRow(canvasElement, ["", "582px", "556px", "496px"]);
+  },
+};
+
+/**
+ * The same at 375×812, where the real row is three lines and the
+ * description two: at the story's own width and squeezed to the shell's
+ * column at 375, 320 and 280px windows (327, 272 and 232px, the last where
+ * the date field truncates), at both roots.
+ */
+export const PaymentsLoadingPhone: Story = {
+  render: () => <SkeletonAboveScreen />,
+  globals: { viewport: { value: "phone", isRotated: false } },
+  play: async ({ canvasElement }) => {
+    await skeletonLandsOnTheRow(canvasElement, ["", "327px", "272px", "232px"]);
   },
 };
 

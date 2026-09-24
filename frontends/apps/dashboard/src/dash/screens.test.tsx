@@ -128,6 +128,24 @@ describe("the payments screen", () => {
     expect(screen.queryByText(/No payments/i)).toBeNull();
   });
 
+  it("shows the screen's own skeleton while the first read is in flight, and no heading yet", () => {
+    // `PaymentsSkeleton`, not `RouteSkeleton`: the library's bar and header
+    // are other heights than this screen's, so the table jumped when the
+    // rows arrived (`payments-skeleton.tsx` has the numbers, and the
+    // `PaymentsLoading` stories hold the geometry in a real browser). The
+    // `inert` filter row is `PaymentsFiltersSkeleton`'s; `RouteSkeleton`
+    // renders none. And no <h2>: `dashboard.cy.ts` waits on
+    // `cy.contains("h2", "Payments")` as the sign the list has loaded.
+    const { container } = mount({
+      ...providerReturning(null),
+      getList: () => new Promise(() => undefined),
+    });
+    const loading = screen.getByRole("status");
+    expect(loading).toHaveAttribute("aria-busy", "true");
+    expect(loading.querySelector("[inert]")?.children).toHaveLength(3);
+    expect(container.querySelector("h2")).toBeNull();
+  });
+
   it("renders the page heading as an <h2>, under the shell's <h1>", async () => {
     const { container } = mount(
       providerReturning({

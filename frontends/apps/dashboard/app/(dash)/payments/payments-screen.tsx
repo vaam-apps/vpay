@@ -1,10 +1,14 @@
 "use client";
 
 import { useList } from "@refinedev/core";
-import { InlineEmptyState, RouteSkeleton, ScreenStack } from "@vaam-apps/ui";
+import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
 
 import { PaymentsFilters } from "../../../src/components/payments-filters";
 import { PaymentsPager } from "../../../src/components/payments-pager";
+import {
+  PAYMENTS_DESCRIPTION,
+  PaymentsSkeleton,
+} from "../../../src/components/payments-skeleton";
 import { PaymentsTable } from "../../../src/components/payments-table";
 import { ReadFailure } from "../../../src/components/read-failure";
 import { PAYMENT_INTENTS } from "../../../src/dash/resource-name";
@@ -107,7 +111,10 @@ export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
   }
 
   if (listQuery.isLoading) {
-    return <RouteSkeleton rows={8} withFilterBar />;
+    // Not `RouteSkeleton`: its header and filter bar are other heights than
+    // this screen's, so everything below them jumped when the rows arrived.
+    // `payments-skeleton.tsx` has the measurements.
+    return <PaymentsSkeleton />;
   }
 
   if (listQuery.isError) {
@@ -139,9 +146,7 @@ export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
         component prefers a different level is not a reason.
       */}
       <h2>Payments</h2>
-      <p className="text-body text-muted-foreground">
-        Every payment intent this merchant has created, newest first.
-      </p>
+      <p className="text-body text-muted-foreground">{PAYMENTS_DESCRIPTION}</p>
       <PaymentsFilters values={{ status, createdFrom, createdTo }} />
       {rows.length === 0 ? (
         <InlineEmptyState
