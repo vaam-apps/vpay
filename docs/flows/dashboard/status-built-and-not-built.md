@@ -251,14 +251,18 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   labels and the two controls line up. This was chosen on this PR's review;
   the bump's first revision had kept the field unlabelled, as it was on
   0.2.x, named it with an `aria-label`, and let it fill the row.
-- **Below 640px the payments filters stack instead of scrolling sideways.**
-  Status, the date field and Apply each take a line (or share one where
-  they fit); nothing is off-screen and nothing scrolls sideways at 320px or
-  375px. From 640px up they stay one line, which scrolls inside itself when
-  the column is too narrow for it — in the app shell, windows from 640px to
-  725px. Before, the row was one line at every width, and at 375px the date
-  field started 231px into a row that had to be scrolled to find it and
-  Apply. Also chosen on this PR's review.
+- **The payments filters wrap instead of scrolling sideways, at every
+  width.** Status, the date field and Apply stay on one line wherever it
+  fits (in the app shell, windows of 726px and up) and move to the next line
+  where it does not: two lines at 640 to 725px, three at 320 and 375px.
+  Nothing is off-screen and nothing scrolls sideways at any of those
+  widths, so Apply can never be hidden behind a scroll. Before, the row was
+  one line at every width and scrolled inside itself when the column was
+  too narrow: at 375px the date field started 231px into it, and Apply was
+  out of view until the row was scrolled. Below a 314px window the date
+  field is wider than the column and pushes the page 10px sideways at
+  280px, which the scrolling row used to contain. Also chosen on this PR's
+  review.
 - **Below 640px the Menu button sits above the bottom navigation bar**,
   not beside it. The bar is now 288px wide and drew over the old button by
   26.5px at 375px (54px of 58px at 320px); the button is now a 64px pill
@@ -273,8 +277,9 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
 
 `app-shell.tsx`, `more-menu.tsx` and `payments-filters.tsx` carry the
 measurements. The date field's width, the two labels' alignment and the
-filter row's layout either side of 640px are checked in a real browser by
-the `play` functions of `FiltersWithRange` (1280×800) and
+filter row's wrapping (one line at 1280px, wrapped with nothing off-screen
+in a 496px column and at phone widths) are checked in a real browser by the
+`play` functions of `FiltersWithRange` (1280×800) and
 `FiltersWithRangePhone` (375×812). What is still not measured by anything in
 CI: the shell's phone geometry. jsdom has
 no layout, the Storybook suite runs at 1200px and `dashboard.cy.ts` at

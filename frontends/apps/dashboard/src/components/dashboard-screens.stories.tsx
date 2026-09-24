@@ -66,10 +66,10 @@ function refusedAction(message: string, requestId: string): FormAction {
 }
 
 /**
- * The two viewports the filter row's layout is tested at, either side of
- * its `sm` (640px) breakpoint. `@storybook/addon-vitest` resizes the test
- * browser to a story's `globals.viewport` before running it; every story
- * that sets none keeps its 1200×900 default.
+ * The two viewports the filter row's layout is tested at: a phone, where it
+ * stacks, and a desktop, where it is one line. `@storybook/addon-vitest`
+ * resizes the test browser to a story's `globals.viewport` before running
+ * it; every story that sets none keeps its 1200×900 default.
  *
  * Declared on `meta` rather than on the two stories that use them, because
  * `a11y-gate.test.ts` pins which stories may carry a `parameters` override
@@ -236,8 +236,28 @@ async function dateField(canvasElement: HTMLElement) {
 }
 
 /**
+ * The filter row's three controls end inside its right edge, and neither
+ * the row nor the page scrolls sideways — the row wraps rather than spill.
+ */
+async function nothingOffScreen(
+  canvasElement: HTMLElement,
+  controls: readonly HTMLElement[],
+) {
+  const row = canvasElement.firstElementChild as HTMLElement;
+  const page = canvasElement.ownerDocument.documentElement;
+  await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
+  await expect(page.scrollWidth).toBeLessThanOrEqual(page.clientWidth);
+  const edge = row.getBoundingClientRect().right;
+  for (const control of controls) {
+    await expect(control.getBoundingClientRect().right).toBeLessThanOrEqual(
+      edge,
+    );
+  }
+}
+
+/**
  * The filters with a range set, at 1280×800: the date field at its longest
- * value, and the only `Filters` story at `sm` and up whose trigger carries a
+ * value, and the only desktop `Filters` story whose trigger carries a
  * description and a Clear button.
  *
  * The `play` function checks, in a real Chromium and against computed
@@ -245,14 +265,14 @@ async function dateField(canvasElement: HTMLElement) {
  * doc claims and jsdom cannot see:
  *
  * - the trigger is named by its visible label and described by the dates;
+ * - at 1280px the three controls are one line and nothing scrolls;
  * - the value is not truncated, and leaves at most 8px of its slot unused
  *   (it leaves ~4px: the root's tracking, which `ch` does not see);
  * - "Status" and "Created between" share a top edge, and so do their
  *   controls;
- * - squeezed to 496px, the narrowest the row gets from `sm` up (the app
- *   shell's content column at a 640px window), the three controls stay on
- *   one line and the row scrolls, and the field neither narrows nor
- *   truncates;
+ * - squeezed to 496px, too narrow for one line (the app shell's content
+ *   column at a 640px window), the row wraps, nothing ends past its edge,
+ *   nothing scrolls sideways, and the field neither narrows nor truncates;
  * - cleared, the field keeps its width, so picking or clearing a range
  *   does not move the row.
  *
@@ -267,6 +287,13 @@ export const FiltersWithRange: Story = {
     await expect(trigger).toHaveAccessibleDescription(
       "2026-09-01 → 2026-09-07",
     );
+    const select = canvas.getByRole("combobox", { name: "Status" });
+    const apply = canvas.getByRole("button", { name: "Apply" });
+    const controls = [select, trigger, apply];
+
+    await expect(top(trigger)).toBe(top(select));
+    await expect(top(apply)).toBe(top(select));
+    await nothingOffScreen(canvasElement, controls);
 
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     const text = canvasElement.ownerDocument.createRange();
@@ -279,16 +306,11 @@ export const FiltersWithRange: Story = {
     const status = canvas.getByText("Status", { selector: "label" });
     const created = canvas.getByText("Created between", { selector: "label" });
     await expect(top(status)).toBe(top(created));
-    const select = canvas.getByRole("combobox", { name: "Status" });
-    await expect(top(select)).toBe(top(trigger));
 
     const width = trigger.getBoundingClientRect().width;
-    const row = canvasElement.firstElementChild as HTMLElement;
-    const apply = canvas.getByRole("button", { name: "Apply" });
     canvasElement.style.width = "496px";
-    await expect(row.scrollWidth).toBeGreaterThan(row.clientWidth);
-    await expect(top(trigger)).toBe(top(select));
-    await expect(top(apply)).toBe(top(select));
+    await expect(top(trigger)).toBeGreaterThan(top(select));
+    await nothingOffScreen(canvasElement, controls);
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     await expect(trigger.getBoundingClientRect().width).toBe(width);
     canvasElement.style.width = "";
@@ -302,17 +324,16 @@ export const FiltersWithRange: Story = {
 };
 
 /**
- * The same filters at 375×812, below `sm`, where the row wraps rather than
- * scrolling: a filter an operator has to scroll sideways to discover is
- * worse on a phone than a short stack.
+ * The same filters at 375×812, where the row stacks: a filter an operator
+ * has to scroll sideways to discover is worse on a phone than a short
+ * stack.
  *
  * The `play` function checks it at the story's own width and squeezed to
  * the app shell's content column at a 375px and a 320px window (327px and
- * 272px): the row does not scroll sideways and neither does the page, no
- * control ends past the row's right edge, the date field sits on a line
- * below Status, and the range is not truncated. Removing the row's
- * `max-sm:flex-wrap` fails it; `FiltersWithRange` fails if the row wraps at
- * every width.
+ * 272px): nothing ends past the row's right edge, neither the row nor the
+ * page scrolls sideways, the date field sits on a line below Status, and
+ * the range is not truncated. The row going back to one line that scrolls
+ * (`flex-nowrap` with `overflow-x-auto`) fails it.
  */
 export const FiltersWithRangePhone: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
@@ -322,19 +343,10 @@ export const FiltersWithRangePhone: Story = {
     const { trigger, value } = await dateField(canvasElement);
     const select = canvas.getByRole("combobox", { name: "Status" });
     const apply = canvas.getByRole("button", { name: "Apply" });
-    const row = canvasElement.firstElementChild as HTMLElement;
-    const page = canvasElement.ownerDocument.documentElement;
 
     for (const width of ["", "327px", "272px"]) {
       canvasElement.style.width = width;
-      await expect(row.scrollWidth).toBeLessThanOrEqual(row.clientWidth);
-      await expect(page.scrollWidth).toBeLessThanOrEqual(page.clientWidth);
-      const edge = row.getBoundingClientRect().right;
-      for (const control of [select, trigger, apply]) {
-        await expect(control.getBoundingClientRect().right).toBeLessThanOrEqual(
-          edge,
-        );
-      }
+      await nothingOffScreen(canvasElement, [select, trigger, apply]);
       await expect(top(trigger)).toBeGreaterThan(top(select));
       await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     }

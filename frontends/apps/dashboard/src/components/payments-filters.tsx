@@ -55,8 +55,8 @@ function rangeFromValues(
 }
 
 /**
- * The status and date-range filters above the table: one row from `sm`
- * (640 px) up, and a short stack below it.
+ * The status and date-range filters above the table: one row wherever it
+ * fits, wrapping onto more lines where it does not.
  *
  * **Was a plain `method="get"` `<form>`** — a screenshot from the e2e run
  * showed it four rows tall, one control per line, and the redesign asked for
@@ -200,38 +200,40 @@ function rangeFromValues(
  * text in a 169 px slot), `font-mono text-prose` removed (`ch` then comes
  * from the sans face: 20.7 px unused), and the select's `h-10` removed (the
  * labels 16 px apart). The `20ch` and sans-face mutations fail
- * `FiltersWithRangePhone` too. The wrap's own mutations are in the next
- * paragraph.
+ * `FiltersWithRangePhone` too. The wrap's own mutations are below.
  *
- * **One scrolling line from `sm` up; a stack below it (2026-09-24).** Below
- * 640 px the row wraps (`max-sm:flex-wrap`): Status, the date field and
- * Apply each take a line at their own width, or share one where they fit.
- * A filter an operator has to scroll sideways to discover is worse on a
- * phone than a short stack — the one-line rule came from a desktop
- * redesign — and the maintainer decided so on vaam-apps/vpay#258's review.
- * From `sm` up the row stays one line, and `overflow-auto` keeps any spill
- * inside the row's own box rather than the document's.
+ * **One line where it fits, wrapped where it does not (2026-09-24).** The
+ * row is `flex-wrap` at every width and never scrolls: Status, the date
+ * field and Apply keep their own widths, share a line while there is room,
+ * and move to the next line when there is not. So Apply can never be hidden
+ * behind a sideways scroll, and no breakpoint has to track the app shell's
+ * geometry. The redesign's "one row, not four" still holds wherever the row
+ * fits. The maintainer decided this on vaam-apps/vpay#258's review, after a
+ * wrap below `sm` alone had left the row scrolling, with Apply hidden, in
+ * 640–725 px windows (see the history below).
  *
  * Measured in the built Storybook, headless Chromium, 2026-09-24, with the
- * payments screen composed inside `AppShell`: at 320 and 375 px the row is
- * three lines and 196 px tall in a 272 px and a 327 px column, the date
- * field (265.9 px) fits the narrower one, nothing ends past the row's edge,
- * and neither the row nor the document scrolls sideways. At 639 px the row
- * may wrap but does not need to: the three fit one 591 px line. At 640 px
- * it is `nowrap`, and the shell's content column is only 496 px, so the
- * row's 582 px scroll inside it; the column is 144 px narrower than the
- * window (`sm:pl-24` and the `p-6`), so that lasts until a 726 px window.
- * At 1280 px, one line with nothing to scroll. `FiltersWithRangePhone`
- * (375×812) fails when `max-sm:flex-wrap` is removed (the row's 582 px
- * scroll in its 375 px box), and `FiltersWithRange` (1280×800, squeezed to
- * that 496 px column) fails when the row wraps at every width.
+ * payments screen composed inside `AppShell`, whose content column is the
+ * window less 48 px below 640 px and less 144 px from 640 px up: one line at
+ * 726, 1024 and 1280 px; two lines at 700 and 725 px (Apply wraps) and at
+ * 640 px (the date field and Apply wrap together, in a 496 px column); three
+ * at 320 and 375 px. At every one of those widths nothing ends past the
+ * row's edge and neither the row nor the document scrolls sideways, and a
+ * range picked and saved from the wrapped row reaches the field. The one
+ * width it does not cover: below a 314 px window the date field (265.9 px)
+ * is wider than the column, and at 280 px it pushes the document 10 px
+ * sideways, a spill the scrolling row used to contain. Measured, and left
+ * as it is.
  *
- * `overflow-auto` and not `overflow-x-auto`, only for `verify-ui`'s
- * 60-character class budget: the two compute the same, because
- * `overflow-x: auto` forces `overflow-y` from `visible` to `auto` (read back
- * in Chromium: `auto`/`auto` for both).
+ * Mutations, each run on its own: the row back to the scrolling line
+ * (`flex-nowrap` with `overflow-x-auto`) fails `FiltersWithRange`, which
+ * squeezed to that 496 px column finds one line where it expects two, and
+ * `FiltersWithRangePhone` (582 px of row in a 375 px box); wrapping below
+ * `sm` only fails `FiltersWithRange` the same way; and always stacked
+ * (`flex-col`) fails `FiltersWithRange` at 1280 px, where the date field
+ * sits 78 px below Status instead of beside it.
  *
- * _History: why the row is a scroll container at all._ `flex` with no
+ * _History: the row scrolled sideways until 2026-09-24._ `flex` with no
  * `flex-wrap` guaranteed the controls never went to a second row — but on
  * 0.2.x nothing here shrank, and that was measured rather than reasoned:
  * rendered against this app's own compiled `globals.css` in a real browser,
@@ -244,14 +246,18 @@ function rangeFromValues(
  * protects the column and not its children — it took the whole document
  * into horizontal scroll with it. That is the failure `ScreenStack`'s doc
  * names in as many words, and `PaymentsTable` is already wrapped against it
- * the same way. `min-w-0` lets the row be narrower than its contents;
- * `overflow-x-auto` kept the spill inside the row's own box. Measured
- * after: at 375 px the document's `scrollWidth` equalled its `clientWidth`.
- * Measured again with both fields labelled and the date field at its fixed
- * width (2026-09-24, before the wrap): at 375 px the row's content was
- * 582 px in a 343 px box (327 px inside the app shell) and scrolled inside
- * itself, the date field starting 231 px in with its label cut off — the
- * finding that led to the wrap.
+ * the same way. `min-w-0` let the row be narrower than its contents, and
+ * `overflow-x-auto` kept the spill inside the row's own box: at 375 px the
+ * document's `scrollWidth` equalled its `clientWidth`. Measured again with
+ * both fields labelled and the date field at its fixed width: at 375 px the
+ * row's content was 582 px in a 343 px box (327 px inside the app shell),
+ * the date field starting 231 px in with its label cut off. For one commit
+ * the row then wrapped below `sm` only (`max-sm:flex-wrap`, with
+ * `overflow-x-auto` shortened to the equivalent `overflow-auto` to fit
+ * `verify-ui`'s 60-character class budget), which fixed phones and left the
+ * one line scrolling in the shell's 640–725 px windows, where the column is
+ * narrower than the row's 582 px — at 640 px the date field's end and Apply
+ * were off-screen.
  *
  * _History: 0.3.0's width, before the label._ 0.3.0 removed the block
  * wrapper 0.2.x put around the trigger, so `DatePickerTrigger`'s own
@@ -261,9 +267,10 @@ function rangeFromValues(
  * `Filters` story, 2026-09-24). The `FormField` around it ended that, and
  * the width above replaced it.
  *
- * Safe with the calendar, checked and not assumed — and for a different
- * reason than before. 0.2.x portalled its panel (`PopoverPanel`'s `anchor`
- * forced `portal`), so it was not a descendant of this scroll container.
+ * Safe with the calendar, checked and not assumed. The row is no longer a
+ * scroll container, but the reasoning that made the picker safe inside one
+ * holds for any ancestor. 0.2.x portalled its panel (`PopoverPanel`'s
+ * `anchor` forced `portal`), so it was not a descendant of the row at all.
  * 0.3.0 renders every picker surface inline, as a descendant, but
  * `position: fixed` (the docked panel placed under the trigger by Floating
  * UI from 640 px up, the full-screen range picker below), and a fixed box is
@@ -311,7 +318,7 @@ export function PaymentsFilters({ values }: PaymentsFiltersProps) {
   }
 
   return (
-    <div className="flex min-w-0 items-end gap-3 overflow-auto max-sm:flex-wrap">
+    <div className="flex min-w-0 flex-wrap items-end gap-3">
       <FormField label="Status" htmlFor="payments-filter-status">
         <select
           id="payments-filter-status"
