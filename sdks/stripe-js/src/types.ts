@@ -82,10 +82,15 @@ export interface LastPaymentError {
 }
 
 /**
- * `vpay_api::model::PaymentIntentWithSecret`: the twelve keys of
- * `PaymentIntentObject` — pinned server-side by
+ * `vpay_api::model::PaymentIntentWithSecret`: `PaymentIntentObject`'s keys —
+ * pinned server-side at thirteen by
  * `every_documented_key_is_present_including_the_null_ones` — plus the
  * `client_secret` the browser surface flattens in alongside them (D2).
+ *
+ * **Twelve of the thirteen are declared here.** `customer` (`cus_…` or
+ * `null`, on the wire since 2026-09-06) is not: it arrives and is simply
+ * untyped. This comment said "the twelve keys of `PaymentIntentObject`"
+ * until 2026-09-23, which was the server's count before `customer`.
  *
  * `client_secret` is `string`, not Stripe's `string | null`: the browser
  * routes are reachable *only* by presenting one, so a response that omitted

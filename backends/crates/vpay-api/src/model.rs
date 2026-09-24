@@ -426,15 +426,23 @@ impl PaymentIntentObject {
 ///
 /// Neither of those is a hypothetical: both are the *current* callers of
 /// `PaymentIntentObject::try_from`. `every_documented_key_is_present_including_the_null_ones`
-/// below asserts that object has exactly twelve keys, and that assertion is
-/// the tripwire this type exists to leave standing.
+/// below asserts that object has exactly thirteen keys, and that assertion is
+/// the tripwire this type exists to leave standing. _(This comment, and five
+/// more on this type, [`PaymentIntentWithSecret`] and [`ExpandableIntent`],
+/// said twelve until 2026-09-23 —
+/// as did three in `v1::payment_intents` and one in the integration suite's
+/// `webhooks.rs`. The object has had
+/// thirteen since `customer` was added on 2026-09-06, and the test has
+/// pinned 13 since then; only the prose lagged.)_
 ///
-/// # `#[serde(flatten)]`, so the wire shape is the twelve keys plus one
+/// # `#[serde(flatten)]`, so the wire shape is the thirteen keys plus one
 ///
 /// A payer's client decodes one object, not a nested one:
 /// `sdks/stripe-js/src/types.ts`'s `PaymentIntent` is
-/// `PaymentIntentObject`'s twelve fields with `client_secret` beside them.
-/// Flattening is what makes that true *by construction* rather than by two
+/// `PaymentIntentObject`'s fields with `client_secret` beside them — all of
+/// them but `customer`, which that interface does not declare (measured
+/// 2026-09-23; the key is on the wire, TypeScript simply does not type it).
+/// Flattening is what makes the server half true *by construction* rather than by two
 /// structs agreeing — and it is why `client_secret` is declared after the
 /// flattened field: `serde_json::Map` sorts keys on serialisation in this
 /// workspace (no `preserve_order`), so declaration order does not affect the
@@ -452,7 +460,7 @@ impl PaymentIntentObject {
 #[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PaymentIntentWithSecret {
-    /// The twelve documented keys, unchanged and rendered by the same code
+    /// The thirteen documented keys, unchanged and rendered by the same code
     /// every other surface uses.
     #[serde(flatten)]
     pub intent: PaymentIntentObject,
@@ -555,9 +563,9 @@ impl PaymentIntentWithSecret {
 pub enum ExpandableIntent {
     /// `"pi_…"` — the merchant surface's answer.
     Id(String),
-    /// The twelve documented keys, and no credential.
+    /// The thirteen documented keys, and no credential.
     Expanded(Box<PaymentIntentObject>),
-    /// The twelve keys plus `client_secret`.
+    /// The thirteen keys plus `client_secret`.
     ExpandedWithSecret(Box<PaymentIntentWithSecret>),
 }
 

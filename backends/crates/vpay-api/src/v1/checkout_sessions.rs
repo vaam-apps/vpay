@@ -861,11 +861,17 @@ fn open_session_conflict(existing_id: &str) -> ApiError {
 /// [`customer_contradiction`], the refusal [`prepare_create`] gives a
 /// session that arrives after the winner, for the same reason. `sent` is the
 /// customer this session named — the only one the compare-and-swap runs for.
+///
+/// The [`vpay_db::DbError::CustomerErased`] arm is the third (ADR-0027): the
+/// session's customer was erased after [`prepare_create`] read it and before
+/// the create took its share lock on the customer. It answers the `409` an
+/// attachment of an erased customer always gets, byte for byte.
 fn create_error(error: vpay_db::DbError, payment_intent_id: &str, sent: Option<&str>) -> ApiError {
     match error {
         vpay_db::DbError::IntentCustomerConflict { on_intent, .. } => {
             customer_contradiction(&on_intent, sent.unwrap_or_default())
         }
+        vpay_db::DbError::CustomerErased { .. } => super::customers::erased_customer(),
         vpay_db::DbError::UniqueViolation { constraint, .. }
             if constraint == "checkout_sessions_one_open_per_intent" =>
         {

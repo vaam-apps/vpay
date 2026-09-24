@@ -1377,7 +1377,14 @@ fn checked_country(value: Option<String>) -> Result<Option<String>, ApiError> {
 /// It is not the `409` that went away in the same change: that one was about
 /// a delete this API now performs, and this one is about a write to a record
 /// there is deliberately nothing left in.
-fn erased_customer() -> ApiError {
+///
+/// `pub(crate)` since 2026-09-23 (ADR-0027) for a third call site,
+/// `checkout_sessions::create_error`. It answers
+/// [`vpay_db::DbError::CustomerErased`], which is this refusal decided under
+/// the customer's share lock for a session create that read the customer
+/// before an erasure committed. The same bytes either way, for the reason
+/// above.
+pub(crate) fn erased_customer() -> ApiError {
     ApiError::Conflict {
         message: "This Customer has been deleted: its identifiers are erased and it cannot be \
                   changed or attached to new payments. It is still readable, and answers \

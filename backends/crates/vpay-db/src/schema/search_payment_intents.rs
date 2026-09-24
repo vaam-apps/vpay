@@ -14,7 +14,8 @@
 //!
 //! **A transport serves it.** `crate::schema::dashboard_procedure_router`
 //! mounts `procedure_router` — never `router()`, which would also mount the
-//! generated CRUD for every one of this schema's nineteen models — behind
+//! generated CRUD for every one of this schema's twenty models (nineteen
+//! until `ManualPayment`, #251) — behind
 //! `vpay-api`'s `require_dashboard_procedure_token`, over a context built by
 //! `crate::dashboard_transport::ExtensionAuthProvider` from the tenant that
 //! middleware already resolved

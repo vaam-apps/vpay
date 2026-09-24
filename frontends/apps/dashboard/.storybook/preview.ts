@@ -14,8 +14,9 @@ import "../app/globals.css";
  *
  * # Two themes, which is a real difference from the checkout
  *
- * The checkout ships one theme. `@vaam-apps/ui` 0.1.2 registers `dark` as
- * its default and `light` as opt-in, `app/layout.tsx` pins
+ * The checkout ships one theme. `@vaam-apps/ui` has registered `dark` as
+ * its default and `light` as opt-in since 0.1.2 (this said "0.1.2
+ * registers" until 2026-09-23, by when the pin was 0.2.4), `app/layout.tsx` pins
  * `data-theme="dark"`, and this app has a real `ThemeSwitcher`
  * (`src/components/more-menu.tsx`, `src/components/app-shell.tsx`). So this
  * file adds a toolbar **globalType** (`theme`, `dark`/`light`, defaulting to

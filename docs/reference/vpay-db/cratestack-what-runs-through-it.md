@@ -2,7 +2,38 @@
 
 _Moved out of [docs/reference/vpay-db.md](../vpay-db.md) on 2026-09-11 by exp57, which split a 3 330-line reference into pages a person can read. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the relative links gained a `../` because the file moved one directory down._
 
-### What runs through it today
+> **A dated snapshot, not today's list (added 2026-09-23).** The registry
+> below is the one measured on **2026-09-10** — thirty-two statements over
+> twelve tables — and the page title's "today" is that day's. It is kept
+> as written, because the account of how the previous version of it was
+> wrong is part of what it records. Re-measured on 2026-09-23 by the same
+> rule (every builder chain in non-test `vpay-db` code ending in one
+> `.run(..)` or `.run_in_tx(..)`, attributed to the delegate accessor it
+> starts from): **36 statements over fourteen tables, fourteen of the
+> schema's twenty models.** What moved since the table below:
+>
+> - `credentials` (migration `0044`) — **four**, all new: `create` (`create`),
+>   `find_for_staff_member` (`find_many().where_(staff_member_id).where_(kind).limit(1)`),
+>   `advance_counter` (`update_many().where_(id).where_(counter.lt(..))`) and
+>   `replace_material` (`update_many().where_(id)`).
+> - `manual_payments` (migration `0049`, #251) — **one**, new:
+>   `manual_payment_for_invoice` (`find_many().where_(invoice_id)`).
+> - `staff_members` — **seven → five**. `enrol_totp`, `record_totp_step` and
+>   `set_password` are gone from this table (the second factor and the
+>   password now live on `credentials`); `delete` (`delete_many().where_(id)`)
+>   is new.
+> - `staff_sessions` — **six → seven**: `delete_others`
+>   (`delete_many().where_(staff_id).where_(id.ne(keep_id))`) is new.
+> - `customers` — still two, but the row below named `delete` with
+>   `.run(ctx)`; the method is now `hard_delete`, and it runs `run_in_tx`.
+>
+> The six models with no generated statement are `PaymentIntent`, `Charge`,
+> `Refund`, `LedgerTransaction`, `LedgerEntry` and `RateLimitWindow`. The
+> same figures, per model, are in `schemas/vpay.cstack`'s header box, which
+> is the copy to re-measure next; the evidence is
+> [2026-09-23-skills-reverification.md](../../status/verification/2026-09-23-skills-reverification.md).
+
+## What runs through it today
 
 **Thirty-two statements, twelve tables, twelve models** — the whole list,
 measured 2026-09-10 rather than accumulated. The rule, so it can be
@@ -83,7 +114,7 @@ migration 0033 changed the write, not the read. The test exists because
 migration 0032's native-enum conversion has no other witness — see "The enum
 conversion no report can see" below.
 
-#### The transaction seam, now measured rather than argued
+### The transaction seam, now measured rather than argued
 
 The last two rows are different in kind from the ones above them, and the
 difference is the whole point of the outbox landing on this layer.
@@ -172,7 +203,7 @@ question left open (whether the reaper and gauge loops should be reserved out
 of it), is in
 [../plans/exp45-worker-pool-bound-notes/opus-review.md](../../plans/exp45-worker-pool-bound-notes/opus-review.md).
 
-#### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
+### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
 
 The seam works. One thing behind it changed anyway, it is not visible in any
 call site, and the review measured it rather than reading it off the
@@ -184,7 +215,7 @@ at-least-once drain needs. Through CrateStack that holds only when the
 earlier row was **committed**. A second call inside the _same, still-open_
 transaction is refused with `PersistenceError::Denied`:
 
-```
+```text
 first  = Ok(Some(f2ba579c-…))
 second = Err(Persistence(Denied { model: "WebhookDelivery", action: "upsert",
                                   detail: "forbidden: update policy denied this upsert" }))
@@ -211,7 +242,7 @@ correct in another — so it is stated in both places and pinned by
 which asserts the refusal _and_ the unchanged committed-row `None`. It is
 reported upstream rather than worked around here.
 
-#### `events.data`: the one write that did not move, and why
+### `events.data`: the one write that did not move, and why
 
 `TxRepositories::insert_in_tx` is still one hand-written `sqlx` statement,
 inside the same transaction as everything else. It is the honest, ugly,
@@ -251,7 +282,7 @@ The reads stay raw too, and for a second reason on top of `data`:
 `Events::list_page`'s cursor is a correlated sub-select (`seq < (SELECT seq
 FROM events WHERE id = $2 AND merchant_id = $1)`) that no delegate expresses.
 
-#### The event vocabulary stays a hand-named CHECK, and that is a live hazard
+### The event vocabulary stays a hand-named CHECK, and that is a live hazard
 
 `events.type_is_a_documented_event` and `events.fanout_state_is_known` are
 multi-value single-column CHECKs, and 0.12.0 has no validator that expresses
@@ -327,7 +358,7 @@ writes, reading every assertion back through a plain `SELECT`.
 Both were executed against a real Postgres on 2026-09-06 and both pass. So
 did the six mutations in "What a missing policy costs, per action" below.
 
-#### `disable_client`: the same statement, and one extra round trip
+### `disable_client`: the same statement, and one extra round trip
 
 `.upsert()` renders
 
@@ -380,7 +411,7 @@ upstream ([docs/plans/exp16-notes/opus-review.md](../../plans/exp16-notes/opus-r
 the probe could run on the transaction's own connection, which already holds
 the row lock. Still `runtime.pool()` at 0.12.0 (2026-09-07).
 
-#### `enable_client`: why `delete_many` and not `delete`
+### `enable_client`: why `delete_many` and not `delete`
 
 `.delete(pk)` is the builder the primary key invites, and it is wrong here.
 `cratestack-sqlx` 0.12.0's `query/write/delete_exec.rs` runs
@@ -409,7 +440,7 @@ The price is stated here rather than left to be discovered: `delete_many` puts
 its policy clause in the `WHERE` (`push_action_policy_query`), so this is the
 one write whose policy mistake is **silent**. See the table below.
 
-#### What a missing policy costs, per action
+### What a missing policy costs, per action
 
 The three write actions do not behave alike, and the difference is the most
 useful thing this adoption has measured. All six rows were produced by

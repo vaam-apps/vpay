@@ -250,6 +250,27 @@ commit between `resolve_for_attachment`'s read and this write. The intent
 then names a customer that has just been anonymised. That is the late-write
 exposure the intent create path already has. ADR-0025 does not change it.
 
+_(**Superseded 2026-09-23, by
+[ADR-0027](../../adr/0027-erasure-reaches-through-checkout-sessions.md) D4.**
+The paragraph above was true when it was written. ADR-0027 then made
+erasure also write intents that an old checkout session names. A
+customer-less intent that a new session create is writing can be one of
+those, so erasure would wait on the intent while holding the customer,
+and the create would wait on the customer while holding the intent. The
+deadlock was reproduced: `40P01`, answered as a `503`. `create` now takes
+`FOR SHARE` on the customer **first**, through
+`customers::erased_under_share_lock`, and runs the compare-and-swap only if
+the customer is not erased. So the order is the customer, then the intent,
+the same as erasure's and as ADR-0024 D18's for out-of-band pay. The late
+write described above is also closed for this path. A create whose customer
+was erased after `resolve_for_attachment` read it, and whose intent has no
+customer yet, is `DbError::CustomerErased`, which `vpay_api` renders as the
+pre-check's `409` byte for byte. An intent that already names the customer
+(every invoice session) proceeds as before. So `create` is up to four
+statements now. The integration proof is
+`a_session_create_and_an_erasure_of_its_customer_serialise_in_either_order`
+in `customers.rs`.)_
+
 ### Why the settlement flip is `pub(crate)` and not a trait method
 
 `checkout_sessions.payment_status` denormalises what the intent says, so a

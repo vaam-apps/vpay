@@ -326,6 +326,34 @@ pub enum DbError {
         on_intent: String,
     },
 
+    /// Raised by [`crate::CheckoutSessions::create`] when the session would
+    /// write its customer onto a customer-less intent and that customer has
+    /// been erased (ADR-0027, 2026-09-23). The check runs under the
+    /// `FOR SHARE` lock the create now takes on the customer before it
+    /// touches the intent.
+    ///
+    /// `vpay_api` refuses an erased customer before the write
+    /// (`resolve_for_attachment`). This is the same rule, decided under the
+    /// lock, for a request that read the customer before an erasure
+    /// committed. Without it, that request would attach a new payment to a
+    /// payer whose erasure has already run. A payer's MSISDN collected through
+    /// the session would then land in `charges.payer_ref` on an intent naming
+    /// an erased customer, and no later erasure would visit it, because a
+    /// second `DELETE` of an erased customer is a no-op and the sweep skips
+    /// erased rows.
+    ///
+    /// `Category::Conflict`, which is what the API's own refusal is (a `409`):
+    /// the customer is in a state that forbids the attachment, and re-sending
+    /// the same request can never succeed.
+    #[error(
+        "customer {customer_id} has been erased; a checkout session cannot write it onto a \
+         payment intent"
+    )]
+    CustomerErased {
+        /// The `cus_…` the session named. The merchant's own id.
+        customer_id: String,
+    },
+
     /// A `currencies` row already exists with a different `exponent` than
     /// the boot-time seed claims — e.g. the deployment says `XAF` has two
     /// decimal places while the database recorded zero.
@@ -614,7 +642,13 @@ impl vpay_core::Classify for DbError {
             // the honest reply. See the variant for why this one CHECK
             // violation does not classify as `Storage` the way every other
             // does.
-            Self::UniqueViolation { .. } | Self::OverRefund { .. } => Category::Conflict,
+            //
+            // A session that would attach an erased customer is the third:
+            // the API's pre-check answers the same request `409`, and this is
+            // that refusal decided under the customer's share lock.
+            Self::UniqueViolation { .. }
+            | Self::OverRefund { .. }
+            | Self::CustomerErased { .. } => Category::Conflict,
             // The request named a currency, provider or object that does not
             // exist. Nothing about retrying it unchanged can succeed.
             //
@@ -699,6 +733,7 @@ impl vpay_core::Classify for DbError {
             // the writer".
             Self::RefundCurrencyMismatch { .. } => "refund_currency_mismatch",
             Self::IntentCustomerConflict { .. } => "intent_customer_conflict",
+            Self::CustomerErased { .. } => "customer_erased",
             Self::Persistence(error) => error.code(),
             // `ledger_unbalanced` / `ledger_degenerate`, from the leaf. Not a
             // `database_…` code, deliberately: nothing about the database
@@ -807,6 +842,24 @@ mod tests {
         let text = error.to_string();
         assert!(text.contains("pi_0123456789abcdefghjkmnpq"), "{text}");
         assert!(text.contains("cus_0123456789abcdefghjkmnpq"), "{text}");
+    }
+
+    /// A session that would attach an erased customer (ADR-0027) is a `409`
+    /// and never a retry — the answer the API's pre-check gives the same
+    /// request when it reads the customer after the erasure.
+    #[test]
+    fn a_session_attaching_an_erased_customer_is_a_conflict_not_a_storage_outage() {
+        let error = DbError::CustomerErased {
+            customer_id: "cus_0123456789abcdefghjkmnpq".to_owned(),
+        };
+        assert_eq!(error.category(), Category::Conflict);
+        assert_eq!(error.category().http_status(), 409);
+        assert_eq!(error.retry(), Retry::Never);
+        assert_eq!(error.code(), "customer_erased");
+        assert!(
+            error.to_string().contains("cus_0123456789abcdefghjkmnpq"),
+            "{error}"
+        );
     }
 
     /// A compare-and-swap that matched nothing pages rather than being

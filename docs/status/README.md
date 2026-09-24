@@ -38,13 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and eight times on 2026-09-23, when the super-linter
+plugin's page landed, and ten times on 2026-09-23, when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page and the single-clock-scheduling page did: the directory holds 68 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 45 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 70 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 47 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43 and then 67/44 on 2026-09-23; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45 and then 69/46 on 2026-09-23; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -72,6 +72,12 @@ rather than trusting this list to be exhaustive.
   turned them red, the `/dash/v1` refusal, and the `EXPLAIN` measurements. Its
   first section records what could not run while the host disk and then Docker
   were down; its second records the full suites once they could.
+- [verification/2026-09-23-erasure-through-checkout-sessions.md](verification/2026-09-23-erasure-through-checkout-sessions.md) —
+  ADR-0027: customer erasure also reaches a customer-less intent that one of
+  the customer's checkout sessions names, and never an intent that names
+  another customer. It has the copies extended, the guard, the three new
+  cases and the extended whole-database scan, three mutations and what each
+  turned red, every suite's passed and ignored counts, and the gates.
 - [verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md) —
   RFC-0004 § 6, invoices paid out of band (migration `0049`): the gate output,
   every suite's passed and ignored counts, the drift constants derived and then
@@ -83,6 +89,15 @@ rather than trusting this list to be exhaustive.
   Debian output byte-identical to the committed manifest and to each other on
   an appended line, the old recipe's output matched under GNU tools, and both
   refusals re-checked.
+- [verification/2026-09-23-skills-reverification.md](verification/2026-09-23-skills-reverification.md) —
+  fourteen claims a re-verification of the agent skills found stale, thirteen
+  of them real: the route-probe test that had missed `manual_payments` (now
+  checked against the schema's own model list, with the mutation that turns it
+  red), a theme test title from before the `light` theme, a nine-method port
+  documented as six, a thirteen-key object called twelve, "the only `DELETE`",
+  a `draft → void` edge that never existed, "FIVE models" of fourteen, a
+  two-leaf exit-code chain of four, and "both binaries" sixteen days after
+  there was one. And the one that was not real, and why.
 - [verification/2026-09-23-stale-claims.md](verification/2026-09-23-stale-claims.md) —
   fourteen claims found stale while writing the vpay-docs site against
   `v0.4.1`, each re-checked on `master` and corrected in place with its date:

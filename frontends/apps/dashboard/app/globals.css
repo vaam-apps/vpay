@@ -11,8 +11,10 @@
  *
  * - `themes: false` — daisyUI's built-in `dark` theme emits at higher
  *   specificity than a custom `@plugin "daisyui/theme"` block registered
- *   under the same name, and `@vaam-apps/ui` registers its one theme as
- *   `dark`. Leave the built-ins on and `--color-base-100` (and every other
+ *   under the same name, and `@vaam-apps/ui` registers its themes under
+ *   built-in names — `dark` (the default) and, since 0.1.2, `light`; this
+ *   said "its one theme" until 2026-09-23. Leave the built-ins on and
+ *   `--color-base-100` (and every other
  *   base/content token) resolves to stock daisyUI's
  *   `oklch(25.33% 0.016 252.42)` instead of this theme's `#0a0b0d`,
  *   regardless of import order.
