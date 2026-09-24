@@ -41,8 +41,9 @@ export const AT_A_GLANCE_CAPTION =
 /**
  * The detail page's own header: its heading and the way back to the list.
  *
- * A plain `<h2>` — see `payments-screen.tsx` for why, and the 13 Cypress
- * assertions that pin it. A component rather than markup in
+ * A plain `<h2>`, as on the list — see `payments-screen.tsx` for why. No
+ * Cypress assertion finds this one by its text: `dashboard.cy.ts` waits on
+ * `data-testid="detail-id"` for this page. A component rather than markup in
  * `payment-screen.tsx` so the `PaymentLoading` stories compare
  * `PaymentSkeleton` with the header the page really renders, not with a
  * copy of it that could drift.

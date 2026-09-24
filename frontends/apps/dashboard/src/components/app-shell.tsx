@@ -42,12 +42,15 @@ import { NAV_ENTRIES } from "../dash/resources";
  * floated its own "Menu" pill beside the rail instead (`more-menu.tsx`,
  * a drawer holding those three), and 0.3.0's 288px bottom bar then drew
  * over it on phones: by 26.5px at 375px and 54px of its 58px at 320px.
- * The pill was lifted above the bar (`bottom-24`), with `<main>` at
- * `pb-40` to clear both, as an interim while vaam-apps/ui#36 asked for the
- * slot to be reachable from the toolbar itself. 0.4.0 shipped that, and
- * its release notes name this pill as the chrome to remove. The pill, its
- * drawer and `pb-40` are gone; the account block is `accountSlot` at every
- * width, and the sheet behind the toolbar's "More" control carries it.
+ * On vaam-apps/vpay#258's branch, while it carried 0.3.0, the pill was
+ * lifted above the bar (`bottom-24`), with `<main>` at `pb-40` to clear
+ * both, as an interim while vaam-apps/ui#36 asked for the slot to be
+ * reachable from the toolbar itself. 0.4.0 shipped that before the branch
+ * merged, so `master` went from the 0.2.x pill (`bottom-3 left-3`, beside
+ * `pb-20`) straight to none, and 0.4.0's release notes name this pill as
+ * the chrome to remove. The pill and its drawer are gone; the account
+ * block is `accountSlot` at every width, and the sheet behind the
+ * toolbar's "More" control carries it.
  *
  * One thing the drawer gave that the sheet does not: below 640px there is
  * no longer a full nav list with visible labels. The phone bar shows four
@@ -88,7 +91,8 @@ export function AppShell({
         for a screen reader without drawing it twice.
 
         Still an <h1>, with every screen's own title an <h2> under it — the
-        hierarchy `dashboard.cy.ts` asserts in thirteen places.
+        hierarchy `dashboard.cy.ts` relies on: it finds each screen by its
+        <h2> (`cy.contains("h2", …)`, fifteen times as of 2026-09-24).
 
         Wrapped in a bare `<header>` — a landmark (implicit `banner` role)
         because it is not nested in `<article>`/`<aside>`/`<main>`/`<nav>`/
@@ -192,8 +196,9 @@ export function AppShell({
             goes back to a menu of links and the rail gains no control at
             all. So the gate is gone, the hidden copy is back, and
             `dashboard.cy.ts` scopes its identity and sign-out queries to
-            `<main>` — the scoping the package's own guidance asks of a test
-            that finds the account block by its text.
+            `<main>`. The package's guidance asks a test that finds the
+            account block by its text to scope the query; it names the
+            sheet, and at 1000px `<main>`'s copy is the visible one.
 
             No hard-coded `id` anywhere in it: while the sheet is open the
             block is mounted twice (the sidebar's copy stays in the DOM
@@ -254,9 +259,10 @@ export function AppShell({
         `xl:pl-0` gives the padding back. Below `sm`, `pb-20` (80px) clears
         the bar — its 16px offset plus its 64px height — so the last row of
         a screen can be scrolled clear of it; the column's own `p-6` is the
-        24px spare. It was `pb-20` against 0.2.x's pill too, and `pb-40`
-        (160px) while this app's Menu pill sat above 0.3.0's bar (the module
-        doc's history).
+        24px spare. It was `pb-20` against 0.2.x's pill too. `pb-40`
+        (160px) cleared this app's Menu pill above 0.3.0's bar on
+        vaam-apps/vpay#258's branch only and never reached `master` (the
+        module doc's history).
 
         **0.4.0**, re-measured 2026-09-24 in the built Storybook `Shell`
         story (twenty rows since this change): the bar is the same 288px by

@@ -143,9 +143,11 @@ describe("the signed-in shell", () => {
   });
 
   it("leaves the document with exactly one <h1> while the sheet is open", async () => {
-    // The sheet's title is Radix's `Dialog.Title`, an <h2>, and
-    // `dashboard.cy.ts` asserts the shell's <h1>/<h2> hierarchy in thirteen
-    // places. Pinned because it is a fact about the PACKAGE, which a
+    // The sheet's title is Radix's `Dialog.Title`, an <h2>, so opening it
+    // adds no second <h1>: one <h1> naming the app, and an <h2> naming each
+    // screen, which `dashboard.cy.ts` relies on when it finds a screen by
+    // `cy.contains("h2", …)` (fifteen times as of 2026-09-24; it asserts no
+    // <h1>). Pinned because it is a fact about the PACKAGE, which a
     // version bump could change.
     renderShell();
     await openPhoneSheet();

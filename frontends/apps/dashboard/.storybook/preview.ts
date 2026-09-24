@@ -45,7 +45,9 @@ import "../app/globals.css";
  * not set its own `globals.theme`. **So only `dark` is genuinely
  * axe-checked by `just test-storybook` today**; `light` is reviewable by a
  * human in the Storybook UI but is not covered by the automated gate, unless
- * a story explicitly sets `parameters.globals = { theme: "light" }` (see
+ * a story explicitly sets `globals: { theme: "light" }` (story-level
+ * `globals`, not `parameters`: `a11y-gate.test.ts` fails any story that
+ * carries a `parameters` override; see
  * `dashboard-screens.stories.tsx` for the small number that do, one per
  * screen family, to get at least one `light` data point into the automated
  * run rather than leaving the whole theme unchecked).

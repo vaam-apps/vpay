@@ -258,8 +258,9 @@ allowBuilds:
 # right after they published it - so the default window would have failed
 # this install outright rather than just warned.
 #
-# It replaces the `@vaam-apps/ui@0.3.0` entry the previous bump added, in
-# two steps: the install that moved the lockfile ran with both entries,
+# On master this replaces the `@vaam-apps/ui@0.2.4` entry. Within #258 the
+# bump went 0.2.4 -> 0.3.0 -> 0.4.0, and the second swap took two steps: the
+# install that moved the lockfile ran with both the 0.3.0 and 0.4.0 entries,
 # because pnpm re-verifies the lockfile's existing 0.3.0 first and, with
 # 0.4.0's entry alone, refuses it (ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION
 # naming 0.3.0, dated 16:39:45Z); then 0.3.0's entry went, since it matches

@@ -74,10 +74,10 @@ export function PaymentScreen({ id, initial }: PaymentScreenProps) {
   }
 
   if (query.isLoading) {
-    // Not `RouteSkeleton rows={10}`: its filter bar is a control this page
-    // does not have, and its header is another height than this one's, so
-    // everything below them moved when the payment arrived.
-    // `payment-skeleton.tsx` has the measurements.
+    // Not `RouteSkeleton rows={10}`: its header matched this page's, but its
+    // filter bar stood where the "At a glance" panel lands and its flat rows
+    // where the Summary does, so everything below the header moved when the
+    // payment arrived. `payment-skeleton.tsx` has the measurements.
     return <PaymentSkeleton />;
   }
 

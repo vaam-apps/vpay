@@ -154,6 +154,9 @@ it is nav IA (Lane E) or upstream.
 
 Full detail is in
 [../../status/verification/2026-09-13-dash-shell-drawer.md](../../status/verification/2026-09-13-dash-shell-drawer.md).
+_(The drawer, `more-menu.tsx`, was deleted on 2026-09-24 with
+`@vaam-apps/ui` 0.4.0, whose `SideNav` carries the account block in its own
+More sheet below 1280px: see the 0.4.0 entry at the end of this page.)_
 
 **Built and proven, 2026-09-13: a Storybook, mirroring the checkout's.** This
 app had no visual-review surface and no browser-level accessibility check —
@@ -194,7 +197,12 @@ With the narrowed suppression the same probe fails at 1.73 against `#0a0b0d`.
 `src/a11y-gate.test.ts` now pins which stories may carry a suppression and
 which rule id, verified under three mutations.)_ This is a defect in the
 published package, not in this app's markup, and is not this task's to fix;
-it has not been reported upstream.
+it has not been reported upstream. _(Corrected 2026-09-24: it had been, as
+vaam-apps/ui#16 on 2026-09-13, the day this was written; the verification
+page linked below says so. `@vaam-apps/ui` 0.4.0 fixed it
+(vaam-apps/ui#39), the suppression is gone, and `a11y-gate.test.ts` now pins
+the set of suppressions as empty: see the 0.4.0 entry at the end of this
+page.)_
 
 **Two router hooks needed a stub, and `next/link` needed a `vite` `define`.**
 `PaymentsFilters` (`useRouter`) and `AppShell` (`usePathname`) throw outside a
@@ -287,12 +295,18 @@ Chromium, 375×812 and 1280×800) and not only in jsdom:
   it sits in the vertical rail's column and matches its dress. The pill is
   an interim: it exists because the library's toolbar cannot reach the
   account block below `lg`, and goes once vaam-apps/ui#36 is fixed and
-  picked up. _(It went the same evening, with 0.4.0: see the next entry.)_
+  picked up. _(It went the same evening, with 0.4.0, before this change
+  merged, so `master` never had the lifted pill or the 160px padding: the
+  pill went from its 0.2.x place, `bottom-3 left-3`, straight to gone. See
+  the next entry.)_
 - **The Menu drawer's phone header sits ~19px lower**, under a drag handle
   that is now visible (the package's change; nothing here depends on it).
+  _(The drawer went with the pill.)_
 
 `app-shell.tsx`, `more-menu.tsx`, `payments-filters.tsx` and
-`payments-skeleton.tsx` carry the measurements. The date field's width,
+`payments-skeleton.tsx` carry the measurements. _(`more-menu.tsx` was
+deleted with 0.4.0; `app-shell.tsx`'s module doc keeps the pill's overlap
+measurements.)_ The date field's width,
 the two labels' alignment and the filter row's wrapping (one line at
 1280px, wrapped with nothing off-screen in a 496px column and at phone
 widths) are checked in a real browser by the `play` functions of `FiltersWithRange` (1280×800) and
@@ -318,12 +332,14 @@ built Storybook in headless Chromium at 320, 375, 640, 700, 1100 and 1280px:
   they sit under the sidebar's nav, as before. The phone bar is 288px wide
   (four destinations and More), and its sheet holds Customers, the one
   destination that does not fit, above the account block; the drawer lists
-  all five, labelled. Escape or a tap on the scrim closes either and puts
-  focus back on More, and Sign out and the theme switch work from inside
-  by pointer and by keyboard.
-- **The content column's bottom padding is back to 80px on a phone**, from
-  the 160px that cleared the pill as well as the bar. Scrolled to the end,
-  the last row ends 24px above the bar at 375×812 and at 320×700.
+  all five, labelled. Escape closes either and puts focus back on More (a
+  tap on the scrim closes it too, by the package's own e2e test; not
+  measured here), and Sign out and the theme switch work from inside by
+  pointer and by keyboard.
+- **The content column's bottom padding stays 80px on a phone**, as on
+  `master` before this change; this change's branch had raised it to 160px
+  to clear the 0.3.0 pill as well, and that never merged. Scrolled to the
+  end, the last row ends 24px above the bar at 375×812 and at 320×700.
 - **Below 640px there is no longer a full nav list with visible labels.**
   The pill's drawer had one. The phone bar shows four destinations as
   icons, named for a screen reader, and the sheet labels only the fifth;
