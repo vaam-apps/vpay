@@ -248,14 +248,18 @@ allowBuilds:
 # pnpm 11 defaults `minimumReleaseAge` to 1440 (24h): a package version has
 # to sit on the registry for a day before pnpm will install it, as a
 # supply-chain guard against an account-takeover publish getting pulled
-# before anyone notices. `@vaam-apps/ui@0.3.0` published 2026-09-24T16:42Z
-# (npm's `time` field) - same day as this bump, requested directly by the
-# maintainer right after they published it - so the default window would
-# have failed this install outright rather than just warned.
+# before anyone notices. `@vaam-apps/ui@0.4.0` published 2026-09-24T20:21Z
+# (npm's `time` field - the later of the two times on record: the release
+# workflow logged its publish at 20:18:58Z, and the date below is counted
+# from the later one so it cannot come early) - same day as this bump,
+# requested directly by the maintainer right after they published it - so
+# the default window would have failed this install outright rather than
+# just warned. It replaces the `@vaam-apps/ui@0.3.0` entry the previous bump
+# added, which matches nothing once no importer asks for 0.3.0.
 #
-# REMOVE WHEN: 2026-09-25T16:42Z has passed (the version has cleared the
+# REMOVE WHEN: 2026-09-25T20:21Z has passed (the version has cleared the
 # 24h window on its own) or the next @vaam-apps/ui bump lands, whichever is
 # first - at that point this entry matches nothing and installing does not
 # need it.
 minimumReleaseAgeExclude:
-  - "@vaam-apps/ui@0.3.0"
+  - "@vaam-apps/ui@0.4.0"
