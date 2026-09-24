@@ -330,6 +330,18 @@ export function AppShell({
         the account block and the theme control, so a trigger would open a
         drawer that repeats the page.
       */}
+      {/*
+        **An interim, with its upstream fix filed.** This pill exists only
+        because `SideNav`'s `accountSlot` is unreachable below `lg` in
+        floating mode (and hidden up to `xl`), so the library's own chrome
+        has nowhere to put the sign-out, the theme control or the labelled
+        nav. vaam-apps/ui#36 asks for `accountSlot` to be reachable from the
+        toolbar itself, the 1024–1279px rail included. Once a release
+        carrying that is picked up, the pill can go, and with it the
+        `bottom-24` stacking above; `<main>`'s `pb-40`, sized to clear the
+        pill as well as the bar, then needs re-measuring against the bar
+        alone.
+      */}
       <div className="fixed bottom-24 left-4 z-40 sm:bottom-4 xl:hidden">
         <div className="rounded-full bg-surface-2 p-2">
           <MoreMenu
