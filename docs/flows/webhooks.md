@@ -201,7 +201,7 @@ that polymorphic column carries.
 
 ## Two-step outbox
 
-```
+```text
 TX 1 (the business transaction)
   UPDATE payment_intent SET status='succeeded'
   INSERT event (fanout_state='pending')

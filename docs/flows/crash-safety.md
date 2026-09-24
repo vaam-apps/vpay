@@ -17,7 +17,7 @@ So the payer's handset starts buzzing before you learn whether your request
 succeeded. Generate the reference in memory, call the rail, crash before writing
 it down, and you have created a payment you can never observe.
 
-```
+```text
 BEGIN;
   INSERT INTO charges (…, provider_reference_id, state='submitting');
 COMMIT;                        -- the reference is now durable
@@ -87,7 +87,7 @@ same function ([../reference/vpay-worker.md](../reference/vpay-worker.md)
 
 The ordering is reversed, and it is safe for a reason worth stating plainly.
 
-```
+```text
 INSERT charge (state='submitting', provider_reference_id = order_id);  COMMIT
 POST /webpayment  →  { pay_token, payment_url }
 UPDATE charge SET provider_ref_extra = {pay_token…}, state='submitted';  COMMIT
