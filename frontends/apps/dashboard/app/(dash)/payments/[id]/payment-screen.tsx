@@ -1,11 +1,14 @@
 "use client";
 
 import { useOne } from "@refinedev/core";
-import { RouteSkeleton, ScreenStack } from "@vaam-apps/ui";
-import NextLink from "next/link";
+import { ScreenStack } from "@vaam-apps/ui";
 import { notFound } from "next/navigation";
 
-import { PaymentDetailView } from "../../../../src/components/payment-detail";
+import {
+  PaymentDetailHeader,
+  PaymentDetailView,
+} from "../../../../src/components/payment-detail";
+import { PaymentSkeleton } from "../../../../src/components/payment-skeleton";
 import { ReadFailure } from "../../../../src/components/read-failure";
 import { failureFromError } from "../../../../src/dash/failure";
 import {
@@ -71,7 +74,11 @@ export function PaymentScreen({ id, initial }: PaymentScreenProps) {
   }
 
   if (query.isLoading) {
-    return <RouteSkeleton rows={10} />;
+    // Not `RouteSkeleton rows={10}`: its header matched this page's, but its
+    // filter bar stood where the "At a glance" panel lands and its flat rows
+    // where the Summary does, so everything below the header moved when the
+    // payment arrived. `payment-skeleton.tsx` has the measurements.
+    return <PaymentSkeleton />;
   }
 
   if (query.isError) {
@@ -94,12 +101,7 @@ export function PaymentScreen({ id, initial }: PaymentScreenProps) {
 
   return (
     <ScreenStack>
-      {/* A plain <h2> — see `payments-screen.tsx` for why, and the 13
-          Cypress assertions that pin it. */}
-      <header>
-        <h2>Payment</h2>
-        <NextLink href="/payments">Back to payments</NextLink>
-      </header>
+      <PaymentDetailHeader />
       <PaymentDetailView detail={detail} />
     </ScreenStack>
   );

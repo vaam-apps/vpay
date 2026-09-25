@@ -95,7 +95,9 @@ if (typeof window !== "undefined" && !window.ResizeObserver) {
 
 /**
  * `window.matchMedia`, for `vaul` — the drawer engine under `@vaam-apps/ui`'s
- * `Drawer` / `QuickDetailDrawer` / `MoreDetailDrawer`.
+ * `Drawer` / `QuickDetailDrawer` / `MoreDetailDrawer`, and since 0.4.0 under
+ * `SideNav`'s More sheet, which `app-shell.test.tsx` and `a11y.test.tsx`
+ * open.
  *
  * Measured, not assumed: without this, mounting an OPEN drawer throws
  * `TypeError: window.matchMedia is not a function` out of

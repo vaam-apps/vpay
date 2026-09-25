@@ -154,6 +154,9 @@ it is nav IA (Lane E) or upstream.
 
 Full detail is in
 [../../status/verification/2026-09-13-dash-shell-drawer.md](../../status/verification/2026-09-13-dash-shell-drawer.md).
+_(The drawer, `more-menu.tsx`, was deleted on 2026-09-24 with
+`@vaam-apps/ui` 0.4.0, whose `SideNav` carries the account block in its own
+More sheet below 1280px: see the 0.4.0 entry at the end of this page.)_
 
 **Built and proven, 2026-09-13: a Storybook, mirroring the checkout's.** This
 app had no visual-review surface and no browser-level accessibility check —
@@ -194,7 +197,12 @@ With the narrowed suppression the same probe fails at 1.73 against `#0a0b0d`.
 `src/a11y-gate.test.ts` now pins which stories may carry a suppression and
 which rule id, verified under three mutations.)_ This is a defect in the
 published package, not in this app's markup, and is not this task's to fix;
-it has not been reported upstream.
+it has not been reported upstream. _(Corrected 2026-09-24: it had been, as
+vaam-apps/ui#16 on 2026-09-13, the day this was written; the verification
+page linked below says so. `@vaam-apps/ui` 0.4.0 fixed it
+(vaam-apps/ui#39), the suppression is gone, and `a11y-gate.test.ts` now pins
+the set of suppressions as empty: see the 0.4.0 entry at the end of this
+page.)_
 
 **Two router hooks needed a stub, and `next/link` needed a `vite` `define`.**
 `PaymentsFilters` (`useRouter`) and `AppShell` (`usePathname`) throw outside a
@@ -223,3 +231,139 @@ below `@plugin`, the recipe exits 1 printing
 Full detail, every gate's real numbers, the six-case mutation table and the
 adversarial review's own findings are in
 [../../status/verification/2026-09-13-dashboard-storybook.md](../../status/verification/2026-09-13-dashboard-storybook.md).
+
+**Amended 2026-09-24: `@vaam-apps/ui` 0.3.0, and six things an operator
+will notice.** The package bump replaced the date-range picker with compound
+parts and moved `SideNav`'s rails to M3's floating toolbar. What changed on
+this app's screens, each seen in a real browser (the built Storybook, headless
+Chromium, 375×812 and 1280×800) and not only in jsdom:
+
+- **The payments "Created between" filter commits on Save.** Tapping days
+  only stages a range; Save commits it, and Cancel, Escape or a press outside
+  throw it away. A tap on a whole range now starts a new one (it used to
+  extend it, so a new start needed Clear first), and a single tap then Save
+  is an open-ended range, which reaches the URL as `created_from` alone —
+  "from that day on", where the first click used to be a one-day range.
+  Below 640px the picker is M3's full-screen range picker.
+- **The date filter has a visible "Created between" label**, above the
+  field as "Status" is above its select, and the label is what names the
+  field for a screen reader; the dates, or "Any time" while none are set,
+  are read as its description. The empty field says "Any time" rather than
+  repeating the label. Clicking the label focuses the field and opens
+  nothing, as clicking "Status" does. The field is a fixed width, the
+  longest value it can show — `YYYY-MM-DD → YYYY-MM-DD` in the mono face,
+  the calendar icon and the Clear button's gutter — so it neither clips a
+  range nor shifts the row when one is picked or cleared: 265.9px in
+  headless Chromium (DejaVu Sans Mono), against the ~262px it had before
+  0.3.0. Its padding is in rem and its value a fixed 14px, so the width
+  grows with the browser's default font size and the whole range still
+  shows at Chrome's "Large" (20px) and "Very large" (24px). The Status
+  select is now the date field's 40px tall, so the two labels and the two
+  controls line up. This was chosen on this PR's review;
+  the bump's first revision had kept the field unlabelled, as it was on
+  0.2.x, named it with an `aria-label`, and let it fill the row.
+- **The payments filters wrap instead of scrolling sideways, at every
+  width.** Status, the date field and Apply stay on one line wherever it
+  fits (in the app shell, windows of 726px and up) and move to the next line
+  where it does not: two lines at 640 to 725px, three at 320 and 375px.
+  Nothing is off-screen and nothing scrolls sideways at any of those
+  widths, so Apply can never be hidden behind a scroll. Before, the row was
+  one line at every width and scrolled inside itself when the column was
+  too narrow: at 375px the date field started 231px into it, and Apply was
+  out of view until the row was scrolled. Below a 314px window the date
+  field is wider than the column, so it shrinks to fit and truncates its
+  value rather than push the page sideways: at 280px it is 232px wide, and
+  a screen reader still hears the whole range. The Status select is capped
+  the same way, which matters only at a larger default font size (at 20px
+  it is 268px, wider than a 280px window's column). Also chosen on this
+  PR's review.
+- **The payments list's loading state is shaped like the list.** It was
+  `@vaam-apps/ui`'s `RouteSkeleton`, whose header and filter bar are other
+  heights than this screen's: the table started 50px lower than the
+  skeleton's rows at 1280px and 156px lower at 375px once the read
+  returned, and at 320px the skeleton pushed the page 24px sideways.
+  `PaymentsSkeleton` mirrors the heading, the description and the filter
+  row, wrapping included; measured inside the app shell at 320, 375, 640,
+  700, 726 and 1280px, at the default and a 20px root, every box of the
+  filter row lands where its placeholder was. The table rows below are
+  still placeholders of a fixed height. Also chosen on this PR's review.
+- **Below 640px the Menu button sits above the bottom navigation bar**,
+  not beside it. The bar is now 288px wide and drew over the old button by
+  26.5px at 375px (54px of 58px at 320px); the button is now a 64px pill
+  16px above the bar, and the content column's bottom padding grew from
+  80px to 160px so the last row still scrolls clear of both. From 640px up
+  it sits in the vertical rail's column and matches its dress. The pill is
+  an interim: it exists because the library's toolbar cannot reach the
+  account block below `lg`, and goes once vaam-apps/ui#36 is fixed and
+  picked up. _(It went the same evening, with 0.4.0, before this change
+  merged, so `master` never had the lifted pill or the 160px padding: the
+  pill went from its 0.2.x place, `bottom-3 left-3`, straight to gone. See
+  the next entry.)_
+- **The Menu drawer's phone header sits ~19px lower**, under a drag handle
+  that is now visible (the package's change; nothing here depends on it).
+  _(The drawer went with the pill.)_
+
+`app-shell.tsx`, `more-menu.tsx`, `payments-filters.tsx` and
+`payments-skeleton.tsx` carry the measurements. _(`more-menu.tsx` was
+deleted with 0.4.0; `app-shell.tsx`'s module doc keeps the pill's overlap
+measurements.)_ The date field's width,
+the two labels' alignment and the filter row's wrapping (one line at
+1280px, wrapped with nothing off-screen in a 496px column and at phone
+widths) are checked in a real browser by the `play` functions of `FiltersWithRange` (1280×800) and
+`FiltersWithRangePhone` (375×812), and the loading skeleton against the
+loaded row by `PaymentsLoading` and `PaymentsLoadingPhone`. What is still
+not measured by anything in CI: the shell's phone geometry. jsdom has no
+layout, every other story runs at 1200px and `dashboard.cy.ts` at 1000px,
+so the bottom-bar clearance above is evidenced by the review's
+screenshots, not by a gate. _(Closed by the next entry's `Shell*` viewport
+stories.)_
+
+**Amended 2026-09-24, later the same day: `@vaam-apps/ui` 0.4.0 — the Menu
+pill is gone, and the payment page loads in its own shape.** 0.4.0 ends
+`SideNav`'s floating toolbars in a **More** control that opens a sheet
+holding the account block (vaam-apps/ui#36, fixed by vaam-apps/ui#40), and
+leaves one visible `Primary` landmark at every width (vaam-apps/ui#16, fixed
+by vaam-apps/ui#39). What changed on this app's screens, each seen in the
+built Storybook in headless Chromium at 320, 375, 640, 700, 1100 and 1280px:
+
+- **The Menu pill is gone.** Below 1280px who is signed in, Sign out and the
+  theme control are behind the toolbar's last control, More: a bottom sheet
+  on a phone, a drawer from the left edge from 640 to 1279px. From 1280px
+  they sit under the sidebar's nav, as before. The phone bar is 288px wide
+  (four destinations and More), and its sheet holds Customers, the one
+  destination that does not fit, above the account block; the drawer lists
+  all five, labelled. Escape or a tap on the scrim closes either and puts
+  focus back on More, and Sign out and the theme switch work from inside by
+  pointer and by keyboard (the scrim and the focus return measured by
+  #258's review).
+- **The content column's bottom padding stays 80px on a phone**, as on
+  `master` before this change; this change's branch had raised it to 160px
+  to clear the 0.3.0 pill as well, and that never merged. Scrolled to the
+  end, the last row ends 24px above the bar at 375×812 and at 320×700.
+- **Below 640px there is no longer a full nav list with visible labels.**
+  The pill's drawer had one. The phone bar shows four destinations as
+  icons, named for a screen reader, and the sheet labels only the fifth;
+  from 640px the rail's drawer lists all five. This is the library's M3
+  toolbar as designed, recorded because the pill used to be the answer.
+- **From 640 to 1279px who is signed in stays on screen** in the content
+  column, as it was; the More drawer carries a second copy.
+- **The payment page's loading state is shaped like the page.** It was
+  `RouteSkeleton rows={10}`: a filter bar the page does not have and ten
+  flat rows where it has an instrument panel, so its rows began 136px above
+  the Summary section they stood in for at 1280×800 and 212px at 375×812.
+  `PaymentSkeleton` puts the header, the "At a glance" panel (its caption
+  and three figures included) and the Summary heading where the page does,
+  to the pixel, at 1280 and 375px and in 956, 496, 327 and 272px columns, at
+  a 16 and a 20px root. The Summary's rows are data and stay placeholders.
+
+`app-shell.tsx` and `payment-skeleton.tsx` carry the measurements. What CI
+now checks in a real browser: `Shell` and `ShellLight` run axe with no rule
+suppressed (`a11y-gate.test.ts` pins the set of suppressions as empty), and
+`ShellPhone`, `ShellRail`, `ShellLaptop` and `ShellDesktop` (375, 700, 1100
+and 1280px) assert one exposed `Primary` landmark, the number of exposed
+sign-outs, no sideways scroll, the last row clearing the phone bar, the
+gutter past the rail, and the More sheet by pointer and by keyboard.
+`PaymentLoading` and `PaymentLoadingPhone` hold the payment skeleton box by
+box. `dashboard.cy.ts` scopes its identity and sign-out queries to
+`<main>`, because the sidebar's hidden copy of the account block is back in
+the DOM ahead of it.

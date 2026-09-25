@@ -51,12 +51,14 @@ The banner for a `412 Precondition Failed` save — "someone else changed this
 row since it loaded".
 
 ```tsx
-{isStaleWrite(error) && <StaleWriteBanner onReload={() => refetch()} />}
+{
+  isStaleWrite(error) && <StaleWriteBanner onReload={() => refetch()} />;
+}
 
 <StaleWriteBanner
   message="This payout was released by another operator while you were editing it."
   onReload={reload}
-/>
+/>;
 ```
 
 `onReload: () => void` is required; `message` defaults to _"Someone else
@@ -144,9 +146,15 @@ A `TableRow` that washes when the record behind it changes state.
       washTrigger={payout.version}
       washHue={PAYOUT_STATUS[payout.state].hue}
     >
-      <TableCell><IdDisplay value={payout.id} /></TableCell>
-      <TableCell><PayoutPill state={payout.state} /></TableCell>
-      <TableCell align="end"><Money amount={payout.amount} currency={payout.currency} /></TableCell>
+      <TableCell>
+        <IdDisplay value={payout.id} />
+      </TableCell>
+      <TableCell>
+        <PayoutPill state={payout.state} />
+      </TableCell>
+      <TableCell align="end">
+        <Money amount={payout.amount} currency={payout.currency} />
+      </TableCell>
     </LiveRow>
   ))}
 </TableBody>
@@ -184,18 +192,34 @@ accordion.
       method: "POST",
       url: "https://api.provider.example/v1/payouts",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ amount: 31842000, currency: "XAF", msisdn: "+237677123456" }, null, 2),
+      body: JSON.stringify(
+        { amount: 31842000, currency: "XAF", msisdn: "+237677123456" },
+        null,
+        2,
+      ),
     },
     {
       direction: "response",
       status: 201,
       durationMs: 412,
-      body: JSON.stringify({ reference: "OM-9F2A4C7E", status: "PENDING" }, null, 2),
+      body: JSON.stringify(
+        { reference: "OM-9F2A4C7E", status: "PENDING" },
+        null,
+        2,
+      ),
     },
     {
       direction: "callback",
       status: 200,
-      body: JSON.stringify({ reference: "OM-9F2A4C7E", status: "FAILED", code: "INSUFFICIENT_FLOAT" }, null, 2),
+      body: JSON.stringify(
+        {
+          reference: "OM-9F2A4C7E",
+          status: "FAILED",
+          code: "INSUFFICIENT_FLOAT",
+        },
+        null,
+        2,
+      ),
       error: "Signature verified. Provider reported a terminal failure.",
     },
   ]}
@@ -243,7 +267,11 @@ inspector per node.
       attempt: 1,
       maxAttempts: 3,
     },
-    { toState: "unknown", at: "2026-09-11T09:00:31Z", providerKey: "orange_cm" },
+    {
+      toState: "unknown",
+      at: "2026-09-11T09:00:31Z",
+      providerKey: "orange_cm",
+    },
   ]}
 />
 ```

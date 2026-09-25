@@ -35,7 +35,7 @@
  * adds on top of these components is composition and a redirect, and the
  * landmark case below renders the real layout around real content.
  */
-import { render } from "@testing-library/react";
+import { render, within } from "@testing-library/react";
 import axe from "axe-core";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -53,7 +53,6 @@ import { PaymentsTable } from "./components/payments-table";
 import { SignInForm } from "./components/sign-in-form";
 import { SignedInBar } from "./components/signed-in-bar";
 import { TotpForm } from "./components/totp-form";
-import { NAV_ENTRIES } from "./dash/resources";
 import { DETAIL, INTENT } from "./testing/fixtures";
 
 // `PaymentsFilters` calls `useRouter()` to apply (see its own module doc);
@@ -155,9 +154,11 @@ describe("the rendered app", () => {
       RootLayout({
         // An ELEMENT, not `AppShell({...})` called as a plain function.
         // That worked while the component's only hook was the mocked
-        // `usePathname`; it now holds real `useState`/`useEffect` (to keep
-        // `SideNav`'s always-rendered `accountSlot` empty below `xl`), and a
-        // hook outside a render is `Cannot read properties of null`.
+        // `usePathname`; it held real `useState`/`useEffect` for a while
+        // (to keep `SideNav`'s `accountSlot` empty below `xl`, which
+        // `@vaam-apps/ui` 0.4.0 made wrong), and `SideNav` renders hooks of
+        // its own, so a hook outside a render is
+        // `Cannot read properties of null` either way.
         children: (
           <AppShell
             email="ops@example.test"
@@ -177,31 +178,31 @@ describe("the rendered app", () => {
     expect(await violations(document.body)).toEqual([]);
   });
 
-  it("covers the More drawer's markup with the drawer actually OPEN", async () => {
+  it("covers the More sheet's markup with the sheet actually OPEN", async () => {
     // The two cases above use `renderToStaticMarkup`, and a closed vaul
-    // drawer renders NONE of its children — not hidden, absent. So every
-    // structural rule in this file was passing over markup that was not
-    // there: the drawer's nav list, its theme radiogroup and its second
-    // `SignedInBar` had no a11y coverage at all, which is the "test that
-    // asserts nothing" CLAUDE.md names. This case is a real client render
-    // that clicks the trigger and runs axe over the resulting document.
+    // sheet renders NONE of its children — not hidden, absent. `SideNav`'s
+    // toolbars are not in that markup at all either: they portal to
+    // `document.body` after an effect, which a static render never runs. So
+    // the sheet's account block — the theme radiogroup and the third
+    // `SignedInBar` — has structural coverage only from a real client
+    // render that opens it, which is this case.
     //
-    // `document.body`, not the render container: `MoreDetailDrawer` portals
-    // to the body, so scoping to the container would exclude the very
-    // markup this case exists to see — and `region` is a document-level rule
-    // that a fragment passes vacuously.
+    // `document.body`, not the render container: the toolbars and the sheet
+    // portal to the body, so scoping to the container would exclude the
+    // very markup this case exists to see — and `region` is a
+    // document-level rule that a fragment passes vacuously.
     //
     // Clearing the body first is load-bearing, not tidiness. The two cases
     // above ASSIGN `document.body.innerHTML`, and Testing Library's
     // `cleanup` only unmounts roots and removes containers it created
     // itself — it does not undo that assignment. Left in place, the static
-    // shell from the previous case is still in the document here, so this
-    // one would find its "Menu" button too (`getByRole` throws "found
-    // multiple elements" — measured) and axe would be scanning a stale
-    // second copy of the shell rather than this render.
+    // shell from the previous case would still be in the document here,
+    // and axe would be scanning a stale second copy of the shell rather
+    // than this render (measured with the drawer this case covered until
+    // 0.4.0: `getByRole` threw "found multiple elements").
     document.body.innerHTML = "";
 
-    const { getAllByRole, findByRole } = render(
+    const { findByRole } = render(
       <AppShell
         email="ops@example.test"
         merchantId="acct_test"
@@ -210,15 +211,22 @@ describe("the rendered app", () => {
         <PaymentsTable rows={[INTENT]} />
       </AppShell>,
     );
-    getAllByRole("button", { name: /^menu$/i })[0]!.click();
-    // Fails loudly if the drawer never opened, rather than running axe over
-    // a document that still has no drawer in it and reporting green.
-    const panel = await findByRole("dialog");
-    expect(panel).toHaveAccessibleName("Menu");
+    // The phone bar's control, by its hook: jsdom shows both toolbars, and
+    // the vertical rail has a "More" of its own.
+    const bar = document.body.querySelector<HTMLElement>(
+      '[data-floating-rail-axis="horizontal"]',
+    );
+    expect(bar, "the phone bar is portalled into the document").not.toBeNull();
+    within(bar as HTMLElement)
+      .getByRole("button", { name: "More" })
+      .click();
+    // Fails loudly if the sheet never opened, rather than running axe over
+    // a document that still has no sheet in it and reporting green.
+    const sheet = await findByRole("dialog", { name: "More" });
     expect(
-      panel.querySelectorAll("a").length,
-      "the open drawer really contains the nav tree",
-    ).toBe(NAV_ENTRIES.length);
+      within(sheet).getByRole("radiogroup", { name: "Theme" }),
+      "the open sheet really contains the account block",
+    ).toBeInTheDocument();
 
     expect(await violations(document.body)).toEqual([]);
   });
@@ -276,6 +284,26 @@ describe("every screen this app renders", () => {
     );
     expect(await violations(filters.container)).toEqual([]);
     filters.unmount();
+
+    // And with a range set, which the empty render above never reaches: the
+    // date field's trigger then points `aria-describedby` at the shown dates
+    // (`aria-valid-attr-value` checks the reference resolves), and the Clear
+    // button renders beside it (`button-name`). The empty render is the one
+    // that holds the trigger's own name: since 2026-09-24 that is the
+    // visible "Created between" label (`button-name` accepts a `<label for>`
+    // through axe's `explicit-label` check), with the "Any time" placeholder
+    // as visible text besides — so axe fires only when both are gone.
+    const filtered = render(
+      <PaymentsFilters
+        values={{
+          status: "",
+          createdFrom: "2026-09-01",
+          createdTo: "2026-09-07",
+        }}
+      />,
+    );
+    expect(await violations(filtered.container)).toEqual([]);
+    filtered.unmount();
 
     const bar = render(
       <SignedInBar

@@ -24,7 +24,7 @@ export default defineConfig({
    * against THIS app's own component tree, not copied from the checkout's
    * list.** Checked by grepping every component this suite stories for its
    * runtime imports (`import`, not `import type`): only `react`,
-   * `react-dom`, `lucide-react` (`AppShell`, `MoreMenu`), `@vaam-apps/ui`
+   * `react-dom`, `lucide-react` (`AppShell`), `@vaam-apps/ui`
    * and `@vpay/tokens` (`PaymentsFilters`' `PAYMENT_STATUS`) are reached.
    *
    * `@refinedev/core`, `@tanstack/react-query` and `@vpay/api-client` —

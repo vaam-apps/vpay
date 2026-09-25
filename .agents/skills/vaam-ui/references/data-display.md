@@ -42,7 +42,8 @@ key, a role key, a job kind, a field name.
 
 ```tsx
 <p className="text-body text-muted-foreground">
-  The route matched on <Code>prefix:+2376</Code> and chose <Code>orange_cm</Code>.
+  The route matched on <Code>prefix:+2376</Code> and chose{" "}
+  <Code>orange_cm</Code>.
 </p>
 ```
 
@@ -85,7 +86,9 @@ investigation.
 ```tsx
 <PhoneDisplay
   value="+237677123456"
-  format={(e164) => e164.replace(/^(\+237)(\d)(\d\d)(\d\d)(\d\d)(\d\d)$/, "$1 $2 $3 $4 $5 $6")}
+  format={(e164) =>
+    e164.replace(/^(\+237)(\d)(\d\d)(\d\d)(\d\d)(\d\d)$/, "$1 $2 $3 $4 $5 $6")
+  }
   tag="MTN"
   tagTitle="Carrier inferred from the number prefix. Portability means this is wrong for some subscribers."
 />
@@ -290,13 +293,14 @@ One headline number with its label and context.
 />
 ```
 
-| Prop      | Type              | Notes                                                                                                                                                                                                                                                               |
-| --------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `label`   | `React.ReactNode` | Truncates to one line.                                                                                                                                                                                                                                              |
-| `value`   | `React.ReactNode` | The figure. **This component does no formatting** — a tile cannot know whether it is showing a count, a currency or a rate. Pass a `Money` or a formatted string. Never clamped: a truncated figure is a wrong figure, so a long one wraps inside the tile instead. |
-| `caption` | `React.ReactNode` | One line under the value: the comparison, the window, the caveat. Clamped to two lines — tiles stretch to the tallest in the row.                                                                                                                                   |
-| `tone`    | `StatusHue`       | Tints the value. Leave unset unless the number's own colour carries meaning; a wall of coloured tiles makes the one that matters harder to find.                                                                                                                    |
-| `action`  | `React.ReactNode` | Top-right slot — a sparkline, a `StateChip`, a refresh button.                                                                                                                                                                                                      |
+| Prop         | Type              | Notes                                                                                                                                                                                                                                                               |
+| ------------ | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `label`      | `React.ReactNode` | Truncates to one line.                                                                                                                                                                                                                                              |
+| `value`      | `React.ReactNode` | The figure. **This component does no formatting** — a tile cannot know whether it is showing a count, a currency or a rate. Pass a `Money` or a formatted string. Never clamped: a truncated figure is a wrong figure, so a long one wraps inside the tile instead. |
+| `caption`    | `React.ReactNode` | One line under the value: the comparison, the window, the caveat. Clamped to two lines — tiles stretch to the tallest in the row.                                                                                                                                   |
+| `tone`       | `StatusHue`       | Tints the value. Leave unset unless the number's own colour carries meaning; a wall of coloured tiles makes the one that matters harder to find.                                                                                                                    |
+| `emphasized` | `boolean`         | Singles this tile's value out among peers by weight (`font-medium`), not colour — colour is reserved for status. Set it on at most one tile in a row; a row where every tile is emphasised has no emphasis.                                                         |
+| `action`     | `React.ReactNode` | Top-right slot — a sparkline, a `StateChip`, a refresh button.                                                                                                                                                                                                      |
 
 The `caption` slot exists because a bare number with no denominator is the
 most common way a dashboard misleads. It is deliberately upright sans, not
@@ -314,10 +318,18 @@ The **instrument register**: an aurora mesh ground, no border, for data you
 _scan_ rather than read.
 
 ```tsx
-<InstrumentPanel title="Settlement" caption="Last 24 hours, across all providers">
+<InstrumentPanel
+  title="Settlement"
+  caption="Last 24 hours, across all providers"
+>
   <div className="grid gap-3 sm:grid-cols-3">
     <StatTile label="Paid" value="12,481" caption="98.2% of 12,710 terminal" />
-    <StatTile label="Unresolved" value="37" tone="uncertain" caption="Outcome never learned" />
+    <StatTile
+      label="Unresolved"
+      value="37"
+      tone="uncertain"
+      caption="Outcome never learned"
+    />
     <StatTile
       label="Spend"
       value={<Money amount={318_420_00} currency="XAF" display="none" />}

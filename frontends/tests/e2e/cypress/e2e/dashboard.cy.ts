@@ -229,7 +229,14 @@ describe("the dashboard", { testIsolation: false }, () => {
 
     // ---- leg 5: signed in, on a token the code exchange minted -----------
     cy.location("pathname").should("eq", "/payments");
-    cy.contains(staffEmail()).should("be.visible");
+    // Scoped to <main>, and the scope is load-bearing. Since
+    // `@vaam-apps/ui` 0.4.0 the shell passes its account block to
+    // `SideNav` at every width, so the sidebar's copy is in the DOM at this
+    // spec's 1000px viewport under `display: none` — and FIRST, before
+    // <main>. An unscoped `cy.contains` takes that hidden copy and fails
+    // "be.visible" (it did on 2026-09-14, for the same reason;
+    // `app-shell.tsx`'s comment on `accountSlot` has the history).
+    cy.get("main").contains(staffEmail()).should("be.visible");
   });
 
   it("keeps the session token httpOnly and the access token out of the browser entirely", () => {
@@ -913,7 +920,9 @@ describe("the dashboard", { testIsolation: false }, () => {
         cy.visit("/payments");
         cy.location("pathname").should("eq", "/payments");
         cy.contains("h2", "Payments").should("be.visible");
-        cy.contains(staffEmail()).should("be.visible");
+        // <main>'s copy — the sidebar's comes first and is hidden at 1000px
+        // (leg 5 of the sign-in test says why).
+        cy.get("main").contains(staffEmail()).should("be.visible");
         cy.get("table").should("exist");
       });
     });
@@ -1150,7 +1159,10 @@ describe("the dashboard", { testIsolation: false }, () => {
   it("refuses everything again after signing out", () => {
     // The last test that runs while still signed in.
     cy.visit("/payments");
-    cy.contains("button", "Sign out").click();
+    // <main>'s Sign out: the sidebar's copy is first in the DOM and hidden
+    // at this spec's 1000px viewport, and Cypress will not click it (leg 5
+    // of the sign-in test says why).
+    cy.get("main").contains("button", "Sign out").click();
 
     // Back at the form, and the cookie is gone from this browser.
     cy.location("pathname").should("eq", "/login");
