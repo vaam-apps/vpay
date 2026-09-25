@@ -1,5 +1,43 @@
 # Changelog
 
+## [0.6.0](https://github.com/vaam-apps/vpay/compare/v0.5.0...v0.6.0) (2026-09-25)
+
+
+### ⚠ BREAKING CHANGES
+
+* vpay-sdk (sdks/rust) — ListPaymentIntentsParams, ListCheckoutSessionsParams and ListRefundsParams each gained a public `customer: Option<String>` field (in 8d328d4). Code that builds any of the three with a struct literal naming every field and no `..Default::default()` no longer compiles (E0063, missing field `customer`); add `customer: None` or `..Default::default()`. Code using Default::default() or field assignment, and every @vaam-apps/vpay-sdk caller, is unaffected.
+
+### Features
+
+* **checkout:** write a session's customer onto a customer-less intent (ADR-0025) ([#253](https://github.com/vaam-apps/vpay/issues/253)) ([fec2fc2](https://github.com/vaam-apps/vpay/commit/fec2fc230b28867b064c964003c0d48e4f451c80))
+* customer filters on list endpoints and manual invoice payments (RFC-0004 step A) ([#251](https://github.com/vaam-apps/vpay/issues/251)) ([b747e5d](https://github.com/vaam-apps/vpay/commit/b747e5d5068c4fda6b6b1b9aa06041ddc32230d3))
+* **dashboard:** move the dashboard to @vaam-apps/ui 0.4.0 ([#258](https://github.com/vaam-apps/vpay/issues/258)) ([f68fda0](https://github.com/vaam-apps/vpay/commit/f68fda097c66299fda183686288cadb6c8198955))
+
+
+### Bug Fixes
+
+* **dashboard:** the timeline note names only the two unwritten event types ([#247](https://github.com/vaam-apps/vpay/issues/247)) ([5129f60](https://github.com/vaam-apps/vpay/commit/5129f60c32701f130ce798ec7e1f1c21c2cfef7f))
+* **erasure:** reach a payer's payments through their checkout sessions too (ADR-0027) ([#257](https://github.com/vaam-apps/vpay/issues/257)) ([1bba541](https://github.com/vaam-apps/vpay/commit/1bba54131e9d605052cf0f3892dbc9230cd49df9))
+* **justfile:** make `just migrations-manifest` run on macOS ([9184e42](https://github.com/vaam-apps/vpay/commit/9184e42e68eb44c70ad27e5b9942d2a3378ca2f8))
+* **justfile:** make just migrations-manifest run on macOS ([#252](https://github.com/vaam-apps/vpay/issues/252)) ([9184e42](https://github.com/vaam-apps/vpay/commit/9184e42e68eb44c70ad27e5b9942d2a3378ca2f8))
+* **worker:** schedule every job on the database's clock, never the app host's (ADR-0026) ([#256](https://github.com/vaam-apps/vpay/issues/256)) ([434dda7](https://github.com/vaam-apps/vpay/commit/434dda7cc00d2e1a109c83e9b9fb10d6b2088366))
+
+
+### Documentation
+
+* **adr:** ADR-0024 — customer filters and manual payments (RFC-0004 step A) ([#248](https://github.com/vaam-apps/vpay/issues/248)) ([51c3c38](https://github.com/vaam-apps/vpay/commit/51c3c38dc852b8368c9805c3d9dee24189f09cc5))
+* retire thirteen stale claims found re-verifying the skills, and make the route probe self-checking ([#255](https://github.com/vaam-apps/vpay/issues/255)) ([1d20640](https://github.com/vaam-apps/vpay/commit/1d20640677c13218136bf5f52cab6faba64d5e03))
+
+
+### Tests
+
+* read "now" off the database in fixtures that Postgres' now() judges ([#254](https://github.com/vaam-apps/vpay/issues/254)) ([d08dafd](https://github.com/vaam-apps/vpay/commit/d08dafdd1e833c23cbaad7fe95b9613738925a86))
+
+
+### Chores
+
+* **deps:** bump @vaam-apps/ui to v0.2.4 ([#249](https://github.com/vaam-apps/vpay/issues/249)) ([c95e257](https://github.com/vaam-apps/vpay/commit/c95e2573d463b058b7768caa2848bf8231e7f121))
+
 ## [0.5.0](https://github.com/vaam-apps/vpay/compare/v0.4.1...v0.5.0) (2026-09-23)
 
 
