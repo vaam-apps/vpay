@@ -111,7 +111,7 @@ confidence-threshold = 0.93
 #
 # Why scoped by name rather than allowed globally. Two crates, one author,
 # one purpose (CBOR codec), reached through one dependency this repository
-# pins exactly (`cratestack = "=0.12.0"`). A third crate arriving under Blue
+# pins exactly (`cratestack = "=0.15.0"`). A third crate arriving under Blue
 # Oak is a new fact that should fail this gate and be argued on its own
 # merits, which an entry on the `allow` list above would silently prevent.
 # The generated CBOR transport is compiled and never called — vpay serves its

@@ -62,6 +62,16 @@ use crate::repository::{PgRepositories, Repositories};
 /// `docs/plans/exp45-worker-pool-bound-notes/opus-review.md`; this file
 /// decides neither number.
 ///
+/// # Since cratestack 0.15.0 the second connection is gone (2026-09-29)
+///
+/// The section above describes cratestack 0.12.0. From 0.15.0 (#1117) the
+/// update-policy re-check runs on the transaction that holds the first
+/// connection, so `create_in_tx`'s `Existing` branch takes one connection, not
+/// two. The `MAX_CONNECTIONS / 2` ceiling and its guards were **not** moved by
+/// the version bump: they are the conservative reading either way, and
+/// changing the boot guard, its integration test and the chart's paired
+/// literal is a behaviour change that belongs to its own PR.
+///
 /// # A second pairing, across the process boundary (2026-09-16, ADR-0022)
 ///
 /// This constant is *also* duplicated — as the literal `10` — in

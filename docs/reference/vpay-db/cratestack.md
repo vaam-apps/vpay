@@ -20,7 +20,7 @@ module is private" because they sit between the two on `vpay-db.md` as it was:
 
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
-(`cratestack = { package = "cratestack-pg", version = "=0.12.0" }`) and runs
+(`cratestack = { package = "cratestack-pg", version = "=0.15.0" }`) and runs
 **thirty-two** statements through the generated data layer, spread over
 **twelve** tables.
 This section says which twelve, what deliberately did not move, and which of

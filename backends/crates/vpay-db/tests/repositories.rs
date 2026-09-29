@@ -9011,50 +9011,29 @@ async fn a_second_delivery_for_one_event_and_endpoint_is_not_created() -> anyhow
     Ok(())
 }
 
-/// The `Ok(None)` above holds only for a delivery an **earlier, committed**
-/// pass created. A second `create_in_tx` for the same pair inside the *same,
-/// still-open* transaction is refused outright — and that is a narrowing the
-/// move to CrateStack introduced on 2026-09-06, not a property of the outbox.
+/// A repeat `create_in_tx` for one `(event_id, endpoint_id)` answers
+/// `Ok(None)` whether the earlier row was committed by a previous pass **or**
+/// inserted moments ago by the *same, still-open* transaction.
 ///
-/// # Why it happens, in the pinned 0.12.0 sources
+/// # History: this test used to assert the opposite
 ///
-/// `.upsert(..).do_nothing()` resolves its branch in two steps that do not
-/// use the same connection:
+/// From the move to CrateStack (2026-09-06) until cratestack 0.15.0, the
+/// second call inside one transaction was refused with
+/// `PersistenceError::Denied`. `.do_nothing()` resolved its branch on two
+/// connections: the conflict pre-probe read through the caller's transaction
+/// and saw the uncommitted row, but the update-policy re-check
+/// (`row_passes_update_policy`) ran on a **pool** connection that could not,
+/// and read the absence as a denial. cratestack 0.15.0 (#1117, "Policy reads
+/// run on the caller's transaction") evaluates that probe on the connection
+/// the write runs on, so the row is visible and the answer is the quiet
+/// `Ok(None)` the raw `INSERT ... ON CONFLICT DO NOTHING` it replaced always
+/// gave. `create_in_tx`'s at-least-once contract is unconditional again.
 ///
-///   1. `upsert_do_nothing_probe.rs::resolve_pre_probe` runs
-///      `SELECT ... FOR UPDATE` **on the caller's transaction**, so it *does*
-///      see a row the caller inserted a moment ago and takes the `Existing`
-///      branch.
-///   2. `upsert_do_nothing_authorize.rs::authorize_existing_row` then
-///      re-checks the update policy with
-///      `upsert_sql.rs::row_passes_update_policy(runtime.pool(), ..)` — a
-///      `SELECT 1 FROM webhook_deliveries WHERE ... ` issued **on a pool
-///      connection**, which cannot see the caller's uncommitted row. It finds
-///      nothing, reads that as "the update policy denied this row", and
-///      raises `Forbidden`.
-///
-/// The statement this replaced had no such split: one
-/// `INSERT ... ON CONFLICT DO NOTHING RETURNING id` inside the transaction
-/// answered `None` for the second call. Measured both ways on 2026-09-06;
-/// `docs/plans/exp18-notes/opus-review.md` F2 carries the transcript.
-///
-/// # Why this is pinned rather than fixed here
-///
-/// It is unreachable in vpay today, and by two independent guards rather
-/// than by luck: `vpay_config` **refuses a duplicate webhook endpoint `id`
-/// at boot** (`webhook-duplicate-endpoint-id.yml`), and
-/// `vpay_worker::webhooks::EndpointRegistry::from_pairs` dedups by id
-/// besides — so `fan_out_one`'s loop cannot call this twice for one pair.
-/// That means `fan_out_one`'s correctness now rests on a config guard in
-/// another crate, which it did not before, and nothing connected the two.
-/// This test is the connection: it fails if CrateStack changes the
-/// behaviour, and it is what a future caller that batches deliveries
-/// differently will trip over here rather than in production.
-///
-/// It deliberately asserts the behaviour as it **is**, not as it should be.
-/// The upstream issue is listed in `opus-review.md` §4.
+/// The test stays as the tripwire for the day that changes back: it asserts
+/// the answer for both the same-transaction repeat and the committed-row
+/// repeat, and that an abandoned transaction leaves nothing behind.
 #[tokio::test]
-async fn a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing()
+async fn a_repeat_creation_inside_one_transaction_is_reported_missing_like_a_committed_one()
 -> anyhow::Result<()> {
     let (_container, repositories, _pool) = migrated_postgres().await?;
     let event = insert_event(
@@ -9080,31 +9059,22 @@ async fn a_repeat_creation_inside_one_transaction_is_refused_rather_than_reporte
                     .await;
                 // Returned rather than asserted here, so the transaction is
                 // closed cleanly before the assertion runs.
-                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(second.err()))
+                Ok::<_, vpay_db::DbError>(TxOutcome::Abandon(Some(second)))
             })
         })
         .await?;
 
-    let error = observed.into_inner().context(
-        "a repeat creation inside one transaction is REFUSED, not reported as `Ok(None)`. If \
-         this is now `None`, CrateStack's `.do_nothing()` has stopped re-checking the update \
-         policy on a pool connection — delete this test and restore `create_in_tx`'s \
-         unconditional contract in its doc comment, in `schemas/vpay.cstack` and in \
-         docs/reference/vpay-db.md",
-    )?;
+    let second = observed.into_inner();
     assert!(
-        matches!(
-            &error,
-            vpay_db::DbError::Persistence(vpay_db::PersistenceError::Denied { model, .. })
-                if *model == "WebhookDelivery"
-        ),
-        "the refusal arrives as a policy denial naming the model, because the pool-side \
-         re-check cannot see the uncommitted row: {error:?}"
+        matches!(second, Some(Ok(None))),
+        "a repeat creation inside one transaction must answer `Ok(None)`, exactly as a repeat \
+         against a committed row does (cratestack 0.15.0, #1117: the update-policy re-check \
+         reads on the caller's transaction and so sees the uncommitted row). A `Denied` here \
+         means the re-check has gone back to a pool connection: {second:?}"
     );
 
     // Nothing was left behind: the transaction was abandoned, so the first
-    // creation is gone too. This is what makes the narrowing survivable —
-    // it fails the whole pass rather than half-committing one.
+    // creation is gone too.
     assert!(
         repositories.for_event(&event.id).await?.is_empty(),
         "the abandoned transaction must leave no delivery behind"
@@ -9267,7 +9237,7 @@ async fn a_generated_events_insert_is_refused_by_the_not_null_on_data() -> anyho
 /// then ask a second, pooled connection about that same row. It still does
 /// not hang — a plain `SELECT 1` does not block on a `FOR UPDATE` row lock in
 /// Postgres — but the conclusion holds for that reason, not for the one
-/// above. See `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`.
+/// above. See `a_repeat_creation_inside_one_transaction_is_reported_missing_like_a_committed_one`.
 #[tokio::test]
 async fn an_abandoned_fan_out_leaves_no_delivery_and_the_event_still_pending() -> anyhow::Result<()>
 {

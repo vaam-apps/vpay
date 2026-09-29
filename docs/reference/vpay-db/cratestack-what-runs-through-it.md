@@ -203,17 +203,23 @@ question left open (whether the reaper and gauge loops should be reserved out
 of it), is in
 [../plans/exp45-worker-pool-bound-notes/opus-review.md](../../plans/exp45-worker-pool-bound-notes/opus-review.md).
 
-### What the move narrowed: `create_in_tx`'s `Ok(None)` now means "an earlier **committed** pass"
+### What the move narrowed, and what 0.15.0 gave back: `create_in_tx`'s `Ok(None)`
 
-The seam works. One thing behind it changed anyway, it is not visible in any
-call site, and the review measured it rather than reading it off the
-signature.
+**Since cratestack 0.15.0 the narrowing below no longer exists.** #1117
+("policy reads run on the caller's transaction") evaluates every write's
+policy probes on the connection the write runs on, so the same-transaction
+repeat answers `Ok(None)` like the committed-row repeat. This section keeps
+the 0.12.0 history because the mechanism is why the test that pins it exists.
+
+The seam works. One thing behind it changed anyway between 0.12.0 and
+0.15.0, it was not visible in any call site, and the review measured it
+rather than reading it off the signature.
 
 `create_in_tx`'s contract is that a repeat creation for one
 `(event_id, endpoint_id)` answers `Ok(None)` — the quiet answer an
-at-least-once drain needs. Through CrateStack that holds only when the
-earlier row was **committed**. A second call inside the _same, still-open_
-transaction is refused with `PersistenceError::Denied`:
+at-least-once drain needs. **Through CrateStack 0.12.0 that held only when the
+earlier row was committed.** A second call inside the _same, still-open_
+transaction was refused with `PersistenceError::Denied`:
 
 ```text
 first  = Ok(Some(f2ba579c-…))
@@ -224,23 +230,31 @@ second = Err(Persistence(Denied { model: "WebhookDelivery", action: "upsert",
 The statement it replaced, run twice in one transaction against the same
 database, answered `Some(…)` then `None`.
 
-The cause is that `.do_nothing()` decides its branch across two connections.
-`upsert_do_nothing_probe.rs::resolve_pre_probe` runs `SELECT … FOR UPDATE`
-**on the caller's transaction**, so it sees the uncommitted row and takes the
-`Existing` branch; `upsert_do_nothing_authorize.rs` then re-checks the update
+The cause was that `.do_nothing()` decided its branch across two connections.
+`upsert_do_nothing_probe.rs::resolve_pre_probe` ran `SELECT … FOR UPDATE`
+**on the caller's transaction**, so it saw the uncommitted row and took the
+`Existing` branch; `upsert_do_nothing_authorize.rs` then re-checked the update
 policy with `row_passes_update_policy(runtime.pool(), …)` — a `SELECT 1` on a
-**pool** connection, which cannot see that row, finds nothing, and reads the
+**pool** connection, which could not see that row, found nothing, and read the
 absence as a denial.
 
-**Nothing in vpay reaches it**, and by two guards that live in other crates:
-`vpay_config` refuses a duplicate webhook endpoint `id` at boot and
-`EndpointRegistry::from_pairs` dedups by id, so `fan_out_one`'s loop cannot
-call this twice for one pair. That is a real dependency the fan-out did not
-have before — config validation in one crate now keeps a persistence call
-correct in another — so it is stated in both places and pinned by
-`a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`,
-which asserts the refusal _and_ the unchanged committed-row `None`. It is
-reported upstream rather than worked around here.
+**At 0.15.0 the answer is `Ok(None)` in both cases**, measured against a real
+Postgres 16 on 2026-09-29: the test that used to assert the refusal failed
+because the second call returned `Ok(None)`, and it is now
+`a_repeat_creation_inside_one_transaction_is_reported_missing_like_a_committed_one`,
+asserting that answer and the unchanged committed-row `None`. Nothing in vpay
+reached the old refusal either: `vpay_config` refuses a duplicate webhook
+endpoint `id` at boot and `EndpointRegistry::from_pairs` dedups by id, so
+`fan_out_one`'s loop cannot call this twice for one pair. Those two guards
+stay; they are now belt and braces rather than what keeps a persistence call
+correct.
+
+**The connection budget is a separate question and was left alone.** The
+`MAX_CONNECTIONS / 2` ceiling on `--worker-concurrency` (above) was derived
+from `.do_nothing()` holding two connections on the `Existing` branch. At
+0.15.0 it takes one. The guard, its integration test and the chart's
+`"worker-concurrency-pool"` literal are unchanged by the version bump, which
+moves no behaviour on purpose; loosening them is a decision for its own change.
 
 ### `events.data`: the one write that did not move, and why
 

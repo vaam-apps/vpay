@@ -469,3 +469,68 @@ declared). The foreign key itself costs nothing — 0.12.0 introspects none.
 Predicted while Docker was down, then measured: `drift detected in 26
 table(s)/view(s) (201 change(s) total)`, 19 unmappable. `just check-schema` passed (29 model/enum declarations). Evidence:
 [verification/2026-09-23-manual-payments.md](verification/2026-09-23-manual-payments.md).
+
+## CrateStack 0.12.0 → 0.15.0 (2026-09-29)
+
+**A version bump, not a feature.** `justfile`'s `cratestack_version`, the root
+`Cargo.toml`'s `cratestack` (`cratestack-pg`) and `vpay-db`'s
+`cratestack-codec-json` all moved to `=0.15.0`, the twelve `cratestack-*`
+entries in `Cargo.lock` were moved with `cargo update -p cratestack-pg
+--precise 0.15.0` (nothing else in the lockfile changed), and both
+`install-cratestack-cli` steps in `.github/workflows/ci.yml` now point at the
+commit `v0.15.0` was tagged at (`da143158cd4621a0268ff5ee4ec9a99833d45daf`, a
+lightweight tag: `git ls-remote` returns the same SHA for the tag and its
+`^{}`). The previous pin was a post-v0.12.0 commit chosen for the CLI-download
+retry fix (cratestack#982); the v0.15.0 `action.yml` still carries that retry.
+No COSE, no envelope layer and no auth change was made: signed transport is
+separate, later work. There are no npm `@cratestack/*` dependencies, and no
+generated client or fixture embeds `SCHEMA_SHA256` here, so the #1065 digest
+change (every `SCHEMA_SHA256` moves once) touches nothing in this tree.
+
+**What the 0.13/0.14/0.15 changelogs could have broken, and what did.**
+
+- _Stricter attribute parsing (0.14.1, GHSA-69g4-xvcm-vm2j)._ `cratestack check`
+  at 0.15.0 accepts `schemas/vpay.cstack` unchanged (29 model/enum declarations)
+  and the `include_server_schema!` macro compiles it: no schema edit was needed.
+- _Relation filters and `@server_only` keys (0.13.0)._ `vpay-db` compiled and its
+  relation-joined reads (`search_refunds` through `payment_intents`) passed
+  unchanged against a real Postgres.
+- _`CoseSigner` split by target (#1007)._ vpay implements no `CoseSigner`,
+  `CoseVerifierResolver` or `RequestAuthorizer`; nothing to change.
+- _Policy reads on the caller's transaction (#1117) — **the one real break.**_
+  `a_repeat_creation_inside_one_transaction_is_refused_rather_than_reported_missing`
+  failed at 0.15.0, as its own message predicted: a second `create_in_tx` for one
+  `(event_id, endpoint_id)` inside one open transaction now answers `Ok(None)`
+  instead of `PersistenceError::Denied`, because `.do_nothing()`'s update-policy
+  re-check reads on the transaction and sees the uncommitted row. That is the
+  behaviour the raw `INSERT ... ON CONFLICT DO NOTHING` had before the move to
+  CrateStack, so `create_in_tx`'s at-least-once contract is unconditional again.
+  The test is renamed `a_repeat_creation_inside_one_transaction_is_reported_missing_like_a_committed_one`
+  and asserts the new answer (and the unchanged committed-row `None`); the doc
+  comments in `webhook_deliveries.rs`, `vpay-worker/src/webhooks.rs`,
+  `schemas/vpay.cstack` and
+  [../reference/vpay-db/cratestack-what-runs-through-it.md](../reference/vpay-db/cratestack-what-runs-through-it.md)
+  say so. Nothing in vpay reached the old refusal (duplicate endpoint ids are
+  refused at boot and deduped), so no production behaviour moved.
+- _Not changed, on purpose:_ the `MAX_CONNECTIONS / 2` ceiling on
+  `--worker-concurrency`, its integration test and the chart's paired literal.
+  They were derived from `.do_nothing()` holding two connections; at 0.15.0 it
+  holds one, so the ceiling is now conservative rather than tight. Loosening it
+  is a behaviour change for its own PR (noted in `vpay_db`'s pool module).
+- _The drift measurement._ `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`
+  runs the 0.15.0 CLI's `migrate baseline --strict` and reports **201 changes
+  across 26 tables**, the constant it already asserted: the bump moved the count
+  not at all.
+
+**Evidence, and what could not run.** The gates ran on 2026-09-29: `just
+fmt-check`, `just clippy`, `just verify` (fifteen gates), `just test-doc`,
+`just deny` and `just check-schema` against the 0.15.0 CLI. The Docker-backed
+suites cannot run in the cloud session that made this change (no Docker
+daemon): the Postgres suites of `vpay-db` and `vpay-tests-integration` were
+instead run against a throwaway local Postgres 16 by a temporary, uncommitted
+patch to their container helpers, and every suite that also needs a WireMock or
+receiver container (`checkout_sessions`, `refunds`, `webhooks`,
+`worker_recovery`, `confirm_rails`, `provider_callback`, `browser_checkout`,
+`account_holders`, `worker_e2e`, most of `worker_kill9`),
+`vpay-tests-conformance` and `vpay-server`'s `cli` suite were **not run** and
+need CI.

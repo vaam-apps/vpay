@@ -202,7 +202,10 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
     // `MAX_CONNECTIONS / 2` is the ceiling because `create_in_tx` on the
     // already-exists branch holds two of these connections at once: its own
     // transaction's, and the one CrateStack's update-policy re-check takes
-    // from the same pool (docs/reference/vpay-db.md § CrateStack). The
+    // from the same pool (docs/reference/vpay-db.md § CrateStack) — true of
+    // cratestack 0.12.0; from 0.15.0 the re-check shares the transaction's
+    // connection and the ceiling is conservative (see `vpay-db`'s pool
+    // module). The
     // measurement behind the number, including what it is *not* — the
     // `fan_out_events` job is a singleton, so one process never has more than
     // one fan-out in flight — is
