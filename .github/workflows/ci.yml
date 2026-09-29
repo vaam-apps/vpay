@@ -600,8 +600,9 @@ jobs:
       # without the binary, not a skip (added 2026-09-05; the first CI run of
       # that test failed here for exactly that reason — run 33980091252).
       # Same two steps as `self-checks`: the version comes from the justfile,
-      # the action is pinned to the v0.12.0 commit (`0823bab`, v0.11.1's
-      # `6b3053f` until 2026-09-07) and verifies the checksum. The evidence
+      # the action is pinned to the commit the v0.15.0 tag points at
+      # (`da14315`; v0.12.0's `0823bab` until 2026-09-29, v0.11.1's `6b3053f`
+      # until 2026-09-07) and verifies the checksum. The evidence
       # for both halves of that sentence is in `self-checks` above rather
       # than repeated here.
       - name: resolve the pinned CrateStack version from the justfile
