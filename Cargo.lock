@@ -4870,12 +4870,16 @@ dependencies = [
 name = "vpay-core"
 version = "0.5.0"
 dependencies = [
+ "hex",
+ "hmac 0.12.1",
  "metrics",
  "metrics-exporter-prometheus",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "thiserror",
  "time",
+ "url",
  "uuid",
 ]
 

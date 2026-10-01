@@ -31,11 +31,12 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 >
 > _(This said "no HTTP call to MTN's or Orange's own endpoints — not
 > production, not even their sandboxes" until 2026-09-16, and had been wrong
-> since **2026-09-15**, when one EUR `mtn_momo` PaymentIntent was created,
-> confirmed and settled against **MTN's real sandbox**. The payer number was an
-> MTN-sandbox test MSISDN the sandbox settles by itself. Orange's rail has
-> still never been called, and neither has MTN's Disbursements product, which
-> is what a refund on that rail is. See [`docs/status.md`](docs/status.md).)_
+> since **2026-09-15**, when over five EUR `mtn_momo` PaymentIntents were
+> created, confirmed and settled against **MTN's real sandbox**. The payer
+> number was an MTN-sandbox test MSISDN the sandbox settles by itself.
+> Orange's rail has still never been called, and neither has MTN's
+> Disbursements product, which is what a refund on that rail is. See
+> [`docs/status.md`](docs/status.md).)_
 >
 > Read [`docs/status.md`](docs/status.md) before forming any expectation of
 > what works. It is machine-checked in both directions: `cargo xtask

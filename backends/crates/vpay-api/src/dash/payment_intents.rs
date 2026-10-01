@@ -35,7 +35,9 @@ use axum::extract::{Path, State};
 use axum::http::StatusCode;
 use axum::response::Response;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 use vpay_core::IntentStatus;
+use vpay_core::privacy::Secret;
 use vpay_db::{
     ChargeRow, EventRow, Events, IntentFilter, PaymentIntentRow, PaymentIntents, RefundRow, Refunds,
 };
@@ -273,7 +275,7 @@ impl PaymentDetail {
 /// smaller change than a field added then. What must not happen is this
 /// field quietly becoming the *unmasked* value because the masked one was
 /// empty.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct ChargeSummary {
     /// Always `"charge"`.
@@ -325,6 +327,43 @@ impl From<&ChargeRow> for ChargeSummary {
             created: row.created_at.unix_timestamp(),
             updated: row.updated_at.unix_timestamp(),
         }
+    }
+}
+
+/// Redacts [`ChargeSummary`]'s two payer-facing fields, leaving every other
+/// field visible (RFC-0002 PR 3, issue #147).
+///
+/// [`ChargeSummary`] **derived** its `Debug` until this impl. `failure_raw`
+/// is the rail's own words for a failure (`rail_failure_text`) — the same
+/// value [`vpay_db::ChargeRow`]'s impl redacts, and rail-authored prose
+/// quotes the payer back, which is why the erasure path rewrites it too
+/// (issue #211). `payer_ref_masked` is the payer's instrument
+/// (`payer_msisdn`), masked for display but recognisable enough to be a
+/// privacy copy in a log. [`PaymentDetail`] derives its `Debug` and holds
+/// `charge: Option<ChargeSummary>`, so this impl is what keeps a `{:?}` of
+/// the whole `/dash/v1` answer from carrying either into a log an operator
+/// reads. The `ch_…` id, the rail's code and the state stay visible — what
+/// an operator investigation starts from.
+impl fmt::Debug for ChargeSummary {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChargeSummary")
+            .field("object", &self.object)
+            .field("id", &self.id)
+            .field("provider_code", &self.provider_code)
+            .field("provider_reference_id", &self.provider_reference_id)
+            .field("provider_txn_id", &self.provider_txn_id)
+            .field("state", &self.state)
+            .field("amount", &self.amount)
+            .field("currency", &self.currency)
+            .field(
+                "payer_ref_masked",
+                &self.payer_ref_masked.as_deref().map(Secret::new),
+            )
+            .field("failure_code", &self.failure_code)
+            .field("failure_raw", &self.failure_raw.as_deref().map(Secret::new))
+            .field("created", &self.created)
+            .field("updated", &self.updated)
+            .finish()
     }
 }
 
@@ -557,5 +596,65 @@ mod tests {
             created_at: time::OffsetDateTime::UNIX_EPOCH,
             updated_at: time::OffsetDateTime::UNIX_EPOCH,
         }
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    //! The `ChargeSummary` redaction canary: the rail's words for a failure
+    //! and the masked payer instrument must never survive `{:?}`. By
+    //! composition this covers [`PaymentDetail`] too — it derives `Debug`
+    //! and holds `charge: Option<ChargeSummary>`, so its output routes
+    //! through this impl.
+
+    use super::ChargeSummary;
+
+    const RAIL_WORDS: &str = "237600000789 has insufficient funds";
+    const MASKED_PAYER: &str = "2376*****789";
+
+    fn charge_summary() -> ChargeSummary {
+        ChargeSummary {
+            object: "charge",
+            id: "ch_fixture".to_owned(),
+            provider_code: "mtn_momo".to_owned(),
+            provider_reference_id: "1234".to_owned(),
+            provider_txn_id: None,
+            state: "failed".to_owned(),
+            amount: 5000,
+            currency: "xaf".to_owned(),
+            payer_ref_masked: Some(MASKED_PAYER.to_owned()),
+            failure_code: Some("insufficient_funds".to_owned()),
+            failure_raw: Some(RAIL_WORDS.to_owned()),
+            created: 1_756_913_600,
+            updated: 1_756_913_600,
+        }
+    }
+
+    /// **This type never prints the rail's words or the payer's masked
+    /// instrument**, in both directions: neither literal appears, and the
+    /// structure an operator reads — the `ch_…` id, the rail's code, the
+    /// failure *code* — always does.
+    ///
+    /// Restoring `#[derive(Debug)]` on `ChargeSummary` is the mutation this
+    /// test exists to catch, and it has a `debug_protections` row in
+    /// `schemas/privacy-inventory.yaml`.
+    #[test]
+    fn no_charge_summary_prints_the_rails_words_or_the_masked_payer() {
+        let printed = format!("{:?}", charge_summary());
+        for literal in [RAIL_WORDS, MASKED_PAYER] {
+            assert!(
+                !printed.contains(literal),
+                "leaked {literal:?} in {printed}"
+            );
+        }
+        assert!(
+            printed.contains("ChargeSummary"),
+            "no structure in {printed}"
+        );
+        assert!(printed.contains("ch_fixture"), "no id in {printed}");
+        assert!(
+            printed.contains("insufficient_funds"),
+            "the failure code must stay visible"
+        );
     }
 }

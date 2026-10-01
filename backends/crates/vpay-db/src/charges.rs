@@ -19,6 +19,8 @@
 //! unique index and not a read is what enforces one charge per intent, why the
 //! counter lives in this layer, and what the after-the-commit timing costs.
 
+use std::fmt;
+
 use sqlx::postgres::PgRow;
 // `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
 // through this wrapper (sqlx#3723). Every `format!` below interpolates crate
@@ -30,6 +32,7 @@ use time::OffsetDateTime;
 use uuid::Uuid;
 use vpay_core::ChargeState;
 use vpay_core::metrics::CHARGE_TRANSITIONS_TOTAL;
+use vpay_core::privacy::{SafeUrl, Secret};
 
 use crate::error::{DbError, classify_write};
 
@@ -90,7 +93,7 @@ pub(crate) const COLUMNS: &str = "id, payment_intent_id, provider_code, provider
                        failure_code, failure_raw, created_at, updated_at";
 
 /// One `charges` row, exactly as stored.
-#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+#[derive(Clone, PartialEq, sqlx::FromRow)]
 pub struct ChargeRow {
     /// Public `ch_…` id, supplied before the insert.
     pub id: String,
@@ -141,6 +144,63 @@ pub struct ChargeRow {
     pub created_at: OffsetDateTime,
     /// When the row last changed (migration 0014).
     pub updated_at: OffsetDateTime,
+}
+
+/// Redacts the six fields that name, quote or steer a payer, leaving every
+/// other column visible (RFC-0002 PR 3, issue #147).
+///
+/// [`ChargeRow`] **derived** its `Debug` until this impl, which printed the
+/// payer's number twice (`payer_ref`, `payer_ref_masked`), the rail's own
+/// words for a failure (`failure_raw` — rail-authored text quotes the payer
+/// back, which is why the erasure path redacts it too), `provider_ref_extra`
+/// (where a redirect rail's `pay_token` is captured — the same credential
+/// [`Submitted`]'s impl redacts), and both URLs. A
+/// URL's query is where a rail puts the token that completes a redirect
+/// payment, so `redirect_url` prints through [`SafeUrl`] — the host is the
+/// operator-useful half ("which rail host was this sent to?") and the rest
+/// is the credential-bearing half. `return_url` follows it for one rule per
+/// element rather than two: both are `webhook_url` copies in
+/// [`schemas/privacy-inventory.yaml`](../../../schemas/privacy-inventory.yaml),
+/// and an inventory element is protected the same way wherever it is stored.
+/// `provider_ref_extra` prints through [`Secret`] for the reason
+/// [`vpay_provider::ChargeRef`]'s impl gives: the inventory classifies
+/// `sys_provider_ref` `control: none` (its *erasure* semantics), but a
+/// payment credential in a log is a payment credential regardless.
+///
+/// Nothing else is hidden. `provider_code`, the amounts and `state` are what
+/// an operator investigation starts from, and hiding them to be thorough
+/// would make this impl worse at the job it exists for.
+impl fmt::Debug for ChargeRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChargeRow")
+            .field("id", &self.id)
+            .field("payment_intent_id", &self.payment_intent_id)
+            .field("provider_code", &self.provider_code)
+            .field("provider_reference_id", &self.provider_reference_id)
+            .field(
+                "provider_ref_extra",
+                &self.provider_ref_extra.as_ref().map(Secret::new),
+            )
+            .field("provider_txn_id", &self.provider_txn_id)
+            .field(
+                "redirect_url",
+                &self.redirect_url.as_deref().map(SafeUrl::new),
+            )
+            .field("return_url", &self.return_url.as_deref().map(SafeUrl::new))
+            .field("state", &self.state)
+            .field("amount", &self.amount)
+            .field("currency_code", &self.currency_code)
+            .field("payer_ref", &self.payer_ref.as_deref().map(Secret::new))
+            .field(
+                "payer_ref_masked",
+                &self.payer_ref_masked.as_deref().map(Secret::new),
+            )
+            .field("failure_code", &self.failure_code)
+            .field("failure_raw", &self.failure_raw.as_deref().map(Secret::new))
+            .field("created_at", &self.created_at)
+            .field("updated_at", &self.updated_at)
+            .finish()
+    }
 }
 
 /// One `charges` row, together with the database's own clock at the instant
@@ -199,7 +259,7 @@ impl FromRow<'_, PgRow> for ChargeAsOf {
 /// how long an unanswered `submitting` charge has been outstanding — and
 /// the database's `now()` is the one clock every replica shares. Nothing
 /// about the confirm path needs to choose it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct NewCharge {
     /// Public `ch_…` id from `vpay_core::ids`, generated before the write.
     pub id: String,
@@ -234,6 +294,39 @@ pub struct NewCharge {
     pub payer_ref: Option<String>,
     /// The masked form for display.
     pub payer_ref_masked: Option<String>,
+}
+
+/// Redacts [`NewCharge`]'s protected fields for the same reasons as
+/// [`ChargeRow`]'s impl above — the write path is where a leak costs the
+/// most: `insert_for_intent` holds these values in the frame that runs the
+/// statement, so every CHECK violation, pool timeout and serialisation
+/// failure around them is an error chain able to carry the inputs.
+impl fmt::Debug for NewCharge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewCharge")
+            .field("id", &self.id)
+            .field("payment_intent_id", &self.payment_intent_id)
+            .field("provider_code", &self.provider_code)
+            .field("provider_reference_id", &self.provider_reference_id)
+            .field(
+                "provider_ref_extra",
+                &self.provider_ref_extra.as_ref().map(Secret::new),
+            )
+            .field(
+                "redirect_url",
+                &self.redirect_url.as_deref().map(SafeUrl::new),
+            )
+            .field("return_url", &self.return_url.as_deref().map(SafeUrl::new))
+            .field("state", &self.state)
+            .field("amount", &self.amount)
+            .field("currency_code", &self.currency_code)
+            .field("payer_ref", &self.payer_ref.as_deref().map(Secret::new))
+            .field(
+                "payer_ref_masked",
+                &self.payer_ref_masked.as_deref().map(Secret::new),
+            )
+            .finish()
+    }
 }
 
 /// Opens the single charge for an intent, inside the caller's transaction.
@@ -631,5 +724,117 @@ impl Charges for crate::repository::PgRepositories {
             .fetch_optional(&self.pool)
             .await
             .map_err(DbError::Query)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! The redaction impls' canary: a payer's number, a rail's own words
+    //! for a failure and a URL's query must never survive `{:?}` — and the
+    //! output must still say enough that an operator reading it is not
+    //! reading nothing.
+
+    use time::OffsetDateTime;
+    use uuid::Uuid;
+
+    use super::{ChargeRow, NewCharge};
+
+    /// A payer's number as a rail would carry it. The trailing digits are
+    /// the canary every negative assertion keys on.
+    const PAYER_REF: &str = "237600000789";
+    /// The same payer, as `payer_ref_masked` would carry them.
+    const PAYER_REF_MASKED: &str = "2376*****789";
+    /// A rail's own words for a failure — the text `failure_raw` stores.
+    const FAILURE_RAW: &str = "237600000789 has insufficient funds";
+    /// A redirect URL whose query carries the token that completes the
+    /// payment — the shape `redirect_url` protects.
+    const REDIRECT_URL: &str = "https://pay.orange.example/op?pay_token=secref01";
+    /// A merchant's return destination, with a query of its own.
+    const RETURN_URL: &str = "https://shop.example/done?ref=secref02";
+    /// A redirect rail's `pay_token`, as `provider_ref_extra` captures it.
+    const PAY_TOKEN: &str = "paytokensecref03";
+
+    /// Every personal literal the fixtures carry, as it would appear
+    /// inside a formatted string.
+    fn payer_literals() -> Vec<String> {
+        vec![
+            PAYER_REF.to_owned(),
+            PAYER_REF_MASKED.to_owned(),
+            FAILURE_RAW.to_owned(),
+            "secref01".to_owned(),
+            "secref02".to_owned(),
+            PAY_TOKEN.to_owned(),
+        ]
+    }
+
+    fn row() -> ChargeRow {
+        ChargeRow {
+            id: "ch_fixture".to_owned(),
+            payment_intent_id: "pi_fixture".to_owned(),
+            provider_code: "mtn_momo".to_owned(),
+            provider_reference_id: Uuid::new_v4(),
+            provider_ref_extra: Some(serde_json::json!({ "pay_token": PAY_TOKEN })),
+            provider_txn_id: None,
+            redirect_url: Some(REDIRECT_URL.to_owned()),
+            return_url: Some(RETURN_URL.to_owned()),
+            state: "submitting".to_owned(),
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            payer_ref: Some(PAYER_REF.to_owned()),
+            payer_ref_masked: Some(PAYER_REF_MASKED.to_owned()),
+            failure_code: None,
+            failure_raw: Some(FAILURE_RAW.to_owned()),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    fn new_charge() -> NewCharge {
+        NewCharge {
+            id: "ch_fixture".to_owned(),
+            payment_intent_id: "pi_fixture".to_owned(),
+            provider_code: "mtn_momo".to_owned(),
+            provider_reference_id: Uuid::new_v4(),
+            provider_ref_extra: Some(serde_json::json!({ "pay_token": PAY_TOKEN })),
+            redirect_url: Some(REDIRECT_URL.to_owned()),
+            return_url: Some(RETURN_URL.to_owned()),
+            state: "submitting".to_owned(),
+            amount: 5000,
+            currency_code: "XAF".to_owned(),
+            payer_ref: Some(PAYER_REF.to_owned()),
+            payer_ref_masked: Some(PAYER_REF_MASKED.to_owned()),
+        }
+    }
+
+    /// **No type in this module prints a payer's number, a rail's own
+    /// words, or a URL's query** — and both directions are pinned: the
+    /// literals never appear, and the structure always does (the type
+    /// name, one visible column, and the host halves of both URLs), so a
+    /// `Debug` that printed nothing at all could not pass it either.
+    ///
+    /// Restoring `#[derive(Debug)]` on either struct is the mutation this
+    /// test exists to catch, and `schemas/privacy-inventory.yaml`'s
+    /// `debug_protections` row for each names it.
+    #[test]
+    fn no_charge_type_prints_a_payers_number_a_rails_words_or_a_urls_query() {
+        for printed in [format!("{:?}", row()), format!("{:?}", new_charge())] {
+            for literal in payer_literals() {
+                assert!(
+                    !printed.contains(&literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            // Positive half: the structure an operator reads survives.
+            assert!(printed.contains("Charge"), "no structure in {printed}");
+            assert!(printed.contains("ch_fixture"), "no id in {printed}");
+            assert!(
+                printed.contains("pay.orange.example"),
+                "no host in {printed}"
+            );
+            assert!(
+                printed.contains("shop.example"),
+                "no return host in {printed}"
+            );
+        }
     }
 }

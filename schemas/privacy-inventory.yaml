@@ -1246,3 +1246,79 @@ non_db_surfaces:
     description: PITR/WAL and full backups (ADR-0013) — external store vpay does not operate
     enumerable: false
     unmet: retention/erasure of restore copies is a deployment obligation (RFC-0002 D13)
+
+# `debug_protections` — every type that must carry a hand-written `Debug`
+# rather than `#[derive(Debug)]`, because it holds a registered personal-data
+# or secret element (RFC-0002 PR 3, issue #147, ADR-0020 § 2). A derived
+# `Debug` would print the value into every log line a `{:?}` of the type
+# reaches — a copy the erasure and retention controls own the column but not
+# the log line for.
+#
+# Two-directional, like the rest of this gate: a registered type that derives
+# `Debug` fails the build (the protection was undone), and a registered type
+# that no longer exists in its file fails it too (the registration went
+# stale). `elements` must name inventory elements and every element is
+# checked to exist.
+#
+# A NEW TYPE holding a payer's identifier, the rail's words for a failure, a
+# rendered API body or a URL is registered here in the same change that adds
+# its hand-written `Debug` and its canary test. A type deliberately keeping a
+# registered element visible (e.g. `CheckoutSessionRow`'s URLs, which are the
+# merchant's own, documented in that impl) is NOT registered — the visible
+# element is a documented decision in the impl, not a silence this list
+# should endorse.
+debug_protections:
+  # vpay-db rows and inputs.
+  - type: ChargeRow
+    file: backends/crates/vpay-db/src/charges.rs
+    elements: [payer_msisdn, rail_failure_text, webhook_url, sys_provider_ref]
+  - type: NewCharge
+    file: backends/crates/vpay-db/src/charges.rs
+    elements: [payer_msisdn, webhook_url, sys_provider_ref]
+  - type: EventRow
+    file: backends/crates/vpay-db/src/events.rs
+    elements: [stored_api_body]
+  - type: NewEvent
+    file: backends/crates/vpay-db/src/events.rs
+    elements: [stored_api_body]
+  - type: IdempotencyRecord
+    file: backends/crates/vpay-db/src/idempotency.rs
+    elements: [stored_api_body]
+  - type: DeliveryRow
+    file: backends/crates/vpay-db/src/webhook_deliveries.rs
+    elements: [rail_failure_text, webhook_url]
+  - type: PaymentIntentRow
+    file: backends/crates/vpay-db/src/payment_intents.rs
+    elements: [oauth_client_secret, rail_failure_text]
+  - type: NewPaymentIntent
+    file: backends/crates/vpay-db/src/payment_intents.rs
+    elements: [oauth_client_secret, rail_failure_text]
+  # vpay-api wire objects.
+  - type: LastPaymentErrorObject
+    file: backends/crates/vpay-api/src/model.rs
+    elements: [rail_failure_text]
+  - type: AccountHolderObject
+    file: backends/crates/vpay-api/src/model.rs
+    elements: [customer_name]
+  - type: EventDataObject
+    file: backends/crates/vpay-api/src/model.rs
+    elements: [stored_api_body]
+  - type: OutOfBandPaymentObject
+    file: backends/crates/vpay-api/src/model.rs
+    elements: [payment_reference]
+  - type: ChargeSummary
+    file: backends/crates/vpay-api/src/dash/payment_intents.rs
+    elements: [payer_msisdn, rail_failure_text]
+  # vpay-provider port types.
+  - type: ChargeRef
+    file: backends/crates/vpay-provider/src/lib.rs
+    elements: [payer_msisdn, webhook_url, sys_provider_ref]
+  - type: Submitted
+    file: backends/crates/vpay-provider/src/lib.rs
+    elements: [webhook_url, sys_provider_ref]
+  - type: ChargeStatus
+    file: backends/crates/vpay-provider/src/lib.rs
+    elements: [rail_failure_text]
+  - type: ProviderError
+    file: backends/crates/vpay-provider/src/lib.rs
+    elements: [rail_failure_text]

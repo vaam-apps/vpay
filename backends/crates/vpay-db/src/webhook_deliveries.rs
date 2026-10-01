@@ -15,6 +15,7 @@
 //! The process is `docs/flows/webhooks.md`; the reasoning behind this module's
 //! shape is `docs/reference/vpay-db.md` §"`webhook_deliveries`".
 
+use std::fmt;
 use std::time::Duration;
 
 // `AssertSqlSafe`: sqlx 0.9 accepts a statement only as `&'static str` or
@@ -25,6 +26,7 @@ use std::time::Duration;
 use sqlx::{AssertSqlSafe, Postgres, Transaction};
 use time::OffsetDateTime;
 use uuid::Uuid;
+use vpay_core::privacy::{SafeUrl, Secret};
 
 use crate::error::{DbError, classify_write};
 use crate::persistence::{classify_cratestack, system_context};
@@ -75,7 +77,7 @@ const COLUMNS: &str = "id, event_id, endpoint_id, url, attempt, state, status_co
 
 /// One `webhook_deliveries` row, as the delivery handler and the runbook
 /// queries see it.
-#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+#[derive(Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct DeliveryRow {
     /// Database-generated identity. Like a job, a delivery has no public
     /// `wd_…` id: nothing outside vpay ever names one, so there is nothing
@@ -130,6 +132,40 @@ pub struct DeliveryRow {
     /// transaction that created it, so the queue owns it — and `None` once
     /// no further attempt is owed.
     pub next_attempt_at: Option<OffsetDateTime>,
+}
+
+/// Redacts the two fields that can carry a receiver's credential or a
+/// receiver's own words, leaving every other column visible (RFC-0002 PR 3,
+/// issue #147).
+///
+/// [`DeliveryRow`] **derived** its `Debug` until this impl. The `url` is a
+/// `webhook_url` inventory element (control `forbid`): open decision D4 of
+/// RFC-0002 exists because a configured endpoint may carry a credential in
+/// its query string, so the URL prints through [`SafeUrl`] — the host is
+/// the operator-useful half ("which receiver was this sent to?") and the
+/// rest is where a credential hides. `response_excerpt` is the receiver's
+/// own body (`rail_failure_text`), which is *untrusted prose*: a receiver
+/// can echo a payer's number back at us, so it prints through [`Secret`].
+/// `payload_sha256`, `event_id` and the attempt state stay visible — the
+/// row's own identity, and what an operator debugging a delivery needs.
+impl fmt::Debug for DeliveryRow {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeliveryRow")
+            .field("id", &self.id)
+            .field("event_id", &self.event_id)
+            .field("endpoint_id", &self.endpoint_id)
+            .field("url", &SafeUrl::new(&self.url))
+            .field("attempt", &self.attempt)
+            .field("state", &self.state)
+            .field("status_code", &self.status_code)
+            .field(
+                "response_excerpt",
+                &self.response_excerpt.as_deref().map(Secret::new),
+            )
+            .field("payload_sha256", &self.payload_sha256)
+            .field("next_attempt_at", &self.next_attempt_at)
+            .finish()
+    }
 }
 
 /// Creates the delivery for one (event, endpoint) pair **inside the
@@ -806,5 +842,55 @@ mod tests {
         // lone continuation byte, which cannot be a `char`.
         assert!(bounded.chars().all(|c| c == 'é'));
         assert!(long.starts_with(&bounded));
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    //! The redaction impl's canary: a receiver's credential (in the URL)
+    //! and a receiver's own words (in the excerpt) must never survive
+    //! `{:?}`, and the host and the row's identity always must.
+
+    use uuid::Uuid;
+
+    use super::DeliveryRow;
+
+    /// A receiver endpoint URL whose query carries the secret that lets its
+    /// holder forge a signature — the shape `url` protects.
+    const ENDPOINT_URL: &str = "https://merchant.example/hooks?vpay_token=secref01";
+    /// A receiver's own body echoing a payer's number back — untrusted
+    /// prose, the shape `response_excerpt` protects.
+    const RECEIVER_EXCERPT: &str = "ok, charged 237600000789";
+
+    fn row() -> DeliveryRow {
+        DeliveryRow {
+            id: Uuid::new_v4(),
+            event_id: "evt_fixture".to_owned(),
+            endpoint_id: "ep_fixture".to_owned(),
+            url: ENDPOINT_URL.to_owned(),
+            attempt: 1,
+            state: "pending".to_owned(),
+            status_code: Some(200),
+            response_excerpt: Some(RECEIVER_EXCERPT.to_owned()),
+            payload_sha256: Some("abcdef".to_owned()),
+            next_attempt_at: None,
+        }
+    }
+
+    /// **This type never prints the receiver's credential or the receiver's
+    /// own words**, in both directions: neither literal appears, and the
+    /// host and the event id always do.
+    #[test]
+    fn no_delivery_row_prints_the_endpoint_credential_or_the_receiver_excerpt() {
+        let printed = format!("{:?}", row());
+        for literal in ["secref01", "237600000789"] {
+            assert!(
+                !printed.contains(literal),
+                "leaked {literal:?} in {printed}"
+            );
+        }
+        assert!(printed.contains("DeliveryRow"), "no structure");
+        assert!(printed.contains("merchant.example"), "no host in {printed}");
+        assert!(printed.contains("evt_fixture"), "no event id in {printed}");
     }
 }

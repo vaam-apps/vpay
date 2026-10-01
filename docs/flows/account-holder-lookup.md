@@ -306,7 +306,7 @@ about the _rail_, and this one answers a question about the _route_.
   (ADR-0006). _(This read "MTN's real sandbox has never been called — for
   this or for any other operation" until 2026-09-23, and the second half had
   been wrong since 2026-09-15, when the Collections token, `requesttopay` and
-  the status query of one EUR charge ran against MTN's real sandbox
+  the status queries of several EUR charges ran against MTN's real sandbox
   ([../status/verification/2026-09-15.md](../status/verification/2026-09-15.md)).
   That run never called `basicuserinfo`, so the first half still stands.)_ Two specifics are unverified as a direct consequence:
   the case of the `accountHolderIdType` path segment, and whether MTN answers

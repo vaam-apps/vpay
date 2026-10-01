@@ -38,6 +38,31 @@ So a new privacy-relevant column cannot land silently, and a stale inventory
 row cannot survive the column it named. The gate also validates every element's
 six fields and every registered non-database surface.
 
+**Since RFC-0002 PR 3 (issue #147) the gate also enforces the `Debug`
+boundary.** A `#[derive(Debug)]` on a struct that holds a payer's identifier,
+the rail's own words for a failure, a rendered API body or a URL prints all of
+it into every log line a `{:?}` of the type reaches — a copy the erasure and
+retention controls own the column but not the log line for. ADR-0020 §2's
+answer is positive projection: each such type carries a hand-written, redacting
+`Debug` instead, composing the shared wrappers in
+[`vpay-core::privacy`](../../backends/crates/vpay-core/src/privacy.rs)
+(`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`). Every type that must carry one
+is registered in the inventory's `debug_protections` list, and the gate fails
+in **both** directions there too:
+
+- a registered type that derives `Debug` → fail (the protection was undone);
+- a registered type that no longer exists in its file → fail (the
+  registration went stale).
+
+A registered entry's `elements` must name live inventory elements, so a
+misspelled element cannot silently register the wrong protection. A new type
+holding a registered element is added to this list in the same change that adds
+its hand-written `Debug` and its canary test. A type deliberately keeping a
+registered element visible — `CheckoutSessionRow`'s URLs, which are the
+merchant's own, documented in that impl — is deliberately **not** registered:
+the visible element is a documented decision, not a silence this list should
+endorse.
+
 _(The parser models `CREATE TABLE`, `ALTER TABLE … ADD/DROP/RENAME COLUMN` and
 `DROP TABLE`. **`DROP TABLE` was added on review, 2026-09-17, and the omission
 had cost exactly what this page exists to prevent:** migration `0009` drops
@@ -431,8 +456,9 @@ are `unresolved`, not guessed.
 
 ## Status
 
-**2026-09-16, amended 2026-09-17 on review.** The inventory exists and is
-machine-checked in both directions against `backends/migrations` by `cargo xtask
+**2026-09-16, amended 2026-09-17 on review, amended 2026-10-01 (RFC-0002 PR
+3).** The inventory exists and is machine-checked in both directions against
+`backends/migrations` by `cargo xtask
 verify-privacy-inventory`, wired into `just verify`. **307** database columns
 across 26 elements (17 personal-data), and 10 non-database surfaces, are
 registered — the gate's own output on 2026-09-23, after migration `0049`
@@ -440,6 +466,17 @@ added twelve columns (`invoices.paid_out_of_band` and the eleven of
 `manual_payments`, the last its always-`true` `paid_out_of_band`, classified
 `sys_status`) and the `payment_reference` element; it said 295 across 25 (16)
 until then, and 306 for the few hours `0049` had eleven.
+
+**RFC-0002 PR 3, 2026-10-01:** the four shared protected diagnostic
+representations landed in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`,
+`SafeUrl` — the latter two as policy-free mechanisms, awaiting RFC-0002 D3),
+seventeen personal-data/secret types across `vpay-db`, `vpay-api` and
+`vpay-provider` swapped derived `Debug` for hand-written redacting impls, and
+the gate now enforces the `debug_protections` registration list in both
+directions. `Masked` and `Pseudonymous` have **no shipping consumer** and are
+built ahead of their first use so PR 4's telemetry work and #56's audit rows
+inherit one representation; adopting either for a live surface before D3 names
+its keying/masking answers is what the module's own docs forbid.
 
 What is **not** done, and each of these keeps #144 open:
 

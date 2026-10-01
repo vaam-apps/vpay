@@ -188,7 +188,7 @@ the other seven claims the same sweep corrected:
 Both rails' wire calls are implemented and **proven against a real
 `wiremock/wiremock` container**. Since 2026-09-15 MTN's **charge path** —
 the Collections token, `submit` and `query_status` — has also run against
-MTN's real sandbox, on one day, settling one charge
+MTN's real sandbox, on one day, settling several charges
 ([verification/2026-09-15.md](verification/2026-09-15.md)); nothing else on
 either rail has met a real endpoint. _(This read "never against MTN or Orange"
 until 2026-09-23, and the matrix below marked MTN's real sandbox "⛔ never
