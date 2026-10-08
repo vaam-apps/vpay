@@ -93,7 +93,7 @@ schema fetches went through the session proxy and succeeded.
 
 **Before** (schema reverted, everything else in place), exit 1:
 
-```
+```text
 ==> wrapper chart (vpay as a subchart of a parent that sets global)
 ==> Linting deploy/helm/fixtures/wrapper
 [INFO] Chart.yaml: icon is recommended
@@ -108,7 +108,7 @@ error: Recipe `helm-check` failed with exit code 1
 
 **After**, exit 0:
 
-```
+```text
 ==> wrapper chart (vpay as a subchart of a parent that sets global)
 ==> Linting deploy/helm/fixtures/wrapper
 [INFO] Chart.yaml: icon is recommended
@@ -129,11 +129,11 @@ default render, which is.
 
 Each was applied to the tree, `just helm-check` run, and the change reverted.
 
-| Mutation                                                                                      | Result                                                                                                                         |
-| --------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| The schema change reverted                                                                    | Fails at `helm lint` of the wrapper, as above.                                                                                 |
-| Top-level `additionalProperties` set to `true` (the over-broad fix)                           | `helm-check: FAIL — an unknown key under vpay: was accepted; the schema is no longer closed`, exit 1                           |
-| A template reading `.Values.global` (three lines appended to `templates/serviceaccount.yaml`) | `helm-check: FAIL — vpay rendered under a parent chart is not what it renders as the root; `global` changed something`, exit 1 |
+| Mutation                                                                                      | Result                                                                                                                           |
+| --------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| The schema change reverted                                                                    | Fails at `helm lint` of the wrapper, as above.                                                                                   |
+| Top-level `additionalProperties` set to `true` (the over-broad fix)                           | `helm-check: FAIL — an unknown key under vpay: was accepted; the schema is no longer closed`, exit 1                             |
+| A template reading `.Values.global` (three lines appended to `templates/serviceaccount.yaml`) | ``helm-check: FAIL — vpay rendered under a parent chart is not what it renders as the root; `global` changed something``, exit 1 |
 
 The third is why the equality assertion exists: "accepted" and "ignored" are
 two claims, and the schema can only prove the first.
@@ -145,7 +145,7 @@ reads tracked files, so it calls a new page broken until `git add`):
 **exit 0, `verify: ok — the fifteen gates above passed; the verify-docs report
 is advisory`**. Per gate:
 
-```
+```text
 verify-no-mocks: ok — no test double reachable from a shipping binary
 verify-status: ok — 1 unimplemented item(s), all declared in docs/status.md and all still in shipping code
 verify-errors: ok — 20 error type(s), all classified; 17 `#[from]` variant(s) delegate every `Classify` method they match on; anyhow confined to binaries
