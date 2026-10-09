@@ -26,11 +26,11 @@ has moved, and no merchant endpoint outside this repository has ever been POSTed
 to.
 
 > _2026-09-15 (the first real rail call): the sentence above is **retired in
-> its turn.** On 2026-09-15 over five EUR `mtn_momo` PaymentIntents
-> (first: `pi_xxd2xj1e914e16c6m63gezag`) were created, confirmed and settled
-> against **MTN's real sandbox** (`https://sandbox.momodeveloper.mtn.com`):
-> the worker's authenticated status query reported the charge paid and the
-> intent reached `succeeded`. **Its replacement is narrower and still load-bearing:
+> its turn.** On 2026-09-15 a EUR `mtn_momo` PaymentIntent
+> (`pi_xxd2xj1e914e16c6m63gezag`) was created, confirmed and settled against
+> **MTN's real sandbox** (`https://sandbox.momodeveloper.mtn.com`): the
+> worker's authenticated status query reported the charge paid and the intent
+> reached `succeeded`. **Its replacement is narrower and still load-bearing:
 > no real payer, no production rail, and no rail other than MTN's sandbox have
 > ever been touched.** The payer number was an MTN-sandbox test MSISDN the
 > sandbox settles automatically — no handset was prompted and no real money
