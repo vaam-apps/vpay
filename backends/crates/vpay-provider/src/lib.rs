@@ -2566,9 +2566,9 @@ mod debug_tests {
     /// and a redirect rail's query can carry a payment token.
     const LOOKUP_URL: &str = "http://127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000789/basicuserinfo?pay_token=secref04";
 
-    /// A real transport failure: a request to a closed loopback port, so the
-    /// `reqwest::Error` carries the URL exactly as a live one does.
-    async fn transport_failure() -> super::ProviderError {
+    /// A real `reqwest::Error`: a request to a closed loopback port, so it
+    /// carries the URL exactly as a live one does.
+    async fn reqwest_failure() -> reqwest::Error {
         let error = super::http::client()
             .expect("the vendored-roots client builds")
             .get(LOOKUP_URL)
@@ -2581,10 +2581,51 @@ mod debug_tests {
                 .is_some_and(|url| url.as_str().contains(PAYER_REF)),
             "the fixture must carry the MSISDN in the error's URL, or the canary proves nothing"
         );
+        error
+    }
+
+    async fn transport_failure() -> super::ProviderError {
         super::ProviderError::Transport {
             context: "mtn_momo: account holder lookup".to_owned(),
-            source: Some(super::RailFailure::Http(error)),
+            source: Some(super::RailFailure::Http(reqwest_failure().await)),
         }
+    }
+
+    /// The body stage holds a `reqwest::Error` too (`HttpBodyError::Read`),
+    /// reached through `RailFailure::Body` and also on its own.
+    ///
+    /// Same two directions; and the cap of a `TooLarge` stays visible, because
+    /// "how big was the limit" is what an operator asks of it.
+    #[tokio::test]
+    async fn no_body_failure_prints_the_request_urls_path_or_query() {
+        use super::http::HttpBodyError;
+
+        let read = HttpBodyError::Read(reqwest_failure().await);
+        let wrapped = super::ProviderError::Malformed {
+            context: "mtn_momo: reading the response".to_owned(),
+            source: Some(super::RailFailure::Body(HttpBodyError::Read(
+                reqwest_failure().await,
+            ))),
+        };
+        for printed in [format!("{read:?}"), format!("{wrapped:?}")] {
+            for literal in [PAYER_REF, "secref04", "pay_token", "basicuserinfo"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(
+                printed.contains("HttpBodyError::Read"),
+                "no stage: {printed}"
+            );
+            assert!(
+                printed.contains("http://127.0.0.1:1"),
+                "no rail host in {printed}"
+            );
+        }
+        assert!(format!("{wrapped:?}").contains("RailFailure::Body"));
+        let too_large = format!("{:?}", HttpBodyError::TooLarge { max: 1_048_576 });
+        assert!(too_large.contains("1048576"), "no cap in {too_large}");
     }
 
     /// **A transport failure's source never prints the request URL's path or
