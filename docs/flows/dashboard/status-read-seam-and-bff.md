@@ -209,7 +209,7 @@ on the status and on the header, along with two more of the seven in
 `autoImplementMethods` and runs the real route module through it, so the `204`
 and the `Allow` string are measured against the installed Next rather than
 quoted from the review. That mattered: **the review named Next 16.3.4, which
-is `examples/shop`'s pin and not this app's.** The dashboard resolves 15.5.25,
+is `examples/shop`'s pin and not this app's.** The dashboard resolved 15.5.25 (15.5.27 since 2026-10-09),
 whose `AUTOMATIC_ROUTE_METHODS` and `Allow` assembly are the same, so the
 finding held against a version it was not measured on.
 

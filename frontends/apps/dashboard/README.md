@@ -173,7 +173,8 @@ one reachable without passing a check, never the only one — and making the
 case that pins the first half.
 
 The review recorded all of this against **Next 16.3.4**, which is
-`examples/shop`'s pin; this app resolves **15.5.25**, whose
+`examples/shop`'s pin; this app resolved **15.5.25** then (15.5.27 since
+2026-10-09, `middleware.test.ts` green on it), whose
 `AUTOMATIC_ROUTE_METHODS` and `Allow` assembly are the same. The finding held;
 the version named in it was not this app's. The test measures the installed
 one rather than repeating either number.
