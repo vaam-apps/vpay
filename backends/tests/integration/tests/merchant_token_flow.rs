@@ -39,6 +39,16 @@
 //! - **(h)** that default widens nothing: a request naming a *narrower*
 //!   scope gets exactly that, one naming a scope the registration does not
 //!   hold is `invalid_scope`, and one naming none gets the registration.
+//! - **(j)** a spent `jti` outlives the validator's leeway: an assertion
+//!   whose `exp` is 30 s in the past is still accepted (`jsonwebtoken`'s 60 s
+//!   default leeway, which `authkestra-op` 0.7.1 leaves alone), and its
+//!   replay is still refused after the worker's housekeeping sweep has run
+//!   ([ADR-0028](../../../../docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md)).
+//! - **(k)** the other half of that bargain: an assertion older than the
+//!   sweep's production horizon is refused by the validator, so no row the
+//!   sweep may delete belongs to an assertion that could still verify. This is
+//!   what fails when an `authkestra-op` or `jsonwebtoken` bump widens the
+//!   leeway past the horizon.
 //!
 //! # What has actually been run
 //!
@@ -92,6 +102,7 @@ use anyhow::Context;
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use serde_json::{Value, json};
+use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
@@ -140,6 +151,9 @@ struct Harness {
     /// cannot leave a listener behind.
     server: tokio::task::JoinHandle<()>,
     repositories: Arc<dyn Repositories>,
+    /// The harness database, for cases that read or stage a row the HTTP
+    /// surface cannot show (the spent `jti`s of cases (j) and (k)).
+    pool: PgPool,
     /// `http://127.0.0.1:{port}` — what a merchant would configure as their
     /// vpay base URL, and what every endpoint below is derived from by the
     /// *same* rules the SDK and `MerchantOp` each apply independently.
@@ -205,7 +219,7 @@ async fn harness() -> anyhow::Result<Harness> {
 async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (container, repositories, _pool) = migrated_postgres().await?;
+    let (container, repositories, pool) = migrated_postgres().await?;
 
     // Bind before building anything that needs to know the URL: the issuer,
     // the assertion audience the SDK signs, and the JWKS URL the validator
@@ -287,6 +301,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         _container: container,
         server,
         repositories,
+        pool,
         base_url,
         merchant_pem,
         signing_key,
@@ -1274,6 +1289,262 @@ async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> 
     .context("minting an assertion for the one grant /v1 does serve")?;
     let (status, body) = post_token(&harness, &token_request_form(&assertion)).await?;
     access_token(status, &body)?;
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------- cases (j) and (k)
+
+/// A client assertion signed by hand with `exp` set `exp_offset_secs` from the
+/// API's `now` (negative: already past).
+///
+/// Hand-signed because `vpay_sdk::auth::mint_client_assertion` cannot look
+/// back — it takes a lifetime of `1..=300` seconds forward, and rightly: no
+/// merchant has a reason to mint an expired assertion. Everything else is the
+/// SDK's shape (`iss = sub = client_id`, the token endpoint as `aud`, a UUID
+/// `jti`, no `kid`), so the only thing that differs from a real assertion is
+/// the one claim under test. The API under test runs in this process, so
+/// "now" here is the API's clock.
+fn assertion_with_exp(harness: &Harness, exp_offset_secs: i64) -> anyhow::Result<(String, String)> {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let jti = uuid::Uuid::new_v4().to_string();
+    let claims = json!({
+        "iss": CLIENT_ID,
+        "sub": CLIENT_ID,
+        "aud": harness.token_endpoint(),
+        "jti": jti,
+        "iat": now + exp_offset_secs - 60,
+        "exp": now + exp_offset_secs,
+    });
+    let assertion = jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_rsa_pem(harness.merchant_pem.as_bytes())
+            .context("the merchant PEM is an RSA key")?,
+    )
+    .context("signing a hand-built assertion")?;
+    Ok((assertion, jti))
+}
+
+/// Runs the shipping housekeeping job, `sweep_expired`, once — through
+/// `vpay_worker::run_once` over the shipping `seed_singletons`, the way
+/// `checkout_sessions.rs`' claim 10 does, because what is being claimed is
+/// that a *deployment* keeps a spent `jti`, not that a statement does.
+///
+/// No rails and no webhook endpoints: the sweep needs neither, and a harness
+/// with an empty registry cannot deliver anything by accident. The other
+/// singletons seeded alongside it may be claimed first; the loop runs them
+/// until the sweep has run, and refuses a sweep that failed.
+async fn run_the_housekeeping_sweep(repositories: &dyn Repositories) -> anyhow::Result<()> {
+    vpay_worker::seed_singletons(repositories)
+        .await
+        .context("seeding the singleton jobs a worker seeds at boot")?;
+
+    let adapters = vpay_worker::Adapters::new();
+    let rails = vpay_worker::RailConfigs::new();
+    let endpoints = support::no_webhook_endpoints();
+    let egress = support::default_egress_policy();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let claimed = vpay_worker::run_once(
+            repositories,
+            &adapters,
+            &rails,
+            &vpay_worker::RecoveryPolicy::default(),
+            &vpay_worker::WebhookContext {
+                endpoints: &endpoints,
+                egress,
+            },
+            "merchant-token-flow",
+        )
+        .await
+        .context("running a worker job")?;
+        match claimed {
+            Some(settled) if settled.kind == "sweep_expired" => {
+                anyhow::ensure!(
+                    settled.error.is_none(),
+                    "the housekeeping sweep must not fail: {:?}",
+                    settled.error
+                );
+                return Ok(());
+            }
+            Some(_) => {}
+            None => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+        anyhow::ensure!(
+            std::time::Instant::now() < deadline,
+            "`sweep_expired` never ran within 10s"
+        );
+    }
+}
+
+/// Case (j): the replay of an assertion that is past its `exp` but inside the
+/// validator's leeway is refused, **after** the housekeeping sweep has run.
+///
+/// `authkestra-op` 0.7.1 leaves `jsonwebtoken`'s `leeway` at 60 s, so an
+/// assertion with `exp` 30 s ago verifies. It is spent once. Until ADR-0028
+/// the hourly sweep deleted `expires_at < now()`, so a sweep landing between
+/// `exp` and `exp + 61 s` deleted the row for an assertion the API still
+/// accepted, and the next presentation was a second access token from one
+/// captured assertion. The sweep here is the shipping one, with the shipping
+/// horizon, and the replay is over HTTP.
+///
+/// A control row, long past its `exp`, is staged first so the sweep is shown
+/// to have run its `jti` statement: without it "the row survived" would also
+/// be true of a sweep that never touched the table.
+///
+/// Decisive: set `CLIENT_ASSERTION_JTI_RETENTION` to `Duration::ZERO` (the
+/// pre-ADR-0028 behaviour) and the replay is accepted with a `200`.
+#[tokio::test]
+async fn a_spent_assertion_past_its_exp_but_inside_the_leeway_cannot_be_replayed_after_a_sweep()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let (assertion, jti) = assertion_with_exp(&harness, -30)?;
+    let form = token_request_form(&assertion);
+
+    let first = raw_client()
+        .post(harness.token_endpoint())
+        .form(&form)
+        .send()
+        .await
+        .context("the first token request answers")?;
+    assert_eq!(
+        first.status().as_u16(),
+        200,
+        "an assertion 30 s past its exp is inside jsonwebtoken's 60 s leeway and must verify \
+         — if this is a 401 the upstream leeway shrank and this case needs rethinking; body: {}",
+        first.text().await.unwrap_or_default()
+    );
+
+    sqlx::query(
+        "INSERT INTO oauth_client_assertion_jtis (jti, expires_at) \
+         VALUES ('control-long-expired', now() - INTERVAL '1 day')",
+    )
+    .execute(&harness.pool)
+    .await
+    .context("staging a control row the sweep must delete")?;
+
+    run_the_housekeeping_sweep(harness.repositories.as_ref()).await?;
+
+    let control: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM oauth_client_assertion_jtis WHERE jti = 'control-long-expired'",
+    )
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the control row back")?;
+    assert_eq!(
+        control, 0,
+        "the sweep must have run its jti statement, or the next assertion proves nothing"
+    );
+    let replay = raw_client()
+        .post(harness.token_endpoint())
+        .form(&form)
+        .send()
+        .await
+        .context("the replay answers")?;
+    assert_eq!(
+        replay.status().as_u16(),
+        401,
+        "a spent assertion must stay refused after a sweep, for as long as the validator would \
+         accept it"
+    );
+    let body: Value = replay.json().await.context("the error body is JSON")?;
+    assert_eq!(
+        body.get("error").and_then(Value::as_str),
+        Some("invalid_client"),
+        "a replayed assertion is a client-authentication failure: {body:#}"
+    );
+
+    let kept: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oauth_client_assertion_jtis WHERE jti = $1")
+            .bind(&jti)
+            .fetch_one(&harness.pool)
+            .await
+            .context("reading the spent jti back")?;
+    assert_eq!(
+        kept, 1,
+        "the spent jti of an assertion the validator still accepts must survive the sweep"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Case (k): an assertion whose `exp` is older than the sweep's production
+/// horizon is refused by the validator. This is the invariant that makes the
+/// horizon sufficient.
+///
+/// The sweep may delete a row once `expires_at < now() - horizon`. That is
+/// safe only if no assertion with such an `exp` can verify any more — i.e. the
+/// validator's leeway is no larger than the horizon. The leeway is
+/// `authkestra-op`'s, pinned at `=0.7.1`, and not vpay's to set. If a bump
+/// widens it (or `jsonwebtoken` changes its default), the first assertion
+/// below is accepted, this case fails, and the horizon in
+/// `vpay_worker::CLIENT_ASSERTION_JTI_RETENTION` has to grow with it before
+/// the bump merges. The horizon is read from that constant, never copied.
+///
+/// A control with the same hand-built shape and an `exp` 30 s past is
+/// accepted first, so the refusal below cannot be about anything but age
+/// (a malformed assertion would be refused too, and prove nothing). The
+/// refused assertion's `jti` is checked unrecorded: it was refused before the
+/// store was consulted.
+#[tokio::test]
+async fn an_assertion_older_than_the_sweep_horizon_is_refused_by_the_validator()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let (control, _) = assertion_with_exp(&harness, -30)?;
+    let accepted = raw_client()
+        .post(harness.token_endpoint())
+        .form(&token_request_form(&control))
+        .send()
+        .await
+        .context("the control request answers")?;
+    assert_eq!(
+        accepted.status().as_u16(),
+        200,
+        "the control (exp 30 s past) must verify, or this case cannot tell age from malformation; \
+         body: {}",
+        accepted.text().await.unwrap_or_default()
+    );
+
+    let horizon_secs = i64::try_from(vpay_worker::CLIENT_ASSERTION_JTI_RETENTION.as_secs())
+        .context("the horizon fits i64")?;
+    // One second past the horizon: a row for this assertion is exactly what
+    // the sweep is allowed to delete.
+    let (stale, stale_jti) = assertion_with_exp(&harness, -horizon_secs - 1)?;
+    let refused = raw_client()
+        .post(harness.token_endpoint())
+        .form(&token_request_form(&stale))
+        .send()
+        .await
+        .context("the stale request answers")?;
+    assert_eq!(
+        refused.status().as_u16(),
+        401,
+        "an assertion older than CLIENT_ASSERTION_JTI_RETENTION verified: the validator's leeway \
+         now exceeds the horizon, so the sweep can delete the jti of an assertion that is still \
+         accepted (ADR-0028). Raise the horizon before taking this dependency bump."
+    );
+    let body: Value = refused.json().await.context("the error body is JSON")?;
+    assert_eq!(
+        body.get("error").and_then(Value::as_str),
+        Some("invalid_client"),
+        "got {body:#}"
+    );
+
+    let recorded: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM oauth_client_assertion_jtis WHERE jti = $1")
+            .bind(&stale_jti)
+            .fetch_one(&harness.pool)
+            .await
+            .context("looking for the refused jti")?;
+    assert_eq!(
+        recorded, 0,
+        "a refused assertion must be refused before its jti is spent"
+    );
 
     harness.shutdown().await;
     Ok(())

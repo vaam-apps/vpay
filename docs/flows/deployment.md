@@ -486,6 +486,7 @@ correlation mechanism until an OTLP decision is made.
 | `limit-rps` assertion on the rendered Ingress                                | same                                       | The rate limit [ADR-0009](../adr/0009-dashboard-oidc-provider.md) assumes exists silently disappearing                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `ExtensionRef`-or-`vpay/rate-limited-by` assertion on the rendered HTTPRoute | same                                       | The same disappearance on the Gateway API path, where there is no annotation to grep for                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `/provider` routability, on both mechanisms                                  | same                                       | Every MTN MoMo and Orange Money callback answered by the ingress controller's 404, with no vpay log line — the chart's own defect until 2026-09-11                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `helm lint` + `helm template` as a subchart that sets `global`               | same                                       | The schema refusing Helm's reserved `global` key, which failed every wrapper chart that depended on this one ([#269](https://github.com/vaam-apps/vpay/issues/269)), while a render of the chart as the root stayed green                                                                                                                                                                                                                                                                                                                             |
 | `Config::validate_all`                                                       | the process                                | Configuration that would fail at runtime                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 
 The rate limit deserves its own sentence. ingress-nginx applies `limit-rps`
@@ -708,6 +709,22 @@ What exists:
   `just helm-check` now also asserts that the fifteen names it expects are
   exactly the fifteen files under `ci/guards/`, so deleting a guard _and_ its
   values file fails instead of passing quietly.
+- **Updated 2026-10-08 ([#269](https://github.com/vaam-apps/vpay/issues/269))**:
+  `values.schema.json` lists Helm's reserved top-level `global` key (an object,
+  any keys; nothing in the chart reads it). The schema is
+  `additionalProperties: false`, and Helm hands a parent chart's `global` to
+  every subchart whether or not the parent sets it, so before this the chart
+  could not be a dependency of any other chart: `helm lint` and `helm template`
+  of the parent failed with `additional properties 'global' not allowed`. Every
+  earlier check rendered this chart as the root and stayed green.
+  `just helm-check` now builds `deploy/helm/fixtures/wrapper`, a real parent
+  that depends on the chart by `file://` path and sets `global`, and asserts it
+  lints, renders the same objects as the root default render, and still refuses
+  an unknown key under `vpay:`. Reproduction, the before and after output and
+  the negative controls are on
+  [docs/status/verification/2026-10-08-chart-global-values.md](../status/verification/2026-10-08-chart-global-values.md).
+  Only the `file://` dependency is exercised; the published OCI chart has not
+  been consumed as a dependency from a registry.
 
 What does not exist, stated plainly:
 

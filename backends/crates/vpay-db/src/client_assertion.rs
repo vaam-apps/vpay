@@ -19,6 +19,7 @@ use authkestra_op::client_assertion::ClientAssertionStore;
 use authkestra_op::error::OpError;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
+use std::time::Duration;
 use time::OffsetDateTime;
 
 use crate::error::DbError;
@@ -140,46 +141,82 @@ impl ClientAssertionStore for SqlClientAssertionStore {
 
 #[async_trait::async_trait]
 pub trait ClientAssertions: Send + Sync {
-    /// Deletes every `jti` whose assertion has already expired, returning how
-    /// many rows went.
+    /// Deletes every spent `jti` whose assertion expired more than
+    /// `retain_after_exp` ago, **on the database's clock**, returning how many
+    /// rows went.
     ///
-    /// **This is a boot-time stopgap, not the cleanup job this table needs.**
-    /// Migration `0011`'s own header records the gap ("there is no cleanup job
-    /// for expired rows"), and `docs/status/backend.md`'s "Client-assertion
-    /// replay protection" row says the same — that row moved off
-    /// `docs/status.md` in the 2026-09-11 split, and this citation followed it
-    /// on 2026-09-16: vpay's worker job loop does not exist yet,
-    /// so nothing in this repository runs scheduled work. Calling this once per
-    /// process start bounds the table at roughly "assertions since the last
-    /// restart" instead of "assertions forever" — which is strictly better than
-    /// unbounded growth and strictly worse than a periodic sweep. When the job
-    /// loop lands, this function is what it should call on a timer; it is not
-    /// meant to be replaced then, only scheduled properly.
+    /// The statement is `expires_at < now() - retain_after_exp`, with the
+    /// duration bound as whole microseconds and multiplied by
+    /// `INTERVAL '1 microsecond'` ([`crate::jobs`]'s idiom, for its reason: it
+    /// saturates rather than refusing a sub-microsecond value). It takes a
+    /// relative [`Duration`] and no instant, so the caller's clock cannot
+    /// reach the comparison
+    /// ([ADR-0026](../../../../docs/adr/0026-the-database-clock-schedules-jobs.md)
+    /// D1).
     ///
-    /// Deleting an expired row is safe with respect to replay protection, and
-    /// that is the whole reason `expires_at` is stored: an assertion past its
-    /// `exp` is refused by `verify_client_assertion` before any store is
-    /// consulted, so a `jti` whose row this removes can never be accepted again
-    /// on the strength of the row being gone. `< now()` is evaluated by the
-    /// database, not by the caller, so a replica with a skewed clock cannot
-    /// delete a row that is still live.
+    /// # Why a row may not be deleted the moment its `exp` passes
+    ///
+    /// `expires_at` is the client's own `exp`, stored as it arrived
+    /// ([`ClientAssertionStore::record_jti`] is handed it by
+    /// `authkestra-op`, and this crate keeps it a *fact*: ADR-0026 D6). It is
+    /// **not** the last instant the API will accept the assertion. The
+    /// validator (`authkestra-op` 0.7.1, `verify_client_assertion`) leaves
+    /// `jsonwebtoken`'s `Validation::leeway` at its 60-second default, which
+    /// vpay cannot configure, so an assertion is still accepted while
+    /// `api_now_secs <= exp + 60` — `now` truncated to whole seconds, hence
+    /// up to 61 seconds after `exp` in real time. A row deleted at
+    /// `expires_at < now()` could therefore be gone while the same assertion
+    /// still verified, and the next presentation would find the `jti` unspent
+    /// and be accepted: one replay of a captured, already-used assertion,
+    /// minting a merchant access token. The window is
+    /// `max(0, 61 s + db_clock_offset − api_clock_offset)` after `exp`, and it
+    /// only matters when a sweep lands inside it.
+    ///
+    /// The caller therefore passes a `retain_after_exp` of at least that
+    /// leeway plus a skew budget between the database's clock and any API
+    /// replica's. The worker passes
+    /// `vpay_worker::CLIENT_ASSERTION_JTI_RETENTION` (5 minutes), which
+    /// derives the number. This method does not default it, because the right
+    /// value is a property of the validator and not of the table.
+    /// [ADR-0028](../../../../docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md)
+    /// records the decision.
+    ///
+    /// **What this still assumes:** that the database's clock is not more than
+    /// roughly `retain_after_exp − 61 s` ahead of every API replica's (about
+    /// four minutes at the production value), and that `authkestra-op`'s
+    /// leeway does not grow. The second is pinned by a test that refuses an
+    /// assertion older than the production horizon
+    /// (`backends/tests/integration/tests/merchant_token_flow.rs`); the first
+    /// is an operational property (NTP) nothing here checks.
+    ///
+    /// Zero is a valid `retain_after_exp` and restores the unsafe behaviour
+    /// this parameter exists to remove; production code must not pass it.
     ///
     /// # Errors
     ///
-    /// Returns [`DbError::Query`] if the delete fails. A caller at boot should
-    /// treat that as non-fatal — failing to prune is not a reason to refuse to
-    /// serve traffic — and log it.
-    async fn delete_expired_client_assertion_jtis(&self) -> Result<u64, DbError>;
+    /// Returns [`DbError::Query`] if the delete fails. The worker's housekeeping
+    /// sweep treats that as a failed run and the job is retried; failing to
+    /// prune is not a reason to refuse to serve traffic.
+    async fn delete_expired_client_assertion_jtis(
+        &self,
+        retain_after_exp: Duration,
+    ) -> Result<u64, DbError>;
 }
 
 #[async_trait::async_trait]
 impl ClientAssertions for crate::repository::PgRepositories {
-    async fn delete_expired_client_assertion_jtis(&self) -> Result<u64, DbError> {
-        let result =
-            sqlx::query("DELETE FROM oauth_client_assertion_jtis WHERE expires_at < now()")
-                .execute(&self.pool)
-                .await
-                .map_err(DbError::Query)?;
+    async fn delete_expired_client_assertion_jtis(
+        &self,
+        retain_after_exp: Duration,
+    ) -> Result<u64, DbError> {
+        let result = sqlx::query(
+            "DELETE FROM oauth_client_assertion_jtis \
+             WHERE expires_at < now() - ($1::BIGINT * INTERVAL '1 microsecond')",
+        )
+        .bind(crate::jobs::as_micros(retain_after_exp))
+        .execute(&self.pool)
+        .await
+        .map_err(DbError::Query)?;
 
         Ok(result.rows_affected())
     }

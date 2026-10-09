@@ -3262,6 +3262,11 @@ ci: fmt-check clippy verify test-rust test-doc verify-ignored lint-web test-web 
 
 chart := "deploy/helm/vpay"
 
+# A parent chart whose only dependency is `chart`, by `file://` path. It is a
+# fixture for `helm-check`, not something that ships: `release.yml` packages
+# `chart` alone. See the "wrapper chart" step in `helm-check`.
+wrapper := "deploy/helm/fixtures/wrapper"
+
 # Everything CI's `deploy` job runs, in the same order, by calling this recipe.
 # CI runs `just helm-check` rather than a copy of these commands, so the gate
 # and the local check cannot drift.
@@ -3289,7 +3294,9 @@ chart := "deploy/helm/vpay"
 # token rule, BOTH mechanisms route the rail callback prefix `/provider`, the
 # HTTPRoute templates render NOTHING without the Gateway API
 # CRDs, the `/dash/v1` HTTPRoute rule and the `-management` NetworkPolicy
-# agree with each other when both are rendered, and every rendered object
+# agree with each other when both are rendered, the chart still lints, renders
+# and renders byte-for-byte the same objects as a SUBCHART of a parent that sets
+# `global` (and still refuses an unknown key there), and every rendered object
 # validates against the upstream schemas. What it does not prove: anything at
 # all about a cluster. Nothing here has ever been applied to one.
 #
@@ -3310,8 +3317,11 @@ helm-check:
     done
 
     chart="{{ chart }}"
+    wrapper="{{ wrapper }}"
     out="$(mktemp -d)"
-    trap 'rm -rf "$out"' EXIT
+    # `helm dependency build` writes `charts/` and `Chart.lock` into the
+    # fixture; neither is committed, so neither outlives the run.
+    trap 'rm -rf "$out" "$wrapper/charts" "$wrapper/Chart.lock"' EXIT
 
     echo "==> helm lint (defaults, ci/values-full.yaml, ci/values-route.yaml, ci/values-route-networkpolicy.yaml)"
     helm lint "$chart"
@@ -3624,13 +3634,46 @@ helm-check:
         || { echo "helm-check: FAIL — the -management NetworkPolicy does not admit the Gateway's namespace, but the HTTPRoute publishes /dash/v1 at a Gateway in it. Every /dash/v1 request would be dropped by the CNI with every object reporting healthy." >&2; exit 1; }
     echo "    /dash/v1 is published AND the -management policy admits the Gateway's namespace"
 
+    # The chart as a SUBCHART, which every render above is not: they all use it
+    # as the root. Helm passes a parent chart's `global` values to every
+    # dependency and validates them against that dependency's own
+    # `values.schema.json`, which is `additionalProperties: false`. Until
+    # `global` was listed there, any chart that depended on this one failed
+    # `helm lint` and `helm template` with "additional properties 'global' not
+    # allowed" (#269) while all four renders above stayed green.
+    #
+    # `$wrapper` is a real parent chart that sets `global`, with this chart
+    # as its dependency, so Helm itself does the passing. Three things are
+    # asserted: it lints and renders; what it renders is the root render's
+    # objects exactly (only the `# Source:` comments differ, because the paths
+    # do) — `global` is accepted, not read; and the schema is still closed
+    # below `global`, because the fix for a rejected key must not be a schema
+    # that accepts every key.
+    echo "==> wrapper chart (vpay as a subchart of a parent that sets global)"
+    helm dependency build "$wrapper" >/dev/null
+    helm lint "$wrapper"
+    helm template vpay "$wrapper" > "$out/wrapper.yaml"
+    grep -q '^kind: Deployment$' "$out/wrapper.yaml" \
+        || { echo "helm-check: FAIL — the wrapper rendered no Deployment; the dependency contributed nothing" >&2; exit 1; }
+    if ! diff <(grep -v '^# Source:' "$out/default.yaml") <(grep -v '^# Source:' "$out/wrapper.yaml") >/dev/null; then
+        echo "helm-check: FAIL — vpay rendered under a parent chart is not what it renders as the root; \`global\` changed something" >&2
+        exit 1
+    fi
+    if closed="$(helm template vpay "$wrapper" --set vpay.bogus=1 2>&1)"; then
+        echo "helm-check: FAIL — an unknown key under vpay: was accepted; the schema is no longer closed" >&2
+        exit 1
+    fi
+    printf '%s' "$closed" | grep -qiE "additional propert(y|ies) '?bogus'?" \
+        || { echo "helm-check: FAIL — an unknown key under vpay: was refused, but not by the schema:" >&2; printf '%s\n' "$closed" >&2; exit 1; }
+    echo "    global accepted, same objects as the root render, unknown keys still refused"
+
     echo "==> kubeconform (downloads schemas — needs network)"
     kubeconform -strict -summary \
         -schema-location default \
         -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{{{.Group}}/{{{{.ResourceKind}}_{{{{.ResourceAPIVersion}}.json' \
         "$out/default.yaml" "$out/full.yaml" "$out/route.yaml" "$out/route-np.yaml"
 
-    echo "helm-check: ok — lint, 4 renders, $guards guards, rate limit (both paths), rail callback (both paths), management route/policy coherence, kubeconform. No cluster was involved."
+    echo "helm-check: ok — lint, 4 renders, $guards guards, rate limit (both paths), rail callback (both paths), management route/policy coherence, wrapper chart (global), kubeconform. No cluster was involved."
 
 # --------------------------------------------------------------- release ---
 

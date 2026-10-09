@@ -102,6 +102,44 @@ pub struct WebhookContext<'a> {
 /// back off.
 const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 
+/// How long after its own `exp` a spent client-assertion `jti` is kept before
+/// the housekeeping sweep may delete it: **five minutes**.
+///
+/// A `jti` row is the only thing standing between a captured, already-used
+/// client assertion and a second access token, so it must outlive the last
+/// instant the API would still accept the assertion. That instant is later
+/// than `exp`, and the number is the sum of three things:
+///
+/// - **60 s** of `jsonwebtoken` clock leeway. `authkestra-op` 0.7.1's
+///   `verify_client_assertion` leaves `Validation::leeway` at the default and
+///   says so in a comment; vpay cannot configure it, so this is a fact about
+///   a pinned dependency, not a vpay setting. An assertion is accepted while
+///   `api_now_secs <= exp + 60`.
+/// - **1 s** because that comparison is on whole seconds: the validator
+///   truncates `now`, so an assertion is accepted for up to 61 s of real time
+///   after `exp`.
+/// - **a skew budget** between the database's clock, which judges the sweep
+///   (`expires_at < now() - retention`), and any API replica's clock, which
+///   judges the assertion. A database clock ahead of an API replica's by `d`
+///   deletes the row `d` earlier than that replica stops accepting the
+///   assertion. The remaining 239 s (`300 - 61`) is that budget: about four
+///   minutes of disagreement between hosts that run NTP.
+///
+/// So the exposure is `max(0, 61 s + db_clock_offset − api_clock_offset)` with
+/// no retention at all, and none while the offset stays under about four
+/// minutes with this constant. Why it exists, what the alternatives were, and
+/// how the window was found: [ADR-0028](../../../../docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md).
+///
+/// `expires_at` stays the client's raw `exp` (a fact, ADR-0026 D6); this
+/// horizon is applied only at deletion, by the database, as a duration
+/// ([`vpay_db::ClientAssertions::delete_expired_client_assertion_jtis`]).
+///
+/// **Pinned from both sides.** `merchant_token_flow.rs` refuses an assertion
+/// older than this constant, so an `authkestra-op` or `jsonwebtoken` bump that
+/// widens the leeway past it fails CI rather than reopening the window; and an
+/// assertion whose `exp` is 30 s past is accepted once, swept, and refused on replay.
+pub const CLIENT_ASSERTION_JTI_RETENTION: Duration = Duration::from_secs(5 * 60);
+
 /// How often the backstop scan runs, and how stale a live charge must be
 /// before the scan considers it unattended.
 ///
@@ -929,7 +967,9 @@ async fn sweep_expired(
     policy: &RecoveryPolicy,
 ) -> Result<Outcome, JobError> {
     let idempotency = repositories.sweep_expired().await?;
-    let assertions = repositories.delete_expired_client_assertion_jtis().await?;
+    let assertions = repositories
+        .delete_expired_client_assertion_jtis(CLIENT_ASSERTION_JTI_RETENTION)
+        .await?;
     // Lease expiry is a separate reaper rather than a condition on `claim`,
     // so `jobs_claimable_idx`'s `locked_at IS NULL` predicate stays exact.
     // Not the *only* reaper, and it must not be: `crate::run_loop` reaps at

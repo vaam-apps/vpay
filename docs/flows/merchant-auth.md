@@ -229,6 +229,33 @@ before you treat anything above as safe with money.
 
 ## Status
 
+**Updated 2026-10-08 ([ADR-0028](../adr/0028-a-spent-jti-outlives-the-validators-leeway.md)):
+a spent assertion's `jti` now outlives the validator's leeway.** The
+paragraph on single use above is true only while the `jti` row exists, and the
+hourly sweep used to delete it at `expires_at < now()`, where `expires_at` is
+the assertion's own `exp`. `authkestra-op` 0.7.1 accepts an assertion for up
+to 61 s past `exp` (`jsonwebtoken`'s 60 s default leeway, which vpay cannot
+set, on a whole-second `now`). A sweep landing in that 61 s let a captured,
+already-spent assertion be replayed once for a second access token. The
+window is `max(0, 61 s + db_clock_offset − api_clock_offset)` after `exp`;
+about 1.7 % per assertion at zero skew. It is closed:
+`ClientAssertions::delete_expired_client_assertion_jtis` takes a duration
+and deletes `expires_at < now() - retain` on the database's clock, and the
+worker passes `vpay_worker::CLIENT_ASSERTION_JTI_RETENTION` (5 minutes). The
+row still stores the client's raw `exp`. Proven in
+`backends/tests/integration/tests/merchant_token_flow.rs` by
+`a_spent_assertion_past_its_exp_but_inside_the_leeway_cannot_be_replayed_after_a_sweep`
+(the real worker sweep runs between the first use and the replay; with the
+horizon at zero the replay was `200`) and, as the invariant that keeps the
+horizon sufficient, `an_assertion_older_than_the_sweep_horizon_is_refused_by_the_validator`
+(an `authkestra-op` or `jsonwebtoken` bump that widens the leeway past the
+horizon fails CI). **Not covered:** a database clock more than about four
+minutes ahead of an API replica's, which nothing checks. Evidence:
+[../status/verification/2026-10-08-jti-purge-horizon.md](../status/verification/2026-10-08-jti-purge-horizon.md).
+_(This closes the clause on the struck "No cleanup job for spent `jti`s"
+bullet below that said no test asserts the job runs the delete: the first of
+those two tests does.)_
+
 **Updated 2026-09-23 (RFC-0004 § 5): `GET /v1/payment_intents` and
 `GET /v1/refunds` take a `customer` filter**, and so does
 `GET /v1/checkout/sessions` ([hosted-checkout.md](hosted-checkout.md)).

@@ -38,13 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and ten times on 2026-09-23, when the super-linter
+plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, and once on 2026-10-09, for the npm-advisories page), when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 71 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 48 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 73 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 50 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 on 2026-10-09; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -64,6 +64,20 @@ rather than trusting this list to be exhaustive.
   failed `trivy` and `web` on every PR: which version each moved to, Trivy's
   exit 1 → 0 and `pnpm audit`'s 18 → 1, the rest of the `web` job's results,
   and the one advisory (`braces`) with no published fix, left visible.
+- [verification/2026-10-08-jti-purge-horizon.md](verification/2026-10-08-jti-purge-horizon.md) —
+  ADR-0028: the housekeeping sweep deleted a spent client-assertion `jti` at
+  its `exp`, while the validator accepts the assertion for 61 s longer
+  (`jsonwebtoken`'s leeway), so a captured, spent assertion could be replayed
+  once. The sweep now keeps the row five minutes past `exp`. Carries the
+  reproduction (the replay answered `200` before the fix), the counts after,
+  and what was not run.
+- [verification/2026-10-08-chart-global-values.md](verification/2026-10-08-chart-global-values.md) —
+  [#269](https://github.com/vaam-apps/vpay/issues/269): the Helm chart's schema
+  refused `global`, the key Helm passes to every subchart, so no chart could
+  depend on it. The reproduction on Helm 3.16.1, 3.18.6, 3.19.0 and 4.0.0, the
+  one-key fix, the new wrapper-chart step in `just helm-check` with its before
+  and after output, three mutations and what each turned red, and what a
+  `file://` dependency does not prove about the published OCI chart.
 - [verification/2026-09-23-session-customer-onto-intent.md](verification/2026-09-23-session-customer-onto-intent.md) —
   ADR-0025, answering ADR-0024's question 3: a checkout session's customer is
   written onto a customer-less intent in the insert's own transaction. What

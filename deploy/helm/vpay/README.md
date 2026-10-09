@@ -211,6 +211,26 @@ networkPolicy:
     cidrs: ["10.0.4.7/32"]
 ```
 
+### As a dependency of another chart
+
+A wrapper chart can list this one under `dependencies:`. Helm then hands the
+parent's `global` values to every subchart and validates them against that
+subchart's `values.schema.json`, so the schema lists `global` (an object, any
+keys). It did not until [#269](https://github.com/vaam-apps/vpay/issues/269):
+every parent failed `helm lint` and `helm template` with `additional properties
+'global' not allowed`, including one whose `values.yaml` was empty, because
+Helm adds the key itself (measured on Helm 3.16.1 and 4.0.0).
+
+**`global` has no effect here.** Nothing in this chart reads `.Values.global`,
+so a value set there changes no rendered object. Configure vpay from the
+parent under the `vpay:` key. Every other unknown key — at the top level or
+under `vpay:` — is still refused, which is the schema's job.
+
+`deploy/helm/fixtures/wrapper` is a real parent chart that depends on this one
+by `file://` path and sets `global`; `just helm-check` lints and renders it. The
+fixture exercises the `file://` dependency only. Nobody has installed the
+published OCI chart as a dependency from a registry in this repository.
+
 ## Two things about configuration that will bite you
 
 **1. The overlay is mounted with `subPath`, and it must be.** `backends/Dockerfile`
@@ -822,7 +842,12 @@ which is exactly what CI's `deploy` job runs. It:
    combination; a `fail` guard cannot assert the coherent one, so it is
    asserted here over the rendered YAML, the way the checkout page's two
    directions already are;
-7. runs `kubeconform -strict -summary` over all four renders, with
+7. builds `deploy/helm/fixtures/wrapper` — a parent chart that depends on this
+   one and sets `global` — then lints and renders it, and checks three things:
+   it renders, the objects are exactly the default render's (`global` is
+   accepted, not read), and an unknown key under `vpay:` is still refused by
+   the schema. See [As a dependency of another chart](#as-a-dependency-of-another-chart);
+8. runs `kubeconform -strict -summary` over all four renders, with
    `-schema-location default` for built-in kinds and the
    [datreeio/CRDs-catalog](https://github.com/datreeio/CRDs-catalog) location
    for `ServiceMonitor` and `PrometheusRule`.

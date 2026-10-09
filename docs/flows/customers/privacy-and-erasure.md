@@ -247,6 +247,24 @@ and the whole-database scan below, which now seeds a session-only payment
 carrying a sixth literal. See
 [../../status/verification/2026-09-23-erasure-through-checkout-sessions.md](../../status/verification/2026-09-23-erasure-through-checkout-sessions.md).
 
+**Decided 2026-10-08, and one consequence ADR-0027 does not name.** The
+maintainer decided to keep the behaviour in the first bullet above: either
+payer's erasure redacts the ambiguous historical intent, and the error goes
+toward erasure. [ADR-0027](../../adr/0027-erasure-reaches-through-checkout-sessions.md)
+is not edited; this is where the decision is recorded. What ADR-0027 says
+about a refund is that the rail is handed the marker as `payer_ref`, "already
+true" of a charge on an intent that names an erased customer. The
+consequence it does not name is who that hurts in the ambiguous case. If `Y`
+paid and `X` is erased, `Y`'s charge now carries the redaction marker in
+`payer_ref`, and a later refund of it hands the rail the marker where the
+MSISDN to pay out to should be. **`Y`'s refund cannot be paid out through
+vpay.** What survives is on the rail's side: `charges.provider_txn_id` and
+`provider_reference_id` are classified `subject: none` in
+`schemas/privacy-inventory.yaml` and are not touched by an erasure, so which
+number paid can still be recovered from the rail, and the refund made there.
+Only intents whose sessions all predate vaam-apps/vpay#253 can have this shape
+with a charge, so it does not grow.
+
 **The two `failure_raw` columns were added to that list on 2026-09-11, by the
 review, after they survived an erasure in a test.** They are not identifier
 columns, which is why the enumeration that produced this table — an
