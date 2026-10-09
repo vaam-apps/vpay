@@ -19,8 +19,9 @@
  *   this surface without passing its gate.
  *
  * The exp55 security review recorded this against **Next 16.3.4**, which is
- * `examples/shop`'s pin and not this app's. This app resolves **Next
- * 15.5.25**, and the helper there is byte-for-byte the same in the part that
+ * `examples/shop`'s pin and not this app's. This app resolved **Next
+ * 15.5.25** then (15.5.27 since 2026-10-09, with `middleware.test.ts` green
+ * on it), and the helper there is byte-for-byte the same in the part that
  * matters — `AUTOMATIC_ROUTE_METHODS = ['HEAD', 'OPTIONS']`, the same `Allow`
  * assembly, the same `204`. So the finding held, but the version named in it
  * was not the version it was about; `middleware.test.ts` pins the behaviour

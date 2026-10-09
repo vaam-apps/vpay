@@ -419,7 +419,7 @@ The `/v1/oauth` issuer works too — the OP accepts either.
 
 | Piece                                              | Version    | Why                                                                                                |
 | -------------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------- |
-| Next.js (App Router)                               | 16.3.4     | D11. `output: 'standalone'` for the image.                                                         |
+| Next.js (App Router)                               | 16.3.8     | D11. `output: 'standalone'` for the image.                                                         |
 | tRPC                                               | 11.18.0    | D11. Server-side callers for pages, one HTTP client for the browser.                               |
 | ZenStack                                           | 3.9.3      | D11. `zenstack/schema.zmodel` is the source of truth; `PolicyPlugin` enforces its `@@allow` rules. |
 | `pg`                                               | 8.x        | ZenStack 3's Postgres driver. v3 has its own ORM — Prisma is not in the request path.              |

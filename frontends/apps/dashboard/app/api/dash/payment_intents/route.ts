@@ -39,8 +39,8 @@ import { paymentIntentsListResponse } from "../../../../src/server/bff";
  *   `404`; that middleware's own comment says so.
  *
  * The review named Next **16.3.4** for this, which is `examples/shop`'s pin
- * rather than this app's — this app resolves **15.5.25**, whose helper does
- * the identical thing. `middleware.test.ts` runs this module through Next's
+ * rather than this app's — this app resolved **15.5.25** then (15.5.27 since
+ * 2026-10-09), whose helper does the identical thing. `middleware.test.ts` runs this module through Next's
  * own `autoImplementMethods` so the measurement is re-made against whichever
  * version is installed rather than repeated from either number.
  *
