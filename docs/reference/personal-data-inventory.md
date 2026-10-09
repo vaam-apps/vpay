@@ -46,22 +46,49 @@ retention controls own the column but not the log line for. ADR-0020 §2's
 answer is positive projection: each such type carries a hand-written, redacting
 `Debug` instead, composing the shared wrappers in
 [`vpay-core::privacy`](../../backends/crates/vpay-core/src/privacy.rs)
-(`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`). Every type that must carry one
-is registered in the inventory's `debug_protections` list, and the gate fails
-in **both** directions there too:
+(`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`). The types that have been
+reviewed and made to carry one are registered in the inventory's
+`debug_protections` list, and the gate fails in **both** directions there too:
 
 - a registered type that derives `Debug` → fail (the protection was undone);
+  the derive is matched by its last path segment, so `std::fmt::Debug` and
+  `core::fmt::Debug` count as `Debug`;
 - a registered type that no longer exists in its file → fail (the
   registration went stale).
 
 A registered entry's `elements` must name live inventory elements, so a
-misspelled element cannot silently register the wrong protection. A new type
-holding a registered element is added to this list in the same change that adds
-its hand-written `Debug` and its canary test. A type deliberately keeping a
-registered element visible — `CheckoutSessionRow`'s URLs, which are the
-merchant's own, documented in that impl — is deliberately **not** registered:
-the visible element is a documented decision, not a silence this list should
-endorse.
+misspelled element cannot silently register the wrong protection.
+
+**What the gate does not do: it checks the types registered, and only those.**
+It cannot find a type that holds a payer's identifier, a credential or a URL
+and was never registered; for those, the list is exactly as complete as review
+makes it. The first sweep missed four types of the class (`NewCheckoutSession`,
+`StoredResponse`, `RedirectToUrl`, `NextAction`) and review found them, not the
+gate. A new type holding a registered element is added to the list in the same
+change that adds its hand-written `Debug` and its canary test. A type that
+deliberately keeps some registered element visible — `CheckoutSessionRow`'s
+URLs, which are the merchant's own, documented in that impl — is registered for
+the elements it **does** redact (its two credentials) and nothing more; the
+visible element stays a documented decision in the impl.
+
+**Known open, 2026-10-09** (each is a type or path the list does not cover, not
+a claim that it is safe):
+
+- `vpay-api/src/staff/mod.rs` `LoginRequest` and `PasswordRequest` (a plaintext
+  password), `vpay-api/src/staff_auth/tokens.rs` `MintedToken` and
+  `vpay-api/src/staff/oauth.rs` `TokenResponse` still **derive** `Debug`. They
+  predate this work, are not registered, and are a follow-up by the
+  maintainer's decision.
+- `reqwest::Error`'s **`Display`** ends in `for url (…)`, so
+  `vpay_core::error::source_chain` — what the worker records in durable
+  `last_error`-shaped columns — still carries a rail request's full URL. MTN's
+  account-holder URL puts the payer's MSISDN in its path. Only the `Debug`
+  path is closed (`RailFailure` and `HttpBodyError` print the failure kind and
+  the host). The fix is `reqwest::Error::without_url()` at the one conversion
+  into `RailFailure`, which also changes a documented diagnostic and every
+  stored `last_error` text; it is not done here.
+- The private `search_*` decoders in `vpay-db/src/schema/` (see the
+  verification page for the reason they are left).
 
 _(The parser models `CREATE TABLE`, `ALTER TABLE … ADD/DROP/RENAME COLUMN` and
 `DROP TABLE`. **`DROP TABLE` was added on review, 2026-09-17, and the omission
@@ -473,7 +500,9 @@ representations landed in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`,
 seventeen personal-data/secret types across `vpay-db`, `vpay-api` and
 `vpay-provider` swapped derived `Debug` for hand-written redacting impls, and
 the gate now enforces the `debug_protections` registration list in both
-directions. `Masked` and `Pseudonymous` have **no shipping consumer** and are
+directions. **Amended 2026-10-09 on review:** seven more types joined (24
+registrations in all) and the gate now reads a path-qualified derive — see the
+"Known open" list above and the verification page's "Maintainer review fixes". `Masked` and `Pseudonymous` have **no shipping consumer** and are
 built ahead of their first use so PR 4's telemetry work and #56's audit rows
 inherit one representation; adopting either for a live surface before D3 names
 its keying/masking answers is what the module's own docs forbid.

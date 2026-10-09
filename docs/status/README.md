@@ -75,12 +75,14 @@ rather than trusting this list to be exhaustive.
   `file://` dependency does not prove about the published OCI chart.
 - [verification/2026-10-01-protected-diagnostics.md](verification/2026-10-01-protected-diagnostics.md) —
   RFC-0002 PR 3 (issue #147): the four protected diagnostic representations
-  in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`), seventeen
+  in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`), 24
   personal-data/secret types across `vpay-db`, `vpay-api` and `vpay-provider`
-  swapped from derived to hand-written redacting `Debug`, and the
+  swapped from derived to hand-written redacting `Debug` (17 in the first
+  version, seven more after the maintainer's review of 2026-10-09), and the
   `debug_protections` registration list the privacy gate now enforces in both
-  directions. What was run (the wrapper/doctest/canary/gate suites) and what
-  was not (full `just ci`, the Postgres integration and conformance suites).
+  directions. What was run, what was not, what the gate cannot see, and what is
+  recorded as open (the staff request/token types, the `Display` path of a
+  transport failure).
 - [verification/2026-09-23-session-customer-onto-intent.md](verification/2026-09-23-session-customer-onto-intent.md) —
   ADR-0025, answering ADR-0024's question 3: a checkout session's customer is
   written onto a customer-less intent in the insert's own transaction. What

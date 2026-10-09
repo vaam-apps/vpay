@@ -1115,3 +1115,23 @@ out in words and are **not** gated — see § What is deliberately not checked.
 files**, all agreeing. Each of the five failure modes was driven against a
 temporary tree and against the real one; the outputs are in
 [verification/2026-09-20-doc-counts-gate.md](verification/2026-09-20-doc-counts-gate.md).
+
+## 2026-10-09 — `verify-privacy-inventory` reads `debug_protections` (RFC-0002 PR 3, issue #147)
+
+The gate that checked database columns now also reads a `debug_protections`
+list in `schemas/privacy-inventory.yaml`: types that must carry a hand-written,
+redacting `Debug` because they hold a registered element. It refuses three
+things — a registered type that derives `Debug`, a registered type no longer
+declared in its file, and an entry naming an element not in the inventory
+(and, by the same loop, an entry with no elements or a file that does not
+exist). **It checks the registered types and only those**: it cannot find a type
+that should be registered and is not, and review of the first sweep found four.
+
+The first version compared each derive entry with `== "Debug"` and so passed
+`#[derive(std::fmt::Debug)]` and `core::fmt::Debug` — confirmed by mutating
+`ChargeRow`. It now compares the last path segment, the rule `derives_serde`
+uses, and a gate test pins four path-qualified spellings and a look-alike that
+must not match. **Measured 2026-10-09:** 307 columns, 26 elements, 10 surfaces,
+**24** `debug_protections`. _(The first version of the PR registered 17; the
+review fixes added seven. Evidence:
+[verification/2026-10-01-protected-diagnostics.md](verification/2026-10-01-protected-diagnostics.md).)_
