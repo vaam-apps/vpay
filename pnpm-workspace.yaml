@@ -239,8 +239,9 @@ shamefullyHoist: false
 #   registry.npmjs.org directly: dist-tags.latest is 3.0.3, last modified
 #   2024-09-18), so there is nothing to pin to. It arrives only through
 #   `@vpay/config > @next/eslint-plugin-next > fast-glob@3.3.1 > micromatch >
-#   braces`, a lint-time glob matcher. Deliberately NOT papered over with an
-#   ignore: `just audit-web` stays red on this one until braces publishes.
+#   braces`, a lint-time glob matcher. It is ignored by `auditConfig` at the
+#   end of this file (maintainer's decision, 2026-10-09), not cleared: see
+#   there for the scope and the removal condition.
 #
 overrides:
   "next>postcss": ^8.5.28
@@ -319,3 +320,31 @@ allowBuilds:
 # entry matches nothing and installing does not need it.
 minimumReleaseAgeExclude:
   - "@vaam-apps/ui@0.4.0"
+
+# ---------------------------------------------------------------------------
+# auditConfig
+# ---------------------------------------------------------------------------
+# ONE advisory, ignored by id, by the maintainer's decision of 2026-10-09
+# (vaam-apps/vpay#272). Not a severity threshold and not a package name, so
+# every other advisory, including any NEW one against braces, still fails
+# `just audit-web`.
+#
+# GHSA-vfj7-8cjw-p6xm: braces <=3.0.3, high, stack exhaustion on deeply
+#   nested brace patterns. The advisory names >=3.0.4 as the fix, and npm
+#   has no such release (dist-tags.latest is 3.0.3, checked 2026-10-09). It is
+#   reached only through `@vpay/config > @next/eslint-plugin-next >
+#   fast-glob@3.3.1 > micromatch > braces`, a matcher that expands the glob
+#   patterns written in this repository's own lint config at lint time.
+#   `@vpay/config` (the shared lint/format config package) lists the plugin
+#   under `dependencies`, so `audit-web`'s `--prod` pass reports it too, but
+#   no app, SDK or server loads `@vpay/config` at run time, and no pattern it
+#   expands comes from a user. Trivy's gate already skips it
+#   (`--ignore-unfixed`).
+#
+# REMOVE WHEN: braces publishes a fixed release. Then add a floor for it under
+# `overrides` like the brace-expansion ones, and delete this block. Re-check
+# on every audit pass, since an ignore that outlives its reason hides the next
+# finding against the same id.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm

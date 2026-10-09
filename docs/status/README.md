@@ -63,7 +63,7 @@ rather than trusting this list to be exhaustive.
   the `next`, `brace-expansion`, `sharp` and `source-map-js` advisories that
   failed `trivy` and `web` on every PR: which version each moved to, Trivy's
   exit 1 → 0 and `pnpm audit`'s 18 → 1, the rest of the `web` job's results,
-  and the one advisory (`braces`) with no published fix, left visible.
+  and the one advisory (`braces`) with no published fix, ignored by id on the maintainer's decision.
 - [verification/2026-10-08-jti-purge-horizon.md](verification/2026-10-08-jti-purge-horizon.md) —
   ADR-0028: the housekeeping sweep deleted a spent client-assertion `jti` at
   its `exp`, while the validator accepts the assertion for 61 s longer

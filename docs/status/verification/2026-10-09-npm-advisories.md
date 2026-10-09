@@ -118,6 +118,31 @@ braces`: a lint-time glob matcher, but `@vpay/config` lists the plugin under
   Not done, deliberately: `pnpm.auditConfig.ignoreGhsas`, or any override that
   swaps the glob stack. Silencing the one remaining finding is a maintainer's
   call, not a side effect of a lockfile refresh.
+
+## Maintainer decision, 2026-10-09: ignore that one advisory by id
+
+The maintainer chose a scoped, dated ignore over leaving `web` red or swapping
+the glob stack. `pnpm-workspace.yaml` gains an `auditConfig` block with
+`ignoreGhsas: [GHSA-vfj7-8cjw-p6xm]`, its reason (lint-time only, no fixed
+release exists) and its removal condition (a fixed `braces` release, then a
+floor under `overrides` like `brace-expansion`'s).
+
+```text
+$ just audit-web
+audit-web: production dependency graph only (attempt 1 of 4)
+1 vulnerabilities found
+Severity: 1 high (1 ignored)
+audit-web: whole workspace, dev dependencies included (attempt 1 of 4)
+1 vulnerabilities found
+Severity: 1 high (1 ignored)
+audit-web: ok — no moderate, high or critical advisory in the workspace
+```
+
+The control: with the listed id replaced by `GHSA-0000-0000-0000`,
+`just audit-web` exits **1**. The ignore is keyed to that one advisory, not to a
+severity or a package, so any new advisory, including another one against
+`braces`, still fails the gate.
+
 - The `cargo` half of CI (`just ci`'s Rust gates, `test-doc`, `test-rust`) was
   not run: no Rust file changed. `just verify` was.
 - The `e2e` job (Cypress against the compose stack) was not run.
