@@ -1261,12 +1261,16 @@ non_db_surfaces:
 # checked to exist.
 #
 # A NEW TYPE holding a payer's identifier, the rail's words for a failure, a
-# rendered API body or a URL is registered here in the same change that adds
-# its hand-written `Debug` and its canary test. A type deliberately keeping a
-# registered element visible (e.g. `CheckoutSessionRow`'s URLs, which are the
-# merchant's own, documented in that impl) is NOT registered — the visible
-# element is a documented decision in the impl, not a silence this list
-# should endorse.
+# rendered API body, a credential or a URL is registered here in the same
+# change that adds its hand-written `Debug` and its canary test. **This list
+# is only as complete as review makes it**: the gate checks the types named
+# here and cannot find a type that should be and is not (review of PR #268
+# found several such omissions in the first sweep). A type that deliberately
+# keeps some registered element visible (e.g. `CheckoutSessionRow`'s URLs,
+# which are the merchant's own, documented in that impl) is registered for
+# the elements it DOES redact — `elements` names what the impl hides, and the
+# visible ones stay a documented decision in the impl, not something this list
+# endorses.
 debug_protections:
   # vpay-db rows and inputs.
   - type: ChargeRow
@@ -1293,6 +1297,18 @@ debug_protections:
   - type: NewPaymentIntent
     file: backends/crates/vpay-db/src/payment_intents.rs
     elements: [oauth_client_secret, rail_failure_text]
+  # The checkout session's two credentials (`client_secret_suffix`,
+  # `return_token`). The row's URLs are the merchant's own and stay visible, so
+  # only the credential element is named.
+  - type: CheckoutSessionRow
+    file: backends/crates/vpay-db/src/checkout_sessions.rs
+    elements: [oauth_client_secret]
+  - type: NewCheckoutSession
+    file: backends/crates/vpay-db/src/checkout_sessions.rs
+    elements: [oauth_client_secret]
+  - type: StoredResponse
+    file: backends/crates/vpay-db/src/idempotency.rs
+    elements: [stored_api_body]
   # vpay-api wire objects.
   - type: LastPaymentErrorObject
     file: backends/crates/vpay-api/src/model.rs
@@ -1306,6 +1322,15 @@ debug_protections:
   - type: OutOfBandPaymentObject
     file: backends/crates/vpay-api/src/model.rs
     elements: [payment_reference]
+  # The rail's redirect URL (Orange's `pay_token` sits in its query), printed
+  # through `SafeUrl`. `PaymentIntentObject` is safe only by composition with
+  # these two.
+  - type: RedirectToUrl
+    file: backends/crates/vpay-api/src/model.rs
+    elements: [webhook_url]
+  - type: NextAction
+    file: backends/crates/vpay-api/src/model.rs
+    elements: [webhook_url]
   - type: ChargeSummary
     file: backends/crates/vpay-api/src/dash/payment_intents.rs
     elements: [payer_msisdn, rail_failure_text]
@@ -1322,3 +1347,11 @@ debug_protections:
   - type: ProviderError
     file: backends/crates/vpay-provider/src/lib.rs
     elements: [rail_failure_text]
+  # `reqwest::Error`'s `Debug` prints the request URL in full; MTN's
+  # account-holder URL carries the payer's MSISDN in its path.
+  - type: RailFailure
+    file: backends/crates/vpay-provider/src/lib.rs
+    elements: [payer_msisdn, webhook_url]
+  - type: HttpBodyError
+    file: backends/crates/vpay-provider/src/http.rs
+    elements: [payer_msisdn, webhook_url]

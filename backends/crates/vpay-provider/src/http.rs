@@ -16,10 +16,12 @@
 //!
 //! [ADR-0004]: ../../../docs/adr/0004-musl-mimalloc.md
 
+use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
 use vpay_core::error::{Category, Classify};
+use vpay_core::privacy::SafeUrl;
 
 /// Why an outbound HTTP client could not be constructed.
 ///
@@ -268,7 +270,7 @@ pub const MAX_RAIL_BODY_BYTES: usize = 256 * 1024;
 ///
 /// Separate from [`HttpClientError`], which is construction-time only: this
 /// one is reachable from a live request path and classifies differently.
-#[derive(Debug, thiserror::Error)]
+#[derive(thiserror::Error)]
 pub enum HttpBodyError {
     /// The rail sent more than the caller was willing to hold.
     ///
@@ -285,6 +287,63 @@ pub enum HttpBodyError {
     /// error, or the request deadline expiring mid-stream.
     #[error("reading the response body")]
     Read(#[source] reqwest::Error),
+}
+
+/// Prints [`HttpBodyError::TooLarge`]'s cap in full and its `Read` variant's
+/// `reqwest::Error` through [`RedactedReqwest`] (issue #147).
+///
+/// Derived `Debug` printed `reqwest::Error`'s own, which carries the request
+/// URL in full — see [`RedactedReqwest`] for what that URL can hold.
+impl fmt::Debug for HttpBodyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { max } => f
+                .debug_struct("HttpBodyError::TooLarge")
+                .field("max", max)
+                .finish(),
+            Self::Read(error) => f
+                .debug_tuple("HttpBodyError::Read")
+                .field(&RedactedReqwest(error))
+                .finish(),
+        }
+    }
+}
+
+/// A `reqwest::Error` printed without the request URL's path, query,
+/// fragment or userinfo, and without its inner source.
+///
+/// `reqwest::Error`'s own `Debug` prints `url` in full. A rail's URL is not
+/// always free of the payer: MTN's `basicuserinfo` lookup puts the payer's
+/// MSISDN in the **path**, and a redirect rail's query can carry a payment
+/// token. A transport failure on such a call, wrapped by
+/// [`crate::ProviderError`] and then by `ApiError`/`JobError`, would print
+/// that into every log a `{:?}` of the chain reached.
+///
+/// What stays is what an operator debugging a transport failure asks first:
+/// what kind of failure it was, whether it was a deadline or a refused
+/// connection, the status if the rail answered, and **which rail host** (the
+/// URL through [`SafeUrl`]). The inner `source` is omitted: it is hyper's or
+/// the OS's text for the cause and is still on the `Display` chain
+/// [`vpay_core::error::source_chain`] renders — which, being reqwest's own
+/// `Display`, still ends in `for url (…)`. That is a separate, wider leak
+/// this type does not touch; see `docs/status/verification/2026-10-01-protected-diagnostics.md`.
+pub(crate) struct RedactedReqwest<'a>(pub(crate) &'a reqwest::Error);
+
+impl fmt::Debug for RedactedReqwest<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let error = self.0;
+        f.debug_struct("reqwest::Error")
+            .field("builder", &error.is_builder())
+            .field("request", &error.is_request())
+            .field("connect", &error.is_connect())
+            .field("timeout", &error.is_timeout())
+            .field("redirect", &error.is_redirect())
+            .field("body", &error.is_body())
+            .field("decode", &error.is_decode())
+            .field("status", &error.status().map(|status| status.as_u16()))
+            .field("url", &error.url().map(|url| SafeUrl::new(url.as_str())))
+            .finish()
+    }
 }
 
 impl Classify for HttpBodyError {

@@ -36,7 +36,7 @@ use std::fmt;
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
-use vpay_core::privacy::Secret;
+use vpay_core::privacy::{SafeUrl, Secret};
 use vpay_core::{IntentStatus, RefundStatus};
 
 use crate::ApiError;
@@ -144,7 +144,11 @@ object_tag!(
 ///
 /// Stripe's own `next_action.redirect_to_url` shape, so a merchant's existing
 /// redirect handling works unchanged (`docs/flows/payment-lifecycle.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `Debug` is **hand-written** below: [`Self::url`] is the rail's hosted page,
+/// and for Orange Money its query carries the `pay_token`, a live payment
+/// credential.
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RedirectToUrl {
     /// The rail's hosted page. Opaque to us — never parsed or rewritten.
@@ -152,6 +156,26 @@ pub struct RedirectToUrl {
     /// Where the rail returns the payer afterwards; `null` if it was not given
     /// one.
     pub return_url: Option<String>,
+}
+
+/// Prints both URLs through [`SafeUrl`] — `scheme://host[:port]` and nothing
+/// else (RFC-0002 PR 3 follow-up, issue #147).
+///
+/// [`RedirectToUrl`] **derived** its `Debug` until this impl, which printed
+/// the rail's hosted-page URL in full. That is the same value
+/// `vpay_db::ChargeRow::redirect_url` holds and prints through [`SafeUrl`]:
+/// a URL's query is where a credential hides, and Orange's `pay_token` sits
+/// in exactly that place. `return_url` is the merchant's own, but a
+/// merchant's return URL may carry a session token in its query too, and
+/// "which host was the payer sent back to" is the only part an operator
+/// needs, so it takes the same cut as the `ChargeRow` impl.
+impl fmt::Debug for RedirectToUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedirectToUrl")
+            .field("url", &SafeUrl::new(&self.url))
+            .field("return_url", &self.return_url.as_deref().map(SafeUrl::new))
+            .finish()
+    }
 }
 
 /// What a payer must do next.
@@ -203,7 +227,7 @@ pub struct RedirectToUrl {
 /// let rendered = serde_json::to_value(&action).expect("a wire DTO always serialises");
 /// assert_eq!(rendered["redirect_to_url"]["return_url"], json!(null));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NextAction {
     /// Send the payer to [`RedirectToUrl::url`].
@@ -211,6 +235,26 @@ pub enum NextAction {
         /// The destination and the return URL the rail was given.
         redirect_to_url: RedirectToUrl,
     },
+}
+
+/// Delegates to [`RedirectToUrl`]'s redacting impl, written out by hand so a
+/// variant added later that carries a URL has to say how it prints it: a
+/// `match` with no wildcard arm does not compile until it does.
+///
+/// [`NextAction`] derived its `Debug` until this impl, which only composed
+/// with [`RedirectToUrl`]'s then-derived one, so
+/// [`PaymentIntentObject::next_action`] printed the rail's redirect URL in
+/// full. The output keeps the derived shape (`RedirectToUrl { redirect_to_url:
+/// … }`).
+impl fmt::Debug for NextAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RedirectToUrl { redirect_to_url } => f
+                .debug_struct("RedirectToUrl")
+                .field("redirect_to_url", redirect_to_url)
+                .finish(),
+        }
+    }
 }
 
 /// The `last_payment_error` sub-object: why the last charge on this intent was
@@ -4380,8 +4424,8 @@ mod debug_tests {
     use serde_json::json;
 
     use super::{
-        AccountHolderObject, AccountHolderTag, EventDataObject, LastPaymentErrorObject,
-        OutOfBandMethod, OutOfBandPaymentObject,
+        AccountHolderObject, AccountHolderTag, EventDataObject, LastPaymentErrorObject, NextAction,
+        OutOfBandMethod, OutOfBandPaymentObject, RedirectToUrl,
     };
 
     const PAYER_NAME: &str = "Adjia Xiphoid";
@@ -4423,6 +4467,56 @@ mod debug_tests {
         }
     }
 
+    /// Orange's `pay_token`: a live payment credential in the query of the
+    /// rail's hosted-page URL.
+    const PAY_TOKEN: &str = "neverlogthispaytoken0123456789";
+
+    fn redirect() -> RedirectToUrl {
+        RedirectToUrl {
+            url: format!("https://pay.rail.example:8443/checkout/abc?pay_token={PAY_TOKEN}"),
+            return_url: Some(format!(
+                "https://shop.example/done?session={PAY_TOKEN}#frag"
+            )),
+        }
+    }
+
+    /// **The redirect URL prints as `scheme://host[:port]` and nothing
+    /// more**, both on its own and inside [`NextAction`] — and, by
+    /// composition, inside `PaymentIntentObject::next_action`, which the
+    /// first sweep called safe while this type still derived `Debug`.
+    ///
+    /// Both directions: the token and the path never appear, and the host the
+    /// payer was sent to always does. Restoring `#[derive(Debug)]` on either
+    /// type is the mutation this test exists to catch; both have a
+    /// `debug_protections` row in `schemas/privacy-inventory.yaml`.
+    #[test]
+    fn no_redirect_prints_more_than_scheme_and_host() {
+        let action = NextAction::RedirectToUrl {
+            redirect_to_url: redirect(),
+        };
+        for printed in [format!("{:?}", redirect()), format!("{action:?}")] {
+            for literal in [PAY_TOKEN, "pay_token", "/checkout/abc", "#frag", "neverlog"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(printed.contains("RedirectToUrl"), "no structure: {printed}");
+            assert!(
+                printed.contains("https://pay.rail.example:8443"),
+                "no rail host: {printed}"
+            );
+            assert!(
+                printed.contains("https://shop.example"),
+                "no return host: {printed}"
+            );
+        }
+        assert!(
+            format!("{action:?}").contains("redirect_to_url"),
+            "NextAction lost its field name"
+        );
+    }
+
     /// **No object in this module prints a payer's name, the rail's words,
     /// a rendered snapshot or a merchant's reference**, in both directions:
     /// the literals never appear, and the structure always does.
@@ -4448,5 +4542,10 @@ mod debug_tests {
         assert!(format!("{:?}", last_error()).contains("insufficient_funds"));
         assert!(format!("{:?}", account_holder()).contains("mtn_momo"));
         assert!(format!("{:?}", out_of_band()).contains("mp_fixture"));
+        // `EventDataObject` carries no vpay-owned field to look for, so its
+        // structure is the type name and the field it still has.
+        let data = format!("{:?}", event_data());
+        assert!(data.contains("EventDataObject"), "no structure in {data}");
+        assert!(data.contains("object"), "no field name in {data}");
     }
 }

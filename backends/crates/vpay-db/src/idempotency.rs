@@ -199,7 +199,10 @@ pub enum IdempotencyClaim {
 /// `store(merchant, key, claim, 200, &body, None, subject)` is a call in
 /// which every argument after the third is a positional puzzle. Each field
 /// is named at the call site instead.
-#[derive(Debug, Clone, Copy)]
+///
+/// `Debug` is **hand-written** below: [`Self::body`] is the rendered API
+/// object, the `stored_api_body` element of the privacy inventory.
+#[derive(Clone, Copy)]
 pub struct StoredResponse<'a> {
     /// The status to replay. `u16` on the wire and `SMALLINT` in the table;
     /// anything above `i16::MAX` is not an HTTP status and is refused rather
@@ -215,6 +218,27 @@ pub struct StoredResponse<'a> {
     /// What the body is about. [`ResponseSubject::Verbatim`] for every route
     /// but `/v1/customers`.
     pub subject: ResponseSubject<'a>,
+}
+
+/// Redacts [`StoredResponse::body`], the one field of the four that can hold a
+/// payer: it is the response that is about to be stored, so a `POST
+/// /v1/customers` that answers `201` puts a payer's name, email, phone, street
+/// and GPS point in it. [`IdempotencyRecord`]'s impl redacts the same body once
+/// it is read back; this is the copy on the way in, held in the frame that
+/// runs the write, so any error chain around [`Idempotency::store`] reaches it.
+///
+/// `status`, `retry` and `subject` stay visible: they are vpay's own closed
+/// vocabulary and a `cus_…` the route already named, and what an operator
+/// debugging a replay needs.
+impl fmt::Debug for StoredResponse<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StoredResponse")
+            .field("status", &self.status)
+            .field("body", &Secret::new(self.body))
+            .field("retry", &self.retry)
+            .field("subject", &self.subject)
+            .finish()
+    }
 }
 
 /// What the response being stored is *about*, and therefore whether an
@@ -762,7 +786,7 @@ mod debug_tests {
 
     use serde_json::json;
 
-    use super::IdempotencyRecord;
+    use super::{IdempotencyRecord, ResponseSubject, StoredResponse};
 
     /// A payer's personal data as it would appear inside a stored response
     /// body — the `stored_api_body` element.
@@ -802,5 +826,39 @@ mod debug_tests {
         }
         assert!(printed.contains("IdempotencyRecord"), "no structure");
         assert!(printed.contains("complete"), "no state in {printed}");
+    }
+
+    /// The write-path twin of the test above: the response being stored is the
+    /// same body, on its way in. Both directions — the payer's literals never
+    /// appear, and the status, retry hint and subject always do.
+    ///
+    /// Restoring `#[derive(Debug)]` on `StoredResponse` is the mutation this
+    /// test exists to catch.
+    #[test]
+    fn no_stored_response_prints_its_body() {
+        let body = json!({
+            "object": "customer",
+            "name": PAYER_NAME,
+            "phone": PAYER_PHONE,
+            "id": "cus_fixture",
+        });
+        let response = StoredResponse {
+            status: 201,
+            body: &body,
+            retry: Some("false"),
+            subject: ResponseSubject::Customer { id: "cus_fixture" },
+        };
+        let printed = format!("{response:?}");
+        for literal in [PAYER_NAME, PAYER_PHONE] {
+            assert!(
+                !printed.contains(literal),
+                "leaked {literal:?} in {printed}"
+            );
+        }
+        assert!(printed.contains("StoredResponse"), "no structure");
+        assert!(printed.contains("201"), "no status in {printed}");
+        assert!(printed.contains("false"), "no retry hint in {printed}");
+        assert!(printed.contains("cus_fixture"), "no subject in {printed}");
+        assert!(printed.contains("[redacted]"), "no marker in {printed}");
     }
 }

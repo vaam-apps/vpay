@@ -938,7 +938,10 @@ pub struct CallbackRef {
 /// through [`vpay_core::error::source_chain`] a timeout reads "sending the
 /// request: error sending request for url (…): operation timed out", where
 /// `reqwest`'s own `Display` stops at the first of those.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Debug` is **hand-written** below: the `reqwest::Error` inside prints the
+/// request URL, which can hold a payer's MSISDN or a payment token.
+#[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum RailFailure {
     /// DNS, connect, TLS, or a deadline from [`ProviderConfig`].
@@ -947,6 +950,28 @@ pub enum RailFailure {
     /// The response body could not be read within its bound.
     #[error("reading the response")]
     Body(#[from] http::HttpBodyError),
+}
+
+/// Prints each stage's `reqwest::Error` through [`http::RedactedReqwest`] and
+/// delegates the body error to [`http::HttpBodyError`]'s own redacting impl
+/// (issue #147, found in review of PR #268).
+///
+/// [`RailFailure`] **derived** its `Debug` until this impl, so
+/// [`ProviderError::Transport`]'s and [`ProviderError::Malformed`]'s `source`
+/// printed `reqwest::Error`'s own `Debug` — and that prints the request URL.
+/// MTN's account-holder URL carries the payer's MSISDN in its path. This
+/// closes the **`Debug`** path only; the `Display` chain still ends in
+/// reqwest's `for url (…)`, which is recorded as open.
+impl fmt::Debug for RailFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(error) => f
+                .debug_tuple("RailFailure::Http")
+                .field(&http::RedactedReqwest(error))
+                .finish(),
+            Self::Body(error) => f.debug_tuple("RailFailure::Body").field(error).finish(),
+        }
+    }
 }
 
 #[derive(thiserror::Error)]
@@ -2534,6 +2559,64 @@ mod debug_tests {
         super::ProviderError::Rejected {
             code: FailureCode::InsufficientFunds,
             message: RAIL_WORDS.to_owned(),
+        }
+    }
+
+    /// MTN's `basicuserinfo` URL carries the payer's MSISDN in its **path**,
+    /// and a redirect rail's query can carry a payment token.
+    const LOOKUP_URL: &str = "http://127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000789/basicuserinfo?pay_token=secref04";
+
+    /// A real transport failure: a request to a closed loopback port, so the
+    /// `reqwest::Error` carries the URL exactly as a live one does.
+    async fn transport_failure() -> super::ProviderError {
+        let error = super::http::client()
+            .expect("the vendored-roots client builds")
+            .get(LOOKUP_URL)
+            .send()
+            .await
+            .expect_err("nothing listens on loopback port 1");
+        assert!(
+            error
+                .url()
+                .is_some_and(|url| url.as_str().contains(PAYER_REF)),
+            "the fixture must carry the MSISDN in the error's URL, or the canary proves nothing"
+        );
+        super::ProviderError::Transport {
+            context: "mtn_momo: account holder lookup".to_owned(),
+            source: Some(super::RailFailure::Http(error)),
+        }
+    }
+
+    /// **A transport failure's source never prints the request URL's path or
+    /// query**, in both directions: the MSISDN and the token never appear, and
+    /// the structure and the rail host always do.
+    ///
+    /// Restoring `#[derive(Debug)]` on `RailFailure` is the mutation this
+    /// test exists to catch: `reqwest::Error`'s own `Debug` prints `url`.
+    #[tokio::test]
+    async fn no_transport_failure_prints_the_request_urls_path_or_query() {
+        let error = transport_failure().await;
+        for printed in [format!("{error:?}"), format!("{error:#?}")] {
+            for literal in [PAYER_REF, "secref04", "pay_token", "basicuserinfo"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(
+                printed.contains("ProviderError::Transport"),
+                "no structure in {printed}"
+            );
+            assert!(
+                printed.contains("RailFailure::Http"),
+                "no stage in {printed}"
+            );
+            assert!(printed.contains("mtn_momo"), "no context in {printed}");
+            assert!(
+                printed.contains("http://127.0.0.1:1"),
+                "no rail host in {printed}"
+            );
+            assert!(printed.contains("connect: true"), "no cause in {printed}");
         }
     }
 
