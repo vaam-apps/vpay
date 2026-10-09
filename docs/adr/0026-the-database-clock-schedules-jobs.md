@@ -1,6 +1,6 @@
 # ADR-0026: The database's clock schedules jobs
 
-- **Status:** Accepted in part.
+- **Status:** Accepted (2026-10-08).
   - **The rule** — "the database's clock must be the one clock for anything
     the database compares" — is the maintainer's decision of 2026-09-23,
     taken on the evidence of
@@ -12,11 +12,22 @@
     maintainer directed the work and named the likely shape ("repository
     methods take a relative delay, and SQL computes `now() + $delay`"); the
     boundaries — which instants are scheduling and which are facts (D6), and
-    what was left out (D8) — were drawn by the agent and **need the
-    maintainer's confirmation in review**. Their reasons are recorded here so
-    that confirmation has something to read.
+    what was left out (D8) — were drawn by the agent and were left for the
+    maintainer's confirmation in review.
+  - **Confirmed 2026-10-08.** The maintainer confirmed D1–D8 on 2026-10-08,
+    after [#256](https://github.com/vaam-apps/vpay/pull/256) merged on
+    2026-09-24. This ADR was "Accepted in part" until then; the text of
+    D1–D8 is unchanged.
+  - **Two findings from the review that preceded the confirmation live in
+    [ADR-0028](0028-a-spent-jti-outlives-the-validators-leeway.md)**, because
+    this ADR is immutable. D8's second bullet (the `jti` item, "named, not
+    concluded") is concluded there: the defect was real and is fixed. And D6
+    omits one call site that follows its rule, the checkout-session confirm
+    gate in `backends/crates/vpay-api/src/v1/return_trip.rs`; ADR-0028
+    § "Related findings" records it.
 - **Implementation:** the pull request that carries this ADR,
-  `fix/single-clock-scheduling`, stacked on #254. Its verification page,
+  `fix/single-clock-scheduling`, stacked on #254. It merged as
+  [#256](https://github.com/vaam-apps/vpay/pull/256) (`434dda7`, 2026-09-24). Its verification page,
   [2026-09-23-single-clock-scheduling.md](../status/verification/2026-09-23-single-clock-scheduling.md),
   is the statement of what was run; this ADR records decisions.
 - **Date:** 2026-09-23
