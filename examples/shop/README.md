@@ -361,7 +361,7 @@ be sent all the way to vpay's page for a `400` at the last step.
 `SHOP_PAYMENT_METHOD_TYPES` is what a deployment says that with, and since
 this change it takes a **per-currency** map as well as a plain list:
 
-```
+```sh
 SHOP_PAYMENT_METHOD_TYPES=orange_money                    # one list, every currency
 SHOP_PAYMENT_METHOD_TYPES=xaf:orange_money;eur:mtn_momo   # per currency
 ```
