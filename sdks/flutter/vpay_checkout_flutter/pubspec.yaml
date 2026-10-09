@@ -4,7 +4,7 @@ description: >-
   in a native window and reports a typed result once a payment intent
   actually settles. Not a way to unlock in-app content — see the README's
   App Store / Play Store section before using externalBrowser mode.
-version: 0.5.0 # x-release-please-version
+version: 0.6.0 # x-release-please-version
 homepage: https://github.com/vaam-apps/vpay
 repository: https://github.com/vaam-apps/vpay
 publish_to: none # not published yet (2026-09-13) — see docs/sdks/parity.md

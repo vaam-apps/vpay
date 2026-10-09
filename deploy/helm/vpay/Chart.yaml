@@ -62,12 +62,12 @@ type: application
 # extension, and `.yaml` gets one that reparses and re-serialises the whole
 # document. Every entry is `{"type": "generic"}` now and `cargo xtask
 # verify-versions` refuses a bare string outright.
-version: 0.5.0 # x-release-please-version
+version: 0.6.0 # x-release-please-version
 
 # The application version this chart was written against. It is NOT a pin:
 # `values.yaml`'s `images.*.tag` defaults to this string, so a chart bump and
 # an image bump are the same edit unless a tag or digest is set explicitly.
-appVersion: "0.5.0" # x-release-please-version
+appVersion: "0.6.0" # x-release-please-version
 
 # `seccompProfile` on a pod spec (used by both Deployments) is GA from 1.19,
 # `PodDisruptionBudget` in `policy/v1` from 1.21, and the
