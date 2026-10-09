@@ -2346,6 +2346,21 @@ fn derives_serde(attributes: &str) -> bool {
     })
 }
 
+/// Whether an attribute block derives `Debug`.
+///
+/// Only the final path segment is compared, so `Debug`, `fmt::Debug`,
+/// `std::fmt::Debug` and `core::fmt::Debug` all count — the rule
+/// [`derives_serde`] applies to `Serialize`. A bare `== "Debug"` let a
+/// registered type undo its protection by spelling the derive out, with the
+/// gate green (found in review of PR #268, confirmed by mutation).
+fn derives_debug(attributes: &str) -> bool {
+    derive_entries(attributes).iter().any(|path| {
+        path.rsplit("::")
+            .next()
+            .is_some_and(|last| last.trim() == "Debug")
+    })
+}
+
 /// Every path named inside a `derive(..)` in an attribute block.
 fn derive_entries(attributes: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -6356,10 +6371,7 @@ fn verify_privacy_inventory(root: &Path) -> Result<(), String> {
         // not the `struct` keyword) — the same shape `verify-serde` reads.
         let decl_start = declaration_start(&scanned, declaration.at);
         let attributes = attribute_block_before(&scanned, decl_start);
-        let derives_debug = derive_entries(&attributes)
-            .iter()
-            .any(|entry| entry == "Debug");
-        if derives_debug {
+        if derives_debug(&attributes) {
             problems.push(format!(
                 "{PRIVACY_INVENTORY}: debug_protection `{}` (`{}:{}`) derives `Debug` — it must \
                  carry a hand-written, redacting impl (RFC-0002 PR 3)",
@@ -7752,6 +7764,45 @@ pub struct CustomerRow {
         let err = verify_privacy_inventory(&root).unwrap_err();
         assert!(err.contains("CustomerRow"), "err: {err}");
         assert!(err.contains("derives `Debug`"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A path-qualified derive is still `Debug`. Review of PR #268 mutated
+    /// `ChargeRow` to `#[derive(std::fmt::Debug)]` and the gate passed,
+    /// because the comparison was `== "Debug"` on the whole path.
+    #[test]
+    fn a_registered_type_that_derives_a_path_qualified_debug_fails_direction_a() {
+        for spelling in [
+            "std::fmt::Debug",
+            "core::fmt::Debug",
+            "fmt::Debug",
+            "::std::fmt::Debug",
+        ] {
+            let root = tmp_root();
+            let derived = format!(
+                "#[derive(Clone, {spelling}, PartialEq)]\npub struct CustomerRow {{\n    pub email: Option<String>,\n}}\n"
+            );
+            write_with_src(&root, OK_INV_WITH_PROTECTION, &derived);
+            let err = verify_privacy_inventory(&root)
+                .expect_err(&format!("`{spelling}` must be refused"));
+            assert!(err.contains("CustomerRow"), "{spelling}: {err}");
+            assert!(err.contains("derives `Debug`"), "{spelling}: {err}");
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    /// The path rule must not turn into a substring rule: a derive whose last
+    /// segment merely contains `Debug`, or a path that only passes through a
+    /// `Debug` module, is not `Debug`.
+    #[test]
+    fn a_derive_that_only_resembles_debug_does_not_fail_the_gate() {
+        let root = tmp_root();
+        let src = format!(
+            "#[derive(Clone, PartialEq, my::DebugLike, Debug::Other)]\n{}",
+            OK_SRC.trim_start()
+        );
+        write_with_src(&root, OK_INV_WITH_PROTECTION, &src);
+        assert!(verify_privacy_inventory(&root).is_ok(), "expected ok");
         let _ = fs::remove_dir_all(&root);
     }
 
