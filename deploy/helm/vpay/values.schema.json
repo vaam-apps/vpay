@@ -25,6 +25,10 @@
     "serviceAccount"
   ],
   "properties": {
+    "global": {
+      "type": "object",
+      "description": "Helm's reserved key. When this chart is a dependency of a parent chart, Helm passes the parent's `global` values to every subchart, so a schema that refuses the key refuses the chart as a subchart (#269). Nothing in this chart reads `.Values.global`; any keys are accepted and none have an effect. Every other top-level key stays closed by `additionalProperties: false` above."
+    },
     "nameOverride": { "type": "string" },
     "fullnameOverride": { "type": "string" },
     "commonLabels": {

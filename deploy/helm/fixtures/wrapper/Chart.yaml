@@ -1,0 +1,9 @@
+apiVersion: v2
+name: vpay-wrapper
+description: Test fixture. A parent chart that depends on deploy/helm/vpay, as a downstream wrapper chart does.
+type: application
+version: 0.0.0
+dependencies:
+  - name: vpay
+    version: ">=0.0.0-0"
+    repository: file://../../vpay

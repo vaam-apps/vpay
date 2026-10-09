@@ -1158,5 +1158,9 @@ jobs:
       # `--api-versions` flag; and `kubeconform -strict -summary` with
       # `-schema-location default` for the built-in kinds and the
       # datreeio/CRDs-catalog location for ServiceMonitor, PrometheusRule and
-      # HTTPRoute, which no built-in schema covers.
+      # HTTPRoute, which no built-in schema covers. It also builds
+      # `deploy/helm/fixtures/wrapper`, a parent chart that depends on the
+      # chart by `file://` path and sets `global`, because every render above
+      # uses the chart as the root and none could see its schema refusing the
+      # key Helm passes to every subchart (#269).
       - run: just helm-check
