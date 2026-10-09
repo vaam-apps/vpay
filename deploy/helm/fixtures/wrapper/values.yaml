@@ -1,0 +1,7 @@
+# A parent-level `global`, which Helm passes to every dependency. Helm adds
+# the key to a subchart's values whether or not the parent sets it (measured
+# with this file empty), so setting it here is not what makes the case; it
+# makes the case visible. `deploy/helm/vpay` must accept it (#269) and
+# nothing in that chart reads it.
+global:
+  imageRegistry: registry.example.test
