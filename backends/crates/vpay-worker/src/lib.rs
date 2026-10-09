@@ -32,7 +32,7 @@ pub mod signing;
 pub mod ssrf;
 pub mod webhooks;
 pub use error::{Decision, JobError, tracing_level};
-pub use handlers::{Adapters, RailConfigs, WebhookContext, handle};
+pub use handlers::{Adapters, CLIENT_ASSERTION_JTI_RETENTION, RailConfigs, WebhookContext, handle};
 pub use jobs::{DeliverWebhookPayload, JobKind, Outcome, PollChargePayload, ResubmitPayload};
 pub use recovery::{RecoveryAction, RecoveryPolicy, SubmitAttempt, recovery_step};
 pub use run_loop::{
