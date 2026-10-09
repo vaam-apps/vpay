@@ -2346,6 +2346,21 @@ fn derives_serde(attributes: &str) -> bool {
     })
 }
 
+/// Whether an attribute block derives `Debug`.
+///
+/// Only the final path segment is compared, so `Debug`, `fmt::Debug`,
+/// `std::fmt::Debug` and `core::fmt::Debug` all count — the rule
+/// [`derives_serde`] applies to `Serialize`. A bare `== "Debug"` let a
+/// registered type undo its protection by spelling the derive out, with the
+/// gate green (found in review of PR #268, confirmed by mutation).
+fn derives_debug(attributes: &str) -> bool {
+    derive_entries(attributes).iter().any(|path| {
+        path.rsplit("::")
+            .next()
+            .is_some_and(|last| last.trim() == "Debug")
+    })
+}
+
 /// Every path named inside a `derive(..)` in an attribute block.
 fn derive_entries(attributes: &str) -> Vec<String> {
     let mut out = Vec::new();
@@ -6299,6 +6314,72 @@ fn verify_privacy_inventory(root: &Path) -> Result<(), String> {
         }
     }
 
+    // `debug_protections` — every registered type must exist in its file and
+    // must NOT derive `Debug` (a hand-written impl is what redacts). Both
+    // directions fail: a registered type that derives is an undone
+    // protection, and a registered type that no longer exists is a stale
+    // registration. `elements` must name live inventory elements, so a
+    // misspelled element cannot silently register the wrong protection.
+    for protection in &inventory.debug_protections {
+        if protection.type_name.is_empty() || protection.file.is_empty() {
+            problems.push(format!(
+                "{PRIVACY_INVENTORY}: a debug_protections entry is missing `type` or `file`"
+            ));
+            continue;
+        }
+        if protection.elements.is_empty() {
+            problems.push(format!(
+                "{PRIVACY_INVENTORY}: debug_protection `{}` lists no elements — every row must \
+                 name the elements its Debug redacts",
+                protection.type_name
+            ));
+        }
+        for element in &protection.elements {
+            if !element_names.contains(element) {
+                problems.push(format!(
+                    "{PRIVACY_INVENTORY}: debug_protection `{}` names element `{element}`, which \
+                     is not in the inventory",
+                    protection.type_name
+                ));
+            }
+        }
+        let file = root.join(&protection.file);
+        let text = fs::read_to_string(&file).unwrap_or_default();
+        if text.is_empty() {
+            problems.push(format!(
+                "{PRIVACY_INVENTORY}: debug_protection `{}` names `{}`, which does not exist",
+                protection.type_name, protection.file
+            ));
+            continue;
+        }
+        let scanned = blank_cfg_test_items(&strip_comments(&text));
+        let found = declarations(&scanned)
+            .into_iter()
+            .find(|declaration| declaration.name == protection.type_name);
+        let Some(declaration) = found else {
+            // Direction B: a registration for a type that no longer exists.
+            problems.push(format!(
+                "{PRIVACY_INVENTORY}: debug_protection `{}` names a type no longer declared in `{}` \
+                 — delete the stale row",
+                protection.type_name, protection.file
+            ));
+            continue;
+        };
+        // Direction A: a registered type that derives `Debug` has had its
+        // protection undone. `attribute_block_before` walks the attributes
+        // above a declaration, and takes the *declaration* start (the `pub`,
+        // not the `struct` keyword) — the same shape `verify-serde` reads.
+        let decl_start = declaration_start(&scanned, declaration.at);
+        let attributes = attribute_block_before(&scanned, decl_start);
+        if derives_debug(&attributes) {
+            problems.push(format!(
+                "{PRIVACY_INVENTORY}: debug_protection `{}` (`{}:{}`) derives `Debug` — it must \
+                 carry a hand-written, redacting impl (RFC-0002 PR 3)",
+                protection.type_name, protection.file, declaration.line
+            ));
+        }
+    }
+
     if !problems.is_empty() {
         return Err(problems.join("\n"));
     }
@@ -6324,13 +6405,15 @@ fn verify_privacy_inventory(root: &Path) -> Result<(), String> {
         .filter(|e| !e.recipients.is_empty())
         .count();
     let necessary_count = inventory.elements.values().filter(|e| e.necessary).count();
+    let protected_types = inventory.debug_protections.len();
     println!(
         "verify-privacy-inventory: ok — {classified_count} database column(s) classified in \
          {PRIVACY_INVENTORY} across {element_count} elements ({personal_elements} personal-data, \
          {necessary_count} necessary), checked in both directions against {db_count} column(s) \
          derived from {MIGRATIONS_DIR}; {surface_count} non-database surface(s) registered \
          ({unmet} not yet statically enumerable, {unmet_notes} with an unmet note, \
-         {elements_with_recipients} element(s) name a recipient)",
+         {elements_with_recipients} element(s) name a recipient); {protected_types} \
+         debug_protection(s) registered and checked in both directions",
         classified_count = classified.len(),
         element_count = inventory.elements.len(),
         db_count = db_columns.len(),
@@ -6345,6 +6428,21 @@ struct PrivacyInventory {
     version: u32,
     elements: BTreeMap<String, PrivacyElement>,
     non_db_surfaces: Vec<PrivacySurface>,
+    /// RFC-0002 PR 3 (issue #147). Defaults to empty so an inventory written
+    /// before the section existed still parses; the real file carries it.
+    #[serde(default)]
+    debug_protections: Vec<PrivacyDebugProtection>,
+}
+
+/// One type that must carry a hand-written `Debug` rather than
+/// `#[derive(Debug)]` (RFC-0002 PR 3, issue #147): the registered
+/// personal-data/secret row, input, wire or port type.
+#[derive(serde::Deserialize)]
+struct PrivacyDebugProtection {
+    #[serde(rename = "type")]
+    type_name: String,
+    file: String,
+    elements: Vec<String>,
 }
 
 /// One stable data element: the ADR-0020 §1 classification — eight fields, of
@@ -7578,6 +7676,170 @@ COMMENT ON TABLE t IS 'RFC 7523 §3 — ±1 step';";
         )
         .unwrap();
         assert!(has(&cols, "t", "email"), "{cols:?}");
+    }
+
+    // -- `debug_protections` (RFC-0002 PR 3) --
+
+    const OK_INV_WITH_PROTECTION: &str = r#"
+version: 1
+elements:
+  customer_email:
+    subject: payer
+    purpose: merchant-identity
+    necessary: false
+    tenant_boundary: merchant
+    recipients: []
+    retention: customer
+    owner: maintainer
+    control: redact
+    copies:
+    - kind: column
+      table: customers
+      column: email
+  sys_status:
+    subject: none
+    purpose: system
+    necessary: true
+    tenant_boundary: merchant
+    recipients: []
+    retention: operational
+    owner: maintainer
+    control: none
+    copies:
+    - kind: column
+      table: customers
+      column: status
+non_db_surfaces:
+- id: logs
+  surface: telemetry
+  description: x
+  enumerable: false
+  unmet: n
+debug_protections:
+- type: CustomerRow
+  file: backends/crates/vpay-db/src/customers.rs
+  elements: [customer_email]
+"#;
+
+    /// The protected type exists and carries a hand-written `Debug`.
+    const OK_SRC: &str = r#"
+pub struct CustomerRow {
+    pub email: Option<String>,
+}
+
+impl std::fmt::Debug for CustomerRow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CustomerRow")
+            .field("email", &"[redacted]")
+            .finish()
+    }
+}
+"#;
+
+    fn write_with_src(root: &Path, inventory: &str, src: &str) {
+        write(root, OK_MIG, inventory);
+        let dir = root.join("backends/crates/vpay-db/src");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("customers.rs"), src).unwrap();
+    }
+
+    #[test]
+    fn a_registered_type_with_a_hand_written_debug_passes() {
+        let root = tmp_root();
+        write_with_src(&root, OK_INV_WITH_PROTECTION, OK_SRC);
+        assert!(verify_privacy_inventory(&root).is_ok(), "expected ok");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_registered_type_that_derives_debug_fails_direction_a() {
+        let root = tmp_root();
+        let derived = r#"
+#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+pub struct CustomerRow {
+    pub email: Option<String>,
+}
+"#;
+        write_with_src(&root, OK_INV_WITH_PROTECTION, derived);
+        let err = verify_privacy_inventory(&root).unwrap_err();
+        assert!(err.contains("CustomerRow"), "err: {err}");
+        assert!(err.contains("derives `Debug`"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A path-qualified derive is still `Debug`. Review of PR #268 mutated
+    /// `ChargeRow` to `#[derive(std::fmt::Debug)]` and the gate passed,
+    /// because the comparison was `== "Debug"` on the whole path.
+    #[test]
+    fn a_registered_type_that_derives_a_path_qualified_debug_fails_direction_a() {
+        for spelling in [
+            "std::fmt::Debug",
+            "core::fmt::Debug",
+            "fmt::Debug",
+            "::std::fmt::Debug",
+        ] {
+            let root = tmp_root();
+            let derived = format!(
+                "#[derive(Clone, {spelling}, PartialEq)]\npub struct CustomerRow {{\n    pub email: Option<String>,\n}}\n"
+            );
+            write_with_src(&root, OK_INV_WITH_PROTECTION, &derived);
+            let err = verify_privacy_inventory(&root)
+                .expect_err(&format!("`{spelling}` must be refused"));
+            assert!(err.contains("CustomerRow"), "{spelling}: {err}");
+            assert!(err.contains("derives `Debug`"), "{spelling}: {err}");
+            let _ = fs::remove_dir_all(&root);
+        }
+    }
+
+    /// The path rule must not turn into a substring rule: a derive whose last
+    /// segment merely contains `Debug`, or a path that only passes through a
+    /// `Debug` module, is not `Debug`.
+    #[test]
+    fn a_derive_that_only_resembles_debug_does_not_fail_the_gate() {
+        let root = tmp_root();
+        let src = format!(
+            "#[derive(Clone, PartialEq, my::DebugLike, Debug::Other)]\n{}",
+            OK_SRC.trim_start()
+        );
+        write_with_src(&root, OK_INV_WITH_PROTECTION, &src);
+        assert!(verify_privacy_inventory(&root).is_ok(), "expected ok");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_stale_debug_protection_fails_direction_b() {
+        let root = tmp_root();
+        // The registration names a type the file no longer declares.
+        write_with_src(&root, OK_INV_WITH_PROTECTION, "pub struct NotTheRow {}");
+        let err = verify_privacy_inventory(&root).unwrap_err();
+        assert!(err.contains("CustomerRow"), "err: {err}");
+        assert!(err.contains("no longer declared"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_debug_protection_naming_an_unknown_element_fails() {
+        let root = tmp_root();
+        let inv = OK_INV_WITH_PROTECTION.replace(
+            "elements: [customer_email]",
+            "elements: [customer_email, payer_msisdn]",
+        );
+        write_with_src(&root, &inv, OK_SRC);
+        let err = verify_privacy_inventory(&root).unwrap_err();
+        assert!(err.contains("payer_msisdn"), "err: {err}");
+        assert!(err.contains("not in the inventory"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_debug_protection_naming_a_missing_file_fails() {
+        let root = tmp_root();
+        // No `backends/crates/vpay-db/src/customers.rs` is written at all.
+        write(&root, OK_MIG, OK_INV_WITH_PROTECTION);
+        let err = verify_privacy_inventory(&root).unwrap_err();
+        assert!(err.contains("CustomerRow"), "err: {err}");
+        assert!(err.contains("does not exist"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
     }
 }
 

@@ -38,6 +38,58 @@ So a new privacy-relevant column cannot land silently, and a stale inventory
 row cannot survive the column it named. The gate also validates every element's
 six fields and every registered non-database surface.
 
+**Since RFC-0002 PR 3 (issue #147) the gate also enforces the `Debug`
+boundary.** A `#[derive(Debug)]` on a struct that holds a payer's identifier,
+the rail's own words for a failure, a rendered API body or a URL prints all of
+it into every log line a `{:?}` of the type reaches — a copy the erasure and
+retention controls own the column but not the log line for. ADR-0020 §2's
+answer is positive projection: each such type carries a hand-written, redacting
+`Debug` instead, composing the shared wrappers in
+[`vpay-core::privacy`](../../backends/crates/vpay-core/src/privacy.rs)
+(`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`). The types that have been
+reviewed and made to carry one are registered in the inventory's
+`debug_protections` list, and the gate fails in **both** directions there too:
+
+- a registered type that derives `Debug` → fail (the protection was undone);
+  the derive is matched by its last path segment, so `std::fmt::Debug` and
+  `core::fmt::Debug` count as `Debug`;
+- a registered type that no longer exists in its file → fail (the
+  registration went stale).
+
+A registered entry's `elements` must name live inventory elements, so a
+misspelled element cannot silently register the wrong protection.
+
+**What the gate does not do: it checks the types registered, and only those.**
+It cannot find a type that holds a payer's identifier, a credential or a URL
+and was never registered; for those, the list is exactly as complete as review
+makes it. The first sweep missed four types of the class (`NewCheckoutSession`,
+`StoredResponse`, `RedirectToUrl`, `NextAction`) and review found them, not the
+gate. A new type holding a registered element is added to the list in the same
+change that adds its hand-written `Debug` and its canary test. A type that
+deliberately keeps some registered element visible — `CheckoutSessionRow`'s
+URLs, which are the merchant's own, documented in that impl — is registered for
+the elements it **does** redact (its two credentials) and nothing more; the
+visible element stays a documented decision in the impl.
+
+**Known open, 2026-10-09** (each is a type or path the list does not cover, not
+a claim that it is safe):
+
+- `vpay-api/src/staff/mod.rs` `LoginRequest` and `PasswordRequest` (a plaintext
+  password), `vpay-api/src/staff_auth/tokens.rs` `MintedToken` and
+  `vpay-api/src/staff/oauth.rs` `TokenResponse` still **derive** `Debug`. They
+  predate this work, are not registered, and are a follow-up by the
+  maintainer's decision.
+- `reqwest::Error`'s **`Display`** ends in `for url (…)`, so
+  `vpay_core::error::source_chain` — what the worker records in durable
+  `last_error`-shaped columns — still carries a rail request's full URL. MTN's
+  account-holder URL puts the payer's MSISDN in its path. Only the `Debug`
+  path is closed (`RailFailure` and `HttpBodyError` print the failure kind and
+  the host). The fix is `reqwest::Error::without_url()` at the one conversion
+  into `RailFailure`, which also changes a documented diagnostic and every
+  stored `last_error` text; it is not done here.
+- The private `search_*` decoders in `vpay-db/src/schema/` (see the
+  verification page for the reason they are left).
+
 _(The parser models `CREATE TABLE`, `ALTER TABLE … ADD/DROP/RENAME COLUMN` and
 `DROP TABLE`. **`DROP TABLE` was added on review, 2026-09-17, and the omission
 had cost exactly what this page exists to prevent:** migration `0009` drops
@@ -431,8 +483,9 @@ are `unresolved`, not guessed.
 
 ## Status
 
-**2026-09-16, amended 2026-09-17 on review.** The inventory exists and is
-machine-checked in both directions against `backends/migrations` by `cargo xtask
+**2026-09-16, amended 2026-09-17 on review, amended 2026-10-01 (RFC-0002 PR
+3).** The inventory exists and is machine-checked in both directions against
+`backends/migrations` by `cargo xtask
 verify-privacy-inventory`, wired into `just verify`. **307** database columns
 across 26 elements (17 personal-data), and 10 non-database surfaces, are
 registered — the gate's own output on 2026-09-23, after migration `0049`
@@ -440,6 +493,19 @@ added twelve columns (`invoices.paid_out_of_band` and the eleven of
 `manual_payments`, the last its always-`true` `paid_out_of_band`, classified
 `sys_status`) and the `payment_reference` element; it said 295 across 25 (16)
 until then, and 306 for the few hours `0049` had eleven.
+
+**RFC-0002 PR 3, 2026-10-01:** the four shared protected diagnostic
+representations landed in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`,
+`SafeUrl` — the latter two as policy-free mechanisms, awaiting RFC-0002 D3),
+seventeen personal-data/secret types across `vpay-db`, `vpay-api` and
+`vpay-provider` swapped derived `Debug` for hand-written redacting impls, and
+the gate now enforces the `debug_protections` registration list in both
+directions. **Amended 2026-10-09 on review:** seven more types joined (24
+registrations in all) and the gate now reads a path-qualified derive — see the
+"Known open" list above and the verification page's "Maintainer review fixes". `Masked` and `Pseudonymous` have **no shipping consumer** and are
+built ahead of their first use so PR 4's telemetry work and #56's audit rows
+inherit one representation; adopting either for a live surface before D3 names
+its keying/masking answers is what the module's own docs forbid.
 
 What is **not** done, and each of these keeps #144 open:
 

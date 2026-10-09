@@ -31,10 +31,12 @@
 //! writes `row.try_into()?` and the `?` does the same work `From` would have.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
+use vpay_core::privacy::{SafeUrl, Secret};
 use vpay_core::{IntentStatus, RefundStatus};
 
 use crate::ApiError;
@@ -142,7 +144,11 @@ object_tag!(
 ///
 /// Stripe's own `next_action.redirect_to_url` shape, so a merchant's existing
 /// redirect handling works unchanged (`docs/flows/payment-lifecycle.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+///
+/// `Debug` is **hand-written** below: [`Self::url`] is the rail's hosted page,
+/// and for Orange Money its query carries the `pay_token`, a live payment
+/// credential.
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct RedirectToUrl {
     /// The rail's hosted page. Opaque to us — never parsed or rewritten.
@@ -150,6 +156,26 @@ pub struct RedirectToUrl {
     /// Where the rail returns the payer afterwards; `null` if it was not given
     /// one.
     pub return_url: Option<String>,
+}
+
+/// Prints both URLs through [`SafeUrl`] — `scheme://host[:port]` and nothing
+/// else (RFC-0002 PR 3 follow-up, issue #147).
+///
+/// [`RedirectToUrl`] **derived** its `Debug` until this impl, which printed
+/// the rail's hosted-page URL in full. That is the same value
+/// `vpay_db::ChargeRow::redirect_url` holds and prints through [`SafeUrl`]:
+/// a URL's query is where a credential hides, and Orange's `pay_token` sits
+/// in exactly that place. `return_url` is the merchant's own, but a
+/// merchant's return URL may carry a session token in its query too, and
+/// "which host was the payer sent back to" is the only part an operator
+/// needs, so it takes the same cut as the `ChargeRow` impl.
+impl fmt::Debug for RedirectToUrl {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("RedirectToUrl")
+            .field("url", &SafeUrl::new(&self.url))
+            .field("return_url", &self.return_url.as_deref().map(SafeUrl::new))
+            .finish()
+    }
 }
 
 /// What a payer must do next.
@@ -201,7 +227,7 @@ pub struct RedirectToUrl {
 /// let rendered = serde_json::to_value(&action).expect("a wire DTO always serialises");
 /// assert_eq!(rendered["redirect_to_url"]["return_url"], json!(null));
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum NextAction {
     /// Send the payer to [`RedirectToUrl::url`].
@@ -209,6 +235,26 @@ pub enum NextAction {
         /// The destination and the return URL the rail was given.
         redirect_to_url: RedirectToUrl,
     },
+}
+
+/// Delegates to [`RedirectToUrl`]'s redacting impl, written out by hand so a
+/// variant added later that carries a URL has to say how it prints it: a
+/// `match` with no wildcard arm does not compile until it does.
+///
+/// [`NextAction`] derived its `Debug` until this impl, which only composed
+/// with [`RedirectToUrl`]'s then-derived one, so
+/// [`PaymentIntentObject::next_action`] printed the rail's redirect URL in
+/// full. The output keeps the derived shape (`RedirectToUrl { redirect_to_url:
+/// … }`).
+impl fmt::Debug for NextAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RedirectToUrl { redirect_to_url } => f
+                .debug_struct("RedirectToUrl")
+                .field("redirect_to_url", redirect_to_url)
+                .finish(),
+        }
+    }
 }
 
 /// The `last_payment_error` sub-object: why the last charge on this intent was
@@ -238,7 +284,7 @@ pub enum NextAction {
 ///     }),
 /// );
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct LastPaymentErrorObject {
     /// A code from `docs/flows/failures.md`'s closed vocabulary.
@@ -252,6 +298,27 @@ pub struct LastPaymentErrorObject {
     pub code: String,
     /// The rail's failure, in words, as `docs/flows/failures.md` maps it.
     pub message: String,
+}
+
+/// Redacts [`LastPaymentErrorObject::message`], leaving the code visible
+/// (RFC-0002 PR 3, issue #147).
+///
+/// [`LastPaymentErrorObject`] **derived** its `Debug` until this impl. The
+/// message is the rail's own words for a failure — the `rail_failure_text`
+/// inventory element — and rail-authored prose quotes the payer back, which
+/// is exactly why the erasure path rewrites it (issue #211). This object is
+/// rendered into `PaymentIntentObject.last_payment_error` and shipped on
+/// every read of an intent, so a derived `Debug` put it in every log a
+/// `{:?}` of the intent reached. The code stays visible with the
+/// `PaymentIntentRow` impl's reason: it is vpay's own closed `FailureCode`
+/// vocabulary, never rail text.
+impl fmt::Debug for LastPaymentErrorObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LastPaymentErrorObject")
+            .field("code", &self.code)
+            .field("message", &Secret::new(&self.message))
+            .finish()
+    }
 }
 
 /// An `account_holder`: whose mobile-money account a number is, or the fact
@@ -301,7 +368,7 @@ pub struct LastPaymentErrorObject {
 ///     }),
 /// );
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct AccountHolderObject {
     /// Always `"account_holder"`.
@@ -325,6 +392,29 @@ pub struct AccountHolderObject {
     /// is **not** a claim that anything was cryptographically verified — it
     /// says the rail named a holder.
     pub verified: bool,
+}
+
+/// Redacts [`AccountHolderObject::name`], leaving every other field visible
+/// (RFC-0002 PR 3, issue #147).
+///
+/// [`AccountHolderObject`] **derived** its `Debug` until this impl. The name
+/// is the registered holder of a payer's number, returned by the rail's
+/// lookup and never stored — but a `{:?}` on the rendered object (a debug
+/// print, an error chain, a test failure) is a log line that *does* store
+/// it, and it is the privacy-inventory's `customer_name`-class data:
+/// the whole point of the account-holder surface is to answer "whose number
+/// is this?" (issue #47), and every answer is a payer who did not ask to be
+/// named in vpay's logs. `verified` and `payment_method_type` stay visible:
+/// they say *what the rail answered*, not *who it named*.
+impl fmt::Debug for AccountHolderObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AccountHolderObject")
+            .field("object", &self.object)
+            .field("payment_method_type", &self.payment_method_type)
+            .field("name", &self.name.as_deref().map(Secret::new))
+            .field("verified", &self.verified)
+            .finish()
+    }
 }
 
 /// A `payment_intent`, exactly as `docs/api/README.md`'s object table and
@@ -1313,7 +1403,7 @@ fn last_payment_error_of(
 /// `sdks/nodejs/src/types.ts` both require the extra `object` level, and an
 /// event that put the payload directly under `data` would fail to decode in
 /// every merchant's client while still looking plausible in a log.
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct EventDataObject {
     /// The object the event is about, verbatim from `events.data` — the
@@ -1327,6 +1417,27 @@ pub struct EventDataObject {
     /// merchant's SDK version predates must still be *deliverable*, not a
     /// decode failure in their handler.
     pub object: Value,
+}
+
+/// Redacts [`EventDataObject::object`] — the rendered API object a webhook
+/// delivers — leaving nothing else to show (RFC-0002 PR 3, issue #147).
+///
+/// [`EventDataObject`] **derived** its `Debug` until this impl. The payload
+/// is the `stored_api_body` inventory element: a `customer.created` event
+/// carries a payer's name, email, phone, street and GPS point, and a
+/// `payment_intent` event carries the rail's words for a failure. This type
+/// is the payload half of every event — rendered for `GET /v1/events` and
+/// for the signed webhook body alike — so a derived `Debug` put the full
+/// snapshot in every log a `{:?}` of the event reached, a copy the erasure
+/// and retention controls cannot reach. There is no non-personal half to
+/// keep: the payload *is* the personal data, and the event's own identity
+/// lives on [`EventObject`].
+impl fmt::Debug for EventDataObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventDataObject")
+            .field("object", &Secret::new(&self.object))
+            .finish()
+    }
 }
 
 /// An `event`, as `GET /v1/events` serves it **and** as the webhook
@@ -1922,7 +2033,7 @@ impl OutOfBandMethod {
 ///
 /// Four keys and no `object`: it is a nested record of one invoice, reached
 /// only through the invoice, and has no route of its own.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct OutOfBandPaymentObject {
     /// `mp_…` — `vpay_core::ids::manual_payment_id`.
@@ -1935,6 +2046,28 @@ pub struct OutOfBandPaymentObject {
     pub reference: Option<String>,
     /// Unix **seconds**: when the merchant says the money arrived.
     pub received_at: i64,
+}
+
+/// Redacts [`OutOfBandPaymentObject::reference`], leaving every other field
+/// visible (RFC-0002 PR 3, issue #147).
+///
+/// [`OutOfBandPaymentObject`] **derived** its `Debug` until this impl. The
+/// reference is the `payment_reference` inventory element (control `redact`)
+/// — a cheque or transfer reference routinely names the payer, which is why
+/// the struct doc above says the erasure path replaces it with
+/// `[redacted]`. It is rendered on every invoice read, so a derived `Debug`
+/// put the reference in every log a `{:?}` of the invoice reached — the
+/// same copy the erasure cannot reach. `id`, `method` and `received_at`
+/// stay visible: they are the payment's own facts, not the payer's.
+impl fmt::Debug for OutOfBandPaymentObject {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OutOfBandPaymentObject")
+            .field("id", &self.id)
+            .field("method", &self.method)
+            .field("reference", &self.reference.as_deref().map(Secret::new))
+            .field("received_at", &self.received_at)
+            .finish()
+    }
 }
 
 impl TryFrom<&vpay_db::ManualPaymentRow> for OutOfBandPaymentObject {
@@ -4279,5 +4412,140 @@ mod tests {
                 "created": 1_756_913_600,
             })
         );
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    //! The redaction impls' canaries: a payer's name, a rail's own words,
+    //! a rendered object snapshot and a merchant's reference must never
+    //! survive `{:?}`, and the structure an operator reads always must.
+
+    use serde_json::json;
+
+    use super::{
+        AccountHolderObject, AccountHolderTag, EventDataObject, LastPaymentErrorObject, NextAction,
+        OutOfBandMethod, OutOfBandPaymentObject, RedirectToUrl,
+    };
+
+    const PAYER_NAME: &str = "Adjia Xiphoid";
+    const RAIL_WORDS: &str = "237600000789 has insufficient funds";
+    const PAYER_REFERENCE: &str = "cheque-237600000789";
+
+    fn last_error() -> LastPaymentErrorObject {
+        LastPaymentErrorObject {
+            code: "insufficient_funds".to_owned(),
+            message: RAIL_WORDS.to_owned(),
+        }
+    }
+
+    fn account_holder() -> AccountHolderObject {
+        AccountHolderObject {
+            object: AccountHolderTag,
+            payment_method_type: "mtn_momo".to_owned(),
+            name: Some(PAYER_NAME.to_owned()),
+            verified: true,
+        }
+    }
+
+    fn event_data() -> EventDataObject {
+        EventDataObject {
+            object: json!({
+                "object": "customer",
+                "name": PAYER_NAME,
+                "phone": "237600000789",
+            }),
+        }
+    }
+
+    fn out_of_band() -> OutOfBandPaymentObject {
+        OutOfBandPaymentObject {
+            id: "mp_fixture".to_owned(),
+            method: OutOfBandMethod::Cheque,
+            reference: Some(PAYER_REFERENCE.to_owned()),
+            received_at: 1_756_913_600,
+        }
+    }
+
+    /// Orange's `pay_token`: a live payment credential in the query of the
+    /// rail's hosted-page URL.
+    const PAY_TOKEN: &str = "neverlogthispaytoken0123456789";
+
+    fn redirect() -> RedirectToUrl {
+        RedirectToUrl {
+            url: format!("https://pay.rail.example:8443/checkout/abc?pay_token={PAY_TOKEN}"),
+            return_url: Some(format!(
+                "https://shop.example/done?session={PAY_TOKEN}#frag"
+            )),
+        }
+    }
+
+    /// **The redirect URL prints as `scheme://host[:port]` and nothing
+    /// more**, both on its own and inside [`NextAction`] — and, by
+    /// composition, inside `PaymentIntentObject::next_action`, which the
+    /// first sweep called safe while this type still derived `Debug`.
+    ///
+    /// Both directions: the token and the path never appear, and the host the
+    /// payer was sent to always does. Restoring `#[derive(Debug)]` on either
+    /// type is the mutation this test exists to catch; both have a
+    /// `debug_protections` row in `schemas/privacy-inventory.yaml`.
+    #[test]
+    fn no_redirect_prints_more_than_scheme_and_host() {
+        let action = NextAction::RedirectToUrl {
+            redirect_to_url: redirect(),
+        };
+        for printed in [format!("{:?}", redirect()), format!("{action:?}")] {
+            for literal in [PAY_TOKEN, "pay_token", "/checkout/abc", "#frag", "neverlog"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(printed.contains("RedirectToUrl"), "no structure: {printed}");
+            assert!(
+                printed.contains("https://pay.rail.example:8443"),
+                "no rail host: {printed}"
+            );
+            assert!(
+                printed.contains("https://shop.example"),
+                "no return host: {printed}"
+            );
+        }
+        assert!(
+            format!("{action:?}").contains("redirect_to_url"),
+            "NextAction lost its field name"
+        );
+    }
+
+    /// **No object in this module prints a payer's name, the rail's words,
+    /// a rendered snapshot or a merchant's reference**, in both directions:
+    /// the literals never appear, and the structure always does.
+    ///
+    /// Each type has a `debug_protections` row in
+    /// `schemas/privacy-inventory.yaml`.
+    #[test]
+    fn no_model_object_prints_a_payer_a_rails_words_a_snapshot_or_a_reference() {
+        for printed in [
+            format!("{:?}", last_error()),
+            format!("{:?}", account_holder()),
+            format!("{:?}", event_data()),
+            format!("{:?}", out_of_band()),
+        ] {
+            for literal in [PAYER_NAME, RAIL_WORDS, PAYER_REFERENCE, "237600000789"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+        }
+        // The vpay-owned vocabulary and identity stay visible.
+        assert!(format!("{:?}", last_error()).contains("insufficient_funds"));
+        assert!(format!("{:?}", account_holder()).contains("mtn_momo"));
+        assert!(format!("{:?}", out_of_band()).contains("mp_fixture"));
+        // `EventDataObject` carries no vpay-owned field to look for, so its
+        // structure is the type name and the field it still has.
+        let data = format!("{:?}", event_data());
+        assert!(data.contains("EventDataObject"), "no structure in {data}");
+        assert!(data.contains("object"), "no field name in {data}");
     }
 }

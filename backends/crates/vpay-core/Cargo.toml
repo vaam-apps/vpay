@@ -11,12 +11,25 @@ publish = false
 workspace = true
 
 [dependencies]
+# `privacy`: HMAC-SHA256 for `Pseudonymous` — the keyed, domain-separated
+# digest RFC-0002 D3's own recommendation argues for on low-entropy
+# identifiers. Both pins already resolved in the lock by `vpay-api`,
+# `vpay-provider` and `vpay-worker`, so no new package enters it.
+hmac.workspace = true
+# `privacy`: the SHA-256 under that HMAC, and lowercase hex for its output
+# — the same `hex` pin `Vpay-Signature`'s `v1=` values use.
+sha2.workspace = true
+hex.workspace = true
 # `metrics`: the facade only. This crate describes every metric name
 # (`metrics.rs`) and installs no recorder — see that module's header.
 metrics.workspace = true
 serde.workspace = true
 thiserror.workspace = true
 time.workspace = true
+# `privacy`: `SafeUrl` prints `scheme://host[:port]` from the same `url`
+# pin `vpay-config` validates endpoint hosts with — one URL parser in the
+# workspace, not a second hand-rolled one next to it.
+url.workspace = true
 # `ids`: the CSPRNG behind every public object id (`pi_…`), via `Uuid::new_v4`.
 uuid.workspace = true
 

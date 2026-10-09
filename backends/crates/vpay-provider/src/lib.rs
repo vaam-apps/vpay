@@ -28,12 +28,14 @@ pub mod token;
 pub use measured::Measured;
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::fmt::Debug;
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use vpay_core::privacy::{SafeUrl, Secret};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 
 /// Where a refund on this rail sends the money.
@@ -290,7 +292,7 @@ pub struct PayerField {
 pub type RefExtra = BTreeMap<String, String>;
 
 /// What a charge looks like to an adapter. Deliberately minimal.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ChargeRef {
     /// The reference *we* generated, durable before any network call.
     pub reference_id: Uuid,
@@ -328,13 +330,68 @@ pub struct ChargeRef {
     pub return_url: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+/// Redacts [`ChargeRef::payer_ref`], [`ChargeRef::return_url`] and
+/// [`ChargeRef::ref_extra`], leaving every other field visible (RFC-0002 PR 3,
+/// issue #147).
+///
+/// [`ChargeRef`] **derived** its `Debug` until this impl. `payer_ref` is the
+/// payer's instrument (`payer_msisdn`), `return_url` can carry a
+/// `{checkout.public_base_url}/c/{cs_id}/return?t=…` whose query is the
+/// return token (`webhook_url` element) — and this type is exactly what the
+/// adapters hold in the frame that makes the rail call, so a derived `Debug`
+/// put both in every error chain and `tracing` event around a rail call.
+/// `ref_extra` is the same live credential in another pocket: it is where a
+/// redirect rail's `pay_token` is captured ([`vpay-adapter-orange-money`]'s
+/// `mapping.rs`), the very token `crash-safety` insists be committed before
+/// it is handed anywhere, so it prints through [`Secret`] — the inventory
+/// classifies `sys_provider_ref` `control: none` (its *erasure* semantics),
+/// but a payment credential in a log is a payment credential regardless.
+/// `return_url` prints through [`SafeUrl`]: the host is the useful half, the
+/// query is the credential-bearing half. `reference_id` and `amount` stay
+/// visible — they are the charge's own facts, not the payer's.
+impl fmt::Debug for ChargeRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ChargeRef")
+            .field("reference_id", &self.reference_id)
+            .field("amount", &self.amount)
+            .field("payer_ref", &self.payer_ref.as_deref().map(Secret::new))
+            .field("ref_extra", &Secret::new(&self.ref_extra))
+            .field("return_url", &self.return_url.as_deref().map(SafeUrl::new))
+            .finish()
+    }
+}
+
+#[derive(Clone)]
 pub struct Submitted {
     /// Key material the core must commit. On a redirect rail this MUST be
     /// committed before `redirect_url` is handed to anyone.
     pub ref_extra: RefExtra,
     /// Present iff the rail's flow is [`ProviderFlow::Redirect`].
     pub redirect_url: Option<String>,
+}
+
+/// Redacts [`Submitted::redirect_url`] and [`Submitted::ref_extra`], leaving
+/// every other field visible (RFC-0002 PR 3, issue #147).
+///
+/// [`Submitted`] **derived** its `Debug` until this impl. On a redirect rail
+/// the rail answers with a URL whose query carries the token that completes
+/// the payment — Orange's `pay_token`, the exact credential `crash-safety`
+/// insists be committed *before* it is handed anywhere
+/// ([`docs/flows/crash-safety.md`](../../../../docs/flows/crash-safety.md)).
+/// A derived `Debug` put that token in every log around a `submit` that
+/// returned one — twice over, because the same token is captured in
+/// `ref_extra` beside the URL, and both print through [`Secret`]/[`SafeUrl`]
+/// for the same reason [`ChargeRef`]'s impl gives.
+impl fmt::Debug for Submitted {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Submitted")
+            .field("ref_extra", &Secret::new(&self.ref_extra))
+            .field(
+                "redirect_url",
+                &self.redirect_url.as_deref().map(SafeUrl::new),
+            )
+            .finish()
+    }
 }
 
 /// Where a [`RefundDestination::Required`] rail must send the money.
@@ -737,7 +794,7 @@ pub struct Refunded {
 }
 
 /// The authoritative status read. Never derived from a callback body.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub enum ChargeStatus {
     Pending,
     Succeeded {
@@ -750,6 +807,35 @@ pub enum ChargeStatus {
     /// The rail has no record. Never on its own grounds to fail a charge —
     /// see `docs/flows/crash-safety.md`.
     NotFound,
+}
+
+/// Redacts [`ChargeStatus::Failed`]'s rail text, leaving the failure code
+/// visible (RFC-0002 PR 3, issue #147).
+///
+/// [`ChargeStatus`] **derived** its `Debug` until this impl. `raw` is the
+/// rail's own words for a failure — the `rail_failure_text` inventory
+/// element — and rail-authored prose quotes the payer back. This enum is
+/// what the worker holds while it decides what a charge's status read
+/// means, so a derived `Debug` put the rail's words in every `tracing` event
+/// and error chain around a status poll. `code` stays visible with the
+/// `PaymentIntentRow` impl's reason: it is vpay's own closed `FailureCode`
+/// vocabulary, never rail text.
+impl fmt::Debug for ChargeStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Pending => f.debug_tuple("ChargeStatus").field(&"Pending").finish(),
+            Self::Succeeded { provider_txn_id } => f
+                .debug_struct("ChargeStatus::Succeeded")
+                .field("provider_txn_id", provider_txn_id)
+                .finish(),
+            Self::Failed { code, raw } => f
+                .debug_struct("ChargeStatus::Failed")
+                .field("code", code)
+                .field("raw", &Secret::new(raw))
+                .finish(),
+            Self::NotFound => f.debug_tuple("ChargeStatus").field(&"NotFound").finish(),
+        }
+    }
 }
 
 /// The registered holder of a payer reference on a rail — **a name, and
@@ -852,7 +938,10 @@ pub struct CallbackRef {
 /// through [`vpay_core::error::source_chain`] a timeout reads "sending the
 /// request: error sending request for url (…): operation timed out", where
 /// `reqwest`'s own `Display` stops at the first of those.
-#[derive(Debug, thiserror::Error)]
+///
+/// `Debug` is **hand-written** below: the `reqwest::Error` inside prints the
+/// request URL, which can hold a payer's MSISDN or a payment token.
+#[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum RailFailure {
     /// DNS, connect, TLS, or a deadline from [`ProviderConfig`].
@@ -863,7 +952,29 @@ pub enum RailFailure {
     Body(#[from] http::HttpBodyError),
 }
 
-#[derive(Debug, thiserror::Error)]
+/// Prints each stage's `reqwest::Error` through [`http::RedactedReqwest`] and
+/// delegates the body error to [`http::HttpBodyError`]'s own redacting impl
+/// (issue #147, found in review of PR #268).
+///
+/// [`RailFailure`] **derived** its `Debug` until this impl, so
+/// [`ProviderError::Transport`]'s and [`ProviderError::Malformed`]'s `source`
+/// printed `reqwest::Error`'s own `Debug` — and that prints the request URL.
+/// MTN's account-holder URL carries the payer's MSISDN in its path. This
+/// closes the **`Debug`** path only; the `Display` chain still ends in
+/// reqwest's `for url (…)`, which is recorded as open.
+impl fmt::Debug for RailFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Http(error) => f
+                .debug_tuple("RailFailure::Http")
+                .field(&http::RedactedReqwest(error))
+                .finish(),
+            Self::Body(error) => f.debug_tuple("RailFailure::Body").field(error).finish(),
+        }
+    }
+}
+
+#[derive(thiserror::Error)]
 pub enum ProviderError {
     /// The rail could not be reached, or could not be finished with.
     ///
@@ -914,6 +1025,53 @@ pub enum ProviderError {
     /// Every occurrence must appear in `docs/status.md`.
     #[error("not implemented yet: {0}")]
     NotImplemented(&'static str),
+}
+
+/// Redacts [`ProviderError::Rejected`]'s rail text, leaving every other
+/// variant rendered in full (RFC-0002 PR 3, issue #147).
+///
+/// [`ProviderError`] **derived** its `Debug` until this impl. `Rejected`'s
+/// `message` is the rail's own words for a rejection — the
+/// `rail_failure_text` inventory element — and rail-authored prose quotes
+/// the payer back; it is the same text `PaymentIntentRow`'s impl redacts
+/// and the erasure path rewrites (issue #211). This enum is wrapped by
+/// `vpay_api::ApiError` and `vpay_worker::JobError`, so the whole error
+/// chain's `Debug` prints the rail's words anywhere a `{err:?}` lands in a
+/// tracing event or a log. `Rejected`'s `code` stays visible for the
+/// `PaymentIntentRow` impl's reason: it is vpay's own closed `FailureCode`
+/// vocabulary, never rail text. The `Transport`/`Malformed` `context` and
+/// `Config` string are the adapter's own sentences — operator diagnostics,
+/// never a payer's identifier or a live credential — and stay visible, as
+/// their `Display` already renders them.
+impl fmt::Debug for ProviderError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Transport { context, source } => f
+                .debug_struct("ProviderError::Transport")
+                .field("context", context)
+                .field("source", source)
+                .finish(),
+            Self::Rejected { code, message } => f
+                .debug_struct("ProviderError::Rejected")
+                .field("code", code)
+                .field("message", &Secret::new(message))
+                .finish(),
+            Self::Malformed { context, source } => f
+                .debug_struct("ProviderError::Malformed")
+                .field("context", context)
+                .field("source", source)
+                .finish(),
+            Self::Config(message) => f
+                .debug_tuple("ProviderError::Config")
+                .field(message)
+                .finish(),
+            Self::Unsupported => f.write_str("ProviderError::Unsupported"),
+            Self::NotImplemented(what) => f
+                .debug_tuple("ProviderError::NotImplemented")
+                .field(what)
+                .finish(),
+        }
+    }
 }
 
 impl vpay_core::Classify for RailFailure {
@@ -2347,5 +2505,212 @@ mod provider_config_debug_tests {
             rendered.contains("sandbox"),
             "settings are not secrets: {rendered}"
         );
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    //! The redaction impls' canaries: a payer's instrument, a rail's own
+    //! words for a failure, and a URL's credential must never survive
+    //! `{:?}`, and the structure an operator reads always must.
+
+    use uuid::Uuid;
+
+    use super::{ChargeRef, ChargeStatus, SafeUrl, Secret, Submitted};
+    use vpay_core::{FailureCode, Money};
+
+    const PAYER_REF: &str = "237600000789";
+    const RAIL_WORDS: &str = "237600000789 has insufficient funds";
+    const REDIRECT_URL: &str = "https://pay.orange.example/op?pay_token=secref01";
+    const RETURN_URL: &str = "https://shop.example/done?ref=secref02";
+    /// A redirect rail's `pay_token`, as an adapter captures it into
+    /// `ref_extra` beside the URL that carries it.
+    const PAY_TOKEN: &str = "paytokensecref03";
+
+    fn charge_ref() -> ChargeRef {
+        ChargeRef {
+            reference_id: Uuid::new_v4(),
+            amount: Money::new(5000, vpay_core::Currency::Xaf).expect("a valid money"),
+            payer_ref: Some(PAYER_REF.to_owned()),
+            ref_extra: [("pay_token".to_owned(), PAY_TOKEN.to_owned())]
+                .into_iter()
+                .collect(),
+            return_url: Some(RETURN_URL.to_owned()),
+        }
+    }
+
+    fn submitted() -> Submitted {
+        Submitted {
+            ref_extra: [("pay_token".to_owned(), PAY_TOKEN.to_owned())]
+                .into_iter()
+                .collect(),
+            redirect_url: Some(REDIRECT_URL.to_owned()),
+        }
+    }
+
+    fn failed_status() -> ChargeStatus {
+        ChargeStatus::Failed {
+            code: FailureCode::InsufficientFunds,
+            raw: RAIL_WORDS.to_owned(),
+        }
+    }
+
+    fn rejected() -> super::ProviderError {
+        super::ProviderError::Rejected {
+            code: FailureCode::InsufficientFunds,
+            message: RAIL_WORDS.to_owned(),
+        }
+    }
+
+    /// MTN's `basicuserinfo` URL carries the payer's MSISDN in its **path**,
+    /// and a redirect rail's query can carry a payment token.
+    const LOOKUP_URL: &str = "http://127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000789/basicuserinfo?pay_token=secref04";
+
+    /// A real `reqwest::Error`: a request to a closed loopback port, so it
+    /// carries the URL exactly as a live one does.
+    async fn reqwest_failure() -> reqwest::Error {
+        let error = super::http::client()
+            .expect("the vendored-roots client builds")
+            .get(LOOKUP_URL)
+            .send()
+            .await
+            .expect_err("nothing listens on loopback port 1");
+        assert!(
+            error
+                .url()
+                .is_some_and(|url| url.as_str().contains(PAYER_REF)),
+            "the fixture must carry the MSISDN in the error's URL, or the canary proves nothing"
+        );
+        error
+    }
+
+    async fn transport_failure() -> super::ProviderError {
+        super::ProviderError::Transport {
+            context: "mtn_momo: account holder lookup".to_owned(),
+            source: Some(super::RailFailure::Http(reqwest_failure().await)),
+        }
+    }
+
+    /// The body stage holds a `reqwest::Error` too (`HttpBodyError::Read`),
+    /// reached through `RailFailure::Body` and also on its own.
+    ///
+    /// Same two directions; and the cap of a `TooLarge` stays visible, because
+    /// "how big was the limit" is what an operator asks of it.
+    #[tokio::test]
+    async fn no_body_failure_prints_the_request_urls_path_or_query() {
+        use super::http::HttpBodyError;
+
+        let read = HttpBodyError::Read(reqwest_failure().await);
+        let wrapped = super::ProviderError::Malformed {
+            context: "mtn_momo: reading the response".to_owned(),
+            source: Some(super::RailFailure::Body(HttpBodyError::Read(
+                reqwest_failure().await,
+            ))),
+        };
+        for printed in [format!("{read:?}"), format!("{wrapped:?}")] {
+            for literal in [PAYER_REF, "secref04", "pay_token", "basicuserinfo"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(
+                printed.contains("HttpBodyError::Read"),
+                "no stage: {printed}"
+            );
+            assert!(
+                printed.contains("http://127.0.0.1:1"),
+                "no rail host in {printed}"
+            );
+        }
+        assert!(format!("{wrapped:?}").contains("RailFailure::Body"));
+        let too_large = format!("{:?}", HttpBodyError::TooLarge { max: 1_048_576 });
+        assert!(too_large.contains("1048576"), "no cap in {too_large}");
+    }
+
+    /// **A transport failure's source never prints the request URL's path or
+    /// query**, in both directions: the MSISDN and the token never appear, and
+    /// the structure and the rail host always do.
+    ///
+    /// Restoring `#[derive(Debug)]` on `RailFailure` is the mutation this
+    /// test exists to catch: `reqwest::Error`'s own `Debug` prints `url`.
+    #[tokio::test]
+    async fn no_transport_failure_prints_the_request_urls_path_or_query() {
+        let error = transport_failure().await;
+        for printed in [format!("{error:?}"), format!("{error:#?}")] {
+            for literal in [PAYER_REF, "secref04", "pay_token", "basicuserinfo"] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(
+                printed.contains("ProviderError::Transport"),
+                "no structure in {printed}"
+            );
+            assert!(
+                printed.contains("RailFailure::Http"),
+                "no stage in {printed}"
+            );
+            assert!(printed.contains("mtn_momo"), "no context in {printed}");
+            assert!(
+                printed.contains("http://127.0.0.1:1"),
+                "no rail host in {printed}"
+            );
+            assert!(printed.contains("connect: true"), "no cause in {printed}");
+        }
+    }
+
+    #[test]
+    fn no_provider_error_prints_the_rails_words() {
+        let printed = format!("{:?}", rejected());
+        assert!(!printed.contains(RAIL_WORDS), "leaked in {printed}");
+        assert!(
+            printed.contains("InsufficientFunds"),
+            "no code in {printed}"
+        );
+        assert!(
+            printed.contains("ProviderError"),
+            "no structure in {printed}"
+        );
+    }
+
+    /// **No type in this module prints a payer's instrument, a rail's own
+    /// words, a URL's credential or the rail token captured in `ref_extra`**,
+    /// in both directions: the literals never appear, and the structure
+    /// always does.
+    #[test]
+    fn no_provider_type_prints_a_payer_a_rails_words_or_a_urls_credential() {
+        for printed in [
+            format!("{:?}", charge_ref()),
+            format!("{:?}", submitted()),
+            format!("{:?}", failed_status()),
+        ] {
+            for literal in [PAYER_REF, RAIL_WORDS, "secref01", "secref02", PAY_TOKEN] {
+                assert!(
+                    !printed.contains(literal),
+                    "leaked {literal:?} in {printed}"
+                );
+            }
+            assert!(
+                printed.contains("Charge") || printed.contains("Submitted"),
+                "no structure in {printed}"
+            );
+        }
+        // The failure code — vpay's own vocabulary — stays visible.
+        assert!(format!("{:?}", failed_status()).contains("InsufficientFunds"));
+        // The hosts stay visible so an operator knows which rail a URL was for.
+        assert!(format!("{:?}", charge_ref()).contains("shop.example"));
+        assert!(format!("{:?}", submitted()).contains("pay.orange.example"));
+    }
+
+    #[test]
+    fn wrappers_are_available_to_callers() {
+        // The privacy module is public API of vpay-core, re-exported for the
+        // provider crate's own impls; this pins that the four types exist.
+        let secret = format!("{:?}", Secret::new(&PAYER_REF));
+        assert!(!secret.contains(PAYER_REF));
+        let url = format!("{:?}", SafeUrl::new(REDIRECT_URL));
+        assert!(!url.contains("secref01"));
     }
 }

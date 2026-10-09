@@ -38,13 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, and once on 2026-10-09, for the npm-advisories page), when the super-linter
+plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, and twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged), when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 73 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 50 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 74 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 51 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page and 74/51 when the protected-diagnostics page merged; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -78,6 +78,16 @@ rather than trusting this list to be exhaustive.
   one-key fix, the new wrapper-chart step in `just helm-check` with its before
   and after output, three mutations and what each turned red, and what a
   `file://` dependency does not prove about the published OCI chart.
+- [verification/2026-10-01-protected-diagnostics.md](verification/2026-10-01-protected-diagnostics.md) —
+  RFC-0002 PR 3 (issue #147): the four protected diagnostic representations
+  in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`, `SafeUrl`), 24
+  personal-data/secret types across `vpay-db`, `vpay-api` and `vpay-provider`
+  swapped from derived to hand-written redacting `Debug` (17 in the first
+  version, seven more after the maintainer's review of 2026-10-09), and the
+  `debug_protections` registration list the privacy gate now enforces in both
+  directions. What was run, what was not, what the gate cannot see, and what is
+  recorded as open (the staff request/token types, the `Display` path of a
+  transport failure).
 - [verification/2026-09-23-session-customer-onto-intent.md](verification/2026-09-23-session-customer-onto-intent.md) —
   ADR-0025, answering ADR-0024's question 3: a checkout session's customer is
   written onto a customer-less intent in the insert's own transaction. What

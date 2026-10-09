@@ -14,6 +14,7 @@ pub mod failure;
 pub mod ids;
 pub mod metrics;
 pub mod money;
+pub mod privacy;
 pub mod settlement;
 pub mod state;
 
