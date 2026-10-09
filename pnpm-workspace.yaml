@@ -88,6 +88,9 @@ shamefullyHoist: false
 #   `frontends/packages/ui` already resolve for their own `postcss ^8.4.49`
 #   devDependency, so the override dedupes the tree rather than splitting it.
 #   Remove when Next's own pin reaches >=8.5.23.
+#   UPDATE 2026-10-09: Next 16.3.8 now pins `postcss: 8.5.23` (fixed), so the
+#   16.x half of the above is stale; Next 15.5.27 (the latest 15.x, used by
+#   frontends/apps/*) still pins `8.4.31`, so the override is still load-bearing.
 #
 # overrides['@storybook/addon-actions>uuid'] and overrides.vite — REMOVED
 #   2026-09-07 by the exp26 UI revamp (docs/plans/2026-09-07-ui-revamp.md
@@ -199,9 +202,54 @@ shamefullyHoist: false
 #   `pnpm --filter @vpay/dashboard typecheck` still exits 0 — the exact
 #   command that exited 2 at c105884 when the extension was first added.
 
+# overrides['brace-expansion@<1.1.21'], ['brace-expansion@>=4.0.0 <5.0.12'],
+#   overrides['sharp@<0.35.5'], overrides['source-map-js@<1.2.2'] — 2026-10-09.
+#   Floors, not pins, and the reason is different from every entry above:
+#   no dependent EXACT-pins these. Every dependent takes them on a caret range
+#   (minimatch 3 on `brace-expansion ^1.1.7`, minimatch 10 on `^5.0.x`, Next on
+#   `sharp ^0.35.4`, postcss/@tailwindcss/node on `source-map-js ^1.2.1`), so a
+#   fresh resolution already lands on the fixed release. The LOCKFILE was what
+#   held the old ones (1.1.18, 5.0.9, 0.35.4, 1.2.1), and pnpm does not move a
+#   locked version unless something forces it. Each floor forces it, and keeps
+#   it forced if a lockfile is ever regenerated from an older one.
+#     brace-expansion — GHSA-6j4f-fj2g-mc7p / GHSA-qhr7-859c-m2p7 (high,
+#       CVE-2026-102276 / CVE-2026-102278) and GHSA-q2hr-2g5m-vwhr (moderate);
+#       fixed in 1.1.21 and 5.0.12 (released 2026-09-14). `just audit-web`
+#       reports three advisories per major and the HIGHEST floor of the three
+#       is the one that matters: 1.1.19/1.1.20 and 5.0.10/5.0.11 clear only
+#       the first two. One selector per MAJOR PRESENT in the lockfile (1.x and
+#       5.x); 2.x and 3.x also have fixes (2.1.7, 3.0.9) but nothing here
+#       resolves them, so no selector, and `audit-web` will say so if that
+#       changes. Per-major ranges, so no dependent is forced across a major.
+#     sharp — GHSA-wq5f-xc86-pv6w (high); fixed in 0.35.5 (2026-09-27). Reached
+#       only through Next's optional `sharp` (image optimisation). Next
+#       15.5.27 accepts `^0.34.3 || ^0.35.4`; the floor keeps it on 0.35.x.
+#     source-map-js — GHSA-68fv-2mgg-jv7q (high, CVE-2026-93749); fixed in
+#       1.2.2 (2026-09-30). Reached through postcss and @tailwindcss/node.
+#   None of the four needed `minimumReleaseAgeExclude`: the newest, 1.2.2, was
+#   nine days old when this was written, well past the 24h window.
+#   An override that outlives its advisory is a pin nobody meant to keep, so
+#   re-check these on the next audit pass; unlike the entries above they
+#   constrain nothing a fresh resolution would not choose anyway, so deleting
+#   one is safe once `pnpm install` has moved the lockfile past it for good.
+#
+# NOT cleared by anything in this file: braces <=3.0.3 (GHSA-vfj7-8cjw-p6xm,
+#   high, stack exhaustion on deeply nested patterns), which names >=3.0.4 as
+#   the fix. npm has no braces newer than 3.0.3 (checked 2026-10-09 against
+#   registry.npmjs.org directly: dist-tags.latest is 3.0.3, last modified
+#   2024-09-18), so there is nothing to pin to. It arrives only through
+#   `@vpay/config > @next/eslint-plugin-next > fast-glob@3.3.1 > micromatch >
+#   braces`, a lint-time glob matcher. It is ignored by `auditConfig` at the
+#   end of this file (maintainer's decision, 2026-10-09), not cleared: see
+#   there for the scope and the removal condition.
+#
 overrides:
   "next>postcss": ^8.5.28
   "@prisma/config>deepmerge-ts": ^8.0.2
+  "brace-expansion@<1.1.21": ^1.1.21
+  "brace-expansion@>=4.0.0 <5.0.12": ^5.0.12
+  "sharp@<0.35.5": ^0.35.5
+  "source-map-js@<1.2.2": ^1.2.2
   "chevrotain>lodash": ^4.18.1
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1
@@ -272,3 +320,31 @@ allowBuilds:
 # entry matches nothing and installing does not need it.
 minimumReleaseAgeExclude:
   - "@vaam-apps/ui@0.4.0"
+
+# ---------------------------------------------------------------------------
+# auditConfig
+# ---------------------------------------------------------------------------
+# ONE advisory, ignored by id, by the maintainer's decision of 2026-10-09
+# (vaam-apps/vpay#272). Not a severity threshold and not a package name, so
+# every other advisory, including any NEW one against braces, still fails
+# `just audit-web`.
+#
+# GHSA-vfj7-8cjw-p6xm: braces <=3.0.3, high, stack exhaustion on deeply
+#   nested brace patterns. The advisory names >=3.0.4 as the fix, and npm
+#   has no such release (dist-tags.latest is 3.0.3, checked 2026-10-09). It is
+#   reached only through `@vpay/config > @next/eslint-plugin-next >
+#   fast-glob@3.3.1 > micromatch > braces`, a matcher that expands the glob
+#   patterns written in this repository's own lint config at lint time.
+#   `@vpay/config` (the shared lint/format config package) lists the plugin
+#   under `dependencies`, so `audit-web`'s `--prod` pass reports it too, but
+#   no app, SDK or server loads `@vpay/config` at run time, and no pattern it
+#   expands comes from a user. Trivy's gate already skips it
+#   (`--ignore-unfixed`).
+#
+# REMOVE WHEN: braces publishes a fixed release. Then add a floor for it under
+# `overrides` like the brace-expansion ones, and delete this block. Re-check
+# on every audit pass, since an ignore that outlives its reason hides the next
+# finding against the same id.
+auditConfig:
+  ignoreGhsas:
+    - GHSA-vfj7-8cjw-p6xm

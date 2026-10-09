@@ -38,13 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and ten times on 2026-09-23 (and twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages), when the super-linter
+plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, and once on 2026-10-09, for the npm-advisories page), when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 72 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 49 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 73 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 50 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -59,6 +59,11 @@ hand-maintained list is exactly how this gap happened; browse
 [verification/](verification/) directly for the complete, current file set
 rather than trusting this list to be exhaustive.
 
+- [verification/2026-10-09-npm-advisories.md](verification/2026-10-09-npm-advisories.md) —
+  the `next`, `brace-expansion`, `sharp` and `source-map-js` advisories that
+  failed `trivy` and `web` on every PR: which version each moved to, Trivy's
+  exit 1 → 0 and `pnpm audit`'s 18 → 1, the rest of the `web` job's results,
+  and the one advisory (`braces`) with no published fix, ignored by id on the maintainer's decision.
 - [verification/2026-10-08-jti-purge-horizon.md](verification/2026-10-08-jti-purge-horizon.md) —
   ADR-0028: the housekeeping sweep deleted a spent client-assertion `jti` at
   its `exp`, while the validator accepts the assertion for 61 s longer
