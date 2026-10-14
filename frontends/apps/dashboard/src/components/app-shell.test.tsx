@@ -85,6 +85,36 @@ describe("the signed-in shell", () => {
     }
   });
 
+  it("renders the rail without a React duplicate-key warning", () => {
+    // Issue #163: the phone bar keys `[topItem, ...items]` by href, so a
+    // `topItem` that borrows an entry's href is two children with one key.
+    const error = vi.spyOn(console, "error");
+    try {
+      renderShell();
+      const duplicateKey = error.mock.calls.filter((args) =>
+        args.map(String).join(" ").includes("same key"),
+      );
+      expect(duplicateKey).toEqual([]);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  it("gives every destination in the phone bar a distinct href", () => {
+    // The same regression as the case above, asserted on the DOM rather
+    // than on the wording of React's warning.
+    renderShell();
+    const bar = document.body.querySelector<HTMLElement>(
+      '[data-floating-rail-axis="horizontal"]',
+    );
+    expect(bar, "the phone bar is portalled into the document").not.toBeNull();
+    const hrefs = [...(bar as HTMLElement).querySelectorAll("a[href]")].map(
+      (a) => a.getAttribute("href"),
+    );
+    expect(hrefs.length, "the bar renders its destinations").toBeGreaterThan(1);
+    expect(new Set(hrefs).size).toBe(hrefs.length);
+  });
+
   it("puts sign-out in a form, never behind a link", () => {
     // Issue #88 item 4: a sign-out reachable by GET is what an `<img src>` or
     // a link scanner fires. It was a POST before this shell existed and it
