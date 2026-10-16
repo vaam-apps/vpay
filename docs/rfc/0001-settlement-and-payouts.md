@@ -10,6 +10,12 @@ rail, and funds move payer → merchant's own wallet. vpay never holds merchant
 money, which keeps it a technical service provider rather than a payment
 institution.
 
+_(2026-10-16: true today only of a deployment that serves one merchant.
+Provider credentials are configured once per deployment and a merchant
+registration names no account, so two `merchant_id`s on one deployment are paid
+into one account on each rail. [RFC-0009](0009-provider-accounts-per-merchant.md)
+measures the gap and proposes the fix.)_
+
 Merchants will eventually ask for aggregation — one vpay account collecting, with
 periodic settlement to them. That is money transmission.
 

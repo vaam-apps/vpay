@@ -682,3 +682,31 @@ and the `stf_…` to remove by hand.
   question stay open honestly.
 - **R4: does `staff add` grow a `--kind`, and what provisions an SSO member?**
   Answerable only alongside the slice that implements a third kind.
+
+## Provider accounts are per deployment, not per merchant (measured 2026-10-16)
+
+**Pass-through holds only on a deployment that serves one merchant.** Measured
+on `master` at `44c5bf5`; nothing in code changed.
+
+- Provider credentials are configured once per rail, under
+  `providers[].credentials` in `config/application.yml`.
+- `vpay_config::oauth::MerchantClient` names no provider account.
+- `vpay_api::v1::ResourceConfig::from_config` builds one `RailConfig` per
+  rail code, and every merchant's call on that rail is handed the same
+  `ProviderConfig` — although the port documents that type as "per-merchant,
+  per-rail".
+- `charges` records `provider_code` (migration `0004`) and no account.
+
+So on a deployment that registers two `merchant_id`s, both merchants' MTN
+payments land in one MTN account and both merchants' Orange payments in one
+Orange `merchant_key`'s account. Whoever holds those accounts holds the other
+merchant's money, which is the aggregation
+[RFC-0001](../rfc/0001-settlement-and-payouts.md) says not to start. No test
+asserts which account a merchant's money reached, because no code path can
+tell two merchants' accounts apart. The per-merchant `merchant_payable` ledger
+account (migration `0045`) records whom vpay believes is owed, not where the
+rail put the money.
+
+[RFC-0009](../rfc/0009-provider-accounts-per-merchant.md) (Draft) proposes a
+provider account per merchant, recorded on every charge. Until it is built,
+run one deployment per merchant.

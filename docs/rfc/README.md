@@ -16,6 +16,7 @@ is recorded as an ADR and the RFC is marked resolved.
 | [0006](0006-card-processing-without-a-psp.md)                      | Card processing without a PSP                               | Draft                                                                                    |
 | [0007](0007-bank-transfer-reconciliation.md)                       | Bank transfers reconciled from bank statements              | Draft                                                                                    |
 | [0008](0008-payment-method-routing.md)                             | Payment-method routing                                      | Draft                                                                                    |
+| [0009](0009-provider-accounts-per-merchant.md)                     | Provider accounts per merchant                              | Draft                                                                                    |
 
 ## Template
 

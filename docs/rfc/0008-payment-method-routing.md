@@ -191,7 +191,9 @@ The invariant is not up for negotiation here.
 4. **Merchant `requires`:** is refund capability something a merchant should
    require per method, or a deployment policy? (Maintainer.)
 5. **Where fee schedules live** once rail credentials become per merchant, if
-   they do. (Maintainer.)
+   they do. (Maintainer.) _(2026-10-16: [RFC-0009](0009-provider-accounts-per-merchant.md)
+   proposes that they do, and that a fee schedule lives on the provider
+   account it prices.)_
 
 ## Impact on existing invariants
 
