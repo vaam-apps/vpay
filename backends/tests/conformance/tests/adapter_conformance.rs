@@ -206,55 +206,82 @@ fn every_adapter_declares_coherent_capabilities() {
     }
 }
 
-/// **Every rail this workspace ships declares
-/// [`RefundDestination::Required`] — and this case exists to fail on the day
-/// one does not.**
+/// **Every shipping rail's `refund_destination` agrees with what its
+/// `parse_destination` does** — a `Required` rail has overridden it, an
+/// `Origin` rail has left the port's `Unsupported` alone.
 ///
-/// It asserts a fact, not a rule, and the fact is load-bearing for a test
-/// somewhere else. `vpay_api::v1::refunds::resolve_destination` refuses a
-/// `destination` sent to an `Origin` rail, and merging that arm into the one
-/// above it — `(Origin, _) => Ok(None)`, which accepts the payee and silently
-/// drops it — compiles and fails **exactly one** test in the workspace:
-/// `an_origin_rail_refuses_a_destination`, a unit test driving a hand-written
-/// fake. Measured 2026-09-16 by the arm that wrote it, and re-stated here
-/// because the reason no integration or conformance case can fail with it is
-/// precisely the fact this line pins: there is no `Origin` rail to drive one
-/// with.
+/// # What this case was, and what it cost to relax
 ///
-/// So the single unit test is *adequate* while this assertion holds, and
-/// becomes inadequate the moment it stops holding — at which point this case
-/// goes red and says what is owed. That is the whole design:
+/// Until 2026-10-17 this was
+/// `no_shipping_rail_returns_a_refund_to_the_paying_instrument`, and it
+/// asserted a fact rather than a rule: every rail this workspace ships
+/// declared [`RefundDestination::Required`]. The fact was load-bearing.
+/// `vpay_api::v1::refunds::resolve_destination` refuses a `destination` sent
+/// to an `Origin` rail, and merging that arm into the one above it —
+/// `(Origin, _) => Ok(None)`, which accepts the payee and silently drops it —
+/// compiled and failed **exactly one** test in the workspace, a unit test on
+/// a hand-written fake (measured 2026-09-16). A fixture `Origin` rail was
+/// refused here, and still is: this suite parameterises over the rails that
+/// actually ship, and a rail that ships nowhere would make every case here
+/// answer a question about a fake. So the case pinned the premise and its
+/// message named three debts to pay before an `Origin` rail could be
+/// admitted.
 ///
-/// * a fixture `Origin` rail is **not** added to this suite. An earlier arm
-///   refused that and ADR-0006 is why — this suite parameterises over the
-///   rails that actually ship, and a rail that ships nowhere would make every
-///   case here answer a question about a fake;
-/// * nothing here can make the core's arm *reachable*, so nothing here tries
-///   to. What it can do is refuse to let the premise change quietly.
+/// **Paid on 2026-10-17 (RFC-0010 § 7, step 1)**, which is the only reason
+/// this assertion changed:
 ///
-/// Added by review, 2026-09-16. `a_destination_is_offered_exactly_when_the_capability_demands_one`
-/// is the neighbouring case that pins this file's own `Origin` branch, and it
-/// has no caller for the same reason.
+/// 1. `an_origin_rail_refuses_a_destination_through_the_route` in
+///    `backends/tests/integration/tests/refunds.rs` sends a `destination` to
+///    an `Origin` rail through `POST /v1/refunds`, against a real Postgres
+///    and the real handler, and asserts the `400`, the parameter, the error
+///    type, that no row was written and that the rail was never asked;
+/// 2. `a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`,
+///    beside it, drives the `Ok` arm — and holds the core change that came
+///    with it: the refund's `ChargeRef::ref_extra` carries the charge's
+///    `provider_txn_id`, which a rail that refunds by naming the payment
+///    cannot do without;
+/// 3. RFC-0003 § 1 says so, in a dated note.
+///
+/// The `Origin` rail those two cases drive lives in that test binary and
+/// nowhere else, for ADR-0006's reason; it is not this suite's, and this
+/// suite's `adapters()` still builds only what ships. What survives here is
+/// the rule the fact was standing in for, checked on every shipping rail and
+/// on the next one without touching this file: a rail's declaration and its
+/// parser must agree. `a_required_rail_parses_its_own_destination` holds the
+/// `Required` half in depth; this case holds both halves in one line each,
+/// so that the first `Origin` rail (RFC-0010) is admitted by it rather than
+/// fought by it.
+///
+/// Added by review, 2026-09-16; rewritten 2026-10-17.
+/// `a_destination_is_offered_exactly_when_the_capability_demands_one` is the
+/// neighbouring case that pins this file's own `Origin` branch.
 #[test]
-fn no_shipping_rail_returns_a_refund_to_the_paying_instrument() {
+fn every_shipping_rails_refund_destination_agrees_with_its_parser() {
+    let mut payee = serde_json::Map::new();
+    payee.insert(
+        "msisdn".to_owned(),
+        serde_json::Value::String(REFUND_PAYEE.to_owned()),
+    );
+
     for a in adapters() {
-        assert_eq!(
-            a.capabilities().refund_destination,
-            RefundDestination::Required,
-            "{} now declares RefundDestination::Origin. That is a legitimate thing for a rail \
-             to be — a card or a wallet refunds to the instrument that paid — and it makes an \
-             `Origin` rail drivable end to end for the first time. Three things are owed \
-             before this assertion is relaxed to admit it: (1) an integration case in \
-             backends/tests/integration/tests/refunds.rs that sends `destination` to this \
-             rail through POST /v1/refunds and asserts the 400, because until now \
-             `an_origin_rail_refuses_a_destination` in vpay_api::v1::refunds — a unit test on \
-             a hand-written fake — has been the ONLY thing in this workspace that fails when \
-             that arm is deleted; (2) a case that a refund WITHOUT a destination succeeds on \
-             it, which nothing covers either; (3) docs/rfc/0003-refunds-destinations-and-the-\
-             first-ledger-postings.md section 1 updated, since it says every rail vpay \
-             carries needs a payee. Do not simply widen this assertion.",
-            a.code()
-        );
+        let parsed = a.parse_destination(&payee);
+        match a.capabilities().refund_destination {
+            RefundDestination::Required => assert!(
+                !matches!(parsed, Err(ProviderError::Unsupported)),
+                "{} declares RefundDestination::Required and takes the port's default \
+                 `parse_destination`. A rail that refunds by transfer owns its payee's wire \
+                 shape; see `a_required_rail_parses_its_own_destination`.",
+                a.code()
+            ),
+            RefundDestination::Origin => assert!(
+                matches!(parsed, Err(ProviderError::Unsupported)),
+                "{} declares RefundDestination::Origin and parses a destination anyway. A \
+                 rail that returns money to the instrument that paid has no payee to parse, \
+                 and the core never calls this on it; an override here is a payee invented \
+                 for a refund nobody nominated one for.",
+                a.code()
+            ),
+        }
     }
 }
 

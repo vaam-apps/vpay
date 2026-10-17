@@ -300,7 +300,11 @@ pub struct ChargeRef {
     /// Payer instrument. `None` on redirect rails, where the payer
     /// authenticates with the rail and we may never learn who they are.
     pub payer_ref: Option<String>,
-    /// Rail key material captured from a previous `submit`, if any.
+    /// Rail key material captured from a previous `submit`, if any — and,
+    /// on a [`refund`](ProviderAdapter::refund) since 2026-10-17, the
+    /// charge's own recorded `provider_txn_id` under the key
+    /// `provider_txn_id`, when the charge has one. That method's docs say
+    /// which kind of rail reads it.
     pub ref_extra: RefExtra,
     /// Where a redirect rail must send the payer's browser when its own page
     /// is done with them. `None` on a push rail, which has no browser.
@@ -1663,6 +1667,29 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// The type does not enforce it because it cannot: one trait serves both
     /// kinds of rail, so the parameter is an `Option` and the guarantee is the
     /// caller's.
+    ///
+    /// # What `charge.ref_extra` carries here, since 2026-10-17
+    ///
+    /// Not the key material a `submit` captured. The core
+    /// (`vpay_api::v1::refunds`, RFC-0010 § 7) builds a refund's
+    /// [`ChargeRef`] with `ref_extra` holding **one** entry — the charge's
+    /// recorded rail transaction id, the `provider_txn_id` of its
+    /// [`ChargeStatus::Succeeded`], under the key `provider_txn_id`, spelled
+    /// once as `vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY` — or
+    /// nothing at all when the charge recorded none. A `Required` rail
+    /// addresses a payee and ignores it; both shipping adapters do, and a
+    /// `Required` adapter that reads it is a bug in that adapter. An
+    /// [`Origin`](RefundDestination::Origin) rail returns money by naming
+    /// the payment to the rail, so it reads it, and when the key is
+    /// **missing** it answers [`ProviderError::Config`] on the reasoning of
+    /// the paragraph above: a settled charge whose rail id was never
+    /// recorded is a case for a human, never an invented id and never a
+    /// decline.
+    ///
+    /// _(Until 2026-10-17 `ref_extra` was empty on every refund, "because a
+    /// refund carries no key material from a submit" — true of every refund
+    /// the two shipping rails make, and the reason no `Origin` rail could
+    /// have been written against this port as it stood.)_
     ///
     /// # An `Ok` is an *acceptance*. It is not a settlement
     ///

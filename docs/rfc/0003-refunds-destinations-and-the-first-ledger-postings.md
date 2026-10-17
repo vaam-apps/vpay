@@ -94,6 +94,23 @@ pub enum RefundDestination {
 `mtn_momo` and `orange_money` both declare `Required`. A future card rail
 declares `Origin` and the merchant sends nothing. No handler learns a rail code.
 
+_(Amended 2026-10-17, [RFC-0010](0010-stripe-adapter.md) § 7, delivery
+step 1. "Every rail vpay carries needs a payee" stopped being the premise the
+core is tested against on that day. The `Origin` arm now has an integration
+guard: two cases in `backends/tests/integration/tests/refunds.rs` drive
+`POST /v1/refunds` on an `Origin` rail that exists only in that test binary,
+`an_origin_rail_refuses_a_destination_through_the_route` asserting the `400`
+on a nominated payee and
+`a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`
+asserting that a refund **without** one is accepted. And a refund on an
+`Origin` rail must name the payment it unwinds, which a payee-addressed
+transfer never had to: `refund_at_rail` puts the charge's `provider_txn_id`
+into the refund `ChargeRef`'s `ref_extra` under
+`vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY`, or nothing when the
+charge recorded none, and an `Origin` adapter that finds it missing answers
+`ProviderError::Config`. The two shipping rails still declare `Required`, no
+shipping rail declares `Origin`, and no rail has refunded anything.)_
+
 **The port signature** gains one parameter:
 
 ```rust

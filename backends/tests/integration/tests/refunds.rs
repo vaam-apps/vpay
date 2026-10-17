@@ -61,7 +61,7 @@
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use serde_json::{Value, json};
@@ -71,7 +71,12 @@ use testcontainers::GenericImage;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_core::{Money, ProviderFlow};
 use vpay_db::{NewEvent, Repositories, TxOutcome, UnitOfWork as _};
+use vpay_provider::{
+    CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
+    ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
+};
 use vpay_sdk::{
     CreatePaymentIntentParams, Credentials, PaymentMethodType, RefundStatus, RequestOptions,
 };
@@ -79,7 +84,8 @@ use vpay_sdk::{
 mod support;
 
 use support::{
-    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+    adapters_by_code, ensure_crypto_provider_installed, generate_key, merchant_client,
+    migrated_postgres, serve, serve_with_adapters,
 };
 
 /// The merchant every test acts as, and the tenant it acts for. Never the
@@ -1850,13 +1856,18 @@ impl Answer {
 /// and they need a rail that answers.
 struct RailHarness {
     _container: ContainerAsync<PostgresImage>,
-    _mtn: ContainerAsync<GenericImage>,
+    /// `None` for [`origin_harness`], whose rail answers in-process and opens
+    /// no socket; `Some` for [`rail_harness`], whose MTN is a WireMock.
+    _mtn: Option<ContainerAsync<GenericImage>>,
     mtn_origin: String,
     server: tokio::task::JoinHandle<()>,
     pool: PgPool,
     base_url: String,
     pem_a: String,
     signing_key: LoadedSigningKey,
+    /// What the `Origin` rail was handed, in call order. Empty, and never
+    /// read, on [`rail_harness`].
+    origin_refunds: Arc<Mutex<Vec<RecordedRefund>>>,
 }
 
 impl RailHarness {
@@ -1908,8 +1919,41 @@ impl RailHarness {
             .create(create_params(), RequestOptions::new())
             .await
             .context("creating the intent a refund comes off")?;
-        self.capture(&intent.id, amount, rail).await?;
+        self.capture(&intent.id, amount, rail, None).await?;
         Ok(intent.id)
+    }
+
+    /// An intent captured on a rail the SDK's `PaymentMethodType` cannot name
+    /// — the `Origin` rail — with the rail transaction id its settlement
+    /// recorded, which is what a refund on such a rail names to the rail.
+    ///
+    /// The intent row is written whole, as [`captured_intent_for`] writes
+    /// one, because `vpay_sdk::PaymentMethodType` is the closed vocabulary of
+    /// the rails that ship and this rail ships nowhere.
+    async fn captured_intent_naming(
+        &self,
+        amount: i64,
+        rail: &str,
+        provider_txn_id: &str,
+    ) -> anyhow::Result<String> {
+        let id = vpay_core::ids::payment_intent_id();
+        sqlx::query(
+            "INSERT INTO payment_intents \
+                 (id, merchant_id, livemode, amount, amount_received, currency_code, status, \
+                  payment_method_types, metadata, client_secret_suffix) \
+             VALUES ($1, $2, false, $3, $3, 'XAF', 'succeeded', $4, '{}'::jsonb, $5)",
+        )
+        .bind(&id)
+        .bind(MERCHANT_A)
+        .bind(amount)
+        .bind(json!([rail]))
+        .bind("x".repeat(32))
+        .execute(&self.pool)
+        .await
+        .context("seeding a captured intent on the Origin rail")?;
+        self.capture(&id, amount, rail, Some(provider_txn_id))
+            .await?;
+        Ok(id)
     }
 
     /// The same, for a merchant whose SDK credential this harness does not
@@ -1931,13 +1975,25 @@ impl RailHarness {
         .execute(&self.pool)
         .await
         .context("seeding another merchant's captured intent")?;
-        self.capture(&id, amount, RAIL).await?;
+        self.capture(&id, amount, RAIL, None).await?;
         Ok(id)
     }
 
     /// Moves an intent to `succeeded` and gives it the charge a refund is
     /// attributed to.
-    async fn capture(&self, intent_id: &str, amount: i64, rail: &str) -> anyhow::Result<()> {
+    ///
+    /// `provider_txn_id` is what the rail named the settled charge
+    /// (`ChargeStatus::Succeeded { provider_txn_id }`, migration `0021`).
+    /// `None` on the MTN cases, which never read it: a transfer to a payee
+    /// names no payment. `Some` on the `Origin` cases, where it is the one
+    /// thing the rail is told.
+    async fn capture(
+        &self,
+        intent_id: &str,
+        amount: i64,
+        rail: &str,
+        provider_txn_id: Option<&str>,
+    ) -> anyhow::Result<()> {
         sqlx::query(
             "UPDATE payment_intents SET status = 'succeeded', amount_received = $2 WHERE id = $1",
         )
@@ -1950,8 +2006,8 @@ impl RailHarness {
         sqlx::query(
             "INSERT INTO charges \
                  (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
-                  currency_code, payer_ref) \
-             VALUES ($1, $2, $3, $4, 'succeeded', $5, 'XAF', $6)",
+                  currency_code, payer_ref, provider_txn_id) \
+             VALUES ($1, $2, $3, $4, 'succeeded', $5, 'XAF', $6, $7)",
         )
         .bind(vpay_core::ids::charge_id())
         .bind(intent_id)
@@ -1962,6 +2018,7 @@ impl RailHarness {
         // sent the money back to the payer by accident would pass a test
         // whose two numbers were the same string.
         .bind("237600000111")
+        .bind(provider_txn_id)
         .execute(&self.pool)
         .await
         .context("seeding the charge a refund comes off")?;
@@ -2284,14 +2341,394 @@ async fn rail_harness() -> anyhow::Result<RailHarness> {
 
     Ok(RailHarness {
         _container: container,
-        _mtn: mtn,
+        _mtn: Some(mtn),
         mtn_origin,
         server: served.server,
         pool,
         base_url: served.base_url,
         pem_a,
         signing_key: served.signing_key,
+        origin_refunds: Arc::new(Mutex::new(Vec::new())),
     })
+}
+
+// ------------------------------------------------------- the Origin rail --
+
+/// The rail code the `Origin` rail below answers to. It is a `providers[]`
+/// code in [`origin_config`] and a key in the adapter map and nowhere else:
+/// not in any binary, not in `REQUIRED_RAIL_KEYS`, not in the SDKs'
+/// `PaymentMethodType`.
+const ORIGIN_RAIL: &str = "origin_rail";
+
+/// The rail transaction id [`captured_intent_naming`] records on the charge,
+/// in the shape a card rail's status read reports one.
+const ORIGIN_TXN_ID: &str = "pi_3Qx9Y2LkdIwHu7ix1R2Z3a4b";
+
+/// One call the `Origin` rail's `refund` received, as the handler shaped it.
+#[derive(Debug, Clone)]
+struct RecordedRefund {
+    reference_id: uuid::Uuid,
+    amount: Money,
+    ref_extra: RefExtra,
+    destination_present: bool,
+}
+
+/// A rail that returns money to the instrument that paid — the first one
+/// `POST /v1/refunds` has ever been driven against, and the reason the two
+/// cases below exist (RFC-0010 § 7, 2026-10-17).
+///
+/// **It is test-only and reachable from no binary** (`cargo xtask
+/// verify-no-mocks`), and it is the kind of double ADR-0006 permits: it is
+/// linked into this test binary's own router, behind the same `Measured`
+/// wrapper the shipping rails get, and the server, the handler, the database
+/// and the wire are all real. What it stands in for is a rail this
+/// workspace does not ship yet — a card or wallet rail with
+/// [`RefundDestination::Origin`] — and the two cases assert the **core's**
+/// behaviour on that capability value, which no shipping rail declares. The
+/// conformance suite deliberately carries no such fixture
+/// (`every_shipping_rails_refund_destination_agrees_with_its_parser` says
+/// why); this suite is where the core's arm is driven, because this suite's
+/// subject is the handler.
+///
+/// `refund` records what it was handed and answers an acceptance, which is
+/// what every real rail answers (`ProviderAdapter::refund` § "An `Ok` is an
+/// *acceptance*"). It is a `Push` rail only because the capability has to
+/// hold some value and the charge path is never exercised: every charge here
+/// is seeded settled.
+#[derive(Debug)]
+struct OriginRail {
+    refunds: Arc<Mutex<Vec<RecordedRefund>>>,
+}
+
+#[async_trait::async_trait]
+impl ProviderAdapter for OriginRail {
+    fn code(&self) -> &'static str {
+        ORIGIN_RAIL
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            flow: ProviderFlow::Push,
+            supports_refunds: true,
+            supports_partial_refunds: true,
+            delivers_callbacks: false,
+            requires_ip_allowlist: false,
+            supports_account_holder_lookup: false,
+            refund_destination: RefundDestination::Origin,
+        }
+    }
+
+    async fn submit(
+        &self,
+        _charge: &ChargeRef,
+        _config: &ProviderConfig,
+    ) -> Result<Submitted, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
+    async fn query_status(
+        &self,
+        _charge: &ChargeRef,
+        _config: &ProviderConfig,
+    ) -> Result<ChargeStatus, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
+    fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
+    // `parse_destination` deliberately takes the port's default: an `Origin`
+    // rail has no payee to parse, and `Unsupported` is the permanent answer.
+
+    async fn refund(
+        &self,
+        charge: &ChargeRef,
+        amount: Money,
+        destination: Option<&RefundTarget>,
+        _config: &ProviderConfig,
+    ) -> Result<Refunded, ProviderError> {
+        self.refunds
+            .lock()
+            .expect("the recorder's lock is never poisoned")
+            .push(RecordedRefund {
+                reference_id: charge.reference_id,
+                amount,
+                ref_extra: charge.ref_extra.clone(),
+                destination_present: destination.is_some(),
+            });
+        Ok(Refunded {
+            ref_extra: BTreeMap::new(),
+            fee: None,
+        })
+    }
+}
+
+/// One rail, the `Origin` one, at an address nothing listens on: its refund
+/// is answered in-process and a test that passed because a socket said so
+/// would be measuring the socket. Two merchants, as every other
+/// configuration here, so the tenancy helpers keep working.
+fn origin_config(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
+    Config {
+        deployment: Deployment {
+            name: "refunds-origin".to_owned(),
+            livemode: false,
+            public_base_url: base_url.to_owned(),
+            surfaces: None,
+        },
+        providers: vec![ProviderHost {
+            code: ORIGIN_RAIL.to_owned(),
+            enabled: true,
+            host: HostEntry {
+                url: "http://127.0.0.1:1".to_owned(),
+                label: "unreachable-by-design".to_owned(),
+            },
+            settings: BTreeMap::new(),
+            callback_url: None,
+            currency: "XAF".to_owned(),
+            credentials: BTreeMap::new(),
+            display_name: None,
+        }],
+        currencies: vec![CurrencyEntry {
+            code: "XAF".to_owned(),
+            exponent: 0,
+        }],
+        merchant_clients: vec![
+            merchant_client(CLIENT_A, MERCHANT_A, jwks_a),
+            merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
+        ],
+        webhooks: vpay_config::WebhookPolicy::default(),
+        checkout: vpay_config::CheckoutConfig::default(),
+        dashboard_client: None,
+        staff_auth: vpay_config::StaffAuth::default(),
+    }
+}
+
+/// Postgres and a server whose one rail is [`OriginRail`]. No WireMock: the
+/// rail opens no socket, and `mtn_origin` is empty because nothing here may
+/// ask a stub anything.
+async fn origin_harness() -> anyhow::Result<RailHarness> {
+    ensure_crypto_provider_installed();
+
+    let (container, repositories, pool) = migrated_postgres().await?;
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let (_pem_b, jwks_b) = generate_key();
+
+    let refunds: Arc<Mutex<Vec<RecordedRefund>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorder = Arc::clone(&refunds);
+    let served = serve_with_adapters(
+        &repositories,
+        &server_pem,
+        |base_url| origin_config(base_url, jwks_a, jwks_b),
+        move || {
+            // The shipping rails stay linked, exactly as the binary links
+            // them, and the `Origin` rail joins them through the same
+            // `vpay_api::v1::boot::adapters_by_code`, so it is `Measured`
+            // like the rest. The configuration above names only the
+            // `Origin` rail, so only it is seeded and routable.
+            let mut adapters = adapters_by_code();
+            adapters.extend(vpay_api::v1::boot::adapters_by_code(vec![Box::new(
+                OriginRail {
+                    refunds: Arc::clone(&recorder),
+                },
+            )]));
+            adapters
+        },
+    )
+    .await?;
+
+    Ok(RailHarness {
+        _container: container,
+        _mtn: None,
+        mtn_origin: String::new(),
+        server: served.server,
+        pool,
+        base_url: served.base_url,
+        pem_a,
+        signing_key: served.signing_key,
+        origin_refunds: refunds,
+    })
+}
+
+// ----------------------------------------------------------------- test 17
+
+/// **A `destination` sent to an `Origin` rail is the caller's `400`, through
+/// the route** — the first of the three debts
+/// `no_shipping_rail_returns_a_refund_to_the_paying_instrument` named before
+/// it could be relaxed (RFC-0010 § 7, step 1).
+///
+/// Until 2026-10-17 `an_origin_rail_refuses_a_destination` in
+/// `vpay_api::v1::refunds` — a unit test on a hand-written fake — was the
+/// only case in the workspace that failed when `resolve_destination`'s
+/// `(Origin, Some(_))` arm was merged into `(Origin, _) => Ok(None)`, which
+/// accepts the payee and silently drops it. This case fails on the same
+/// mutation through the real handler: the refusal names the parameter, is
+/// `invalid_request_error` and not a rail fault, writes no row, and reaches
+/// no rail — the recorder is empty afterwards, which is the half the unit
+/// test could not say.
+#[tokio::test]
+async fn an_origin_rail_refuses_a_destination_through_the_route() -> anyhow::Result<()> {
+    let harness = origin_harness().await?;
+    let intent_id = harness
+        .captured_intent_naming(AMOUNT, ORIGIN_RAIL, ORIGIN_TXN_ID)
+        .await?;
+
+    let refused = harness
+        .create_refund_on(&intent_id, Some(REFUND_AMOUNT), PAYEE, ORIGIN_RAIL)
+        .await?;
+    assert_eq!(
+        refused.status, 400,
+        "a payee on a rail that returns money to the paying instrument: {:#}",
+        refused.body
+    );
+    assert_eq!(
+        refused.body.pointer("/error/param").and_then(Value::as_str),
+        Some("destination"),
+        "the refusal names the parameter an SDK points a form field at: {:#}",
+        refused.body
+    );
+    assert_eq!(
+        refused.body.pointer("/error/type").and_then(Value::as_str),
+        Some("invalid_request_error"),
+        "a merchant's mistake is not a rail outage: {:#}",
+        refused.body
+    );
+    assert!(
+        !serde_json::to_string(&refused.body)?.contains(PAYEE_CANONICAL),
+        "a refusal must not echo the number it refused: {:#}",
+        refused.body
+    );
+
+    // Decided before the transaction opened: no row, no reservation, and the
+    // rail was never asked — which is the statement a fake behind a unit
+    // test cannot make about the handler.
+    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(refunds, 0, "nothing was written by the refusal");
+    let pending: i64 =
+        sqlx::query_scalar("SELECT amount_refund_pending FROM payment_intents WHERE id = $1")
+            .bind(&intent_id)
+            .fetch_one(&harness.pool)
+            .await?;
+    assert_eq!(pending, 0, "nothing was reserved by the refusal");
+    assert!(
+        harness
+            .origin_refunds
+            .lock()
+            .expect("the recorder's lock is never poisoned")
+            .is_empty(),
+        "the rail was asked to refund something the core had refused"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------------------------------- test 18
+
+/// **A refund with no `destination` succeeds on an `Origin` rail, and the
+/// rail is told which payment it unwinds** — the second debt, plus the core
+/// change RFC-0010 § 7 names first.
+///
+/// Two things are asserted on what the rail was handed, and each has a
+/// mutation that fails it:
+///
+/// * `destination` was `None` — the invariant `ProviderAdapter::refund`
+///   documents an adapter is entitled to, driven for the first time on the
+///   capability value that makes it `None`;
+/// * `ref_extra` carries the charge's `provider_txn_id` under
+///   `vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY`. Until 2026-10-17 it
+///   was empty, which no shipping rail noticed because a transfer to a payee
+///   names no payment; a rail that refunds by naming the payment — Stripe by
+///   `payment_intent`, PayPal by capture id — would have been handed nothing
+///   to name. Handing the **charge's** reference instead of the rail's id is
+///   the plausible wrong fix, and the assertion on the exact string is what
+///   refuses it.
+///
+/// The refund's own reference — not the charge's — is what the rail is
+/// addressed by, as `two_partial_refunds_of_one_charge_carry_two_references`
+/// holds on MTN; it is re-asserted here because this is a different rail
+/// kind and the same bug would be as silent.
+#[tokio::test]
+async fn a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment()
+-> anyhow::Result<()> {
+    let harness = origin_harness().await?;
+    let intent_id = harness
+        .captured_intent_naming(AMOUNT, ORIGIN_RAIL, ORIGIN_TXN_ID)
+        .await?;
+
+    let response = harness
+        .post_refund_form(&format!(
+            "payment_intent={intent_id}&amount={REFUND_AMOUNT}"
+        ))
+        .await?;
+    assert_eq!(response.status, 201, "{:#}", response.body);
+    assert_eq!(
+        response.body.get("status").and_then(Value::as_str),
+        Some("pending"),
+        "an Ok from the rail is an acceptance, never a settlement: {:#}",
+        response.body
+    );
+    assert_eq!(
+        response.body.get("amount").and_then(Value::as_i64),
+        Some(REFUND_AMOUNT)
+    );
+    let refund_id = response.id();
+
+    // The reservation is on the intent, as on every other rail.
+    let (refunded, pending, reference): (i64, i64, uuid::Uuid) = sqlx::query_as(
+        "SELECT p.amount_refunded, p.amount_refund_pending, r.provider_reference_id \
+         FROM payment_intents p JOIN refunds r ON r.payment_intent_id = p.id \
+         WHERE r.id = $1",
+    )
+    .bind(&refund_id)
+    .fetch_one(&harness.pool)
+    .await
+    .context("reading the intent's counters and the refund's reference")?;
+    assert_eq!(refunded, 0, "nothing has settled");
+    assert_eq!(pending, REFUND_AMOUNT, "the amount is reserved");
+
+    let recorded = harness
+        .origin_refunds
+        .lock()
+        .expect("the recorder's lock is never poisoned")
+        .clone();
+    let [call] = recorded.as_slice() else {
+        panic!("the rail was instructed exactly once: {recorded:?}");
+    };
+    assert!(
+        !call.destination_present,
+        "an Origin rail was handed a payee the core should have refused to carry"
+    );
+    assert_eq!(
+        call.reference_id, reference,
+        "the rail is addressed by the refund's own reference, never the charge's"
+    );
+    assert_eq!(
+        call.amount.to_provider_minor(),
+        REFUND_AMOUNT,
+        "the amount the rail was told is the refund's"
+    );
+    assert_eq!(
+        call.ref_extra
+            .get(vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY)
+            .map(String::as_str),
+        Some(ORIGIN_TXN_ID),
+        "the rail must be told which payment it is unwinding: {:?}",
+        call.ref_extra
+    );
+    assert_eq!(
+        call.ref_extra.len(),
+        1,
+        "exactly the one key, so an adapter cannot come to depend on a second: {:?}",
+        call.ref_extra
+    );
+
+    harness.shutdown().await;
+    Ok(())
 }
 
 // ----------------------------------------------------------------- test 16

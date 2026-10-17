@@ -424,13 +424,35 @@ pub(crate) fn router_deps(
     signing_key: &LoadedSigningKey,
     config: &Config,
 ) -> RouterDeps {
+    router_deps_with(
+        repositories,
+        merchant_op,
+        merchant_validator,
+        dashboard_validator,
+        signing_key,
+        config,
+        adapters_by_code(),
+    )
+}
+
+/// [`router_deps`], with the adapter map the suite supplies — see
+/// [`reconcile_from_config_with`] for the one suite that needs it.
+pub(crate) fn router_deps_with(
+    repositories: Arc<dyn Repositories>,
+    merchant_op: Arc<MerchantOp>,
+    merchant_validator: MerchantJwtValidator,
+    dashboard_validator: Option<DashboardJwtValidator>,
+    signing_key: &LoadedSigningKey,
+    config: &Config,
+    adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> RouterDeps {
     let repositories_for_login = Arc::clone(&repositories);
     RouterDeps {
         repositories,
         merchant_op,
         merchant_validator,
         dashboard_validator,
-        adapters: Arc::new(adapters_by_code()),
+        adapters: Arc::new(adapters),
         resource_config: Arc::new(
             ResourceConfig::from_config(config)
                 .expect("the suite's configuration projects onto the port"),
@@ -546,8 +568,22 @@ pub(crate) async fn reconcile_from_config(
     repositories: &dyn Repositories,
     config: &Config,
 ) -> anyhow::Result<()> {
-    let adapters = adapters_by_code();
+    reconcile_from_config_with(repositories, config, &adapters_by_code()).await
+}
 
+/// [`reconcile_from_config`], against an adapter map the suite supplies.
+///
+/// For the one suite that links a rail the binary does not: `refunds.rs`'s
+/// `Origin`-refunding rail, which exists so `POST /v1/refunds`' `Origin` arm
+/// can be driven end to end before a shipping rail declares it (RFC-0010 § 7,
+/// 2026-10-17). Every other suite takes [`adapters_by_code`] through the
+/// wrapper above, and the rail in question is reachable from no binary
+/// (`cargo xtask verify-no-mocks`).
+pub(crate) async fn reconcile_from_config_with(
+    repositories: &dyn Repositories,
+    config: &Config,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> anyhow::Result<()> {
     let currencies = config
         .currencies
         .iter()
@@ -916,6 +952,22 @@ pub(crate) async fn serve(
     server_pem: &str,
     make_config: impl FnOnce(&str) -> Config,
 ) -> anyhow::Result<Served> {
+    serve_with_adapters(repositories, server_pem, make_config, adapters_by_code).await
+}
+
+/// [`serve`], with the adapter map the suite supplies.
+///
+/// `adapters` is called twice — once to seed `providers` from the
+/// configuration (boot step 4) and once for the router — exactly as
+/// [`adapters_by_code`] is by the wrapper above, so the two maps are built
+/// the same way and cannot disagree about which rails exist. See
+/// [`reconcile_from_config_with`] for the one suite that needs this.
+pub(crate) async fn serve_with_adapters(
+    repositories: &Arc<dyn Repositories>,
+    server_pem: &str,
+    make_config: impl FnOnce(&str) -> Config,
+    adapters: impl Fn() -> BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> anyhow::Result<Served> {
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
         .context("binding an ephemeral loopback port")?;
@@ -931,7 +983,7 @@ pub(crate) async fn serve(
         .context("announcing the signing key in oauth_signing_keys")?;
 
     let config = make_config(&base_url);
-    reconcile_from_config(repositories.as_ref(), &config).await?;
+    reconcile_from_config_with(repositories.as_ref(), &config, &adapters()).await?;
 
     let merchant_op = Arc::new(MerchantOp::new(
         &config,
@@ -949,13 +1001,14 @@ pub(crate) async fn serve(
     );
 
     let dashboard_validator = dashboard_validator_for(&base_url, merchant_op.issuer(), &config);
-    let deps = router_deps(
+    let deps = router_deps_with(
         Arc::clone(repositories),
         merchant_op,
         merchant_validator,
         dashboard_validator,
         &signing_key,
         &config,
+        adapters(),
     );
     let server = tokio::spawn(async move {
         // `into_make_service_with_connect_info`, exactly as

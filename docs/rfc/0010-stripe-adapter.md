@@ -1,6 +1,7 @@
 # RFC-0010: A Stripe adapter — hosted Checkout behind the port
 
-- **Status:** Draft
+- **Status:** Draft — Delivery step 1 (the two core changes) landed
+  2026-10-17; steps 2–7 are unbuilt
 - **Author:** vpay maintainers
 - **Date:** 2026-10-17
 - **Related:** [RFC-0004](0004-billing-on-top-of-invoices.md) § 7 (one
@@ -400,10 +401,21 @@ things, and both are the port's `Origin` arm being used for the first time:
    `ref_extra`, "because a refund carries no key material from a submit".
    True of a transfer to a payee; false of a refund to the instrument that
    paid, which Stripe takes by `payment_intent`. The core puts the charge's
-   `provider_txn_id` into `ref_extra` under `provider_txn_id`; `Required`
-   rails ignore it; a `Required`-shaped adapter that reads it is a bug. A
-   charge with none is not refundable, and that is the handler's refusal
-   before any rail call.
+   `provider_txn_id` into `ref_extra` under `provider_txn_id` —
+   `vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY`, spelled in one place
+   so the adapter and the handler cannot disagree — or nothing when the
+   charge recorded none; `Required` rails ignore it; a `Required`-shaped
+   adapter that reads it is a bug. A charge with none is not refundable on an
+   `Origin` rail, and that refusal is **the adapter's**, as
+   `ProviderError::Config`: the port's settled answer for a broken invariant,
+   which stops the poll ladder, pages, and never reaches a payer as a
+   decline. **Landed 2026-10-17.** _(This said "that is the handler's refusal
+   before any rail call" until it landed. The handler cannot refuse on the
+   capability without learning what every `Origin` rail needs, and
+   `charges.provider_txn_id` is nullable on purpose — a `Required` rail may
+   settle a charge without naming a transaction — so the core carries what
+   it has and the rail that needs it is the one that says so. The port's
+   `refund` docs carry the rule.)_
 2. **The assertion that no shipping rail is `Origin` is relaxed, by paying
    what it names.** `no_shipping_rail_returns_a_refund_to_the_paying_instrument`
    in the conformance suite lists three debts: an integration case sending
@@ -411,6 +423,17 @@ things, and both are the port's `Origin` arm being used for the first time:
    the 400; a case that a refund **without** a destination succeeds on it;
    and RFC-0003 § 1 amended, since it says every rail vpay carries needs a
    payee. All three land in the same change as the capability value.
+   **Landed 2026-10-17, ahead of the capability value:** the two cases are
+   `an_origin_rail_refuses_a_destination_through_the_route` and
+   `a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`
+   in `backends/tests/integration/tests/refunds.rs`, driven on an `Origin`
+   rail that exists only in that test binary (ADR-0006 permits a double
+   there; `cargo xtask verify-no-mocks` is what proves it reaches no shipping
+   process); the conformance case became
+   `every_shipping_rails_refund_destination_agrees_with_its_parser`, a rule
+   (`Required` overrides `parse_destination`, `Origin` does not) rather than
+   a census; RFC-0003 § 1 carries the dated amendment. Step 3's suite changes
+   (§ 8) are the part that still waits on a shipping `Origin` rail.
 
 Nothing else moves: not the lifecycle, not the reconciler, not the checkout,
 not the settlement transaction. If step 9 of the implementation turns out to
@@ -479,7 +502,7 @@ be "and also patch the reconciler", the port leaked and that is the finding.
 
 | Step | Contents                                                                                                                                                                                                                                                                                                        | Depends on                            |
 | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| 1    | Core: `refund_at_rail` passes `provider_txn_id`; the `Origin` assertion relaxed with its three debts paid; RFC-0003 § 1 amended                                                                                                                                                                                 | nothing                               |
+| 1    | Core: `refund_at_rail` passes `provider_txn_id`; the `Origin` assertion relaxed with its three debts paid; RFC-0003 § 1 amended — **landed 2026-10-17** ([verification/2026-10-17-origin-refund-core.md](../status/verification/2026-10-17-origin-refund-core.md))                                              | nothing                               |
 | 2    | `vpay-adapter-stripe`: `wire.rs`, `mapping.rs` with the snapshot, `lib.rs`; unit tests                                                                                                                                                                                                                          | 1                                     |
 | 3    | Mappings, the conformance rows, the three suite changes in § 8                                                                                                                                                                                                                                                  | 2                                     |
 | 4    | Wiring: `adapters()`/`adapter_codes()`, `REQUIRED_RAIL_KEYS`, `compose.yml` (`wiremock-stripe`), `.env.example`, Helm, `config/application.yml`, `docs/api/`, both SDKs' value lists, `sdks/parity.md`, `examples/shop`'s crate map, `docs/flows/adapter-stripe.md`, `docs/flows/failures.md`, the status pages | 3                                     |
@@ -487,7 +510,10 @@ be "and also patch the reconciler", the port leaked and that is the finding.
 | 6    | Model B: `Stripe-Account` on every call, the Connect webhook endpoint                                                                                                                                                                                                                                           | RFC-0009                              |
 | 7    | Saved cards: `payment_intent_data[setup_future_usage]=off_session`, `customer_creation=always`, a `charge_stored` on the port                                                                                                                                                                                   | RFC-0004 § 7 stored methods, RFC-0009 |
 
-Steps 1–5 are one PR against `master` and one against `vpay-skills`; the
+Steps 1–5 were planned as one PR against `master` and one against
+`vpay-skills`; step 1 landed on its own on 2026-10-17, because it is the part
+no rail depends on and the part every `Origin` rail does, so steps 2–5 are
+the pair that remains. The
 `vpay-provider-adapters` skill says today that `supports_off_session`,
 `charge_stored` and `method_types` do not exist, and after step 5 it must say
 what this rail does and does not do in the same terms.

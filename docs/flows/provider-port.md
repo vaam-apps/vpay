@@ -199,6 +199,57 @@ whether this is a port or just a folder.
 
 ## Status
 
+**Updated 2026-10-17 (RFC-0010 § 7, delivery step 1): the `Origin` arm has an
+integration guard, and a refund's `ChargeRef` names the payment it unwinds.**
+No rail changed, no shipping rail declares `Origin`, and no rail has refunded
+anything.
+
+- **`refund_at_rail` fills `ref_extra`.** Until today it was empty on every
+  refund, "because a refund carries no key material from a submit" — true of
+  a transfer to a payee, false of a refund to the instrument that paid, which
+  a card or wallet rail makes by naming the original payment to the rail. The
+  core now puts the charge's `provider_txn_id` under
+  `vpay_api::v1::refunds::REFUND_PROVIDER_TXN_ID_KEY` (the string
+  `provider_txn_id`), or nothing when the charge recorded none — the column
+  is nullable, and a `Required` rail never needs it. `Required` rails ignore
+  the key; both shipping adapters do. An `Origin` adapter that finds it
+  missing answers `ProviderError::Config`, the port's settled answer for a
+  broken invariant, and the port's `refund` docs now carry that rule. Two
+  pure unit cases pin the two shapes:
+  `a_refund_names_the_payment_it_unwinds` and
+  `a_refund_of_an_unnamed_payment_carries_no_key`.
+- **`an_origin_rail_refuses_a_destination` is no longer the whole guard.**
+  Two cases in `backends/tests/integration/tests/refunds.rs` drive the real
+  handler through `POST /v1/refunds`, against a migrated Postgres, on an
+  `Origin` rail that exists only in that test binary — ADR-0006 permits a
+  double there, and `cargo xtask verify-no-mocks` is what proves it reaches
+  no shipping process. `an_origin_rail_refuses_a_destination_through_the_route`
+  asserts the `400` naming `destination` with no payee echoed, no `refunds`
+  row, nothing reserved and the rail never called;
+  `a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`
+  asserts a `201` `pending`, the amount reserved, and exactly one rail call
+  carrying `destination: None`, the **refund's** own reference and the
+  charge's `provider_txn_id` as the only `ref_extra` entry. The harness
+  gained `serve_with_adapters` and `reconcile_from_config_with` for it; every
+  other suite still boots through the unchanged `serve`. The unit case stays
+  as the cheapest thing that fails when the arm is merged.
+- **The conformance premise guard became a rule.**
+  `no_shipping_rail_returns_a_refund_to_the_paying_instrument`, which asserted
+  that every shipping rail declares `Required` and listed three debts as the
+  price of relaxing it, is
+  `every_shipping_rails_refund_destination_agrees_with_its_parser`: a
+  `Required` rail must override `parse_destination`, an `Origin` rail must
+  not. The two cases above and RFC-0003 § 1's dated amendment are what paid
+  for it.
+- **Not run where this was written, stated plainly.** The two integration
+  cases need Docker (testcontainers Postgres) and the sandbox that wrote them
+  had none. They compiled under `cargo build --tests` and
+  `cargo clippy --all-targets -D warnings`; CI's `rust` job is the run that
+  proves them, and the verification page lists which commands ran and which
+  did not.
+- Evidence:
+  [verification/2026-10-17-origin-refund-core.md](../status/verification/2026-10-17-origin-refund-core.md).
+
 **Updated 2026-09-16 (RFC-0003 § 2, wave 3): the port's `refund` has a
 shipping caller for the first time, and no rail has executed one.** This
 section had no entry for the day the routes landed; the three below it each
@@ -219,6 +270,7 @@ end with a "not built by this change" list that wave 3 is what moved.
   `an_origin_rail_refuses_a_destination` is the only case in `vpay-api` that
   fails when the branch is deleted — this workspace carries no `Origin` rail
   for an integration suite to drive, so that one unit case is the whole guard.
+  _(Until 2026-10-17: the entry above.)_
 - **`parse_destination` has a caller, and the wave-1b obligation on it was
   discharged.** The rail code is stripped before the adapter sees the map, and
   a refusal is translated to `ApiError::invalid_param("destination", …)`

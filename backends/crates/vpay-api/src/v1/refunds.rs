@@ -825,6 +825,41 @@ async fn write_pending_refund(
     })
 }
 
+/// The key under which a refund's [`ChargeRef::ref_extra`] carries the
+/// charge's rail transaction id — `charges.provider_txn_id`, the value
+/// [`vpay_provider::ChargeStatus::Succeeded`] reported when the charge
+/// settled.
+///
+/// A rail that returns money to the instrument that paid
+/// ([`RefundDestination::Origin`]) refunds **by naming the payment**: Stripe
+/// takes a `payment_intent`, PayPal a capture id, and neither can be asked to
+/// unwind a charge it is not told about. A rail that returns money by
+/// transfer ([`RefundDestination::Required`]) addresses a payee instead and
+/// ignores this key; both shipping adapters do, and a `Required` adapter that
+/// reads it is a bug in that adapter. The key is spelled in one place so an
+/// adapter and this handler cannot disagree about it.
+pub const REFUND_PROVIDER_TXN_ID_KEY: &str = "provider_txn_id";
+
+/// The `ref_extra` a refund's [`ChargeRef`] carries: the charge's rail
+/// transaction id under [`REFUND_PROVIDER_TXN_ID_KEY`], or nothing.
+///
+/// Nothing, rather than an empty string, when the charge recorded no id:
+/// `charges.provider_txn_id` is nullable because a rail may settle a charge
+/// without naming a transaction (`ChargeStatus::Succeeded { provider_txn_id:
+/// None }`), and a `Required` rail never needs one. An `Origin` adapter that
+/// finds the key missing answers [`ProviderError::Config`] — a charge whose
+/// rail id was never recorded is a case for a human, on exactly the terms
+/// `orange_money` answers a lost `pay_token` — and never invents one.
+///
+/// Pure, so the two shapes are pinned without a database:
+/// `a_refund_names_the_payment_it_unwinds` and
+/// `a_refund_of_an_unnamed_payment_carries_no_key`.
+fn refund_ref_extra(provider_txn_id: Option<&str>) -> vpay_provider::RefExtra {
+    provider_txn_id
+        .map(|id| BTreeMap::from([(REFUND_PROVIDER_TXN_ID_KEY.to_owned(), id.to_owned())]))
+        .unwrap_or_default()
+}
+
 /// Step 6: the rail, addressed by the **refund's** reference.
 ///
 /// # The reference is the whole of this function's reason to exist
@@ -843,9 +878,15 @@ async fn write_pending_refund(
 /// `two_partial_refunds_of_one_charge_carry_two_references` pins this one.
 ///
 /// `payer_ref` is the charge's — it is what the rail knows this movement is
-/// unwinding — and `ref_extra` is empty because a refund carries no key
-/// material from a submit. `return_url` is `None`: no payer's browser is
-/// involved in giving money back.
+/// unwinding — and `ref_extra` names the **payment** the refund unwinds, as
+/// [`refund_ref_extra`] spells it. `return_url` is `None`: no payer's browser
+/// is involved in giving money back.
+///
+/// _(Until 2026-10-17 `ref_extra` was empty here, "because a refund carries
+/// no key material from a submit". True of a transfer to a payee, which is
+/// every refund the two shipping rails make; false of a refund to the
+/// instrument that paid, which a card or wallet rail makes by naming the
+/// original payment to the rail. RFC-0010 § 7 is the change.)_
 async fn refund_at_rail(
     target: &RefundTargetResolved<'_>,
     row: &RefundRow,
@@ -861,7 +902,7 @@ async fn refund_at_rail(
         reference_id: reference,
         amount,
         payer_ref: target.charge.payer_ref.clone(),
-        ref_extra: BTreeMap::new(),
+        ref_extra: refund_ref_extra(target.charge.provider_txn_id.as_deref()),
         return_url: None,
     };
 
@@ -1865,21 +1906,32 @@ mod tests {
     /// because vpay carries no `Origin` rail for an integration or
     /// conformance suite to drive.
     ///
-    /// # One fake is the whole guard, deliberately, and the premise is
-    /// pinned elsewhere
+    /// # One fake was the whole guard until 2026-10-17
     ///
-    /// Reviewed 2026-09-16 and left as it stands. A fixture `Origin` rail was
+    /// Reviewed 2026-09-16 and left as it stood. A fixture `Origin` rail was
     /// **not** added to `backends/tests/conformance`: an earlier arm refused
     /// that and ADR-0006 is the reason — that suite parameterises over the
     /// rails that actually ship, and a rail that ships nowhere would make its
-    /// cases answer questions about a fake. What the review added instead is
+    /// cases answer questions about a fake. What the review added instead was
     /// `no_shipping_rail_returns_a_refund_to_the_paying_instrument` in that
-    /// suite, which asserts the fact that makes this test sufficient: every
-    /// adapter in the workspace declares [`RefundDestination::Required`]. The
-    /// day one does not, that case goes red and names the integration
-    /// coverage owed before the premise is allowed to change — which is the
-    /// failure mode a lone fake actually has, since nobody would notice the
-    /// guard had become thin.
+    /// suite, which asserted the fact that made this test sufficient: every
+    /// adapter in the workspace declared [`RefundDestination::Required`], and
+    /// its message named the integration coverage owed before that could
+    /// change.
+    ///
+    /// **Paid on 2026-10-17 (RFC-0010 § 7, step 1).** Two cases in
+    /// `backends/tests/integration/tests/refunds.rs` now drive the real
+    /// handler, through `POST /v1/refunds` against a real Postgres, on an
+    /// `Origin` rail that lives in that test binary:
+    /// `an_origin_rail_refuses_a_destination_through_the_route` (this arm's
+    /// `400`, end to end) and
+    /// `a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`
+    /// (the `Ok` arm, with [`REFUND_PROVIDER_TXN_ID_KEY`] handed to the
+    /// adapter). The conformance case became
+    /// `every_shipping_rails_refund_destination_agrees_with_its_parser`, which
+    /// admits an `Origin` rail. This unit test stays: it is the cheapest
+    /// thing that fails when the arm is merged, and it is no longer the only
+    /// one.
     ///
     /// The fake itself is test-only and unreachable from any binary
     /// (`cargo xtask verify-no-mocks`).
@@ -1893,6 +1945,29 @@ mod tests {
         )
         .expect_err("an Origin rail takes no destination");
         assert_eq!(param_of(&error), DESTINATION_PARAM);
+    }
+
+    /// A refund's `ChargeRef` names the payment it unwinds, under the one key
+    /// an `Origin` adapter reads (RFC-0010 § 7). The handler's half of the
+    /// contract whose other half is `refund_at_rail`'s call site; the
+    /// integration case
+    /// `a_refund_without_a_destination_succeeds_on_an_origin_rail_and_names_the_payment`
+    /// proves the key reaches a rail through the route.
+    #[test]
+    fn a_refund_names_the_payment_it_unwinds() {
+        let extra = refund_ref_extra(Some("pi_3Qx9Y2LkdIwHu7ix1R2Z3a4b"));
+        assert_eq!(
+            extra.get(REFUND_PROVIDER_TXN_ID_KEY).map(String::as_str),
+            Some("pi_3Qx9Y2LkdIwHu7ix1R2Z3a4b")
+        );
+        assert_eq!(extra.len(), 1, "exactly the one key: {extra:?}");
+    }
+
+    /// A charge the rail never named stays unnamed: no key, never an empty
+    /// string an adapter could send to a rail as "the payment".
+    #[test]
+    fn a_refund_of_an_unnamed_payment_carries_no_key() {
+        assert!(refund_ref_extra(None).is_empty());
     }
 
     /// The other half of the capability, and the half an adapter is entitled

@@ -38,13 +38,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, and twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged), when the super-linter
+plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged, and once on 2026-10-17, for the origin-refund-core page), when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 74 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 51 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 75 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 52 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page and 74/51 when the protected-diagnostics page merged; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page, 74/51 when the protected-diagnostics page merged, and 75/52 on 2026-10-17 with the origin-refund-core page; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -59,6 +59,12 @@ hand-maintained list is exactly how this gap happened; browse
 [verification/](verification/) directly for the complete, current file set
 rather than trusting this list to be exhaustive.
 
+- [verification/2026-10-17-origin-refund-core.md](verification/2026-10-17-origin-refund-core.md) —
+  RFC-0010 § 7, delivery step 1: `refund_at_rail` hands an adapter the
+  charge's `provider_txn_id` in the refund `ChargeRef`'s `ref_extra`; the
+  `Origin` arm gains two integration cases on a test-only `Origin` rail and
+  the conformance premise guard becomes a rule; which commands ran in a
+  sandbox without Docker, with their counts, and which did not.
 - [verification/2026-10-09-npm-advisories.md](verification/2026-10-09-npm-advisories.md) —
   the `next`, `brace-expansion`, `sharp` and `source-map-js` advisories that
   failed `trivy` and `web` on every PR: which version each moved to, Trivy's
