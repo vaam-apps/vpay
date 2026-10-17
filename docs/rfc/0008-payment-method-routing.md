@@ -1,6 +1,10 @@
 # RFC-0008: Payment-method routing — the cheapest capable rail first
 
-- **Status:** Draft
+- **Status:** Accepted 2026-10-17 →
+  [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md),
+  except § 7 (health), which this RFC defers itself. The ADR answers open
+  questions 1–5; its answers are proposed and need the maintainer's
+  confirmation. Nothing is built.
 - **Author:** vpay maintainers
 - **Date:** 2026-09-23
 - **Related:** [RFC-0004](0004-billing-on-top-of-invoices.md) § 7 (one adapter
