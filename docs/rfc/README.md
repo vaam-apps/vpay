@@ -18,6 +18,7 @@ is recorded as an ADR and the RFC is marked resolved.
 | [0008](0008-payment-method-routing.md)                             | Payment-method routing                                      | Draft                                                                                    |
 | [0009](0009-provider-accounts-per-merchant.md)                     | Provider accounts per merchant                              | Draft                                                                                    |
 | [0010](0010-stripe-adapter.md)                                     | A Stripe adapter — hosted Checkout behind the port          | Draft                                                                                    |
+| [0011](0011-paypal-adapter.md)                                     | A PayPal adapter — Orders v2 behind the port                | Draft                                                                                    |
 
 ## Template
 
