@@ -17,6 +17,7 @@ is recorded as an ADR and the RFC is marked resolved.
 | [0007](0007-bank-transfer-reconciliation.md)                       | Bank transfers reconciled from bank statements              | Draft                                                                                    |
 | [0008](0008-payment-method-routing.md)                             | Payment-method routing                                      | Draft                                                                                    |
 | [0009](0009-provider-accounts-per-merchant.md)                     | Provider accounts per merchant                              | Draft                                                                                    |
+| [0010](0010-stripe-adapter.md)                                     | A Stripe adapter — hosted Checkout behind the port          | Draft                                                                                    |
 
 ## Template
 

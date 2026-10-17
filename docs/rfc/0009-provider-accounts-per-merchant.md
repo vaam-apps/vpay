@@ -210,7 +210,7 @@ handed. What changes is which value the core hands them.
 | 1    | Config shape, two-level merge, boot refusals, one-merchant compatibility                                | nothing               |
 | 2    | `charges.provider_account_id`; per-call resolution in `vpay-api` and the worker; the two-merchant proof | 1                     |
 | 3    | MTN and Orange per-account keys declared and checked, Disbursements included                            | 2                     |
-| 4    | Stripe and PayPal adapters under RFC-0004 § 7, using both levels                                        | 2; their own decision |
+| 4    | Stripe ([RFC-0010](0010-stripe-adapter.md)) and PayPal adapters under RFC-0004 § 7, using both levels   | 2; their own decision |
 
 ## Alternatives considered
 
