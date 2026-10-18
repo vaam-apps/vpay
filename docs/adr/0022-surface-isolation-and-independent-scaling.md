@@ -105,7 +105,7 @@ single vpay process should never be able to starve the rest of that budget".
 That arithmetic was written for a fixed replica count. Under an HPA it becomes
 the binding constraint:
 
-```
+```text
 (business_max_replicas + management_replicas + worker_replicas) × 10  ≤  max_connections − operator_headroom
 ```
 
@@ -224,7 +224,7 @@ why the original defect passed two route-table test suites.
 
 A new guard — `connection-budget` — fails the release when
 
-```
+```text
 (server.autoscaling.maxReplicas + management.replicaCount + worker.replicaCount) × 10
   > database.maxConnections − database.reservedConnections
 ```
