@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.7.0](https://github.com/vaam-apps/vpay/compare/v0.6.0...v0.7.0) (2026-10-18)
+
+
+### Features
+
+* **refunds:** name the payment a refund unwinds, and guard the Origin arm end to end ([c8c1904](https://github.com/vaam-apps/vpay/commit/c8c19041bfbbecbf76b373b1c620861a7a7859dd))
+* **refunds:** name the payment a refund unwinds, and guard the Origin arm end to end (RFC-0010 step 1) ([#277](https://github.com/vaam-apps/vpay/issues/277)) ([c8c1904](https://github.com/vaam-apps/vpay/commit/c8c19041bfbbecbf76b373b1c620861a7a7859dd))
+
+
+### Bug Fixes
+
+* **frontends:** numeric USER so Kubernetes runAsNonRoot can verify the dashboard and checkout images ([#278](https://github.com/vaam-apps/vpay/issues/278)) ([ca26054](https://github.com/vaam-apps/vpay/commit/ca260547017e33faad243d7d2585e4706e145b19))
+
+
+### Documentation
+
+* RFC-0009, RFC-0010, RFC-0011, and ADR-0029 accepting RFC-0004 § 7 and RFC-0008 ([#275](https://github.com/vaam-apps/vpay/issues/275)) ([6524032](https://github.com/vaam-apps/vpay/commit/6524032f1a1bd32de6a2fa0fcbc641085d1cf16b))
+
 ## [0.6.0](https://github.com/vaam-apps/vpay/compare/v0.5.0...v0.6.0) (2026-10-09)
 
 
