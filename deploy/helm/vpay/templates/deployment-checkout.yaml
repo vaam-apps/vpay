@@ -7,9 +7,13 @@
 # the differences all follow from that:
 #
 #   * `runAsNonRoot: true` with NO explicit `runAsUser`. The image declares
-#     `USER node` and is `node:22-alpine`, so /etc/passwd exists and the
-#     kubelet can resolve the name — unlike the scratch images, where a
-#     missing numeric UID is a pod the kubelet refuses to start.
+#     the NUMERIC `USER 1000:1000` (the `node` user of `node:22-alpine`), which
+#     is what lets the kubelet verify non-root; the image is the single source
+#     of truth for the UID, and naming it here too is how the two drift. The
+#     `FROM scratch` images solve the same problem the other way, with a pod
+#     `runAsUser` (see `vpay.podSecurityContext`). A named `USER node` would
+#     NOT do: the kubelet refuses it with "container has runAsNonRoot and
+#     image has non-numeric user (node)".
 #   * `readOnlyRootFilesystem: true` **with an emptyDir on /tmp**. The Rust
 #     binaries need no writable path at all; this one does — Node and Next's
 #     standalone server want `HOME` and `XDG_CACHE_HOME`, which the image
@@ -22,8 +26,12 @@
 #
 # **What is observed and what is not.** The image has been built from a clean
 # context, run non-root under `--read-only --tmpfs /tmp`, and answered
-# `GET /healthz` 200 with its security headers — that is where the two
-# securityContext claims above come from. **No pod has ever run**: the probes'
+# `GET /healthz` 200 with its security headers — that is where the
+# read-only-filesystem claim above comes from. **That run was plain `docker
+# run`, which does not perform the kubelet's `runAsNonRoot` check**, so it
+# never verified the image's non-root-ness the way Kubernetes does (corrected
+# 2026-10-18: the image's then-named `USER node` failed that check; it is now
+# the numeric `USER 1000:1000`). **No pod has ever run**: the probes'
 # thresholds, the resource numbers and the Ingress are reasoned, exactly like
 # the rest of this chart.
 apiVersion: apps/v1

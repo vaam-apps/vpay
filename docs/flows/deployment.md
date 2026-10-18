@@ -70,7 +70,9 @@ What an operator has to do about it:
 page (`frontends/apps/checkout`), built from `frontends/Dockerfile`'s
 `checkout` target. A second Next.js image beside the dashboard's, and the
 first one this repository deploys: the chart templates it under
-`checkout.enabled` (default false). It runs as `node` (uid 1000) with a
+`checkout.enabled` (default false). It runs as the `node` user, declared as the numeric `USER 1000:1000` (a
+named `USER node` is refused by the kubelet under `runAsNonRoot`; corrected
+2026-10-18), with a
 read-only root filesystem and a memory-backed `emptyDir` on `/tmp`, holds no
 merchant credential, no rail credential and no signing key, and reads no
 YAML — its whole configuration is two environment variables. Published and

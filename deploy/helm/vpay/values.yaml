@@ -86,8 +86,10 @@ images:
 # `frontends/Dockerfile`'s `runner` stage declared no `USER` and its
 # behaviour under `readOnlyRootFilesystem` had never been observed — the
 # "dashboard-not-templated" guard was this chart's `ProviderError::NotImplemented`
-# for exactly that gap. Both are now closed: the image runs `USER node`, and
-# ADR-0022's own Dockerfile-hardening commit ran it with
+# for exactly that gap. Both are now closed: the image runs the numeric `USER 1000:1000`
+# (the `node` user; a named `USER node` is refused by the kubelet under
+# `runAsNonRoot`, corrected 2026-10-18), and ADR-0022's own
+# Dockerfile-hardening commit ran it with
 # `--read-only --tmpfs /tmp --user 1000:1000` and recorded it answering
 # `GET /healthz` 200 and turning Docker-healthy — a recorded run, not a
 # reasoned claim, and the one item the ADR's own verification list said no
@@ -196,10 +198,13 @@ dashboard:
 # — which is the "checkout-templated-when-enabled" guard's second half.
 #
 # Unlike `dashboard` above, this one IS templated when enabled, and the
-# difference is evidence rather than taste: this image declares `USER node`,
-# has been run non-root under `--read-only --tmpfs /tmp` and answered
+# difference is evidence rather than taste: this image declares the numeric
+# `USER 1000:1000`, has been run under `--read-only --tmpfs /tmp` and answered
 # `/healthz` 200 (see `frontends/Dockerfile`'s own commit), and the app writes
 # nothing outside /tmp. The dashboard image does none of those things.
+# (Corrected 2026-10-18: that docker run never proved non-root to the
+# kubelet's standard; the image used to declare the named `USER node`, which
+# `runAsNonRoot` refuses.)
 #
 # **What is still unproven, and it is the same sentence the rest of this chart
 # carries: no pod has ever run.** The probes, the securityContext and the

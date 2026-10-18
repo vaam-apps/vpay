@@ -69,10 +69,10 @@ ENV NODE_ENV=production \
 COPY --from=dashboard-builder /build/frontends/apps/dashboard/.next/standalone ./
 COPY --from=dashboard-builder /build/frontends/apps/dashboard/.next/static ./frontends/apps/dashboard/.next/static
 
-# `node`, the image's own unprivileged user (uid 1000) — see the `checkout`
-# stage's own comment on this line for why a `node:22-alpine` image can make
-# this claim without a numeric `runAsUser` guess.
-USER node
+# `1000:1000` is the `node` user of `node:22-alpine`, written as numbers on
+# purpose — see the `checkout` stage's own comment on this line. A named
+# `USER node` makes the kubelet refuse the pod under `runAsNonRoot: true`.
+USER 1000:1000
 
 EXPOSE 3000
 
@@ -132,11 +132,15 @@ ENV NODE_ENV=production \
 COPY --from=checkout-builder /build/frontends/apps/checkout/.next/standalone ./
 COPY --from=checkout-builder /build/frontends/apps/checkout/.next/static ./frontends/apps/checkout/.next/static
 
-# `node`, the image's own unprivileged user (uid 1000). The same discipline
-# `examples/shop/Dockerfile` uses, and the reason the chart can set
-# `runAsNonRoot: true` without a numeric `runAsUser` guess: this is a
-# `node:22-alpine` image, so /etc/passwd exists and the name resolves.
-USER node
+# `1000:1000` is the `node` user of `node:22-alpine` (its /etc/passwd has
+# `node:x:1000:1000`), and it MUST be numeric. The kubelet can only verify
+# `runAsNonRoot: true` against a numeric image USER (or a pod `runAsUser`); a
+# named `USER node` fails with `CreateContainerConfigError: container has
+# runAsNonRoot and image has non-numeric user (node), cannot verify user is
+# non-root`. `docker run` performs no such check, so a named user looked fine
+# there. The image is the single source of truth for the UID: the chart sets
+# no `runAsUser`, so the two cannot drift.
+USER 1000:1000
 
 EXPOSE 3000
 

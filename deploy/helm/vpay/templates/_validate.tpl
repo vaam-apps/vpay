@@ -214,7 +214,9 @@ dashboard-not-templated — RETIRED 2026-09-16 (ADR-0022). This slot fired
 unconditionally on `dashboard.enabled: true`; that image now templates a
 Deployment (`deployment-dashboard.yaml`), because ADR-0022's own
 Dockerfile-hardening commit closed the gap this guard existed to name —
-`frontends/Dockerfile`'s `runner` stage now declares `USER node`, and that
+`frontends/Dockerfile`'s `runner` stage now declares a `USER` (numeric
+`1000:1000` since 2026-10-18; it was the named `USER node` until the kubelet
+refused that under `runAsNonRoot`), and that
 image was run with `docker run --read-only --tmpfs /tmp --user 1000:1000`
 and recorded turning Docker-`healthy` on `GET /healthz`. See
 `docs/status/verification/` for that run. The number is left with a gap

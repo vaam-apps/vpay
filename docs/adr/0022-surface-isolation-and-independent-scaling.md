@@ -255,7 +255,11 @@ explicit `runAsUser`, `readOnlyRootFilesystem: true`, and a memory-backed
 
 This is blocked until `frontends/Dockerfile`'s `runner` stage is brought to
 parity with its `checkout` stage: `USER node`, `HOME` and `XDG_CACHE_HOME`
-at `/tmp`, and a healthcheck. **Guard 12 must not be retired before that
+at `/tmp`, and a healthcheck. (Corrected 2026-10-18: the `USER` must be
+numeric, `USER 1000:1000`, not `USER node` — the kubelet cannot verify
+`runAsNonRoot` against a named user and refuses the pod; see
+[verification/2026-10-18-numeric-user.md](../status/verification/2026-10-18-numeric-user.md).)
+**Guard 12 must not be retired before that
 lands**, and the commit that retires it is the commit that proves the image
 starts read-only — not a deployment that discovers it.
 

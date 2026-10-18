@@ -6,8 +6,11 @@
 # `node:22-alpine` Next standalone server, including verbatim:
 #
 #   * `runAsNonRoot: true` with NO explicit `runAsUser` — the image declares
-#     `USER node` and is `node:22-alpine`, so /etc/passwd exists and the
-#     kubelet can resolve the name.
+#     the NUMERIC `USER 1000:1000` (the `node` user of `node:22-alpine`), which
+#     is what lets the kubelet verify non-root. The image is the single source
+#     of truth for the UID; naming it here too is how the two drift. A named
+#     `USER node` is NOT enough: the kubelet refuses it with "container has
+#     runAsNonRoot and image has non-numeric user (node)".
 #   * `readOnlyRootFilesystem: true` with a memory-backed `emptyDir` on
 #     `/tmp` — Next's standalone server wants `HOME`/`XDG_CACHE_HOME`, which
 #     the image points at `/tmp` for exactly this reason.
@@ -22,9 +25,12 @@
 # commit ran this exact image with `docker run --read-only --tmpfs /tmp
 # --user 1000:1000` and recorded it turning Docker-`healthy` on
 # `GET /healthz`. **No POD has ever run**: a container under `docker run` is
-# not a Kubernetes Pod, and the probes' thresholds and the resource numbers
-# below are reasoned from the image and from Kubernetes' documented
-# behaviour, exactly like the rest of this chart.
+# not a Kubernetes Pod (and `docker run` does not perform the kubelet's
+# `runAsNonRoot` check — corrected 2026-10-18: the image's then-named
+# `USER node` failed it, and is now the numeric `USER 1000:1000`), and the
+# probes' thresholds and the resource numbers below are reasoned from the
+# image and from Kubernetes' documented behaviour, exactly like the rest of
+# this chart.
 apiVersion: apps/v1
 kind: Deployment
 metadata:

@@ -415,20 +415,28 @@ retired the same day). Both are templated-when-enabled now, for the same
 reason — the evidence exists for both images.
 
 `vpay-checkout` and `vpay-dashboard` are templated when enabled because each
-image's `runner`/`checkout` stage declares `USER node`, has been built from a
-clean context, and was run with `--read-only --tmpfs /tmp --user 1000:1000`,
+image's `runner`/`checkout` stage declares the numeric `USER 1000:1000`, has
+been built from a clean context, and was run with `--read-only --tmpfs /tmp --user 1000:1000`,
 answering `GET /healthz` 200 in that state (`vpay-dashboard`'s own
 `app/healthz/route.ts` did not exist before ADR-0022's Dockerfile-hardening
 commit added it alongside the `HEALTHCHECK` that needed it). That is what
-each Deployment's `runAsNonRoot` (with no invented UID — both images have an
-`/etc/passwd`), `readOnlyRootFilesystem` and single `emptyDir` on `/tmp` are
-derived from.
+each Deployment's `readOnlyRootFilesystem` and single `emptyDir` on `/tmp` are
+derived from. Each Deployment's `runAsNonRoot` (with no UID of its own: the
+image is the single source of truth) depends on the image's `USER` being
+**numeric**: the kubelet refuses `runAsNonRoot: true` against a named user
+(`container has runAsNonRoot and image has non-numeric user (node), cannot
+verify user is non-root`). Until 2026-10-18 both stages said `USER node`, and
+the `docker run` evidence above could not catch that, because `docker run`
+performs no such check; observed on a real cluster that day with chart 0.6.0
+and `dashboard.enabled: true`. Both stages now say `USER 1000:1000`.
 
 **No POD has ever run**, for either. A container under `docker run` is not a
 Kubernetes Pod; the probe thresholds, the resource numbers and the routing
 objects are reasoned from the image and from Kubernetes' documented
 behaviour, like the rest of this chart. What is new is only that each
-_container_ has been observed running the way its Deployment asks it to.
+_container_ has been observed under `docker run` with a read-only root and a
+`/tmp` tmpfs. It has **not** been observed passing the kubelet's
+`runAsNonRoot` check, which `docker run` does not make.
 
 Off by default, and for `checkout` that is a complete deployment rather than
 a missing one: `checkout.public_base_url` is optional in vpay's own config,
@@ -1062,7 +1070,10 @@ authenticated with the token provided` — after the chart had already been
   i.e. a second copy of the e2e job, for the ability to catch scheduling
   errors. Deferred by decision (9), worth doing.
 - `helm unittest` for the object shapes, rather than kubeconform alone.
-- A dashboard workload, once someone has run that image with a non-root UID.
+- A dashboard (and checkout) pod actually started under `runAsNonRoot: true`
+  from an image carrying the numeric `USER 1000:1000` — the previous images
+  (named `USER node`) were refused by the kubelet on 2026-10-18, so no pod of
+  either has run yet.
 - A cluster run of the checkout page's path-prefix Ingress shape, which is
   templated and unexercised. Its Gateway API twin — `checkout.route.path` and
   the `URLRewrite` filter — is in exactly the same position.
