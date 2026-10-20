@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.8.0](https://github.com/vaam-apps/vpay/compare/v0.7.0...v0.8.0) (2026-10-20)
+
+
+### Features
+
+* **dashboard:** staff sign-in through an OpenID Connect provider (ADR-0030) ([#280](https://github.com/vaam-apps/vpay/issues/280)) ([b69e14d](https://github.com/vaam-apps/vpay/commit/b69e14d1c1bd0bc276f8b339c49f1d3732e6caaa))
+
+
+### Bug Fixes
+
+* **deps:** rustls 0.23.46 for RUSTSEC-2026-0346..0349 ([#281](https://github.com/vaam-apps/vpay/issues/281)) ([0a86e83](https://github.com/vaam-apps/vpay/commit/0a86e834f3fdf52b7f625c3522bd1778fc3f60cd))
+
 ## [0.7.0](https://github.com/vaam-apps/vpay/compare/v0.6.0...v0.7.0) (2026-10-18)
 
 

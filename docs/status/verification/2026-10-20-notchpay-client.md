@@ -2,7 +2,9 @@
 
 ## What this is, and what it is not
 
-One branch, `claude/happy-hopper-r3h6rz`, on `master` at `0a86e83`. It adds:
+One branch, `claude/happy-hopper-r3h6rz`, cut from `master` at `0a86e83` and
+merged with `master` at `dbe8300` (the 0.8.0 release) the same day; the gates
+below are the post-merge run. It adds:
 
 - **`backends/crates/vpay-notchpay`**, a typed client for the Notch Pay REST
   API transcribed from Notch Pay's OpenAPI specification 2.1.0, at the
@@ -71,7 +73,7 @@ review that added them" has each one. The two that mattered:
 | `cargo xtask verify-repositories`                                    | ok                                                                                         |
 | `cargo xtask verify-toolchain`                                       | ok — 1.98.0                                                                                |
 | `cargo xtask verify-migrations`                                      | ok — 50 migrations; this branch adds none                                                  |
-| `cargo xtask verify-versions`                                        | ok — 25 version references at 0.7.0, one more than `master` (the new workspace dependency) |
+| `cargo xtask verify-versions`                                        | ok — 25 version references at 0.8.0, one more than `master` (the new workspace dependency) |
 | `cargo xtask verify-privacy-inventory`                               | ok — `debug_protections` checked in both directions, twelve of them new                    |
 | `cargo xtask verify-doc-counts`                                      | ok                                                                                         |
 | `npx prettier@3.9.6 --check` on every changed Markdown and YAML file | clean                                                                                      |
