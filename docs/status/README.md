@@ -17,6 +17,7 @@ rules that used to separate two sections which now live in two files.
 | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | what each `just verify` gate checks, what it used to miss, and the mutation that proved the hole shut | [gates.md](gates.md)                                           |
 | which backend capability is real, and what its test actually asserts                                  | [backend.md](backend.md)                                       |
+| which payment provider can do what today, cell by cell, across every rail shipped or designed         | [providers.md](providers.md)                                   |
 | why the Orange stub's hosted page grew a payer's window                                               | [backend-orange-hosted-page.md](backend-orange-hosted-page.md) |
 | what the checkout page, the dashboard and the demo shop do                                            | [frontend.md](frontend.md)                                     |
 | what boots, in compose and in CI, and what has never run in a pod                                     | [infrastructure.md](infrastructure.md)                         |
@@ -38,13 +39,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged, once on 2026-10-17, for the origin-refund-core page, once on 2026-10-18, for the numeric-user page, and twice on 2026-10-20, for the staff-oidc-sso and path-segment-dot-segments pages), when the super-linter
+plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged, once on 2026-10-17, for the origin-refund-core page, once on 2026-10-18, for the numeric-user page, and three times on 2026-10-20, for the staff-oidc-sso, notchpay-client and path-segment-dot-segments pages), when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 78 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 55 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 79 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 56 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page, 74/51 when the protected-diagnostics page merged, 75/52 on 2026-10-17 with the origin-refund-core page, 76/53 on 2026-10-18 with the numeric-user page, and 77/54 on 2026-10-20 with the staff-oidc-sso page; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page, 74/51 when the protected-diagnostics page merged, 75/52 on 2026-10-17 with the origin-refund-core page, 76/53 on 2026-10-18 with the numeric-user page, 77/54 on 2026-10-20 with the staff-oidc-sso page, 78/55 the same day with the notchpay-client page, and 79/56 with the path-segment-dot-segments page; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -64,6 +65,10 @@ rather than trusting this list to be exhaustive.
   or all-dots segment as `Malformed`, because no escape keeps a dot segment
   in place; `mtn_momo`'s lookup migrated; the test counts, four caught
   mutations, the gate output, and what was not run.
+- [verification/2026-10-20-notchpay-client.md](verification/2026-10-20-notchpay-client.md) —
+  the Notch Pay client crate (linked by nothing), RFC-0012, RFC-0013 and the
+  provider matrix: the independent review's two blocking findings and how
+  they were fixed, every gate's output, and what was not run.
 - [verification/2026-10-20-staff-oidc-sso.md](verification/2026-10-20-staff-oidc-sso.md) —
   ADR-0030: staff sign in through an OpenID Connect provider — the gate output,
   the test counts, the mutation checks, what a real Keycloak 26.6.1 issued (and

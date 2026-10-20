@@ -1,0 +1,33 @@
+[package]
+name = "vpay-notchpay"
+description = "A typed client for the Notch Pay REST API, transcribed from its OpenAPI specification 2.1.0. Internal to vpay; not published."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# `vpay_core::privacy::Secret` is what every hand-written `Debug` here
+# composes, exactly as the port's own types do.
+vpay-core.workspace = true
+# The client returns the port's `ProviderError` for the two outcomes it can
+# classify without knowing what a payment means — a transport failure and an
+# answer that does not parse — and reads bodies through the port's bounded
+# reader. No error type of its own: see the crate docs.
+vpay-provider.workspace = true
+# The caller builds the `reqwest::Client` (the binary does it once, at boot,
+# through `vpay_provider::http::client_with_timeouts`); naming the type needs
+# the direct dependency. No new package: `vpay-provider` already resolves it.
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+# One test sends a request to a closed loopback port, to prove a transport
+# failure is `Transport` and never a refusal. No server, no double.
+tokio.workspace = true

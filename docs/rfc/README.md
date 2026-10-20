@@ -19,6 +19,8 @@ is recorded as an ADR and the RFC is marked resolved.
 | [0009](0009-provider-accounts-per-merchant.md)                     | Provider accounts per merchant                              | Draft                                                                                                                                                                                 |
 | [0010](0010-stripe-adapter.md)                                     | A Stripe adapter — hosted Checkout behind the port          | Draft                                                                                                                                                                                 |
 | [0011](0011-paypal-adapter.md)                                     | A PayPal adapter — Orders v2 behind the port                | Draft                                                                                                                                                                                 |
+| [0012](0012-notchpay-adapter.md)                                   | A Notch Pay adapter — mobile money through an aggregator    | Draft — not buildable until [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md) D1's third rule is resolved                                                  |
+| [0013](0013-vpay-registers-its-own-callbacks.md)                   | vpay registers its own callback endpoints                   | Draft                                                                                                                                                                                 |
 
 ## Template
 

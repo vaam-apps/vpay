@@ -18,19 +18,19 @@ here, it is still in the repository; start from
 > **vpay is a scaffold.** It compiles, lints clean, and its tests pass — but it
 > cannot take a payment. Do not deploy it.
 
-**The load-bearing sentence, unchanged since 2026-09-03 (Step 3): no HTTP call
-to a real rail has ever been made.** Every payment in this repository's history
+**Historical claim from 2026-09-03 (Step 3), retired by the addendum below:
+no HTTP call to a real rail has ever been made.** Every payment in this repository's history
 settled against a `wiremock/wiremock` host that answered the way these documents
 say a rail answers. No payer has ever been prompted on a real handset, no money
 has moved, and no merchant endpoint outside this repository has ever been POSTed
 to.
 
 > _2026-09-15 (the first real rail call): the sentence above is **retired in
-> its turn.** On 2026-09-15 a EUR `mtn_momo` PaymentIntent
-> (`pi_xxd2xj1e914e16c6m63gezag`) was created, confirmed and settled against
-> **MTN's real sandbox** (`https://sandbox.momodeveloper.mtn.com`): the
-> worker's authenticated status query reported the charge paid and the intent
-> reached `succeeded`. **Its replacement is narrower and still load-bearing:
+> its turn.** On 2026-09-15 over seven EUR `mtn_momo` PaymentIntents
+> (first: `pi_xxd2xj1e914e16c6m63gezag`) were created, confirmed and settled
+> against **MTN's real sandbox** (`https://sandbox.momodeveloper.mtn.com`):
+> the worker's authenticated status query reported the charge paid and the
+> intent reached `succeeded`. **Its replacement is narrower and still load-bearing:
 > no real payer, no production rail, and no rail other than MTN's sandbox have
 > ever been touched.** The payer number was an MTN-sandbox test MSISDN the
 > sandbox settles automatically — no handset was prompted and no real money
@@ -66,6 +66,14 @@ to.
 > no refund poll ladder — so every refund they can create stays `pending`
 > forever. See
 > [status/verification/2026-09-16-w3-sdk-refunds.md](status/verification/2026-09-16-w3-sdk-refunds.md).)_
+
+**Count corrected 2026-10-20:** the maintainer who performed the real MTN
+sandbox tests confirmed **over seven successful payments**. Earlier wording
+reported one payment. The first intent named above is one
+documented example; the three attempts in its session (two token failures,
+then one success) are not the day's total. This is a correction to the
+2026-09-15 testing record, not a new test run or evidence of production money
+movement. See [the verification record](status/verification/2026-09-15.md).
 
 That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
 3, 4, 5c, 7 (twice), 8, 9 and exp31, each retiring a specific claim on a

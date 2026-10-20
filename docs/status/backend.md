@@ -189,19 +189,23 @@ the other seven claims the same sweep corrected:
 Both rails' wire calls are implemented and **proven against a real
 `wiremock/wiremock` container**. Since 2026-09-15 MTN's **charge path** —
 the Collections token, `submit` and `query_status` — has also run against
-MTN's real sandbox, on one day, settling one charge
+MTN's real sandbox on that day, settling **over seven payments**, according
+to the maintainer who performed the tests and confirmed the count on
+2026-10-20
 ([verification/2026-09-15.md](verification/2026-09-15.md)); nothing else on
 either rail has met a real endpoint. _(This read "never against MTN or Orange"
 until 2026-09-23, and the matrix below marked MTN's real sandbox "⛔ never
-called"; both had been wrong since 2026-09-15.)_ The column
+called"; both had been wrong since 2026-09-15. The count read "one
+charge" until the maintainer's 2026-10-20 clarification; the verification
+record's one detailed success is an example within the aggregate.)_ The column
 split below is the whole point of this section: ✅ means a conformance case
 would fail if the behaviour broke; 🟡 means the code is real and its only
 witness is a stub; ⛔ means not built.
 
-| Rail                      | Capabilities           | Wire calls (vs. WireMock)                                               | Real sandbox                                               | Callbacks                                                   | Refunds                                         |
-| ------------------------- | ---------------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------- |
-| `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | 🟡 charge path on 2026-09-15 only; lookup and refund never | 🟡 parsed, routed, never received                           | 🟡 `transfer` written, **product never called** |
-| `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called                                            | 🟡 parsed, routed, never received; `notif_token` unverified | ⛔ `NotImplemented("orange_money::refund")`     |
+| Rail                      | Capabilities           | Wire calls (vs. WireMock)                                               | Real sandbox                                                          | Callbacks                                                   | Refunds                                         |
+| ------------------------- | ---------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------- | ----------------------------------------------------------- | ----------------------------------------------- |
+| `mtn_momo` (push)         | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback` / `account_holder_name` | 🟡 over seven charge successes on 2026-09-15; lookup and refund never | 🟡 parsed, routed, never received                           | 🟡 `transfer` written, **product never called** |
+| `orange_money` (redirect) | ✅ declared and tested | ✅ `submit` / `query_status` / `parse_callback`                         | ⛔ never called                                                       | 🟡 parsed, routed, never received; `notif_token` unverified | ⛔ `NotImplemented("orange_money::refund")`     |
 
 **Each rail parses its own refund destination (2026-09-15, RFC-0003 open
 question 4).** Both adapters implement `ProviderAdapter::parse_destination`,
@@ -497,11 +501,18 @@ this section used to name are gone**, and `just verify-ignored` now pins
 
 **What the ⛔ and 🟡 columns mean, plainly.**
 
-- **Real sandbox — ⛔.** Neither adapter has ever exchanged a byte with MTN
-  or Orange. Every assertion above would still pass if
+- **Real sandbox — the original ⛔, superseded below.** Neither adapter has
+  ever exchanged a byte with MTN or Orange. Every assertion above would still pass if
   `docs/flows/adapter-mtn-momo.md` and `docs/flows/adapter-orange-money.md`
   were wrong about the rails, because the mappings were written from those
   documents. Both docs' "to confirm with the rail" lists stand in full.
+  **Corrected 2026-10-20:** that blanket claim was already false on
+  2026-09-15. MTN's Collections token, submit and status-query path ran
+  against its real sandbox; the maintainer who ran it confirms over seven
+  successful payments that day. The matrix above and the
+  [verification record](verification/2026-09-15.md) carry that evidence.
+  Lookup, refunds, callbacks and Orange remain outside those observations;
+  the historical conformance tests described here still used WireMock.
 - **The 401 → re-mint → retry path is unproven on both rails.** The logic
   exists and is bounded at one retry, but no mapping returns 401 from
   `requesttopay` / `webpayment` _after_ a good token. What is proven is the
@@ -762,3 +773,26 @@ because every `Origin` rail needs it and no rail depends on the rest.
   lists the commands and their counts.
 - [flows/provider-port.md](../flows/provider-port.md) § Status carries the
   entry of this date.
+
+## A Notch Pay client, linked by nothing; two RFCs; one provider matrix (2026-10-20)
+
+**No rail changed and no new rail exists.** This branch adds a crate and
+documents.
+
+- `backends/crates/vpay-notchpay` is a typed client for the Notch Pay API,
+  transcribed from its OpenAPI specification 2.1.0, with 34 unit tests and
+  one doctest. **No crate depends on it, no binary links it, and nothing has
+  called Notch Pay.** [reference](../reference/vpay-notchpay.md).
+- [RFC-0012](../rfc/0012-notchpay-adapter.md) designs the adapter. Notch
+  Pay's status read is documented as authenticated by its public key, which
+  ADR-0029 D1's third rule refuses; the maintainer chose to ask Notch Pay in
+  writing and emailed them on 2026-10-20. The adapter is not written.
+- [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md) designs vpay
+  registering its own callback endpoints on the rails that register them.
+  Nothing of it is built. Its § 11 records five findings about this
+  repository's own documentation, including the claim that MTN retries a
+  callback, which MTN's own page contradicts.
+- [providers.md](providers.md) is one matrix of every provider shipped or
+  designed, cell by cell.
+- [verification/2026-10-20-notchpay-client.md](verification/2026-10-20-notchpay-client.md)
+  has the gates' output and what was not run.

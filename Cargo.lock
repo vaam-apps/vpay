@@ -4926,6 +4926,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "vpay-notchpay"
+version = "0.8.0"
+dependencies = [
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tokio",
+ "vpay-core",
+ "vpay-provider",
+]
+
+[[package]]
 name = "vpay-provider"
 version = "0.8.0"
 dependencies = [

@@ -87,6 +87,53 @@ Sources: [requirements](https://flutterwave.com/eu/support/general/what-are-the-
 [v4 webhooks](https://developer.flutterwave.com/v4.0.0/docs/webhooks),
 [v4 bank transfer](https://developer.flutterwave.com/v4.0.0/docs/pay-with-bank-transfer).
 
+**Re-measured 2026-10-20**, from documentation only (no account, no API call),
+when the maintainer asked "What about adding flutterwave?" and set the goal as
+payments of any method, not cards alone:
+
+- **Rule 3 passes.** v3's `GET /v3/transactions/{id}/verify` takes a Bearer
+  secret key ([v3 authentication](https://developer.flutterwave.com/docs/authentication));
+  v4's `GET /charges/{id}` takes OAuth2 client credentials
+  ([v4 authentication](https://developer.flutterwave.com/v4.0.0/docs/authentication)).
+- **The payout pause is still unresolved.** All three regional copies of
+  "About the payout pause in Cameroon" (for example
+  [the US copy](https://flutterwave.com/us/support/general/about-the-payout-pause-in-cameroon))
+  answer HTTP 200 with "Oops! We can't seem to find the page you are looking
+  for": no replacement, no retraction. Against that, the
+  [payout-time table](https://flutterwave.com/us/support/payments/how-long-does-a-transfer-take)
+  lists Cameroon XAF bank and mobile-money payouts, and the
+  [status page](https://status.flutterwave.com/) recorded XAF payouts "back
+  online" on 2026-10-15 — after a global outage, which is not the pause.
+- **Hosted XAF cards: softened, not cleared.** v3's
+  [payment-methods table](https://developer.flutterwave.com/docs/payment-methods)
+  now lists `card` for XAF. The [Standard](https://developer.flutterwave.com/docs/flutterwave-standard-1)
+  page still says nothing of XAF or 3-D Secure. v4 cards still have the
+  integrator encrypt card fields, which fails rule 2.
+- **Mobile money in Cameroon is documented**: v3
+  `POST /v3/charges?type=mobile_money_franco` with `CM`, `XAF`, `MTN` and
+  `ORANGEMONEY` ([francophone](https://developer.flutterwave.com/docs/francophone)).
+- **Webhooks are registered in the dashboard only**; neither API index has a
+  create endpoint. v3 echoes a secret in `verif-hash`; v4 signs with
+  HMAC-SHA256 in `flutterwave-signature`
+  ([v4 webhooks](https://developer.flutterwave.com/v4.0.0/docs/webhooks)).
+  So RFC-0013's self-registration cannot reach this rail.
+- **Refunds**: partial on both versions; v3 documents no idempotency key, v4
+  documents `X-Idempotency-Key` ([v4 idempotency](https://developer.flutterwave.com/v4.0.0/docs/idempotency)).
+- **Licence**: the [June 2025 announcement](https://flutterwave.com/ke/blog/flutterwave-powers-business-growth-in-cameroon-with-fully-licensed-payment-services)
+  says "officially licensed by the Central Bank for Central African States"
+  through "a technical partnership with Ecobank", and names no licensee or
+  instrument. A press report
+  ([EcoMatin](https://www.ecomatin.net/paiements-numeriques-flutterwave-fait-son-entree-au-cameroun-grace-a-un-partenariat-strategique-avec-ecobank))
+  says Ecobank Cameroun holds the COBAC approval.
+- **Pricing for Cameroon** ([pricing](https://flutterwave.com/cm/pricing)):
+  cards 4.8 %, mobile money 2 %, a bank payout XAF 1 500, a mobile-money payout
+  1 %; settlement next business day.
+
+**What would unblock it**: Flutterwave's written word that XAF withdrawals to
+a Cameroon merchant's bank and mobile money are available, and — for cards
+only — that v3's hosted page accepts XAF cards with 3-D Secure for a
+Cameroon-registered merchant.
+
 ### CinetPay
 
 - **`docs.cinetpay.com` and `api-checkout.cinetpay.com` do not resolve**
@@ -115,6 +162,15 @@ Sources: [requirements](https://flutterwave.com/eu/support/general/what-are-the-
   French-speaking Africa" in one clause and defines legal persons in another.
   No official page names a legal entity, a licence, a partner bank or
   card-scheme membership.
+
+**Re-measured 2026-10-20 for [RFC-0012](../rfc/0012-notchpay-adapter.md).**
+Every finding above stands: still no card guide, no 3-D Secure, no test card
+and no card price; the status read still declares only the public key
+(openapi.yaml 2.1.0); refunds are still in a guide and not in the
+specification; and the merchant agreement (last updated 31 December 2023)
+still reserves the service to natural persons and names no legal entity or
+licence. RFC-0012 designs a mobile-money rail and leaves the rule-3 decision
+to the maintainer.
 
 Sources: [collect](https://developer.notchpay.co/accept-payments/collect),
 [authentication](https://developer.notchpay.co/api-reference/authentication),

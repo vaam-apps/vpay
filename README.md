@@ -31,11 +31,15 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 >
 > _(This said "no HTTP call to MTN's or Orange's own endpoints — not
 > production, not even their sandboxes" until 2026-09-16, and had been wrong
-> since **2026-09-15**, when one EUR `mtn_momo` PaymentIntent was created,
-> confirmed and settled against **MTN's real sandbox**. The payer number was an
-> MTN-sandbox test MSISDN the sandbox settles by itself. Orange's rail has
-> still never been called, and neither has MTN's Disbursements product, which
-> is what a refund on that rail is. See [`docs/status.md`](docs/status.md).)_
+> since **2026-09-15**, when over seven EUR `mtn_momo` PaymentIntents were
+> created, confirmed and settled against **MTN's real sandbox**. The payer
+> number was an MTN-sandbox test MSISDN the sandbox settles by itself.
+> Orange's rail has still never been called, and neither has MTN's
+> Disbursements product, which is what a refund on that rail is. See
+> [`docs/status.md`](docs/status.md). The maintainer who performed the tests
+> confirmed the **over seven successful payments** count on 2026-10-20;
+> [the verification record](docs/status/verification/2026-09-15.md) distinguishes
+> the day's total from the first documented session.)_
 >
 > Read [`docs/status.md`](docs/status.md) before forming any expectation of
 > what works. It is machine-checked in both directions: `cargo xtask
@@ -338,8 +342,9 @@ hex steering code the stub keys its scenario on, and step 6 shows
 a Cameroon E.164 number. Nothing rewrites stored state to
 make an outcome happen. The stubs are WireMock containers reached over HTTP
 exactly as a real rail would be — that is the rule in [AGENTS.md](AGENTS.md): a
-stub rail is a _host_, never a linked implementation — and **MTN's and Orange's
-real endpoints have never been called by this code.** A `succeeded` here means
+stub rail is a _host_, never a linked implementation. **This demo calls neither
+MTN's nor Orange's real endpoints.** The separate 2026-09-15 MTN sandbox tests
+settled over seven payments, as confirmed by their tester on 2026-10-20. A `succeeded` here means
 `vpay-worker` asked a stub and the stub said `SUCCESSFUL`; it does not mean
 anyone paid.
 

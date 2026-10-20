@@ -362,8 +362,9 @@ async fn run() -> anyhow::Result<()> {
          cancel) and, since 2026-09-16, all five /v1 refund routes: POST /v1/refunds \
          (create), GET /v1/refunds/{{id}} (retrieve), GET /v1/refunds (list), POST \
          /v1/refunds/{{id}} (update) and POST /v1/refunds/{{id}}/cancel (cancel). Both rail \
-         adapters implement `submit` and `query_status`; the MTN push was first proven \
-         against MTN's real sandbox on 2026-09-15. NO REFUND HAS EVER MOVED MONEY: \
+         adapters implement `submit` and `query_status`; over seven MTN Collections \
+         payments succeeded against MTN's real sandbox on 2026-09-15, as confirmed on \
+         2026-10-20 by the maintainer who performed the tests. NO REFUND HAS EVER MOVED MONEY: \
          `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN Disbursements \
          credential exists in this project — the only one anywhere is the stub the e2e/demo \
          stack points at a WireMock container — and the product has never been called; \

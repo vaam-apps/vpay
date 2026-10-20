@@ -14,8 +14,8 @@
   plugin has spoken to a **running vpay** (`ghcr.io/vaam-apps/vpay-*:edge`,
   not a build of this tree), on an **iOS Simulator and an Android
   emulator**, and took two payments through vpay's own hosted page to
-  `succeeded`. What stands, unchanged: **no real rail** — every rail this
-  repository has ever driven is a WireMock container, so no money has moved;
+  `succeeded`. What stands for these Tauri runs: **no real rail** — the rail
+  was a WireMock container, so no money moved;
   **no physical device**; **no desktop run of any kind**, so
   `open::that_detached` has still never executed; and **the plugin's own
   suites open no socket** — every count in `sdks/tauri/` is a unit suite
@@ -23,6 +23,13 @@
   [`../status/verification/2026-09-22-tauri-plugin.md`](../status/verification/2026-09-22-tauri-plugin.md),
   and what is still missing is on
   [`../status/mobile-tauri-plugin.md`](../status/mobile-tauri-plugin.md).
+
+  **Scope corrected 2026-10-20:** the former repository-wide WireMock claim
+  was stale. The maintainer who performed the 2026-09-15 tests confirms
+  **over seven successful payments against MTN's real sandbox**
+  ([verification](../status/verification/2026-09-15.md)). That separate
+  evidence does not establish real-MTN checkout through the Tauri plugin.
+
 - **Inherits, unchanged:** [ADR-0021](../adr/0021-flutter-checkout-plugin.md)
   and [`2026-09-13-flutter-plugin.md`](2026-09-13-flutter-plugin.md)'s D1–D9.
   This document adds **T1–T7**, the decisions that are about Tauri and about

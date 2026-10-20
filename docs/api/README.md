@@ -632,13 +632,19 @@ where it is a `redirect_to_url` carrying the rail's `url` and your
 `GET /v1/payment_intents/{id}`, so losing the confirm's response does not
 strand the payment. There is no other `next_action` type.
 
-**No rail this deployment has ever called was a real one.** Every outcome
-above has been observed against a WireMock host; MTN and Orange have never
-been contacted. _(The second half of this paragraph said "nothing polls a
+**Every outcome above has been observed against a WireMock host.** Separately,
+the 2026-09-15 MTN Collections tests settled **over seven payments against
+MTN's real sandbox**, as confirmed on 2026-10-20 by the maintainer who performed
+them. This corrects the former claim that neither MTN nor Orange had been
+contacted; Orange remains untested.
+([Verification](../status/verification/2026-09-15.md).)
+
+_(The second half of this paragraph said "nothing polls a
 `submitted` charge yet … `succeeded` has never happened" until 2026-09-03; Step
 4's worker retired it. A `processing` intent is now driven to `succeeded` by
 `vpay_worker`, and Step 5 delivers the webhook that follows — against WireMock
-hosts, on a developer machine and in CI, and nowhere else.)_ See
+hosts, on a developer machine and in CI. That earlier evidence predates the
+separate MTN sandbox tests.)_ See
 [../status.md](../status.md).
 
 ### Bodies, and the `Idempotency-Key` header

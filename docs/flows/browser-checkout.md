@@ -389,10 +389,14 @@ the value to `@vaam-apps/vpay-stripe-js` in the browser and never logs it.
   confirm. `examples/merchant-demo` still carries the old codes and is
   expected to fail the same way; nothing in CI runs it.
 
-Nothing above has ever taken real money: both rails are WireMock hosts on a
-compose network, same as everywhere else in this repository. That is as true of
-Step 9's page as of Step 5c's example — a browser has now walked an entire
-checkout, and every rail in that walk answered from a container.
+Nothing above has ever taken real money: both rails in the compose tests are
+WireMock hosts. **Corrected 2026-10-20:** the former "same as everywhere else
+in this repository" claim was stale. Separately, the maintainer confirms over
+seven successful MTN sandbox payments in the testing recorded on 2026-09-15
+([verification](../status/verification/2026-09-15.md)). The
+[live-sandbox runbook](../runbooks/live-sandbox-test.md) records the browser
+path exercised that day; this does not turn the compose tests into real-rail
+tests or establish production payments.
 
 ## Status
 

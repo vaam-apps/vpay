@@ -6,6 +6,12 @@ worker, the payer checkout page, and the staff dashboard — and watch it settle
 This is the reproducible form of the work first done on 2026-09-15
 ([`../status.md`](../status.md)).
 
+**Testing evidence, corrected 2026-10-20:** the maintainer who performed those
+tests confirmed **over seven successful payments against MTN's real sandbox**.
+This walkthrough reproduces one payment; the first documented session's three
+attempts (two token failures, then one success) are not the total across the day.
+See [the verification record](../status/verification/2026-09-15.md).
+
 **What this page is.** A step-by-step runbook whose every command is the one
 actually run. Follow it top to bottom and you end with a `succeeded`
 `payment_intents` row that MTN's sandbox settled for you.
@@ -163,7 +169,7 @@ This mints an **EUR** `mtn_momo` PaymentIntent as `live-merchant` and prints a
 ready-to-open URL. The tracked example script reads `MINT_CURRENCY` (the demo
 default is XAF, which MTN's sandbox rejects):
 
-```
+```text
 http://localhost:4180/?pk=...&client_secret=...&api=http%3A%2F%2Flocalhost%3A8080
 ```
 
@@ -181,7 +187,7 @@ settlement and moves the row to `succeeded`.
 
 Confirm it from the worker (Terminal 2), which logs:
 
-```
+```text
 the rail reported a charge as paid  …  payment_intent_id=pi_…
 ```
 

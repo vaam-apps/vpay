@@ -6,6 +6,17 @@ _It still says "above" and "below" where it once pointed at another part of the 
 
 ## What would have to be true to call this "an MVP"
 
+**Sandbox evidence corrected 2026-10-20.** The maintainer who performed the
+September 15 tests confirms **over seven successful EUR `mtn_momo` payments
+against MTN's real sandbox that day**. The
+[verification record](verification/2026-09-15.md) details the first successful
+payment after two token-mint failures and records the aggregate separately.
+The blanket "no real rail has ever been called" statements retained below
+describe the earlier state; the September 16 addendum repeated that already
+outdated claim. MTN Collections has this sandbox evidence. Orange, real
+refunds, production payments and the other unproven conditions below remain
+open.
+
 _**No item moved on 2026-09-16, and the refunds work is why that is worth
 saying.** Wave 3 of RFC-0003 mounted five `/v1` refund routes, gave both
 merchant SDKs a refund surface and emitted `charge.refunded` for the first
