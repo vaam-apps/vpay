@@ -248,12 +248,13 @@ impl Client {
     /// # Errors
     ///
     /// As for [`Client::initialize_payment`], and `Malformed` without any
-    /// request if `reference` is empty or made only of dots. Those would
-    /// resolve to another endpoint — `/payments/` is the list, and
-    /// `/payments/..` is the API root — and an escape does not help, because
-    /// URL parsing treats `%2E%2E` as `..` as well. The reference can be
-    /// Notch Pay's own, from a stored answer, so the rail is one of the
-    /// callers this guards against.
+    /// request if `reference` is empty or made only of dots. It is
+    /// [`vpay_provider::http::path_segment`] that refuses those, not this
+    /// crate: they would resolve to another endpoint — `/payments/` is the
+    /// list, and `/payments/..` is the API root — and an escape does not
+    /// help, because URL parsing treats `%2E%2E` as `..` as well. The
+    /// reference can be Notch Pay's own, from a stored answer, so the rail is
+    /// one of the callers this guards against.
     pub async fn retrieve_payment(
         &self,
         reference: &str,
@@ -296,7 +297,7 @@ impl Client {
         method: Method,
         reference: &str,
     ) -> Result<reqwest::RequestBuilder, ProviderError> {
-        let path = format!("/payments/{}", reference_segment(reference)?);
+        let path = format!("/payments/{}", path_segment(reference)?);
         Ok(self.request(method, &path))
     }
 
@@ -328,16 +329,6 @@ impl Client {
         let (status, body) = read_rail_body(response, context).await?;
         interpret(status, &body, context)
     }
-}
-
-/// One path segment for a payment reference, or a refusal.
-fn reference_segment(reference: &str) -> Result<String, ProviderError> {
-    if reference.chars().all(|c| c == '.') {
-        return Err(ProviderError::malformed(
-            "notchpay: a payment reference that is empty or only dots cannot be a path segment",
-        ));
-    }
-    Ok(path_segment(reference))
 }
 
 /// Decodes a webhook body Notch Pay POSTed.
@@ -549,6 +540,11 @@ mod tests {
         }
     }
 
+    /// The refusal itself belongs to `vpay_provider::http::path_segment` and is
+    /// proved there. What this proves is that **this crate calls it**: it goes
+    /// through `payment_request`, the one place a reference becomes a path, so
+    /// replacing `path_segment(reference)?` with anything that skips the check
+    /// fails here. A test of the helper alone would stay green through that.
     #[test]
     fn an_empty_or_dot_only_reference_is_refused_before_any_request() {
         let client = client("https://api.notchpay.co");

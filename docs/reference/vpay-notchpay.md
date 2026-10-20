@@ -128,6 +128,20 @@ published on a branch:
   request. MTN's account-holder path uses the same helper with a digits-only
   number, so it is not affected; the helper itself still passes dots, and a
   future caller must refuse them as this crate does.
+
+  _(This bullet said "the helper itself still passes dots, and a future caller
+  must refuse them as this crate does", and described the helper as one that
+  "passes `.` and `..` through", until 2026-10-20; both were true of the
+  helper the review read. `path_segment` now refuses an empty or all-dots
+  segment itself, as `Malformed` with a fixed message that never quotes the
+  input, and this crate's private `reference_segment` was deleted in favour
+  of it: `Client::payment_request` calls `path_segment(reference)?`. The
+  refusal is the helper's to prove, in `vpay-provider`; that this crate
+  calls it is what
+  `an_empty_or_dot_only_reference_is_refused_before_any_request` pins, by
+  going through `payment_request` rather than through the helper. See
+  `docs/reference/rails.md` § "A path segment the caller chose".)_
+
 - **A payload is required.** Every envelope field was `Option`, so `{}` — or
   the `data`-shaped body some API reference pages show — decoded as an empty
   success. A webhook list read that way finds no vpay endpoint, and a caller
