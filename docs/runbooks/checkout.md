@@ -332,7 +332,7 @@ of vpay, because no deployment exists; this runbook's compose tests use
 WireMock rails; and the §5 CSP check has not been performed by anyone against
 a browser — only the page's own origin refusal has.
 **Corrected 2026-10-20:** the former blanket "no real rail has been called"
-claim was stale. Separately, the maintainer confirms over seven successful
+claim was stale. Separately, Valantine Suh (@Valsuh45) confirms over seven successful
 MTN sandbox payments in the testing recorded on 2026-09-15
 ([verification](../status/verification/2026-09-15.md)); that evidence does
 not prove this shop runbook against MTN. See [../status.md](../status.md).

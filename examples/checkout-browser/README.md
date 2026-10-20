@@ -62,7 +62,7 @@ step 4's URL (`mint.mjs` reads `VPAY_BASE_URL`, so
   happen and what is missing (the Orange return trip has no route yet).
 - Nothing here has taken real money. Both rails in the compose tests are
   WireMock stubs. **Corrected 2026-10-20:** the former "same as everywhere
-  else in this repository" claim was stale. The maintainer confirms over
+  else in this repository" claim was stale. Valantine Suh (@Valsuh45) confirms over
   seven successful MTN sandbox payments in the testing recorded on
   2026-09-15; [the live-sandbox runbook](../../docs/runbooks/live-sandbox-test.md)
   records this browser example's use that day. That evidence is separate from

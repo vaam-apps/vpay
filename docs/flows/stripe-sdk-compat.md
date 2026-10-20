@@ -361,7 +361,7 @@ collapse described above.
   MTN. No money has moved. The `succeeded` the suite polls to is a stub mapping answering
   `SUCCESSFUL`, driven through the real worker, the real settlement
   transaction and the real `/v1` renderer — but the approval itself is
-  fiction. **Scope clarified 2026-10-20:** the maintainer separately confirms
+  fiction. **Scope clarified 2026-10-20:** Valantine Suh (@Valsuh45) separately confirms
   over seven successful MTN sandbox payments in the testing recorded on
   2026-09-15 ([verification](../status/verification/2026-09-15.md)).
   That aggregate is not evidence that this compatibility suite ran against MTN.

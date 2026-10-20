@@ -25,7 +25,7 @@
   [`../status/mobile-tauri-plugin.md`](../status/mobile-tauri-plugin.md).
 
   **Scope corrected 2026-10-20:** the former repository-wide WireMock claim
-  was stale. The maintainer who performed the 2026-09-15 tests confirms
+  was stale. Valantine Suh (@Valsuh45), who performed the 2026-09-15 tests, confirms
   **over seven successful payments against MTN's real sandbox**
   ([verification](../status/verification/2026-09-15.md)). That separate
   evidence does not establish real-MTN checkout through the Tauri plugin.

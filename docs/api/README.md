@@ -634,8 +634,7 @@ strand the payment. There is no other `next_action` type.
 
 **Every outcome above has been observed against a WireMock host.** Separately,
 the 2026-09-15 MTN Collections tests settled **over seven payments against
-MTN's real sandbox**, as confirmed on 2026-10-20 by the maintainer who performed
-them. This corrects the former claim that neither MTN nor Orange had been
+MTN's real sandbox**, as confirmed on 2026-10-20 by Valantine Suh (@Valsuh45), who performed them. This corrects the former claim that neither MTN nor Orange had been
 contacted; Orange remains untested.
 ([Verification](../status/verification/2026-09-15.md).)
 

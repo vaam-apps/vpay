@@ -539,7 +539,7 @@ transaction and uses the commit path as its control).
   a stub speaking the documented protocol, so what is proven is that the
   recovery table is executed correctly, not that the rails behave as these
   documents claim. **Corrected 2026-10-20:** the former "No real rail has ever
-  been called" claim was too broad. The maintainer confirms over seven
+  been called" claim was too broad. Valantine Suh (@Valsuh45) confirms over seven
   successful MTN sandbox payments in the testing recorded on 2026-09-15
   ([verification](../status/verification/2026-09-15.md)); those successes do
   not establish that any crash-recovery case was exercised against MTN.

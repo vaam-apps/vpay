@@ -161,8 +161,7 @@ carrying the raw reason rather than being guessed at
 ([runbooks/provider-error-rate.md](../runbooks/provider-error-rate.md)).
 **What none of this proves** is that the tables are faithful to the _rails_:
 every decline above came from WireMock, and no real rail has ever declined a
-vpay charge. The maintainer who performed the 2026-09-15 MTN sandbox tests
-confirmed on 2026-10-20 that **over seven payments succeeded**. The initial
+vpay charge. Valantine Suh (@Valsuh45), who performed the 2026-09-15 MTN sandbox tests, confirmed on 2026-10-20 that **over seven payments succeeded**. The initial
 documented session had three attempts: the first two stopped at the token mint
 on adapter bugs and the third settled its charge. Those three attempts are
 not the day's total, and no rail-reported decline was observed
