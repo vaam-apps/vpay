@@ -336,10 +336,10 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
         setting_values: &[("channel", &["cm.mobile"])],
         // Notch Pay's XOF channels are other countries and another RFC.
         currencies: &["XAF"],
-        // Notch Pay documents test keys as carrying `test_`, and serves its
-        // sandbox and its production from one host, so the livemode rule
-        // can only sit on the key (RFC-0012 § 2). A live key's prefix is not
-        // documented (§ 10 item 8); the rule reads `test_` and nothing else.
+        // Notch Pay serves its sandbox and its production from one host, so
+        // the livemode rule can only sit on the key (RFC-0012 § 2). Which
+        // markers it reads is `TEST_KEY_MARKERS`'s. A live key's prefix is
+        // not documented (§ 10 item 8).
         test_marked_credentials: &["public_key", "private_key"],
         // ADR-0031 condition 4, as the maintainer amended it on 2026-10-20:
         // in livemode the operator states, in the rail's own block, that
@@ -362,8 +362,8 @@ struct RequiredRailKeys {
     setting_values: &'static [(&'static str, &'static [&'static str])],
     /// The currencies the rail's adapter charges in; empty is any.
     currencies: &'static [&'static str],
-    /// `credentials` keys whose value must contain [`TEST_KEY_MARKER`]
-    /// exactly when the deployment is not livemode.
+    /// `credentials` keys whose value must contain one of
+    /// [`TEST_KEY_MARKERS`] exactly when the deployment is not livemode.
     test_marked_credentials: &'static [&'static str],
     /// The `settings` key a livemode deployment must set to `"true"` before
     /// the rail boots, for a rail admitted under ADR-0031's public-key limb.
@@ -381,8 +381,17 @@ struct PublicKeyAcknowledgement {
 }
 
 /// What a rail test key carries, for the rows that list
-/// `test_marked_credentials`. Notch Pay's spelling ("the `test_` prefix").
-const TEST_KEY_MARKER: &str = "test_";
+/// `test_marked_credentials`: either marker makes a key a test key.
+///
+/// `test.` is what Notch Pay's sandbox keys were seen to carry on 2026-10-20:
+/// on the maintainer's test-mode account both keys contain `test` followed by
+/// `.` and neither contains `test_`
+/// (`docs/status/verification/2026-10-20-notchpay-sandbox.md`). `test_` is
+/// what Notch Pay's documentation says ("the `test_` prefix", `pk_test_…`),
+/// and it stays: if some account's keys are shaped as documented, livemode
+/// still refuses them. Reading `test_` alone refused every real sandbox key
+/// outside livemode and admitted one in livemode.
+const TEST_KEY_MARKERS: [&str; 2] = ["test.", "test_"];
 
 impl ProviderHost {
     /// Projects this rail's YAML onto the [`ProviderConfig`] an adapter is
@@ -1734,7 +1743,7 @@ fn validate_required_rail_keys(provider: &ProviderHost, livemode: bool) -> Resul
         let carries = provider
             .credentials
             .get(*key)
-            .is_some_and(|value| value.contains(TEST_KEY_MARKER));
+            .is_some_and(|value| TEST_KEY_MARKERS.iter().any(|marker| value.contains(marker)));
         if carries == livemode {
             return Err(ConfigError::RailKeyLivemodeMismatch {
                 code: provider.code.clone(),
@@ -3909,6 +3918,72 @@ mod tests {
     const NOTCHPAY_TEST_PRIVATE: &str = "private-key-test_0002";
     const NOTCHPAY_LIVE_PUBLIC: &str = "public-key-live-0003";
     const NOTCHPAY_LIVE_PRIVATE: &str = "private-key-live-0004";
+    /// The shape Notch Pay's sandbox keys were seen to carry on 2026-10-20:
+    /// `test` followed by `.`, and no `test_`. Not a real key.
+    const NOTCHPAY_SANDBOX_SHAPED_PUBLIC: &str = "public-key-test.0005";
+    const NOTCHPAY_SANDBOX_SHAPED_PRIVATE: &str = "private-key-test.0006";
+
+    /// The defect the 2026-10-20 sandbox session found: the rule read `test_`
+    /// only, so a genuine sandbox key (`test.`) was refused outside livemode
+    /// and admitted in it. Both directions, for the measured shape.
+    #[test]
+    fn a_key_shaped_like_notch_pays_real_sandbox_keys_is_a_test_key() {
+        let sandbox = notchpay(
+            NOTCHPAY_SANDBOX_SHAPED_PUBLIC,
+            NOTCHPAY_SANDBOX_SHAPED_PRIVATE,
+        );
+        assert_eq!(validate_required_rail_keys(&sandbox, false), Ok(()));
+        assert_eq!(
+            validate_required_rail_keys(&acknowledged(sandbox), true),
+            Err(ConfigError::RailKeyLivemodeMismatch {
+                code: "notchpay".to_owned(),
+                key: "public_key".to_owned(),
+                marker: "carries",
+                livemode: true,
+            })
+        );
+        assert_eq!(
+            validate_required_rail_keys(
+                &acknowledged(notchpay(
+                    NOTCHPAY_LIVE_PUBLIC,
+                    NOTCHPAY_SANDBOX_SHAPED_PRIVATE
+                )),
+                true
+            ),
+            Err(ConfigError::RailKeyLivemodeMismatch {
+                code: "notchpay".to_owned(),
+                key: "private_key".to_owned(),
+                marker: "carries",
+                livemode: true,
+            })
+        );
+    }
+
+    /// Either marker is a test key, so the documented shape and the measured
+    /// one may sit side by side in a sandbox, and `test` with neither
+    /// separator is not a marker at all.
+    #[test]
+    fn either_marker_makes_a_test_key_and_a_bare_test_does_not() {
+        assert_eq!(
+            validate_required_rail_keys(
+                &notchpay(NOTCHPAY_SANDBOX_SHAPED_PUBLIC, NOTCHPAY_TEST_PRIVATE),
+                false
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_required_rail_keys(
+                &notchpay("public-key-test0007", NOTCHPAY_TEST_PRIVATE),
+                false
+            ),
+            Err(ConfigError::RailKeyLivemodeMismatch {
+                code: "notchpay".to_owned(),
+                key: "public_key".to_owned(),
+                marker: "lacks",
+                livemode: false,
+            })
+        );
+    }
 
     #[test]
     fn a_sandbox_notchpay_block_with_test_keys_boots() {

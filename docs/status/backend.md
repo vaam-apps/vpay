@@ -808,8 +808,9 @@ was available.
   `worker`).
 - **Boot refusals** (`vpay_config::config::REQUIRED_RAIL_KEYS`, whose rows
   gained three columns): both keys required; `channel` must be `cm.mobile`;
-  currency must be `XAF`; a key's `test_` marker must agree with
-  `deployment.livemode`; and, in livemode only,
+  currency must be `XAF`; a key's test-key marker (`test.` or `test_`; `test_` alone until
+  the 2026-10-20 sandbox session found real test keys carry `test.`) must
+  agree with `deployment.livemode`; and, in livemode only,
   `settings.accept_public_key_exposure` must be `true` (ADR-0031 condition 4,
   added the same day on the maintainer's answer "Livemode acknowledgement:
   YES, require it."). The acknowledged livemode boot is proven on the real

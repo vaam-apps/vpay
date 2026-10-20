@@ -599,8 +599,8 @@ than a feature it added:**
   Orange: `credentials.merchant_key`, `credentials.client_id`,
   `credentials.client_secret`; Notch Pay (2026-10-20):
   `settings.channel` (exactly `cm.mobile`), `credentials.public_key`,
-  `credentials.private_key`, currency `XAF`, a `test_` marker on both keys
-  that agrees with `deployment.livemode`, and **in livemode only**
+  `credentials.private_key`, currency `XAF`, a test-key marker (`test.` or `test_`, corrected
+  2026-10-20) on both keys that agrees with `deployment.livemode`, and **in livemode only**
   `settings.accept_public_key_exposure: true`, ADR-0031 condition 4's
   acknowledgement (see [adapter-notchpay.md](adapter-notchpay.md) §
   "Configuration"). A present-but-empty value counts as missing.

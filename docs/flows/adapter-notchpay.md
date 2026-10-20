@@ -124,10 +124,16 @@ Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
   step 8). Configured for a whole deployment, either would fail every payer on
   the other network;
 - `currency` exactly `XAF`;
-- **the livemode rule is on the keys**: in livemode a key containing `test_`
-  refuses to boot, and outside livemode a key without it does. Notch Pay
-  serves its sandbox and its production from one host, so the host rule
-  cannot tell them apart. The error names the key and never prints it;
+- **the livemode rule is on the keys**: in livemode a key containing `test.`
+  or `test_` refuses to boot, and outside livemode a key with neither does.
+  Notch Pay serves its sandbox and its production from one host, so the host
+  rule cannot tell them apart. The error names the key and never prints it.
+  _(Corrected 2026-10-20: this read "`test_`" alone, as RFC-0012 § 2 did.
+  The maintainer's real test-mode keys carry `test` followed by `.` and no
+  `test_`, so that rule refused every genuine sandbox key outside livemode
+  and admitted one in livemode. `test_` stays because Notch Pay's
+  documentation spells it so. See
+  [the sandbox page](../status/verification/2026-10-20-notchpay-sandbox.md).)_;
 - **in livemode, `settings.accept_public_key_exposure` exactly `true`**
   (ADR-0031 condition 4). Absent or `false`, boot refuses, naming the setting
   and `credentials.public_key` and never a value. Outside livemode it may be
@@ -250,7 +256,13 @@ without the `+`. The adapter sends the `+` form the documentation shows.
   proves nothing about Notch Pay.
 - **Not done:** RFC-0012 delivery step 1 (the first sandbox session) and step
   5 (the first test-mode call through the adapter). No test-mode key was
-  available on 2026-10-20. Until a dated verification page records them, the
+  available when the adapter landed. A session later on 2026-10-20 had the
+  keys and **still made no request**: its permission policy refused the
+  calls, and its egress re-terminates TLS, which vpay's vendored-roots client
+  rightly rejects. It did measure one thing: the real test keys carry `test.`,
+  not `test_`, and the boot rule is corrected for it
+  ([status/verification/2026-10-20-notchpay-sandbox.md](../status/verification/2026-10-20-notchpay-sandbox.md)).
+  Until a dated verification page records steps 1 and 5, the
   Collect and Status read cells of [status/providers.md](../status/providers.md)
   say "stub-only", never "sandbox".
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not

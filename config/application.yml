@@ -116,8 +116,9 @@ providers:
   # every deployment of this image. Uncommenting it adds NOTCHPAY_PUBLIC_KEY
   # and NOTCHPAY_PRIVATE_KEY to `grep -o '${[A-Z_]*}' config/application.yml`.
   #
-  # In this (non-livemode) file both keys must contain `test_`, and in a
-  # livemode one they must not (RFC-0012 § 2); boot names the key, never its
+  # In this (non-livemode) file both keys must contain `test.` or `test_`
+  # (real sandbox keys carry `test.`), and in a livemode one neither may
+  # (RFC-0012 § 2); boot names the key, never its
   # value. `wiremock-notchpay` (compose.yml) is the stub this host points at.
   #
   # - code: notchpay

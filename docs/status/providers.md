@@ -78,7 +78,11 @@ Notes on cells that a word cannot carry:
   passes against a WireMock stub transcribed from Notch Pay's specification
   2.1.0. **Nothing has called Notch Pay.** RFC-0012 delivery steps 1 and 5,
   the sandbox session and the first test-mode call through the adapter, are
-  not done: no test-mode key was available. The Collect and Status read cells
+  not done. When the adapter landed no test-mode key was available. A later
+  session the same day had keys and still made no request
+  ([verification/2026-10-20-notchpay-sandbox.md](verification/2026-10-20-notchpay-sandbox.md)).
+  It found that the real test keys carry `test.` rather than `test_`, and
+  corrected the boot rule. The Collect and Status read cells
   move to "proven; sandbox" plus a date only on a dated verification page.
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the evidence. _(This note read "client … no binary links it … waits on

@@ -20,7 +20,8 @@ use super::*;
 
 /// Fixture keys, named so a secret scanner cannot mistake them for a real
 /// provider's (`pk_test_…` / `sk_test_…` shapes are what Trivy flags). Both
-/// carry `test_`, which is the only thing the livemode rule reads.
+/// carry `test_`, one of the two markers the livemode rule reads (the other,
+/// `test.`, is what real sandbox keys carry).
 const PUBLIC: &str = "public-key-test_0001";
 const PRIVATE: &str = "private-key-test_0002";
 
