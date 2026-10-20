@@ -674,6 +674,140 @@ pub struct StaffAuth {
     #[garde(range(min = 10, max = 3600))]
     #[serde(default = "StaffAuth::default_access_token_ttl_seconds")]
     pub access_token_ttl_seconds: u32,
+
+    /// Single sign-on through an external OpenID Connect provider
+    /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+    ///
+    /// **Present means active.** This is deployment configuration — which
+    /// identity provider this deployment trusts — and not a feature flag:
+    /// there is no `enabled` switch beside it, and a deployment that does not
+    /// write the block gets no SSO routes that answer anything but "not
+    /// configured". Password + TOTP sign-in is unaffected either way; it
+    /// stays as the break-glass path.
+    #[garde(dive)]
+    #[serde(default)]
+    pub sso: Option<StaffSso>,
+}
+
+/// The one OpenID Connect provider this deployment's staff may sign in
+/// through ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+///
+/// # One issuer, per deployment, and the shape that reaches per-merchant
+///
+/// ADR-0019 § R3 left "per deployment or per merchant" open; ADR-0030 takes
+/// it: per deployment. Everything in this block is therefore singular. The
+/// `credentials` row already carries the issuer string, so a later move to
+/// per-merchant issuers changes this block's cardinality and nothing in the
+/// schema.
+///
+/// # Roles stay local
+///
+/// Nothing here — and no token claim — reads or writes `is_admin` or
+/// `merchant_id` (ADR-0019 § R2). A member provisioned on first sign-in is a
+/// non-admin bound to `dashboard_client.merchant_id`.
+#[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct StaffSso {
+    /// The Issuer Identifier, written exactly as the provider publishes it —
+    /// `https://auth.example/realms/staff` for Keycloak. Discovery
+    /// (`<issuer>/.well-known/openid-configuration`) must answer an `issuer`
+    /// equal to this **byte for byte**, and a token's `iss` must equal it the
+    /// same way. No normalisation happens anywhere: a trailing slash is part
+    /// of the identifier.
+    #[garde(length(min = 1))]
+    pub issuer: String,
+
+    /// vpay's client identifier at the provider.
+    #[garde(length(min = 1))]
+    pub client_id: String,
+
+    /// vpay's client secret at the provider (`client_secret_basic` at the
+    /// token endpoint). A `${VAR}` reference in livemode, like every other
+    /// secret in this document.
+    #[garde(length(min = 1))]
+    pub client_secret: String,
+
+    /// **The dashboard's** callback — the URL the provider redirects the
+    /// browser back to, e.g. `https://dashboard.example/api/auth/sso/callback`.
+    /// Not a vpay URL: the dashboard app receives the `code` and hands it to
+    /// vpay server-side. Must be registered at the provider as a valid
+    /// redirect URI for `client_id`.
+    #[garde(length(min = 1))]
+    pub redirect_uri: String,
+
+    /// Scopes requested. Must include `openid`. Defaults to
+    /// `openid email profile`.
+    #[garde(skip)]
+    #[serde(default = "StaffSso::default_scopes")]
+    pub scopes: Vec<String>,
+
+    /// The provider group a person must be in to sign in at all, and to be
+    /// provisioned on first sign-in. Required: an SSO block that admitted
+    /// every account in a realm would make the realm's membership the
+    /// staff list.
+    #[garde(length(min = 1))]
+    pub required_group: String,
+
+    /// Which id_token claim carries the groups. A JSON array of strings, or
+    /// one string. Defaults to `groups`.
+    #[garde(length(min = 1))]
+    #[serde(default = "StaffSso::default_groups_claim")]
+    pub groups_claim: String,
+
+    /// `acr` values that prove a second factor. An id_token is accepted only
+    /// if its `acr` is in this list **or** its `amr` intersects
+    /// [`Self::accepted_amr`]. May be empty if `accepted_amr` is not, and
+    /// vice versa; both empty is a boot refusal (fail closed — ADR-0019 § R1).
+    ///
+    /// Provider-specific and not obvious: Keycloak's `acr` is a *level of
+    /// authentication* (`"1"` after a password alone, `"0"` on an SSO-cookie
+    /// re-entry), so listing its numbers proves nothing about a second factor
+    /// unless the realm maps them deliberately. `accepted_amr` is usually the
+    /// right one there (`["otp"]`).
+    #[garde(skip)]
+    #[serde(default)]
+    pub accepted_acr: Vec<String>,
+
+    /// `amr` values (RFC 8176) that prove a second factor, e.g. `["otp"]`.
+    /// See [`Self::accepted_acr`].
+    #[garde(skip)]
+    #[serde(default)]
+    pub accepted_amr: Vec<String>,
+}
+
+/// Redacts the client secret and prints everything else: the issuer, the
+/// group and the MFA rule are exactly what an operator checks against the
+/// provider's console from a startup log.
+impl fmt::Debug for StaffSso {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaffSso")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("required_group", &self.required_group)
+            .field("groups_claim", &self.groups_claim)
+            .field("accepted_acr", &self.accepted_acr)
+            .field("accepted_amr", &self.accepted_amr)
+            .finish()
+    }
+}
+
+impl StaffSso {
+    /// `openid email profile` — what a Keycloak realm's default client scopes
+    /// offer, and the minimum that yields a display name and an address.
+    fn default_scopes() -> Vec<String> {
+        ["openid", "email", "profile"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// `groups`.
+    fn default_groups_claim() -> String {
+        "groups".to_owned()
+    }
 }
 
 impl Default for StaffAuth {
@@ -692,6 +826,7 @@ impl Default for StaffAuth {
             trusted_proxies: Vec::new(),
             rate_limits: RateLimits::default(),
             access_token_ttl_seconds: Self::default_access_token_ttl_seconds(),
+            sso: None,
         }
     }
 }
@@ -832,6 +967,7 @@ impl fmt::Debug for StaffAuth {
             .field("trusted_proxies", &self.trusted_proxies)
             .field("rate_limits", &self.rate_limits)
             .field("access_token_ttl_seconds", &self.access_token_ttl_seconds)
+            .field("sso", &self.sso)
             .finish()
     }
 }
@@ -1174,6 +1310,17 @@ impl Config {
             // nothing to protect.
             validate_staff_auth(&self.staff_auth, livemode, raw_secrets)?;
         }
+        // Outside the `if let` above on purpose: an `sso` block with no
+        // dashboard client is a contradiction to refuse, not a block to skip.
+        if let Some(sso) = &self.staff_auth.sso {
+            validate_staff_sso(
+                &self.staff_auth,
+                sso,
+                self.dashboard_client.is_some(),
+                livemode,
+                raw_secrets,
+            )?;
+        }
 
         Ok(())
     }
@@ -1352,6 +1499,16 @@ impl RawSecrets {
         for (key, value) in dict {
             if let Some(text) = value.as_str() {
                 out.insert(key.clone(), text.to_owned());
+            } else if let Some(nested) = value.as_dict() {
+                // One level down, flattened as `<block>.<field>`: the
+                // `sso` block's `client_secret` is a secret like the two
+                // above and must be provable to have been written as a
+                // `${VAR}` for the same reason.
+                for (inner_key, inner) in nested {
+                    if let Some(text) = inner.as_str() {
+                        out.insert(format!("{key}.{inner_key}"), text.to_owned());
+                    }
+                }
             }
         }
         out
@@ -1399,6 +1556,14 @@ impl RawSecrets {
                 (
                     "totp_encryption_key",
                     config.staff_auth.totp_encryption_key.as_deref(),
+                ),
+                (
+                    "sso.client_secret",
+                    config
+                        .staff_auth
+                        .sso
+                        .as_ref()
+                        .map(|sso| sso.client_secret.as_str()),
                 ),
             ]
             .into_iter()
@@ -2365,6 +2530,145 @@ fn validate_staff_auth(
             }
         }
     }
+    Ok(())
+}
+
+/// The `staff_auth.sso` block's rules
+/// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+///
+/// Ordered as an operator reads them: the contradictions with the rest of the
+/// document first (SSO needs a dashboard to land in and the staff secrets to
+/// seal a verifier with), then the shape of each value, then the one policy
+/// rule that has no safe default.
+///
+/// # The second-factor rule has no default and is not livemode-only
+///
+/// An id_token is accepted only if it proves a second factor
+/// (ADR-0019 § R1, taken for the `oidc` kind by ADR-0030). A block with both
+/// `accepted_acr` and `accepted_amr` empty would accept nothing — or, worse, a
+/// future edit would make it accept everything — so it is refused at boot in
+/// every deployment rather than quietly meaning "no rule".
+///
+/// # Errors
+///
+/// [`ConfigError::StaffSsoRequiresDashboardClient`],
+/// [`ConfigError::StaffSsoRequiresStaffSecrets`],
+/// [`ConfigError::StaffSsoMalformed`], [`ConfigError::StaffSsoNoSecondFactorRule`],
+/// [`ConfigError::LiteralSecret`] (livemode, `client_secret` not a `${VAR}`),
+/// and the livemode https / stub-host rules of
+/// [`crate::validate_webhook_url`] for `issuer` and `redirect_uri`.
+fn validate_staff_sso(
+    staff_auth: &StaffAuth,
+    sso: &StaffSso,
+    has_dashboard_client: bool,
+    livemode: bool,
+    raw_secrets: &RawSecrets,
+) -> Result<(), ConfigError> {
+    if !has_dashboard_client {
+        return Err(ConfigError::StaffSsoRequiresDashboardClient);
+    }
+    if staff_auth.both().is_none() {
+        return Err(ConfigError::StaffSsoRequiresStaffSecrets);
+    }
+
+    let malformed = |field: &'static str, reason: &'static str| ConfigError::StaffSsoMalformed {
+        field,
+        reason,
+    };
+
+    // The issuer: an absolute URL, no userinfo, no query, no fragment (OpenID
+    // Connect Discovery 1.0 §4.3 / RFC 8414 §2). NOT normalised: the value is
+    // compared byte for byte against what discovery and every token claim.
+    let issuer =
+        url::Url::parse(&sso.issuer).map_err(|_| malformed("issuer", "it is not a URL"))?;
+    if !matches!(issuer.scheme(), "http" | "https") {
+        return Err(malformed("issuer", "its scheme must be http or https"));
+    }
+    if issuer.host_str().is_none_or(str::is_empty) {
+        return Err(malformed("issuer", "it names no host"));
+    }
+    if !issuer.username().is_empty() || issuer.password().is_some() {
+        return Err(malformed("issuer", "it carries embedded credentials"));
+    }
+    if issuer.query().is_some() || issuer.fragment().is_some() {
+        return Err(malformed(
+            "issuer",
+            "it must carry no query and no fragment",
+        ));
+    }
+    validate_webhook_url(&issuer, &sso.issuer, livemode)?;
+
+    let redirect = url::Url::parse(&sso.redirect_uri)
+        .map_err(|_| malformed("redirect_uri", "it is not a URL"))?;
+    if !matches!(redirect.scheme(), "http" | "https") {
+        return Err(malformed(
+            "redirect_uri",
+            "its scheme must be http or https",
+        ));
+    }
+    if redirect.host_str().is_none_or(str::is_empty) {
+        return Err(malformed("redirect_uri", "it names no host"));
+    }
+    if redirect.fragment().is_some() {
+        return Err(malformed(
+            "redirect_uri",
+            "it must carry no fragment (RFC 6749 section 3.1.2)",
+        ));
+    }
+    validate_webhook_url(&redirect, &sso.redirect_uri, livemode)?;
+
+    if sso.client_id.trim() != sso.client_id || sso.client_id.contains(':') {
+        return Err(malformed(
+            "client_id",
+            "it must carry no surrounding whitespace and no `:` (client_secret_basic joins it \
+             to the secret with one)",
+        ));
+    }
+    if sso.client_secret.trim().is_empty() {
+        return Err(malformed("client_secret", "it is blank"));
+    }
+    // The value as written, never the resolved one — `validate_staff_auth`'s
+    // rule, applied to a fourth secret.
+    validate_secret(
+        "staff_auth.sso.client_secret",
+        raw_secrets
+            .staff_auth_as_written("sso.client_secret")
+            .unwrap_or(""),
+        livemode,
+    )?;
+
+    if !sso.scopes.iter().any(|scope| scope == "openid") {
+        return Err(malformed("scopes", "it must include `openid`"));
+    }
+    if sso
+        .scopes
+        .iter()
+        .any(|scope| scope.is_empty() || scope.chars().any(char::is_whitespace))
+    {
+        return Err(malformed(
+            "scopes",
+            "each scope must be one non-empty token with no whitespace",
+        ));
+    }
+    if sso.required_group.trim().is_empty() {
+        return Err(malformed("required_group", "it is blank"));
+    }
+    if sso.groups_claim.trim().is_empty() {
+        return Err(malformed("groups_claim", "it is blank"));
+    }
+
+    for (field, values) in [
+        ("accepted_acr", &sso.accepted_acr),
+        ("accepted_amr", &sso.accepted_amr),
+    ] {
+        if values.iter().any(|value| value.trim().is_empty()) {
+            return Err(malformed(field, "an entry is blank"));
+        }
+    }
+    if sso.accepted_acr.is_empty() && sso.accepted_amr.is_empty() {
+        return Err(ConfigError::StaffSsoNoSecondFactorRule);
+    }
+
     Ok(())
 }
 
@@ -5106,6 +5410,257 @@ providers:
         assert_eq!(
             err,
             ConfigError::ClientSecretPresent("vpay-dashboard".to_owned())
+        );
+    }
+
+    // --- staff_auth.sso (ADR-0030) ---
+
+    /// A deployment that satisfies every `staff_auth.sso` rule, in memory:
+    /// `valid_config()` plus a dashboard client, both staff secrets, and a
+    /// block with an `amr` rule only. Each case below breaks **one** thing.
+    fn sso_config() -> Config {
+        let mut config = valid_config();
+        config.dashboard_client = Some(DashboardClient {
+            client_id: "vpay-dashboard".to_owned(),
+            redirect_uris: vec!["http://localhost:3000/api/auth/callback".to_owned()],
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            scope: "dashboard:read".to_owned(),
+            client_secret: None,
+        });
+        config.staff_auth = StaffAuth {
+            password_pepper: Some("pepper".to_owned()),
+            totp_encryption_key: Some("key".to_owned()),
+            sso: Some(StaffSso {
+                issuer: "https://auth.example.test/realms/staff".to_owned(),
+                client_id: "vpay-staff".to_owned(),
+                client_secret: "secret".to_owned(),
+                redirect_uri: "https://dashboard.example.test/api/auth/sso/callback".to_owned(),
+                scopes: StaffSso::default_scopes(),
+                required_group: "vpay-staff".to_owned(),
+                groups_claim: StaffSso::default_groups_claim(),
+                accepted_acr: Vec::new(),
+                accepted_amr: vec!["otp".to_owned()],
+            }),
+            ..StaffAuth::default()
+        };
+        config
+    }
+
+    fn sso_refusal(config: &Config) -> ConfigError {
+        config
+            .validate_all(&RawSecrets::identity(config))
+            .expect_err("the case breaks exactly one sso rule and must be refused")
+    }
+
+    fn sso_mut(config: &mut Config) -> &mut StaffSso {
+        config
+            .staff_auth
+            .sso
+            .as_mut()
+            .expect("sso_config() carries an sso block")
+    }
+
+    /// The baseline every refusal below is measured against: if this stops
+    /// loading, the other cases would pass for the wrong reason.
+    #[test]
+    fn the_sso_baseline_is_valid() {
+        let config = sso_config();
+        config
+            .validate_all(&RawSecrets::identity(&config))
+            .expect("the baseline sso block satisfies every rule");
+    }
+
+    /// ADR-0019 § R1 for the `oidc` kind, fail closed: both lists empty is a
+    /// boot refusal, in sandbox as much as in livemode — and either list alone
+    /// is enough, because Keycloak's `acr` proves nothing about a second
+    /// factor (measured) and an `amr`-only rule is the production shape.
+    #[test]
+    fn an_sso_block_with_no_second_factor_rule_is_refused_and_either_list_alone_is_enough() {
+        let mut config = sso_config();
+        sso_mut(&mut config).accepted_amr.clear();
+        assert_eq!(
+            sso_refusal(&config),
+            ConfigError::StaffSsoNoSecondFactorRule
+        );
+
+        let mut acr_only = sso_config();
+        {
+            let sso = sso_mut(&mut acr_only);
+            sso.accepted_amr.clear();
+            sso.accepted_acr = vec!["mfa".to_owned()];
+        }
+        acr_only
+            .validate_all(&RawSecrets::identity(&acr_only))
+            .expect("an acr list with an empty amr list is a rule");
+
+        let mut blank = sso_config();
+        sso_mut(&mut blank).accepted_amr = vec!["  ".to_owned()];
+        assert!(matches!(
+            sso_refusal(&blank),
+            ConfigError::StaffSsoMalformed {
+                field: "accepted_amr",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn sso_needs_a_dashboard_client_and_the_staff_secrets() {
+        let mut no_dashboard = sso_config();
+        no_dashboard.dashboard_client = None;
+        assert_eq!(
+            sso_refusal(&no_dashboard),
+            ConfigError::StaffSsoRequiresDashboardClient
+        );
+
+        let mut no_secrets = sso_config();
+        no_secrets.staff_auth.totp_encryption_key = None;
+        assert_eq!(
+            sso_refusal(&no_secrets),
+            ConfigError::StaffSsoRequiresStaffSecrets
+        );
+    }
+
+    /// Each shape rule refuses its own value, and names the field.
+    #[test]
+    fn every_sso_shape_rule_refuses_its_own_value() {
+        type Break = fn(&mut StaffSso);
+        let cases: [(&'static str, Break); 11] = [
+            ("issuer", |sso| sso.issuer = "not a url".to_owned()),
+            ("issuer", |sso| {
+                sso.issuer = "ftp://auth.example.test".to_owned()
+            }),
+            ("issuer", |sso| {
+                sso.issuer = "https://u:p@auth.example.test".to_owned()
+            }),
+            ("issuer", |sso| {
+                sso.issuer = "https://auth.example.test/r?x=1".to_owned()
+            }),
+            ("issuer", |sso| {
+                sso.issuer = "https://auth.example.test/r#frag".to_owned()
+            }),
+            ("redirect_uri", |sso| {
+                sso.redirect_uri = "/relative".to_owned()
+            }),
+            ("redirect_uri", |sso| {
+                sso.redirect_uri = "https://dashboard.example.test/cb#x".to_owned();
+            }),
+            ("client_id", |sso| sso.client_id = "has:colon".to_owned()),
+            ("scopes", |sso| sso.scopes = vec!["email".to_owned()]),
+            ("scopes", |sso| {
+                sso.scopes = vec!["openid".to_owned(), "two words".to_owned()];
+            }),
+            ("required_group", |sso| sso.required_group = "  ".to_owned()),
+        ];
+        for (field, break_it) in cases {
+            let mut config = sso_config();
+            break_it(sso_mut(&mut config));
+            match sso_refusal(&config) {
+                ConfigError::StaffSsoMalformed { field: got, .. } => {
+                    assert_eq!(got, field, "{config:?}");
+                }
+                other => panic!("expected StaffSsoMalformed for {field}, got {other:?}"),
+            }
+        }
+    }
+
+    /// Livemode: https only, no stub host, for both URLs.
+    #[test]
+    fn a_livemode_sso_block_needs_https_and_no_stub_host() {
+        let mut http_issuer = sso_config();
+        http_issuer.deployment.livemode = true;
+        sso_mut(&mut http_issuer).issuer = "http://auth.example.test/realms/staff".to_owned();
+        livemode_placeholders(&mut http_issuer);
+        assert!(matches!(
+            http_issuer.validate_all(&RawSecrets::identity(&http_issuer)),
+            Err(ConfigError::InsecureHost(_))
+        ));
+
+        let mut stub = sso_config();
+        stub.deployment.livemode = true;
+        sso_mut(&mut stub).redirect_uri = "https://localhost/api/auth/sso/callback".to_owned();
+        livemode_placeholders(&mut stub);
+        assert!(matches!(
+            stub.validate_all(&RawSecrets::identity(&stub)),
+            Err(ConfigError::StubHostInLivemode(_))
+        ));
+    }
+
+    /// Livemode wants every secret written as a placeholder; the cases that
+    /// are about something else must not fail on that first.
+    fn livemode_placeholders(config: &mut Config) {
+        if let Some(dashboard) = config.dashboard_client.as_mut() {
+            dashboard.redirect_uris = vec!["https://dashboard.example.test/cb".to_owned()];
+        }
+        config.staff_auth.password_pepper = Some("${PEPPER}".to_owned());
+        config.staff_auth.totp_encryption_key = Some("${KEY}".to_owned());
+        sso_mut(config).client_secret = "${SECRET}".to_owned();
+    }
+
+    /// The block's secret is `Debug`-redacted.
+    #[test]
+    fn the_sso_client_secret_never_reaches_debug() {
+        let config = sso_config();
+        let printed = format!("{:?}", config.staff_auth);
+        assert!(!printed.contains("secret\""), "{printed}");
+        assert!(
+            printed.contains("vpay-staff"),
+            "client_id is public: {printed}"
+        );
+        assert!(printed.contains("[redacted]"), "{printed}");
+    }
+
+    /// The YAML shape reaches the struct, and what a deployment that writes
+    /// only the keys without defaults gets.
+    #[test]
+    fn the_sso_block_loads_from_yaml_with_its_defaults() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/staff-sso-valid.yml");
+        let env = example_env(BTreeMap::from([
+            ("STAFF_PEPPER".to_owned(), "pepper".to_owned()),
+            ("STAFF_TOTP_KEY".to_owned(), "key".to_owned()),
+            (
+                "STAFF_SSO_CLIENT_SECRET".to_owned(),
+                "the-resolved-secret".to_owned(),
+            ),
+        ]));
+        let config = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .expect("the fixture satisfies every sso rule");
+        let sso = config.staff_auth.sso.expect("the block reached the struct");
+
+        assert_eq!(sso.issuer, "https://auth.example.test/realms/staff");
+        assert_eq!(
+            sso.client_secret, "the-resolved-secret",
+            "resolved, like every placeholder"
+        );
+        assert_eq!(sso.scopes, ["openid", "email", "profile"]);
+        assert_eq!(sso.groups_claim, "groups");
+        assert!(sso.accepted_acr.is_empty());
+        assert_eq!(sso.accepted_amr, ["otp"]);
+    }
+
+    /// A deployment that writes no `sso` block gets none: SSO is
+    /// configuration, not a flag with a default.
+    #[test]
+    fn no_sso_block_means_no_sso() {
+        assert!(StaffAuth::default().sso.is_none());
+    }
+
+    /// The literal-secret rule reaches the nested secret. The fixture is
+    /// livemode with placeholders everywhere else, so this is the SSO rule.
+    #[test]
+    fn a_livemode_sso_client_secret_must_be_a_placeholder() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-sso-livemode-literal-secret.yml");
+        let env = example_env(BTreeMap::from([
+            ("STAFF_PEPPER".to_owned(), "pepper".to_owned()),
+            ("STAFF_TOTP_KEY".to_owned(), "key".to_owned()),
+        ]));
+        let error = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .map(|_| ())
+            .expect_err("a literal sso client_secret in livemode must be refused");
+        assert_eq!(
+            error,
+            ConfigError::LiteralSecret("staff_auth.sso.client_secret".to_owned())
         );
     }
 }

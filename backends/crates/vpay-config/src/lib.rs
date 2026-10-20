@@ -26,7 +26,7 @@ pub mod signal;
 pub use cli::{CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs};
 pub use config::{
     CheckoutConfig, Config, CurrencyEntry, ProviderHost, RailDisplayName, RateLimitPolicy,
-    RateLimits, StaffAuth, WebhookPolicy,
+    RateLimits, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use oauth::{
     DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
@@ -428,6 +428,56 @@ pub enum ConfigError {
         /// `password_pepper` or `totp_encryption_key`.
         field: String,
     },
+
+    /// `staff_auth.sso` is present and no `dashboard_client` is registered
+    /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+    ///
+    /// Fatal: a member provisioned on first sign-in is bound to
+    /// `dashboard_client.merchant_id`, so without a dashboard client there is
+    /// no tenant to bind them to and no `/dash/v1` for them to reach.
+    #[error(
+        "staff_auth.sso is configured but no dashboard_client is registered: a member \
+         provisioned on first sign-in is bound to dashboard_client.merchant_id (ADR-0030)"
+    )]
+    StaffSsoRequiresDashboardClient,
+
+    /// `staff_auth.sso` is present and `password_pepper` or
+    /// `totp_encryption_key` is not.
+    ///
+    /// Fatal in every deployment. The staff login mounts only with both, and
+    /// the SSO flow seals its PKCE verifier under the second one; a block that
+    /// would be silently ignored is the "looks configured, is not" state this
+    /// repository refuses.
+    #[error(
+        "staff_auth.sso is configured but staff_auth.password_pepper / \
+         staff_auth.totp_encryption_key are not both set: the staff login, and with it SSO, \
+         would not mount (ADR-0030)"
+    )]
+    StaffSsoRequiresStaffSecrets,
+
+    /// A `staff_auth.sso` value is unusable. `reason` is chosen by the check
+    /// and never by anything a file contains; the value itself is never
+    /// echoed, because one of the fields is a secret and the others do not
+    /// need it to be found.
+    #[error("staff_auth.sso.{field} is not usable: {reason}")]
+    StaffSsoMalformed {
+        /// Which field.
+        field: &'static str,
+        /// Which rule it broke.
+        reason: &'static str,
+    },
+
+    /// `staff_auth.sso` lists neither an accepted `acr` nor an accepted `amr`
+    /// (ADR-0019 § R1 for the `oidc` kind, taken by ADR-0030).
+    ///
+    /// Fail closed: an id_token is accepted only if it proves a second
+    /// factor, and a block with no rule for what proves one cannot say. Either
+    /// list may be empty as long as the other is not.
+    #[error(
+        "staff_auth.sso lists neither accepted_acr nor accepted_amr: an id_token is accepted \
+         only if it proves a second factor, and this block names no way to tell (ADR-0030)"
+    )]
+    StaffSsoNoSecondFactorRule,
 
     /// ADR-0010 / `docs/flows/dashboard-auth.md`: vpay stores no client
     /// secret, in any form, for any client kind — a merchant authenticates
