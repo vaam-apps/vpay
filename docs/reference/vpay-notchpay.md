@@ -5,14 +5,22 @@ Notch Pay's OpenAPI specification **2.1.0** (`https://developer.notchpay.co/open
 and its API reference pages. It is internal (`publish = false`) and exists to
 be called by a `notchpay` adapter.
 
-**What is built, and what is not.** The crate is built and unit-tested. **No
-adapter uses it, and no binary links it.**
+**What is built, and what is not.** The crate is built and unit-tested.
+**Since 2026-10-20 `vpay-adapter-notchpay` sits on it, and `vpay-server`
+links that adapter.** It is admitted under
+[ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md),
+which amended ADR-0029 D1's third rule; see
+[adapter-notchpay.md](../flows/adapter-notchpay.md). **Nothing has called
+Notch Pay**, through this crate or any other.
+
+_(This paragraph read as follows until 2026-10-20, when the adapter landed.)_
+"No adapter uses it, and no binary links it.
 [RFC-0012](../rfc/0012-notchpay-adapter.md) designs the adapter and records
 why it is not written: Notch Pay's status read is documented as
 authenticated by the key Notch Pay calls public, and
 [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
 D1's third hard rule refuses an adapter to such a provider until the
-maintainer resolves it. Nothing in this crate has called Notch Pay.
+maintainer resolves it. Nothing in this crate has called Notch Pay."
 
 ## Why it is its own crate
 
@@ -76,6 +84,13 @@ what RFC-0012's way A would require of the read, and a server that ignores
 the header loses nothing by receiving it. Both keys are held as header values
 marked sensitive, so neither `reqwest`'s `Debug` of a request nor this crate's
 own prints them.
+
+**A per-request deadline, since 2026-10-20.** `Client::with_request_timeout`
+puts a deadline on every request the client builds. The adapter sets it from
+`ProviderConfig::request_timeout`, because the process's one
+`reqwest::Client` is shared by every rail and carries only the default. The
+conformance case `an_unavailable_rail_is_a_transport_error_never_a_decline`
+was measured to fail on `notchpay` with the call removed.
 
 **The `reqwest::Client` must not follow redirects.** A followed redirect
 replays every header `reqwest` does not consider sensitive to the new host,

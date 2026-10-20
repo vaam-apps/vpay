@@ -58,8 +58,8 @@ use vpay_core::metrics::{
 };
 
 use crate::{
-    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, PayerField, ProviderAdapter,
-    ProviderConfig, ProviderError, RefundTarget, Refunded, Submitted,
+    AcceptedExposure, AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus,
+    PayerField, ProviderAdapter, ProviderConfig, ProviderError, RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -154,6 +154,15 @@ impl ProviderAdapter for Measured {
     /// when the adapter itself declares one.
     fn payer_fields(&self) -> &'static [PayerField] {
         self.inner.payer_fields()
+    }
+
+    /// Forwarded, not defaulted, for `payer_fields`' reason: the trait's
+    /// default is `None`, and a wrapper that took it would silence the boot
+    /// warning ADR-0031 requires for every rail on its second limb while the
+    /// adapter's own tests, which hold it unwrapped, stayed green.
+    /// `the_accepted_exposure_is_forwarded_not_defaulted` is what catches it.
+    fn accepted_exposure(&self) -> Option<AcceptedExposure> {
+        self.inner.accepted_exposure()
     }
 
     async fn submit(
@@ -297,6 +306,13 @@ mod tests {
                 label_key: "msisdn.label",
             }];
             FIELDS
+        }
+
+        /// Declared so that a wrapper which took the trait's `None` instead
+        /// of forwarding is visible: see
+        /// `the_accepted_exposure_is_forwarded_not_defaulted`.
+        fn accepted_exposure(&self) -> Option<AcceptedExposure> {
+            Some(ANSWERING_EXPOSURE)
         }
 
         fn capabilities(&self) -> Capabilities {
@@ -683,6 +699,27 @@ mod tests {
             !scrape.contains("237600000200"),
             "a payee's number must never reach a metric label: {scrape}"
         );
+    }
+
+    /// What [`Answering`] declares, so the forwarding test can compare the
+    /// whole value rather than its presence.
+    const ANSWERING_EXPOSURE: AcceptedExposure = AcceptedExposure {
+        credential: "public_key",
+        operations: &["read any payment"],
+        document: "docs/flows/provider-port.md",
+    };
+
+    /// ADR-0031 condition 4 rests on this forward. The boot warning reads
+    /// the exposure off the adapters `adapters_by_code` returns, and every
+    /// one of those is a `Measured`; a wrapper that took the trait's `None`
+    /// would silence the warning on every rail at once.
+    #[test]
+    fn the_accepted_exposure_is_forwarded_not_defaulted() {
+        let adapter = Measured::wrap(Box::new(Answering {
+            code: "fixture",
+            error: None,
+        }));
+        assert_eq!(adapter.accepted_exposure(), Some(ANSWERING_EXPOSURE));
     }
 
     /// The wrapper forwards [`ProviderAdapter::parse_destination`] rather

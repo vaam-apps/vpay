@@ -93,15 +93,15 @@ narrowing the sentence above.
 Each row links to the page that carries the rows, the evidence and the history.
 Every 🟡 and ⛔ on those pages is there because a test says so.
 
-| Area                                                     | Today                                                                                                                                                                                                      | Detail                                                                                                                                            |
-| -------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Backend** — `/v1`, `/dash/v1`, `/provider`, `/browser` | 🟡 Real routes, real rows, real adapters; every rail call went to a stub until 2026-09-15, when the MTN push first went to MTN's real sandbox                                                              | [status/backend.md](status/backend.md)                                                                                                            |
-| **Adapters** — `mtn_momo`, `orange_money`                | 🟡 Wire calls proven against WireMock; since 2026-09-15 `mtn_momo`'s **charge path** proven against MTN's real sandbox, ⛔ `mtn_momo::refund` (Disbursements) never called, ⛔ `orange_money` never called | [status/backend.md](status/backend.md), and the payer-window note in [status/backend-orange-hosted-page.md](status/backend-orange-hosted-page.md) |
-| **Frontend** — checkout page, dashboard, demo shop       | 🟡 Built and walked by a real browser against a stub rail                                                                                                                                                  | [status/frontend.md](status/frontend.md)                                                                                                          |
-| **Infrastructure** — images, compose, Helm, migrations   | 🟡 Boots in compose and in CI; ⛔ no pod has ever run                                                                                                                                                      | [status/infrastructure.md](status/infrastructure.md)                                                                                              |
-| **Data layer** — sqlx, CrateStack, the schema            | 🟡 `schemas/vpay.cstack` compiles into `vpay-db`; the migration/model drift is counted, not closed                                                                                                         | [status/cratestack.md](status/cratestack.md), [status/sqlx-and-op-stores.md](status/sqlx-and-op-stores.md)                                        |
-| **Merchant SDKs** — `sdks/rust`, `sdks/nodejs`           | 🟡 Parity is machine-checked in both directions; the gaps are dated and owned                                                                                                                              | [status/merchant-sdks.md](status/merchant-sdks.md), [sdks/parity.md](sdks/parity.md)                                                              |
-| **An MVP**                                               | 🟡 Two of eight conditions met (items 1 and 6); the other six are decided by one sentence                                                                                                                  | [status/mvp.md](status/mvp.md)                                                                                                                    |
+| Area                                                     | Today                                                                                                                                                                                                                                                                                                                                   | Detail                                                                                                                                            |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Backend** — `/v1`, `/dash/v1`, `/provider`, `/browser` | 🟡 Real routes, real rows, real adapters; every rail call went to a stub until 2026-09-15, when the MTN push first went to MTN's real sandbox                                                                                                                                                                                           | [status/backend.md](status/backend.md)                                                                                                            |
+| **Adapters** — `mtn_momo`, `orange_money`, `notchpay`    | 🟡 Wire calls proven against WireMock; since 2026-09-15 `mtn_momo`'s **charge path** proven against MTN's real sandbox, ⛔ `mtn_momo::refund` (Disbursements) never called, ⛔ `orange_money` never called, ⛔ `notchpay` (2026-10-20, admitted under ADR-0031) never called — stub-only, and its public-key exposure is logged at boot | [status/backend.md](status/backend.md), and the payer-window note in [status/backend-orange-hosted-page.md](status/backend-orange-hosted-page.md) |
+| **Frontend** — checkout page, dashboard, demo shop       | 🟡 Built and walked by a real browser against a stub rail                                                                                                                                                                                                                                                                               | [status/frontend.md](status/frontend.md)                                                                                                          |
+| **Infrastructure** — images, compose, Helm, migrations   | 🟡 Boots in compose and in CI; ⛔ no pod has ever run                                                                                                                                                                                                                                                                                   | [status/infrastructure.md](status/infrastructure.md)                                                                                              |
+| **Data layer** — sqlx, CrateStack, the schema            | 🟡 `schemas/vpay.cstack` compiles into `vpay-db`; the migration/model drift is counted, not closed                                                                                                                                                                                                                                      | [status/cratestack.md](status/cratestack.md), [status/sqlx-and-op-stores.md](status/sqlx-and-op-stores.md)                                        |
+| **Merchant SDKs** — `sdks/rust`, `sdks/nodejs`           | 🟡 Parity is machine-checked in both directions; the gaps are dated and owned                                                                                                                                                                                                                                                           | [status/merchant-sdks.md](status/merchant-sdks.md), [sdks/parity.md](sdks/parity.md)                                                              |
+| **An MVP**                                               | 🟡 Two of eight conditions met (items 1 and 6); the other six are decided by one sentence                                                                                                                                                                                                                                               | [status/mvp.md](status/mvp.md)                                                                                                                    |
 
 ## How this page is checked
 
@@ -292,9 +292,10 @@ a doc comment to keep this gate green
 `a_token_in_a_doc_attribute_is_not_a_shipping_claim` and
 `the_lexer_tells_the_four_states_apart` in `xtask`).
 
-**There is exactly one, down from eight on 2026-09-03 (Step 3) and from two
-partway through 2026-09-15 — and the list has moved in both directions, which
-is the distinction it exists to keep visible.** All eight of the original
+**There are two since 2026-10-20, when `notchpay::refund` joined; it was
+exactly one from 2026-09-15, down from eight on 2026-09-03 (Step 3) and from
+two partway through 2026-09-15 — and the list has moved in both directions,
+which is the distinction it exists to keep visible.** All eight of the original
 tokens have left it at some point, for two different reasons, and one of the
 eight came back.
 
@@ -339,8 +340,25 @@ about this list.
   (`refund_is_a_token_about_vpay_not_an_answer_about_orange` in the adapter,
   `a_rail_without_the_refund_capability_answers_unsupported` in the
   conformance suite.)
+- `notchpay::refund` — added 2026-10-20 by RFC-0012 § 7, with the `notchpay`
+  adapter. Notch Pay documents `POST /refunds` in a guide and nowhere else:
+  not in `openapi.yaml` 2.1.0, not in the API reference. And the guide's
+  request carries no reference of vpay's and no idempotency key, so a refund
+  re-sent after a lost answer would pay twice — what
+  `a_duplicate_refund_reference_is_accepted_and_never_paid_twice` exists to
+  refuse. `supports_refunds` and `supports_partial_refunds` are `true` and
+  `refund_destination` is `Origin`, because that is what Notch Pay documents.
+  Answering `Unsupported` would be a claim about Notch Pay rather than an
+  admission about vpay. It becomes a call when Notch Pay confirms a
+  replay-safe refund in writing and its sandbox answers `POST /refunds`
+  (RFC-0012 § 10 item 6). The `Origin` arm that would carry it has landed in
+  the core since 2026-10-17, so a refund here fails at the token with its
+  reservation released, as Orange's does.
+  (`refund_is_a_token_about_vpay_not_an_answer_about_notch_pay` in the
+  adapter, and the `notchpay` row of
+  `a_rail_without_the_refund_capability_answers_unsupported`.)
 
-**Declared and unpopulated, beside that token: the refund `fee`.** Added
+**Declared and unpopulated, beside those tokens: the refund `fee`.** Added
 2026-09-05 for [issue #46](https://github.com/vaam-apps/vpay/issues/46), which
 an integrator filed because vpay's `refund` object never said what the
 movement cost and their own type had no way to spell "unknown", so they were

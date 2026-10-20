@@ -1,0 +1,180 @@
+{
+  "mappings": [
+    {
+      "name": "initialize accepted (201, pending) -- only with both keys and the documented body",
+      "priority": 10,
+      "request": {
+        "method": "POST",
+        "urlPath": "/payments",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.reference",
+              "matches": "^[0-9a-f-]{36}$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.currency",
+              "equalTo": "XAF"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.phone",
+              "matches": "^\\+237[0-9]{9}$"
+            }
+          },
+          {
+            "matchesJsonPath": "$[?(@.amount >= 100)]"
+          }
+        ]
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Payment initialized\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{jsonPath request.body '$.reference'}}\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"pending\"}}"
+      },
+      "metadata": {
+        "why": [
+          "Transcribed from openapi.yaml 2.1.0's initializePayment (201) and NOT from Notch Pay: nothing in",
+          "this repository has called Notch Pay. Matching on X-Grant is a CONTRACT of this stub, not a",
+          "claim about Notch Pay, whose specification asks only for Authorization here: ADR-0031",
+          "condition 1 says the private key rides on every call, and an adapter that stopped sending it",
+          "matches no mapping and gets WireMock's 404, which it reads as Config. The body pattern holds",
+          "RFC-0012 section 3's shape: our reference, XAF, a +-prefixed Cameroonian number, and an",
+          "amount at or above Notch Pay's documented minimum of 100."
+        ]
+      }
+    },
+    {
+      "name": "initialize: the account's keys refused (401)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/payments",
+        "headers": {
+          "Authorization": {
+            "equalTo": "bad-key"
+          }
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 401,
+          "status": "Unauthorized",
+          "message": "Unauthenticated."
+        }
+      },
+      "metadata": {
+        "why": "The value the conformance suite's Credentials::Rejected sends. The adapter must page (provider_account_blocked), never report a payer's problem. Notch Pay's exact 401 message is not documented; the adapter does not read it."
+      }
+    },
+    {
+      "name": "initialize: a payment with this reference already exists (409)",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/payments",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.reference",
+              "equalTo": "00000000-0000-0000-0000-0000000000dd"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 409,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 409,
+          "status": "Conflict",
+          "message": "A payment with this reference already exists"
+        }
+      },
+      "metadata": {
+        "why": [
+          "REF_DUPLICATE. From Notch Pay's errors page; ABSENT from openapi.yaml 2.1.0 (RFC-0012 section 10",
+          "item 4). The adapter reads the payment (the retrieve catch-all answers complete) and reports",
+          "Submitted with no key material: the crash-retry case."
+        ]
+      }
+    },
+    {
+      "name": "initialize: a redirect, which must never be followed",
+      "priority": 1,
+      "request": {
+        "method": "POST",
+        "urlPath": "/payments",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.reference",
+              "equalTo": "00000000-0000-0000-0000-000000000302"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 307,
+        "headers": {
+          "Location": "/__never-followed/00000000-0000-0000-0000-000000000302"
+        }
+      },
+      "metadata": {
+        "why": "REF_REDIRECT. A followed 307 replays the body (the payer's number) and every header reqwest does not strip, X-Grant among them."
+      }
+    },
+    {
+      "name": "the redirect's target, answering 'accepted' so a followed redirect would be an Ok",
+      "priority": 1,
+      "request": {
+        "urlPath": "/__never-followed/00000000-0000-0000-0000-000000000302"
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Payment initialized\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000302\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"pending\"}}"
+      },
+      "metadata": {
+        "why": "redirects_are_refused_and_never_followed asserts the journal never shows this path."
+      }
+    }
+  ]
+}

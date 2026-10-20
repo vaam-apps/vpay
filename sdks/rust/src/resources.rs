@@ -187,6 +187,13 @@ pub enum ConfirmPaymentIntentParams {
         /// `payment_method_data[type]`.
         return_url: String,
     },
+    /// Push rail through Notch Pay (RFC-0012): the same instrument as MTN's,
+    /// the payer's number, under this rail's own code.
+    NotchPay {
+        /// The payer's MSISDN (e.g. `237670000000`). Sent as
+        /// `payment_method_data[notchpay][msisdn]`.
+        msisdn: String,
+    },
 }
 
 impl ConfirmPaymentIntentParams {
@@ -194,6 +201,14 @@ impl ConfirmPaymentIntentParams {
     #[must_use]
     pub fn mtn_momo(msisdn: impl Into<String>) -> Self {
         ConfirmPaymentIntentParams::MtnMomo {
+            msisdn: msisdn.into(),
+        }
+    }
+
+    /// Confirms against Notch Pay, prompting `msisdn`.
+    #[must_use]
+    pub fn notchpay(msisdn: impl Into<String>) -> Self {
+        ConfirmPaymentIntentParams::NotchPay {
             msisdn: msisdn.into(),
         }
     }
@@ -212,6 +227,7 @@ impl ConfirmPaymentIntentParams {
         match self {
             ConfirmPaymentIntentParams::MtnMomo { .. } => PaymentMethodType::MtnMomo,
             ConfirmPaymentIntentParams::OrangeMoney { .. } => PaymentMethodType::OrangeMoney,
+            ConfirmPaymentIntentParams::NotchPay { .. } => PaymentMethodType::NotchPay,
         }
     }
 
@@ -221,12 +237,15 @@ impl ConfirmPaymentIntentParams {
             FormValue::from(self.payment_method_type().as_wire_str()),
         );
         match self {
-            ConfirmPaymentIntentParams::MtnMomo { msisdn } => FormValue::Object(vec![(
+            // Both push rails send the payer's number under their own code:
+            // `payment_method_data[<code>][msisdn]`.
+            ConfirmPaymentIntentParams::MtnMomo { msisdn }
+            | ConfirmPaymentIntentParams::NotchPay { msisdn } => FormValue::Object(vec![(
                 "payment_method_data".to_string(),
                 FormValue::Object(vec![
                     type_field,
                     (
-                        "mtn_momo".to_string(),
+                        self.payment_method_type().as_wire_str().to_string(),
                         FormValue::Object(vec![(
                             "msisdn".to_string(),
                             FormValue::from(msisdn.as_str()),
@@ -1255,8 +1274,8 @@ impl std::fmt::Debug for RefundDestination {
 /// # No refund this creates has ever moved money
 ///
 /// The route is real and so is every refusal it makes, but nothing on the
-/// other side of it pays anybody: `orange_money`'s refund is a declared
-/// `NotImplemented` token, `mtn_momo`'s is MTN's Disbursements `transfer`
+/// other side of it pays anybody: `orange_money`'s and `notchpay`'s refunds
+/// are declared `NotImplemented` tokens, `mtn_momo`'s is MTN's Disbursements `transfer`
 /// which is WireMock-proven and for which **no real MTN credential exists in
 /// this project** — the only `disbursement_subscription_key` anywhere is the
 /// stub the e2e/demo stack points at a WireMock container, and the product
@@ -2162,12 +2181,13 @@ impl RefundsResource<'_> {
     ///
     /// It is an `Option` because the port allows a rail that refunds to the
     /// instrument that paid, and such a rail refuses a `destination` with a
-    /// `400`. **Neither rail vpay carries today is one**: `mtn_momo` and
-    /// `orange_money` both declare that a refund needs a payee, because on
-    /// both of them it is an outbound transfer. A
+    /// `400`. `mtn_momo` and `orange_money` both declare that a refund needs
+    /// a payee, because on both of them it is an outbound transfer, so a
     /// [`CreateRefundParams`] with no [`destination`](CreateRefundParams::destination)
-    /// is therefore a `400` naming `destination` against every deployment
-    /// this repository can build.
+    /// is a `400` naming `destination` on either. `notchpay` (2026-10-20) is
+    /// the first shipping rail that refunds to the instrument that paid and
+    /// so refuses a `destination` — but its refund is a declared
+    /// `NotImplemented` token, so a refund there fails whatever it carries.
     ///
     /// # What a `200` here does and does not mean
     ///

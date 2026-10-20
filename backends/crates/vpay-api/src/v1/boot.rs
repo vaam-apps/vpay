@@ -20,7 +20,7 @@ use vpay_config::{Config, ConfigError};
 use vpay_core::ProviderFlow;
 use vpay_core::error::{Category, Classify};
 use vpay_db::{CurrencySeed, DbError, ProviderSeed, Repositories};
-use vpay_provider::{Measured, ProviderAdapter};
+use vpay_provider::{AcceptedExposure, Measured, ProviderAdapter};
 
 /// A binary's linked adapters, keyed by `providers.code`.
 ///
@@ -176,6 +176,90 @@ pub fn boot_seeds(
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
     Ok((currencies, providers))
+}
+
+/// Every **configured** rail whose adapter declares an
+/// [`AcceptedExposure`], with that declaration — ADR-0031's condition 4.
+///
+/// Configured, `enabled` or not: a disabled rail's keys are still loaded and
+/// still the merchant's, and the operator who wrote the block is the one who
+/// should read the warning. A rail this binary links but the YAML does not
+/// name has no keys here and is not listed.
+///
+/// Pure, so the rule can be tested without a subscriber; the logging is
+/// [`warn_about_accepted_exposures`]. A configured code with no linked
+/// adapter is skipped rather than reported: [`boot_seeds`] refuses it, and
+/// both binaries call that first.
+#[must_use]
+pub fn accepted_exposures(
+    config: &Config,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> Vec<(String, AcceptedExposure)> {
+    config
+        .providers
+        .iter()
+        .filter_map(|provider| {
+            let exposure = adapters.get(&provider.code)?.accepted_exposure()?;
+            Some((provider.code.clone(), exposure))
+        })
+        .collect()
+}
+
+/// Logs ADR-0031's boot warning, once per configured rail that declares an
+/// exposure: what the key the provider calls public lets anyone who holds it
+/// do on the merchant's account, and the page that explains it.
+///
+/// `warn!` in both modes, because the maintainer asked for a warning ("warn
+/// the developer about the risks in prod"). In livemode the line says so in
+/// capitals and adds that real money is at stake; that is the "louder", and
+/// an operator filtering on `livemode=true` finds it. A livemode boot only
+/// gets here at all if the rail's block carries its acknowledgement
+/// (ADR-0031 condition 4 as amended on 2026-10-20, enforced by
+/// `vpay-config`'s rail-key table); the acknowledgement admits the rail and
+/// does not silence this.
+///
+/// **Never prints a key.** The declaration names the credential by its
+/// configuration key, and nothing here reads `credentials`.
+pub fn warn_about_accepted_exposures(
+    config: &Config,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) {
+    let livemode = config.deployment.livemode;
+    for (code, exposure) in accepted_exposures(config, adapters) {
+        let operations = exposure.operations.join("; ");
+        if livemode {
+            tracing::warn!(
+                rail = %code,
+                livemode,
+                credential = exposure.credential,
+                document = exposure.document,
+                "LIVEMODE, REAL MONEY: rail {code} is admitted under ADR-0031. Its status read is \
+                 authenticated by credentials.{credential}, a key the provider calls PUBLIC. \
+                 Anyone who holds that key can: {operations}. vpay keeps it server-side and \
+                 sends the private key on every call; it cannot stop a leaked or front-end-\
+                 embedded copy being used against this merchant's account. This deployment \
+                 acknowledged that exposure in the rail's settings; the acknowledgement admits \
+                 the rail, it does not make the key private. Read {document} \
+                 (\"Production risks\").",
+                credential = exposure.credential,
+                document = exposure.document,
+            );
+        } else {
+            tracing::warn!(
+                rail = %code,
+                livemode,
+                credential = exposure.credential,
+                document = exposure.document,
+                "rail {code} is admitted under ADR-0031: its status read is authenticated by \
+                 credentials.{credential}, a key the provider calls public. Anyone who holds \
+                 that key can: {operations}. In production this is the merchant's accepted \
+                 exposure, and a livemode boot refuses this rail until its settings acknowledge \
+                 it; see {document} (\"Production risks\").",
+                credential = exposure.credential,
+                document = exposure.document,
+            );
+        }
+    }
 }
 
 /// The `providers.flow` label for a flow shape.
@@ -421,6 +505,9 @@ mod tests {
     struct TestRail {
         code: &'static str,
         capabilities: Capabilities,
+        /// What the rail declares under ADR-0031; `None` on every rail but
+        /// the one the exposure cases build.
+        exposure: Option<AcceptedExposure>,
     }
 
     /// What a rail that contradicts itself about nothing declares: both
@@ -451,6 +538,10 @@ mod tests {
 
         fn capabilities(&self) -> Capabilities {
             self.capabilities
+        }
+
+        fn accepted_exposure(&self) -> Option<AcceptedExposure> {
+            self.exposure
         }
 
         async fn submit(
@@ -525,12 +616,111 @@ mod tests {
             Box::new(TestRail {
                 code: "mtn_momo",
                 capabilities: coherent(ProviderFlow::Push),
+                exposure: None,
             }),
             Box::new(TestRail {
                 code: "orange_money",
                 capabilities: coherent(ProviderFlow::Redirect),
+                exposure: None,
             }),
         ])
+    }
+
+    /// What the exposure cases' rail declares. Names, never values.
+    const EXPOSURE: AcceptedExposure = AcceptedExposure {
+        credential: "public_key",
+        operations: &["read any payment", "cancel any pending payment"],
+        document: "docs/flows/adapter-notchpay.md",
+    };
+
+    /// `mtn_momo` declares nothing; `exposed` declares [`EXPOSURE`];
+    /// `linked_only` declares it too and is never configured.
+    fn rails_with_an_exposure() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
+        let rail = |code, exposure| -> Box<dyn ProviderAdapter> {
+            Box::new(TestRail {
+                code,
+                capabilities: coherent(ProviderFlow::Push),
+                exposure,
+            })
+        };
+        adapters_by_code(vec![
+            rail("mtn_momo", None),
+            rail("exposed", Some(EXPOSURE)),
+            rail("linked_only", Some(EXPOSURE)),
+        ])
+    }
+
+    /// ADR-0031 condition 4: every configured rail that declares an
+    /// exposure, `enabled` or not, and nothing else — not a rail that
+    /// declares none, and not one the binary links and the YAML omits. The
+    /// adapters come back through `adapters_by_code`, so this also holds
+    /// `Measured` to forwarding the declaration.
+    #[test]
+    fn only_a_configured_rail_that_declares_an_exposure_is_warned_about() {
+        let adapters = rails_with_an_exposure();
+        let mut config = config_with(&["mtn_momo", "exposed"]);
+        assert_eq!(
+            accepted_exposures(&config, &adapters),
+            vec![("exposed".to_owned(), EXPOSURE)]
+        );
+        for provider in &mut config.providers {
+            provider.enabled = false;
+        }
+        assert_eq!(
+            accepted_exposures(&config, &adapters),
+            vec![("exposed".to_owned(), EXPOSURE)],
+            "a disabled rail's keys are still loaded"
+        );
+        assert!(accepted_exposures(&config_with(&["mtn_momo"]), &adapters).is_empty());
+    }
+
+    /// What an operator reads, in both modes: a `WARN` naming the rail, the
+    /// credential by its key, every operation and the page; louder in
+    /// livemode; and never a credential's value.
+    #[test]
+    fn the_boot_warning_names_the_exposure_louder_in_livemode_and_never_a_key() {
+        let adapters = rails_with_an_exposure();
+        for livemode in [false, true] {
+            let mut config = config_with(&["exposed"]);
+            config.deployment.livemode = livemode;
+            config
+                .providers
+                .first_mut()
+                .expect("one rail configured")
+                .credentials
+                .insert("public_key".to_owned(), "public-key-test_0001".to_owned());
+            let ((), log) = crate::test_log::with_captured_log(|| {
+                warn_about_accepted_exposures(&config, &adapters);
+            });
+            assert!(log.contains("WARN"), "{log}");
+            for expected in [
+                "exposed",
+                "ADR-0031",
+                "credentials.public_key",
+                "read any payment",
+                "cancel any pending payment",
+                "docs/flows/adapter-notchpay.md",
+            ] {
+                assert!(log.contains(expected), "{expected} missing from {log}");
+            }
+            assert_eq!(log.contains("LIVEMODE, REAL MONEY"), livemode, "{log}");
+            // Livemode only boots acknowledged, and the line still says the
+            // key is not private; a sandbox is told livemode will refuse.
+            assert_eq!(
+                log.contains("does not make the key private"),
+                livemode,
+                "{log}"
+            );
+            assert_eq!(log.contains("livemode boot refuses"), !livemode, "{log}");
+            assert!(
+                !log.contains("public-key-test_0001"),
+                "a key reached the log: {log}"
+            );
+        }
+        let ((), silent) = crate::test_log::with_captured_log(|| {
+            warn_about_accepted_exposures(&config_with(&["mtn_momo"]), &adapters);
+        });
+        assert!(silent.is_empty(), "{silent}");
     }
 
     /// The join both binaries run, end to end: every configured rail is
@@ -757,6 +947,7 @@ mod tests {
                     supports_partial_refunds: true,
                     ..coherent(ProviderFlow::Push)
                 },
+                exposure: None,
             })]);
             let mut config = config_with(&["broken_rail"]);
             config

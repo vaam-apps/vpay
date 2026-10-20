@@ -96,6 +96,49 @@ providers:
       # nothing that is actually wrong. See `Credentials::from_config`.
       disbursement_subscription_key: ${MTN_DISBURSEMENT_SUBSCRIPTION_KEY}
       disbursement_api_key: ${MTN_DISBURSEMENT_API_KEY}
+  # Notch Pay (RFC-0012), commented out on purpose. Uncomment to offer it.
+  #
+  # PRODUCTION RISK — read docs/flows/adapter-notchpay.md § "Production risks"
+  # first. Notch Pay is admitted under ADR-0031 (rule 3 amended): its status
+  # read is authenticated by the key Notch Pay calls PUBLIC. Whoever holds
+  # `public_key` can read, initialize, process (a USSD prompt to ANY number,
+  # in the merchant's name) and cancel payments on this merchant's account,
+  # and vpay cannot stop a leaked or front-end-embedded copy being used. vpay
+  # keeps it server-side and sends `private_key` (X-Grant) on every call.
+  # Every boot of a deployment that configures this rail logs that at WARN,
+  # and in livemode boot REFUSES the rail until its settings carry
+  # `accept_public_key_exposure: true` (ADR-0031 condition 4): setting it is
+  # the operator's written acceptance of that risk. It does not stop the WARN.
+  #
+  # Why commented rather than `enabled: false`: boot requires both keys
+  # non-blank (ADR-0031 condition 2) for every CONFIGURED rail, enabled or
+  # not, so an uncommented block would make two more secrets mandatory for
+  # every deployment of this image. Uncommenting it adds NOTCHPAY_PUBLIC_KEY
+  # and NOTCHPAY_PRIVATE_KEY to `grep -o '${[A-Z_]*}' config/application.yml`.
+  #
+  # In this (non-livemode) file both keys must contain `test_`, and in a
+  # livemode one they must not (RFC-0012 § 2); boot names the key, never its
+  # value. `wiremock-notchpay` (compose.yml) is the stub this host points at.
+  #
+  # - code: notchpay
+  #   enabled: true
+  #   host:
+  #     url: http://wiremock-notchpay:8080   # https://api.notchpay.co for real
+  #     label: notchpay-sandbox-wiremock
+  #   display_name:
+  #     en: Mobile money (Notch Pay)
+  #     fr: Mobile money (Notch Pay)
+  #   currency: XAF                          # the only currency allowed
+  #   settings:
+  #     channel: cm.mobile                   # the only channel allowed today
+  #     description: Payment                 # optional; sent to Notch Pay
+  #     # Livemode refuses to boot without it; optional in a sandbox.
+  #     accept_public_key_exposure: true
+  #   credentials:
+  #     # Notch Pay calls this key public. Keep it server-side, never in a
+  #     # front end.
+  #     public_key: ${NOTCHPAY_PUBLIC_KEY}
+  #     private_key: ${NOTCHPAY_PRIVATE_KEY} # sent as X-Grant on every call
   - code: orange_money
     host:
       # Includes the `/orange-money-webpay/{env}` path prefix on purpose:

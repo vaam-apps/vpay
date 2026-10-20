@@ -16,6 +16,7 @@ vpay-core.workspace = true
 vpay-provider.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
+vpay-adapter-notchpay.workspace = true
 vpay-testkit.workspace = true
 tokio.workspace = true
 rstest.workspace = true

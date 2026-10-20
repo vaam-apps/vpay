@@ -4790,6 +4790,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "vpay-adapter-notchpay"
+version = "0.8.0"
+dependencies = [
+ "async-trait",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "tracing",
+ "uuid",
+ "vpay-core",
+ "vpay-notchpay",
+ "vpay-provider",
+]
+
+[[package]]
 name = "vpay-adapter-orange-money"
 version = "0.8.0"
 dependencies = [
@@ -5004,6 +5019,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "vpay-adapter-mtn-momo",
+ "vpay-adapter-notchpay",
  "vpay-adapter-orange-money",
  "vpay-api",
  "vpay-config",
@@ -5039,6 +5055,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vpay-adapter-mtn-momo",
+ "vpay-adapter-notchpay",
  "vpay-adapter-orange-money",
  "vpay-core",
  "vpay-provider",

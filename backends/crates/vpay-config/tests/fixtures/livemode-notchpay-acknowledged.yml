@@ -1,0 +1,30 @@
+# Fixture for `a_livemode_notchpay_block_written_as_the_docs_show_loads`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# A livemode `notchpay` block as `config/application.yml`'s commented block
+# writes it: https host, `${VAR}` keys, and the acknowledgement ADR-0031
+# condition 4 requires in livemode, as a bare YAML boolean. The point is that
+# `true` unquoted reaches the check as `"true"` through the string-valued
+# `settings` map, so the documented spelling is the one that boots.
+
+deployment:
+  name: vpay-prod
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+providers:
+  - code: notchpay
+    currency: XAF
+    host:
+      url: https://api.notchpay.co
+      label: notchpay
+    settings:
+      channel: cm.mobile
+      accept_public_key_exposure: true
+    credentials:
+      public_key: ${NOTCHPAY_PUBLIC_KEY}
+      private_key: ${NOTCHPAY_PRIVATE_KEY}
+
+currencies:
+  - code: XAF
+    exponent: 0

@@ -589,6 +589,132 @@ fn the_repositorys_own_configuration_passes_the_adapter_join() {
     );
 }
 
+/// ADR-0031 condition 4, on the real process: a deployment that configures
+/// `notchpay` logs the exposure at boot — the rail, the credential by its
+/// key, the page that explains it — and never prints either key.
+///
+/// No container. The warning is emitted right after the adapter join, before
+/// the signing key is read, so this config stops at the missing
+/// `--oauth-signing-key-file` (exit 78) with the warning already written.
+/// Logs go to stdout for `serve`; both streams are searched, so the test
+/// does not depend on which.
+#[test]
+fn a_notchpay_rail_is_warned_about_at_boot_and_its_keys_are_never_printed() {
+    let output = bin()
+        .env(
+            "VPAY_CONFIG",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/notchpay-config.yml"
+            ),
+        )
+        .output()
+        .expect("spawn vpay-server");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected the step after the join to stop it: {all}"
+    );
+    assert!(all.contains("oauth-signing-key-file"), "{all}");
+    for expected in [
+        "WARN",
+        "notchpay",
+        "ADR-0031",
+        "credentials.public_key",
+        "docs/flows/adapter-notchpay.md",
+    ] {
+        assert!(all.contains(expected), "{expected} missing from: {all}");
+    }
+    assert!(!all.contains("LIVEMODE, REAL MONEY"), "a sandbox: {all}");
+    for key in ["cli-public-key-test_0001", "cli-private-key-test_0002"] {
+        assert!(
+            !all.contains(key),
+            "a Notch Pay key reached the output: {all}"
+        );
+    }
+}
+
+/// ADR-0031 condition 4 as amended on 2026-10-20, on the real binary. In
+/// livemode a `notchpay` block without `settings.accept_public_key_exposure:
+/// true` stops at configuration (`78`), naming the setting and the key; the
+/// same block with it gets past the adapter join and logs the
+/// `LIVEMODE, REAL MONEY` warning anyway — the acknowledgement admits the
+/// rail, it does not silence it. Neither run prints a key.
+#[test]
+fn a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns() {
+    const PUBLIC_KEY: &str = "cli-public-key-live-0003";
+    const PRIVATE_KEY: &str = "cli-private-key-live-0004";
+    let acknowledged = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/notchpay-livemode-config.yml"
+    );
+    let raw = std::fs::read_to_string(acknowledged).expect("read the fixture");
+    let bare = raw.replace("      accept_public_key_exposure: true\n", "");
+    assert_ne!(bare, raw, "the fixture carries the line this test removes");
+    // `CARGO_TARGET_TMPDIR`, pid-named, as `SIGNING_KEY_FILE` is and for the
+    // same reasons.
+    let bare_path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("notchpay-livemode-bare-{}.yml", std::process::id()));
+    std::fs::write(&bare_path, bare).expect("write the bare copy");
+
+    let run = |path: &std::path::Path| {
+        let output = bin()
+            .env("VPAY_CONFIG", path)
+            .env("CLI_NOTCHPAY_PUBLIC_KEY", PUBLIC_KEY)
+            .env("CLI_NOTCHPAY_PRIVATE_KEY", PRIVATE_KEY)
+            .output()
+            .expect("spawn vpay-server");
+        let all = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        for key in [PUBLIC_KEY, PRIVATE_KEY] {
+            assert!(
+                !all.contains(key),
+                "a Notch Pay key reached the output: {all}"
+            );
+        }
+        (output.status.code(), all)
+    };
+
+    let (code, all) = run(&bare_path);
+    let _ = std::fs::remove_file(&bare_path);
+    assert_eq!(code, Some(78), "{all}");
+    for expected in [
+        "accept_public_key_exposure",
+        "credentials.public_key",
+        "ADR-0031",
+    ] {
+        assert!(all.contains(expected), "{expected} missing from: {all}");
+    }
+    assert!(
+        !all.contains("oauth-signing-key-file"),
+        "refused before boot went on: {all}"
+    );
+
+    let (code, all) = run(std::path::Path::new(acknowledged));
+    assert_eq!(
+        code,
+        Some(78),
+        "expected the step after the join to stop it: {all}"
+    );
+    assert!(all.contains("oauth-signing-key-file"), "{all}");
+    for expected in [
+        "WARN",
+        "LIVEMODE, REAL MONEY",
+        "notchpay",
+        "credentials.public_key",
+    ] {
+        assert!(all.contains(expected), "{expected} missing from: {all}");
+    }
+}
+
 /// The other half of ADR-0011's exit-code contract: a config that is
 /// perfectly valid, pointing at a database that is not there, exits `69`
 /// (`EX_UNAVAILABLE`) — `Category::Storage`'s code — and not `78`.

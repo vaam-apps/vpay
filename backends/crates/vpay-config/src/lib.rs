@@ -252,6 +252,91 @@ pub enum ConfigError {
         /// The key that is absent or empty.
         key: String,
     },
+    /// A rail setting holds a value its adapter cannot use. The table is
+    /// `config::REQUIRED_RAIL_KEYS`' `setting_values`: a closed list per
+    /// rail, for a setting whose wrong value would fail every charge rather
+    /// than one (`notchpay`'s `channel`).
+    ///
+    /// A setting is not a secret (`ProviderHost`'s `Debug` prints settings in
+    /// full), so the message names the allowed values; it does not quote the
+    /// one written, which an operator can read in their own file.
+    #[error("provider {code} settings.{key} must be one of: {allowed}")]
+    ProviderSettingNotAllowed {
+        /// The `providers[].code` whose setting is wrong.
+        code: String,
+        /// The setting's key.
+        key: String,
+        /// The values the adapter accepts, comma-separated.
+        allowed: String,
+    },
+    /// A rail whose adapter charges in fixed currencies is configured with
+    /// another one. Refused here rather than as a `ProviderError::Config` on
+    /// a payer's confirm, on [`Self::MissingProviderSetting`]'s reasoning.
+    #[error(
+        "provider {code} is configured with currency {currency}; its adapter charges in {allowed} only"
+    )]
+    ProviderCurrencyNotAllowed {
+        /// The `providers[].code`.
+        code: String,
+        /// The currency as written.
+        currency: String,
+        /// The currencies the adapter charges in, comma-separated.
+        allowed: String,
+    },
+    /// A rail credential's `test_` marker contradicts `deployment.livemode`:
+    /// a key containing `test_` in a livemode deployment, or one without it
+    /// in a sandbox.
+    ///
+    /// [`Self::PublishableKeyLivemodeMismatch`]'s rule applied to a rail key,
+    /// as RFC-0012 § 2 applies it to Notch Pay's. It has to sit on the key
+    /// because the host cannot carry it: Notch Pay serves its sandbox and its
+    /// production from the one host, so [`validate_host`]'s stub-marker rule
+    /// cannot tell them apart. **Not an environment branch** (ADR-0003):
+    /// nothing behaves differently because a key says `test_`; boot only
+    /// refuses a label that contradicts the deployment.
+    ///
+    /// **The key is never in the message**, unlike the publishable-key
+    /// variant's: a rail credential is a secret, and only its name is
+    /// printed.
+    #[error(
+        "provider {code} credentials.{key} {marker} the `test_` marker under \
+         deployment.livemode: {livemode}; a key containing `test_` belongs to a sandbox \
+         deployment and a key without it to a livemode one"
+    )]
+    RailKeyLivemodeMismatch {
+        /// The `providers[].code`.
+        code: String,
+        /// The credential's key — never its value.
+        key: String,
+        /// `"carries"` or `"lacks"`, chosen by the check.
+        marker: &'static str,
+        /// What `deployment.livemode` says.
+        livemode: bool,
+    },
+    /// A livemode deployment configures a rail admitted under ADR-0031's
+    /// public-key limb without the acknowledgement its row names
+    /// (`settings.accept_public_key_exposure: true` for `notchpay`).
+    ///
+    /// ADR-0031 condition 4, as amended on 2026-10-20: a sandbox only warns
+    /// at boot, and livemode refuses to boot until the operator has stated,
+    /// in the rail's own block, that they accept what the public key lets
+    /// anyone holding it do. Setting it does not silence the warning.
+    ///
+    /// **The message names the setting and the credential, never a value.**
+    #[error(
+        "provider {code} is admitted under ADR-0031: credentials.{credential} is a key the \
+         provider documents as public, and whoever holds it can act on the account; under \
+         deployment.livemode: true, set settings.{setting}: true to accept that exposure \
+         (docs/flows/adapter-{code}.md, \"Production risks\")"
+    )]
+    PublicKeyExposureNotAcknowledged {
+        /// The `providers[].code`.
+        code: String,
+        /// The `settings` key that acknowledges it.
+        setting: &'static str,
+        /// The exposed credential's key — never its value.
+        credential: &'static str,
+    },
     /// "Currency exponent matches the canonical table"
     /// (`docs/flows/configuration.md`'s boot-guard table) — the exponent is
     /// a property of the currency itself, never configurable per deployment

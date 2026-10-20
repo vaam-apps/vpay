@@ -1,12 +1,16 @@
 # RFC-0012: A Notch Pay adapter — mobile money through an aggregator, behind the port
 
-- **Status:** Draft — **not buildable as written.** Notch Pay fails the third
+- **Status:** Draft, **admitted under
+  [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)
+  (rule 3 amended) on 2026-10-20, and built.** Notch Pay still fails the third
   hard rule of [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
-  D1 on its own documentation (§ "The gate" below). Delivery step 0 is the
-  maintainer's decision on that rule; nothing from step 2 on is written until
-  it is made. **Built on 2026-10-20, ahead of it:** `vpay-notchpay`, the
-  Notch Pay API client the adapter will sit on, transcribed from Notch Pay's
-  specification at the maintainer's direction (§ 1). No binary links it.
+  D1 **as ADR-0029 wrote it** (§ "The gate" below). It does not pass that
+  rule; the rule was changed, openly, for every provider. Delivery step 0 is
+  that ADR. Steps 2–4 are built in the same change as it, with every Notch
+  Pay mapping taken from `openapi.yaml` 2.1.0 and marked "To confirm",
+  because no test-mode key was available to it: **nothing has called Notch
+  Pay**, and steps 1 and 5 are not done. `vpay-notchpay`, the client, landed
+  earlier on 2026-10-20 (§ 1).
 - **Author:** vpay maintainers
 - **Date:** 2026-10-20
 - **Related:** [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
@@ -63,7 +67,7 @@ finding stands.
 | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | 1. vpay never holds the money         | Payments land in the merchant's own Notch Pay balance, withdrawable to mobile money ("Your money is available at any time", [pricing](https://notchpay.co/pricing)). But settlement funds are held "in accordance with our policies", which are not published (agreement § 8.3), and eligibility is "reserved for natural persons aged 18 and over, residing in French-speaking Africa" (§ 3), against § 1's definition of a merchant as "any natural or legal person"                                                                                            | Passes in shape, on model A (§ 2). A company's eligibility is unconfirmed |
 | 2. No card number reaches vpay-server | A push mobile-money rail carries no card                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          | Passes                                                                    |
-| 3. A secret-authenticated status read | **`GET /payments/{reference}` declares `ApiKeyAuth` and `SyncAuth` only** (openapi.yaml 2.1.0). `ApiKeyAuth` is the `Authorization` header, which takes the key the documentation calls public: "Public keys (starting with `pk_`) … can be safely included in your frontend code" ([authentication](https://developer.notchpay.co/get-started/authentication)). The private key, in `X-Grant`, is required on `/balance`, `/transfers`, `/beneficiaries` and `/webhooks` only ([API authentication](https://developer.notchpay.co/api-reference/authentication)) | **Fails**                                                                 |
+| 3. A secret-authenticated status read | **`GET /payments/{reference}` declares `ApiKeyAuth` and `SyncAuth` only** (openapi.yaml 2.1.0). `ApiKeyAuth` is the `Authorization` header, which takes the key the documentation calls public: "Public keys (starting with `pk_`) … can be safely included in your frontend code" ([authentication](https://developer.notchpay.co/get-started/authentication)). The private key, in `X-Grant`, is required on `/balance`, `/transfers`, `/beneficiaries` and `/webhooks` only ([API authentication](https://developer.notchpay.co/api-reference/authentication)) | **Fails** as ADR-0029 wrote it; admitted under ADR-0031                   |
 | 4. A stub-able contract               | An OpenAPI 3.1 specification, and a test mode in which a phone number's last digits choose the outcome ([testing](https://developer.notchpay.co/get-started/testing)). The specification omits refunds and the duplicate-reference `409` (§§ 3 and 7)                                                                                                                                                                                                                                                                                                             | Passes, with gaps                                                         |
 
 ADR-0029 D1 is explicit: "a provider … whose status read accepts a
@@ -124,12 +128,27 @@ sandbox items attached for completeness. Rule 3 stays as written until Notch
 Pay answers; delivery step 0 waits on that answer now, not on a decision. **The maintainer emailed Notch Pay on 2026-10-20.** No answer is recorded
 yet; this paragraph moves when one is.
 
-Building the adapter under the public key and calling rule 3 "satisfied in
-practice" is way B done silently. It is the one option this RFC refuses.
+**Changed 2026-10-20, the same day: way B, taken openly.** Notch Pay had
+not answered. The maintainer wrote: "Let's do a full implementation and warn
+the developer about the risks in prod. They never answered to me too".
+[ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)
+amends rule 3 for every provider, starting from the wording suggested under
+"B." above, and keeps everything way A gave for free: the private key goes in
+`X-Grant` on every call (§ 3), and boot refuses a configuration without it
+(§ 2). The question to Notch Pay stays open (§ 10 item 1); a yes moves Notch
+Pay to ADR-0031's first limb. Notch Pay is "admitted under ADR-0031 (rule 3
+amended)" — **never** "rule 3 passes". The risk the amendment accepts is
+written in § 9 under "Production risks", and the process logs it at every
+boot of a deployment that configures the rail.
 
-The design below is written now so that the decision is about the rule, not
-about whether an adapter can be designed. It is written against way A: every
-call carries the private key, and nothing is lost if way B is chosen instead.
+Building the adapter under the public key and calling rule 3 "satisfied in
+practice" is way B done silently. It is the one option this RFC refuses, and
+ADR-0031 refuses it too.
+
+The design below was written so that the decision would be about the rule,
+not about whether an adapter can be designed. It was written against way A:
+every call carries the private key, and nothing was lost when way B was
+chosen instead.
 
 ## Proposal
 
@@ -241,6 +260,13 @@ Boot refusals, in `vpay_config::config::REQUIRED_RAIL_KEYS` per ADR-0012:
   applied to a rail key, as RFC-0010 § 2 applies it to Stripe's. A live key's
   prefix is not documented ("To confirm" item 8).
 - `settings.channel` must be a `cm.` channel the adapter knows.
+- **In livemode, `settings.accept_public_key_exposure` must be `true`.**
+  _Added when built, 2026-10-20_, on the maintainer's answer "Livemode
+  acknowledgement: YES, require it." It is ADR-0031 condition 4: the operator
+  accepts in writing what the public key exposes (§ 9), and boot refuses
+  without it, naming the setting and `credentials.public_key`, never a value.
+  A sandbox only warns. Any value other than `true` or `false` is refused in
+  either mode.
 - `currency` must be `XAF`. Notch Pay's XOF channels are other countries and
   another RFC.
 
@@ -282,7 +308,7 @@ receives, and step 4 registers Notch Pay as its recipient in
 
 | Answer                                               | Outcome                                                                                                                                                                                               |
 | ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `201`, `transaction.status = pending`                | keep `transaction.id` (`pay_…`) and Notch Pay's own `transaction.reference` in `ref_extra`, then call 2                                                                                               |
+| `201`, `transaction.status = pending`                | call 2. _(Designed as "keep `transaction.id` and Notch Pay's own `transaction.reference` in `ref_extra`, then call 2"; built with an empty `ref_extra`, see below.)_                                  |
 | `409` "A payment with this reference already exists" | the crash-retry case: call 3; on `pending`, call 2; on anything else, `Submitted` and the poll resolves it. Documented on the errors page and **absent from the specification** ("To confirm" item 4) |
 | `422` validation (amount bounds, currency, phone)    | `Rejected { provider_error }` with Notch Pay's message as the raw reason                                                                                                                              |
 | `401`, `403`                                         | `Rejected { provider_account_blocked }` — our own keys, and it pages, as on `mtn_momo`                                                                                                                |
@@ -306,7 +332,16 @@ example response is Notch Pay's (`trx.123456789abcdefghj`), with the
 merchant's beside it as `trxref`
 ([charge](https://developer.notchpay.co/accept-payments/charge)). The adapter
 uses Notch Pay's reference from call 1 when it holds one, and the charge's
-own only on the crash path, where call 1's answer was lost. The guide also
+own only on the crash path, where call 1's answer was lost.
+
+**Changed when built, 2026-10-20: the adapter uses the charge's own
+reference on every call, and `ref_extra` is always empty.** That is the
+specification's form. One rule behaves the same before and after a crash.
+The conformance suite requires a push rail's duplicate submit to carry no key
+material, and a stored `trx.…` would be exactly that. If item 2 shows the
+path wants Notch Pay's reference, the read changes in one place
+(`vpay_adapter_notchpay`'s `query_status`) and `ref_extra` starts carrying
+it. Until then the guide's form is not used. The guide also
 spells the number as `data.account_number` in one example and `data.phone` in
 another; the specification has both, and the adapter sends `phone`.
 
@@ -391,7 +426,10 @@ three hours, and is part of the first sandbox session.
   "data": { "id": "pay_…", "reference": "<the charge's reference>", "…": "…" } }
 ```
 
-→ `CallbackRef { reference_id, ref_extra: { notchpay_id, event_type } }` for
+→ `CallbackRef { reference_id, ref_extra: {} }` — built with an **empty**
+`ref_extra`, where this said `{ notchpay_id, event_type }` until 2026-10-20:
+the route discards it anyway, and an adapter that hands nothing from an
+unauthenticated request onward cannot be the one that leaks it — for
 the five payment events the setup page lists: `payment.created`,
 `payment.complete`, `payment.failed`, `payment.canceled` and
 `payment.expired` ([webhook setup](https://developer.notchpay.co/get-started/webhooks)).
@@ -425,7 +463,7 @@ Three things about this rail's callbacks, none of which changes the design:
   `callback_url_pattern` covers it; whichever adapter lands first carries
   that change.
 - **Notch Pay signs its webhooks, and vpay cannot check the signature
-  today.** `x-notch-signature` is a hex HMAC-SHA256, keyed by the endpoint's
+  today.** (2026-10-20: [RFC-0014](0014-verifying-rail-callbacks.md) designs the check; it is not built.) `x-notch-signature` is a hex HMAC-SHA256, keyed by the endpoint's
   "Hash Key" (`hsk_test_…` in the sandbox)
   ([verify](https://developer.notchpay.co/get-started/webhooks/verify)).
   `parse_callback` receives the body and no headers, which is the port
@@ -497,6 +535,31 @@ guide's refund object has no fee field.
 
 ### 9. What the operator and the merchant take on
 
+#### Production risks
+
+Added 2026-10-20 with
+[ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md),
+which admitted this rail on the amended rule 3. **Whoever holds the
+merchant's public key can, on that merchant's Notch Pay account: read the
+status, amount and customer of any payment; initialize a payment; process a
+pending payment to any phone number, which sends a USSD prompt in the
+merchant's name; and cancel any pending payment, vpay's included.** vpay
+keeps the key server-side, sends the private key on every call, refuses to
+boot without it, accepts a success only for the charge's own amount and
+currency, and logs this exposure at `WARN` on every boot of a deployment
+that configures the rail, louder in livemode. It cannot do more: a key that
+leaves the server, or that the merchant embeds in a front end as Notch Pay's
+documentation invites, is beyond vpay's reach.
+[adapter-notchpay.md](../flows/adapter-notchpay.md) § "Production risks" is
+the operator's copy, and
+[threat-models/notchpay.md](../security/threat-models/notchpay.md) the
+STRIDE model.
+
+In livemode boot also refuses the rail until its block carries
+`settings.accept_public_key_exposure: true` (§ 2; ADR-0031 condition 4, as
+the maintainer amended it on 2026-10-20: "Livemode acknowledgement: YES,
+require it."). Setting it admits the rail; it does not silence the warning.
+
 - **An account per merchant.** Opened online, with Notch Pay's KYC. The
   agreement reserves the service to "natural persons aged 18 and over,
   residing in French-speaking Africa"; a company should get Notch Pay's
@@ -561,18 +624,18 @@ In writing (W) or in the sandbox (S):
 
 ## Delivery
 
-| Step | Contents                                                                                                                                                                                                                                                                                                                                                                         | Depends on                            |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| 0    | **Rule 3 resolved**: Notch Pay's written answer to item 1, or an ADR amending ADR-0029 D1's third rule                                                                                                                                                                                                                                                                           | the maintainer; Notch Pay             |
-| 1    | The first sandbox session: items 2–5, 7 and 11 on a dated verification page. No code                                                                                                                                                                                                                                                                                             | a test-mode account; may run before 0 |
-| 1b   | `vpay-notchpay`, the client: initialize, process and read a payment, list and create webhooks, parse an event; unit tests. **Landed 2026-10-20**, ahead of step 0 at the maintainer's direction; linked by nothing                                                                                                                                                               | nothing                               |
-| 2    | `vpay-adapter-notchpay` on top of `vpay-notchpay`: `mapping.rs` filled from step 1, `lib.rs`, `refund` as a declared `NotImplemented` token; unit tests                                                                                                                                                                                                                          | 0, 1                                  |
-| 3    | Mappings, the conformance rows, and RFC-0010 § 8's `callback_url_pattern` change if RFC-0010 has not landed it                                                                                                                                                                                                                                                                   | 2                                     |
-| 4    | Wiring: `adapters()`/`adapter_codes()`, `REQUIRED_RAIL_KEYS`, `compose.yml` (`wiremock-notchpay`), `.env.example`, Helm, `config/application.yml`, `docs/api/`, both SDKs' value lists, `sdks/parity.md`, `examples/shop`'s crate map, `docs/flows/adapter-notchpay.md`, `docs/flows/failures.md`, the privacy inventory's recipient, `docs/status.md`'s token, the status pages | 3                                     |
-| 5    | The first test-mode call through the adapter, on a dated verification page                                                                                                                                                                                                                                                                                                       | 4; test-mode keys                     |
-| 6    | Refunds as a call                                                                                                                                                                                                                                                                                                                                                                | item 6 answered                       |
-| 7    | Model B: `X-Sync`                                                                                                                                                                                                                                                                                                                                                                | RFC-0009; item 9 answered             |
-| 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type                                                                                                                                                                                                                                                                                                                     | ADR-0029 D6 landed                    |
+| Step | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Depends on                            |
+| ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| 0    | **Rule 3 resolved**: Notch Pay's written answer to item 1, or an ADR amending ADR-0029 D1's third rule. **Done 2026-10-20: ADR-0031**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | the maintainer; Notch Pay             |
+| 1    | The first sandbox session: items 2–5, 7 and 11 on a dated verification page. No code                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | a test-mode account; may run before 0 |
+| 1b   | `vpay-notchpay`, the client: initialize, process and read a payment, list and create webhooks, parse an event; unit tests. **Landed 2026-10-20**, ahead of step 0 at the maintainer's direction; linked by nothing                                                                                                                                                                                                                                                                                                                                                                                                  | nothing                               |
+| 2    | `vpay-adapter-notchpay` on top of `vpay-notchpay`: `mapping.rs` filled from step 1, `lib.rs`, `refund` as a declared `NotImplemented` token; unit tests. **Built 2026-10-20 without step 1**: no test-mode key was available, so `mapping.rs` is filled from `openapi.yaml` 2.1.0 and every row is "To confirm"                                                                                                                                                                                                                                                                                                     | 0, 1                                  |
+| 3    | Mappings, the conformance rows, and RFC-0010 § 8's `callback_url_pattern` change if RFC-0010 has not landed it. **Built 2026-10-20**; this rail carried the `callback_url_pattern` change                                                                                                                                                                                                                                                                                                                                                                                                                           | 2                                     |
+| 4    | Wiring: `adapters()`/`adapter_codes()`, `REQUIRED_RAIL_KEYS`, `compose.yml` (`wiremock-notchpay`), `.env.example`, Helm, `config/application.yml`, `docs/api/`, both SDKs' value lists, `sdks/parity.md`, `examples/shop`'s crate map, `docs/flows/adapter-notchpay.md`, `docs/flows/failures.md`, the privacy inventory's recipient, `docs/status.md`'s token, the status pages. **Built 2026-10-20**, except that `config/application.yml` carries the block commented out and `examples/shop` gets a note rather than a test-number table (both in [adapter-notchpay.md](../flows/adapter-notchpay.md) § Status) | 3                                     |
+| 5    | The first test-mode call through the adapter, on a dated verification page. **Not done**: no test-mode key was available on 2026-10-20                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | 4; test-mode keys                     |
+| 6    | Refunds as a call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | item 6 answered                       |
+| 7    | Model B: `X-Sync`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | RFC-0009; item 9 answered             |
+| 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ADR-0029 D6 landed                    |
 
 Steps 2–5 are one pull request against `master` and one against
 `vpay-skills`.
@@ -598,9 +661,13 @@ Steps 2–5 are one pull request against `master` and one against
 ## Open questions
 
 1. **~~Way A or way B for rule 3.~~ Decided 2026-10-20: way A**, asking
-   Notch Pay in writing. What remains open is Notch Pay's answer, and it is
-   delivery step 0. _(This said "The maintainer's decision, and delivery step
-   0" until the same day.)_
+   Notch Pay in writing, **then way B the same day**, by
+   [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md),
+   because Notch Pay had not answered. Notch Pay's answer is still worth
+   having: a yes moves the rail to ADR-0031's first limb and retires the boot
+   warning. _(This said "The maintainer's decision, and delivery step 0" until
+   the same day, and then "What remains open is Notch Pay's answer, and it is
+   delivery step 0" until the ADR.)_
 2. **Two entries for one network.** Until ADR-0029 D8–D10 land, a deployment
    with `mtn_momo` and `notchpay` both enabled shows an MTN payer two rails by
    code. Is that acceptable for the interval, or should a deployment enable
@@ -630,5 +697,8 @@ Steps 2–5 are one pull request against `master` and one against
 - **No mocks in shipping processes** holds: the stub is a WireMock host in
   configuration.
 - **Pass-through** holds on model A. Model B is unconfirmed and not offered.
-- **ADR-0029 D1's third hard rule does not hold** on Notch Pay's
-  documentation, and that is why this RFC is not buildable as written.
+- **ADR-0029 D1's third hard rule, as ADR-0029 wrote it, does not hold** on
+  Notch Pay's documentation. The adapter is admitted under the rule as
+  [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)
+  amended it, on that ADR's six conditions. _(This bullet ended "and that is
+  why this RFC is not buildable as written" until 2026-10-20.)_

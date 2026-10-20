@@ -1,0 +1,30 @@
+# A livemode configuration with a `notchpay` rail, for
+# `a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns` in
+# `tests/cli.rs`.
+#
+# ADR-0031 condition 4, as amended on 2026-10-20: in livemode the rail's block
+# must carry `settings.accept_public_key_exposure: true`, and a boot that
+# carries it still logs the warning. The test runs this file as written, and
+# a copy with the acknowledgement removed, which must not boot.
+#
+# The keys are `${VAR}`s (livemode refuses literals) that the test sets to
+# values without `test_` (livemode refuses test keys). Nothing calls the host:
+# the run stops on the missing signing key, after the warning.
+
+deployment:
+  name: vpay-server-cli-notchpay-livemode
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+providers:
+  - code: notchpay
+    currency: XAF
+    host:
+      url: https://api.notchpay.co
+      label: notchpay
+    settings:
+      channel: cm.mobile
+      accept_public_key_exposure: true
+    credentials:
+      public_key: ${CLI_NOTCHPAY_PUBLIC_KEY}
+      private_key: ${CLI_NOTCHPAY_PRIVATE_KEY}

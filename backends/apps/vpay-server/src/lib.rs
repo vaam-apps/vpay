@@ -21,7 +21,11 @@ use vpay_provider::ProviderAdapter;
 pub fn adapters(http: reqwest::Client) -> Vec<Box<dyn ProviderAdapter>> {
     vec![
         Box::new(vpay_adapter_mtn_momo::Adapter::new(http.clone())),
-        Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+        Box::new(vpay_adapter_orange_money::Adapter::new(http.clone())),
+        // Admitted under ADR-0031 (rule 3 amended): its status read takes a
+        // key Notch Pay calls public, and boot warns about it for every
+        // deployment that configures the rail.
+        Box::new(vpay_adapter_notchpay::Adapter::new(http)),
     ]
 }
 
@@ -31,11 +35,11 @@ pub fn adapters(http: reqwest::Client) -> Vec<Box<dyn ProviderAdapter>> {
 /// built by constructing every adapter): a log line must not need an HTTP
 /// client, and the previous shape would have forced `main` to build a
 /// throwaway TLS stack — or to log after the client existed — purely to
-/// print two strings. The two lists are kept honest by
+/// print three strings. The two lists are kept honest by
 /// `the_codes_match_the_adapters_that_are_linked` below.
 #[must_use]
-pub const fn adapter_codes() -> [&'static str; 2] {
-    ["mtn_momo", "orange_money"]
+pub const fn adapter_codes() -> [&'static str; 3] {
+    ["mtn_momo", "orange_money", "notchpay"]
 }
 
 #[cfg(test)]
@@ -53,6 +57,21 @@ mod tests {
         let codes = adapter_codes();
         assert!(codes.contains(&"mtn_momo"), "MTN missing: {codes:?}");
         assert!(codes.contains(&"orange_money"), "Orange missing: {codes:?}");
+        assert!(codes.contains(&"notchpay"), "Notch Pay missing: {codes:?}");
+    }
+
+    /// ADR-0031: exactly the rail admitted on the amended rule 3 declares an
+    /// exposure, so the boot warning fires for it and for nothing else. A
+    /// future rail on the second limb fails here until this list names it,
+    /// which is the review ADR-0031 asks for.
+    #[test]
+    fn only_notchpay_declares_an_accepted_exposure() {
+        let declaring: Vec<&str> = adapters(http())
+            .iter()
+            .filter(|adapter| adapter.accepted_exposure().is_some())
+            .map(|adapter| adapter.code())
+            .collect();
+        assert_eq!(declaring, ["notchpay"]);
     }
 
     /// The log line and the wiring must not drift: `adapter_codes` is a

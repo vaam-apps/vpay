@@ -1,0 +1,43 @@
+[package]
+name = "vpay-adapter-notchpay"
+description = "The notchpay rail: Notch Pay's direct mobile-money charge behind the provider port, on the vpay-notchpay client. Admitted under ADR-0031."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+vpay-core.workspace = true
+vpay-provider.workspace = true
+# The wire: Notch Pay's bodies and calls. This crate decides what an answer
+# means for a charge (`mapping`), and nothing about how it was fetched.
+vpay-notchpay.workspace = true
+# The port's methods are `async fn` behind `#[async_trait]`, so an
+# implementor must spell the same attribute.
+async-trait.workspace = true
+# The adapter owns the `reqwest::Client` the binary builds at boot and hands
+# a clone to each `vpay_notchpay::Client`; naming the type needs the direct
+# dependency. No new package: `vpay-provider` already resolves it.
+reqwest.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+# NOT here, deliberately: `serde`/`serde_json`. Every body is the client's
+# (`vpay_notchpay::wire`), and the one value this crate reads out of a
+# merchant's map, `parse_destination`'s, it never reads — the rail is
+# `RefundDestination::Origin` and takes the port's default. Nor `thiserror`:
+# every failure is a `vpay_provider::ProviderError`, as in both other adapters.
+
+[dev-dependencies]
+# The unit tests that prove nothing leaves the process point the client at a
+# closed loopback port; `#[tokio::test]` is what runs an `async` port method.
+# `net` and `io-util` for the few that read the one raw request the adapter
+# sent off a loopback listener — a socket, not a double. Test-only, and both
+# features are already in every binary's graph through `axum`.
+tokio = { workspace = true, features = ["net", "io-util"] }
+serde_json.workspace = true

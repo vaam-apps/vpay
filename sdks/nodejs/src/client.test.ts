@@ -603,6 +603,30 @@ describe("resource methods", () => {
     expect(result.status).toBe("processing");
   });
 
+  it("payment_intents.confirm on notchpay: the push-rail body under its own code", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: makeSamplePaymentIntent({ status: "processing" }),
+      }),
+    });
+    const client = makeClient(server);
+
+    await client.paymentIntents.confirm("pi_123", {
+      payment_method_data: {
+        type: "notchpay",
+        notchpay: { msisdn: "237670000000" },
+      },
+    });
+
+    const req = server.requests.find(
+      (r) => r.url === "/v1/payment_intents/pi_123/confirm",
+    )!;
+    expect(req.body).toBe(
+      "payment_method_data[type]=notchpay&payment_method_data[notchpay][msisdn]=237670000000",
+    );
+  });
+
   it("payment_intents.confirm on a redirect rail: includes return_url", async () => {
     const server = await withServer({
       resource: () => ({

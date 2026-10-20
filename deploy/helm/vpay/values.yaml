@@ -630,6 +630,24 @@ rails:
   # so this does not leak.
   existingSecret: vpay-rails
 
+  # NOTCH PAY ADDS TWO KEYS, AND ONLY IF YOU CONFIGURE IT (RFC-0012).
+  #
+  # The baked `config/application.yml` carries a `notchpay` block commented
+  # out, so the ten keys above are unchanged. A `config.overlay` that adds a
+  # `notchpay` provider writes its keys as `${NOTCHPAY_PUBLIC_KEY}` and
+  # `${NOTCHPAY_PRIVATE_KEY}`, and both must then be in the Secret above,
+  # non-blank. In livemode neither may contain `test_`; outside it both must.
+  #
+  # PRODUCTION RISK. Notch Pay is admitted under ADR-0031 (rule 3 amended):
+  # NOTCHPAY_PUBLIC_KEY is the key Notch Pay calls public, and it
+  # authenticates the status read. Whoever holds it can read, initialize,
+  # process (a USSD prompt to ANY number, in the merchant's name) and cancel
+  # payments on the merchant's account. Both Deployments log this at WARN on
+  # every boot, and in livemode refuse to boot unless the overlay's notchpay
+  # block sets `settings.accept_public_key_exposure: true` (ADR-0031
+  # condition 4). Read docs/flows/adapter-notchpay.md § "Production risks"
+  # before you set it.
+
   # STAFF SINGLE SIGN-ON ADDS ONE KEY, AND ONLY IF YOU TURN IT ON.
   #
   # `staff_auth.sso` (an OIDC login for dashboard staff; README.md "Staff

@@ -361,10 +361,12 @@ async fn run() -> anyhow::Result<()> {
          authentication boundary, /v1/payment_intents (create, retrieve, list, confirm, \
          cancel) and, since 2026-09-16, all five /v1 refund routes: POST /v1/refunds \
          (create), GET /v1/refunds/{{id}} (retrieve), GET /v1/refunds (list), POST \
-         /v1/refunds/{{id}} (update) and POST /v1/refunds/{{id}}/cancel (cancel). Both rail \
+         /v1/refunds/{{id}} (update) and POST /v1/refunds/{{id}}/cancel (cancel). All three rail \
          adapters implement `submit` and `query_status`; over seven MTN Collections \
          payments succeeded against MTN's real sandbox on 2026-09-15, as confirmed on \
-         2026-10-20 by the maintainer who performed the tests. NO REFUND HAS EVER MOVED MONEY: \
+         2026-10-20 by the maintainer who performed the tests. NOTCH PAY HAS NEVER BEEN \
+         CALLED: `notchpay` (2026-10-20, ADR-0031) is proven against a WireMock stub only, \
+         and `notchpay::refund` answers a NotImplemented token. NO REFUND HAS EVER MOVED MONEY: \
          `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN Disbursements \
          credential exists in this project — the only one anywhere is the stub the e2e/demo \
          stack points at a WireMock container — and the product has never been called; \
@@ -544,6 +546,9 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // milliseconds and — as `a_provider_code_with_no_linked_adapter_is_exit_78`
     // in `tests/cli.rs` relies on — without a database.
     let (currency_seeds, provider_seeds) = vpay_api::boot::boot_seeds(&config, &adapters)?;
+    // ADR-0031 condition 4: one `warn!` per configured rail admitted on the
+    // amended rule 3, after the join has refused anything unlinked.
+    vpay_api::boot::warn_about_accepted_exposures(&config, &adapters);
 
     let signing_key = load_signing_key(args, &config)?;
 

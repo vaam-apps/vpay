@@ -247,6 +247,9 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
     .context("building the outbound HTTP client every rail adapter shares")?;
     let adapters = vpay_api::boot::adapters_by_code(vpay_server::adapters(http));
     let (currency_seeds, provider_seeds) = vpay_api::boot::boot_seeds(&config, &adapters)?;
+    // The worker reads with the same keys, so it says the same thing at boot
+    // (ADR-0031 condition 4).
+    vpay_api::boot::warn_about_accepted_exposures(&config, &adapters);
 
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
     // level and is required here — see docs/reference/vpay-config.md
