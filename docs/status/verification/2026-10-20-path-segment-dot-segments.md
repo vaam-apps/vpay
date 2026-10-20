@@ -31,8 +31,9 @@ is why `...` needed a decision rather than a reading of the standard.
 
 **Nothing reachable was exposed.** `GET /v1/account_holders` and
 `POST /v1/refunds` validate the number as `237` + `6` + eight digits before the
-port sees it. `vpay-notchpay` (RFC-0012), which is not on `master`, had
-already worked round it with a private `reference_segment` guard.
+port sees it. `vpay-notchpay` (RFC-0012), which landed on `master` the same
+day in #285 and is linked by no binary, had already worked round it with a
+private `reference_segment` guard.
 
 ## The change
 
@@ -127,18 +128,33 @@ them.
 
 ## The companion changes
 
-- **`vpay-notchpay`**: branch `claude/notchpay-port-path-segment`. It is
-  `origin/claude/happy-hopper-r3h6rz` (RFC-0012's WIP) with this change merged
-  in, plus one commit. That commit deletes `reference_segment`, has
-  `payment_request` call `path_segment(reference)?`, and adds a dated
-  correction to `docs/reference/vpay-notchpay.md`. Run on that branch:
-  `cargo test -p vpay-notchpay` gave 34 passed and 0 ignored, plus 1 doctest.
-  `cargo clippy -p vpay-notchpay --all-targets -- -D warnings` was clean.
-  Replacing `path_segment(reference)?` with `reference.to_owned()` failed
-  three of its tests: `an_empty_or_dot_only_reference_is_refused_before_any_request`,
+- **`vpay-notchpay`, in this change since #285 merged.** It was first
+  migrated on a side branch, because the crate was still RFC-0012 WIP. #285
+  then landed it on `master` with the private guard intact and the old
+  infallible call, `Ok(path_segment(reference))`, which does not compile
+  against this signature. So merging `master` in brought the migration here.
+  The commit deletes `reference_segment`, has `payment_request` call
+  `path_segment(reference)?`, and adds a dated correction to
+  `docs/reference/vpay-notchpay.md`. `master`'s crate was byte-identical to
+  the RFC-0012 tip it had been migrated on. The results, re-run on the merged
+  tree, are below.
+
+  ```text
+  $ cargo test -p vpay-provider -p vpay-adapter-mtn-momo -p vpay-notchpay
+  vpay_adapter_mtn_momo  unit 89 passed, 0 ignored; doctests 1 passed
+  vpay_notchpay          unit 34 passed, 0 ignored; doctests 1 passed
+  vpay_provider          unit 42 passed, 0 ignored; doctests 12 passed
+  $ just clippy            exit 0
+  $ just verify            verify: ok — the fifteen gates above passed
+                           verify-links: ok — 2347 repository link(s) in 454 tracked markdown file(s)
+  ```
+
+  Replacing `path_segment(reference)?` with `reference.to_owned()` in
+  `payment_request` failed three of the crate's tests:
+  `an_empty_or_dot_only_reference_is_refused_before_any_request`,
   `the_public_payment_methods_refuse_a_dot_reference_without_sending` and
-  `both_payment_paths_escape_the_reference_as_one_segment`. It lands with
-  RFC-0012, not here.
+  `both_payment_paths_escape_the_reference_as_one_segment`.
+
 - **`vaam-apps/vpay-skills`**: `vpay-provider-adapters` (`SKILL.md` and
   `references/adding-a-rail.md`) and `vpay-mtn-momo`
   (`references/account-holder-lookup.md`, which quotes `account_holder_url`).

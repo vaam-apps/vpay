@@ -273,8 +273,9 @@ tests together.
 
 **`Result` on `path_segment` itself, not a `checked_path_segment` beside it.**
 An unchecked twin is the function the next adapter reaches for, which is how
-the gap opened. RFC-0012's `vpay-notchpay`, still on a branch on 2026-10-20,
-carried its own private `reference_segment` guard because the port had none.
+the gap opened. RFC-0012's `vpay-notchpay` client (#285, 2026-10-20) shipped
+with its own private `reference_segment` guard because the port had none. The
+same change that made this function checked deleted that guard.
 Changing the signature makes every caller, including code on branches not
 yet merged, fail to compile until it handles the refusal. A per-adapter copy
 is the thing this function exists to prevent: the second copy is the one that
@@ -293,6 +294,10 @@ What pins it:
   `a_dot_segment_reference_is_refused_before_any_request` on the method
   itself. The adapter builds the URL before `send_authorized`, so a refused
   number costs no token request either.
+- In `vpay-notchpay`, `an_empty_or_dot_only_reference_is_refused_before_any_request`
+  goes through `Client::payment_request`, the one place a reference becomes a
+  path. With `the_public_payment_methods_refuse_a_dot_reference_without_sending`
+  it fails if the client stops calling the helper.
 - Four mutations, each caught, are recorded on
   [the dated verification page](../status/verification/2026-10-20-path-segment-dot-segments.md).
 

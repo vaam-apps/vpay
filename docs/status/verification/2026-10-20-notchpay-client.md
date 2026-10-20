@@ -45,6 +45,10 @@ review that added them" has each one. The two that mattered:
   `the_public_payment_methods_refuse_a_dot_reference_without_sending` pin
   it. The shared helper still passes dots; MTN's only use of it takes a
   digits-only number. A suggested task records the port-level fix.
+  _(True when measured. Later on 2026-10-20 #294 made `path_segment` itself
+  refuse an empty or all-dots segment and deleted this crate's private
+  guard; see
+  [2026-10-20-path-segment-dot-segments.md](2026-10-20-path-segment-dot-segments.md).)_
 - **An empty body read as success.** Every envelope field was `Option`, so
   `{}` decoded as a payment answer with no payment, and as a webhook list with
   no endpoints — which would make a caller register a duplicate endpoint on
@@ -112,4 +116,5 @@ read, and they read every one with a generic User-Agent.
 - **Flutterwave**: no RFC. Its blocker is Flutterwave's written word on XAF
   withdrawals in Cameroon.
 - **The two suggested follow-ups**: correcting vpay's claim that MTN retries
-  callbacks, and making `path_segment` refuse dot segments.
+  callbacks, and making `path_segment` refuse dot segments. _(The second was
+  done the same day, in #294.)_

@@ -461,9 +461,10 @@ account-holder lookup, propagates the refusal before its token fetch. **What
 this does not change:** no route reached the hole, because `/v1` admits
 digits only, so this narrows what the port accepts rather than closing
 anything exploitable today. The merchant SDKs' own escaping still passes dot
-segments. `vpay-notchpay` (RFC-0012) is not on `master`, and its private copy
-of this guard is deleted on its branch, not here. Evidence and four caught
-mutations:
+segments. `vpay-notchpay` (RFC-0012, merged the same day in #285, linked by
+no binary) shipped with a private copy of this guard, `reference_segment`. It
+is deleted here, and the client's `payment_request` calls `path_segment(..)?`.
+Evidence and four caught mutations:
 [verification/2026-10-20-path-segment-dot-segments.md](verification/2026-10-20-path-segment-dot-segments.md).
 
 **What the ✅ in the wire-call column rests on, named.** The shared

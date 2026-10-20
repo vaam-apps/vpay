@@ -208,7 +208,8 @@ under our own credentials, and escaping could not stop them, because URL
 parsing reads `%2E%2E` as `..`. `...` is refused as well, by decision. No
 unchecked variant was kept, so a caller that ignores the refusal does not
 compile. `mtn_momo`'s account-holder lookup, the one shipping caller, refuses
-before its token fetch. No route reaches the refusal today: `/v1` admits
+before its token fetch. `vpay-notchpay`'s client, which no binary links yet,
+lost its private copy of the guard and calls this one. No route reaches the refusal today: `/v1` admits
 digits only. Not changed: the merchant SDKs' own escaping, which passes dot
 segments too
 ([../reference/rails.md § "A path segment the caller chose"](../reference/rails.md#a-path-segment-the-caller-chose)).
