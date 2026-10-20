@@ -1,0 +1,78 @@
+# vpay "notchpay-sandbox" profile overlay — config/application-notchpay-sandbox.yml
+#
+# RFC-0012 delivery step 5: the first test-mode call through the `notchpay`
+# adapter, against Notch Pay's REAL SANDBOX. Run it only from
+# docs/runbooks/notchpay-sandbox-test.md, on a machine whose egress presents
+# Notch Pay's own certificate (vpay trusts vendored roots only, and ignores
+# proxy variables).
+#
+# Loaded with `--profile notchpay-sandbox`; it overlays config/application.yml
+# (ADR-0003 — a profile selects a FILE, never a code path). A LIST in an
+# overlay replaces the base list wholesale, so `providers` and
+# `merchant_clients` below are the COMPLETE lists for this profile: MTN, Orange
+# and acme-cameroon do not survive, and none of their ${VAR}s is needed.
+#
+# Every ${VAR} resolves from the environment, and an unresolved one is a fatal
+# boot error (exit 78). Keep them in an env file OUTSIDE the repository; the
+# runbook says which.
+
+deployment:
+  name: vpay-notchpay-sandbox
+  # MUST stay false. Notch Pay serves its sandbox and its production from the
+  # one host, so the only thing that says "sandbox" here is the keys: boot
+  # refuses this rail outside livemode unless both keys carry `test.` or
+  # `test_` (RFC-0012 § 2, corrected 2026-10-20).
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: notchpay
+    enabled: true
+    host:
+      # Sandbox AND production (openapi.yaml 2.1.0: "Production and Sandbox
+      # Environment"). The keys decide which.
+      url: https://api.notchpay.co
+      label: notchpay-sandbox
+    display_name:
+      en: Mobile money (Notch Pay)
+      fr: Mobile money (Notch Pay)
+    currency: XAF
+    settings:
+      channel: cm.mobile
+      description: vpay sandbox test (RFC-0012 step 5)
+      # Not required outside livemode; boot still logs the public-key WARN,
+      # which is expected (ADR-0031 condition 4).
+    credentials:
+      # The same names the sandbox probe reads, so one env file serves both.
+      public_key: ${NOTCHPAY_TEST_PUBLIC_KEY}
+      private_key: ${NOTCHPAY_TEST_PRIVATE_KEY}
+    # Defaults to {public_base_url}/provider/notchpay/callback. Notch Pay
+    # cannot reach localhost, and settlement does not need it to: the worker's
+    # authenticated read is what moves money. Notch Pay registers webhook URLs
+    # on the account, not per payment (RFC-0012 § 6).
+
+# The one merchant this profile authenticates. Generate its keypair with
+#     cargo xtask gen-signing-key --out .e2e/notchpay-sandbox-merchant
+# and put the printed `kid` and modulus `n` in the env file as
+# NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / NOTCHPAY_SANDBOX_MERCHANT_JWK_N. vpay
+# holds the public half only (ADR-0010); `.e2e/` is git-ignored.
+merchant_clients:
+  - client_id: notchpay-sandbox-merchant
+    merchant_id: notchpay-sandbox-merchant
+    display_name: Notch Pay Sandbox Merchant
+    jwks:
+      keys:
+        - kty: RSA
+          use: sig
+          kid: ${NOTCHPAY_SANDBOX_MERCHANT_JWK_KID}
+          alg: RS256
+          n: ${NOTCHPAY_SANDBOX_MERCHANT_JWK_N}
+          e: AQAB
+    grant_types: [client_credentials]
+    scopes: [payments:write, payments:read]
+    allowed_audiences: ["vpay:v1"]
+
+# The base file's dashboard client names acme-cameroon, which this overlay
+# removes; boot refuses an unknown tenant (DashboardUnknownMerchant).
+dashboard_client:
+  merchant_id: notchpay-sandbox-merchant

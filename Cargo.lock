@@ -4944,10 +4944,14 @@ dependencies = [
 name = "vpay-notchpay"
 version = "0.8.0"
 dependencies = [
+ "hex",
+ "hmac 0.12.1",
  "reqwest",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
+ "uuid",
  "vpay-core",
  "vpay-provider",
 ]

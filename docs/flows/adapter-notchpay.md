@@ -262,6 +262,10 @@ without the `+`. The adapter sends the `+` form the documentation shows.
   rightly rejects. It did measure one thing: the real test keys carry `test.`,
   not `test_`, and the boot rule is corrected for it
   ([status/verification/2026-10-20-notchpay-sandbox.md](../status/verification/2026-10-20-notchpay-sandbox.md)).
+  On the maintainer's decision the same day, both steps run on a real
+  machine from [runbooks/notchpay-sandbox-test.md](../runbooks/notchpay-sandbox-test.md)
+  (a probe, `vpay-notchpay --example sandbox_probe`, and the
+  `notchpay-sandbox` profile). **Written, not yet run against Notch Pay.**
   Until a dated verification page records steps 1 and 5, the
   Collect and Status read cells of [status/providers.md](../status/providers.md)
   say "stub-only", never "sandbox".

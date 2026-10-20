@@ -38,15 +38,26 @@ const vpay = new VpayClient({
   kid: process.env.VPAY_KID,
 });
 
+// Defaults are this example's original merchant_a values. Override them to
+// drive a real sandbox, as docs/runbooks/notchpay-sandbox-test.md does:
+// VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=237670000000 VPAY_ORDER=<unique>.
+// VPAY_ORDER keeps the idempotency keys fresh, so a second run creates a new
+// intent instead of replaying the first.
+const rail = process.env.VPAY_RAIL ?? "mtn_momo";
+const currency = process.env.VPAY_CURRENCY ?? "xaf";
+const msisdn = process.env.VPAY_PAYER_MSISDN ?? "237670000000";
+const order = process.env.VPAY_ORDER ?? "order_1234";
+const amount = Number(process.env.VPAY_AMOUNT ?? "5000");
+
 async function main() {
   const intent = await vpay.paymentIntents.create(
     {
-      amount: 5000, // 5,000 FCFA — XAF is zero-decimal, integer minor units
-      currency: "xaf",
-      payment_method_types: ["mtn_momo"],
-      metadata: { order_id: "1234" },
+      amount, // 5,000 FCFA by default — XAF is zero-decimal, integer minor units
+      currency,
+      payment_method_types: [rail],
+      metadata: { order_id: order },
     },
-    { idempotencyKey: "order_1234_attempt_1" },
+    { idempotencyKey: `${order}_attempt_1` },
   );
   console.log("created", intent.id, intent.status);
 
@@ -54,11 +65,11 @@ async function main() {
     intent.id,
     {
       payment_method_data: {
-        type: "mtn_momo",
-        mtn_momo: { msisdn: "237670000000" },
+        type: rail,
+        [rail]: { msisdn },
       },
     },
-    { idempotencyKey: "order_1234_confirm_1" },
+    { idempotencyKey: `${order}_confirm_1` },
   );
 
   // `processing` means NOT YET. The payer has a prompt on their handset;

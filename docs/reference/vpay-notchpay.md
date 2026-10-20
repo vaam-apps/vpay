@@ -178,6 +178,23 @@ lists every one for the first sandbox session.
 | A webhook's signing secret             | absent from the schema                 | "when creating a webhook via the API"                                      |
 | What a webhook signature covers        | —                                      | raw body on two pages; a re-serialised object in one example               |
 
+## The sandbox probe
+
+`examples/sandbox_probe.rs` asks Notch Pay's real sandbox RFC-0012 § 10's
+sandbox questions, from
+[runbooks/notchpay-sandbox-test.md](../runbooks/notchpay-sandbox-test.md).
+It is an example, so `cargo nextest` never builds it and `verify-ignored`'s
+counts do not move. **Written 2026-10-20, never run against Notch Pay.**
+
+It sends every body from this crate's `wire` types and decodes every answer
+with them. Each read also goes through `Client`. The other calls go out by
+hand with `Client`'s headers, because `Client` keeps no raw body and the
+evidence needs one. It refuses to start unless both keys contain `test.` or
+`test_`. It redacts its report before writing it: a string holding a key
+becomes the key's name, and a field named like a secret becomes its shape.
+It deletes every webhook endpoint it creates. Its `uuid`, `hmac`, `sha2` and
+`hex` are `[dev-dependencies]`, already in the workspace.
+
 ## Privacy
 
 Every type that holds a payer's number, a reference, a callback URL or Notch
