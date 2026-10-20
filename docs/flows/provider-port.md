@@ -558,9 +558,13 @@ cases on the push rail alone). The 11 port cases are
 `an_oversized_rail_body_is_refused_at_the_cap`.
 
 **What the suite does not prove.** Every one of those cases talks to
-WireMock. **Neither adapter has ever called MTN's or Orange's real
-sandbox**, so a mapping that is faithful to the flow doc but not to the rail
-would pass. The 401-after-a-good-token re-mint path has no mapping in the
+WireMock, so a mapping that is faithful to the flow doc but not to the rail
+would pass. **Corrected 2026-10-20:** the former claim that neither real
+sandbox had ever been called was stale. The maintainer who performed the
+2026-09-15 MTN Collections tests confirmed **over seven successful payments**
+against MTN's real sandbox
+([verification](../status/verification/2026-09-15.md)); Orange remains untested.
+The 401-after-a-good-token re-mint path has no mapping in the
 suite and is unproven on both rails. ~~No callback route exists, so
 `parse_callback`'s output is verified by tests and by nothing in production.~~
 **Corrected 2026-09-04 (Step 8, lane C): since Step 8 `parse_callback`'s output

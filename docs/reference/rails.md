@@ -608,9 +608,14 @@ because there is no `checkout_sessions` table in this tree; that is the truth
 today, and the doc comment on that impl names the method Step 9 lane 1 has to
 replace it with.
 
-**Not proven by any of it.** Every conformance case talks to WireMock:
-**neither adapter has ever called MTN's or Orange's real sandbox**, so a mapping
-faithful to the flow doc but not to the rail would pass. The 401-after-a-good-
+**Not proven by the conformance suite.** Every conformance case talks to WireMock,
+so a mapping faithful to the flow doc but not to the rail would pass.
+**Corrected 2026-10-20:** this paragraph's "neither adapter has ever called
+MTN's or Orange's real sandbox" claim was stale. The maintainer who performed
+the 2026-09-15 MTN Collections tests confirmed **over seven successful payments**
+against MTN's real sandbox
+([verification](../status/verification/2026-09-15.md)); Orange remains untested.
+The 401-after-a-good-
 token re-mint path has no WireMock mapping and is unproven on both rails.
 Orange's error-body shapes are inferred, as above. See
 [`status.md`](../status.md).

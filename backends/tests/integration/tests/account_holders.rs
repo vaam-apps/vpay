@@ -26,8 +26,11 @@
 //! It does **not** claim anything about MTN. Every answer here comes from
 //! `backends/tests/conformance/wiremock/mtn/mappings/basicuserinfo.json` —
 //! the same directory `compose.yml` bind-mounts and the conformance suite
-//! starts — and vpay has never called MTN's real sandbox for this or any
-//! other operation. `docs/status.md` says so.
+//! starts — and this lookup has never called MTN's real sandbox. The former
+//! "or any other operation" claim was stale: the maintainer confirmed on
+//! 2026-10-20 that the 2026-09-15 Collections tests settled over seven payments
+//! against MTN's real sandbox. Those tests did not call `basicuserinfo`; see
+//! `docs/status/verification/2026-09-15.md`.
 //!
 //! # Where the other half of the proof is
 //!

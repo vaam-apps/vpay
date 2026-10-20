@@ -124,3 +124,13 @@ itself, and the load-bearing sentence that survived all nine, are still on
 > been called; no webhook has ever reached a merchant endpoint outside this
 > repository; `mtn_momo::refund` is still `NotImplemented`; and no cluster has
 > ever run vpay. Do not deploy it._
+
+> **Count clarified 2026-10-20 from the maintainer's firsthand account.**
+> The maintainer who performed the September 15 tests confirms **over seven
+> successful EUR `mtn_momo` payments against MTN's real sandbox across that
+> day**. The PaymentIntent named above is the first documented success,
+> not the total: its detailed session had two token-mint failures followed
+> by one successful payment. The
+> [September 15 verification record](verification/2026-09-15.md) separates
+> that example from the aggregate and records the correction from its
+> earlier three-run total.

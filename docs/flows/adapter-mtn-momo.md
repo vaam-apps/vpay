@@ -388,8 +388,10 @@ is transcribed into `mapping::FAILURE_REASONS` and every row is asserted, in
 both directions, by a unit test.
 
 **Updated 2026-09-15 (the first real call): `submit`, `query_status` and the
-token mint were exercised against MTN's **real sandbox** and a payment
-settled.** A EUR `mtn_momo` PaymentIntent (`pi_xxd2xj1e914e16c6m63gezag`) was
+token mint were exercised against MTN's **real sandbox**. Over seven payments
+settled across the day**, as confirmed on 2026-10-20 by the maintainer who
+performed the tests. The first documented EUR `mtn_momo` PaymentIntent
+(`pi_xxd2xj1e914e16c6m63gezag`) was
 created, confirmed and reached `succeeded` through the worker's authenticated
 status query. That run also found and fixed a real bug the WireMock suite
 could not see: the token mint posted **no body** to `POST /collection/token/`,
@@ -399,6 +401,12 @@ form-encoded (`grant_type=client_credentials`) the gateway answered a 200
 `{"grant_type":"client_credentials"}` with `Content-Type: application/json`.
 The conformance stub now enforces that body
 (`backends/tests/conformance/wiremock/mtn/mappings/token.json`).
+
+**Count corrected 2026-10-20:** this page previously described "one real
+sandbox call" and a single settled payment. The
+[verification record](../status/verification/2026-09-15.md) details three
+attempts in the initial session, of which one succeeded; the maintainer's
+over-seven count covers all successful payments that day, not just that session.
 
 **Updated 2026-09-10 (exp48, [issue
 #59](https://github.com/vaam-apps/vpay/issues/59)).** The table went from nine
@@ -549,16 +557,16 @@ inherits three refusals that are not MTN-specific:
 
 ### Not proven
 
-- **Until 2026-09-15 nothing here had ever called MTN; one real sandbox call
-  has now been made, and it was on Collections.** Every wire assertion in this
+- **The 2026-09-15 tests settled over seven payments against MTN's real
+  sandbox, all on Collections** (count confirmed 2026-10-20). Every wire assertion in this
   document is against a `wiremock/wiremock` container except the live-sandbox
-  run of 2026-09-15 (Status above), which exercised `submit` and
-  `query_status` against `https://sandbox.momodeveloper.mtn.com` and settled a
-  payment. Both **confirm** rows in the environment table above are still
+  tests of 2026-09-15 (Status above), which exercised `submit` and
+  `query_status` against `https://sandbox.momodeveloper.mtn.com`.
+  Both **confirm** rows in the environment table above are still
   unconfirmed, and a mapping faithful to this document but not to MTN would
   pass.
 - **MTN's Disbursements product has never been called at all** — not by the
-  2026-09-15 run, which was a Collections payment, and not since. So every
+  2026-09-15 tests, which exercised Collections payments, and not since. So every
   line of "The transfer call" above, and the Disbursements half of "The token
   grant", is a transcription of MTN's published `Transfer` operation rather
   than an observation, and the portal serves **no OpenAPI schema document for
@@ -608,22 +616,22 @@ inherits three refusals that are not MTN-specific:
   `backends/tests/integration/tests/provider_callback.rs` POSTs the body
   transcribed above to the URL MTN was handed on the submit, so **a body
   faithful to this document but not to MTN would pass**.
-- **One real call settled a payment, and none of it exercised the decline
+- **Over seven real sandbox payments succeeded, and none exercised the decline
   vocabulary — so this bullet is unchanged in substance.** `PAYMENT_NOT_APPROVED`,
   `APPROVAL_REJECTED` and `EXPIRED` are real strings
   from MTN's published enum, and that enum is the declared type of
   `RequestToPayResult.reason` — so the shape and the vocabulary are cited, not
   assumed. What no document can tell us is whether MTN's Cameroon deployment
   ever _emits_ a given one. A stub answering a string MTN may never send
-  proves the mapping row, not the rail; the 2026-09-15 sandbox payment reached
+  proves the mapping row, not the rail; the 2026-09-15 sandbox payments reached
   `succeeded` and so proved none of the failure codes against the real rail.
 
   _(This bullet said the enum "is the whole Collection API's and says nothing
   about which operation returns which code" until 2026-09-11; see "Failure
   mapping" for the correction. The conclusion — that only a real call settles
-  this — is unchanged: the one real call so far was a success path, which is
-  why "Real sandbox" remains ⛔ for the failure vocabulary even though a
-  sandbox payment has now settled.)_
+  this — is unchanged: the successful sandbox payments exercised success paths, which is
+  why "Real sandbox" remains ⛔ for the failure vocabulary even though
+  over seven sandbox payments have settled.)_
 
 - The crate runs **87 tests, 87 passed, 0 skipped**
   (`cargo nextest run -p vpay-adapter-mtn-momo`, measured 2026-09-15; 62 on

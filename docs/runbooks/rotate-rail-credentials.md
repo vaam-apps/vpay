@@ -13,9 +13,12 @@ both and the mechanisms have nothing in common:
   exists; `docs/roadmap.md` recorded that no runbook documented
   it.
 
-**Nobody has done either on a deployment.** No cluster has run vpay, and no
-credential in this repository has ever been a real one — every rail call ever
-made went to a WireMock host ([../status.md](../status.md)).
+**Nobody has done either on a deployment.** No cluster has run vpay.
+**Corrected 2026-10-20:** the former claim that no real credential had ever
+been used was stale. The maintainer confirms over seven successful MTN
+Collections sandbox payments in the testing recorded on 2026-09-15
+([verification](../status/verification/2026-09-15.md)). Those calls used real
+sandbox credentials; they do not establish that credential rotation was tested.
 
 ---
 
@@ -244,8 +247,9 @@ disagree about the client list for the length of a rolling deploy.
 
 ## 6. What is unproven
 
-- **No real rail credential has ever been used.** Every call this code has
-  made went to a `wiremock/wiremock` host. `error_kind = 'misconfigured'` as
+- **No real rail credential rotation has been observed.** The MTN Collections
+  sandbox calls described above do not prove this procedure.
+  `error_kind = 'misconfigured'` as
   the signature of a bad credential is read off the classification table, not
   off a real MTN or Orange rejection.
 - **No cluster has run vpay**, so every `kubectl` command here is unexercised.

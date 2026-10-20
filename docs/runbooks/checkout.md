@@ -328,6 +328,11 @@ and `shop-embedded.cy.ts`, green from nothing in the `vpay-ci` VM — **its
 they are here for a human to run by hand.
 
 **What has not happened:** no human has followed this page against a deployment
-of vpay, because no deployment exists; no real rail has been called; and the
-§5 CSP check has not been performed by anyone against a browser — only the
-page's own origin refusal has. See [../status.md](../status.md).
+of vpay, because no deployment exists; this runbook's compose tests use
+WireMock rails; and the §5 CSP check has not been performed by anyone against
+a browser — only the page's own origin refusal has.
+**Corrected 2026-10-20:** the former blanket "no real rail has been called"
+claim was stale. Separately, the maintainer confirms over seven successful
+MTN sandbox payments in the testing recorded on 2026-09-15
+([verification](../status/verification/2026-09-15.md)); that evidence does
+not prove this shop runbook against MTN. See [../status.md](../status.md).

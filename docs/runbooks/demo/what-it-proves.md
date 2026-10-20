@@ -46,11 +46,14 @@ _Moved out of [docs/runbooks/demo.md](../demo.md) on 2026-09-11 by exp57, which 
 
 **Does not prove**, each named so it is a decision and not an omission:
 
-- **That MTN or Orange work.** No real rail endpoint has ever been called by
-  this code. Every outcome is chosen at a WireMock stub, by a field of the
+- **That MTN or Orange work.** This demo calls no real rail endpoint.
+  Every outcome is chosen at a WireMock stub, by a field of the
   request a merchant genuinely controls — the MSISDN on MTN (a `GET` status
   query steers no other way), the amount on Orange (whose status query is a
   `POST` carrying it). **Nothing rewrites stored state to force an outcome.**
+  **Scope clarified 2026-10-20:** separately from this demo, the maintainer
+  confirms over seven successful MTN sandbox payments in the testing recorded
+  on 2026-09-15 ([verification](../../status/verification/2026-09-15.md)).
 - **That a payer can complete Orange's hosted page.** The demo prints the URL
   and does not open it; the stub then answers the status query as though the
   payer had finished. Since Step 9 that URL _is_ openable — the stub is

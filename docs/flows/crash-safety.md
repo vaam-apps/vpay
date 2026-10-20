@@ -536,9 +536,13 @@ transaction and uses the commit path as its control).
   arrives or not. What is still missing is a rail that has actually called it.
   See [reconciler.md](reconciler.md).
 - **The rails are WireMock hosts.** Every recovery case above is proven against
-  a stub speaking the documented protocol. No real rail has ever been called,
-  so what is proven is that the recovery table is executed correctly, not that
-  the rails behave as these documents claim.
+  a stub speaking the documented protocol, so what is proven is that the
+  recovery table is executed correctly, not that the rails behave as these
+  documents claim. **Corrected 2026-10-20:** the former "No real rail has ever
+  been called" claim was too broad. The maintainer confirms over seven
+  successful MTN sandbox payments in the testing recorded on 2026-09-15
+  ([verification](../status/verification/2026-09-15.md)); those successes do
+  not establish that any crash-recovery case was exercised against MTN.
 
 ## Worker concurrency and the pool
 

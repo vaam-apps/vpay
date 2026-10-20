@@ -357,11 +357,14 @@ collapse described above.
   (`the_retry_advisory_follows_the_classification_not_the_status`); its effect
   on stripe-node is not.
 - **The `502` re-POST described above is reasoning, not a measurement.**
-- **The rail is a WireMock host.** MTN has never been called. No money has
-  moved. The `succeeded` the suite polls to is a stub mapping answering
+- **The rail is a WireMock host.** This compatibility suite has never called
+  MTN. No money has moved. The `succeeded` the suite polls to is a stub mapping answering
   `SUCCESSFUL`, driven through the real worker, the real settlement
   transaction and the real `/v1` renderer — but the approval itself is
-  fiction.
+  fiction. **Scope clarified 2026-10-20:** the maintainer separately confirms
+  over seven successful MTN sandbox payments in the testing recorded on
+  2026-09-15 ([verification](../status/verification/2026-09-15.md)).
+  That aggregate is not evidence that this compatibility suite ran against MTN.
 - **The receiver is a WireMock host too.** No merchant endpoint has ever been
   POSTed to. ~~and there is no SSRF protection on the destination~~ —
   **corrected 2026-09-04 (Step 8): every delivery now goes through

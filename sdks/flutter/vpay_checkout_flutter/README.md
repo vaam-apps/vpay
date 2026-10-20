@@ -166,7 +166,12 @@ select between.
   Chrome has not finished onboarding, tapping Pay shows "Make Chrome your
   own" and a Google sign-in prompt before the page loads. Not fixable from
   this side.
-- **No real rail.** WireMock behind everything, as everywhere else here.
+- **No real rail in these Flutter runs.** The rail was WireMock.
+  **Corrected 2026-10-20:** the former "as everywhere else here" claim was
+  stale. Separately, the maintainer confirms over seven successful MTN
+  sandbox payments in the testing recorded on 2026-09-15
+  ([verification](../../../docs/status/verification/2026-09-15.md)); that
+  evidence does not establish real-MTN checkout through this plugin.
 - **No CI gate runs any Flutter recipe** (D-M3). A human runs them.
 
 ## Customising it
