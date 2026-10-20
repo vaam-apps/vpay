@@ -225,6 +225,84 @@ nothing about whether the payment happened — and
 [`crash-safety.md`](../flows/crash-safety.md) resolves an unknown fate by asking
 again.
 
+### A path segment the caller chose
+
+`http::path_segment` is the one function an adapter calls before it puts a
+value it did not write — a payer's number, a reference — into a rail's URL
+path. Every byte outside the RFC 3986 unreserved set is percent-encoded, so a
+`/` stays inside its segment and a `?` or a `#` cannot turn the rest of the
+path into a query or a fragment. The value is caller data, and the request
+carries **our** credentials: a value that moves the request is a request to
+an endpoint nobody chose, signed by this deployment.
+
+**Escaping alone has a hole, and it is the dot segments.** `.` and `..` are
+unreserved characters, so they pass through unescaped, and as whole segments
+they are dot segments: MTN's lookup with `..` for a number resolves to
+`/collection/v1_0/accountholder/basicuserinfo`, with `.` to
+`…/msisdn/basicuserinfo`, and with an empty number it is
+`…/msisdn//basicuserinfo`. Escaping the dots would not help, because URL
+parsing reads `%2E` as `.` in a path: WHATWG and the `url` crate that reqwest
+uses both treat `%2E%2E`, `.%2e` and `%2e.` as `..`.
+`url_parsing_resolves_an_escaped_dot_segment_like_a_plain_one` pins that
+against the parser reqwest actually links. If it ever stops being true the
+refusal is still harmless, but the reason written here would be wrong.
+
+So since 2026-10-20 the function returns `Result<String, ProviderError>` and
+refuses, before anything is sent, **an empty input and any input made only of
+dots**. The refusal is `ProviderError::Malformed`, with one fixed message that
+names the rule and never quotes the input, because the input may be a payer's
+number. `Malformed`'s `Display` begins "could not parse the rail's
+response", which is wrong for a request that never left the process. That is
+the compromise `parse_destination` already makes for a merchant's parameters,
+and the error table on `ProviderAdapter` now names both. The context says
+"nothing was sent". `/v1` validates a number as digits before the port sees
+it, so no route reaches the refusal today. The port is reachable by any
+caller in the process, which is why the guard is in the port anyway.
+
+**`...` is refused too, and that is a decision, not a reading of a standard.**
+RFC 3986 § 3.3 and WHATWG define exactly two dot segments, `.` and `..`, plus
+their percent-encoded spellings. `...` is an ordinary segment to both, and
+`reqwest::Url` keeps it as one: `…/msisdn/.../basicuserinfo` parses to itself.
+It is refused because no value an adapter interpolates is legitimately all dots: an
+MSISDN is digits, and a rail's reference or id is not punctuation. A gateway
+in front of a rail is bound by no standard, and the normaliser of no hop
+between vpay and either rail has been read. Refusing costs nothing, while
+admitting it would bet on every hop. A rail that one day documents an
+all-dots identifier is the reason to revisit this, in this function and its
+tests together.
+
+**`Result` on `path_segment` itself, not a `checked_path_segment` beside it.**
+An unchecked twin is the function the next adapter reaches for, which is how
+the gap opened. RFC-0012's `vpay-notchpay`, still on a branch on 2026-10-20,
+carried its own private `reference_segment` guard because the port had none.
+Changing the signature makes every caller, including code on branches not
+yet merged, fail to compile until it handles the refusal. A per-adapter copy
+is the thing this function exists to prevent: the second copy is the one that
+disagrees.
+
+What pins it:
+
+- `an_empty_or_all_dots_segment_is_refused_with_a_fixed_message` and
+  `every_admitted_segment_stays_exactly_one_segment`, in `http`'s own tests.
+  The second asserts through `reqwest::Url` that each admitted input
+  (`a..b`, `%2E%2E`, `a\b`, which WHATWG treats as `a/b`, and the delimiters)
+  arrives as exactly one segment, in place.
+- The function's doctest, which `just test-doc` runs.
+- In MTN's adapter, `the_lookup_url_escapes_the_payer_reference_it_interpolates`
+  on the URL `account_holder_url` builds, and
+  `a_dot_segment_reference_is_refused_before_any_request` on the method
+  itself. The adapter builds the URL before `send_authorized`, so a refused
+  number costs no token request either.
+- Four mutations, each caught, are recorded on
+  [the dated verification page](../status/verification/2026-10-20-path-segment-dot-segments.md).
+
+**Not changed: the merchant SDKs.** `sdks/rust`'s private `path_segment`, which
+applies `encodeURIComponent`'s rule, and the Node SDK's `encodeURIComponent`
+itself pass `.`, `..` and `""` through as well. That is a merchant's own request, under
+the merchant's own credentials, to vpay's own API, which is a different harm
+from this one. What vpay answers for, say, `GET /v1/payment_intents/` has not
+been measured, so it is named here rather than fixed silently.
+
 ---
 
 ## The token cache

@@ -412,8 +412,9 @@ fn count(outcome: &'static str) {
 /// input we could see was not a phone number — and because an unvalidated
 /// value is what makes "enumerate the number space" cheap in ways E.164 does
 /// not. It is also the only thing standing between a caller and an arbitrary
-/// path segment on MTN's API; the adapter escapes it as well
-/// (`vpay_provider::http::path_segment`), belt and braces.
+/// path segment on MTN's API; the adapter escapes it as well, and refuses
+/// an empty or all-dots one (`vpay_provider::http::path_segment`), belt and
+/// braces.
 ///
 /// The **twelve-digit, no-`+`** form is what the rail receives:
 /// `payer.partyId` is `237600000000` in `vpay-adapter-mtn-momo` and in every

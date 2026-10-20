@@ -1419,7 +1419,7 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
 /// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
 /// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. On `parse_destination` alone it is not the rail at all but the *merchant's* parameters, which is the same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
 /// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
 /// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
 ///
@@ -1787,8 +1787,9 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// credentials, [`ProviderError::Transport`] when the rail could not be
     /// reached or finished with, and [`ProviderError::Malformed`] for an
     /// answer it cannot act on — including a body past
-    /// [`http::MAX_RAIL_BODY_BYTES`]. Never a decline: there is no payment
-    /// here to decline.
+    /// [`http::MAX_RAIL_BODY_BYTES`] — or for an `msisdn` that is empty or
+    /// only dots, which [`http::path_segment`] refuses before any request.
+    /// Never a decline: there is no payment here to decline.
     async fn account_holder_name(
         &self,
         _msisdn: &str,

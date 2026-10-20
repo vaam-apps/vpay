@@ -600,11 +600,19 @@ const ACCOUNT_HOLDER_ID_TYPE: &str = "msisdn";
 ///
 /// `ACCOUNT_HOLDER_ID_TYPE` is interpolated verbatim, not escaped: it is a
 /// constant in this file, not caller data.
-fn account_holder_url(base: &str, msisdn: &str) -> String {
-    format!(
+///
+/// # Errors
+///
+/// [`ProviderError::Malformed`] for an empty or all-dots `msisdn`, which no
+/// escape can keep inside its segment (`docs/reference/rails.md`, § "A path
+/// segment the caller chose"): `..` would send our token to
+/// `/accountholder/basicuserinfo`. Unreachable through `/v1`, which admits
+/// digits only; the port is reachable by any caller.
+fn account_holder_url(base: &str, msisdn: &str) -> Result<String, ProviderError> {
+    Ok(format!(
         "{base}/collection/v1_0/accountholder/{ACCOUNT_HOLDER_ID_TYPE}/{}/basicuserinfo",
-        vpay_provider::http::path_segment(msisdn),
-    )
+        vpay_provider::http::path_segment(msisdn)?,
+    ))
 }
 
 /// What a `basicuserinfo` response means, as a pure function of the status
@@ -1152,12 +1160,14 @@ impl ProviderAdapter for Adapter {
     ) -> Result<Option<AccountHolder>, ProviderError> {
         let credentials = Credentials::from_config(config, Product::Collections)?;
         let (subscription, environment) = Adapter::common_headers(&credentials)?;
-        // Percent-encoded inside `account_holder_url`, although `/v1`'s own
-        // validation admits digits only: this adapter is reachable from the
-        // port by any caller, and a path segment interpolated raw is a
-        // segment a `/` or a `?` could move to a different endpoint under
-        // our own credentials.
-        let url = account_holder_url(base_url(config), msisdn);
+        // Percent-encoded inside `account_holder_url`, and refused there if
+        // it is empty or only dots, although `/v1`'s own validation admits
+        // digits only: this adapter is reachable from the port by any
+        // caller, and a path segment interpolated raw is a segment a `/`, a
+        // `?` or a `..` could move to a different endpoint under our own
+        // credentials. Built before `send_authorized`, so a refusal costs no
+        // token request either.
+        let url = account_holder_url(base_url(config), msisdn)?;
 
         let response = self
             .send_authorized(config, &credentials, |token| {
@@ -2150,13 +2160,14 @@ mod tests {
         // `wiremock/mtn/mappings/basicuserinfo.json` matches on, so a change
         // to either one is a 404 in CI.
         assert_eq!(
-            account_holder_url("http://rail.test", "237600000200"),
+            account_holder_url("http://rail.test", "237600000200").expect("an MSISDN"),
             "http://rail.test/collection/v1_0/accountholder/msisdn/237600000200/basicuserinfo",
         );
 
         // The case the escaping exists for: a traversal must stay inside its
         // own segment rather than becoming a different endpoint.
-        let escaped = account_holder_url("http://rail.test", "../../v1_0/token");
+        let escaped =
+            account_holder_url("http://rail.test", "../../v1_0/token").expect("not only dots");
         assert_eq!(
             escaped,
             "http://rail.test/collection/v1_0/accountholder/msisdn/\
@@ -2169,11 +2180,43 @@ mod tests {
 
         // A `?` would otherwise truncate the path and turn the rest into a
         // query string, so the request would not name `basicuserinfo` at all.
-        let query = account_holder_url("http://rail.test", "237?x=1");
+        let query = account_holder_url("http://rail.test", "237?x=1").expect("not only dots");
         assert!(
             query.ends_with("/237%3Fx%3D1/basicuserinfo"),
             "a `?` must not truncate the path: {query}"
         );
+
+        // The case escaping cannot reach: a dot segment. `..` would resolve
+        // to `/collection/v1_0/accountholder/basicuserinfo`, `.` to
+        // `…/msisdn/basicuserinfo`, and the empty segment is
+        // `…/msisdn//basicuserinfo` — none of them a path MTN documents for
+        // a number, so none of them becomes a URL at all.
+        for refused in ["", ".", "..", "..."] {
+            let outcome = account_holder_url("http://rail.test", refused);
+            assert!(
+                matches!(outcome, Err(ProviderError::Malformed { .. })),
+                "{refused:?} must be refused, not interpolated: {outcome:?}"
+            );
+        }
+    }
+
+    /// The refusal holds at the **method**, not only in the helper: a dot
+    /// reference is `Malformed` and never reaches the network. `config()`
+    /// points at a port nothing listens on, so a request that left the
+    /// process — the token fetch included — would come back as
+    /// `Transport` instead, which is what
+    /// [`the_account_holder_capability_is_backed_by_an_implementation`]
+    /// shows a digits-only number doing.
+    #[tokio::test]
+    async fn a_dot_segment_reference_is_refused_before_any_request() {
+        let adapter = adapter();
+        for refused in ["", ".", ".."] {
+            let outcome = adapter.account_holder_name(refused, &config()).await;
+            assert!(
+                matches!(outcome, Err(ProviderError::Malformed { .. })),
+                "{refused:?} must be refused before the network: {outcome:?}"
+            );
+        }
     }
 
     /// MTN returns money by **disbursing** it to a number, so a refund here

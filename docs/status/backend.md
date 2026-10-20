@@ -443,6 +443,25 @@ example, and vpay, spell it lower-case), and the `404` → `Ok(None)` mapping
 (MTN documents `200`, `401` and `500` for this operation and no `404` at all).
 Both are named in [flows/adapter-mtn-momo.md](../flows/adapter-mtn-momo.md).
 
+**Changed 2026-10-20: `vpay_provider::http::path_segment` refuses a dot
+segment.** It percent-encoded everything outside the RFC 3986 unreserved set,
+so `/`, `?` and `#` could not move a request. But it passed `""`, `.` and `..`
+through unchanged, and those are dot segments. Escaping cannot fix that,
+because URL parsing reads `%2E%2E` as `..`. It now returns
+`Result<String, ProviderError>` and refuses an empty or all-dots input as
+`Malformed`, with a fixed message, before anything is sent. `...` is refused
+by an explicit decision
+([reference/rails.md](../reference/rails.md#a-path-segment-the-caller-chose)).
+No unchecked variant was kept. The one shipping caller, `mtn_momo`'s
+account-holder lookup, propagates the refusal before its token fetch. **What
+this does not change:** no route reached the hole, because `/v1` admits
+digits only, so this narrows what the port accepts rather than closing
+anything exploitable today. The merchant SDKs' own escaping still passes dot
+segments. `vpay-notchpay` (RFC-0012) is not on `master`, and its private copy
+of this guard is deleted on its branch, not here. Evidence and four caught
+mutations:
+[verification/2026-10-20-path-segment-dot-segments.md](verification/2026-10-20-path-segment-dot-segments.md).
+
 **What the ✅ in the wire-call column rests on, named.** The shared
 conformance suite ran **26 tests, 26 passed, 0 skipped** on 2026-09-03 (measured for
 this note, as part of the 115-test container run in the header): 4

@@ -352,6 +352,19 @@ never treat 500 as blind-retry.
 
 ## Status
 
+**Updated 2026-10-20: the account-holder lookup refuses a dot-segment
+number.** `account_holder_url` now returns a `Result` and propagates
+`vpay_provider::http::path_segment`'s refusal of an empty or all-dots
+`msisdn` as `ProviderError::Malformed`. The URL is built before
+`send_authorized`, so a refused number spends neither a token request nor a
+lookup. `..` would otherwise have resolved to
+`/collection/v1_0/accountholder/basicuserinfo` under our subscription key and
+bearer token. `/v1` admits digits only, so no route reaches it. Pinned by
+`a_dot_segment_reference_is_refused_before_any_request` and by the dot cases
+added to `the_lookup_url_escapes_the_payer_reference_it_interpolates`. No wire
+change for any number a route can send
+([../reference/rails.md § "A path segment the caller chose"](../reference/rails.md#a-path-segment-the-caller-chose)).
+
 **Updated 2026-09-16 (RFC-0003 § 2, wave 3): this adapter's `refund` has a
 merchant-reachable caller, and MTN's Disbursements product has still never
 been called.** `POST /v1/refunds` is mounted, so the transfer below is

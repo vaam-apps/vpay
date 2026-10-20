@@ -469,20 +469,59 @@ pub async fn read_rail_body(
 /// narrower set is the right one, and over-escaping a segment is harmless
 /// to any conforming server.
 ///
+/// # Dot segments are refused, because no escape survives them
+///
+/// `.` and `..` are unreserved, so escaping passes them through — and they
+/// are **dot segments**: `https://rail/payments/..` resolves to the API root
+/// and `https://rail/payments/` to the collection. Escaping them would not
+/// help, because URL parsing (WHATWG, and the `url` crate reqwest uses)
+/// reads `%2E` as `.` in a path, so `%2E%2E` and `.%2e` are `..` too. A
+/// value that would be one is therefore refused rather than encoded: an
+/// empty input, and any input made only of dots. `...` is not a dot segment
+/// under either standard; it is refused anyway, **as a decision**, because
+/// no value an adapter interpolates is legitimately all dots and a gateway
+/// in front of a rail is bound by no standard. The argument is in
+/// `docs/reference/rails.md`, § "A path segment the caller chose".
+///
+/// # Errors
+///
+/// [`ProviderError::Malformed`](crate::ProviderError::Malformed) for an
+/// empty or all-dots input, before anything is sent. The message is fixed
+/// and never quotes the input, which is caller data — a payer's number, a
+/// reference.
+///
 /// ```
+/// use vpay_provider::ProviderError;
 /// use vpay_provider::http::path_segment;
 ///
 /// // The ordinary case is a no-op: a Cameroon MSISDN survives verbatim.
-/// assert_eq!(path_segment("237600000000"), "237600000000");
+/// assert_eq!(path_segment("237600000000")?, "237600000000");
 /// // The case this exists for.
-/// assert_eq!(path_segment("../v1_0/token"), "..%2Fv1_0%2Ftoken");
-/// assert_eq!(path_segment("a?b#c d"), "a%3Fb%23c%20d");
+/// assert_eq!(path_segment("../v1_0/token")?, "..%2Fv1_0%2Ftoken");
+/// assert_eq!(path_segment("a?b#c d")?, "a%3Fb%23c%20d");
 /// // Multi-byte input is escaped per UTF-8 byte, upper-case hex.
-/// assert_eq!(path_segment("é"), "%C3%A9");
+/// assert_eq!(path_segment("é")?, "%C3%A9");
+/// // A dot is ordinary inside a segment; only a segment of nothing else is
+/// // refused. An escaped dot is escaped again, so it reaches the rail as
+/// // the three characters `%2E` and never as a `.`.
+/// assert_eq!(path_segment("a..b")?, "a..b");
+/// assert_eq!(path_segment(".well-known")?, ".well-known");
+/// assert_eq!(path_segment("%2E%2E")?, "%252E%252E");
+///
+/// // The dot segments, and the empty one, are refused before any request.
+/// for refused in ["", ".", "..", "..."] {
+///     assert!(matches!(path_segment(refused), Err(ProviderError::Malformed { .. })));
+/// }
+/// # Ok::<(), ProviderError>(())
 /// ```
-#[must_use]
-pub fn path_segment(input: &str) -> String {
+pub fn path_segment(input: &str) -> Result<String, crate::ProviderError> {
     use std::fmt::Write as _;
+
+    // `all` is true of an empty input, which is the empty segment: refused
+    // for the same reason, since `/payments/` is the collection.
+    if input.bytes().all(|byte| byte == b'.') {
+        return Err(crate::ProviderError::malformed(DOT_SEGMENT_REFUSAL));
+    }
 
     let mut out = String::with_capacity(input.len());
     for byte in input.bytes() {
@@ -495,12 +534,17 @@ pub fn path_segment(input: &str) -> String {
             let _ = write!(out, "%{byte:02X}");
         }
     }
-    out
+    Ok(out)
 }
+
+/// [`path_segment`]'s refusal, as one constant so its tests can prove the
+/// message is fixed — it names the rule, never the input.
+const DOT_SEGMENT_REFUSAL: &str = "a URL path segment that is empty or only dots would address a different endpoint; nothing was sent";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ProviderError;
 
     /// The whole point: building a client must not depend on a process-wide
     /// `CryptoProvider` having been installed, and must not read the platform
@@ -729,5 +773,87 @@ mod tests {
             "the 150 ms request timeout did not bound the call: waited {:?}",
             started.elapsed()
         );
+    }
+
+    /// The premise [`path_segment`]'s refusal rests on, pinned against the
+    /// parser reqwest actually uses: an *escaped* dot segment still moves the
+    /// request. If this ever stops being true the refusal is still harmless,
+    /// but the reason written beside it would be wrong, so it fails here.
+    #[test]
+    fn url_parsing_resolves_an_escaped_dot_segment_like_a_plain_one() {
+        for (url, path) in [
+            ("https://rail.test/payments/..", "/"),
+            ("https://rail.test/payments/%2E%2E", "/"),
+            ("https://rail.test/payments/.%2e", "/"),
+            ("https://rail.test/payments/%2e", "/payments/"),
+        ] {
+            let parsed = reqwest::Url::parse(url).expect("a well-formed URL");
+            assert_eq!(parsed.path(), path, "{url}");
+        }
+    }
+
+    /// Empty and every all-dots input is refused, as `Malformed`, with the
+    /// one fixed message — which is what keeps a payer's number or a
+    /// reference out of a log line. `...` is in the list **on purpose**: it
+    /// is not a dot segment to either URL standard and is refused anyway
+    /// (`docs/reference/rails.md`, § "A path segment the caller chose").
+    #[test]
+    fn an_empty_or_all_dots_segment_is_refused_with_a_fixed_message() {
+        for input in ["", ".", "..", "...", "....."] {
+            let error = path_segment(input).expect_err(input);
+            let ProviderError::Malformed { context, source } = &error else {
+                panic!("{input:?} must be Malformed, got {error:?}");
+            };
+            assert_eq!(context, DOT_SEGMENT_REFUSAL, "{input:?}");
+            assert!(source.is_none(), "{input:?}: nothing failed underneath");
+            assert!(
+                !error.to_string().contains(".."),
+                "{input:?}: the message must not quote the input: {error}"
+            );
+        }
+    }
+
+    /// The property the function exists for, asserted through the real
+    /// parser rather than on the string: whatever it admits arrives as
+    /// exactly **one** segment, the one it was put in, with the segments
+    /// either side of it intact. Every input here is one a narrower check
+    /// would have let move the request — a dot beside other bytes, a dot
+    /// that is already escaped, every delimiter, and `\`, which WHATWG
+    /// treats as `/` in an `https` URL.
+    #[test]
+    fn every_admitted_segment_stays_exactly_one_segment() {
+        for input in [
+            "237600000000",
+            "a..b",
+            ".a",
+            "a.",
+            "..a",
+            "%2E%2E",
+            "%2e.",
+            ".%2E",
+            "../v1_0/token",
+            "a/b",
+            "a\\b",
+            "a?b",
+            "a#b",
+            "a;b",
+            " ",
+            "é",
+        ] {
+            let segment = path_segment(input).expect(input);
+            let url = format!("https://rail.test/payments/{segment}/basicuserinfo");
+            let parsed = reqwest::Url::parse(&url).expect("a well-formed URL");
+            let segments: Vec<&str> = parsed
+                .path_segments()
+                .expect("an https URL has a path")
+                .collect();
+            assert_eq!(
+                segments,
+                ["payments", segment.as_str(), "basicuserinfo"],
+                "{input:?} moved the request: {parsed}"
+            );
+            assert_eq!(parsed.query(), None, "{input:?} became a query");
+            assert_eq!(parsed.fragment(), None, "{input:?} became a fragment");
+        }
     }
 }

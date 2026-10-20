@@ -293,7 +293,12 @@ about the _rail_, and this one answers a question about the _route_.
 - `ProviderAdapter::account_holder_name` — on the port, defaulted to
   `ProviderError::Unsupported`.
 - `mtn_momo` — `supports_account_holder_lookup: true`, implemented against
-  `GET /collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo`.
+  `GET /collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo`. The
+  number is percent-encoded into its segment and, since 2026-10-20, refused
+  as `ProviderError::Malformed` before any request (the token fetch
+  included) if it is empty or only dots
+  (`a_dot_segment_reference_is_refused_before_any_request`). `/v1`'s digits-only
+  validation means no route reaches that refusal; it guards the port.
 - `orange_money` — `supports_account_holder_lookup: false`, no
   implementation, no `NotImplemented` token.
 - Both merchant SDKs — `account_holders.retrieve` / `accountHolders.retrieve`

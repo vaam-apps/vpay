@@ -66,7 +66,10 @@ could see was not a phone number; the hex WireMock steering numbers
 (`237600000f01`) are unreachable through a production-shaped route; and an
 arbitrary path segment cannot be interpolated into MTN's API. The adapter
 percent-encodes it as well (`vpay_provider::http::path_segment`), belt and
-braces, because the port is reachable by any caller in the process.
+braces, because the port is reachable by any caller in the process. Since
+2026-10-20 that helper also refuses an empty or all-dots value, which no
+escape keeps inside its segment
+([rails.md § "A path segment the caller chose"](../rails.md#a-path-segment-the-caller-chose)).
 
 ### The mask, and the column it does not write
 
