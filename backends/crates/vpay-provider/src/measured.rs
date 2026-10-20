@@ -701,23 +701,6 @@ mod tests {
         );
     }
 
-    /// The wrapper forwards [`ProviderAdapter::parse_destination`] rather
-    /// than inheriting the port's default.
-    ///
-    /// `parse_destination` is the only port method whose default body is a
-    /// *refusal* an adapter is expected to override, which makes a missing
-    /// forward in this decorator uniquely dangerous: it compiles, every
-    /// adapter's own unit tests keep passing because they hold the adapter
-    /// unwrapped, and every refund in production — `Measured` wraps every
-    /// adapter `vpay_api::v1::boot::adapters_by_code` resolves — answers
-    /// "this rail has no such API" for a rail that plainly does.
-    ///
-    /// The decisive mutation: delete `Measured::parse_destination` and this
-    /// case fails on `Unsupported`.
-    ///
-    /// The second assertion is `refund`'s privacy half, on a method that is
-    /// *un*measured: no series at all may be emitted here, and in particular
-    /// none carrying the number.
     /// What [`Answering`] declares, so the forwarding test can compare the
     /// whole value rather than its presence.
     const ANSWERING_EXPOSURE: AcceptedExposure = AcceptedExposure {
@@ -739,6 +722,23 @@ mod tests {
         assert_eq!(adapter.accepted_exposure(), Some(ANSWERING_EXPOSURE));
     }
 
+    /// The wrapper forwards [`ProviderAdapter::parse_destination`] rather
+    /// than inheriting the port's default.
+    ///
+    /// `parse_destination` is the only port method whose default body is a
+    /// *refusal* an adapter is expected to override, which makes a missing
+    /// forward in this decorator uniquely dangerous: it compiles, every
+    /// adapter's own unit tests keep passing because they hold the adapter
+    /// unwrapped, and every refund in production — `Measured` wraps every
+    /// adapter `vpay_api::v1::boot::adapters_by_code` resolves — answers
+    /// "this rail has no such API" for a rail that plainly does.
+    ///
+    /// The decisive mutation: delete `Measured::parse_destination` and this
+    /// case fails on `Unsupported`.
+    ///
+    /// The second assertion is `refund`'s privacy half, on a method that is
+    /// *un*measured: no series at all may be emitted here, and in particular
+    /// none carrying the number.
     #[test]
     fn a_defaulted_method_is_not_silently_answered_by_the_wrapper() {
         let adapter = Measured::wrap(Box::new(RecordingRefund {
