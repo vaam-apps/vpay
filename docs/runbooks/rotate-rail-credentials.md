@@ -15,7 +15,7 @@ both and the mechanisms have nothing in common:
 
 **Nobody has done either on a deployment.** No cluster has run vpay.
 **Corrected 2026-10-20:** the former claim that no real credential had ever
-been used was stale. The maintainer confirms over seven successful MTN
+been used was stale. Valantine Suh (@Valsuh45) confirms over seven successful MTN
 Collections sandbox payments in the testing recorded on 2026-09-15
 ([verification](../status/verification/2026-09-15.md)). Those calls used real
 sandbox credentials; they do not establish that credential rotation was tested.

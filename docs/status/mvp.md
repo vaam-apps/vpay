@@ -6,8 +6,7 @@ _It still says "above" and "below" where it once pointed at another part of the 
 
 ## What would have to be true to call this "an MVP"
 
-**Sandbox evidence corrected 2026-10-20.** The maintainer who performed the
-September 15 tests confirms **over seven successful EUR `mtn_momo` payments
+**Sandbox evidence corrected 2026-10-20.** Valantine Suh (@Valsuh45), who performed the September 15 tests, confirms **over seven successful EUR `mtn_momo` payments
 against MTN's real sandbox that day**. The
 [verification record](verification/2026-09-15.md) details the first successful
 payment after two token-mint failures and records the aggregate separately.

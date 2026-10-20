@@ -636,7 +636,8 @@ rails:
   # out, so the ten keys above are unchanged. A `config.overlay` that adds a
   # `notchpay` provider writes its keys as `${NOTCHPAY_PUBLIC_KEY}` and
   # `${NOTCHPAY_PRIVATE_KEY}`, and both must then be in the Secret above,
-  # non-blank. In livemode neither may contain `test_`; outside it both must.
+  # non-blank. In livemode neither may contain `test.` or
+  # `test_`; outside it both must contain one (real sandbox keys carry `test.`).
   #
   # PRODUCTION RISK. Notch Pay is admitted under ADR-0031 (rule 3 amended):
   # NOTCHPAY_PUBLIC_KEY is the key Notch Pay calls public, and it

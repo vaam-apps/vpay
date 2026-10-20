@@ -259,6 +259,20 @@ Boot refusals, in `vpay_config::config::REQUIRED_RAIL_KEYS` per ADR-0012:
   livemode a key without it does — the `PublishableKeyLivemodeMismatch` rule
   applied to a rail key, as RFC-0010 § 2 applies it to Stripe's. A live key's
   prefix is not documented ("To confirm" item 8).
+
+  _**Corrected 2026-10-20, on the maintainer's own test-mode keys.** Neither
+  of them contains `test_`. Both contain `test` followed by `.`; the public
+  key starts `pk` and the private key `sk`. The maintainer confirmed in
+  Notch Pay's dashboard that they are test-mode keys. Only those facts were
+  read, never a value. So the documented `test_` is not what this account's
+  sandbox keys carry, and a rule reading `test_` alone was wrong both ways:
+  it refused every genuine sandbox key outside livemode and admitted one in
+  livemode. The rule now reads either `test.` or `test_` as a test key.
+  `test_` stays because the documentation spells it so, and in livemode
+  refusing more test-looking keys costs nothing. A live key's prefix is still
+  unknown (item 8). Evidence:
+  [2026-10-20-notchpay-sandbox.md](../status/verification/2026-10-20-notchpay-sandbox.md)._
+
 - `settings.channel` must be a `cm.` channel the adapter knows.
 - **In livemode, `settings.accept_public_key_exposure` must be `true`.**
   _Added when built, 2026-10-20_, on the maintainer's answer "Livemode
@@ -601,7 +615,10 @@ In writing (W) or in the sandbox (S):
    to replay, and which events does it fire?
 7. **(S)** Is the webhook signature over the raw body, and is the header
    always lower-case?
-8. **(W)** What prefix does a live key carry?
+8. **(W)** What prefix does a live key carry? _(Its neighbour, the test
+   key's shape, was measured on 2026-10-20: `test` followed by `.`, not the
+   documented `test_`; § 2 carries the correction. The live prefix is still
+   unknown.)_
 9. **(W)** On Sync's direct charges, does the money land in the connected
    account's balance or the platform's?
 10. **(W)** May a company hold an account, despite agreement § 3? Which legal
@@ -627,7 +644,7 @@ In writing (W) or in the sandbox (S):
 | Step | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Depends on                            |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
 | 0    | **Rule 3 resolved**: Notch Pay's written answer to item 1, or an ADR amending ADR-0029 D1's third rule. **Done 2026-10-20: ADR-0031**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | the maintainer; Notch Pay             |
-| 1    | The first sandbox session: items 2–5, 7 and 11 on a dated verification page. No code                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                | a test-mode account; may run before 0 |
+| 1    | The first sandbox session: items 2–5, 7 and 11 on a dated verification page. No code. **Attempted 2026-10-20, no request made**; the key shape was measured and contradicted § 2 ([page](../status/verification/2026-10-20-notchpay-sandbox.md))                                                                                                                                                                                                                                                                                                                                                                    | a test-mode account; may run before 0 |
 | 1b   | `vpay-notchpay`, the client: initialize, process and read a payment, list and create webhooks, parse an event; unit tests. **Landed 2026-10-20**, ahead of step 0 at the maintainer's direction; linked by nothing                                                                                                                                                                                                                                                                                                                                                                                                  | nothing                               |
 | 2    | `vpay-adapter-notchpay` on top of `vpay-notchpay`: `mapping.rs` filled from step 1, `lib.rs`, `refund` as a declared `NotImplemented` token; unit tests. **Built 2026-10-20 without step 1**: no test-mode key was available, so `mapping.rs` is filled from `openapi.yaml` 2.1.0 and every row is "To confirm"                                                                                                                                                                                                                                                                                                     | 0, 1                                  |
 | 3    | Mappings, the conformance rows, and RFC-0010 § 8's `callback_url_pattern` change if RFC-0010 has not landed it. **Built 2026-10-20**; this rail carried the `callback_url_pattern` change                                                                                                                                                                                                                                                                                                                                                                                                                           | 2                                     |

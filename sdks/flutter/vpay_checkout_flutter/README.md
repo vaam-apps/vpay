@@ -168,7 +168,7 @@ select between.
   this side.
 - **No real rail in these Flutter runs.** The rail was WireMock.
   **Corrected 2026-10-20:** the former "as everywhere else here" claim was
-  stale. Separately, the maintainer confirms over seven successful MTN
+  stale. Separately, Valantine Suh (@Valsuh45) confirms over seven successful MTN
   sandbox payments in the testing recorded on 2026-09-15
   ([verification](../../../docs/status/verification/2026-09-15.md)); that
   evidence does not establish real-MTN checkout through this plugin.

@@ -391,7 +391,7 @@ the value to `@vaam-apps/vpay-stripe-js` in the browser and never logs it.
 
 Nothing above has ever taken real money: both rails in the compose tests are
 WireMock hosts. **Corrected 2026-10-20:** the former "same as everywhere else
-in this repository" claim was stale. Separately, the maintainer confirms over
+in this repository" claim was stale. Separately, Valantine Suh (@Valsuh45) confirms over
 seven successful MTN sandbox payments in the testing recorded on 2026-09-15
 ([verification](../status/verification/2026-09-15.md)). The
 [live-sandbox runbook](../runbooks/live-sandbox-test.md) records the browser

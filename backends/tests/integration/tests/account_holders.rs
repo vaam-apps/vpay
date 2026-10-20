@@ -27,10 +27,10 @@
 //! `backends/tests/conformance/wiremock/mtn/mappings/basicuserinfo.json` —
 //! the same directory `compose.yml` bind-mounts and the conformance suite
 //! starts — and this lookup has never called MTN's real sandbox. The former
-//! "or any other operation" claim was stale: the maintainer confirmed on
-//! 2026-10-20 that the 2026-09-15 Collections tests settled over seven payments
-//! against MTN's real sandbox. Those tests did not call `basicuserinfo`; see
-//! `docs/status/verification/2026-09-15.md`.
+//! "or any other operation" claim was stale: Valantine Suh (@Valsuh45), who ran
+//! the 2026-09-15 Collections tests, confirmed on 2026-10-20 that they settled
+//! over seven payments against MTN's real sandbox. Those tests did not call
+//! `basicuserinfo`; see `docs/status/verification/2026-09-15.md`.
 //!
 //! # Where the other half of the proof is
 //!

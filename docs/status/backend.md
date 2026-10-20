@@ -190,13 +190,13 @@ Both rails' wire calls are implemented and **proven against a real
 `wiremock/wiremock` container**. Since 2026-09-15 MTN's **charge path** —
 the Collections token, `submit` and `query_status` — has also run against
 MTN's real sandbox on that day, settling **over seven payments**, according
-to the maintainer who performed the tests and confirmed the count on
+to Valantine Suh (@Valsuh45), who performed the tests and confirmed the count on
 2026-10-20
 ([verification/2026-09-15.md](verification/2026-09-15.md)); nothing else on
 either rail has met a real endpoint. _(This read "never against MTN or Orange"
 until 2026-09-23, and the matrix below marked MTN's real sandbox "⛔ never
 called"; both had been wrong since 2026-09-15. The count read "one
-charge" until the maintainer's 2026-10-20 clarification; the verification
+charge" until Valantine Suh's 2026-10-20 clarification; the verification
 record's one detailed success is an example within the aggregate.)_ The column
 split below is the whole point of this section: ✅ means a conformance case
 would fail if the behaviour broke; 🟡 means the code is real and its only
@@ -511,7 +511,7 @@ this section used to name are gone**, and `just verify-ignored` now pins
   documents. Both docs' "to confirm with the rail" lists stand in full.
   **Corrected 2026-10-20:** that blanket claim was already false on
   2026-09-15. MTN's Collections token, submit and status-query path ran
-  against its real sandbox; the maintainer who ran it confirms over seven
+  against its real sandbox; Valantine Suh (@Valsuh45), who ran it, confirms over seven
   successful payments that day. The matrix above and the
   [verification record](verification/2026-09-15.md) carry that evidence.
   Lookup, refunds, callbacks and Orange remain outside those observations;
@@ -830,8 +830,9 @@ was available.
   `worker`).
 - **Boot refusals** (`vpay_config::config::REQUIRED_RAIL_KEYS`, whose rows
   gained three columns): both keys required; `channel` must be `cm.mobile`;
-  currency must be `XAF`; a key's `test_` marker must agree with
-  `deployment.livemode`; and, in livemode only,
+  currency must be `XAF`; a key's test-key marker (`test.` or `test_`; `test_` alone until
+  the 2026-10-20 sandbox session found real test keys carry `test.`) must
+  agree with `deployment.livemode`; and, in livemode only,
   `settings.accept_public_key_exposure` must be `true` (ADR-0031 condition 4,
   added the same day on the maintainer's answer "Livemode acknowledgement:
   YES, require it."). The acknowledged livemode boot is proven on the real

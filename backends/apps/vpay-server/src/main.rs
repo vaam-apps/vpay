@@ -364,7 +364,7 @@ async fn run() -> anyhow::Result<()> {
          /v1/refunds/{{id}} (update) and POST /v1/refunds/{{id}}/cancel (cancel). All three rail \
          adapters implement `submit` and `query_status`; over seven MTN Collections \
          payments succeeded against MTN's real sandbox on 2026-09-15, as confirmed on \
-         2026-10-20 by the maintainer who performed the tests. NOTCH PAY HAS NEVER BEEN \
+         2026-10-20 by Valantine Suh, who performed the tests. NOTCH PAY HAS NEVER BEEN \
          CALLED: `notchpay` (2026-10-20, ADR-0031) is proven against a WireMock stub only, \
          and `notchpay::refund` answers a NotImplemented token. NO REFUND HAS EVER MOVED MONEY: \
          `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN Disbursements \
