@@ -46,6 +46,9 @@ spec:
           port: {{ .Values.observability.port }}
   egress:
 {{ include "vpay.egressRules" . | indent 4 }}
+{{- with include "vpay.idpEgressRules" (dict "ctx" . "component" "server") }}
+{{ . | trim | indent 4 }}
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -132,5 +135,8 @@ spec:
           port: {{ .Values.observability.port }}
   egress:
 {{ include "vpay.egressRules" . | indent 4 }}
+{{- with include "vpay.idpEgressRules" (dict "ctx" . "component" "management") }}
+{{ . | trim | indent 4 }}
+{{- end }}
 {{- end }}
 {{- end }}

@@ -312,6 +312,109 @@ process. Update the Secret, then `kubectl rollout restart deploy/<release>-serve
 **Rolling back to a retired `kid` crash-loops with exit 78**, not 69 —
 `DbError::SigningKeyRetired`. Roll forward, never back.
 
+## Staff single sign-on
+
+vpay can let dashboard staff sign in through an external OpenID Connect provider
+(ADR-0030). Password + TOTP sign-in stays as the break-glass path whether or not
+this is on. **It is configured in the profile overlay, not in a value of this
+chart**: the `staff_auth.sso` block being present in `config.overlay` is the
+whole switch. This chart templates nothing for it — the overlay is opaque text
+to Helm — and a release whose overlay has no such block renders exactly what it
+rendered before (the default and the CI values files were diffed against the
+previous revision: byte-identical; see "What has NOT been verified" for what
+that does not prove).
+
+```yaml
+# values.yaml of the release — a Keycloak realm. Every key is the binary's;
+# `vpay-config`'s `StaffSso` and `validate_staff_sso` are the source of truth.
+config:
+  profile: production
+  createOverlayConfigMap: true
+  overlay: |
+    deployment:
+      livemode: true
+      public_base_url: https://api.example
+    dashboard_client:                      # SSO refuses to boot without one
+      merchant_id: <a merchant_clients entry>
+    staff_auth:
+      password_pepper: ${VPAY_STAFF_PEPPER}          # also required by SSO
+      totp_encryption_key: ${VPAY_STAFF_TOTP_KEY}    # also required by SSO
+      sso:
+        issuer: https://auth.verif.fyi/realms/vaam-staff
+        client_id: vpay-staff
+        client_secret: ${VPAY_STAFF_SSO_CLIENT_SECRET}   # ${VAR} is required in livemode
+        redirect_uri: https://dash.example/api/auth/sso/callback
+        scopes: [openid, email, profile]   # the default
+        required_group: vpay-staff
+        groups_claim: groups               # the default
+        accepted_acr: []
+        accepted_amr: [otp]                # at least one of the two lists must be non-empty
+```
+
+Four things about it that the YAML does not say:
+
+1. **The client secret is a new key in the `rails.existingSecret` Secret**,
+   `VPAY_STAFF_SSO_CLIENT_SECRET`, projected by `envFrom` like
+   `VPAY_STAFF_PEPPER` and `VPAY_STAFF_TOTP_KEY` — the chart creates no Secret
+   and has no templated path for it. **Add the key before the overlay that
+   writes the block rolls out:** an unresolved `${…}` placeholder is a fatal
+   exit 78 on **every** vpay process (server, management and worker), not an
+   empty string. The converse: a deployment that does not write the block needs
+   no new key.
+2. **`redirect_uri` is the dashboard's callback, not a vpay URL.** It must equal
+   `<dashboard.publicOrigin>/api/auth/sso/callback` and be registered at the
+   IdP as a valid redirect URI for `client_id`. The chart cannot check either:
+   `dashboard.publicOrigin` is a chart value but the overlay is free text, so
+   keeping them in step is the operator's job. A mismatch fails at the IdP, at
+   sign-in, not at install.
+3. **`accepted_amr: [otp]` and `accepted_acr: []` for Keycloak.** Both empty is a
+   boot refusal. Keycloak's `acr` is an authentication _level_ (`"1"` after a
+   password alone, `"0"` on a cookie re-entry), so listing it would prove no
+   second factor; `amr` is the claim that does. `issuer` must equal the realm's
+   discovery `issuer` byte for byte.
+4. **The pod that serves `/dash/v1` now makes outbound HTTPS to the IdP**
+   (discovery, JWKS, token endpoint) — `-management` when `management.enabled`,
+   otherwise `-server`. No vpay process called anything but the rails before.
+   See the next section.
+
+### Egress to the identity provider under `networkPolicy`
+
+Read from `templates/networkpolicy.yaml` and `templates/_egress.tpl`, not
+observed on a cluster:
+
+- All three policies (`-server`, `-worker`, `-management`) get the same shared
+  egress rules (`vpay.egressRules`): DNS, Postgres, and — while
+  `networkPolicy.railsEgress.enabled` is true, its default — TCP 443 to
+  `0.0.0.0/0` **minus** `railsEgress.except` (RFC1918 and `169.254.0.0/16`).
+  So **a public IdP on 443 is already reachable** from the pod that needs it,
+  and needs nothing added.
+- **An IdP on a private address or in the cluster is not**: those ranges are
+  excluded on purpose. Neither is an IdP on a non-443 port, nor any IdP when
+  `railsEgress.enabled` is false (then the management tier has no 443 egress at
+  all, and sign-in would fail at discovery with the policy as the only clue).
+- For those cases set `networkPolicy.idpEgress` — the shape of
+  `networkPolicy.database` (`cidrs`, or `namespace` + `podSelector`, plus
+  `port`). It renders onto the pod that serves `/dash/v1` only: `-management`
+  when `management.enabled`, else `-server`; **never `-worker`, and not
+  `-server` once the tiers are split**. Peers are named destinations; there is
+  no wildcard form, so it does not reopen the metadata endpoint or the VPC at
+  large. `values.schema.json` refuses `0.0.0.0/0`, `::/0` and anything under
+  `169.254.`; it cannot tell a too-wide block such as `10.0.0.0/8` from a
+  right one. Empty (the default) renders nothing — it is "no extra peers", not
+  a switch.
+
+```yaml
+networkPolicy:
+  idpEgress:
+    cidrs: ["10.20.0.5/32"]              # a private-address IdP, or:
+    # namespace: keycloak                # an in-cluster one
+    # podSelector: { app.kubernetes.io/name: keycloak }
+    port: 8443                           # default 443
+```
+
+The dashboard's pods have no NetworkPolicy in this chart, so the browser-side
+redirect and the dashboard's own calls are unaffected by any of this.
+
 ## Postgres
 
 There is none in this chart, deliberately (step-6 decision (9)). `DATABASE_URL`
@@ -536,19 +639,19 @@ no HPA either — nothing has measured what would drive one.
 | `config.profile`                | `sandbox`                 | `VPAY_PROFILE`; selects a _file_, never a code path            |
 | `config.path`                   | `/config/application.yml` | The baked base config; changing this is almost certainly wrong |
 | `config.createOverlayConfigMap` | `false`                   | Render the overlay ConfigMap                                   |
-| `config.overlay`                | `""`                      | The overlay's YAML content                                     |
+| `config.overlay`                | `""`                      | The overlay's YAML content; where `staff_auth.sso` goes        |
 
 ### Secrets
 
-| Key                          | Default                          | Meaning                                      |
-| ---------------------------- | -------------------------------- | -------------------------------------------- |
-| `database.existingSecret`    | `vpay-database`                  |                                              |
-| `database.existingSecretKey` | `url`                            |                                              |
-| `signingKey.existingSecret`  | `vpay-oauth-signing-key`         | Server only                                  |
-| `signingKey.key`             | `oauth-signing-key.pem`          |                                              |
-| `signingKey.mountPath`       | `/secrets/oauth-signing-key.pem` | Becomes `VPAY_OAUTH_SIGNING_KEY_FILE`        |
-| `signingKey.defaultMode`     | `0440` (288)                     | See above — **not** `0400`                   |
-| `rails.existingSecret`       | `vpay-rails`                     | Projected with `envFrom` onto both workloads |
+| Key                          | Default                          | Meaning                                                                                                                          |
+| ---------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `database.existingSecret`    | `vpay-database`                  |                                                                                                                                  |
+| `database.existingSecretKey` | `url`                            |                                                                                                                                  |
+| `signingKey.existingSecret`  | `vpay-oauth-signing-key`         | Server only                                                                                                                      |
+| `signingKey.key`             | `oauth-signing-key.pem`          |                                                                                                                                  |
+| `signingKey.mountPath`       | `/secrets/oauth-signing-key.pem` | Becomes `VPAY_OAUTH_SIGNING_KEY_FILE`                                                                                            |
+| `signingKey.defaultMode`     | `0440` (288)                     | See above — **not** `0400`                                                                                                       |
+| `rails.existingSecret`       | `vpay-rails`                     | Projected with `envFrom` onto both workloads; carries `VPAY_STAFF_SSO_CLIENT_SECRET` only if the overlay writes `staff_auth.sso` |
 
 ### Observability
 
@@ -571,54 +674,57 @@ no HPA either — nothing has measured what would drive one.
 
 ### Network
 
-| Key                                                   | Default                     | Meaning                                                                                                            |
-| ----------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `service.type`                                        | `ClusterIP`                 |                                                                                                                    |
-| `service.port`                                        | `8080`                      |                                                                                                                    |
-| `service.annotations`                                 | `{}`                        |                                                                                                                    |
-| `ingress.enabled`                                     | `false`                     |                                                                                                                    |
-| `ingress.className`                                   | `nginx`                     | Step-6 decision (4)                                                                                                |
-| `ingress.host`                                        | `""`                        | Required when enabled                                                                                              |
-| `ingress.annotations`                                 | `{}`                        | Merged onto both Ingress objects                                                                                   |
-| `ingress.tls.enabled`                                 | `true`                      |                                                                                                                    |
-| `ingress.tls.clusterIssuer`                           | `letsencrypt-prod`          | cert-manager annotation                                                                                            |
-| `ingress.tls.secretName`                              | `""`                        | Empty means `<fullname>-tls`                                                                                       |
-| `ingress.api.path` / `.pathType`                      | `/v1` / `Prefix`            |                                                                                                                    |
-| `ingress.api.limitRps` / `.limitBurstMultiplier`      | `20` / `3`                  |                                                                                                                    |
-| `ingress.token.path` / `.pathType`                    | `/v1/oauth/token` / `Exact` |                                                                                                                    |
-| `ingress.token.limitRps` / `.limitBurstMultiplier`    | `5` / `2`                   | Must be ≤ the api limit                                                                                            |
-| `ingress.provider.enabled`                            | `true`                      | The rail callback's own Ingress. **On by default** — see below                                                     |
-| `ingress.provider.path` / `.pathType`                 | `/provider` / `Prefix`      | `/provider` is a literal owned by `vpay-api`; the guard refuses anything but it or `/`                             |
-| `ingress.provider.limitRps` / `.limitBurstMultiplier` | `10` / `5`                  | Must be ≤ the api limit. Tighter on purpose: unauthenticated, and unlimited inside the process                     |
-| `ingress.provider.sourceRange`                        | `""`                        | `whitelist-source-range`, rendered only when set                                                                   |
-| `ingress.provider.servedElsewhere`                    | `""`                        | Required to set `enabled: false`                                                                                   |
-| `route.enabled`                                       | `false`                     | Gateway API instead of Ingress. Renders nothing without the Gateway API CRDs                                       |
-| `route.parentRefs`                                    | `[]`                        | Verbatim `ParentReference` list. Required when enabled — there is no `className` equivalent                        |
-| `route.hostnames`                                     | `[]`                        | Empty falls back to `[ingress.host]`                                                                               |
-| `route.annotations` / `.labels`                       | `{}`                        | Merged onto the rendered HTTPRoute                                                                                 |
-| `route.rateLimitedBy`                                 | `""`                        | Required unless the token rule carries an `ExtensionRef` filter. Rendered as the `vpay/rate-limited-by` annotation |
-| `route.api.path` / `.pathType`                        | `/v1` / `PathPrefix`        | `PathPrefix`, not the Ingress spelling `Prefix`                                                                    |
-| `route.api.filters`                                   | `[]`                        | Verbatim `HTTPRouteFilter` list                                                                                    |
-| `route.token.path` / `.pathType`                      | `/v1/oauth/token` / `Exact` |                                                                                                                    |
-| `route.token.filters`                                 | `[]`                        | Where the rate-limit `ExtensionRef` goes                                                                           |
-| `route.provider.enabled`                              | `true`                      | The rail callback, as a third rule on the same HTTPRoute                                                           |
-| `route.provider.path` / `.pathType`                   | `/provider` / `PathPrefix`  |                                                                                                                    |
-| `route.provider.filters`                              | `[]`                        | Where a rate limit or source-IP `ExtensionRef` goes                                                                |
-| `route.provider.servedElsewhere`                      | `""`                        | Required to set `enabled: false`                                                                                   |
-| `networkPolicy.enabled`                               | `false`                     | Off until you say where Postgres is                                                                                |
-| `networkPolicy.ingressControllerNamespace`            | `ingress-nginx`             |                                                                                                                    |
-| `networkPolicy.monitoringNamespace`                   | `monitoring`                | The only source allowed to reach 9090                                                                              |
-| `networkPolicy.dnsNamespace`                          | `kube-system`               |                                                                                                                    |
-| `networkPolicy.managementIngress.podSelector`         | `{}`                        | Pods in **this** namespace that may reach `/dash/v1`; required once `management.enabled` (see the guard)           |
-| `networkPolicy.managementIngress.namespaceSelector`   | `{}`                        | A second, ORed peer: a whole namespace that may reach `/dash/v1`. Required once `route.enabled` publishes it       |
-| `networkPolicy.database.cidrs`                        | `[]`                        | A managed instance's address                                                                                       |
-| `networkPolicy.database.namespace` / `.podSelector`   | `""` / `{}`                 | An in-cluster one                                                                                                  |
-| `networkPolicy.database.port`                         | `5432`                      |                                                                                                                    |
-| `networkPolicy.railsEgress.enabled`                   | `true`                      | Outbound HTTPS to the rails                                                                                        |
-| `networkPolicy.railsEgress.port`                      | `443`                       |                                                                                                                    |
-| `networkPolicy.railsEgress.except`                    | RFC1918 + `169.254.0.0/16`  | Keeps the rule from reaching the VPC or the metadata endpoint                                                      |
-| `podDisruptionBudget.enabled`                         | `true`                      | Server only                                                                                                        |
-| `podDisruptionBudget.minAvailable`                    | `1`                         | Integer, never a percentage                                                                                        |
+| Key                                                   | Default                     | Meaning                                                                                                                       |
+| ----------------------------------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `service.type`                                        | `ClusterIP`                 |                                                                                                                               |
+| `service.port`                                        | `8080`                      |                                                                                                                               |
+| `service.annotations`                                 | `{}`                        |                                                                                                                               |
+| `ingress.enabled`                                     | `false`                     |                                                                                                                               |
+| `ingress.className`                                   | `nginx`                     | Step-6 decision (4)                                                                                                           |
+| `ingress.host`                                        | `""`                        | Required when enabled                                                                                                         |
+| `ingress.annotations`                                 | `{}`                        | Merged onto both Ingress objects                                                                                              |
+| `ingress.tls.enabled`                                 | `true`                      |                                                                                                                               |
+| `ingress.tls.clusterIssuer`                           | `letsencrypt-prod`          | cert-manager annotation                                                                                                       |
+| `ingress.tls.secretName`                              | `""`                        | Empty means `<fullname>-tls`                                                                                                  |
+| `ingress.api.path` / `.pathType`                      | `/v1` / `Prefix`            |                                                                                                                               |
+| `ingress.api.limitRps` / `.limitBurstMultiplier`      | `20` / `3`                  |                                                                                                                               |
+| `ingress.token.path` / `.pathType`                    | `/v1/oauth/token` / `Exact` |                                                                                                                               |
+| `ingress.token.limitRps` / `.limitBurstMultiplier`    | `5` / `2`                   | Must be ≤ the api limit                                                                                                       |
+| `ingress.provider.enabled`                            | `true`                      | The rail callback's own Ingress. **On by default** — see below                                                                |
+| `ingress.provider.path` / `.pathType`                 | `/provider` / `Prefix`      | `/provider` is a literal owned by `vpay-api`; the guard refuses anything but it or `/`                                        |
+| `ingress.provider.limitRps` / `.limitBurstMultiplier` | `10` / `5`                  | Must be ≤ the api limit. Tighter on purpose: unauthenticated, and unlimited inside the process                                |
+| `ingress.provider.sourceRange`                        | `""`                        | `whitelist-source-range`, rendered only when set                                                                              |
+| `ingress.provider.servedElsewhere`                    | `""`                        | Required to set `enabled: false`                                                                                              |
+| `route.enabled`                                       | `false`                     | Gateway API instead of Ingress. Renders nothing without the Gateway API CRDs                                                  |
+| `route.parentRefs`                                    | `[]`                        | Verbatim `ParentReference` list. Required when enabled — there is no `className` equivalent                                   |
+| `route.hostnames`                                     | `[]`                        | Empty falls back to `[ingress.host]`                                                                                          |
+| `route.annotations` / `.labels`                       | `{}`                        | Merged onto the rendered HTTPRoute                                                                                            |
+| `route.rateLimitedBy`                                 | `""`                        | Required unless the token rule carries an `ExtensionRef` filter. Rendered as the `vpay/rate-limited-by` annotation            |
+| `route.api.path` / `.pathType`                        | `/v1` / `PathPrefix`        | `PathPrefix`, not the Ingress spelling `Prefix`                                                                               |
+| `route.api.filters`                                   | `[]`                        | Verbatim `HTTPRouteFilter` list                                                                                               |
+| `route.token.path` / `.pathType`                      | `/v1/oauth/token` / `Exact` |                                                                                                                               |
+| `route.token.filters`                                 | `[]`                        | Where the rate-limit `ExtensionRef` goes                                                                                      |
+| `route.provider.enabled`                              | `true`                      | The rail callback, as a third rule on the same HTTPRoute                                                                      |
+| `route.provider.path` / `.pathType`                   | `/provider` / `PathPrefix`  |                                                                                                                               |
+| `route.provider.filters`                              | `[]`                        | Where a rate limit or source-IP `ExtensionRef` goes                                                                           |
+| `route.provider.servedElsewhere`                      | `""`                        | Required to set `enabled: false`                                                                                              |
+| `networkPolicy.enabled`                               | `false`                     | Off until you say where Postgres is                                                                                           |
+| `networkPolicy.ingressControllerNamespace`            | `ingress-nginx`             |                                                                                                                               |
+| `networkPolicy.monitoringNamespace`                   | `monitoring`                | The only source allowed to reach 9090                                                                                         |
+| `networkPolicy.dnsNamespace`                          | `kube-system`               |                                                                                                                               |
+| `networkPolicy.managementIngress.podSelector`         | `{}`                        | Pods in **this** namespace that may reach `/dash/v1`; required once `management.enabled` (see the guard)                      |
+| `networkPolicy.managementIngress.namespaceSelector`   | `{}`                        | A second, ORed peer: a whole namespace that may reach `/dash/v1`. Required once `route.enabled` publishes it                  |
+| `networkPolicy.database.cidrs`                        | `[]`                        | A managed instance's address                                                                                                  |
+| `networkPolicy.database.namespace` / `.podSelector`   | `""` / `{}`                 | An in-cluster one                                                                                                             |
+| `networkPolicy.database.port`                         | `5432`                      |                                                                                                                               |
+| `networkPolicy.idpEgress.cidrs`                       | `[]`                        | Extra egress peers for the staff SSO IdP, `/dash/v1` pod only. Not needed for a public IdP on 443; see "Staff single sign-on" |
+| `networkPolicy.idpEgress.namespace` / `.podSelector`  | `""` / `{}`                 | An in-cluster IdP                                                                                                             |
+| `networkPolicy.idpEgress.port`                        | `443`                       |                                                                                                                               |
+| `networkPolicy.railsEgress.enabled`                   | `true`                      | Outbound HTTPS to the rails                                                                                                   |
+| `networkPolicy.railsEgress.port`                      | `443`                       |                                                                                                                               |
+| `networkPolicy.railsEgress.except`                    | RFC1918 + `169.254.0.0/16`  | Keeps the rule from reaching the VPC or the metadata endpoint                                                                 |
+| `podDisruptionBudget.enabled`                         | `true`                      | Server only                                                                                                                   |
+| `podDisruptionBudget.minAvailable`                    | `1`                         | Integer, never a percentage                                                                                                   |
 
 ### Misc
 
@@ -947,6 +1053,18 @@ helm-check` report that the guard "did not fire" and name it. See the
 
 ### What has NOT been verified — most of it
 
+- **Staff single sign-on has never run in a cluster, nor against a real
+  Keycloak from this chart.** What was checked is that the chart renders and
+  that the default and every CI values file render byte-identical to before
+  the SSO documentation and `networkPolicy.idpEgress` landed (the only
+  difference is the new `idpEgress` rules in `ci/values-full.yaml`'s
+  `-management` policy). Not checked: that the overlay's `staff_auth.sso`
+  block boots (this chart cannot parse it; only `vpay-config` can, and that
+  was not exercised from here), that `VPAY_STAFF_SSO_CLIENT_SECRET` reaches the pod,
+  that the CNI enforces the `idpEgress` rule, that the `-server`-tier branch
+  of `vpay.idpEgressRules` (management off) is covered by `just helm-check` —
+  it is not: every CI values file that turns `networkPolicy` on also turns
+  `management` on — or that the IdP accepts the dashboard's `redirect_uri`.
 - **No cluster has ever run this.** Not a real one, not kind, not minikube.
   Step-6 decision (9) put a kind smoke test out of scope for this step, so
   nothing here says anything about scheduling, admission, or whether these

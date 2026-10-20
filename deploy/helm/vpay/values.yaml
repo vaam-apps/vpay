@@ -502,6 +502,47 @@ config:
   # `deployment.public_base_url`, not from an environment variable. Step-6
   # decision (7) removes the inert `--public-base-url` flag; YAML is the only
   # spelling that has ever worked.
+  #
+  # STAFF SINGLE SIGN-ON LIVES HERE, in this overlay, not in a value of this
+  # chart. `staff_auth.sso` is deployment configuration — which identity
+  # provider this deployment's staff sign in through — and the block being
+  # PRESENT is the whole switch (there is no `enabled` beside it, here or in
+  # the binary). Password + TOTP sign-in stays as the break-glass path either
+  # way. A Keycloak realm, the shape ADR-0030 targets, looks like this:
+  #
+  #     staff_auth:
+  #       password_pepper: ${VPAY_STAFF_PEPPER}
+  #       totp_encryption_key: ${VPAY_STAFF_TOTP_KEY}
+  #       sso:
+  #         # Exactly what the realm's discovery document publishes as
+  #         # `issuer` — byte for byte, a trailing slash included. Nothing is
+  #         # normalised on either side of the comparison.
+  #         issuer: https://auth.verif.fyi/realms/vaam-staff
+  #         client_id: vpay-staff
+  #         # A ${VAR} reference is REQUIRED in livemode (a literal is a boot
+  #         # refusal). The key goes in the `rails.existingSecret` Secret.
+  #         client_secret: ${VPAY_STAFF_SSO_CLIENT_SECRET}
+  #         # THE DASHBOARD's callback, not a vpay URL: it must equal
+  #         # `<dashboard.publicOrigin>/api/auth/sso/callback` and be
+  #         # registered at the realm as a valid redirect URI for client_id.
+  #         redirect_uri: https://dash.example/api/auth/sso/callback
+  #         scopes: [openid, email, profile]     # the default; must include openid
+  #         required_group: vpay-staff           # the realm group allowed in
+  #         groups_claim: groups                 # the default
+  #         # Fail closed: at least ONE of the two lists must be non-empty or
+  #         # the process refuses to boot. On Keycloak use `amr`, not `acr`:
+  #         # its `acr` is an authentication LEVEL ("1" after a password
+  #         # alone), so listing it proves nothing about a second factor.
+  #         accepted_acr: []
+  #         accepted_amr: [otp]
+  #     dashboard_client:                        # SSO requires one
+  #       merchant_id: <a merchant_clients entry>
+  #
+  # `redirect_uri` is NOT derived from `dashboard.publicOrigin` by the chart
+  # (the overlay is opaque text to it); keeping the two in step is yours.
+  # `client_secret` is the only new secret. See README.md "Staff single
+  # sign-on" for the Secret key, the egress to the IdP and what has not been
+  # verified (nothing here has run in a cluster).
   createOverlayConfigMap: false
   overlay: ""
 
@@ -588,6 +629,26 @@ rails:
   # `kubectl describe pod` shows env *names* only for an `envFrom.secretRef`,
   # so this does not leak.
   existingSecret: vpay-rails
+
+  # STAFF SINGLE SIGN-ON ADDS ONE KEY, AND ONLY IF YOU TURN IT ON.
+  #
+  # `staff_auth.sso` (an OIDC login for dashboard staff; README.md "Staff
+  # single sign-on") is switched on by the block being PRESENT in
+  # `config.overlay` — deployment configuration, not a value in this file.
+  # Its client secret is written there as `${VPAY_STAFF_SSO_CLIENT_SECRET}`
+  # and reaches the pod the way `${VPAY_STAFF_PEPPER}` and
+  # `${VPAY_STAFF_TOTP_KEY}` do: as a key in the Secret above, via `envFrom`.
+  #
+  # **Add that key BEFORE rolling an overlay that writes the block.** An
+  # unresolved placeholder is a fatal exit 78 on every vpay process (server,
+  # management, worker), not an empty string — the same trap as the
+  # Disbursements names above. The converse also holds: an overlay without
+  # the `sso` block needs no new key, and this chart's output for it is
+  # unchanged.
+  #
+  # Nothing in this chart checks the key exists (it cannot read the Secret);
+  # `kubectl get secret <name> -o jsonpath='{.data}' | jq 'keys'` before the
+  # upgrade is the check.
 
 # --------------------------------------------------------- observability ---
 
@@ -1001,6 +1062,39 @@ networkPolicy:
     namespace: ""
     podSelector: {}
     port: 5432
+  # Egress to the staff SSO identity provider (`staff_auth.sso`, see
+  # README.md "Staff single sign-on"). The process that serves `/dash/v1` —
+  # `-management` when `management.enabled`, otherwise `-server` — makes
+  # OUTBOUND HTTPS to the IdP (discovery, JWKS, token endpoint); it never made
+  # an outbound call to anything but the rails before. The worker and, when the
+  # tiers are split, `-server` get no such rule.
+  #
+  # **You usually need nothing here.** `railsEgress` below already allows
+  # TCP 443 to every PUBLIC address from all three pods, so a public IdP
+  # (e.g. `https://auth.verif.fyi`) is reachable while `railsEgress.enabled`
+  # is true. This list is for what that rule deliberately excludes: an IdP on
+  # a private address or in the cluster, an IdP on a port other than
+  # `railsEgress.port`, or a release that has turned `railsEgress` off. An
+  # empty list is "no extra peers", not a switch: it renders nothing and the
+  # default render is byte-identical to a chart without this value.
+  #
+  # The shape is `database`'s, and the peers are NAMED destinations — there is
+  # no wildcard form, so this cannot reopen the metadata endpoint or the VPC at
+  # large the way a loosened `railsEgress.except` can. `values.schema.json`
+  # refuses `0.0.0.0/0`, `::/0` and anything starting `169.254.`; it cannot
+  # tell a merely too-wide block (`10.0.0.0/8`) from a right one, so scope it.
+  #
+  #   cidrs: ["10.20.0.5/32"]                          — a private-address IdP
+  #   namespace: keycloak, podSelector: {app: keycloak} — an in-cluster one
+  #   port: 8443                                        — if not 443
+  #
+  # Nothing here has been applied to a cluster; see the NetworkPolicy
+  # disclaimer in templates/networkpolicy.yaml.
+  idpEgress:
+    cidrs: []
+    namespace: ""
+    podSelector: {}
+    port: 443
   # Egress for outbound rail calls (HTTPS). `0.0.0.0/0` minus the private
   # ranges and the cloud metadata address, because a rail is on the public
   # internet and an SSRF-shaped egress to 169.254.169.254 is not.

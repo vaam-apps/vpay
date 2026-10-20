@@ -48,6 +48,16 @@ READ THIS.
       Secret/{{ .Values.signingKey.existingSecret }} (key {{ .Values.signingKey.key }}) — the RS256 signing key
       Secret/{{ .Values.rails.existingSecret }} — the rail credentials, one key per ${VAR} in the config
 
+  * Staff single sign-on (`staff_auth.sso` in the overlay) is on only if the
+    overlay WRITES that block, and then it needs Secret/{{ .Values.rails.existingSecret }} to carry
+    VPAY_STAFF_SSO_CLIENT_SECRET BEFORE the pods roll: an unresolved ${VAR} is
+    exit 78 on every process. An overlay without the block needs no new key.
+    redirect_uri must equal {{ if .Values.dashboard.publicOrigin }}{{ .Values.dashboard.publicOrigin }}{{ else }}<dashboard.publicOrigin>{{ end }}/api/auth/sso/callback and be registered at
+    the IdP; the chart can check neither. The pod serving /dash/v1 then calls
+    the IdP over HTTPS: with networkPolicy on, a public IdP on 443 is allowed by
+    railsEgress; a private or in-cluster one needs networkPolicy.idpEgress. Nothing here has run in a
+    cluster; see README.md "Staff single sign-on".
+
   * Rotating the signing key is restart-based, and rolling back to a retired
     kid is exit 78, not a degraded start.
 {{ if .Values.server.autoscaling.enabled }}

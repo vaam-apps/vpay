@@ -139,6 +139,18 @@ networkPolicy:
     # TEST-NET-3 (RFC 5737), i.e. deliberately not a real address.
     cidrs:
       - 203.0.113.10/32
+  # Staff SSO's IdP, in both shapes `vpay.idpEgressRules` renders, so
+  # kubeconform sees them on the -management policy (management.enabled is on
+  # above). TEST-NET-2 (RFC 5737) and a made-up namespace: an in-cluster
+  # Keycloak and a private-address one are what this value exists for, a
+  # public IdP on 443 needs nothing here (railsEgress covers it).
+  idpEgress:
+    cidrs:
+      - 198.51.100.20/32
+    namespace: keycloak
+    podSelector:
+      app.kubernetes.io/name: keycloak
+    port: 8443
 
 podDisruptionBudget:
   enabled: true

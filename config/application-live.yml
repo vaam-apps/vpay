@@ -133,3 +133,23 @@ dashboard_client:
 staff_auth:
   password_pepper: ${VPAY_STAFF_PEPPER}
   totp_encryption_key: ${VPAY_STAFF_TOTP_KEY}
+
+  # Staff single sign-on through an OIDC provider (ADR-0030) — NOT enabled
+  # here, and deliberately a comment: this profile is a local MTN-sandbox
+  # test with no identity provider, and the block being PRESENT is the whole
+  # switch (there is no `enabled`). Uncommenting it makes the process serving
+  # /dash/v1 call the IdP over HTTPS (discovery, JWKS, token endpoint), and
+  # an unset ${VPAY_STAFF_SSO_CLIENT_SECRET} is a fatal exit 78 on every
+  # process, so add that line to `.env.live` first. It requires
+  # `dashboard_client` (above) and both staff secrets (above). Nothing in
+  # this repository has run it against a real Keycloak; the Helm chart's
+  # README ("Staff single sign-on") has the production shape and says what is
+  # unverified.
+  #
+  #   sso:
+  #     issuer: https://auth.example/realms/staff     # byte-for-byte the realm's discovery `issuer`
+  #     client_id: vpay-staff
+  #     client_secret: ${VPAY_STAFF_SSO_CLIENT_SECRET}
+  #     redirect_uri: https://dash.example/api/auth/sso/callback   # the DASHBOARD's callback; register it at the IdP
+  #     required_group: vpay-staff
+  #     accepted_amr: [otp]    # Keycloak: `amr`, not `acr` (its acr is a level, not a factor)
