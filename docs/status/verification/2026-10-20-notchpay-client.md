@@ -84,6 +84,14 @@ with no `cargo xtask` form; neither reads anything this branch touches),
 tests start no container, and no integration suite touches it). CI's `rust`
 job is the workspace-wide run.
 
+**What CI caught that the gates above could not.** `just verify-ignored` is a
+bash recipe too, and it pins the number of test binaries. The new crate is one
+more (`vpay-notchpay`'s library tests), and the pin was not moved with it, so
+CI's `rust` job failed on `f219b0d` reporting **51** binaries, **2232** total,
+**0** ignored — 2198 at ADR-0030 plus the crate's 34. `expected_suites` is now 51. `cargo metadata --no-deps` against `master` differs by that one target and
+no other. A local `cargo nextest list --workspace` was attempted and did not
+fit the disk, so the count is CI's measurement, not this page's.
+
 ## How the work was split
 
 At the maintainer's request the work fanned out to sub-agents: two research

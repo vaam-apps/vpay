@@ -3046,7 +3046,16 @@ expected_ignored := "0"
 # its own file because each boots its own stack and the second needs a JVM and
 # a pulled image the first does not. Measured after adding them: `cargo nextest
 # list --workspace` gives **50** binaries, **2198** total, **0** ignored.
-expected_suites := "50"
+#
+# **50 -> 51 on 2026-10-20 (RFC-0012 step 1b)**: one new binary, the unit tests
+# of `backends/crates/vpay-notchpay`'s library — the crate's only target, so
+# `cargo metadata --no-deps` against `master` differs by exactly
+# `vpay-notchpay::lib::vpay_notchpay`. This number was not moved with the
+# crate, and CI's `rust` job failed here on `f219b0d` with the new name in its
+# listing: **51** binaries, **2232** total, **0** ignored — 2198 plus the
+# crate's 34. Measured by that CI run, not locally: a full test build of the
+# workspace did not fit the disk where this was written.
+expected_suites := "51"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
