@@ -76,7 +76,7 @@ What else an operator takes on, from RFC-0012 § 9:
 - **Webhooks are unverified.** Notch Pay signs them (`x-notch-signature`), and
   the port gives `parse_callback` no headers, so vpay cannot check the
   signature. A forged webhook costs one authenticated read and moves no money.
-  RFC-0014 (vaam-apps/vpay#296, a draft) designs the check; it is not built.
+  [RFC-0014](../rfc/0014-verifying-rail-callbacks.md) (a draft) designs the check; it is not built.
 - **Licensing is unpublished.** No Notch Pay page names a legal entity, a
   licence, a regulator or a partner bank. That is the operator's due
   diligence (ADR-0029 D1), and § 10 item 10 asks.
@@ -255,7 +255,7 @@ without the `+`. The adapter sends the `+` form the documentation shows.
   say "stub-only", never "sandbox".
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
-  (RFC-0014, a draft);
+  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft);
   vpay registering its own webhook (RFC-0013).
 - **Not wired into any running stack.** `config/application.yml` carries the
   `notchpay` block **commented out**, pointed at the `wiremock-notchpay`
