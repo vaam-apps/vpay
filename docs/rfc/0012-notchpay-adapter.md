@@ -116,6 +116,13 @@ this RFC does not make it.**
   the merchant's accepted exposure". That is a policy change for every future
   provider, not an exception for this one, and it would be argued as such.
 
+**Decided 2026-10-20: way A.** The maintainer wrote: "Ask Notch Pay first,
+I'll email them", and will raise the same questions in a Telegram group the
+maintainer shares with Notch Pay. The questions are § 10's written items (1,
+6, 8, 9, 10, 11 and 12) and where merchants' funds are held (§ 9), with the
+sandbox items attached for completeness. Rule 3 stays as written until Notch
+Pay answers; delivery step 0 waits on that answer now, not on a decision.
+
 Building the adapter under the public key and calling rule 3 "satisfied in
 practice" is way B done silently. It is the one option this RFC refuses.
 
@@ -589,8 +596,10 @@ Steps 2–5 are one pull request against `master` and one against
 
 ## Open questions
 
-1. **Way A or way B for rule 3.** The maintainer's decision, and delivery
-   step 0.
+1. **~~Way A or way B for rule 3.~~ Decided 2026-10-20: way A**, asking
+   Notch Pay in writing. What remains open is Notch Pay's answer, and it is
+   delivery step 0. _(This said "The maintainer's decision, and delivery step
+   0" until the same day.)_
 2. **Two entries for one network.** Until ADR-0029 D8–D10 land, a deployment
    with `mtn_momo` and `notchpay` both enabled shows an MTN payer two rails by
    code. Is that acceptable for the interval, or should a deployment enable
