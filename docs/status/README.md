@@ -17,6 +17,7 @@ rules that used to separate two sections which now live in two files.
 | ----------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
 | what each `just verify` gate checks, what it used to miss, and the mutation that proved the hole shut | [gates.md](gates.md)                                           |
 | which backend capability is real, and what its test actually asserts                                  | [backend.md](backend.md)                                       |
+| which payment provider can do what today, cell by cell, across every rail shipped or designed         | [providers.md](providers.md)                                   |
 | why the Orange stub's hosted page grew a payer's window                                               | [backend-orange-hosted-page.md](backend-orange-hosted-page.md) |
 | what the checkout page, the dashboard and the demo shop do                                            | [frontend.md](frontend.md)                                     |
 | what boots, in compose and in CI, and what has never run in a pod                                     | [infrastructure.md](infrastructure.md)                         |
