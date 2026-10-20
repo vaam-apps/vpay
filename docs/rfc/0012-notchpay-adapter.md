@@ -303,10 +303,15 @@ spells the number as `data.account_number` in one example and `data.phone` in
 another; the specification has both, and the adapter sends `phone`.
 
 **Call 3 — read.** `GET /payments/{reference}`, with the same reference rule.
-`202` carries `transaction`, mapped by § 4. `404` is `ChargeStatus::NotFound`,
-which [crash-safety.md](../flows/crash-safety.md) never lets fail a charge on
-its own: three `NotFound`s over at least 60 s, and only then a resubmit under
-the same reference.
+`202` carries `transaction`, mapped by § 4. A `404` whose message is Notch
+Pay's "Payment not found" is `ChargeStatus::NotFound`, which
+[crash-safety.md](../flows/crash-safety.md) never lets fail a charge on its
+own: three `NotFound`s over at least 60 s, and only then a resubmit under the
+same reference. Any other `404` is `Config`, as both existing adapters treat a
+`404` on submit: an unknown `X-Sync` account answers `404` "Sync account not
+found", and a base URL with a wrong path answers `404` on every call. Reading
+either as "the payment does not exist" would resubmit a payment that may be
+alive.
 
 **A crash between calls 1 and 2 costs one payer a long wait and no money.**
 Notch Pay then holds a `pending` payment, and the payer has had no prompt.
@@ -537,6 +542,14 @@ In writing (W) or in the sandbox (S):
     the API reference says and the specification's schema does not?
 14. **(S)** Does `POST /webhooks` refuse a URL the account already has, or
     create a second endpoint for it?
+15. **(S)** Is an answer's payload under the specification's keys
+    (`transaction`, `endpoint`, `endpoints`) or under `data`, as the API
+    reference pages show it? The client follows the specification, so a
+    `data`-shaped answer is `Malformed` until this is settled.
+16. **(S)** Does a webhook endpoint carry an `active` flag, as the API
+    reference page shows and the specification does not?
+17. **(S)** Is `payment.processing` a real event? The API reference lists it;
+    the specification's `createWebhook` enum does not.
 
 ## Delivery
 

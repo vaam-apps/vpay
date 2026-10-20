@@ -1,82 +1,23 @@
-//! A typed client for the Notch Pay REST API, written from its own reference.
+//! A typed client for the Notch Pay REST API, transcribed from Notch Pay's
+//! OpenAPI specification 2.1.0, for vpay's own use (`publish = false`).
 //!
-//! Notch Pay publishes SDKs for JavaScript, PHP, Python, Laravel and mobile,
-//! and none for Rust. This crate is vpay's own, transcribed from the
-//! OpenAPI specification Notch Pay publishes (**2.1.0**,
-//! `https://developer.notchpay.co/openapi.yaml`, read 2026-10-20) and from
-//! its API reference pages. It is internal to the workspace (`publish =
-//! false`) and exists to be called by a `notchpay` adapter.
+//! **No adapter uses it yet and no binary links it.** It sends what a caller
+//! asks and reports what Notch Pay answered; deciding what an answer means
+//! for a charge is the adapter's, and the adapter waits on a decision about
+//! ADR-0029 D1's third rule ([RFC-0012](../../../../docs/rfc/0012-notchpay-adapter.md)).
+//! Nothing here has called Notch Pay. Why it covers what it covers, why every
+//! call carries the private key, why a `4xx` is an answer and not an error,
+//! and every place the specification and Notch Pay's guides disagree are in
+//! [docs/reference/vpay-notchpay.md](../../../../docs/reference/vpay-notchpay.md).
 //!
-//! # What is built, and what is not — read this first
-//!
-//! **No adapter uses this crate yet, and nothing in any binary links it.**
-//! [RFC-0012](../../../../docs/rfc/0012-notchpay-adapter.md) designs the
-//! adapter and records why it is not written: Notch Pay's status read is
-//! documented as authenticated by the key Notch Pay calls public, and
-//! [ADR-0029](../../../../docs/adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
-//! D1's third hard rule refuses an adapter to such a provider. Resolving that
-//! is the maintainer's decision (RFC-0012, delivery step 0). This crate does
-//! not resolve it, and it does not move money on its own: it sends what a
-//! caller tells it to and reports what Notch Pay answered.
-//!
-//! Nothing here has called Notch Pay. Every shape is the specification's, and
-//! the specification and Notch Pay's guides disagree in places that RFC-0012
-//! § 10 lists. The crate follows the specification and says so at each one.
-//!
-//! # The operations, and why only these
-//!
-//! | Operation | Notch Pay endpoint | Method here |
+//! | Operation | Notch Pay endpoint | Here |
 //! | --- | --- | --- |
 //! | Initialize a payment | `POST /payments` | [`Client::initialize_payment`] |
 //! | Process a payment (the USSD prompt) | `POST /payments/{reference}` | [`Client::process_payment`] |
-//! | Retrieve a payment (the authoritative read) | `GET /payments/{reference}` | [`Client::retrieve_payment`] |
+//! | Retrieve a payment (the read) | `GET /payments/{reference}` | [`Client::retrieve_payment`] |
 //! | List webhook endpoints | `GET /webhooks` | [`Client::list_webhooks`] |
 //! | Create a webhook endpoint | `POST /webhooks` | [`Client::create_webhook`] |
 //! | A webhook event (inbound) | — | [`parse_event`] |
-//!
-//! The two webhook calls are here because the maintainer asked on 2026-10-20
-//! that vpay register its own endpoints rather than depend on a merchant
-//! doing it by hand ([RFC-0013](../../../../docs/rfc/0013-vpay-registers-its-own-callbacks.md)).
-//! The client only performs them; when, how often and how a duplicate is
-//! avoided is that RFC's design, not this crate's.
-//!
-//! Deliberately absent:
-//!
-//! - **Refunds.** `POST /refunds` appears in a Notch Pay guide and not in the
-//!   specification or the API reference, and the guide's request carries no
-//!   reference that would make a replay safe. RFC-0012 § 7 is the whole
-//!   argument; the adapter will declare a `NotImplemented` token instead.
-//! - **Cancel** (`DELETE /payments/{reference}`). The port has no
-//!   cancel-at-rail operation, and a courtesy call in the money path is a
-//!   call with no test behind it.
-//! - **Transfers, beneficiaries, customers, balance, channels**, and webhook
-//!   **update and delete**. vpay calls none of them. Never deleting an
-//!   endpoint is deliberate: an account's other endpoints are not vpay's.
-//! - **Webhook signature verification.** Notch Pay signs with HMAC-SHA256 in
-//!   `x-notch-signature`, but the port's `parse_callback` receives no headers
-//!   (RFC-0010 open question 4), so a verifier would be code nothing can
-//!   call.
-//!
-//! # Every call carries the private key
-//!
-//! The specification requires only `Authorization` (the public key) on the
-//! payment endpoints, and `X-Grant` (the private key) on transfers, balance,
-//! beneficiaries and webhooks. [`Client`] sends **both on every request**.
-//! That is what RFC-0012's way A would require of the read, and a server
-//! that ignores the header loses nothing by receiving it.
-//!
-//! # No error type of its own
-//!
-//! A call returns `Result<Answer<T>, ProviderError>`. The `Err` side is the
-//! port's [`ProviderError`] and only ever one of two variants, both decided
-//! without knowing what a payment means: `Transport` (the request did not
-//! complete, or Notch Pay answered `429` or `5xx`, so the payment's fate is
-//! unknown) and `Malformed` (an answer that is not the documented shape). A
-//! `4xx` is **not** an error here: it is [`Answer::Refused`], because what a
-//! `409` or a `422` means for a charge is the adapter's mapping, and a
-//! client that turned it into a decline would be deciding that in a library.
-//! A leaf error enum would be a second place to classify the same failures,
-//! which is why the two existing adapters do not define one either.
 
 pub mod status;
 pub mod wire;
@@ -85,15 +26,15 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
-use reqwest::{Method, StatusCode};
+use reqwest::{Method, StatusCode, Url};
 use serde::de::DeserializeOwned;
-use vpay_core::privacy::Secret;
+use vpay_core::privacy::{SafeUrl, Secret};
 use vpay_provider::ProviderError;
 use vpay_provider::http::{path_segment, read_rail_body};
 
 use crate::wire::{
-    CreateWebhook, ErrorEnvelope, Event, InitializePayment, PaymentEnvelope, ProcessPayment,
-    WebhookEnvelope, WebhookPage,
+    CreateWebhook, Event, InitializePayment, PaymentEnvelope, ProcessPayment, WebhookEnvelope,
+    WebhookPage,
 };
 
 /// The private-key header, as the specification names it (`GrantAuth`).
@@ -118,9 +59,7 @@ impl Keys {
     /// # Errors
     ///
     /// [`ProviderError::Config`] if either is empty or is not a valid HTTP
-    /// header value. The message names which key and never contains it:
-    /// a key with a stray newline is a configuration mistake, and reporting it
-    /// must not put the key in a log.
+    /// header value. The message names which key and never contains it.
     pub fn new(public_key: &str, private_key: &str) -> Result<Self, ProviderError> {
         Ok(Self {
             public_key: sensitive_header("public_key", public_key)?,
@@ -130,11 +69,8 @@ impl Keys {
     }
 
     /// Adds the Sync connected account, sent as `X-Sync` on every call.
-    ///
-    /// RFC-0012 § 2 does **not** offer Sync until Notch Pay confirms where a
-    /// connected account's money lands. The method exists because the
-    /// header is part of the API reference and costs nothing to carry; no
-    /// caller passes one.
+    /// RFC-0012 § 2 does not offer Sync until Notch Pay confirms where a
+    /// connected account's money lands, so no caller passes one yet.
     ///
     /// # Errors
     ///
@@ -156,8 +92,7 @@ fn sensitive_header(name: &str, value: &str) -> Result<HeaderValue, ProviderErro
     Ok(header)
 }
 
-/// Every key hidden; whether a Sync account is set is a fact about the
-/// configuration and prints as `Some`/`None`.
+/// Every key hidden; whether a Sync account is set prints as `Some`/`None`.
 impl fmt::Debug for Keys {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Keys")
@@ -173,26 +108,24 @@ impl fmt::Debug for Keys {
 pub enum Answer<T> {
     /// A `2xx`, decoded into the documented shape.
     Success(T),
-    /// A `4xx` other than `429`, with Notch Pay's error envelope.
+    /// A `4xx` other than `408` and `429`, with Notch Pay's error envelope.
     Refused(Refusal),
 }
 
-/// A `4xx` answer: the status, and Notch Pay's error envelope when the body
-/// was one.
+/// A `4xx` answer: the status, and Notch Pay's error envelope as far as the
+/// body was one.
 ///
-/// `message` and `errors` are Notch Pay's own prose — "A payment with this
-/// reference already exists", "Phone number is required for mobile money
-/// payments" — and a validation message can quote the value it refused.
-/// They are for an operator's eyes through the adapter's mapping, never for
-/// a log line, which is why `Debug` prints the field **names** of `errors`
-/// and nothing of what they say.
+/// `message` and `errors` are Notch Pay's own prose, and a validation message
+/// can quote the value it refused, so `Debug` prints the field **names** of
+/// `errors` and nothing of what they say.
 pub struct Refusal {
     /// The HTTP status: `400`, `401`, `403`, `404`, `409` and `422` are the
     /// ones Notch Pay documents.
     pub http_status: u16,
-    /// The envelope's `message`, if the body was an envelope.
+    /// The envelope's `message`, when the body carried one as a string.
     pub message: Option<String>,
-    /// The envelope's `errors`, from a field name to its messages.
+    /// The envelope's `errors`, from a field name to its messages, keeping
+    /// only the entries that are an array of strings.
     pub errors: BTreeMap<String, Vec<String>>,
 }
 
@@ -206,51 +139,74 @@ impl fmt::Debug for Refusal {
     }
 }
 
-/// A Notch Pay account, reached through the `reqwest::Client` the caller
-/// built.
+/// A Notch Pay account, reached through a `reqwest::Client` the caller built.
 ///
-/// The client is the caller's because its timeouts are the caller's: the
-/// binary builds one at boot with `vpay_provider::http::client_with_timeouts`
-/// and every adapter shares that discipline.
+/// **The client must not follow redirects.** A followed redirect replays
+/// every header `reqwest` does not consider sensitive to the new host, and
+/// `X-Grant` is one of them. `vpay_provider::http::client_with_timeouts` and
+/// `vpay_provider::http::client` both refuse redirects; build it with one of
+/// them, as the binary does at boot.
 pub struct Client {
     http: reqwest::Client,
     base_url: String,
     keys: Keys,
 }
 
+/// The base URL prints as `scheme://host[:port]` only, as every URL in this
+/// workspace's `Debug` output does.
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
-            .field("base_url", &self.base_url)
+            .field("base_url", &SafeUrl::new(&self.base_url))
             .field("keys", &self.keys)
             .finish_non_exhaustive()
     }
 }
 
 impl Client {
-    /// A client for the account `keys` opens, at `base_url` — Notch Pay's
+    /// A client for the account `keys` opens, at `base_url`: Notch Pay's
     /// `https://api.notchpay.co` for both its sandbox and its production, or
-    /// a WireMock host in a test deployment. A trailing `/` is dropped.
-    #[must_use]
-    pub fn new(http: reqwest::Client, base_url: impl Into<String>, keys: Keys) -> Self {
-        let mut base_url = base_url.into();
-        while base_url.ends_with('/') {
-            base_url.pop();
+    /// a WireMock host in a test deployment.
+    ///
+    /// # Errors
+    ///
+    /// [`ProviderError::Config`] unless `base_url` is an absolute `http` or
+    /// `https` URL with a host and no user information, query or fragment. A
+    /// URL that every call would fail to use is refused here, at boot, rather
+    /// than turning into a `Transport` error on every charge — a `Transport`
+    /// says the payment's fate is unknown, and a request that was never sent
+    /// has no fate. The message never quotes the URL, which could carry a
+    /// password in its user information.
+    pub fn new(http: reqwest::Client, base_url: &str, keys: Keys) -> Result<Self, ProviderError> {
+        let refused = |why: &str| ProviderError::Config(format!("notchpay: the base URL {why}"));
+        let url = Url::parse(base_url).map_err(|_| refused("is not an absolute URL"))?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return Err(refused("is not http or https"));
         }
-        Self {
+        if url.host_str().is_none_or(str::is_empty) {
+            return Err(refused("has no host"));
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err(refused("carries user information"));
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err(refused("carries a query or a fragment"));
+        }
+        Ok(Self {
             http,
-            base_url,
+            base_url: url.as_str().trim_end_matches('/').to_owned(),
             keys,
-        }
+        })
     }
 
     /// `POST /payments`. The specification documents `201` on success.
     ///
     /// # Errors
     ///
-    /// `Transport` or `Malformed`, as the crate docs describe. A duplicate
-    /// reference is `Ok(Answer::Refused)` with `http_status` 409, per Notch
-    /// Pay's errors page (the specification itself omits the `409`).
+    /// `Transport` (the fate is unknown) or `Malformed` (an answer that is
+    /// not the documented shape). A duplicate reference is
+    /// `Ok(Answer::Refused)` with `http_status` 409, per Notch Pay's errors
+    /// page; the specification itself omits the `409`.
     pub async fn initialize_payment(
         &self,
         body: &InitializePayment<'_>,
@@ -263,44 +219,51 @@ impl Client {
     /// specification documents `202` on success.
     ///
     /// Which reference the path takes — the caller's or Notch Pay's own
-    /// `trx.…` — is the specification and the direct-charge guide
-    /// disagreeing; the caller decides, and RFC-0012 § 10 item 2 settles it.
-    /// The reference is percent-encoded as one path segment, so no value can
-    /// move the request to another endpoint.
+    /// `trx.…` — is a disagreement between the specification and a guide;
+    /// RFC-0012 § 10 item 2 settles it in the sandbox.
     ///
     /// # Errors
     ///
-    /// As for [`Client::initialize_payment`].
+    /// As for [`Client::initialize_payment`], and `Malformed` without any
+    /// request if `reference` cannot be one path segment (see
+    /// [`Client::retrieve_payment`]).
     pub async fn process_payment(
         &self,
         reference: &str,
         body: &ProcessPayment<'_>,
     ) -> Result<Answer<PaymentEnvelope>, ProviderError> {
-        let path = format!("/payments/{}", path_segment(reference));
-        let request = self.request(Method::POST, &path).json(body);
+        let request = self.payment_request(Method::POST, reference)?.json(body);
         self.send(request, "notchpay: processing a payment").await
     }
 
     /// `GET /payments/{reference}`, the read. The specification documents
-    /// `202` on success and `404` for an unknown reference; the `404` is
-    /// `Ok(Answer::Refused)` here, and the adapter turns it into
-    /// `ChargeStatus::NotFound`.
+    /// `202` on success and `404` for an unknown reference.
+    ///
+    /// A `404` is `Ok(Answer::Refused)` and **not** necessarily "no such
+    /// payment": an unknown `X-Sync` account is a `404` too ("Sync account
+    /// not found"), and so is every call against a base URL with a wrong
+    /// path. Which `404` this is, is the adapter's to tell from Notch Pay's
+    /// `message` (RFC-0012 § 3).
     ///
     /// # Errors
     ///
-    /// As for [`Client::initialize_payment`].
+    /// As for [`Client::initialize_payment`], and `Malformed` without any
+    /// request if `reference` is empty or made only of dots. Those would
+    /// resolve to another endpoint — `/payments/` is the list, and
+    /// `/payments/..` is the API root — and an escape does not help, because
+    /// URL parsing treats `%2E%2E` as `..` as well. The reference can be
+    /// Notch Pay's own, from a stored answer, so the rail is one of the
+    /// callers this guards against.
     pub async fn retrieve_payment(
         &self,
         reference: &str,
     ) -> Result<Answer<PaymentEnvelope>, ProviderError> {
-        let path = format!("/payments/{}", path_segment(reference));
-        let request = self.request(Method::GET, &path);
+        let request = self.payment_request(Method::GET, reference)?;
         self.send(request, "notchpay: reading a payment").await
     }
 
     /// `GET /webhooks?page={page}`, one page of the account's endpoints. The
-    /// specification documents `200` and requires the private key, which
-    /// every call here sends anyway.
+    /// specification documents `200`.
     ///
     /// # Errors
     ///
@@ -312,12 +275,9 @@ impl Client {
             .await
     }
 
-    /// `POST /webhooks`. The specification documents `201` and a `422` for
-    /// a body it refuses.
-    ///
-    /// Not idempotent as documented: the specification names no idempotency
-    /// header and no refusal of a duplicate URL, so two calls make two
-    /// endpoints. A caller lists first.
+    /// `POST /webhooks`. The specification documents `201` and a `422` for a
+    /// body it refuses. **Not idempotent as documented**: no idempotency
+    /// header and no refusal of a duplicate URL, so a caller lists first.
     ///
     /// # Errors
     ///
@@ -329,6 +289,15 @@ impl Client {
         let request = self.request(Method::POST, "/webhooks").json(body);
         self.send(request, "notchpay: creating a webhook endpoint")
             .await
+    }
+
+    fn payment_request(
+        &self,
+        method: Method,
+        reference: &str,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let path = format!("/payments/{}", reference_segment(reference)?);
+        Ok(self.request(method, &path))
     }
 
     fn request(&self, method: Method, path: &str) -> reqwest::RequestBuilder {
@@ -350,22 +319,34 @@ impl Client {
         request: reqwest::RequestBuilder,
         context: &str,
     ) -> Result<Answer<T>, ProviderError> {
+        // `without_url`: a payment path carries a reference, and the error's
+        // text would otherwise end in the full URL.
         let response = request
             .send()
             .await
-            .map_err(|error| ProviderError::transport_from(context, error))?;
+            .map_err(|error| ProviderError::transport_from(context, error.without_url()))?;
         let (status, body) = read_rail_body(response, context).await?;
         interpret(status, &body, context)
     }
+}
+
+/// One path segment for a payment reference, or a refusal.
+fn reference_segment(reference: &str) -> Result<String, ProviderError> {
+    if reference.chars().all(|c| c == '.') {
+        return Err(ProviderError::malformed(
+            "notchpay: a payment reference that is empty or only dots cannot be a path segment",
+        ));
+    }
+    Ok(path_segment(reference))
 }
 
 /// Decodes a webhook body Notch Pay POSTed.
 ///
 /// # Errors
 ///
-/// [`ProviderError::Malformed`] if the body is not an event. The message is
-/// fixed and never quotes the body or serde's account of it, which can quote
-/// a value.
+/// [`ProviderError::Malformed`] if the body is not an event with a `data`
+/// object. The message is fixed and never quotes the body or serde's account
+/// of it, which can quote a value.
 pub fn parse_event(body: &[u8]) -> Result<Event, ProviderError> {
     serde_json::from_slice(body)
         .map_err(|_| ProviderError::malformed("notchpay: the webhook body is not an event"))
@@ -373,15 +354,13 @@ pub fn parse_event(body: &[u8]) -> Result<Event, ProviderError> {
 
 /// What a completed exchange means at the HTTP level, and nothing more.
 ///
-/// Pure, so the whole table is a unit test:
-///
 /// | Status | Result |
 /// | --- | --- |
 /// | `2xx` with the documented shape | `Ok(Success)` |
 /// | `2xx` with anything else | `Err(Malformed)` |
-/// | `429`, `5xx` | `Err(Transport)` — the payment's fate is unknown |
-/// | any other `4xx` | `Ok(Refused)`, with the envelope if the body is one |
-/// | `1xx`, `3xx` | `Err(Malformed)` — redirects are not followed into a payment API |
+/// | `408`, `429`, `5xx` | `Err(Transport)` — the payment's fate is unknown |
+/// | any other `4xx` | `Ok(Refused)`, with as much of the envelope as parses |
+/// | `1xx`, `3xx` | `Err(Malformed)` — the client follows no redirect |
 fn interpret<T: DeserializeOwned>(
     status: StatusCode,
     body: &[u8],
@@ -396,25 +375,55 @@ fn interpret<T: DeserializeOwned>(
                 ))
             });
     }
-    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+    if matches!(
+        status,
+        StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+    ) || status.is_server_error()
+    {
         return Err(ProviderError::transport(format!(
             "{context}: Notch Pay answered {status}"
         )));
     }
     if status.is_client_error() {
-        let envelope = serde_json::from_slice::<ErrorEnvelope>(body).ok();
-        let (message, errors) = envelope.map_or((None, BTreeMap::new()), |envelope| {
-            (envelope.message, envelope.errors.unwrap_or_default())
-        });
-        return Ok(Answer::Refused(Refusal {
-            http_status: status.as_u16(),
-            message,
-            errors,
-        }));
+        return Ok(Answer::Refused(refusal(status, body)));
     }
     Err(ProviderError::malformed(format!(
         "{context}: an unexpected {status}"
     )))
+}
+
+/// The error envelope, read field by field.
+///
+/// Not one serde struct: a Laravel API answers an empty error list as `[]`
+/// rather than `{}`, and an all-or-nothing decode would then lose `message`
+/// too — the one field that says "A payment with this reference already
+/// exists".
+fn refusal(status: StatusCode, body: &[u8]) -> Refusal {
+    let envelope: Option<serde_json::Value> = serde_json::from_slice(body).ok();
+    let field = |name: &str| envelope.as_ref().and_then(|value| value.get(name));
+    let message = field("message")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_owned);
+    let errors = field("errors")
+        .and_then(serde_json::Value::as_object)
+        .map(|map| {
+            map.iter()
+                .filter_map(|(name, messages)| {
+                    let messages = messages.as_array()?;
+                    let strings: Option<Vec<String>> = messages
+                        .iter()
+                        .map(|m| m.as_str().map(str::to_owned))
+                        .collect();
+                    Some((name.clone(), strings?))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Refusal {
+        http_status: status.as_u16(),
+        message,
+        errors,
+    }
 }
 
 #[cfg(test)]
@@ -424,17 +433,18 @@ mod tests {
 
     const PUBLIC: &str = "pk_test_public0001";
     const PRIVATE: &str = "sk_test_private0002";
+    const PAYER: &str = "+237670000000";
 
     fn http() -> reqwest::Client {
         vpay_provider::http::client().expect("the vendored-roots client builds")
     }
 
+    fn keys() -> Keys {
+        Keys::new(PUBLIC, PRIVATE).expect("valid keys")
+    }
+
     fn client(base_url: &str) -> Client {
-        Client::new(
-            http(),
-            base_url,
-            Keys::new(PUBLIC, PRIVATE).expect("valid keys"),
-        )
+        Client::new(http(), base_url, keys()).expect("a valid base URL")
     }
 
     fn header<'a>(request: &'a reqwest::Request, name: &str) -> Option<&'a str> {
@@ -442,6 +452,13 @@ mod tests {
             .headers()
             .get(name)
             .and_then(|value| value.to_str().ok())
+    }
+
+    fn process_body() -> ProcessPayment<'static> {
+        ProcessPayment {
+            channel: "cm.mobile",
+            data: ProcessData { phone: PAYER },
+        }
     }
 
     #[test]
@@ -462,10 +479,11 @@ mod tests {
 
     #[test]
     fn a_sync_account_is_sent_as_x_sync() {
-        let keys = Keys::new(PUBLIC, PRIVATE)
-            .and_then(|keys| keys.with_sync_account("sync_123456789"))
+        let keys = keys()
+            .with_sync_account("sync_123456789")
             .expect("valid keys");
         let request = Client::new(http(), "https://api.notchpay.co", keys)
+            .expect("a valid base URL")
             .request(Method::GET, "/payments/abc")
             .build()
             .expect("builds");
@@ -474,27 +492,90 @@ mod tests {
 
     #[test]
     fn a_trailing_slash_on_the_base_url_does_not_double_the_separator() {
-        let request = client("http://wiremock-notchpay:8080//")
-            .request(Method::POST, "/payments")
-            .build()
-            .expect("builds");
-        assert_eq!(
-            request.url().as_str(),
-            "http://wiremock-notchpay:8080/payments"
-        );
+        for base in [
+            "http://wiremock-notchpay:8080",
+            "http://wiremock-notchpay:8080/",
+        ] {
+            let request = client(base)
+                .request(Method::POST, "/payments")
+                .build()
+                .expect("builds");
+            assert_eq!(
+                request.url().as_str(),
+                "http://wiremock-notchpay:8080/payments"
+            );
+        }
     }
 
     #[test]
-    fn a_reference_cannot_move_the_request_to_another_endpoint() {
+    fn a_base_url_no_call_could_use_is_refused_at_construction_without_echoing_it() {
+        for base in [
+            "",
+            "api.notchpay.co",
+            "ftp://api.notchpay.co",
+            "https://user:pw-secret@api.notchpay.co",
+            "https://api.notchpay.co?key=pw-secret",
+            "https://api.notchpay.co#pw-secret",
+        ] {
+            let error = Client::new(http(), base, keys()).expect_err("refused");
+            assert!(
+                matches!(error, ProviderError::Config(_)),
+                "{base}: {error:?}"
+            );
+            assert!(
+                !format!("{error} {error:?}").contains("pw-secret"),
+                "{base}"
+            );
+        }
+    }
+
+    #[test]
+    fn both_payment_paths_escape_the_reference_as_one_segment() {
         let client = client("https://api.notchpay.co");
-        let path = format!("/payments/{}", path_segment("../balance?x=1"));
-        let request = client.request(Method::GET, &path).build().expect("builds");
-        assert_eq!(
-            request.url().path(),
-            "/payments/..%2Fbalance%3Fx%3D1",
-            "the reference stayed one segment"
-        );
-        assert_eq!(request.url().query(), None);
+        for method in [Method::GET, Method::POST] {
+            for (reference, path) in [
+                ("trx.123456789abcdefghj", "/payments/trx.123456789abcdefghj"),
+                ("../balance?x=1", "/payments/..%2Fbalance%3Fx%3D1"),
+                ("a/b#c", "/payments/a%2Fb%23c"),
+            ] {
+                let request = client
+                    .payment_request(method.clone(), reference)
+                    .expect("a usable reference")
+                    .build()
+                    .expect("builds");
+                assert_eq!(request.url().path(), path, "{method} {reference}");
+                assert_eq!(request.url().query(), None, "{method} {reference}");
+            }
+        }
+    }
+
+    #[test]
+    fn an_empty_or_dot_only_reference_is_refused_before_any_request() {
+        let client = client("https://api.notchpay.co");
+        for reference in ["", ".", "..", "..."] {
+            let error = client
+                .payment_request(Method::GET, reference)
+                .expect_err("refused");
+            assert!(
+                matches!(error, ProviderError::Malformed { .. }),
+                "{reference:?}: {error:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn the_public_payment_methods_refuse_a_dot_reference_without_sending() {
+        // A closed port: had either method sent a request, the answer would
+        // be `Transport`, not `Malformed`.
+        let client = client("http://127.0.0.1:1");
+        let read = client.retrieve_payment("..").await;
+        let process = client.process_payment(".", &process_body()).await;
+        for result in [read, process] {
+            assert!(
+                matches!(result, Err(ProviderError::Malformed { .. })),
+                "{result:?}"
+            );
+        }
     }
 
     #[test]
@@ -513,11 +594,12 @@ mod tests {
     }
 
     #[test]
-    fn no_debug_output_prints_a_key() {
-        let keys = Keys::new(PUBLIC, PRIVATE)
-            .and_then(|keys| keys.with_sync_account("sync_secret03"))
+    fn no_debug_output_prints_a_key_or_more_of_the_url_than_its_host() {
+        let keys = keys()
+            .with_sync_account("sync_secret03")
             .expect("valid keys");
-        let client = Client::new(http(), "https://api.notchpay.co", keys);
+        let client = Client::new(http(), "https://api.notchpay.co/v1-secret-path", keys)
+            .expect("a valid base URL");
         let request = client
             .request(Method::GET, "/payments/abc")
             .build()
@@ -526,7 +608,9 @@ mod tests {
         for leaked in [PUBLIC, PRIVATE, "sync_secret03"] {
             assert!(!printed.contains(leaked), "{leaked} printed: {printed}");
         }
-        assert!(printed.contains("https://api.notchpay.co"), "{printed}");
+        let client_only = format!("{client:?}");
+        assert!(client_only.contains("api.notchpay.co"), "{client_only}");
+        assert!(!client_only.contains("v1-secret-path"), "{client_only}");
     }
 
     #[test]
@@ -539,21 +623,61 @@ mod tests {
         let Answer::Success(envelope) = answer else {
             panic!("a 201 is a success: {answer:?}");
         };
-        let payment = envelope.transaction.expect("has a transaction");
-        assert_eq!(payment.status.as_deref(), Some("pending"));
+        assert_eq!(envelope.transaction.status.as_deref(), Some("pending"));
     }
 
     #[test]
-    fn a_success_with_an_undocumented_body_is_malformed_and_never_quotes_it() {
+    fn a_success_missing_its_payload_is_malformed_not_an_empty_success() {
+        // `{}`, and the `data` envelope Notch Pay's API reference page shows
+        // where the specification says `transaction` / `endpoints`.
+        for body in [&b"{}"[..], br#"{"code":200,"data":{"id":"pay_1"}}"#] {
+            let payment: Result<Answer<PaymentEnvelope>, _> =
+                interpret(StatusCode::ACCEPTED, body, "test");
+            assert!(
+                matches!(payment, Err(ProviderError::Malformed { .. })),
+                "{payment:?}"
+            );
+        }
+        for body in [
+            &b"{}"[..],
+            br#"{"code":200,"data":[{"id":"wh_1","url":"https://example.com","active":true}]}"#,
+        ] {
+            let page: Result<Answer<WebhookPage>, _> = interpret(StatusCode::OK, body, "test");
+            assert!(
+                matches!(page, Err(ProviderError::Malformed { .. })),
+                "{page:?}"
+            );
+            let created: Result<Answer<WebhookEnvelope>, _> =
+                interpret(StatusCode::CREATED, body, "test");
+            assert!(
+                matches!(created, Err(ProviderError::Malformed { .. })),
+                "{created:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_success_whose_body_makes_serde_quote_a_value_is_malformed_and_never_quotes_it() {
+        // serde's own message for this body is `invalid type: string
+        // "+237670000000", expected …` — it quotes the number, so the
+        // assertion below would fail if that message were ever forwarded.
+        let body = br#"{"transaction":{"amount":"+237670000000"}}"#;
+        let serde_says = serde_json::from_slice::<PaymentEnvelope>(body)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            serde_says.contains(PAYER),
+            "the canary must make serde quote the value: {serde_says}"
+        );
         let result: Result<Answer<PaymentEnvelope>, _> =
-            interpret(StatusCode::ACCEPTED, b"+237670000000 not json", "test");
+            interpret(StatusCode::ACCEPTED, body, "test");
         let error = result.expect_err("refused");
         assert!(
             matches!(error, ProviderError::Malformed { .. }),
             "{error:?}"
         );
-        let printed = format!("{error} {error:?}");
-        assert!(!printed.contains("+237670000000"), "{printed}");
+        assert!(!format!("{error} {error:?}").contains(PAYER));
     }
 
     #[test]
@@ -571,6 +695,26 @@ mod tests {
             Some("A payment with this reference already exists")
         );
         assert!(refusal.errors.is_empty());
+    }
+
+    #[test]
+    fn an_irregular_errors_field_does_not_cost_the_message() {
+        for body in [
+            &br#"{"message":"A payment with this reference already exists","errors":[]}"#[..],
+            br#"{"message":"A payment with this reference already exists","errors":{"f":"one string"}}"#,
+            br#"{"message":"A payment with this reference already exists","errors":{"f":[1,2]}}"#,
+        ] {
+            let answer: Answer<PaymentEnvelope> =
+                interpret(StatusCode::CONFLICT, body, "test").expect("an answer");
+            let Answer::Refused(refusal) = answer else {
+                panic!("a 409 is a refusal: {answer:?}");
+            };
+            assert_eq!(
+                refusal.message.as_deref(),
+                Some("A payment with this reference already exists")
+            );
+            assert!(refusal.errors.is_empty(), "{refusal:?}");
+        }
     }
 
     #[test]
@@ -607,8 +751,9 @@ mod tests {
     }
 
     #[test]
-    fn a_rate_limit_or_a_server_error_leaves_the_fate_unknown() {
+    fn a_timeout_a_rate_limit_or_a_server_error_leaves_the_fate_unknown() {
         for status in [
+            StatusCode::REQUEST_TIMEOUT,
             StatusCode::TOO_MANY_REQUESTS,
             StatusCode::INTERNAL_SERVER_ERROR,
             StatusCode::BAD_GATEWAY,
@@ -623,7 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn a_redirect_is_not_followed_into_a_payment_api() {
+    fn a_3xx_answer_is_malformed_because_the_client_follows_no_redirect() {
         let result: Result<Answer<PaymentEnvelope>, _> = interpret(StatusCode::FOUND, b"", "test");
         assert!(
             matches!(result, Err(ProviderError::Malformed { .. })),
@@ -633,56 +778,48 @@ mod tests {
 
     #[test]
     fn a_webhook_body_that_is_not_an_event_is_malformed_and_never_quoted() {
-        let error = parse_event(b"payer +237670000000").expect_err("refused");
-        assert!(
-            matches!(error, ProviderError::Malformed { .. }),
-            "{error:?}"
-        );
-        assert!(!format!("{error} {error:?}").contains("+237670000000"));
+        // `data` as a string makes serde say `invalid type: string
+        // "+237670000000", expected struct EventData`.
+        for body in [&b"payer +237670000000"[..], br#"{"data":"+237670000000"}"#] {
+            let error = parse_event(body).expect_err("refused");
+            assert!(
+                matches!(error, ProviderError::Malformed { .. }),
+                "{error:?}"
+            );
+            assert!(!format!("{error} {error:?}").contains(PAYER));
+        }
     }
 
     #[tokio::test]
-    async fn a_request_that_never_completes_is_transport_and_never_a_refusal() {
+    async fn a_request_that_never_completes_is_transport_and_prints_no_url() {
         // Nothing listens on loopback port 1.
-        let result = client("http://127.0.0.1:1")
+        let client = client("http://127.0.0.1:1");
+        let initialize = client
             .initialize_payment(&InitializePayment {
                 amount: 5000,
                 currency: "XAF",
-                phone: "+237670000000",
+                phone: PAYER,
                 reference: "6d7c0f1e-0000-4000-8000-000000000001",
                 description: None,
             })
             .await;
-        assert!(
-            matches!(result, Err(ProviderError::Transport { .. })),
-            "{result:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_two_payment_paths_are_built_from_one_escaped_segment() {
-        // Also a closed port: the assertion is on the error's context, which
-        // names the operation, not on any answer.
-        let client = client("http://127.0.0.1:1");
         let process = client
-            .process_payment(
-                "trx.123",
-                &ProcessPayment {
-                    channel: "cm.mobile",
-                    data: ProcessData {
-                        phone: "+237670000000",
-                    },
-                },
-            )
+            .process_payment("trx.secret-ref", &process_body())
             .await;
-        let read = client.retrieve_payment("trx.123").await;
-        for (result, operation) in [(process, "processing"), (read, "reading")] {
+        let read = client.retrieve_payment("trx.secret-ref").await;
+        for (result, operation) in [
+            (initialize, "initializing"),
+            (process, "processing"),
+            (read, "reading"),
+        ] {
             let error = result.expect_err("nothing listens");
             assert!(
                 matches!(error, ProviderError::Transport { .. }),
                 "{error:?}"
             );
-            assert!(error.to_string().contains(operation), "{error}");
+            let printed = format!("{error} {error:?}");
+            assert!(printed.contains(operation), "{printed}");
+            assert!(!printed.contains("trx.secret-ref"), "{printed}");
         }
     }
 }

@@ -1,5 +1,5 @@
-//! The JSON bodies of the four Notch Pay operations vpay uses, and nothing
-//! else.
+//! The JSON bodies of the Notch Pay operations vpay uses — five calls and
+//! one inbound event — and nothing else.
 //!
 //! Transcribed from Notch Pay's OpenAPI specification **2.1.0**
 //! (`https://developer.notchpay.co/openapi.yaml`, read 2026-10-20). Where the
@@ -26,13 +26,27 @@
 //! the attribute says exactly what the rail sends, and a reviewer can check
 //! it against the specification one line at a time.
 //!
-//! # Why the response fields are `Option`
+//! # Which fields are required, and which are `Option`
 //!
-//! The specification marks most of them required. They are optional here
-//! anyway, so that a missing one reaches the adapter as `None` and becomes a
-//! [`ProviderError::Malformed`](vpay_provider::ProviderError::Malformed) that
-//! names the field — rather than a serde error, whose message can quote the
-//! value it choked on, and that value can be a payer's number.
+//! Each envelope's **payload** — `transaction`, `endpoint`, `endpoints`, an
+//! event's `data` — is required. Without it a body is not an answer at all,
+//! and `{}` must be `Malformed`, not an empty success: a webhook list that
+//! decoded as "no endpoints" would make a caller register a duplicate on
+//! every run. The fields **inside** a payload are `Option`, so that a missing
+//! one reaches the adapter as `None` and becomes a `Malformed` that names the
+//! field. Neither path ever shows serde's own message, which can quote the
+//! value it choked on; `interpret` and `parse_event` discard it.
+//!
+//! # Where Notch Pay's pages disagree with the specification
+//!
+//! The API reference pages show some answers under a `data` key — the
+//! webhook list as `{ "code": 200, "data": [ … ] }`, with an `active` field
+//! on each endpoint — where the specification says `endpoints`,
+//! `transaction` and `endpoint`, and has no `active`. The API reference also
+//! lists a `payment.processing` event that the specification's enum does
+//! not. This file follows the specification, so a `data`-shaped answer is
+//! `Malformed` rather than silently read; RFC-0012 § 10 lists all three, and
+//! the first sandbox session settles them.
 
 use std::fmt;
 
@@ -129,7 +143,7 @@ pub struct PaymentEnvelope {
     #[serde(rename = "message")]
     pub message: Option<String>,
     #[serde(rename = "transaction")]
-    pub transaction: Option<Payment>,
+    pub transaction: Payment,
 }
 
 /// Hides Notch Pay's `message`, which is the rail's own prose.
@@ -201,17 +215,6 @@ impl fmt::Debug for Payment {
     }
 }
 
-/// Notch Pay's error envelope (`General.ErrorResponse` in the
-/// specification): `code`, `status`, `message`, and an `errors` map from a
-/// field name to its messages.
-#[derive(Deserialize)]
-pub(crate) struct ErrorEnvelope {
-    #[serde(rename = "message")]
-    pub(crate) message: Option<String>,
-    #[serde(rename = "errors")]
-    pub(crate) errors: Option<std::collections::BTreeMap<String, Vec<String>>>,
-}
-
 /// A webhook event, as Notch Pay POSTs it to a registered endpoint.
 ///
 /// `{ "id": "evt_…", "type": "payment.complete", "created_at": "…",
@@ -227,7 +230,7 @@ pub struct Event {
     #[serde(rename = "type")]
     pub event_type: Option<String>,
     #[serde(rename = "data")]
-    pub data: Option<EventData>,
+    pub data: EventData,
 }
 
 /// The part of an event's `data` vpay reads: which payment it is about.
@@ -267,7 +270,9 @@ impl fmt::Debug for EventData {
 ///
 /// These are the events a vpay endpoint subscribes to. Transfer and customer
 /// events are in the same enum and are not charges, so a vpay endpoint never
-/// asks for them.
+/// asks for them. `payment.processing`, which the API reference lists and the
+/// specification's enum does not, is not here until the sandbox shows it is
+/// accepted.
 pub const PAYMENT_EVENTS: [&str; 5] = [
     "payment.created",
     "payment.complete",
@@ -305,7 +310,7 @@ impl fmt::Debug for CreateWebhook<'_> {
 #[derive(Deserialize)]
 pub struct WebhookEnvelope {
     #[serde(rename = "endpoint")]
-    pub endpoint: Option<Webhook>,
+    pub endpoint: Webhook,
 }
 
 /// The body of `GET /webhooks`: one page of endpoints.
@@ -317,7 +322,7 @@ pub struct WebhookEnvelope {
 #[derive(Deserialize)]
 pub struct WebhookPage {
     #[serde(rename = "endpoints")]
-    pub endpoints: Option<Vec<Webhook>>,
+    pub endpoints: Vec<Webhook>,
     #[serde(rename = "current_page")]
     pub current_page: Option<u32>,
     #[serde(rename = "last_page")]
@@ -446,7 +451,7 @@ mod tests {
         }"#;
         let envelope: PaymentEnvelope = serde_json::from_slice(body).expect("decodes");
         assert_eq!(envelope.code, Some(202));
-        let payment = envelope.transaction.expect("has a transaction");
+        let payment = envelope.transaction;
         assert_eq!(payment.id.as_deref(), Some("pay_123456789"));
         assert_eq!(payment.status.as_deref(), Some("complete"));
         assert_eq!(payment.amount_minor(), Some(5000));
@@ -460,7 +465,7 @@ mod tests {
         // `reference`, the merchant's in `trxref`.
         let body = br#"{"transaction":{"reference":"trx.123456789abcdefghj","trxref":"order_123","status":"processing"}}"#;
         let envelope: PaymentEnvelope = serde_json::from_slice(body).expect("decodes");
-        let payment = envelope.transaction.expect("has a transaction");
+        let payment = envelope.transaction;
         assert_eq!(payment.reference.as_deref(), Some("trx.123456789abcdefghj"));
         assert_eq!(payment.trxref.as_deref(), Some("order_123"));
         assert_eq!(payment.amount_minor(), None, "no amount was sent");
@@ -489,7 +494,7 @@ mod tests {
         }"#;
         let event: Event = serde_json::from_slice(body).expect("decodes");
         assert_eq!(event.event_type.as_deref(), Some("payment.complete"));
-        let data = event.data.expect("has data");
+        let data = event.data;
         assert_eq!(data.reference.as_deref(), Some("order_123"));
         assert_eq!(data.id.as_deref(), Some("pay_123456789"));
     }
@@ -562,7 +567,7 @@ mod tests {
         let page: WebhookPage = serde_json::from_slice(body).expect("decodes");
         assert_eq!(page.current_page, Some(1));
         assert_eq!(page.last_page, Some(1));
-        let endpoints = page.endpoints.expect("has endpoints");
+        let endpoints = page.endpoints;
         let [endpoint] = endpoints.as_slice() else {
             panic!("one endpoint: {endpoints:?}");
         };
