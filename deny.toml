@@ -47,6 +47,26 @@ ignore = [
   # reports `note[advisory-ignored]` against `rsa v0.9.10`. It was preemptive
   # when added on 2026-08-09 and is load-bearing as of 2026-08-11.
   "RUSTSEC-2023-0071",
+
+  # RUSTSEC-2024-0449: `unsafe-libyaml` is unmaintained. This is an
+  # "unmaintained" notice, not a vulnerability: no exploitable defect is named.
+  #
+  # Where it comes from (`cargo tree -i unsafe-libyaml -e normal,build`):
+  #     unsafe-libyaml <- serde_yaml 0.9 (deprecated) <- figment <- vpay-config
+  #     unsafe-libyaml <- serde_yaml_ng 0.10 <- vpay-config, xtask
+  # so it is linked into every shipping binary. What it parses is vpay's own
+  # configuration documents, written by the operator and mounted from a
+  # ConfigMap, never a request body or anything a caller controls.
+  #
+  # Why it is accepted rather than fixed: there is no drop-in. Removing it
+  # means replacing figment's YAML provider and serde_yaml_ng with a parser
+  # that does not sit on libyaml, which is a change to how every deployment's
+  # config is read, and it belongs in its own reviewed PR, not in a lockfile
+  # bump. Revisit when that PR exists, or immediately if a vulnerability (not
+  # only "unmaintained") is published against unsafe-libyaml.
+  #
+  # Added 2026-10-20, when the advisory began failing `cargo deny` on master.
+  "RUSTSEC-2024-0449",
 ]
 
 [licenses]
