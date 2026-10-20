@@ -71,14 +71,14 @@ stateDiagram-v2
 
 `Taken --> InFlight` is the only edge back, and the row it creates carries
 `is_retry`, which a callback that finds it set can only refuse: "at most one retry" is a property of
-the data. `InFlight --> Taken` is a `DELETE ... ` whose row count decides the
+the data. `InFlight --> Taken` is a `DELETE ...` whose row count decides the
 race, so there is no state in which two callbacks both proceed.
 
 ## What can go wrong, and what the person sees
 
 Every refusal is the same `401` and the same sentence as the password and TOTP
 legs; the dashboard turns it into one generic message on `/login`. The reason is
-in vpay's log, prefixed `sso `, and carries no token, code, secret or claim
+in vpay's log, prefixed `sso`, and carries no token, code, secret or claim
 value:
 
 | Log stage                                        | Meaning                                                                         |
