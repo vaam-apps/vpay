@@ -84,6 +84,12 @@ Notes on cells that a word cannot carry:
 - **The "Callback URL" column** is RFC-0013's subject: per request on the two
   shipping rails, registered with the account on the three designed ones.
   Nothing anywhere registers one today.
+- **Callback verification** is [RFC-0014](../rfc/0014-verifying-rail-callbacks.md)'s
+  subject (Draft, 2026-10-20). Today vpay checks no rail's callback: MTN
+  signs nothing; Orange's `notif_token` is stored at submit and never
+  compared; Stripe, PayPal and Notch Pay sign, and the port cannot read a
+  header. A callback is a hint on every row either way: it moves a poll,
+  never money.
 - **Account lookup** is "unsupported" on every rail but MTN because none of the
   others documents a registered-name lookup for a payer.
 

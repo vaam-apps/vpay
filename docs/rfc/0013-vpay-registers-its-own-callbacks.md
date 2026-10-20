@@ -405,7 +405,10 @@ Why each piece is there:
   signature can be checked until the port grows a headers argument: RFC-0010
   open question 4. RFC-0012 § 2 refused to configure Notch Pay's hash key on
   exactly this ground: "a secret that nothing reads is a secret held for no
-  reason".
+  reason". _2026-10-20: [RFC-0014](0014-verifying-rail-callbacks.md)
+  designs the reader: a defaulted `verify_callback` with the headers. For an
+  endpoint vpay creates itself, verifying needs this section's sealed store
+  (RFC-0014 § 5). Neither is built._
 - **So the first build discards it** (open question 2). The adapter keeps the
   endpoint id and drops the secret, and a `Debug` canary proves it never
   reaches a log. When the port can verify, vpay replaces each endpoint it
