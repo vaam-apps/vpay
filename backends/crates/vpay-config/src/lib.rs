@@ -283,17 +283,17 @@ pub enum ConfigError {
         /// The currencies the adapter charges in, comma-separated.
         allowed: String,
     },
-    /// A rail credential's `test_` marker contradicts `deployment.livemode`:
-    /// a key containing `test_` in a livemode deployment, or one without it
-    /// in a sandbox.
+    /// A rail credential's test-key marker (`test.` or `test_`) contradicts
+    /// `deployment.livemode`: a key containing either in a livemode
+    /// deployment, or one with neither in a sandbox.
     ///
     /// [`Self::PublishableKeyLivemodeMismatch`]'s rule applied to a rail key,
     /// as RFC-0012 § 2 applies it to Notch Pay's. It has to sit on the key
     /// because the host cannot carry it: Notch Pay serves its sandbox and its
     /// production from the one host, so [`validate_host`]'s stub-marker rule
     /// cannot tell them apart. **Not an environment branch** (ADR-0003):
-    /// nothing behaves differently because a key says `test.` or `test_`; boot only
-    /// refuses a label that contradicts the deployment.
+    /// nothing behaves differently because a key says `test.` or `test_`;
+    /// boot only refuses a label that contradicts the deployment.
     ///
     /// **The key is never in the message**, unlike the publishable-key
     /// variant's: a rail credential is a secret, and only its name is
