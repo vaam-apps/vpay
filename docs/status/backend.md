@@ -456,14 +456,16 @@ because URL parsing reads `%2E%2E` as `..`. It now returns
 `Malformed`, with a fixed message, before anything is sent. `...` is refused
 by an explicit decision
 ([reference/rails.md](../reference/rails.md#a-path-segment-the-caller-chose)).
-No unchecked variant was kept. The one shipping caller, `mtn_momo`'s
-account-holder lookup, propagates the refusal before its token fetch. **What
-this does not change:** no route reached the hole, because `/v1` admits
-digits only, so this narrows what the port accepts rather than closing
-anything exploitable today. The merchant SDKs' own escaping still passes dot
-segments. `vpay-notchpay` (RFC-0012, merged the same day in #285, linked by
-no binary) shipped with a private copy of this guard, `reference_segment`. It
-is deleted here, and the client's `payment_request` calls `path_segment(..)?`.
+No unchecked variant was kept. `mtn_momo`'s account-holder lookup propagates
+the refusal before its token fetch. `vpay-notchpay` (RFC-0012, #285) shipped
+with a private copy of this guard, `reference_segment`. It is deleted here,
+and the client's `payment_request` calls `path_segment(..)?`; the `notchpay`
+rail (#295, the same day) reads and processes payments through that client.
+**What this does not change:** no route reached the hole. `/v1` admits only
+digits for MTN's number, and the `notchpay` rail addresses a payment by
+vpay's own UUID reference. So this narrows what the port accepts rather than
+closing anything exploitable today. The merchant SDKs' own escaping still
+passes dot segments.
 Evidence and four caught mutations:
 [verification/2026-10-20-path-segment-dot-segments.md](verification/2026-10-20-path-segment-dot-segments.md).
 
