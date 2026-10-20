@@ -784,6 +784,15 @@ which move from the merchant to vpay, and RFC-0012 § 9's "until then".
 6. **Model B's registration unit**, the platform rather than the account
    (§ 7). (Maintainer, with RFC-0009.)
 
+7. **A rail that registers its URL but only in a dashboard.** Flutterwave,
+   re-measured on 2026-10-20, documents no webhook-registration endpoint on
+   either API version
+   ([evaluation](../plans/2026-09-23-card-provider-evaluation.md)). If it gets
+   an adapter, it is `Registered` and `ensure_callback_endpoint` stays
+   `Unsupported`, so the pass can only report that the URL is the merchant's
+   to register. Is a third mode worth naming for that, or is `Unsupported` on
+   a `Registered` rail the honest answer already?
+
 ## Impact on existing invariants
 
 - **Rails behind the port** holds. The core branches on
