@@ -88,5 +88,32 @@ services:
       timeout: 3s
       retries: 30
 
+  # Stands in for Notch Pay (RFC-0012), from
+  # `backends/tests/conformance/wiremock/notchpay`, which the conformance
+  # suite also mounts. Transcribed from Notch Pay's openapi.yaml 2.1.0;
+  # nothing in this repository has called Notch Pay. No vpay process talks to
+  # it unless the commented `notchpay` block in config/application.yml is
+  # uncommented. No host port, deliberately: compose.demo.yml runs two demo
+  # stacks side by side, and a fixed port here would make them collide.
+  # Reach it from inside the network, or `docker compose exec` into it.
+  wiremock-notchpay:
+    image: wiremock/wiremock:3.9.2
+    command: ["--global-response-templating", "--verbose"]
+    volumes:
+      - ./backends/tests/conformance/wiremock/notchpay:/home/wiremock:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "curl",
+          "-fsS",
+          "-o",
+          "/dev/null",
+          "http://localhost:8080/__admin/health",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   pgdata:

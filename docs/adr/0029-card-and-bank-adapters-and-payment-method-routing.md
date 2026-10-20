@@ -16,6 +16,14 @@
     confirmation**. D12 in particular refuses a spelling the maintainer
     proposed that day, for reasons recorded there; it is the first thing to
     read if this ADR is to be reversed anywhere.
+  - **D1's third hard rule amended 2026-10-20 by
+    [ADR-0031](0031-a-status-read-authenticated-by-a-server-side-key.md):**
+    a status read authenticated by a key the provider calls public is
+    admissible when that key is held server-side, every secret the provider
+    has is sent on every call, boot refuses a configuration without that
+    secret, and the exposure is documented and logged at boot. Rules 1, 2
+    and 4, and D2–D17, are unchanged. The rule as written below is the text
+    ADR-0031 replaced.
 - **Implementation:** none. This ADR records decisions, not capability.
   Nothing it decides exists in code on the day it is written: the port has no
   `method_types`, no `amount_limits`, no `supports_off_session`, no

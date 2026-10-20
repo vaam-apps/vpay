@@ -701,7 +701,12 @@ the merchant `not_implemented` (**501**), as "Not served — the honest 404 stan
 (`an_unbuilt_rail_refund_fails_and_releases_its_reservation`,
 `backends/tests/integration/tests/refunds.rs`). That makes
 `not_implemented` (501) a code a `/v1` caller can receive again, from
-`POST /v1/refunds` on Orange and nowhere else.)_
+`POST /v1/refunds` on Orange and nowhere else.)_ _(And on Notch Pay since
+2026-10-20: `notchpay::refund` is a declared token too (RFC-0012 § 7), so
+`verify-status` prints **2** and `POST /v1/refunds` answers `501` on either
+rail. Notch Pay is the first shipping rail that refunds to the instrument
+that paid (`RefundDestination::Origin`), so a `destination` sent to it is a
+`400` naming `destination` before the token is reached.)_
 Every one is derived from a `Category`; see
 [../flows/errors.md](../flows/errors.md). `Category::Conflict` now carries
 three codes rather than its default alone — `invalid_state`,

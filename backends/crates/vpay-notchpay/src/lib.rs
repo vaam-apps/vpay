@@ -1,11 +1,12 @@
 //! A typed client for the Notch Pay REST API, transcribed from Notch Pay's
 //! OpenAPI specification 2.1.0, for vpay's own use (`publish = false`).
 //!
-//! **No adapter uses it yet and no binary links it.** It sends what a caller
-//! asks and reports what Notch Pay answered; deciding what an answer means
-//! for a charge is the adapter's, and the adapter waits on a decision about
-//! ADR-0029 D1's third rule ([RFC-0012](../../../../docs/rfc/0012-notchpay-adapter.md)).
-//! Nothing here has called Notch Pay. Why it covers what it covers, why every
+//! **`vpay-adapter-notchpay` uses it since 2026-10-20**, admitted under
+//! ADR-0031 (ADR-0029 D1's third rule amended), and `vpay-server` links that
+//! adapter. It sends what a caller asks and reports what Notch Pay answered;
+//! deciding what an answer means for a charge is the adapter's
+//! ([RFC-0012](../../../../docs/rfc/0012-notchpay-adapter.md)). **Nothing here
+//! has called Notch Pay.** Why it covers what it covers, why every
 //! call carries the private key, why a `4xx` is an answer and not an error,
 //! and every place the specification and Notch Pay's guides disagree are in
 //! [docs/reference/vpay-notchpay.md](../../../../docs/reference/vpay-notchpay.md).
@@ -24,6 +25,7 @@ pub mod wire;
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::time::Duration;
 
 use reqwest::header::{ACCEPT, AUTHORIZATION, HeaderValue};
 use reqwest::{Method, StatusCode, Url};
@@ -150,6 +152,9 @@ pub struct Client {
     http: reqwest::Client,
     base_url: String,
     keys: Keys,
+    /// The whole-request deadline every call carries, when the caller set
+    /// one with [`Client::with_request_timeout`].
+    request_timeout: Option<Duration>,
 }
 
 /// The base URL prints as `scheme://host[:port]` only, as every URL in this
@@ -159,6 +164,7 @@ impl fmt::Debug for Client {
         f.debug_struct("Client")
             .field("base_url", &SafeUrl::new(&self.base_url))
             .field("keys", &self.keys)
+            .field("request_timeout", &self.request_timeout)
             .finish_non_exhaustive()
     }
 }
@@ -196,7 +202,25 @@ impl Client {
             http,
             base_url: url.as_str().trim_end_matches('/').to_owned(),
             keys,
+            request_timeout: None,
         })
+    }
+
+    /// Every call made through this client carries `timeout` as its
+    /// whole-request deadline.
+    ///
+    /// The adapter sets it from `ProviderConfig::request_timeout`, because the
+    /// process's one `reqwest::Client` is shared by every rail and carries the
+    /// default deadline only (`vpay_provider::ProviderConfig`'s
+    /// `request_timeout` field says why the deadline lives on the
+    /// configuration). Without it a configured deadline would be ignored, and
+    /// the conformance case that proves a slow rail is a `Transport` error
+    /// would pass on the client's default instead of on the adapter's
+    /// configuration — exactly what it caught on `orange_money`.
+    #[must_use]
+    pub const fn with_request_timeout(mut self, timeout: Duration) -> Self {
+        self.request_timeout = Some(timeout);
+        self
     }
 
     /// `POST /payments`. The specification documents `201` on success.
@@ -310,6 +334,9 @@ impl Client {
             .header(ACCEPT, "application/json");
         if let Some(sync_account) = &self.keys.sync_account {
             request = request.header(X_SYNC, sync_account.clone());
+        }
+        if let Some(timeout) = self.request_timeout {
+            request = request.timeout(timeout);
         }
         request
     }
@@ -459,6 +486,28 @@ mod tests {
             channel: "cm.mobile",
             data: ProcessData { phone: PAYER },
         }
+    }
+
+    /// The deadline the adapter configures is on the request itself, so it
+    /// applies whatever the shared `reqwest::Client` was built with — and a
+    /// client nobody configured carries none of its own.
+    #[test]
+    fn a_configured_deadline_rides_on_every_request_and_none_is_invented() {
+        let deadline = Duration::from_millis(150);
+        let timed = client("https://api.notchpay.co").with_request_timeout(deadline);
+        for request in [
+            timed.request(Method::GET, "/payments/abc"),
+            timed.request(Method::POST, "/payments"),
+            timed.request(Method::GET, "/webhooks?page=1"),
+        ] {
+            let request = request.build().expect("builds");
+            assert_eq!(request.timeout(), Some(&deadline));
+        }
+        let untimed = client("https://api.notchpay.co")
+            .request(Method::GET, "/payments/abc")
+            .build()
+            .expect("builds");
+        assert_eq!(untimed.timeout(), None);
     }
 
     #[test]

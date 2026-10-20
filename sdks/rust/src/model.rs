@@ -37,7 +37,7 @@ pub enum IntentStatus {
 ///
 /// Closed, and `#[non_exhaustive]` so adding a rail is not a breaking change
 /// for a caller who matched on it. `sdks/nodejs/src/types.ts` closes the same
-/// list (`PaymentMethodType = "mtn_momo" | "orange_money"`), and it is closed
+/// list (`PaymentMethodType = "mtn_momo" | "orange_money" | "notchpay"`), and it is closed
 /// on the *request* side only: a rail this SDK version predates must still be
 /// readable in a response, so [`PaymentIntent::payment_method_types`] stays
 /// `Vec<String>` exactly as Node's `PaymentIntent.payment_method_types` stays
@@ -50,6 +50,12 @@ pub enum PaymentMethodType {
     MtnMomo,
     /// Orange Money — a redirect rail: the payer is sent to the rail's page.
     OrangeMoney,
+    /// Notch Pay — a push rail through an aggregator: MTN MoMo and Orange
+    /// Money in Cameroon on one account. Added 2026-10-20 (RFC-0012); the
+    /// server's adapter is proven against a stub only and has never called
+    /// Notch Pay.
+    #[serde(rename = "notchpay")]
+    NotchPay,
 }
 
 impl PaymentMethodType {
@@ -64,6 +70,7 @@ impl PaymentMethodType {
         match self {
             PaymentMethodType::MtnMomo => "mtn_momo",
             PaymentMethodType::OrangeMoney => "orange_money",
+            PaymentMethodType::NotchPay => "notchpay",
         }
     }
 }
@@ -1475,6 +1482,7 @@ mod tests {
         for (value, wire) in [
             (PaymentMethodType::MtnMomo, "mtn_momo"),
             (PaymentMethodType::OrangeMoney, "orange_money"),
+            (PaymentMethodType::NotchPay, "notchpay"),
         ] {
             assert_eq!(value.as_wire_str(), wire);
             assert_eq!(value.to_string(), wire);

@@ -10,6 +10,9 @@
  *
  * - `orange_money`'s refund is a declared `NotImplemented` token — an Orange
  *   refund is an outbound transfer this repository has no specification for;
+ * - `notchpay`'s refund is a declared `NotImplemented` token too — Notch Pay
+ *   documents refunds in a guide only, with nothing that makes a replay safe
+ *   (RFC-0012 § 7);
  * - `mtn_momo`'s is MTN's Disbursements `transfer`, WireMock-proven and
  *   rail-unproven: **no real MTN Disbursements credential exists in this
  *   project** — the only `disbursement_subscription_key` anywhere is the stub

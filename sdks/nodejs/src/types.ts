@@ -17,7 +17,7 @@ export type PaymentIntentStatus =
   | "canceled";
 
 /** Rail codes this SDK's `payment_method_types` values may hold. */
-export type PaymentMethodType = "mtn_momo" | "orange_money";
+export type PaymentMethodType = "mtn_momo" | "orange_money" | "notchpay";
 
 /** Redirect-rail next step, Stripe's own `next_action.redirect_to_url` shape. */
 export interface NextAction {
@@ -1236,8 +1236,19 @@ export type OrangeMoneyPaymentMethodData = {
   type: "orange_money";
 };
 
+/**
+ * Notch Pay (RFC-0012, 2026-10-20): a push rail, so the same instrument as
+ * MTN's, under this rail's own code. The server's adapter is proven against a
+ * stub only and has never called Notch Pay.
+ */
+export type NotchPayPaymentMethodData = {
+  type: "notchpay";
+  notchpay: { msisdn: string };
+};
+
 export type ConfirmPaymentIntentParams =
   | { payment_method_data: MtnMomoPaymentMethodData }
+  | { payment_method_data: NotchPayPaymentMethodData }
   | { payment_method_data: OrangeMoneyPaymentMethodData; return_url: string };
 
 /**
@@ -1399,8 +1410,8 @@ export type RefundDestination = {
  * # No refund this creates has ever moved money
  *
  * The route is real and so is every refusal it makes, but nothing on the
- * other side of it pays anybody: `orange_money`'s refund is a declared
- * `NotImplemented` token, `mtn_momo`'s is MTN's Disbursements `transfer`
+ * other side of it pays anybody: `orange_money`'s and `notchpay`'s refunds
+ * are declared `NotImplemented` tokens, `mtn_momo`'s is MTN's Disbursements `transfer`
  * which is WireMock-proven and for which **no real MTN credential exists in
  * this project** — the only `disbursement_subscription_key` anywhere is the
  * stub the e2e/demo stack points at a WireMock container, and the product has
@@ -1428,10 +1439,12 @@ export interface CreateRefundParams {
    *
    * Optional because the port allows a rail that refunds to the instrument
    * that paid, and such a rail refuses a `destination` with a `400`.
-   * **Neither rail vpay carries today is one**: `mtn_momo` and `orange_money`
-   * both declare that a refund needs a payee, so a create with no
-   * `destination` is a `400` naming `destination` against every deployment
-   * this repository can build.
+   * `mtn_momo` and `orange_money` both declare that a refund needs a payee,
+   * so a create with no `destination` is a `400` naming `destination` on
+   * either. `notchpay` (2026-10-20) is the first shipping rail that refunds
+   * to the instrument that paid and so refuses one — but its refund is a
+   * declared `NotImplemented` token, so a refund there fails whatever it
+   * carries.
    */
   destination?: RefundDestination | undefined;
   metadata?: Record<string, string> | undefined;

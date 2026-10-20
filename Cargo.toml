@@ -9,6 +9,7 @@ members = [
     "backends/crates/vpay-adapter-mtn-momo",
     "backends/crates/vpay-adapter-orange-money",
     "backends/crates/vpay-notchpay",
+    "backends/crates/vpay-adapter-notchpay",
     "backends/crates/vpay-api",
     "backends/crates/vpay-worker",
     "backends/crates/vpay-testkit",
@@ -464,6 +465,7 @@ vpay-provider = { path = "backends/crates/vpay-provider", version = "0.8.0" } # 
 vpay-notchpay = { path = "backends/crates/vpay-notchpay", version = "0.8.0" } # x-release-please-version
 vpay-adapter-mtn-momo = { path = "backends/crates/vpay-adapter-mtn-momo", version = "0.8.0" } # x-release-please-version
 vpay-adapter-orange-money = { path = "backends/crates/vpay-adapter-orange-money", version = "0.8.0" } # x-release-please-version
+vpay-adapter-notchpay = { path = "backends/crates/vpay-adapter-notchpay", version = "0.8.0" } # x-release-please-version
 vpay-api = { path = "backends/crates/vpay-api", version = "0.8.0" } # x-release-please-version
 vpay-worker = { path = "backends/crates/vpay-worker", version = "0.8.0" } # x-release-please-version
 vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.8.0" } # x-release-please-version

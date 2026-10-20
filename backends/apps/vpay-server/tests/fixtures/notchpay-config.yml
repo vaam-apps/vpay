@@ -1,0 +1,30 @@
+# A sandbox configuration with a `notchpay` rail, for
+# `a_notchpay_rail_is_warned_about_at_boot_and_its_keys_are_never_printed` in
+# `tests/cli.rs`.
+#
+# Notch Pay is admitted under ADR-0031 (rule 3 amended): its status read takes
+# a key Notch Pay calls public, and every boot of a deployment that configures
+# it must say so (condition 4). This fixture gets past validation and the
+# adapter join, so the warning is emitted, and then stops on the missing
+# signing key — no database, no rail call.
+#
+# Literal keys, which `livemode: false` permits. They carry `test_`, because
+# a sandbox key without it refuses to boot (RFC-0012 § 2), and they are named
+# so a secret scanner cannot mistake them for a real provider's.
+
+deployment:
+  name: vpay-server-cli-notchpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+providers:
+  - code: notchpay
+    currency: XAF
+    host:
+      url: http://wiremock-notchpay:8080
+      label: notchpay-wiremock
+    settings:
+      channel: cm.mobile
+    credentials:
+      public_key: cli-public-key-test_0001
+      private_key: cli-private-key-test_0002

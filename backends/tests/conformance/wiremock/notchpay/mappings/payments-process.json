@@ -1,0 +1,50 @@
+{
+  "mappings": [
+    {
+      "name": "process accepted (202, processing) -- cm.mobile and a +-prefixed number under data.phone",
+      "priority": 10,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/payments/[0-9a-f-]{36}",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.channel",
+              "equalTo": "cm.mobile"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.data.phone",
+              "matches": "^\\+237[0-9]{9}$"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment is being processed\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{request.pathSegments.[1]}}\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"processing\"}}"
+      },
+      "metadata": {
+        "why": [
+          "openapi.yaml 2.1.0's processPayment (202). The path carries OUR reference, as the",
+          "specification's example does; Notch Pay's direct-charge guide passes its own trx. reference",
+          "instead, and which one the live API takes is RFC-0012 section 10 item 2, unanswered.",
+          "The number goes under data.phone, the specification's first form (one guide uses",
+          "data.account_number). Never confirmed against Notch Pay."
+        ]
+      }
+    }
+  ]
+}

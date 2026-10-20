@@ -43,9 +43,13 @@
 //! Every case below selects its stubbed response by *reference*: MTN matches
 //! it on the `X-Reference-Id` header, Orange on the body's `order_id` (which
 //! is `ChargeRef::reference_id` rendered as a string, per
-//! `docs/flows/adapter-orange-money.md`). So both rails' mapping directories
-//! stub the *same* UUIDs, and adding a rail means adding one mappings
-//! directory rather than editing this file:
+//! `docs/flows/adapter-orange-money.md`), and Notch Pay on the initialize
+//! body's `reference` and the read's path (`docs/flows/adapter-notchpay.md`).
+//! So every rail's mapping directory stubs the *same* UUIDs, and adding a
+//! rail means adding one mappings directory and one row per table function
+//! rather than editing a case — which is what `notchpay` did on 2026-10-20,
+//! with one suite change RFC-0010 section 8 had named in advance
+//! ([`callback_url_pattern`] became an `Option`):
 //!
 //! | constant | what the rail's mappings must do |
 //! |---|---|
@@ -150,20 +154,26 @@ use vpay_provider::{
 };
 use vpay_testkit::containers::start_wiremock;
 
-/// The two rails this workspace ships, as the *only* place a rail's name
+/// The rails this workspace ships, as the *only* place a rail's name
 /// appears in a test body. Everything else branches on capability values, per
 /// ADR-0002.
+///
+/// `NotchPay` since 2026-10-20 (RFC-0012 step 3). Its row proves the adapter
+/// against a stub transcribed from Notch Pay's `openapi.yaml` 2.1.0, and
+/// nothing about Notch Pay: nothing in this repository has called it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RailUnderTest {
     MtnMomo,
     OrangeMoney,
+    NotchPay,
 }
 
 fn adapters() -> Vec<Box<dyn ProviderAdapter>> {
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
     vec![
         Box::new(vpay_adapter_mtn_momo::Adapter::new(http.clone())),
-        Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+        Box::new(vpay_adapter_orange_money::Adapter::new(http.clone())),
+        Box::new(vpay_adapter_notchpay::Adapter::new(http)),
     ]
 }
 
@@ -484,6 +494,7 @@ fn mappings_dir(rail: RailUnderTest) -> PathBuf {
     let dir = match rail {
         RailUnderTest::MtnMomo => "mtn",
         RailUnderTest::OrangeMoney => "orange",
+        RailUnderTest::NotchPay => "notchpay",
     };
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("wiremock")
@@ -623,6 +634,38 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
                         },
                     ),
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
+                ]),
+                connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+                request_timeout,
+            },
+        ),
+        RailUnderTest::NotchPay => (
+            Box::new(vpay_adapter_notchpay::Adapter::new(http)),
+            ProviderConfig {
+                // One host for Notch Pay's sandbox and its production, so
+                // no path prefix (RFC-0012 section 2).
+                base_url: host.clone(),
+                callback_url: format!("{host}/provider/notchpay/callback"),
+                currency: Currency::Xaf,
+                settings: BTreeMap::from([
+                    ("channel".to_owned(), "cm.mobile".to_owned()),
+                    ("description".to_owned(), "Payment".to_owned()),
+                ]),
+                // Named so a secret scanner cannot mistake them for a real
+                // provider's keys; `test_` is all the livemode rule reads.
+                credentials: BTreeMap::from([
+                    (
+                        "public_key".to_owned(),
+                        match credentials {
+                            Credentials::Valid => "stub-public-key-test_0001".to_owned(),
+                            // The value the Notch Pay mappings answer 401 to.
+                            Credentials::Rejected => "bad-key".to_owned(),
+                        },
+                    ),
+                    (
+                        "private_key".to_owned(),
+                        "stub-private-key-test_0002".to_owned(),
+                    ),
                 ]),
                 connect_timeout: vpay_provider::DEFAULT_CONNECT_TIMEOUT,
                 request_timeout,
@@ -781,6 +824,17 @@ fn documented_declines(rail: RailUnderTest) -> Vec<DocumentedDecline> {
             // string itself is the whole of the rail's own word.
             row(0x0f02, "FAILED", FailureCode::ProviderError),
         ],
+        // RFC-0012 section 4. Notch Pay's read names no failure reason, so
+        // its status word is the whole of what it says, and only two codes
+        // are reachable. Transcribed, not observed: the sandbox's outcome
+        // numbers are what will show whether the read can say more.
+        RailUnderTest::NotchPay => vec![
+            row(0x0f01, "failed", FailureCode::ProviderError),
+            row(0x0f02, "canceled", FailureCode::ProviderError),
+            row(0x0f03, "rejected", FailureCode::ProviderError),
+            row(0x0f04, "expired", FailureCode::PayerTimeout),
+            row(0x0f05, "abandoned", FailureCode::PayerTimeout),
+        ],
     }
 }
 
@@ -793,6 +847,7 @@ fn declared_failure_codes(rail: RailUnderTest) -> &'static [FailureCode] {
     match rail {
         RailUnderTest::MtnMomo => &vpay_adapter_mtn_momo::PRODUCED_FAILURE_CODES,
         RailUnderTest::OrangeMoney => &vpay_adapter_orange_money::PRODUCED_FAILURE_CODES,
+        RailUnderTest::NotchPay => &vpay_adapter_notchpay::PRODUCED_FAILURE_CODES,
     }
 }
 
@@ -812,6 +867,14 @@ fn documented_callback_body(rail: RailUnderTest, reference: Uuid) -> Vec<u8> {
         RailUnderTest::OrangeMoney => format!(
             r#"{{"order_id":"{reference}","status":"SUCCESS","txnid":"stub-txn",
                 "notif_token":"stub-notif-token","pay_token":"stub-pay-token"}}"#
+        )
+        .into_bytes(),
+        // The Webhooks API's "Webhook Event Object". Its `data.status` says
+        // complete, and the adapter does not read it.
+        RailUnderTest::NotchPay => format!(
+            r#"{{"id":"evt.test_0001","type":"payment.complete","created_at":"2026-10-20T10:00:00Z",
+                "data":{{"id":"pay.test_0001","reference":"{reference}","amount":5000,
+                "currency":"XAF","status":"complete"}}}}"#
         )
         .into_bytes(),
     }
@@ -836,17 +899,30 @@ fn documented_callback_body(rail: RailUnderTest, reference: Uuid) -> Vec<u8> {
 /// `vpay_config::ProviderHost::effective_callback_url` derives, and an
 /// adapter that sent its `base_url`, an empty string or a hard-coded
 /// constant would satisfy a presence check and be exactly as broken.
-fn callback_url_pattern(rail: RailUnderTest, callback_url: &str) -> String {
+///
+/// # `None`: registered out of band
+///
+/// RFC-0010 section 8's change, made by the first adapter that needed it
+/// (`notchpay`, 2026-10-20). Some rails take no callback URL on a request at
+/// all: the URL is registered with the account once, by the merchant in the
+/// provider's dashboard until RFC-0013 lands. For those the shared case
+/// asserts the callback URL appears **nowhere** in the stub's journal — the
+/// stronger statement `return_url_pattern` already makes on a push rail —
+/// because an adapter that sent it anyway would be sending it somewhere the
+/// rail's protocol does not read, which on Notch Pay is call 1's `callback`
+/// field: a *browser* redirect.
+fn callback_url_pattern(rail: RailUnderTest, callback_url: &str) -> Option<String> {
     match rail {
-        RailUnderTest::MtnMomo => format!(
+        RailUnderTest::MtnMomo => Some(format!(
             r#"{{"method":"POST","urlPath":"/collection/v1_0/requesttopay",
                  "headers":{{"X-Callback-Url":{{"equalTo":"{callback_url}"}}}}}}"#
-        ),
-        RailUnderTest::OrangeMoney => format!(
+        )),
+        RailUnderTest::OrangeMoney => Some(format!(
             r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
                  "bodyPatterns":[{{"matchesJsonPath":
                    {{"expression":"$.notif_url","equalTo":"{callback_url}"}}}}]}}"#
-        ),
+        )),
+        RailUnderTest::NotchPay => None,
     }
 }
 
@@ -879,6 +955,10 @@ fn refund_body_pattern(rail: RailUnderTest, reference: Uuid) -> Option<String> {
                    {{"expression":"$.payee.partyId","equalTo":"{REFUND_PAYEE_CANONICAL}"}}}}]}}"#
         )),
         RailUnderTest::OrangeMoney => None,
+        // An `Origin` rail names the payment, not a payee, and Notch Pay's
+        // refund is a declared token (RFC-0012 section 7); the refund cases
+        // meet the token before they would read this.
+        RailUnderTest::NotchPay => None,
     }
 }
 
@@ -906,7 +986,7 @@ fn refund_body_pattern(rail: RailUnderTest, reference: Uuid) -> Option<String> {
 /// distinction nothing checks.
 fn return_url_pattern(rail: RailUnderTest, return_url: &str) -> Option<String> {
     match rail {
-        RailUnderTest::MtnMomo => None,
+        RailUnderTest::MtnMomo | RailUnderTest::NotchPay => None,
         RailUnderTest::OrangeMoney => Some(format!(
             r#"{{"method":"POST","urlPathPattern":"/orange-money-webpay/[^/]+/v1/webpayment",
                  "bodyPatterns":[
@@ -974,6 +1054,7 @@ async fn recorded_requests(rail: &Rail) -> String {
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn the_submit_tells_the_rail_where_to_send_the_payer_back(
     #[case] rail_under_test: RailUnderTest,
@@ -1042,6 +1123,7 @@ async fn the_submit_tells_the_rail_where_to_send_the_payer_back(
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: RailUnderTest) {
     let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
@@ -1064,15 +1146,27 @@ async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: R
         .await
         .expect("an accepted submit must be Ok");
 
-    let pattern = callback_url_pattern(rail_under_test, &rail.config.callback_url);
-    assert_eq!(
-        requests_matching(&rail, &pattern).await,
-        1,
-        "{}: the rail received no submit carrying {} where its protocol documents one; \
-         a rail told nothing can only ever be settled by the poll ladder",
-        rail.adapter.code(),
-        rail.config.callback_url
-    );
+    match callback_url_pattern(rail_under_test, &rail.config.callback_url) {
+        Some(pattern) => assert_eq!(
+            requests_matching(&rail, &pattern).await,
+            1,
+            "{}: the rail received no submit carrying {} where its protocol documents one; \
+             a rail told nothing can only ever be settled by the poll ladder",
+            rail.adapter.code(),
+            rail.config.callback_url
+        ),
+        // Registered out of band (RFC-0010 section 8): the URL must reach
+        // the rail nowhere at all on a submit.
+        None => assert!(
+            !recorded_requests(&rail)
+                .await
+                .contains(&rail.config.callback_url),
+            "{}: a rail whose callback URL is registered with the account must not be sent \
+             {} on a submit",
+            rail.adapter.code(),
+            rail.config.callback_url
+        ),
+    }
 }
 
 /// Proves an accepted submit is `Ok` on both rails, and that the shape of what
@@ -1086,6 +1180,7 @@ async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: R
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -1164,6 +1259,7 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn duplicate_submit_reports_submitted_not_an_error(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -1224,6 +1320,7 @@ async fn duplicate_submit_reports_submitted_not_an_error(#[case] rail: RailUnder
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -1254,6 +1351,7 @@ async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_declined_charge_maps_to_the_documented_failure_code(
     #[case] rail_under_test: RailUnderTest,
@@ -1306,6 +1404,7 @@ async fn a_declined_charge_maps_to_the_documented_failure_code(
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTest) {
     let mut proven: Vec<FailureCode> = documented_declines(rail)
         .into_iter()
@@ -1341,6 +1440,7 @@ fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTe
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn an_unavailable_rail_is_a_transport_error_never_a_decline(#[case] rail: RailUnderTest) {
     use vpay_core::{Category, Classify as _};
@@ -1374,6 +1474,7 @@ async fn an_unavailable_rail_is_a_transport_error_never_a_decline(#[case] rail: 
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn bad_credentials_are_not_reported_as_a_payer_problem(#[case] rail: RailUnderTest) {
     use vpay_core::{Classify as _, Severity};
@@ -1407,6 +1508,7 @@ async fn bad_credentials_are_not_reported_as_a_payer_problem(#[case] rail: RailU
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test: RailUnderTest) {
     // No container: parsing a callback body is pure, and must stay pure — the
@@ -1416,6 +1518,7 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
     let adapter: Box<dyn ProviderAdapter> = match rail_under_test {
         RailUnderTest::MtnMomo => Box::new(vpay_adapter_mtn_momo::Adapter::new(http)),
         RailUnderTest::OrangeMoney => Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+        RailUnderTest::NotchPay => Box::new(vpay_adapter_notchpay::Adapter::new(http)),
     };
 
     let parsed = adapter
@@ -1520,11 +1623,13 @@ fn a_destination_is_offered_exactly_when_the_capability_demands_one() {
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 fn a_required_rail_parses_its_own_destination(#[case] rail_under_test: RailUnderTest) {
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
     let adapter: Box<dyn ProviderAdapter> = match rail_under_test {
         RailUnderTest::MtnMomo => Box::new(vpay_adapter_mtn_momo::Adapter::new(http)),
         RailUnderTest::OrangeMoney => Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+        RailUnderTest::NotchPay => Box::new(vpay_adapter_notchpay::Adapter::new(http)),
     };
 
     // The rail's own wire keys are the adapter's business, so this suite
@@ -1792,6 +1897,7 @@ fn refund_destination(rail: &Rail, msisdn: &str) -> Option<RefundTarget> {
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted(
     #[case] rail: RailUnderTest,
@@ -1861,6 +1967,7 @@ async fn a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted(
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn the_refund_is_addressed_to_the_payee_the_merchant_nominated(
     #[case] rail_under_test: RailUnderTest,
@@ -1902,6 +2009,7 @@ async fn the_refund_is_addressed_to_the_payee_the_merchant_nominated(
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_refund_to_a_payee_the_rail_rejects_is_a_decline_and_never_an_accepted_transfer(
     #[case] rail: RailUnderTest,
@@ -1959,6 +2067,7 @@ async fn a_refund_to_a_payee_the_rail_rejects_is_a_decline_and_never_an_accepted
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_duplicate_refund_reference_is_accepted_and_never_paid_twice(
     #[case] rail: RailUnderTest,
@@ -1997,6 +2106,7 @@ async fn a_duplicate_refund_reference_is_accepted_and_never_paid_twice(
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_refund_never_puts_the_payees_number_in_a_log_line(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2093,6 +2203,7 @@ async fn a_refund_never_puts_the_payees_number_in_a_log_line(#[case] rail: RailU
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_rail_without_the_refund_capability_answers_unsupported(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2156,6 +2267,7 @@ async fn a_rail_without_the_refund_capability_answers_unsupported(#[case] rail: 
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn pending_then_successful_walks_the_scenario(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2226,6 +2338,7 @@ async fn pending_then_successful_walks_the_scenario(#[case] rail: RailUnderTest)
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn redirects_are_refused_and_never_followed(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2268,6 +2381,7 @@ async fn redirects_are_refused_and_never_followed(#[case] rail: RailUnderTest) {
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn an_oversized_rail_body_is_refused_at_the_cap(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2343,6 +2457,7 @@ async fn claims_account_holder_lookup(rail: &Rail) -> bool {
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn an_account_holder_lookup_returns_a_name_and_nothing_else(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2389,6 +2504,7 @@ async fn an_account_holder_lookup_returns_a_name_and_nothing_else(#[case] rail: 
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_number_the_rail_has_no_record_of_is_not_an_error(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2439,6 +2555,7 @@ async fn a_number_the_rail_has_no_record_of_is_not_an_error(#[case] rail: RailUn
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_holder(
     #[case] rail: RailUnderTest,
@@ -2485,6 +2602,7 @@ async fn a_lookup_that_cannot_reach_the_rail_is_never_reported_as_a_missing_hold
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn an_oversized_account_holder_body_is_refused_at_the_cap(#[case] rail: RailUnderTest) {
     let rail = start(rail, Credentials::Valid, Duration::from_secs(10)).await;
@@ -2533,6 +2651,7 @@ async fn an_oversized_account_holder_body_is_refused_at_the_cap(#[case] rail: Ra
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
 #[tokio::test]
 async fn an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing(
     #[case] rail: RailUnderTest,

@@ -36,6 +36,7 @@ code expresses it belongs in `../reference/`.
 | [account-holder-lookup.md](account-holder-lookup.md) | `GET /v1/account_holders`: the three-way answer a name lookup has, the privacy rules that apply only here, and the three controls issue #47 asked for that are **reserved decisions rather than built**  |
 | [adapter-mtn-momo.md](adapter-mtn-momo.md)           | MTN specifics — push flow                                                                                                                                                                                |
 | [adapter-orange-money.md](adapter-orange-money.md)   | Orange specifics — redirect flow                                                                                                                                                                         |
+| [adapter-notchpay.md](adapter-notchpay.md)           | Notch Pay specifics — push flow through an aggregator, admitted under ADR-0031; its **Production risks** are the first thing to read                                                                     |
 | [deployment.md](deployment.md)                       | What ships, what must exist before a pod starts, the boot order, the `subPath` overlay rule, and what guards a bad deployment                                                                            |
 
 Every flow here is _designed_. See [../status.md](../status.md) for which parts

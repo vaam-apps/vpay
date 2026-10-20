@@ -3055,7 +3055,16 @@ expected_ignored := "0"
 # listing: **51** binaries, **2232** total, **0** ignored — 2198 plus the
 # crate's 34. Measured by that CI run, not locally: a full test build of the
 # workspace did not fit the disk where this was written.
-expected_suites := "51"
+#
+# **51 -> 52 on 2026-10-20 (RFC-0012 steps 2-4, ADR-0031)**: one new binary,
+# the unit tests of `backends/crates/vpay-adapter-notchpay`'s library. Counted
+# before building, by diffing `cargo metadata --no-deps` target lists against
+# `master` at `b8be107`: the only new target is
+# `vpay-adapter-notchpay::lib::vpay_adapter_notchpay`. Everything else this
+# change tests went into binaries that already existed (the conformance
+# suite's `notchpay` row, `vpay-server`'s `cli.rs`, `vpay-config`,
+# `vpay-api`, `vpay-provider`, `vpay-notchpay`, both SDKs).
+expected_suites := "52"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

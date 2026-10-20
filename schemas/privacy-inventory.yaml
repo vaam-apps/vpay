@@ -725,6 +725,9 @@ elements:
     recipients:
       - mtn_momo
       - orange_money
+      # Since 2026-10-20 (RFC-0012 § 3): the initialize and process calls
+      # carry the payer's number, `+`-prefixed, and nothing else of theirs.
+      - notchpay
     retention: customer
     owner: maintainer
     control: redact
@@ -813,6 +816,9 @@ elements:
     recipients:
       - mtn_momo
       - orange_money
+      # The charge's reference is Notch Pay's `reference` on initialize and
+      # the path segment of every process and read (2026-10-20, RFC-0012).
+      - notchpay
     retention: operational
     owner: maintainer
     control: none

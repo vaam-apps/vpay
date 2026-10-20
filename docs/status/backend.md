@@ -777,3 +777,52 @@ documents.
   designed, cell by cell.
 - [verification/2026-10-20-notchpay-client.md](verification/2026-10-20-notchpay-client.md)
   has the gates' output and what was not run.
+
+## The `notchpay` adapter, admitted under ADR-0031; never called (2026-10-20)
+
+**A third rail is linked into `vpay-server`, and nothing has called it.**
+RFC-0012 delivery steps 0, 2, 3 and 4 in one change. Steps 1 and 5, the
+sandbox session and the first test-mode call, did not run: no test-mode key
+was available.
+
+- **Step 0.** [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)
+  amends ADR-0029 D1's third rule for every provider: a status read
+  authenticated by a key the provider calls public is admissible on six
+  conditions. Notch Pay was emailed on 2026-10-20 and has not answered. The
+  maintainer wrote: "Let's do a full implementation and warn the developer
+  about the risks in prod. They never answered to me too". `notchpay` is
+  **admitted under ADR-0031 (rule 3 amended)**; it does not pass rule 3 as
+  ADR-0029 wrote it.
+- **The threat model came first**:
+  [security/threat-models/notchpay.md](../security/threat-models/notchpay.md),
+  STRIDE over the four boundaries the rail opens. `docs/security/` is new.
+- **`backends/crates/vpay-adapter-notchpay`** sits on the client
+  `vpay-notchpay`. It is a `Push` rail on `cm.mobile`, XAF only, and the
+  first shipping `Origin` rail. `refund` is the declared token
+  `notchpay::refund`. Every mapping is transcribed from `openapi.yaml` 2.1.0
+  and is "To confirm" ([adapter-notchpay.md](../flows/adapter-notchpay.md)).
+- **The port grew one method**, `accepted_exposure`, `None` by default and
+  forwarded by `Measured`. Boot logs it at `WARN` for every configured rail
+  that declares one, louder in livemode, never printing a key
+  (`vpay_api::boot::warn_about_accepted_exposures`, called by `serve` and
+  `worker`).
+- **Boot refusals** (`vpay_config::config::REQUIRED_RAIL_KEYS`, whose rows
+  gained three columns): both keys required; `channel` must be `cm.mobile`;
+  currency must be `XAF`; and a key's `test_` marker must agree with
+  `deployment.livemode`.
+- **The client** gained `Client::with_request_timeout`, so the configured
+  deadline applies per request.
+- **Conformance.** `RailUnderTest::NotchPay` has a row in every table
+  function, against `backends/tests/conformance/wiremock/notchpay/mappings/`.
+  RFC-0010 § 8's change landed with it: `callback_url_pattern` is an
+  `Option`, and `None` asserts the callback URL is sent nowhere.
+- **Wiring.** `adapters()`/`adapter_codes()`; the `wiremock-notchpay` compose
+  service; a **commented** block in `config/application.yml` (uncommented, it
+  would make two non-blank secrets mandatory for every deployment); commented
+  variables in `.env.example`; the Helm values comment; both SDKs'
+  `PaymentMethodType` and confirm shapes, with a `docs/sdks/parity.md` row;
+  `notchpay` as a recipient of `payer_msisdn` and `sys_provider_ref`.
+- **Not proven against Notch Pay, in any respect.**
+  [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
+  has the gates, the counts, the two mutations the conformance row was
+  checked against, and what was not run.

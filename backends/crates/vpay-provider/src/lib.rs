@@ -921,6 +921,39 @@ impl AccountHolder {
     }
 }
 
+/// What a rail admitted on [ADR-0031]'s second limb lets a third party do on
+/// the merchant's account, declared by the adapter so the process can say so
+/// at boot.
+///
+/// ADR-0031 amended ADR-0029 D1's third rule: a status read authenticated by
+/// a key the provider calls *public* is admissible when vpay keeps that key
+/// server-side and the key's other powers are recorded as the merchant's
+/// accepted exposure. This is that record, in the one place the binary can
+/// read it without knowing which rail it is looking at (ADR-0002). Boot logs
+/// it for every **configured** rail that declares one
+/// (`vpay_api::boot::warn_about_accepted_exposures`).
+///
+/// Every field is `&'static str` and names things, never values: a key is
+/// referred to by its configuration name, so nothing built from this can
+/// print a credential.
+///
+/// No `Serialize`: it is a boot-time statement for an operator, not part of
+/// any wire, and `verify-serde` would otherwise ask it to promise a spelling.
+///
+/// [ADR-0031]: ../../../../docs/adr/0031-a-status-read-authenticated-by-a-server-side-key.md
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AcceptedExposure {
+    /// The `credentials` key whose value the provider calls public and
+    /// accepts on the status read, e.g. `"public_key"`. The name, never the
+    /// value.
+    pub credential: &'static str,
+    /// Every operation the provider documents that credential as permitting,
+    /// in plain words an operator can read in a log line.
+    pub operations: &'static [&'static str],
+    /// The page that explains the exposure, as a repository-relative path.
+    pub document: &'static str,
+}
+
 /// Identifiers extracted from a callback. Deliberately *not* a status: the core
 /// will not trust anything read off an unauthenticated request.
 #[derive(Debug, Clone)]
@@ -1816,6 +1849,24 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// value here must never be read out of `ProviderConfig`.
     fn payer_fields(&self) -> &'static [PayerField] {
         &[]
+    }
+
+    /// What this rail's status-read key lets someone other than vpay do on
+    /// the merchant's account, when the rail was admitted on ADR-0031's
+    /// second limb — a key the provider itself calls public.
+    ///
+    /// `None` is the default and the right answer for every rail whose read
+    /// is authenticated by a secret, which is every rail but one today. An
+    /// adapter on the second limb **must** override it: ADR-0031 condition 4
+    /// makes the declaration part of the admission, and an adapter that
+    /// accepted the exposure without declaring it would be way B done
+    /// silently.
+    ///
+    /// Synchronous and configuration-free: it is a fact about the provider's
+    /// product, like [`Capabilities`], and the boot warning that reads it
+    /// must not be able to reach the network.
+    fn accepted_exposure(&self) -> Option<AcceptedExposure> {
+        None
     }
 }
 

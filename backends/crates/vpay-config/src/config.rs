@@ -292,7 +292,12 @@ impl fmt::Debug for ProviderHost {
 /// material that already lives there in `config/application.yml`, and
 /// `ProviderHost`'s `Debug` redacts `credentials` while printing `settings`
 /// in full — so moving it would make it log-visible for no gain.
-const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 2] = [
+///
+/// `notchpay` (RFC-0012 § 2, ADR-0031) is the first row that needs more than
+/// presence: a channel from a closed list, one currency, and the livemode
+/// rule on its two keys. Those are columns of this table rather than an `if`
+/// on the code, so the table stays the one place a rail's boot rules live.
+const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
     RequiredRailKeys {
         code: "mtn_momo",
         // `target_environment` is MTN's `X-Target-Environment` header
@@ -304,20 +309,58 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 2] = [
         // rail is broken rather than like our YAML is.
         settings: &["target_environment", "api_user"],
         credentials: &["subscription_key", "api_key"],
+        setting_values: &[],
+        currencies: &[],
+        test_marked_credentials: &[],
     },
     RequiredRailKeys {
         code: "orange_money",
         settings: &[],
         credentials: &["merchant_key", "client_id", "client_secret"],
+        setting_values: &[],
+        currencies: &[],
+        test_marked_credentials: &[],
+    },
+    RequiredRailKeys {
+        code: "notchpay",
+        // `cm.mobile`, the one channel the adapter sends
+        // (`vpay_adapter_notchpay::KNOWN_CHANNELS`). `description` is
+        // optional and not listed.
+        settings: &["channel"],
+        // Both keys, always. The private key is ADR-0031's condition 2: the
+        // public key alone — the weaker shape Notch Pay's own documentation
+        // describes for the read — never boots.
+        credentials: &["public_key", "private_key"],
+        setting_values: &[("channel", &["cm.mobile"])],
+        // Notch Pay's XOF channels are other countries and another RFC.
+        currencies: &["XAF"],
+        // Notch Pay documents test keys as carrying `test_`, and serves its
+        // sandbox and its production from one host, so the livemode rule
+        // can only sit on the key (RFC-0012 § 2). A live key's prefix is not
+        // documented (§ 10 item 8); the rule reads `test_` and nothing else.
+        test_marked_credentials: &["public_key", "private_key"],
     },
 ];
 
 /// One row of [`REQUIRED_RAIL_KEYS`].
 struct RequiredRailKeys {
     code: &'static str,
+    /// `settings` keys that must be present and non-blank.
     settings: &'static [&'static str],
+    /// `credentials` keys that must be present and non-blank.
     credentials: &'static [&'static str],
+    /// `settings` keys whose value must be one of a closed list.
+    setting_values: &'static [(&'static str, &'static [&'static str])],
+    /// The currencies the rail's adapter charges in; empty is any.
+    currencies: &'static [&'static str],
+    /// `credentials` keys whose value must contain [`TEST_KEY_MARKER`]
+    /// exactly when the deployment is not livemode.
+    test_marked_credentials: &'static [&'static str],
 }
+
+/// What a rail test key carries, for the rows that list
+/// `test_marked_credentials`. Notch Pay's spelling ("the `test_` prefix").
+const TEST_KEY_MARKER: &str = "test_";
 
 impl ProviderHost {
     /// Projects this rail's YAML onto the [`ProviderConfig`] an adapter is
@@ -1182,7 +1225,7 @@ impl Config {
             // merchant's confirm rather than a refusal to start.
             Currency::from_code(&provider.currency.to_ascii_uppercase())
                 .map_err(|_| ConfigError::UnknownCurrency(provider.currency.clone()))?;
-            validate_required_rail_keys(provider)?;
+            validate_required_rail_keys(provider, livemode)?;
             validate_provider_display_name(provider)?;
         }
 
@@ -1608,7 +1651,7 @@ impl RawSecrets {
 /// string cannot reach here (step 2 makes an unresolved placeholder fatal),
 /// but a literal `api_key: ""` in a sandbox file can, and it fails on the
 /// wire in a way that names neither the key nor the file.
-fn validate_required_rail_keys(provider: &ProviderHost) -> Result<(), ConfigError> {
+fn validate_required_rail_keys(provider: &ProviderHost, livemode: bool) -> Result<(), ConfigError> {
     let Some(required) = REQUIRED_RAIL_KEYS
         .iter()
         .find(|entry| entry.code == provider.code)
@@ -1639,6 +1682,43 @@ fn validate_required_rail_keys(provider: &ProviderHost) -> Result<(), ConfigErro
                 code: provider.code.clone(),
                 section: "credentials",
                 key: (*key).to_owned(),
+            });
+        }
+    }
+    for (key, allowed) in required.setting_values {
+        let value = provider.settings.get(*key).map(String::as_str);
+        if !value.is_some_and(|value| allowed.contains(&value)) {
+            return Err(ConfigError::ProviderSettingNotAllowed {
+                code: provider.code.clone(),
+                key: (*key).to_owned(),
+                allowed: allowed.join(", "),
+            });
+        }
+    }
+    if !required.currencies.is_empty()
+        && !required
+            .currencies
+            .iter()
+            .any(|currency| currency.eq_ignore_ascii_case(&provider.currency))
+    {
+        return Err(ConfigError::ProviderCurrencyNotAllowed {
+            code: provider.code.clone(),
+            currency: provider.currency.clone(),
+            allowed: required.currencies.join(", "),
+        });
+    }
+    for key in required.test_marked_credentials {
+        // Present by now: every row lists these under `credentials` too.
+        let carries = provider
+            .credentials
+            .get(*key)
+            .is_some_and(|value| value.contains(TEST_KEY_MARKER));
+        if carries == livemode {
+            return Err(ConfigError::RailKeyLivemodeMismatch {
+                code: provider.code.clone(),
+                key: (*key).to_owned(),
+                marker: if carries { "carries" } else { "lacks" },
+                livemode,
             });
         }
     }
@@ -3707,7 +3787,181 @@ mod tests {
             credentials: BTreeMap::new(),
             display_name: None,
         };
-        assert_eq!(validate_required_rail_keys(&host), Ok(()));
+        assert_eq!(validate_required_rail_keys(&host, false), Ok(()));
+    }
+
+    /// A `notchpay` block as a sandbox deployment writes it: both keys,
+    /// carrying `test_`; `cm.mobile`; XAF. Fixture key names a secret scanner
+    /// cannot mistake for a real provider's.
+    fn notchpay(public_key: &str, private_key: &str) -> ProviderHost {
+        ProviderHost {
+            code: "notchpay".to_owned(),
+            enabled: true,
+            host: HostEntry {
+                url: "https://api.notchpay.co".to_owned(),
+                label: "notchpay".to_owned(),
+            },
+            settings: BTreeMap::from([("channel".to_owned(), "cm.mobile".to_owned())]),
+            callback_url: None,
+            currency: "XAF".to_owned(),
+            credentials: BTreeMap::from([
+                ("public_key".to_owned(), public_key.to_owned()),
+                ("private_key".to_owned(), private_key.to_owned()),
+            ]),
+            display_name: None,
+        }
+    }
+
+    const NOTCHPAY_TEST_PUBLIC: &str = "public-key-test_0001";
+    const NOTCHPAY_TEST_PRIVATE: &str = "private-key-test_0002";
+    const NOTCHPAY_LIVE_PUBLIC: &str = "public-key-live-0003";
+    const NOTCHPAY_LIVE_PRIVATE: &str = "private-key-live-0004";
+
+    #[test]
+    fn a_sandbox_notchpay_block_with_test_keys_boots() {
+        assert_eq!(
+            validate_required_rail_keys(
+                &notchpay(NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE),
+                false
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_required_rail_keys(
+                &notchpay(NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE),
+                true
+            ),
+            Ok(())
+        );
+    }
+
+    /// ADR-0031 condition 2: the public key alone never boots, and neither
+    /// does the private key alone.
+    #[test]
+    fn notchpay_requires_both_keys() {
+        for missing in ["public_key", "private_key"] {
+            let mut host = notchpay(NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE);
+            host.credentials.remove(missing);
+            assert_eq!(
+                validate_required_rail_keys(&host, false),
+                Err(ConfigError::MissingProviderSetting {
+                    code: "notchpay".to_owned(),
+                    section: "credentials",
+                    key: missing.to_owned(),
+                })
+            );
+        }
+    }
+
+    /// RFC-0012 § 2. Each key on its own, in both directions: a test key in
+    /// livemode, a live key in a sandbox.
+    #[test]
+    fn a_notchpay_key_must_agree_with_livemode() {
+        let cases = [
+            (
+                NOTCHPAY_TEST_PUBLIC,
+                NOTCHPAY_LIVE_PRIVATE,
+                true,
+                "public_key",
+                "carries",
+            ),
+            (
+                NOTCHPAY_LIVE_PUBLIC,
+                NOTCHPAY_TEST_PRIVATE,
+                true,
+                "private_key",
+                "carries",
+            ),
+            (
+                NOTCHPAY_LIVE_PUBLIC,
+                NOTCHPAY_TEST_PRIVATE,
+                false,
+                "public_key",
+                "lacks",
+            ),
+            (
+                NOTCHPAY_TEST_PUBLIC,
+                NOTCHPAY_LIVE_PRIVATE,
+                false,
+                "private_key",
+                "lacks",
+            ),
+        ];
+        for (public_key, private_key, livemode, key, marker) in cases {
+            assert_eq!(
+                validate_required_rail_keys(&notchpay(public_key, private_key), livemode),
+                Err(ConfigError::RailKeyLivemodeMismatch {
+                    code: "notchpay".to_owned(),
+                    key: key.to_owned(),
+                    marker,
+                    livemode,
+                }),
+                "{key} under livemode {livemode}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_notchpay_key_livemode_mismatch_never_prints_the_key() {
+        let error = validate_required_rail_keys(
+            &notchpay(NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE),
+            true,
+        )
+        .expect_err("test keys in livemode");
+        for rendered in [error.to_string(), format!("{error:?}")] {
+            for key in [NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE] {
+                assert!(!rendered.contains(key), "{rendered}");
+            }
+            assert!(rendered.contains("credentials.public_key") || rendered.contains("public_key"));
+        }
+    }
+
+    /// `cm.mtn` and `cm.orange` wait for ADR-0029 D6: configured for a whole
+    /// deployment, either would fail every payer on the other network.
+    #[test]
+    fn a_notchpay_channel_outside_the_adapters_list_is_refused() {
+        for channel in ["cm.mtn", "cm.orange", "ci.orange", ""] {
+            let mut host = notchpay(NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE);
+            host.settings
+                .insert("channel".to_owned(), channel.to_owned());
+            let refused = validate_required_rail_keys(&host, false);
+            assert!(
+                matches!(
+                    refused,
+                    Err(ConfigError::ProviderSettingNotAllowed { .. }
+                        | ConfigError::MissingProviderSetting { .. })
+                ),
+                "{channel:?}: {refused:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn notchpay_charges_in_xaf_only() {
+        let mut host = notchpay(NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE);
+        host.currency = "XOF".to_owned();
+        assert_eq!(
+            validate_required_rail_keys(&host, false),
+            Err(ConfigError::ProviderCurrencyNotAllowed {
+                code: "notchpay".to_owned(),
+                currency: "XOF".to_owned(),
+                allowed: "XAF".to_owned(),
+            })
+        );
+    }
+
+    /// The new columns are empty on the two older rows, so nothing about
+    /// MTN's or Orange's boot moved — whatever their keys contain.
+    #[test]
+    fn the_older_rails_carry_no_livemode_key_rule() {
+        for row in REQUIRED_RAIL_KEYS
+            .iter()
+            .filter(|row| row.code != "notchpay")
+        {
+            assert!(row.test_marked_credentials.is_empty(), "{}", row.code);
+            assert!(row.setting_values.is_empty(), "{}", row.code);
+            assert!(row.currencies.is_empty(), "{}", row.code);
+        }
     }
 
     #[test]

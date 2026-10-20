@@ -1,0 +1,270 @@
+{
+  "mappings": [
+    {
+      "name": "read: any payment of ours reads complete, for the charge's 5000 XAF",
+      "priority": 10,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/payments/[0-9a-f-]{36}",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{request.pathSegments.[1]}}\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"complete\"}}"
+      },
+      "metadata": {
+        "why": [
+          "openapi.yaml 2.1.0's retrievePayment documents 202 on success, with the payment under",
+          "`transaction`. Some API reference pages show `data` instead (RFC-0012 section 10 item 15);",
+          "the client follows the specification. The amount and currency are the conformance charge's,",
+          "because the adapter refuses a success for any other money (ADR-0031 condition 5)."
+        ]
+      }
+    },
+    {
+      "name": "read: Notch Pay has no record (404 Payment not found)",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000404",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 404,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 404,
+          "status": "Not Found",
+          "message": "Payment not found"
+        }
+      },
+      "metadata": {
+        "why": "REF_UNKNOWN. Only Notch Pay's own words are NotFound; any other 404 is Config (RFC-0012 section 3)."
+      }
+    },
+    {
+      "name": "read: the rail is down (503)",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-0000000005aa",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 503
+      },
+      "metadata": {
+        "why": "REF_UNAVAILABLE. Transport, never a decline."
+      }
+    },
+    {
+      "name": "read: slower than the configured deadline",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000560",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000560\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"pending\"}}",
+        "fixedDelayMilliseconds": 2000
+      },
+      "metadata": {
+        "why": "REF_SLOW. Two orders of magnitude above the suite's SHORT_REQUEST_TIMEOUT, so the case proves the adapter applies ProviderConfig::request_timeout per request (Client::with_request_timeout)."
+      }
+    },
+    {
+      "name": "read: a body far larger than any answer Notch Pay documents",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000b16",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"transaction\":{\"id\":\"pay.test_0b16\",\"reference\":\"00000000-0000-0000-0000-000000000b16\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"complete\"},\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
+      },
+      "metadata": {
+        "why": "REF_HUGE. A valid complete read padded past MAX_RAIL_BODY_BYTES (256 KiB), so without the bound the adapter would answer Succeeded."
+      }
+    },
+    {
+      "name": "decline: failed",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000f01",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f01\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"failed\"}}"
+      },
+      "metadata": {
+        "why": "Notch Pay's read names no reason (RFC-0012 section 4): failed is provider_error until the sandbox shows otherwise."
+      }
+    },
+    {
+      "name": "decline: canceled",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000f02",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f02\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"canceled\"}}"
+      },
+      "metadata": {
+        "why": "'canceled by the merchant or customer' -- and the public key can cancel (ADR-0031). provider_error, never payer_declined."
+      }
+    },
+    {
+      "name": "decline: rejected",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000f03",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f03\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"rejected\"}}"
+      },
+      "metadata": {
+        "why": "'rejected by our system or by operator', including Notch Pay's fraud system. provider_error."
+      }
+    },
+    {
+      "name": "decline: expired",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000f04",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f04\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"expired\"}}"
+      },
+      "metadata": {
+        "why": "'expired after 3 hours'. payer_timeout."
+      }
+    },
+    {
+      "name": "decline: abandoned",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000f05",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f05\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"abandoned\"}}"
+      },
+      "metadata": {
+        "why": "'abandoned the payment on our hosted page' -- a push charge should never read it; payer_timeout if it does."
+      }
+    }
+  ]
+}

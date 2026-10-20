@@ -343,6 +343,22 @@ its PaymentIntent — the button on the order page — and vpay delivers
 `payment_intent.canceled`, which since 2026-09-10 it does. See the note under
 "Failure outcomes" above.
 
+#### Notch Pay: no test numbers, on purpose
+
+`notchpay` (RFC-0012, 2026-10-20) is a third rail vpay links, and this shop
+has no table for it. No stack this repository starts enables it:
+`config/application.yml` carries its block commented out, so a payer of this
+shop is never offered it, and a table here would promise outcomes nobody can
+reach. Its WireMock stub (`wiremock-notchpay`) steers by **charge reference**
+for the conformance suite, not by phone number, so even an enabled stack
+would settle every number the same way. Notch Pay's real sandbox steers by
+the number's last digits (`…000000` success to `…000004` canceled), and
+nothing in this repository has called it. The shop itself needs no change to
+offer it: `SHOP_PAYMENT_METHOD_TYPES=notchpay` works against a deployment that
+enables the rail. Read
+[adapter-notchpay.md](../../docs/flows/adapter-notchpay.md) § "Production
+risks" before doing that with real keys.
+
 ### Which rail can pay for what
 
 Both test-number tables above are reachable from `just demo`, and that is a

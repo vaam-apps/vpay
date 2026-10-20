@@ -414,6 +414,39 @@ async fn confirm_sends_the_push_rail_instrument() {
     );
 }
 
+/// The second push rail (RFC-0012): the same instrument as MTN's, under
+/// Notch Pay's own code — the server reads `payment_method_data[notchpay]
+/// [msisdn]`, and the MTN key would be refused there as a field it does not
+/// declare.
+#[tokio::test]
+async fn confirm_sends_the_notchpay_instrument_under_its_own_code() {
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payment_intents/pi_1/confirm"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::payment_intent_json("pi_1")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    client
+        .payment_intents()
+        .confirm(
+            "pi_1",
+            ConfirmPaymentIntentParams::notchpay("237670000000"),
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/payment_intents/pi_1/confirm").await;
+    assert_eq!(
+        body_string(&request),
+        "payment_method_data[type]=notchpay&payment_method_data[notchpay][msisdn]=237670000000"
+    );
+}
+
 #[tokio::test]
 async fn confirm_sends_the_redirect_rail_return_url() {
     let (server, client) = fixture().await;

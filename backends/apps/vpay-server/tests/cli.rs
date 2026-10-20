@@ -589,6 +589,56 @@ fn the_repositorys_own_configuration_passes_the_adapter_join() {
     );
 }
 
+/// ADR-0031 condition 4, on the real process: a deployment that configures
+/// `notchpay` logs the exposure at boot — the rail, the credential by its
+/// key, the page that explains it — and never prints either key.
+///
+/// No container. The warning is emitted right after the adapter join, before
+/// the signing key is read, so this config stops at the missing
+/// `--oauth-signing-key-file` (exit 78) with the warning already written.
+/// Logs go to stdout for `serve`; both streams are searched, so the test
+/// does not depend on which.
+#[test]
+fn a_notchpay_rail_is_warned_about_at_boot_and_its_keys_are_never_printed() {
+    let output = bin()
+        .env(
+            "VPAY_CONFIG",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/notchpay-config.yml"
+            ),
+        )
+        .output()
+        .expect("spawn vpay-server");
+    let all = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(78),
+        "expected the step after the join to stop it: {all}"
+    );
+    assert!(all.contains("oauth-signing-key-file"), "{all}");
+    for expected in [
+        "WARN",
+        "notchpay",
+        "ADR-0031",
+        "credentials.public_key",
+        "docs/flows/adapter-notchpay.md",
+    ] {
+        assert!(all.contains(expected), "{expected} missing from: {all}");
+    }
+    assert!(!all.contains("LIVEMODE, REAL MONEY"), "a sandbox: {all}");
+    for key in ["cli-public-key-test_0001", "cli-private-key-test_0002"] {
+        assert!(
+            !all.contains(key),
+            "a Notch Pay key reached the output: {all}"
+        );
+    }
+}
+
 /// The other half of ADR-0011's exit-code contract: a config that is
 /// perfectly valid, pointing at a database that is not there, exits `69`
 /// (`EX_UNAVAILABLE`) — `Category::Storage`'s code — and not `78`.

@@ -1,0 +1,58 @@
+{
+  "mappings": [
+    {
+      "name": "REF_SCENARIO: first read pending",
+      "priority": 1,
+      "scenarioName": "notchpay-scenario",
+      "requiredScenarioState": "Started",
+      "newScenarioState": "settled",
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000ce0",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000ce0\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"processing\"}}"
+      },
+      "metadata": {
+        "why": "query_status reports what the rail says now and never caches a first answer."
+      }
+    },
+    {
+      "name": "REF_SCENARIO: second read complete",
+      "priority": 1,
+      "scenarioName": "notchpay-scenario",
+      "requiredScenarioState": "settled",
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000ce0",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 202,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000ce0\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"complete\"}}"
+      }
+    }
+  ]
+}
