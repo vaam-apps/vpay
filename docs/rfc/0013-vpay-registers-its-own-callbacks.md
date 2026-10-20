@@ -2,8 +2,7 @@
 
 - **Status:** Draft. **Nothing in this document is built.** What exists is two
   calls in the Notch Pay client, `Client::list_webhooks` and
-  `Client::create_webhook` (`backends/crates/vpay-notchpay/src/lib.rs`, lines
-  308 and 325, written 2026-10-20), and nothing calls them: no crate
+  `Client::create_webhook` (`backends/crates/vpay-notchpay/src/lib.rs`, written 2026-10-20), and nothing calls them: no crate
   depends on it, and the workspace `Cargo.toml` is the only manifest outside
   it that names it.
 - **Author:** vpay maintainers
@@ -144,9 +143,9 @@ The three that register differ in exactly the ways that shape § 4:
 | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Create              | `POST /v1/webhook_endpoints`: `url`, `enabled_events`, `api_version`, `description`, `metadata`, `connect` ([create](https://docs.stripe.com/api/webhook_endpoints/create))                                                                                                       | `POST /v1/notifications/webhooks`: `url`, `event_types` ([webhooks-post](https://developer.paypal.com/api/webhooks/v1/webhooks-post))                                                                                                                                                                               | `POST /webhooks`: `url`, `events`, optional `description` (openapi.yaml 2.1.0)                                                                                                                                                                                    |
 | List                | No filter; `limit` 1 to 100 ([list](https://docs.stripe.com/api/webhook_endpoints/list))                                                                                                                                                                                          | No URL filter ([schema](https://developer.paypal.com/api/webhooks/v1/schema.json))                                                                                                                                                                                                                                  | Paginated: `page`, `limit` (default 30); `current_page`, `last_page` (openapi.yaml 2.1.0)                                                                                                                                                                         |
-| Update, delete      | Both; update takes `url`, `enabled_events`, `disabled`, `description`, `metadata` ([update](https://docs.stripe.com/api/webhook_endpoints/update)); `api_version` "can't change … after you create the endpoint" ([object](https://docs.stripe.com/api/webhook_endpoints/object)) | Both; `PATCH` supports only `replace`, and a patch that changes nothing is an error, `WEBHOOK_PATCH_REQUEST_NO_CHANGE` ([schema](https://developer.paypal.com/api/webhooks/v1/schema.json))                                                                                                                         | `PUT` and `DELETE` on `/webhooks/{endpoint}` exist; the client implements neither, "deliberate" (`vpay-notchpay/src/lib.rs:52-54`)                                                                                                                                |
+| Update, delete      | Both; update takes `url`, `enabled_events`, `disabled`, `description`, `metadata` ([update](https://docs.stripe.com/api/webhook_endpoints/update)); `api_version` "can't change … after you create the endpoint" ([object](https://docs.stripe.com/api/webhook_endpoints/object)) | Both; `PATCH` supports only `replace`, and a patch that changes nothing is an error, `WEBHOOK_PATCH_REQUEST_NO_CHANGE` ([schema](https://developer.paypal.com/api/webhooks/v1/schema.json))                                                                                                                         | `PUT` and `DELETE` on `/webhooks/{endpoint}` exist; the client implements neither, "deliberate" ([vpay-notchpay.md](../reference/vpay-notchpay.md), "What it deliberately omits")                                                                                 |
 | A label vpay writes | `metadata` and `description`                                                                                                                                                                                                                                                      | **None**: the object is `id`, `url`, `event_types`, `links` ([schema](https://developer.paypal.com/api/webhooks/v1/schema.json))                                                                                                                                                                                    | `description` only                                                                                                                                                                                                                                                |
-| Idempotent create   | **Yes**: "all `POST` requests accept idempotency keys", and "Retries with the same key return the saved response" ([idempotent requests](https://docs.stripe.com/api/idempotent_requests)). A duplicate URL is not documented either way (§ 12, item 1)                           | No key: `PayPal-Request-Id` is not listed for this call, and "Not all APIs support this header" ([idempotency](https://developer.paypal.com/api/rest/reference/idempotency)). **But a duplicate URL is refused**: `WEBHOOK_URL_ALREADY_EXISTS` ([schema](https://developer.paypal.com/api/webhooks/v1/schema.json)) | **No**: no idempotency header and no duplicate-URL refusal is documented (`vpay-notchpay/src/lib.rs:318-320`)                                                                                                                                                     |
+| Idempotent create   | **Yes**: "all `POST` requests accept idempotency keys", and "Retries with the same key return the saved response" ([idempotent requests](https://docs.stripe.com/api/idempotent_requests)). A duplicate URL is not documented either way (§ 12, item 1)                           | No key: `PayPal-Request-Id` is not listed for this call, and "Not all APIs support this header" ([idempotency](https://developer.paypal.com/api/rest/reference/idempotency)). **But a duplicate URL is refused**: `WEBHOOK_URL_ALREADY_EXISTS` ([schema](https://developer.paypal.com/api/webhooks/v1/schema.json)) | **No**: no idempotency header and no duplicate-URL refusal is documented (`vpay_notchpay::Client::create_webhook`'s docs)                                                                                                                                         |
 | Secret              | `whsec_…`: "Only returned at creation" ([object](https://docs.stripe.com/api/webhook_endpoints/object))                                                                                                                                                                           | None. Verification needs the `webhook_id`, which "does not come in the header or body of the message" ([webhooks/rest](https://developer.paypal.com/api/rest/webhooks/rest/)); list returns it                                                                                                                      | The `Webhooks.Webhook` schema has none (`id`, `url`, `description`, `events`, `created_at`, `updated_at`); the reference says "Each webhook has a secret that you can find in your dashboard or when creating a webhook via the API" — To confirm (§ 12, item 10) |
 | Limit               | "up to 16 webhook endpoints on each Stripe account" ([Dashboard webhooks](https://docs.stripe.com/development/dashboard/webhooks)), per mode ([how events work](https://docs.stripe.com/events/how-events-work))                                                                  | "Up to 10 webhook URLs may be subscribed per app" ([webhooks](https://developer.paypal.com/api/rest/webhooks/))                                                                                                                                                                                                     | None documented                                                                                                                                                                                                                                                   |
 | Who may create      | A restricted key needs `webhook_write`, "a sensitive permission because it allows subscribing to events across your entire account"; `webhook_read` lists ([permissions](https://docs.stripe.com/stripe-apps/reference/permissions))                                              | The REST app's token, with the webhooks scope; webhooks are per app: "Only events associated with the specific app will be received" ([webhooks](https://developer.paypal.com/api/rest/webhooks/))                                                                                                                  | The private key, in `X-Grant` ([API authentication](https://developer.notchpay.co/api-reference/authentication))                                                                                                                                                  |
@@ -209,11 +208,11 @@ dashboard, an event type removed, an endpoint Stripe disabled.
 - A seed that fails "is logged with `alert` and the loop starts anyway"
   (`run_loop.rs:668-683`). The sixth seed inherits that.
 - The handler always answers with a reschedule, never with an error. This is a
-  rule, not a preference. A dead-lettered job is parked at `run_at =
-'infinity'` and "keeps its `dedupe_key` occupied" (migration
-  `0023_jobs-scan-deliveries.sql`, lines 30–33). `seed_singletons`' `ON
-CONFLICT DO NOTHING` could then never revive it, and registration would
-  stop for good, silently.
+  rule, not a preference. A dead-lettered job is parked at
+  `run_at = 'infinity'` and "keeps its `dedupe_key` occupied" (migration
+  `0023_jobs-scan-deliveries.sql`, lines 30–33). The
+  `ON CONFLICT DO NOTHING` in `seed_singletons` could then never revive it,
+  and registration would stop for good, silently.
 - Nothing waits on it. A charge on a rail with no endpoint is polled exactly
   as today.
 
@@ -250,7 +249,7 @@ somebody believes in.
 
 Every list is read whole: Notch Pay's every page to `last_page` — the client
 already says "stopping at the first would miss one and register a duplicate"
-(`vpay-notchpay/src/wire.rs:311-317`) — Stripe's 16 at most in one page of
+(`vpay_notchpay::wire::WebhookPage`'s docs) — Stripe's 16 at most in one page of
 `limit=100`, PayPal's in one call. No provider filters a list by URL or label,
 so the classification is vpay's:
 
@@ -265,7 +264,7 @@ so the classification is vpay's:
 Stripe carries it in `metadata[vpay_endpoint]` and in `description`; Notch Pay
 in `description`, its only label: the client already documents that field
 as "what lets vpay recognise an endpoint it created itself"
-(`CreateWebhook`, `vpay-notchpay/src/wire.rs:279-283`). The deployment's name is in the marker
+(`vpay_notchpay::wire::CreateWebhook`). The deployment's name is in the marker
 so that two deployments sharing one sandbox account never take each other's
 endpoints for superseded ones.
 
@@ -371,7 +370,7 @@ Why each piece is there:
 **`notchpay`** (RFC-0012).
 
 - Create: `Client::create_webhook` with `url`, `description` the marker, and
-  `events` the five in `PAYMENT_EVENTS` (`vpay-notchpay/src/wire.rs:271`).
+  `events` the five in `PAYMENT_EVENTS` (`vpay_notchpay::wire::PAYMENT_EVENTS`).
 - List: `Client::list_webhooks(page)` until `current_page` equals
   `last_page`. The client sends `page` and takes the default `limit` of 30.
 - Drift: the schema has no enabled state to read. Restoring vpay's events
@@ -379,7 +378,8 @@ Why each piece is there:
   neither, on purpose. Both would be added, and called only on an endpoint
   that carries this deployment's marker.
 - None of this moves RFC-0012's gate. The Notch Pay adapter is not buildable
-  until its delivery step 0 is decided.
+  until its delivery step 0 is met, which since 2026-10-20 means Notch Pay's
+  written answer on rule 3 (RFC-0012, "The gate").
 
 ### 6. Secrets acquired at runtime
 
@@ -400,8 +400,8 @@ Why each piece is there:
   accounts as rows "needs a key-custody decision for rail secrets".
   **This store is the largest new piece of the design** — larger than the
   pass.
-- **And nothing could read the secret yet.** `parse_callback(&self, body:
-&[u8])` receives no headers (`vpay-provider/src/lib.rs:1518`), so no rail's
+- **And nothing could read the secret yet.** `parse_callback` takes
+  `body: &[u8]` and no headers (`vpay-provider/src/lib.rs:1518`), so no rail's
   signature can be checked until the port grows a headers argument: RFC-0010
   open question 4. RFC-0012 § 2 refused to configure Notch Pay's hash key on
   exactly this ground: "a secret that nothing reads is a secret held for no
@@ -433,8 +433,8 @@ Why each piece is there:
   deployment's charges.
 - **All N point at the same URL**, `{public_base_url}/provider/{rail}/callback`,
   with no account in the path. The route finds the charge by rail and by the
-  reference in the body (`get_by_provider_reference(&code,
-reference.reference_id)`, `provider_callback.rs:281-283`), and RFC-0009 § 3
+  reference in the body (`get_by_provider_reference`,
+  `provider_callback.rs:281-283`), and RFC-0009 § 3
   resolves the account from the **charge**. An account in the URL would be an
   input the caller chooses on an unauthenticated route, and anything that
   trusted it — a verifier choosing a secret, a poll choosing credentials —
