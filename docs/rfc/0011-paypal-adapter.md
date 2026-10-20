@@ -597,7 +597,11 @@ Steps 2–6 are one PR against `master` and one against `vpay-skills`.
    counsel.)
 6. **Signed callbacks** — RFC-0010 open question 4, with the note that
    PayPal's verification is an API call needing a `webhook_id` in
-   configuration. (Maintainer; a port change.)
+   configuration. (Maintainer; a port change.) _2026-10-20:
+   [RFC-0014](0014-verifying-rail-callbacks.md) designs verification for
+   every rail that signs. For PayPal it recommends local RSA verification
+   against a pinned certificate host over the verify API, which would give
+   every anonymous POST an outbound call (its open question 3)._
 7. **`fee` on refunds**: promote after § 10 item 3, and what `Some(0)` should
    mean to a merchant if PayPal always answers zero. (Maintainer, with issue
    #46's integrator.)

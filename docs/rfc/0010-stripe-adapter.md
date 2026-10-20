@@ -552,7 +552,11 @@ what this rail does and does not do in the same terms.
    intent. (Maintainer, product.)
 4. **Signed callbacks.** Does `parse_callback` grow a headers argument so a
    rail that signs can be verified, with the hint design kept as the
-   fallback? (Maintainer; a port change.)
+   fallback? (Maintainer; a port change.) _Answered 2026-10-20: the
+   maintainer chose verification "as its own piece of work".
+   [RFC-0014](0014-verifying-rail-callbacks.md) designs it. `parse_callback`
+   keeps its signature, and a defaulted `verify_callback` runs after the
+   charge is found. Nothing is built._
 5. **`application_fee_amount` on model B.** It is not holding merchant money,
    and it is the operator earning on a merchant's payment; RFC-0001's
    licence conversation decides whether a CEMAC operator may. (Maintainer,
