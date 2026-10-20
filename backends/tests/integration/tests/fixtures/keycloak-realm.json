@@ -11,7 +11,7 @@
       "enabled": true,
       "protocol": "openid-connect",
       "publicClient": false,
-      "secret": "kc-test-client-secret",
+      "secret": "__CLIENT_SECRET__",
       "standardFlowEnabled": true,
       "directAccessGrantsEnabled": false,
       "implicitFlowEnabled": false,
@@ -119,7 +119,7 @@
       "enabled": true,
       "groups": ["/vpay-staff"],
       "credentials": [
-        { "type": "password", "value": "ada-password" },
+        { "type": "password", "value": "__ADA_PASSWORD__" },
         {
           "type": "otp",
           "secretData": "{\"value\":\"12345678901234567890\"}",
@@ -135,7 +135,7 @@
       "lastName": "Hopper",
       "enabled": true,
       "groups": ["/vpay-staff"],
-      "credentials": [{ "type": "password", "value": "grace-password" }],
+      "credentials": [{ "type": "password", "value": "__GRACE_PASSWORD__" }],
       "requiredActions": ["CONFIGURE_TOTP"]
     },
     {
@@ -146,7 +146,7 @@
       "lastName": "Outsider",
       "enabled": true,
       "credentials": [
-        { "type": "password", "value": "mallory-password" },
+        { "type": "password", "value": "__MALLORY_PASSWORD__" },
         {
           "type": "otp",
           "secretData": "{\"value\":\"12345678901234567890\"}",

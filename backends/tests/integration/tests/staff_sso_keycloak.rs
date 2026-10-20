@@ -63,14 +63,17 @@ use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
 };
 
-const REALM: &str = include_str!("fixtures/keycloak-realm.json");
+/// The realm import, with `__NAME__` placeholders where a secret goes. **No
+/// password, client secret or admin credential is written down anywhere in this
+/// repository**: [`Secrets::generate`] draws each from the OS CSPRNG per run
+/// and [`Secrets::realm`] substitutes them, so a leaked fixture opens nothing.
+const REALM_TEMPLATE: &str = include_str!("fixtures/keycloak-realm.json");
 /// The TOTP key `ada`'s and `mallory`'s OTP credentials were imported with.
 /// Keycloak uses the **raw bytes** of the imported value as the HMAC key (not
 /// its base32 decoding), which is why this is a byte string and not a seed.
 const IMPORTED_TOTP_KEY: &[u8] = b"12345678901234567890";
 
 const SSO_CLIENT_ID: &str = "vpay-staff";
-const SSO_CLIENT_SECRET: &str = "kc-test-client-secret";
 const SSO_REDIRECT_URI: &str = "http://127.0.0.1:3000/api/auth/sso/callback";
 
 const MERCHANT_A: &str = "acme-cameroon-tenant";
@@ -241,7 +244,40 @@ fn query(location: &str, name: &str) -> Option<String> {
 
 // ------------------------------------------------------------ the scenario --
 
+/// Every credential this run uses, random per run (256 bits from the same
+/// `OsRng` path vpay mints session tokens with).
+struct Secrets {
+    ada: String,
+    grace: String,
+    mallory: String,
+    client_secret: String,
+    admin: String,
+}
+
+impl Secrets {
+    fn generate() -> Self {
+        let fresh = || vpay_api::staff_auth::tokens::mint().token;
+        Self {
+            ada: fresh(),
+            grace: fresh(),
+            mallory: fresh(),
+            client_secret: fresh(),
+            admin: fresh(),
+        }
+    }
+
+    /// The realm import with this run's secrets in it.
+    fn realm(&self) -> String {
+        REALM_TEMPLATE
+            .replace("__ADA_PASSWORD__", &self.ada)
+            .replace("__GRACE_PASSWORD__", &self.grace)
+            .replace("__MALLORY_PASSWORD__", &self.mallory)
+            .replace("__CLIENT_SECRET__", &self.client_secret)
+    }
+}
+
 struct Stack {
+    secrets: Secrets,
     _keycloak: testcontainers::ContainerAsync<GenericImage>,
     _postgres: testcontainers::ContainerAsync<testcontainers_modules::postgres::Postgres>,
     _server: tokio::task::JoinHandle<()>,
@@ -251,15 +287,16 @@ struct Stack {
 
 async fn stack() -> anyhow::Result<Stack> {
     ensure_crypto_provider_installed();
+    let secrets = Secrets::generate();
 
     let keycloak = GenericImage::new("quay.io/keycloak/keycloak", "26.6.1")
         .with_exposed_port(8080.tcp())
         .with_wait_for(WaitFor::message_on_stdout("Listening on:"))
         .with_env_var("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
-        .with_env_var("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")
+        .with_env_var("KC_BOOTSTRAP_ADMIN_PASSWORD", secrets.admin.clone())
         .with_copy_to(
             "/opt/keycloak/data/import/realm.json",
-            REALM.as_bytes().to_vec(),
+            secrets.realm().into_bytes(),
         )
         .with_cmd(["start-dev", "--import-realm"])
         .start()
@@ -281,7 +318,7 @@ async fn stack() -> anyhow::Result<Stack> {
         sso: Some(StaffSso {
             issuer,
             client_id: SSO_CLIENT_ID.to_owned(),
-            client_secret: SSO_CLIENT_SECRET.to_owned(),
+            client_secret: secrets.client_secret.clone(),
             redirect_uri: SSO_REDIRECT_URI.to_owned(),
             scopes: vec!["openid".into(), "email".into(), "profile".into()],
             required_group: "vpay-staff".to_owned(),
@@ -340,6 +377,7 @@ async fn stack() -> anyhow::Result<Stack> {
     .await?;
 
     Ok(Stack {
+        secrets,
         _keycloak: keycloak,
         _postgres: postgres,
         _server: served.server,
@@ -498,7 +536,7 @@ async fn a_real_keycloak_signs_staff_in_and_the_measured_amr_behaviour_is_handle
         &mut ada,
         &url,
         "ada",
-        "ada-password",
+        &stack.secrets.ada,
         Some(IMPORTED_TOTP_KEY),
         0,
     )
@@ -530,7 +568,7 @@ async fn a_real_keycloak_signs_staff_in_and_the_measured_amr_behaviour_is_handle
     // that setting load-bearing in the test rather than a coincidence of speed.
     tokio::time::sleep(std::time::Duration::from_secs(3)).await;
     let (pending, url) = stack.start().await?;
-    let walked = sign_in_at_keycloak(&mut ada, &url, "ada", "ada-password", None, 0).await?;
+    let walked = sign_in_at_keycloak(&mut ada, &url, "ada", &stack.secrets.ada, None, 0).await?;
     let (status, body) = stack.callback(&pending, &walked.redirect).await?;
     assert_eq!(
         (status, field(&body, "outcome").as_str()),
@@ -552,7 +590,8 @@ async fn a_real_keycloak_signs_staff_in_and_the_measured_amr_behaviour_is_handle
     // ---- 2. OTP enrolled during the sign-in: amr ["pwd"], one retry ---------
     let mut grace = Browser::default();
     let (pending, url) = stack.start().await?;
-    let first = sign_in_at_keycloak(&mut grace, &url, "grace", "grace-password", None, 0).await?;
+    let first =
+        sign_in_at_keycloak(&mut grace, &url, "grace", &stack.secrets.grace, None, 0).await?;
     let enrolled = first
         .enrolled_secret
         .clone()
@@ -588,7 +627,7 @@ async fn a_real_keycloak_signs_staff_in_and_the_measured_amr_behaviour_is_handle
         &mut grace,
         &retry_url,
         "grace",
-        "grace-password",
+        &stack.secrets.grace,
         Some(&enrolled),
         1,
     )
@@ -608,7 +647,7 @@ async fn a_real_keycloak_signs_staff_in_and_the_measured_amr_behaviour_is_handle
         &mut mallory,
         &url,
         "mallory",
-        "mallory-password",
+        &stack.secrets.mallory,
         Some(IMPORTED_TOTP_KEY),
         0,
     )
