@@ -5278,13 +5278,10 @@ providers:
                 .merchant_clients
                 .iter()
                 .any(|merchant| merchant.merchant_id == dashboard.merchant_id),
-            "dashboard bound to {:?}, merchants are {:?}",
-            dashboard.merchant_id,
-            config
-                .merchant_clients
-                .iter()
-                .map(|merchant| merchant.merchant_id.as_str())
-                .collect::<Vec<_>>()
+            // No config value in the message: CodeQL's cleartext-logging
+            // query follows `Config` from `validate_secret` into any format
+            // argument, and a merchant id is not worth that alert.
+            "the example's dashboard client names no registered merchant"
         );
     }
 
