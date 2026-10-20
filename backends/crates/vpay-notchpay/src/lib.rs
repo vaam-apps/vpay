@@ -431,7 +431,7 @@ mod tests {
     use super::*;
     use crate::wire::ProcessData;
 
-    const PUBLIC: &str = "pk_test_public0001";
+    const PUBLIC: &str = "public-key-0001";
     const PRIVATE: &str = "private-key-0002";
     const PAYER: &str = "+237670000000";
 
@@ -583,13 +583,15 @@ mod tests {
         for (public, private, named) in [
             ("", PRIVATE, "public_key"),
             ("   ", PRIVATE, "public_key"),
-            (PUBLIC, "private-key\nnewline", "private_key"),
+            (PUBLIC, "refused-private-key\nnewline", "private_key"),
         ] {
             let error = Keys::new(public, private).expect_err("refused");
             assert!(matches!(error, ProviderError::Config(_)), "{error:?}");
             let printed = format!("{error} {error:?}");
             assert!(printed.contains(named), "{printed}");
-            assert!(!printed.contains("sk_test_with"), "{printed}");
+            for leaked in ["refused-private-key", PUBLIC, PRIVATE] {
+                assert!(!printed.contains(leaked), "{leaked} printed: {printed}");
+            }
         }
     }
 

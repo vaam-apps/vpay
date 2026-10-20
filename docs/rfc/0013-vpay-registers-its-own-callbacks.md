@@ -652,7 +652,7 @@ here; Delivery step 0 fixes them as dated corrections.
 
 In the sandbox (S) or in writing (W).
 
-**Stripe**
+#### Stripe
 
 1. **(S)** Does `POST /v1/webhook_endpoints` refuse a second endpoint at a URL
    the account already has? No docs.stripe.com page says. A third-party
@@ -670,7 +670,7 @@ In the sandbox (S) or in writing (W).
 5. **(W)** The Dashboard's label for `webhook_write`, and whether a Stripe
    App's restricted key may request it, with RFC-0010 § 10 item 4.
 
-**PayPal**
+#### PayPal
 
 6. **(S)** Is `WEBHOOK_URL_ALREADY_EXISTS` per app or per account, and on
    which HTTP status? The schema maps no error to an operation.
@@ -682,7 +682,7 @@ In the sandbox (S) or in writing (W).
 9. **(W)** Does PayPal ever disable a failing webhook, and how far back does
    the events API read?
 
-**Notch Pay**
+#### Notch Pay
 
 10. **(S)** Does `POST /webhooks` return the endpoint's signing secret, as the
     reference says and the schema does not? (RFC-0012 § 10, item 13.)
@@ -694,7 +694,7 @@ In the sandbox (S) or in writing (W).
 13. **(W)** How many retries, over how long, and can an endpoint be disabled?
     The schema has no state field.
 
-**MTN**
+#### MTN
 
 14. **(W)** Does production expose any read of an API user's
     `providerCallbackHost`?
@@ -703,7 +703,7 @@ In the sandbox (S) or in writing (W).
     MTN's published responses for `requesttopay` are 202, 400, 409 and 500.
 16. **(S)** Does MTN call back with `PUT` or `POST` (§ 11, item 2)?
 
-**Orange**
+#### Orange
 
 17. **(W)** Is `notif_url` per request only, with no registration or
     allowlist? Does Orange retry? Does the notification carry `order_id`
