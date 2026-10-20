@@ -1376,3 +1376,44 @@ debug_protections:
   - type: HttpBodyError
     file: backends/crates/vpay-provider/src/http.rs
     elements: [payer_msisdn, webhook_url]
+  # vpay-notchpay, the Notch Pay client (RFC-0012). Linked by no binary on
+  # 2026-10-20; registered now because the types exist now. `Keys` and
+  # `Client` hold rail credentials and hide them with `Secret`, and are not
+  # listed: the inventory has no element for a rail credential, which is
+  # `vpay_provider::ProviderConfig`'s situation too.
+  - type: InitializePayment
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [payer_msisdn]
+  - type: ProcessPayment
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [payer_msisdn]
+  - type: ProcessData
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [payer_msisdn]
+  - type: PaymentEnvelope
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [rail_failure_text, sys_provider_ref]
+  - type: Payment
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [sys_provider_ref]
+  - type: Event
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [sys_provider_ref]
+  - type: EventData
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [sys_provider_ref]
+  - type: CreateWebhook
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [webhook_url]
+  - type: WebhookEnvelope
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [webhook_url]
+  - type: WebhookPage
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [webhook_url]
+  - type: Webhook
+    file: backends/crates/vpay-notchpay/src/wire.rs
+    elements: [webhook_url]
+  - type: Refusal
+    file: backends/crates/vpay-notchpay/src/lib.rs
+    elements: [rail_failure_text]

@@ -116,6 +116,15 @@ Sources: [requirements](https://flutterwave.com/eu/support/general/what-are-the-
   No official page names a legal entity, a licence, a partner bank or
   card-scheme membership.
 
+**Re-measured 2026-10-20 for [RFC-0012](../rfc/0012-notchpay-adapter.md).**
+Every finding above stands: still no card guide, no 3-D Secure, no test card
+and no card price; the status read still declares only the public key
+(openapi.yaml 2.1.0); refunds are still in a guide and not in the
+specification; and the merchant agreement (last updated 31 December 2023)
+still reserves the service to natural persons and names no legal entity or
+licence. RFC-0012 designs a mobile-money rail and leaves the rule-3 decision
+to the maintainer.
+
 Sources: [collect](https://developer.notchpay.co/accept-payments/collect),
 [authentication](https://developer.notchpay.co/api-reference/authentication),
 [refunds](https://developer.notchpay.co/accept-payments/refunds),
