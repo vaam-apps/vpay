@@ -125,8 +125,8 @@ itself, and the load-bearing sentence that survived all nine, are still on
 > repository; `mtn_momo::refund` is still `NotImplemented`; and no cluster has
 > ever run vpay. Do not deploy it._
 
-> **Count clarified 2026-10-20 from the maintainer's firsthand account.**
-> The maintainer who performed the September 15 tests confirms **over seven
+> **Count clarified 2026-10-20 from Valantine Suh's firsthand account.**
+> Valantine Suh (@Valsuh45), who performed the September 15 tests, confirms **over seven
 > successful EUR `mtn_momo` payments against MTN's real sandbox across that
 > day**. The PaymentIntent named above is the first documented success,
 > not the total: its detailed session had two token-mint failures followed

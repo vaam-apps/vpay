@@ -51,8 +51,7 @@ _Moved out of [docs/runbooks/demo.md](../demo.md) on 2026-09-11 by exp57, which 
   request a merchant genuinely controls — the MSISDN on MTN (a `GET` status
   query steers no other way), the amount on Orange (whose status query is a
   `POST` carrying it). **Nothing rewrites stored state to force an outcome.**
-  **Scope clarified 2026-10-20:** separately from this demo, the maintainer
-  confirms over seven successful MTN sandbox payments in the testing recorded
+  **Scope clarified 2026-10-20:** separately from this demo, Valantine Suh (@Valsuh45) confirms over seven successful MTN sandbox payments in the testing recorded
   on 2026-09-15 ([verification](../../status/verification/2026-09-15.md)).
 - **That a payer can complete Orange's hosted page.** The demo prints the URL
   and does not open it; the stub then answers the status query as though the

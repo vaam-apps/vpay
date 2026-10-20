@@ -389,8 +389,7 @@ both directions, by a unit test.
 
 **Updated 2026-09-15 (the first real call): `submit`, `query_status` and the
 token mint were exercised against MTN's **real sandbox**. Over seven payments
-settled across the day**, as confirmed on 2026-10-20 by the maintainer who
-performed the tests. The first documented EUR `mtn_momo` PaymentIntent
+settled across the day**, as confirmed on 2026-10-20 by Valantine Suh (@Valsuh45), who performed the tests. The first documented EUR `mtn_momo` PaymentIntent
 (`pi_xxd2xj1e914e16c6m63gezag`) was
 created, confirmed and reached `succeeded` through the worker's authenticated
 status query. That run also found and fixed a real bug the WireMock suite

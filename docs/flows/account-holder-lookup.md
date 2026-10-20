@@ -307,7 +307,7 @@ about the _rail_, and this one answers a question about the _route_.
   this or for any other operation" until 2026-09-23, and the second half had
   been wrong since 2026-09-15, when the Collections token, `requesttopay` and
   the status queries ran against MTN's real sandbox, settling over seven EUR
-  payments (count confirmed on 2026-10-20 by the maintainer who performed the tests)
+  payments (count confirmed on 2026-10-20 by Valantine Suh (@Valsuh45), who performed the tests)
   ([../status/verification/2026-09-15.md](../status/verification/2026-09-15.md)).
   Those tests never called `basicuserinfo`, so the first half still stands.)_ Two specifics are unverified as a direct consequence:
   the case of the `accountHolderIdType` path segment, and whether MTN answers

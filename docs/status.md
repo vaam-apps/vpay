@@ -67,13 +67,15 @@ to.
 > forever. See
 > [status/verification/2026-09-16-w3-sdk-refunds.md](status/verification/2026-09-16-w3-sdk-refunds.md).)_
 
-**Count corrected 2026-10-20:** the maintainer who performed the real MTN
-sandbox tests confirmed **over seven successful payments**. Earlier wording
+**Count corrected 2026-10-20:** Valantine Suh (@Valsuh45), who performed the real MTN sandbox tests, confirmed **over seven successful payments**. Earlier wording
 reported one payment. The first intent named above is one
 documented example; the three attempts in its session (two token failures,
 then one success) are not the day's total. This is a correction to the
 2026-09-15 testing record, not a new test run or evidence of production money
 movement. See [the verification record](status/verification/2026-09-15.md).
+_(Attribution corrected 2026-10-20: this said "the maintainer" performed the
+tests until later the same day. The maintainer states that Valantine Suh ran
+them.)_
 
 That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
 3, 4, 5c, 7 (twice), 8, 9 and exp31, each retiring a specific claim on a

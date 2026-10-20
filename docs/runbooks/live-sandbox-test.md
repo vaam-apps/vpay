@@ -6,8 +6,7 @@ worker, the payer checkout page, and the staff dashboard — and watch it settle
 This is the reproducible form of the work first done on 2026-09-15
 ([`../status.md`](../status.md)).
 
-**Testing evidence, corrected 2026-10-20:** the maintainer who performed those
-tests confirmed **over seven successful payments against MTN's real sandbox**.
+**Testing evidence, corrected 2026-10-20:** Valantine Suh (@Valsuh45), who performed those tests, confirmed **over seven successful payments against MTN's real sandbox**.
 This walkthrough reproduces one payment; the first documented session's three
 attempts (two token failures, then one success) are not the total across the day.
 See [the verification record](../status/verification/2026-09-15.md).

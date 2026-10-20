@@ -36,8 +36,9 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 > number was an MTN-sandbox test MSISDN the sandbox settles by itself.
 > Orange's rail has still never been called, and neither has MTN's
 > Disbursements product, which is what a refund on that rail is. See
-> [`docs/status.md`](docs/status.md). The maintainer who performed the tests
-> confirmed the **over seven successful payments** count on 2026-10-20;
+> [`docs/status.md`](docs/status.md). Valantine Suh (@Valsuh45), who performed
+> the tests, confirmed the **over seven successful payments** count on
+> 2026-10-20;
 > [the verification record](docs/status/verification/2026-09-15.md) distinguishes
 > the day's total from the first documented session.)_
 >
