@@ -3454,8 +3454,8 @@ packages:
   hermes-parser@0.25.1:
     resolution: {integrity: sha512-6pEjquH3rqaI6cYAXYPcz9MS4rY6R4ngRgrgfDshRptUZIc3lw0MCIJIGDj9++mfySOuPTHB4nrSW99BCvOPIA==}
 
-  hono@4.13.7:
-    resolution: {integrity: sha512-c8/gF9ac8Y78/agExVocyLevgR+JlpNB444Py0FSX8pJoPdYUfUzRcXtYEYGwt6l19qIlVZPN5Mfsw9jFShmQQ==}
+  hono@4.13.13:
+    resolution: {integrity: sha512-CQ46U0ZkAGmbT/4UxdzzGJpacP2IeKgY4a5/tOI9AABbpOMfK739wfDXmv1usCk+3RkKj1hQy4/fjhiwa2xlrA==}
     engines: {node: '>=16.9.0'}
 
   html-encoding-sniffer@4.0.0:
@@ -5517,9 +5517,9 @@ snapshots:
       react-dom: 19.2.8(react@19.2.8)
       use-sync-external-store: 1.6.0(react@19.2.8)
 
-  '@hono/node-server@1.19.17(hono@4.13.7)':
+  '@hono/node-server@1.19.17(hono@4.13.13)':
     dependencies:
-      hono: 4.13.7
+      hono: 4.13.13
 
   '@humanfs/core@0.19.2':
     dependencies:
@@ -6834,21 +6834,21 @@ snapshots:
 
   '@zenstackhq/cli@3.9.3(kysely@0.29.5)(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(supports-color@8.1.1)(typescript@5.9.3)':
     dependencies:
-      '@hono/node-server': 1.19.17(hono@4.13.7)
+      '@hono/node-server': 1.19.17(hono@4.13.13)
       '@zenstackhq/common-helpers': 3.9.3
       '@zenstackhq/language': 3.9.3
       '@zenstackhq/orm': 3.9.3(pg@8.23.0)(zod@4.5.4)
       '@zenstackhq/plugin-policy': 3.9.3(kysely@0.29.5)(pg@8.23.0)(zod@4.5.4)
       '@zenstackhq/schema': 3.9.3
       '@zenstackhq/sdk': 3.9.3
-      '@zenstackhq/server': 3.9.3(hono@4.13.7)(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(zod@4.5.4)
+      '@zenstackhq/server': 3.9.3(hono@4.13.13)(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(zod@4.5.4)
       chokidar: 5.0.0
       colors: 1.4.0
       commander: 8.3.0
       cors: 2.8.6
       dotenv: 17.4.2
       execa: 9.6.1
-      hono: 4.13.7
+      hono: 4.13.13
       jiti: 2.7.0
       langium: 4.2.4
       mixpanel: 0.18.1(supports-color@8.1.1)
@@ -6932,7 +6932,7 @@ snapshots:
       ts-pattern: 5.9.0
       typescript: 6.0.3
 
-  '@zenstackhq/server@3.9.3(hono@4.13.7)(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(zod@4.5.4)':
+  '@zenstackhq/server@3.9.3(hono@4.13.13)(next@16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(pg@8.23.0)(zod@4.5.4)':
     dependencies:
       '@zenstackhq/common-helpers': 3.9.3
       '@zenstackhq/orm': 3.9.3(pg@8.23.0)(zod@4.5.4)
@@ -6945,7 +6945,7 @@ snapshots:
       zod: 4.5.4
       zod-validation-error: 4.0.2(zod@4.5.4)
     optionalDependencies:
-      hono: 4.13.7
+      hono: 4.13.13
       next: 16.3.8(@babel/core@7.29.7(supports-color@10.2.2))(@types/node@22.20.1)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
     transitivePeerDependencies:
       - better-sqlite3
@@ -7881,7 +7881,7 @@ snapshots:
     dependencies:
       hermes-estree: 0.25.1
 
-  hono@4.13.7: {}
+  hono@4.13.13: {}
 
   html-encoding-sniffer@4.0.0:
     dependencies:

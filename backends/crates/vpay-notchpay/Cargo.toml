@@ -31,3 +31,11 @@ serde_json.workspace = true
 # One test sends a request to a closed loopback port, to prove a transport
 # failure is `Transport` and never a refusal. No server, no double.
 tokio.workspace = true
+# The rest serve `examples/sandbox_probe.rs` only, which a person runs
+# against Notch Pay's real sandbox from docs/runbooks/notchpay-sandbox-test.md:
+# fresh references, and item 7's signature check. All four are already in the
+# workspace's lockfile.
+uuid.workspace = true
+hmac.workspace = true
+sha2.workspace = true
+hex.workspace = true

@@ -3653,6 +3653,42 @@ mod tests {
         );
     }
 
+    /// `config/application-notchpay-sandbox.yml` is what
+    /// `docs/runbooks/notchpay-sandbox-test.md` boots for RFC-0012 step 5, and
+    /// nothing else loads it. So this does: with keys shaped like Notch Pay's
+    /// real sandbox keys (`test.`, measured 2026-10-20) it boots outside
+    /// livemode, routes `notchpay` alone, at Notch Pay's one host.
+    #[test]
+    fn the_notchpay_sandbox_overlay_loads_with_real_shaped_test_keys() {
+        let env = example_env(BTreeMap::from([
+            (
+                "NOTCHPAY_TEST_PUBLIC_KEY".to_owned(),
+                "public-key-test.0005".to_owned(),
+            ),
+            (
+                "NOTCHPAY_TEST_PRIVATE_KEY".to_owned(),
+                "private-key-test.0006".to_owned(),
+            ),
+            (
+                "NOTCHPAY_SANDBOX_MERCHANT_JWK_KID".to_owned(),
+                "notchpay-sandbox-merchant-kid".to_owned(),
+            ),
+            (
+                "NOTCHPAY_SANDBOX_MERCHANT_JWK_N".to_owned(),
+                "placeholder-rsa-modulus".to_owned(),
+            ),
+        ]));
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "notchpay-sandbox", &env)
+            .expect("the notchpay-sandbox overlay loads");
+        assert!(!config.deployment.livemode);
+        let codes: Vec<&str> = config.providers.iter().map(|p| p.code.as_str()).collect();
+        assert_eq!(codes, ["notchpay"]);
+        assert_eq!(
+            config.providers.first().map(|p| p.host.url.as_str()),
+            Some("https://api.notchpay.co")
+        );
+    }
+
     /// The two length bounds are transcribed from migration 0022, and this
     /// reads the migration to prove it.
     ///

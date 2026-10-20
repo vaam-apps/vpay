@@ -1,0 +1,338 @@
+# Testing the `notchpay` rail against Notch Pay's real sandbox
+
+**Who this is for.** The maintainer, or whoever they ask (Valantine Suh ran
+the 2026-09-15 MTN sandbox tests the same way), with a Notch Pay
+**test-mode** account. You run two things on your own machine:
+
+- **Part A**, RFC-0012 delivery step 1: a probe that asks Notch Pay's sandbox
+  the § 10 sandbox questions and writes a redacted report.
+- **Part B**, delivery step 5: vpay itself, with server, worker and Postgres,
+  taking one sandbox payment that succeeds and one that fails, through the
+  `notchpay` adapter.
+
+You paste the outputs back to a Claude session. It records them on dated
+pages under `docs/status/verification/` and corrects the adapter wherever
+Notch Pay disagrees with its specification.
+
+**What this page is not.** It is not evidence. Nothing has called Notch Pay
+until someone runs it and the outputs are recorded
+([`../status/verification/2026-10-20-notchpay-sandbox.md`](../status/verification/2026-10-20-notchpay-sandbox.md)
+says why the first attempt made no request). It is not a production test:
+every key here is a test key, and `deployment.livemode` stays `false`. It is
+not webhook signature verification, which is designed in
+[RFC-0014](../rfc/0014-verifying-rail-callbacks.md) and not built.
+
+Written 2026-10-20. Nothing on this page has been run yet against Notch Pay.
+What was run, in a container that cannot reach Notch Pay, was this:
+
+- the probe's three phases, against the repository's WireMock stub
+  (`backends/tests/conformance/wiremock/notchpay`) on loopback, with fixture
+  keys;
+- its key refusal (no request, no report);
+- `verify-signature` against HMACs computed independently with `openssl`;
+- B1 and B2 below, booted against a local Postgres with fixture keys, up to
+  `healthz` and `livez`. Neither process calls the rail until a charge
+  exists, and B3 was not run. The first real run will find something this page
+  gets wrong; fix the page in the same change that records the run.
+
+---
+
+## Ground rules
+
+1. **Test keys only.** In Notch Pay's dashboard, check that the account is in
+   **Test** mode before you copy the keys. The probe and vpay's boot both
+   refuse a key that contains neither `test.` nor `test_`. That check is a
+   backstop. It does not replace looking at the dashboard.
+2. **Keys never leave your machine.** Keep them in an env file **outside the
+   repository**. Never paste a key, the hash key or an endpoint's signing
+   secret into a chat, an issue or a commit. The probe's report is redacted,
+   but read it before you paste it.
+3. **Real egress.** vpay trusts only its vendored root certificates and
+   ignores proxy variables. Behind a TLS-intercepting proxy, every call fails
+   at the handshake; that is what stopped the 2026-10-20 attempt. Check first:
+
+   ```bash
+   echo | openssl s_client -connect api.notchpay.co:443 -servername api.notchpay.co 2>/dev/null \
+     | openssl x509 -noout -issuer
+   ```
+
+   The issuer must be a public CA, not your company's or a gateway's.
+
+4. **Vary the numbers.** Notch Pay's fraud system is active in the sandbox
+   and watches for many payments to one number. The probe varies amounts.
+   Do not loop it.
+
+## The env file
+
+```bash
+mkdir -p ~/.config/vpay && touch ~/.config/vpay/notchpay-sandbox.env
+chmod 600 ~/.config/vpay/notchpay-sandbox.env
+$EDITOR ~/.config/vpay/notchpay-sandbox.env
+```
+
+```text
+NOTCHPAY_TEST_PUBLIC_KEY=...      # dashboard: Settings > API keys, test mode
+NOTCHPAY_TEST_PRIVATE_KEY=...     # sent as X-Grant on every call
+NOTCHPAY_TEST_HASH_KEY=...        # Part A item 7 only; vpay never reads it
+NOTCHPAY_SANDBOX_MERCHANT_JWK_KID=...   # Part B, from gen-signing-key below
+NOTCHPAY_SANDBOX_MERCHANT_JWK_N=...     # Part B, from gen-signing-key below
+```
+
+Load it in every terminal with `set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a`.
+
+---
+
+## Part A — the sandbox probe (step 1)
+
+`backends/crates/vpay-notchpay/examples/sandbox_probe.rs` is a cargo
+example, not a test. It builds every request body from `vpay-notchpay`'s own
+wire types and decodes every answer with them. Each read is also made
+through `vpay_notchpay::Client`. It writes one JSON report, appending a run
+per phase. Run it from the repository root:
+
+```bash
+cargo build -p vpay-notchpay --example sandbox_probe
+PROBE=./target/debug/examples/sandbox_probe
+REPORT=~/notchpay-sandbox-report.json      # outside the repository
+```
+
+### A1. Read-only first
+
+```bash
+$PROBE read --out "$REPORT"
+```
+
+This changes nothing on the account. It reads a payment reference that cannot
+exist and lists the account's webhook endpoints. Its last line says whether
+any field names a mode. **If anything says live, stop.**
+
+### A2. Payments (items 2, 3, 4, 5)
+
+```bash
+$PROBE payments --out "$REPORT"
+```
+
+It initializes and processes six payments on `cm.mobile`, the channel the
+adapter sends, with Notch Pay's documented outcome numbers. Notch Pay's
+[testing page](https://developer.notchpay.co/get-started/testing) lists them
+under `cm.mtn` and `cm.orange`, so whether they work on `cm.mobile` is item 3.
+
+| Number          | Documented outcome          |
+| --------------- | --------------------------- |
+| `+237670000000` | MTN: success                |
+| `+237670000001` | MTN: insufficient funds     |
+| `+237670000002` | MTN: failure (other reason) |
+| `+237670000003` | MTN: timeout (no response)  |
+| `+237670000004` | MTN: canceled by user       |
+| `+237690000000` | Orange: success             |
+
+For each one it processes by vpay's own reference first, and by Notch Pay's
+`trx.…` reference only if that is refused (item 2). It then reads every 5 s
+until a terminal status or 180 s (`NOTCHPAY_PROBE_POLL_SECONDS` changes it),
+recording each status change (item 5). Finally it re-initializes the first
+reference (item 4). It takes about ten minutes, mostly the timeout number.
+
+### A3. Webhook endpoints (items 13, 14, 15, 16, 17's event name)
+
+```bash
+$PROBE webhooks --out "$REPORT" --webhook-url https://vpay-sandbox-probe.example/provider/notchpay/callback
+```
+
+It lists the account's endpoints, then creates three at that URL:
+
+- one with the five payment events;
+- the same again, to see whether a duplicate URL is refused;
+- one asking for `payment.processing`.
+
+Then it lists again and **deletes every endpoint it created**. Any it could
+not delete are named on its last line; delete those in the dashboard. A
+signing secret in an answer is recorded as its shape only (`hsk_test_…`).
+The URL need not be reachable for these items. Use one that is obviously
+vpay's probe.
+
+### A4. Receiving a webhook (items 7 and 17)
+
+These need Notch Pay to POST to you, so they need a **public URL**. Which
+tunnel to use is your call. A third-party tunnel or capture service sees your
+test account's payment data, which is why a Claude session will not choose
+one for you. If you have none, skip A4. Items 7 and 17 then stay open, by
+name.
+
+With a tunnel forwarding to `localhost:8099`, run a receiver that keeps the
+raw body and the header **names** (`receive.py` below writes outside the
+repository):
+
+```python
+# ~/receive.py — saves each POST's raw body and header names; prints nothing secret
+import http.server, json, pathlib, time
+out = pathlib.Path.home() / "notchpay-webhooks"; out.mkdir(exist_ok=True)
+class H(http.server.BaseHTTPRequestHandler):
+    def do_POST(self):
+        body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+        stem = out / str(time.time_ns())
+        stem.with_suffix(".body").write_bytes(body)
+        sig = next((v for k, v in self.headers.items() if k.lower() == "x-notch-signature"), "")
+        stem.with_suffix(".sig").write_text(sig)
+        stem.with_suffix(".headers.json").write_text(json.dumps(list(self.headers.keys())))
+        self.send_response(200); self.end_headers()
+http.server.HTTPServer(("127.0.0.1", 8099), H).serve_forever()
+```
+
+1. In the dashboard (Settings > Webhooks), add an endpoint at your tunnel's
+   URL for every payment event, `payment.processing` included if offered.
+2. Run `python3 ~/receive.py`, then repeat A2 (`$PROBE payments --out "$REPORT"`).
+3. For one delivery, check what the signature covers:
+
+   ```bash
+   f=$(ls ~/notchpay-webhooks/*.body | head -1); s="${f%.body}.sig"
+   $PROBE verify-signature --body "$f" --signature "$(cat "$s")"
+   ```
+
+   It prints whether HMAC-SHA256 under the hash key matches the raw body or
+   its `JSON.stringify` form. It never prints the key.
+
+4. Delete the endpoint in the dashboard.
+
+What to paste back from A4:
+
+- the `verify-signature` output;
+- the event `type` of each delivery (`grep -ho '"type":"[^"]*"' ~/notchpay-webhooks/*.body | sort | uniq -c`);
+- the contents of one `.headers.json` file, which holds header names only.
+
+Do not paste the bodies or the signatures.
+
+### What to paste back from Part A
+
+The whole of `$REPORT`, after reading it. It holds request and response
+bodies with the sandbox test numbers, Notch Pay's ids and references, and no
+key. Before you paste, check:
+
+```bash
+for v in NOTCHPAY_TEST_PUBLIC_KEY NOTCHPAY_TEST_PRIVATE_KEY NOTCHPAY_TEST_HASH_KEY; do
+  grep -qF -- "$(printenv $v)" "$REPORT" && echo "$v FOUND - do not paste" || echo "$v absent"
+done
+```
+
+---
+
+## Part B — the first test-mode payment through vpay (step 5)
+
+`config/application-notchpay-sandbox.yml` is the profile. It has
+`livemode: false`, one rail (`notchpay` at `https://api.notchpay.co`, channel
+`cm.mobile`, XAF) and one merchant, `notchpay-sandbox-merchant`. Its keys are
+`${VAR}`s from the env file above.
+
+### B0. Build, key, database
+
+```bash
+cargo build -p vpay-server
+cargo xtask gen-signing-key --out secrets                                # the OP's signing key
+cargo xtask gen-signing-key --out .e2e/notchpay-sandbox-merchant         # the merchant's keypair
+# put the printed kid and n into the env file as NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / _N
+pnpm install --filter "@vpay-examples/merchant-node..." && pnpm --filter @vaam-apps/vpay-sdk build
+docker run -d --name vpay-pg-notchpay -p 5434:5432 \
+  -e POSTGRES_USER=vpay -e POSTGRES_PASSWORD=vpay -e POSTGRES_DB=vpay postgres:16-alpine
+```
+
+`secrets/` and `.e2e/` are git-ignored.
+
+### B1. Terminal 1: the server
+
+```bash
+set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
+./target/debug/vpay-server \
+  --profile notchpay-sandbox --config config/application.yml \
+  --database-url postgres://vpay:vpay@localhost:5434/vpay \
+  --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
+  --bind 127.0.0.1:8080 --log-format text 2>&1 | tee ~/notchpay-server.log
+```
+
+A **WARN about the public key's exposure is expected** at every boot
+(ADR-0031 condition 4). A boot error naming `credentials.public_key` and
+"lacks" means the key has neither `test.` nor `test_`. Stop and check which
+key you copied.
+
+### B2. Terminal 2: the worker
+
+```bash
+set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
+./target/debug/vpay-server worker \
+  --profile notchpay-sandbox --config config/application.yml \
+  --database-url postgres://vpay:vpay@localhost:5434/vpay \
+  --log-format text --observability-bind 127.0.0.1:9091 2>&1 | tee ~/notchpay-worker.log
+```
+
+The worker's authenticated read is what moves the charge. Notch Pay cannot
+reach `localhost`, and no webhook is needed.
+
+### B3. Terminal 3: one success, one failure
+
+```bash
+for n in 237670000000 237670000001; do
+  VPAY_BASE_URL=http://localhost:8080 VPAY_CLIENT_ID=notchpay-sandbox-merchant \
+  VPAY_PRIVATE_KEY_FILE=.e2e/notchpay-sandbox-merchant/oauth-signing-key.pem \
+  VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=$n VPAY_ORDER="np-$n-$(date +%s)" \
+    node examples/merchant-node/index.mjs
+done
+```
+
+Each prints `created pi_…` and `confirmed processing`. Wait about two
+minutes: the worker asks at 10, 20, 30, 45, 60 and 90 s. Then read the state
+from the database:
+
+```bash
+psql postgres://vpay:vpay@localhost:5434/vpay -c \
+ "select pi.id, pi.status, c.state, c.failure_code, c.provider_txn_id is not null as has_txn, c.updated_at
+    from payment_intents pi join charges c on c.payment_intent_id = pi.id order by c.created_at"
+psql postgres://vpay:vpay@localhost:5434/vpay -c \
+ "select object_id, type, created_at from events order by seq"
+```
+
+Expected if the mapping is right:
+
+- `…000000` reaches `succeeded`.
+- `…000001` reaches `requires_payment_method` with a `failure_code`.
+
+Whatever you see is the answer. Do not adjust anything to match the
+expectation.
+
+If `…000001` never leaves `processing`, the read may not be reaching a
+terminal status. Leave it running for 15 minutes and paste what you have.
+
+### What to paste back from Part B
+
+- both `psql` outputs;
+- `grep -E "notchpay|charge|poll" ~/notchpay-worker.log | tail -100`;
+- the server's boot lines up to `healthz`.
+
+Check them first. vpay never logs a key, and this verifies it:
+
+```bash
+for v in NOTCHPAY_TEST_PUBLIC_KEY NOTCHPAY_TEST_PRIVATE_KEY; do
+  grep -qF -- "$(printenv $v)" ~/notchpay-*.log && echo "$v FOUND - do not paste" || echo "$v absent"
+done
+```
+
+## Teardown
+
+Ctrl-C both terminals, then `docker rm -f vpay-pg-notchpay`. Delete any
+webhook endpoint left in the dashboard. Delete `~/notchpay-webhooks/` once
+the results are recorded.
+
+## What a run proves, and what it does not
+
+**Proves**, once recorded on a dated page: what Notch Pay's sandbox answers
+to the calls vpay's client and adapter make, and whether `notchpay` charges
+reach a terminal status through the worker's read. Only then may
+[`../status/providers.md`](../status/providers.md)'s Collect and Status read
+cells say "proven; sandbox" with the date.
+
+**Does not prove**: anything about Notch Pay's production; a live key's
+prefix (§ 10 item 8, a written question); refunds (`notchpay::refund` stays
+a token); webhook signature verification in vpay (RFC-0014, not built).
+
+## Related
+
+- [RFC-0012](../rfc/0012-notchpay-adapter.md) § 10 — the questions, and § "Delivery".
+- [`../flows/adapter-notchpay.md`](../flows/adapter-notchpay.md) — the adapter and its "To confirm" list.
+- [`./live-sandbox-test.md`](live-sandbox-test.md) — the MTN equivalent this page is modelled on.
