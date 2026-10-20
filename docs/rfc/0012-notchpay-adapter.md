@@ -463,7 +463,7 @@ Three things about this rail's callbacks, none of which changes the design:
   `callback_url_pattern` covers it; whichever adapter lands first carries
   that change.
 - **Notch Pay signs its webhooks, and vpay cannot check the signature
-  today.** `x-notch-signature` is a hex HMAC-SHA256, keyed by the endpoint's
+  today.** (2026-10-20: RFC-0014 designs the check; it is not built.) `x-notch-signature` is a hex HMAC-SHA256, keyed by the endpoint's
   "Hash Key" (`hsk_test_…` in the sandbox)
   ([verify](https://developer.notchpay.co/get-started/webhooks/verify)).
   `parse_callback` receives the body and no headers, which is the port
