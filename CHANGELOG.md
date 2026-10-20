@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.9.0](https://github.com/vaam-apps/vpay/compare/v0.8.0...v0.9.0) (2026-10-20)
+
+
+### Features
+
+* **adapters:** the notchpay rail, admitted under ADR-0031 (rule 3 amended) ([#295](https://github.com/vaam-apps/vpay/issues/295)) ([357c825](https://github.com/vaam-apps/vpay/commit/357c82556d8dff277751ed9bd65b0488b6719b40))
+* **notchpay:** opt-in --ca-bundle for the sandbox probe (cloud sessions only) ([#302](https://github.com/vaam-apps/vpay/issues/302)) ([d14cbe9](https://github.com/vaam-apps/vpay/commit/d14cbe983330a69bd3c8bc4ac0b72e456344e250))
+
+
+### Bug Fixes
+
+* **config:** Notch Pay's real test keys carry `test.`, not `test_` ([#298](https://github.com/vaam-apps/vpay/issues/298)) ([18ef9b7](https://github.com/vaam-apps/vpay/commit/18ef9b7123cc24f6aeaf25a742a741baad8da79d))
+* **deps:** hono 4.13.13 clears GHSA-5r4p-p66f-jhc7 ([#300](https://github.com/vaam-apps/vpay/issues/300)) ([a38937a](https://github.com/vaam-apps/vpay/commit/a38937a35dbdd0c84f213b9b4abc424dd87b528e))
+* **provider:** path_segment refuses an empty or all-dots segment ([#294](https://github.com/vaam-apps/vpay/issues/294)) ([de9e2bf](https://github.com/vaam-apps/vpay/commit/de9e2bf731e12ffd181a27d593978a21352cbb65))
+
+
+### Documentation
+
+* correct real MTN sandbox payment totals ([#283](https://github.com/vaam-apps/vpay/issues/283)) ([cd25532](https://github.com/vaam-apps/vpay/commit/cd255325cddc2876e16c4301b760caf84feb6ade))
+* **rfc:** Notch Pay (RFC-0012), self-registered callbacks (RFC-0013), the provider matrix, and an unlinked Notch Pay client ([#285](https://github.com/vaam-apps/vpay/issues/285)) ([b8be107](https://github.com/vaam-apps/vpay/commit/b8be107c8896c91ccdf433ad67c521e9d871992e))
+* **rfc:** RFC-0014 — verifying rail callbacks ([#296](https://github.com/vaam-apps/vpay/issues/296)) ([0977616](https://github.com/vaam-apps/vpay/commit/097761669e6810d4546e7376ebd4610d7c4457c8))
+* **runbooks:** a Notch Pay sandbox runbook, a probe, and a step-5 profile ([#299](https://github.com/vaam-apps/vpay/issues/299)) ([c5b0a80](https://github.com/vaam-apps/vpay/commit/c5b0a80222daa154f0c8dab6071d42680518577b))
+* Valantine Suh ran the 2026-09-15 MTN sandbox tests, not the maintainer ([#297](https://github.com/vaam-apps/vpay/issues/297)) ([72a31a7](https://github.com/vaam-apps/vpay/commit/72a31a780090cbf6027620f762c006a023edf2a4))
+
 ## [0.8.0](https://github.com/vaam-apps/vpay/compare/v0.7.0...v0.8.0) (2026-10-20)
 
 
