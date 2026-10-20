@@ -121,7 +121,8 @@ I'll email them", and will raise the same questions in a Telegram group the
 maintainer shares with Notch Pay. The questions are § 10's written items (1,
 6, 8, 9, 10, 11 and 12) and where merchants' funds are held (§ 9), with the
 sandbox items attached for completeness. Rule 3 stays as written until Notch
-Pay answers; delivery step 0 waits on that answer now, not on a decision.
+Pay answers; delivery step 0 waits on that answer now, not on a decision. **The maintainer emailed Notch Pay on 2026-10-20.** No answer is recorded
+yet; this paragraph moves when one is.
 
 Building the adapter under the public key and calling rule 3 "satisfied in
 practice" is way B done silently. It is the one option this RFC refuses.

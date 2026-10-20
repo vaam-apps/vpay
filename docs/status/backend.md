@@ -743,3 +743,26 @@ because every `Origin` rail needs it and no rail depends on the rest.
   lists the commands and their counts.
 - [flows/provider-port.md](../flows/provider-port.md) § Status carries the
   entry of this date.
+
+## A Notch Pay client, linked by nothing; two RFCs; one provider matrix (2026-10-20)
+
+**No rail changed and no new rail exists.** This branch adds a crate and
+documents.
+
+- `backends/crates/vpay-notchpay` is a typed client for the Notch Pay API,
+  transcribed from its OpenAPI specification 2.1.0, with 34 unit tests and
+  one doctest. **No crate depends on it, no binary links it, and nothing has
+  called Notch Pay.** [reference](../reference/vpay-notchpay.md).
+- [RFC-0012](../rfc/0012-notchpay-adapter.md) designs the adapter. Notch
+  Pay's status read is documented as authenticated by its public key, which
+  ADR-0029 D1's third rule refuses; the maintainer chose to ask Notch Pay in
+  writing and emailed them on 2026-10-20. The adapter is not written.
+- [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md) designs vpay
+  registering its own callback endpoints on the rails that register them.
+  Nothing of it is built. Its § 11 records five findings about this
+  repository's own documentation, including the claim that MTN retries a
+  callback, which MTN's own page contradicts.
+- [providers.md](providers.md) is one matrix of every provider shipped or
+  designed, cell by cell.
+- [verification/2026-10-20-notchpay-client.md](verification/2026-10-20-notchpay-client.md)
+  has the gates' output and what was not run.
