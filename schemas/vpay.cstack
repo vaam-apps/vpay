@@ -1771,6 +1771,43 @@ model StaffSession {
   @@allow("delete", auth().isSystem())
 }
 
+// An SSO sign-in in flight (migration 0050,
+// [ADR-0030](../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+//
+// `StaffSsoAttempt` and not `StaffSsoFlow` or the like because the name decides
+// the TABLE name (`StaffSession`'s reason): 0.15 derives it with
+// `pluralize(to_snake_case(model))` and has no `@@map`, so this reads and
+// writes `staff_sso_attempts`.
+//
+// NOT a `StaffSession` with a third state, and NOT nullable `staff_id`:
+// nobody exists yet when a first sign-in begins. Migration 0050's header has
+// the argument.
+model StaffSsoAttempt {
+  // SHA-256 of the pending-flow token, hex — never the token.
+  id String @id @length(min: 64, max: 64)
+  // SHA-256 of the `state` sent to the provider.
+  state_hash String @length(min: 64, max: 64)
+  // SHA-256 of the `nonce` sent to the provider.
+  nonce_hash String @length(min: 64, max: 64)
+  // The PKCE verifier, AES-256-GCM sealed (not hashed: the token request must
+  // present the raw value). `@sensitive` for `StaffSession.access_token`'s
+  // reason.
+  code_verifier String @length(min: 1, max: 1024) @sensitive
+  // Whether this flow is the single `prompt=login` retry.
+  is_retry Boolean
+  created_at DateTime
+  expires_at DateTime
+
+  // Four arms, one per action `vpay_db::staff_sso_attempts` calls. `read` and
+  // `delete` are SILENT when missing (the policy compiles into the WHERE and
+  // matches nothing, so every callback answers "no such flow"); `create` is
+  // LOUD.
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
 model OauthAuthorizationCode {
   code_hash String @id @length(min: 64, max: 64)
   client_id String @length(min: 1, max: 256)

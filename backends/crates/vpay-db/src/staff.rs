@@ -464,6 +464,63 @@ impl Staff for crate::repository::PgRepositories {
     }
 }
 
+/// Creates a staff member **and** their first credential in the caller's
+/// transaction — the one write just-in-time SSO provisioning makes
+/// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+///
+/// # Why this is a transaction and `staff add` is not
+///
+/// `vpay-server staff add` is two inserts with a compensating delete, and
+/// says why: the transaction seam is a hand-curated trait and putting both
+/// tables in it would take them off the generated data layer. That is no
+/// longer the trade here. CrateStack's `run_in_tx` runs the *same* generated
+/// statements on a transaction the caller owns (`customers::erase_in_tx` and
+/// `webhook_deliveries::create_in_tx` already do), so the data-layer property
+/// survives and the window does not exist: a person provisioned by their first
+/// sign-in either has a member **and** the link that lets them sign in again,
+/// or has neither. The failure the compensation exists for — a member nobody
+/// can sign in as, holding an email address nobody else can now be given — is
+/// not reachable.
+///
+/// A unique violation on `staff_members_email_key` (the address belongs to
+/// somebody else) or on `credentials_federated_identity_key` (a concurrent
+/// first sign-in of the same identity won) rolls the whole thing back and
+/// reaches the caller as [`crate::PersistenceError::Unique`].
+///
+/// # Errors
+///
+/// [`DbError::Persistence`].
+pub(crate) async fn provision_federated_in_tx(
+    cs: &cratestack_schema::Cratestack,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    staff: &NewStaff,
+    credential: crate::credentials::NewCredential,
+) -> Result<(), DbError> {
+    cs.staff_member()
+        .create(cratestack_schema::CreateStaffMemberInput {
+            id: staff.id.clone(),
+            merchant_id: staff.merchant_id.clone(),
+            email: staff.email.clone(),
+            display_name: staff.display_name.clone(),
+            status: StaffStatus::Active.as_wire_str().to_owned(),
+            is_admin: staff.is_admin,
+            created_at: to_chrono(staff.now),
+            updated_at: to_chrono(staff.now),
+            last_sign_in_at: None,
+        })
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack(MODEL, "create", error)))?;
+
+    cs.credential()
+        .create(crate::credentials::create_input(credential))
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack("Credential", "create", error)))?;
+
+    Ok(())
+}
+
 /// The generated model row, in vpay's own types.
 ///
 /// The one fallible step is [`StaffStatus::parse`]: a stored value outside

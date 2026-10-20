@@ -88,6 +88,9 @@ pub mod staff;
 /// Server-side staff sessions: the two bounds, and the revocation that makes
 /// signing out mean something (ADR-0017 decision 2).
 pub mod staff_sessions;
+/// An SSO sign-in in flight: hashed state and nonce, sealed PKCE verifier, single
+/// use (ADR-0030).
+pub mod staff_sso_attempts;
 // The delivery side of the outbox. Its own module rather than functions on
 // `events`, because the fan-out transaction spans both tables and the write
 // that closes it (`mark_fanned_out_in_tx`) must not be reachable without the
@@ -176,5 +179,8 @@ pub use signing_keys::{ActivationOutcome, SigningKey, SigningKeys};
 pub use staff::{NewStaff, Staff, StaffRow, StaffStatus};
 pub use staff_sessions::{
     ABSOLUTE_LIFETIME, IDLE_TIMEOUT, NewSession, SessionRow, SessionState, StaffSessions,
+};
+pub use staff_sso_attempts::{
+    NewSsoAttempt, SSO_ATTEMPT_LIFETIME, SsoAttemptRow, StaffSsoAttempts,
 };
 pub use webhook_deliveries::{DeliveryRow, WebhookDeliveries};

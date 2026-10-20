@@ -46,6 +46,7 @@ use crate::settlement::Settlement;
 use crate::signing_keys::SigningKeys;
 use crate::staff::Staff;
 use crate::staff_sessions::StaffSessions;
+use crate::staff_sso_attempts::StaffSsoAttempts;
 use crate::webhook_deliveries::WebhookDeliveries;
 
 /// A future that borrows the transaction it was handed, boxed so the closure
@@ -549,6 +550,22 @@ pub trait TxRepositories: Send {
         event_data: &serde_json::Value,
     ) -> Result<crate::CustomerErasure, DbError>;
 
+    /// `staff_members` + `credentials`: creates a member and their first
+    /// credential, atomically — just-in-time SSO provisioning
+    /// (ADR-0030). See [`crate::staff`]'s `provision_federated_in_tx` for why
+    /// this one is a transaction.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`] — [`crate::PersistenceError::Unique`] when the
+    /// address is taken or the federated identity was linked concurrently
+    /// (the transaction is rolled back by the caller dropping it).
+    async fn provision_federated_staff_in_tx(
+        &mut self,
+        staff: &crate::NewStaff,
+        credential: crate::NewCredential,
+    ) -> Result<(), DbError>;
+
     /// `payment_intents`: stamps `last_payment_error` without moving the
     /// status the intent never left.
     ///
@@ -832,6 +849,15 @@ impl TxRepositories for PendingTransaction {
         crate::customers::erase_in_tx(cs, tx, row, now, event_id, event_data).await
     }
 
+    async fn provision_federated_staff_in_tx(
+        &mut self,
+        staff: &crate::NewStaff,
+        credential: crate::NewCredential,
+    ) -> Result<(), DbError> {
+        let (cs, tx) = self.cratestack_tx();
+        crate::staff::provision_federated_in_tx(cs, tx, staff, credential).await
+    }
+
     async fn record_payment_error(
         &mut self,
         merchant_id: &str,
@@ -1048,6 +1074,7 @@ pub trait Repositories:
     + SigningKeys
     + Staff
     + StaffSessions
+    + StaffSsoAttempts
     + AuthorizationCodes
     + TransactionSource
     + WebhookDeliveries

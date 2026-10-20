@@ -534,3 +534,22 @@ receiver container (`checkout_sessions`, `refunds`, `webhooks`,
 `account_holders`, `worker_e2e`, most of `worker_kill9`),
 `vpay-tests-conformance` and `vpay-server`'s `cli` suite were **not run** and
 need CI.
+
+## 2026-10-20 — `model StaffSsoAttempt` (migration `0050`), and drift goes 201 → 206
+
+ADR-0030's pending-SSO-flow table, born with a model in migration `0035`'s
+shape: no `DEFAULT` on any column a writer names, no `seq`, no native enum, no
+`bytea`, no `jsonb`. **Measured against a freshly migrated Postgres, not
+predicted:** `drift detected in 27 table(s)/view(s) (206 change(s) total)` —
+`EXPECTED_DRIFT_CHANGES` 201 → 206 and `EXPECTED_DRIFTED_RELATIONS` 26 → 27 in
+`postgres_smoke.rs`, which passes. The five new lines are all on the one new
+relation: four single-column `[safe] CHECK ... exists in the live database but
+is not declared` (`staff_sso_attempts_id_length`, `_state_hash_length`,
+`_nonce_hash_length`, `_code_verifier_length`) and one `[safe] index
+staff_sso_attempts_expires_idx ... not declared`. `_lifetime_is_positive`
+(`expires_at > created_at`) is multi-column and so invisible to the report in
+both directions; it is added to the multi-column list the smoke test reads from
+the live database, and `the_sso_attempt_table_refuses_malformed_rows` fires
+each CHECK. `EXPECTED_UNMAPPABLE_COLUMNS` is unmoved (19): every column is a
+mapped type. `model Credential` gained no field; `Credentials::find_federated`
+is a read over columns it already had. Tool: the pinned `cratestack` 0.15.0.

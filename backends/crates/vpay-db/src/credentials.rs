@@ -399,6 +399,28 @@ pub trait Credentials {
         kind: CredentialKind,
     ) -> Result<Option<CredentialRow>, DbError>;
 
+    /// The federated link for `(issuer, subject)`, or `None`.
+    ///
+    /// **The only way a federated identity is ever looked up**, and the key is
+    /// the pair — never an address ([ADR-0019](../../../../docs/adr/0019-credential-model.md)
+    /// decision 5). `issuer` is whatever the caller passes, and the caller
+    /// passes the *configured* one: which issuers a deployment trusts is
+    /// configuration, so a row naming any other issuer is simply never
+    /// found, and verifies nothing (ADR-0030, R3).
+    ///
+    /// `(issuer, subject)` is globally unique under
+    /// `credentials_federated_identity_key`, so there is at most one row.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::CredentialKindUnknown`] (only reachable if the kind CHECK
+    /// were dropped), [`DbError::Persistence`] otherwise.
+    async fn find_federated(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<CredentialRow>, DbError>;
+
     /// **The replay guard.** Records `counter` as the last accepted one, but
     /// only if it is strictly greater than what is stored.
     ///
@@ -472,22 +494,7 @@ impl Credentials for crate::repository::PgRepositories {
         // invented.
         self.cs
             .credential()
-            .create(cratestack_schema::CreateCredentialInput {
-                id: new.id,
-                staff_member_id: new.staff_member_id,
-                kind: new.kind.as_wire_str().to_owned(),
-                material: new.material,
-                issuer: new.issuer,
-                subject: new.subject,
-                // The seed migration 0044 requires, and the reason it is not
-                // nullable: `NULL < step` is NULL in SQL, so a nullable
-                // column would refuse this subject's first code forever.
-                counter: 0,
-                must_change: new.must_change,
-                expires_at: new.expires_at.map(to_chrono),
-                created_at: to_chrono(new.now),
-                updated_at: to_chrono(new.now),
-            })
+            .create(create_input(new))
             .run(&system_context())
             .await
             .map_err(|error| DbError::from(classify_cratestack(MODEL, "create", error)))?;
@@ -512,6 +519,26 @@ impl Credentials for crate::repository::PgRepositories {
             .find_many()
             .where_(credential::staff_member_id().eq(staff_member_id.to_owned()))
             .where_(credential::kind().eq(kind.as_wire_str().to_owned()))
+            .limit(1)
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
+
+        rows.into_iter().next().map(row_from_model).transpose()
+    }
+
+    async fn find_federated(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<CredentialRow>, DbError> {
+        let rows = self
+            .cs
+            .credential()
+            .find_many()
+            .where_(credential::kind().eq(CredentialKind::Oidc.as_wire_str().to_owned()))
+            .where_(credential::issuer().eq(issuer.to_owned()))
+            .where_(credential::subject().eq(subject.to_owned()))
             .limit(1)
             .run(&system_context())
             .await
@@ -570,6 +597,29 @@ impl Credentials for crate::repository::PgRepositories {
             .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
 
         Ok(summary.ok == 1)
+    }
+}
+
+/// The whole `INSERT` for one credential, shared by [`Credentials::create`]
+/// and the just-in-time provisioning transaction
+/// ([`crate::staff::provision_federated_in_tx`]) so the two cannot disagree
+/// about a column.
+pub(crate) fn create_input(new: NewCredential) -> cratestack_schema::CreateCredentialInput {
+    cratestack_schema::CreateCredentialInput {
+        id: new.id,
+        staff_member_id: new.staff_member_id,
+        kind: new.kind.as_wire_str().to_owned(),
+        material: new.material,
+        issuer: new.issuer,
+        subject: new.subject,
+        // The seed migration 0044 requires, and the reason it is not
+        // nullable: `NULL < step` is NULL in SQL, so a nullable
+        // column would refuse this subject's first code forever.
+        counter: 0,
+        must_change: new.must_change,
+        expires_at: new.expires_at.map(to_chrono),
+        created_at: to_chrono(new.now),
+        updated_at: to_chrono(new.now),
     }
 }
 

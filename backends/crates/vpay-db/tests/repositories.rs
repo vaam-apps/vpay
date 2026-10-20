@@ -11533,3 +11533,345 @@ async fn the_rate_limit_table_grows_by_one_window_and_is_then_swept() -> anyhow:
 
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// ADR-0030: staff single sign-on — the pending flow, the federated lookup, and
+// the provisioning transaction.
+// ---------------------------------------------------------------------------
+
+fn sso_attempt(id_char: char, now: time::OffsetDateTime) -> vpay_db::NewSsoAttempt {
+    vpay_db::NewSsoAttempt {
+        id: id_char.to_string().repeat(64),
+        state_hash: "s".repeat(64),
+        nonce_hash: "n".repeat(64),
+        code_verifier: "sealed-verifier".to_owned(),
+        is_retry: false,
+        now,
+    }
+}
+
+/// A pending SSO flow is taken **exactly once**, and a second take finds
+/// nothing — whichever way the second one arrives.
+///
+/// The decisive mutation: make `consume` read without deleting (or ignore the
+/// delete's row count) and the second assertion reads `Some`.
+#[tokio::test]
+async fn a_pending_sso_flow_is_consumed_exactly_once() -> anyhow::Result<()> {
+    use vpay_db::StaffSsoAttempts;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('a', now)).await?;
+
+    let first = StaffSsoAttempts::consume(repositories.as_ref(), &"a".repeat(64), now)
+        .await?
+        .context("the first take finds the flow")?;
+    assert_eq!(first.code_verifier, "sealed-verifier");
+    assert!(!first.is_retry);
+    assert_eq!(
+        first.expires_at - first.created_at,
+        vpay_db::SSO_ATTEMPT_LIFETIME
+    );
+
+    assert!(
+        StaffSsoAttempts::consume(repositories.as_ref(), &"a".repeat(64), now)
+            .await?
+            .is_none(),
+        "a flow already taken is gone"
+    );
+    Ok(())
+}
+
+/// Two takes racing on one flow: exactly one wins. This is the
+/// compare-and-swap, which no sequential test reaches.
+#[tokio::test]
+async fn racing_takes_of_one_sso_flow_yield_exactly_one_winner() -> anyhow::Result<()> {
+    use vpay_db::StaffSsoAttempts;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('b', now)).await?;
+
+    let id = "b".repeat(64);
+    let takes = futures_join_all((0..8).map(|_| {
+        let repositories = Arc::clone(&repositories);
+        let id = id.clone();
+        tokio::spawn(async move {
+            StaffSsoAttempts::consume(repositories.as_ref(), &id, now)
+                .await
+                .map(|row| row.is_some())
+        })
+    }))
+    .await;
+
+    let mut winners = 0;
+    for take in takes {
+        if take?? {
+            winners += 1;
+        }
+    }
+    assert_eq!(winners, 1, "eight racing callbacks, one flow: one winner");
+    Ok(())
+}
+
+async fn futures_join_all<T>(
+    handles: impl Iterator<Item = tokio::task::JoinHandle<T>>,
+) -> Vec<Result<T, tokio::task::JoinError>> {
+    let mut out = Vec::new();
+    for handle in handles.collect::<Vec<_>>() {
+        out.push(handle.await);
+    }
+    out
+}
+
+/// An expired flow is refused, and is gone afterwards; the sweep removes
+/// expired rows and only those.
+#[tokio::test]
+async fn an_expired_sso_flow_is_refused_and_the_sweep_removes_only_expired_rows()
+-> anyhow::Result<()> {
+    use vpay_db::StaffSsoAttempts;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    let long_ago = now - time::Duration::hours(1);
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('c', long_ago)).await?;
+    assert!(
+        StaffSsoAttempts::consume(repositories.as_ref(), &"c".repeat(64), now)
+            .await?
+            .is_none(),
+        "created an hour ago, lifetime ten minutes"
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM staff_sso_attempts")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(
+        remaining, 0,
+        "an expired flow that is taken is deleted, not left behind"
+    );
+
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('d', long_ago)).await?;
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('e', now)).await?;
+    let swept = StaffSsoAttempts::sweep_expired_sso_attempts(repositories.as_ref(), now).await?;
+    assert_eq!(swept, 1);
+    assert!(
+        StaffSsoAttempts::consume(repositories.as_ref(), &"e".repeat(64), now)
+            .await?
+            .is_some(),
+        "the live flow survives the sweep"
+    );
+    Ok(())
+}
+
+/// The table's own CHECKs: digests are 64 characters, and a flow cannot
+/// expire before it began.
+#[tokio::test]
+async fn the_sso_attempt_table_refuses_malformed_rows() -> anyhow::Result<()> {
+    let (_container, _repositories, pool) = migrated_postgres().await?;
+
+    for (name, sql) in [
+        (
+            "staff_sso_attempts_id_length",
+            "INSERT INTO staff_sso_attempts VALUES ('short', repeat('s',64), repeat('n',64), 'v', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_state_hash_length",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), 'short', repeat('n',64), 'v', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_nonce_hash_length",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), repeat('s',64), 'short', 'v', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_code_verifier_length",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), repeat('s',64), repeat('n',64), '', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_lifetime_is_positive",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), repeat('s',64), repeat('n',64), 'v', false, now(), now() - interval '1 minute')",
+        ),
+    ] {
+        let error = sqlx::query(sql).execute(&pool).await.expect_err(name);
+        assert!(error.to_string().contains(name), "{name}: {error}");
+    }
+    Ok(())
+}
+
+fn federated(
+    staff_id: &str,
+    issuer: &str,
+    subject: &str,
+    now: time::OffsetDateTime,
+) -> NewCredential {
+    NewCredential {
+        id: vpay_core::ids::credential_id(),
+        staff_member_id: Some(staff_id.to_owned()),
+        kind: CredentialKind::Oidc,
+        material: None,
+        issuer: Some(issuer.to_owned()),
+        subject: Some(subject.to_owned()),
+        must_change: false,
+        expires_at: None,
+        now,
+    }
+}
+
+fn provisioned(id: &str, email: &str, now: time::OffsetDateTime) -> NewStaff {
+    NewStaff {
+        id: id.to_owned(),
+        merchant_id: "merchant_a".to_owned(),
+        email: email.to_owned(),
+        display_name: "Provisioned".to_owned(),
+        is_admin: false,
+        now,
+    }
+}
+
+/// `find_federated` answers on the **pair**, and on nothing else: the same
+/// subject at another issuer is a different identity.
+#[tokio::test]
+async fn a_federated_link_is_found_by_issuer_and_subject_together() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    Staff::create(
+        repositories.as_ref(),
+        provisioned("stf_a", "a@example.test", now),
+    )
+    .await?;
+    Credentials::create(
+        repositories.as_ref(),
+        federated(
+            "stf_a",
+            "https://idp.example.test/realms/staff",
+            "sub-1",
+            now,
+        ),
+    )
+    .await?;
+
+    let found = Credentials::find_federated(
+        repositories.as_ref(),
+        "https://idp.example.test/realms/staff",
+        "sub-1",
+    )
+    .await?
+    .context("the pair finds the link")?;
+    assert_eq!(found.staff_member_id.as_deref(), Some("stf_a"));
+    assert_eq!(found.material, None);
+
+    for (issuer, subject) in [
+        ("https://idp.example.test/realms/staff", "sub-2"),
+        ("https://other.example.test/realms/staff", "sub-1"),
+        ("https://idp.example.test/realms/staff/", "sub-1"),
+    ] {
+        assert!(
+            Credentials::find_federated(repositories.as_ref(), issuer, subject)
+                .await?
+                .is_none(),
+            "{issuer} / {subject} is not the linked identity"
+        );
+    }
+    Ok(())
+}
+
+/// Provisioning is **atomic**: a member and their link commit together or not
+/// at all. Both unique violations roll the whole thing back.
+///
+/// The decisive mutation: run the two inserts on the pool instead of the
+/// transaction (`run` for `run_in_tx`), and the email-collision half leaves
+/// nothing behind only by luck — the identity-collision half then leaves an
+/// orphan member.
+#[tokio::test]
+async fn provisioning_a_federated_member_is_atomic() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    let issuer = "https://idp.example.test/realms/staff";
+
+    // Happy path: both rows.
+    let outcome: TxOutcome<()> = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.provision_federated_staff_in_tx(
+                    &provisioned("stf_one", "one@example.test", now),
+                    federated("stf_one", issuer, "sub-1", now),
+                )
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await?;
+    assert_eq!(outcome, TxOutcome::Commit(()));
+    assert!(
+        Staff::find(repositories.as_ref(), "stf_one")
+            .await?
+            .is_some()
+    );
+    assert!(
+        Credentials::find_federated(repositories.as_ref(), issuer, "sub-1")
+            .await?
+            .is_some()
+    );
+
+    // Email already taken: refused, and the credential insert never ran.
+    let error = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.provision_federated_staff_in_tx(
+                    &provisioned("stf_two", "one@example.test", now),
+                    federated("stf_two", issuer, "sub-2", now),
+                )
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .expect_err("an address already in use must refuse the whole provisioning");
+    assert!(
+        matches!(
+            error,
+            vpay_db::DbError::Persistence(vpay_db::PersistenceError::Unique { .. })
+        ),
+        "{error:?}"
+    );
+    assert!(
+        Staff::find(repositories.as_ref(), "stf_two")
+            .await?
+            .is_none()
+    );
+    assert!(
+        Credentials::find_federated(repositories.as_ref(), issuer, "sub-2")
+            .await?
+            .is_none()
+    );
+
+    // Identity already linked (a concurrent first sign-in won): the NEW member
+    // must not survive the failed link.
+    let error = repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                tx.provision_federated_staff_in_tx(
+                    &provisioned("stf_three", "three@example.test", now),
+                    federated("stf_three", issuer, "sub-1", now),
+                )
+                .await?;
+                Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+            })
+        })
+        .await
+        .expect_err("an identity already linked must refuse the whole provisioning");
+    assert!(
+        matches!(
+            error,
+            vpay_db::DbError::Persistence(vpay_db::PersistenceError::Unique { .. })
+        ),
+        "{error:?}"
+    );
+    let orphans: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM staff_members WHERE id = 'stf_three'")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        orphans, 0,
+        "no member without the link that lets them sign in again"
+    );
+    Ok(())
+}

@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 49,
-        "all forty-nine migration files under backends/migrations should be recorded as applied \
+        applied, 50,
+        "all fifty migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -375,7 +375,14 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          paid_out_of_band_means_paid, paid_names_how and \
          paid_out_of_band_is_never_refunded -- and received_before_recorded \
          on manual_payments. It posts nothing to any ledger: the row is a \
-         merchant's statement no rail witnessed.)"
+         merchant's statement no rail witnessed, and ADR-0030's 0050, \
+         staff_sso_attempts: an SSO sign-in in flight, one row from the \
+         moment a staff member presses the SSO button until the identity \
+         provider sends the browser back, holding the SHA-256 of the state \
+         and the nonce and the AEAD-sealed PKCE verifier. It is not a \
+         staff_sessions row because staff_sessions.staff_id is NOT NULL and a \
+         first sign-in has no staff member yet; it is consumed by DELETE so \
+         single use is the row count.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -4926,7 +4933,26 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 ///
 /// The composite foreign key `manual_payments_agree_with_their_invoice`
 /// costs nothing, because 0.12.0 introspects no foreign key.
-const EXPECTED_DRIFT_CHANGES: u32 = 201;
+///
+/// **201 -> 206 on 2026-10-20 (migration 0050, ADR-0030), MEASURED against a
+/// freshly migrated Postgres and not predicted:** `drift detected in 27
+/// table(s)/view(s) (206 change(s) total)`, and the five new lines are all on
+/// `staff_sso_attempts`, which is a new relation born with `model
+/// StaffSsoAttempt`:
+///
+///   * four `[safe] CHECK ... exists in the live database but is not declared
+///     in the schema` — `staff_sso_attempts_id_length`,
+///     `_state_hash_length`, `_nonce_hash_length` and `_code_verifier_length`;
+///   * one `[safe] index staff_sso_attempts_expires_idx exists ... not
+///     declared` — the index the opportunistic sweep needs.
+///
+/// A fifth CHECK, `staff_sso_attempts_lifetime_is_positive`
+/// (`expires_at > created_at`), is multi-column, so the report does not see it
+/// in either direction; `the_sso_attempt_table_refuses_malformed_rows` in
+/// `vpay-db/tests/repositories.rs` asserts it against a real Postgres. The
+/// columns cost nothing: no `jsonb`, `bytea` or `int4`, no DEFAULT, and
+/// `is_retry` is a plain `Boolean`.
+const EXPECTED_DRIFT_CHANGES: u32 = 206;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -5013,7 +5039,12 @@ const EXPECTED_DRIFT_CHANGES: u32 = 201;
 /// the reason `EXPECTED_DRIFT_CHANGES`' newest note gives): `manual_payments`
 /// joins the list declared-and-differing, in the shape `rate_limit_windows`
 /// joined it in, and `invoices` stays one entry.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 26;
+///
+/// **26 -> 27 on 2026-10-20 (migration 0050, measured):** `staff_sso_attempts`
+/// joins the list declared-and-differing, in the shape `credentials` joined it
+/// in, and no other relation moved — so `EXPECTED_DRIFT_CHANGES`' +5 landed
+/// entirely on the one that arrived.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 27;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -5624,6 +5655,13 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // dashboard cannot decide about and re-mints on every render,
             // which is a credential operation per page view.
             ("staff_sessions", "staff_sessions_token_expiry_is_paired"),
+            // ADR-0030, migration 0050: `expires_at > created_at`. Multi-column, so
+            // the drift report cannot see it; `the_sso_attempt_table_refuses_malformed_rows`
+            // in vpay-db asserts it fires.
+            (
+                "staff_sso_attempts",
+                "staff_sso_attempts_lifetime_is_positive"
+            ),
         ],
         "the multi-column CHECK constraints backends/migrations builds. This list is read from \
          the live database rather than from the report precisely because the report cannot see \

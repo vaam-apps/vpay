@@ -295,6 +295,12 @@ elements:
         table: staff_sessions
         column: last_seen_at
       - kind: column
+        table: staff_sso_attempts
+        column: created_at
+      - kind: column
+        table: staff_sso_attempts
+        column: expires_at
+      - kind: column
         table: webhook_deliveries
         column: created_at
       - kind: column
@@ -463,6 +469,9 @@ elements:
       - kind: column
         table: staff_sessions
         column: state
+      - kind: column
+        table: staff_sso_attempts
+        column: is_retry
       - kind: column
         table: webhook_deliveries
         column: state
@@ -1140,6 +1149,18 @@ elements:
       - kind: column
         table: oauth_refresh_tokens
         column: token
+      - kind: column
+        table: staff_sso_attempts
+        column: code_verifier
+      - kind: column
+        table: staff_sso_attempts
+        column: id
+      - kind: column
+        table: staff_sso_attempts
+        column: nonce_hash
+      - kind: column
+        table: staff_sso_attempts
+        column: state_hash
   oauth_signing_key:
     subject: system
     purpose: token-signing
