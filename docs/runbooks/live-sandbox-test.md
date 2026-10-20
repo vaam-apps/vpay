@@ -169,7 +169,7 @@ This mints an **EUR** `mtn_momo` PaymentIntent as `live-merchant` and prints a
 ready-to-open URL. The tracked example script reads `MINT_CURRENCY` (the demo
 default is XAF, which MTN's sandbox rejects):
 
-```
+```text
 http://localhost:4180/?pk=...&client_secret=...&api=http%3A%2F%2Flocalhost%3A8080
 ```
 
@@ -187,7 +187,7 @@ settlement and moves the row to `succeeded`.
 
 Confirm it from the worker (Terminal 2), which logs:
 
-```
+```text
 the rail reported a charge as paid  …  payment_intent_id=pi_…
 ```
 
