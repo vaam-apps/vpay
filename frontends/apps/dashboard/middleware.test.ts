@@ -36,6 +36,8 @@ import type {
 } from "next/dist/server/route-modules/app-route/module";
 import { describe, expect, it } from "vitest";
 
+import * as ssoCallbackRoute from "./app/api/auth/sso/callback/route";
+import * as ssoStartRoute from "./app/api/auth/sso/start/route";
 import * as detailRoute from "./app/api/dash/payment_intents/[id]/route";
 import * as listRoute from "./app/api/dash/payment_intents/route";
 import { config, middleware } from "./middleware";
@@ -166,5 +168,34 @@ describe("the method policy", () => {
     // today is a visible change rather than a quiet one. `:path*` is zero or
     // more segments.
     expect(config.matcher).toBe("/api/dash/:path*");
+  });
+});
+
+describe("the single sign-on routes", () => {
+  // These run before a session exists, so nothing may gate them — and the
+  // only gate in front of a route in this app is this middleware, whose
+  // matcher is a literal. The two cases pin that the literal does not reach
+  // them, so widening it (say to `/api/:path*`) is a visible change here
+  // rather than a sign-in that quietly answers 405.
+  const SSO_PATHS = ["/api/auth/sso/start", "/api/auth/sso/callback"];
+
+  it("are outside the matcher, so the method policy never runs on them", () => {
+    const matcher = String(config.matcher);
+    const prefix = matcher.replace(/:path\*$/, "");
+    expect(prefix).toBe("/api/dash/");
+    for (const path of SSO_PATHS) {
+      expect(path.startsWith(prefix), path).toBe(false);
+      expect(path === prefix.replace(/\/$/, ""), path).toBe(false);
+    }
+  });
+
+  it("export exactly one method each: POST to start, GET to callback", () => {
+    // Next auto-implements OPTIONS for whatever is exported; what matters is
+    // that the start route cannot be fired with a GET (a link) and the
+    // callback — a browser redirect — cannot be posted to.
+    const methods = (module: object) =>
+      ["GET", "POST", "PUT", "PATCH", "DELETE"].filter((m) => m in module);
+    expect(methods(ssoStartRoute)).toEqual(["POST"]);
+    expect(methods(ssoCallbackRoute)).toEqual(["GET"]);
   });
 });

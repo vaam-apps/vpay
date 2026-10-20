@@ -52,6 +52,65 @@ and this page is the only one such a session can reach. There is no
 re-checking a password this endpoint then overwrites would be a second copy of
 that check in the wrong layer.
 
+## Single sign-on (OIDC) — the browser-facing half
+
+vpay stays the OpenID provider for `/dash/v1`; only the human step can go to
+an external identity provider (Keycloak). This app is the front door of that
+broker flow and holds **two route handlers**, both reachable without a session
+(they run before one exists — `middleware.ts` matches `/api/dash/**` only and
+does not touch them):
+
+| Route                        | What it does                                                                                                                                                                                                         |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `POST /api/auth/sso/start`   | Origin check (`server/csrf.ts`, as the server actions), `POST /dash/v1/staff/sso/start`, stores the returned **pending-flow token** in the session cookie for 10 minutes, `303` to the validated `authorization_url` |
+| `GET /api/auth/sso/callback` | Reads `code` and `state`, `POST /dash/v1/staff/sso/callback` with the pending token, then either signs in or follows the one `prompt=login` retry vpay allows — see below                                            |
+
+`/login` asks vpay `GET /dash/v1/staff/sso` and, only when it answers
+`{"enabled": true}`, renders a secondary **Sign in with Keycloak** button under
+an "or" rule. It is a plain `<form method="post">`, so it works without
+JavaScript. The password + TOTP form is always rendered; if the status call
+fails for any reason the button is simply absent and nothing is logged.
+
+**The cookie hand-off.** The pending-flow token is not a session: only the
+callback accepts it. It lives in the same cookie slot as the session
+(`vpay_dash_session`, same `COOKIE_ATTRIBUTES`) and is always **replaced**,
+never reused, by the token the callback answers with:
+
+- `signed_in` — the new token is already authenticated; it is stored for the
+  full 12 hours, the existing authorization-code leg
+  (`completeAuthorizationCode`, the same one the TOTP success path runs) is
+  run, and the browser is sent to `/payments`. If that leg fails the browser is
+  still sent to `/payments`: the session is authenticated, and `requireStaff`
+  already handles an unminted token (password-change redirect, retry, outage
+  page, or sign-out). This answer does not carry `password_change_required`, so
+  the gate is where that is discovered.
+- `reauthenticate` — the id_token lacked a second factor; the new pending token
+  replaces the cookie (10 minutes) and the browser goes to the new
+  `authorization_url`. vpay allows this once.
+- anything else (`401`, `429`, `404`, a network failure, an unreadable body, a
+  missing/duplicated/empty `code` or `state`, an IdP `error` parameter) — the
+  cookie is cleared and the browser is sent to `/login?sso=failed`, which shows
+  one fixed sentence. Where `code`/`state` are missing or `error` is present,
+  vpay is not called at all.
+
+What never happens: a token in a URL or a log; the IdP's `code`, `state`, error
+text or claim values in HTML, a `Location`, a header or a log line; an
+`authorization_url` that is not an absolute `http(s)` URL without credentials
+being followed. Both routes answer with `Cache-Control: no-store` and
+`Referrer-Policy: no-referrer`. The substance is `src/server/sso.ts`; the three
+vpay calls are `ssoStart`, `ssoCallback` and `getSsoStatus` in
+`src/server/api.ts`.
+
+**What is verified, and what is not.** Covered by unit tests against a stubbed
+`fetch` (`src/server/sso.test.ts`, `src/server/sso-api.test.ts`,
+`app/login/page.test.tsx`, plus cases in `middleware.test.ts` and
+`src/a11y.test.tsx`). **Not** run: a real browser, a real Keycloak, the
+Cypress end-to-end suite, or Storybook (no story was added for the button).
+The `redirect_uri` registered at the identity provider has to be
+`<public origin>/api/auth/sso/callback`; that registration is outside this app
+and nothing here checks it. This is distinct from the dashboard's own OAuth
+`redirect_uri` above, which still has no route.
+
 ## The BFF, which is a new browser-reachable surface
 
 Six `GET` route handlers: two added 2026-09-11, three on 2026-09-13 and one

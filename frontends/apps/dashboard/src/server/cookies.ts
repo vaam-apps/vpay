@@ -85,3 +85,17 @@ export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
  * enrolled account and refuses it for one enrolled meanwhile.
  */
 export const ENROLMENT_MAX_AGE_SECONDS = 10 * 60;
+
+/**
+ * How long the session cookie may hold a **pending-flow** token — the one vpay
+ * hands out at `POST /staff/sso/start` and again when the identity provider's
+ * answer lacked a second factor.
+ *
+ * Ten minutes, for the enrolment cookie's reason: it bridges one round trip
+ * to the identity provider (a person typing a password and a code there) and
+ * a token that outlived the attempt would only be a credential sitting in a
+ * browser for no purpose. It is a short-lived cookie in the **same** slot as
+ * the session — the pending token is replaced, never kept, when the callback
+ * answers (see `sso.ts`).
+ */
+export const SSO_PENDING_MAX_AGE_SECONDS = 10 * 60;

@@ -3,8 +3,14 @@ import { redirect } from "next/navigation";
 import { Code, InlineBanner, ScreenStack } from "@vaam-apps/ui";
 
 import { dashboardConfig } from "../../src/config/runtime";
+import { FormAlert } from "../../src/components/form-alert";
 import { SignInForm } from "../../src/components/sign-in-form";
+import {
+  SSO_FAILED_MESSAGE,
+  SsoSignIn,
+} from "../../src/components/sso-sign-in";
 import { signIn } from "../../src/server/actions";
+import { getSsoStatus } from "../../src/server/api";
 import { alreadySignedIn, HOME_PATH } from "../../src/server/session";
 
 /**
@@ -24,7 +30,16 @@ import { alreadySignedIn, HOME_PATH } from "../../src/server/session";
  */
 export const dynamic = "force-dynamic";
 
-export default async function LoginPage() {
+/**
+ * `?sso=failed` is the whole of what a failed single sign-in leaves in the
+ * URL (`src/server/sso.ts`): one fixed value, no reason, no code. Anything
+ * else in `sso` is ignored.
+ */
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
   const { config, problems } = dashboardConfig();
 
   if (config === null) {
@@ -57,6 +72,11 @@ export default async function LoginPage() {
     redirect(HOME_PATH);
   }
 
+  const ssoFailed = (await searchParams).sso === "failed";
+  // Fails soft: any error reads as "not enabled" and the password form below
+  // is rendered either way.
+  const sso = await getSsoStatus(config.apiBaseUrl);
+
   return (
     <ScreenStack>
       <h2 className="text-title-sm font-medium text-foreground">Sign in</h2>
@@ -64,7 +84,9 @@ export default async function LoginPage() {
         Staff accounts are created with <Code>vpay-server staff add</Code>.
         There is no sign-up.
       </p>
+      {ssoFailed ? <FormAlert error={SSO_FAILED_MESSAGE} /> : null}
       <SignInForm action={signIn} />
+      {sso.enabled ? <SsoSignIn /> : null}
     </ScreenStack>
   );
 }

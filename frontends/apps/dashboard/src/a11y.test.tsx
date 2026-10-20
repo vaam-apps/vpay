@@ -51,6 +51,7 @@ import { PaymentsFilters } from "./components/payments-filters";
 import { PaymentsPager } from "./components/payments-pager";
 import { PaymentsTable } from "./components/payments-table";
 import { SignInForm } from "./components/sign-in-form";
+import { SsoSignIn } from "./components/sso-sign-in";
 import { SignedInBar } from "./components/signed-in-bar";
 import { TotpForm } from "./components/totp-form";
 import { DETAIL, INTENT } from "./testing/fixtures";
@@ -247,6 +248,17 @@ describe("every screen this app renders", () => {
     );
     expect(await violations(refused.container)).toEqual([]);
     refused.unmount();
+  });
+
+  it("the single sign-on button beneath the password form", async () => {
+    const both = render(
+      <>
+        <SignInForm action={idle()} />
+        <SsoSignIn />
+      </>,
+    );
+    expect(await violations(both.container)).toEqual([]);
+    both.unmount();
   });
 
   it("the code form and the enrolment panel", async () => {
