@@ -5,12 +5,24 @@
 > **No `/dash/v1` request runs without a token vpay itself issued, signed
 > with a key vpay itself rotates, against a client vpay itself registered.**
 
-`/dash/v1` never accepts a merchant API key and never federates to an
-external IdP. vpay is its own OpenID Provider (OP) for this surface, running
+`/dash/v1` never accepts a merchant API key and never accepts another
+issuer's token. vpay is its own OpenID Provider (OP) for this surface, running
 [Authkestra](https://github.com/marcjazz/authkestra)'s `authkestra-op`
 in-process. See [ADR-0008](../adr/0008-dashboard-scope.md) for why the
 dashboard uses sessions at all, and [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
 for why vpay runs the OP itself rather than pointing at someone else's.
+
+~~`/dash/v1` … never federates to an external IdP.~~ **Corrected 2026-10-19
+([ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).**
+What federates, when a deployment configures `staff_auth.sso`, is the **human
+authentication step**: a person may prove who they are at the deployment's
+OpenID Connect provider instead of with a password and a TOTP code. What does
+**not** federate is everything the invariant above is about: the provider's
+id_token is verified, its claims read and the token discarded; its access token
+is never read; and the session, the authorization code and the `/dash/v1` token
+are all vpay's, signed by vpay's key. A successful SSO sign-in ends in the same
+`authenticated` `staff_sessions` row the TOTP step ends in. See
+[dashboard-auth/sso.md](dashboard-auth/sso.md).
 
 ## Login flow
 
@@ -99,7 +111,8 @@ rather than implying otherwise.
 ## The rest of this flow
 
 Everything between the session above and the Status below was 464 lines until
-2026-09-11. It is three pages now, in the order it was written, moved verbatim:
+2026-09-11. It is three pages now, in the order it was written, moved verbatim;
+a fourth, written new on 2026-10-20, is the last bullet:
 
 - [dashboard-auth/sessions-and-refusals.md](dashboard-auth/sessions-and-refusals.md)
   — changing a password ends every other session, a mistyped code does not, and
@@ -109,8 +122,29 @@ Everything between the session above and the Status below was 464 lines until
 - [dashboard-auth/scope-and-tokens.md](dashboard-auth/scope-and-tokens.md) —
   scope, token lifetimes, replacing a token before it expires, JWKS publication
   and key rotation, and where each piece lives
+- [dashboard-auth/sso.md](dashboard-auth/sso.md) — signing in through an
+  OpenID Connect provider (2026-10-20): the flow, the second-factor rule and the
+  one `prompt=login` retry, what the provider's realm must be set up to do, and
+  what is not built
 
 ## Status
+
+**Added 2026-10-20 ([ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)):
+a staff member can also sign in through an OpenID Connect provider.** Three
+unauthenticated routes (`GET /staff/sso`, `POST /staff/sso/start`,
+`POST /staff/sso/callback` — **eleven** staff routes now, eight until that date)
+and two dashboard routes (`/api/auth/sso/start`, `/api/auth/sso/callback`), behind
+a `staff_auth.sso` block whose presence is the whole switch. A first sign-in
+provisions the member just in time, gated by an IdP group, linked by `(iss, sub)`
+and never by email, as a non-admin of the configured tenant. An id_token is
+accepted only if it proves a second factor (`acr` or `amr` in configured lists),
+and a token whose only defect is the missing factor earns exactly one
+`prompt=login` retry. Password + TOTP is unchanged and is the break-glass path.
+Proven against a simulated provider and against a real Keycloak 26.6.1 — see
+[dashboard-auth/sso.md](dashboard-auth/sso.md) for the flow, what the realm must
+be configured to do (without which `amr` is empty), and the list of what is not
+built: no linking of existing members, no logout propagation, no continuous
+group check, nothing run in a cluster.
 
 **A staff member can sign in, and since 2026-09-07 they can do it in a
 browser.** The first half of that sentence entered this document with
@@ -171,12 +205,14 @@ first code forever). And **enrolment is the existence of a `totp` row**, so
 `totp_enrolled_at IS NULL` guard are both gone — replaced by a partial unique
 index, which an edit cannot drop by accident the way a `WHERE` clause can.
 
-**Eight kinds are declared and two are implemented.** `hotp`, `magic_link`,
-`email_otp`, `phone_otp`, `webauthn` and `oidc` are reachable by no code path
-here; federated identity has columns, constraints and indexes and **no
-writer**. Whether a live payment deployment may ever accept a single-factor
-credential is a **reserved maintainer decision** — ADR-0019 § R1 — and it is
-not live, because no third kind has a verifier.
+**Eight kinds are declared and ~~two~~ three are implemented** _(corrected
+2026-10-20: `oidc` has a writer and a verifier now, ADR-0030)_. `hotp`,
+`magic_link`, `email_otp`, `phone_otp` and `webauthn` are reachable by no code
+path here. ~~Federated identity has columns, constraints and indexes and **no
+writer**.~~ Whether a live payment deployment may ever accept a **single-factor**
+credential is still a **reserved maintainer decision** — ADR-0019 § R1 — and it
+is not live, because none of those five has a verifier; for `oidc` it is taken
+(ADR-0030 decision 6: an id_token must prove a second factor).
 
 What is built, in the order a request meets it:
 
@@ -195,7 +231,8 @@ What is built, in the order a request meets it:
   found the hard way.
 - `POST /dash/v1/staff/login`, `/totp`, `/password`, `/logout`,
   `GET /dash/v1/staff/session` and `/staff/session/stage`, and
-  `GET /dash/v1/oauth/authorize` + `POST /dash/v1/oauth/token`. **Eight**
+  `GET /dash/v1/oauth/authorize` + `POST /dash/v1/oauth/token`. ~~**Eight**~~
+  **Eleven** _(three SSO routes joined on 2026-10-20, ADR-0030)_
   unauthenticated routes (seven until 2026-09-10 — the eighth is the stage
   read, "A mistyped code does not end a session either" above), mounted beside
   the protected reads rather than inside the bearer-token layer, because they

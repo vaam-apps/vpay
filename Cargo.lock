@@ -4821,6 +4821,7 @@ dependencies = [
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
+ "p256",
  "phonenumber",
  "rand 0.8.7",
  "reqwest",
@@ -4838,6 +4839,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "vpay-config",
  "vpay-core",
@@ -5071,6 +5073,7 @@ dependencies = [
  "vpay-sdk",
  "vpay-testkit",
  "vpay-worker",
+ "wiremock",
 ]
 
 [[package]]

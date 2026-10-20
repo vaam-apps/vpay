@@ -64,6 +64,7 @@ use crate::staff_auth::{StaffCredentials, tokens, totp};
 pub mod client_address;
 pub mod oauth;
 pub mod rate_limit;
+pub mod sso;
 
 /// Where a caller presents its session token.
 ///
@@ -109,6 +110,16 @@ pub struct StaffLogin {
     /// projection for it would put a display string on the type every `/v1`
     /// handler reads.
     pub issuer_label: String,
+    /// The OpenID Connect provider staff may sign in through, when
+    /// `staff_auth.sso` is configured
+    /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+    ///
+    /// `None` means the three SSO routes answer "not configured" (`status`
+    /// says `enabled: false`; `start` and `callback` are the honest `404`) and
+    /// password + TOTP is the only way in. It is **configuration, not a
+    /// feature flag**: the block's presence is the whole switch, and password +
+    /// TOTP stays mounted either way as the break-glass path.
+    pub sso: Option<Arc<sso::SsoProvider>>,
 }
 
 /// Shows nothing but the fact that a login is configured. Both the
@@ -351,6 +362,12 @@ pub const STAFF_ROUTES: &[(&str, &[&str])] = &[
     ("/staff/logout", &["POST"]),
     ("/oauth/authorize", &["GET"]),
     ("/oauth/token", &["POST"]),
+    // SSO (ADR-0030). Mounted whether or not `staff_auth.sso` is configured,
+    // like every route above: an unconfigured one answers `enabled: false` or
+    // the honest 404 rather than being absent from the table a test walks.
+    ("/staff/sso", &["GET"]),
+    ("/staff/sso/start", &["POST"]),
+    ("/staff/sso/callback", &["POST"]),
 ];
 
 /// The unauthenticated half of `/dash/v1`.
@@ -369,6 +386,9 @@ pub(crate) fn routes() -> Router<crate::AppState> {
         .route("/staff/logout", post(logout))
         .route("/oauth/authorize", get(oauth::authorize))
         .route("/oauth/token", post(oauth::token))
+        .route("/staff/sso", get(sso::status))
+        .route("/staff/sso/start", post(sso::start))
+        .route("/staff/sso/callback", post(sso::callback))
 }
 
 /// Step 1: the password.
@@ -1169,8 +1189,9 @@ mod tests {
     /// Every route this module mounts is listed in `STAFF_ROUTES`, which is
     /// what the boundary test walks.
     #[test]
-    fn the_route_table_names_eight_unauthenticated_paths() {
-        assert_eq!(STAFF_ROUTES.len(), 8);
+    fn the_route_table_names_eleven_unauthenticated_paths() {
+        // Eight until ADR-0030 added the three SSO routes.
+        assert_eq!(STAFF_ROUTES.len(), 11);
         for (path, methods) in STAFF_ROUTES {
             assert!(path.starts_with('/'), "{path}");
             assert!(!methods.is_empty(), "{path}");

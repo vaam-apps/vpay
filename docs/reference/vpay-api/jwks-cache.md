@@ -113,3 +113,33 @@ Not deviations, and worth stating because they look like ones:
   measures.
 
 ---
+
+## A second cache, for a federated issuer (2026-10-20, ADR-0030)
+
+`jwks_cache.rs` now holds two caches. `JwksCache` is the port described above
+and serves this deployment's **own** `/v1/oauth/jwks.json` to the two bearer
+validators. `KeySetCache` serves the **identity provider's** key set to the SSO
+callback, and differs in four ways, each deliberate:
+
+- **It stores `jsonwebtoken`'s `Jwk`, not authkestra's.** `authkestra_resource`'s
+  `Jwk` models RSA and Ed25519 only; an `ES256` key arrives with its `crv`, `x`
+  and `y` dropped. A federated provider may sign with an elliptic curve, so the
+  type has to be the one that can verify with it.
+- **It parses key by key.** Keycloak publishes `RSA-OAEP` encryption keys beside
+  its signing keys, and one key whose algorithm `jsonwebtoken` does not know
+  must not refuse every sign-in. Keys declared `use: enc` are skipped; ones that
+  do not parse are dropped.
+- **It owns its throttle.** `JwksCache::get_key` relies on its caller to bound
+  the unconditional re-fetch an unknown `kid` forces. `KeySetCache` carries the
+  bound itself — at most one forced re-fetch per 30 seconds — because its one
+  caller reads the `kid` out of a token the provider _just returned over TLS_,
+  and a bound that cannot be forgotten costs nothing.
+- **It has no method that takes a URI.** It is built from the one `jwks_uri` the
+  configured issuer's discovery document named, so it cannot be asked for
+  another issuer's keys. ADR-0019 decision 5's "the issuer in a credentials row
+  is never dereferenced" is therefore structural.
+
+Proven by `a_key_set_skips_encryption_keys_and_keeps_ec_keys_whole`,
+`an_unknown_kid_forces_one_refetch_and_then_is_throttled`,
+`a_rotated_in_key_is_found_by_the_forced_refetch` and
+`a_failing_or_malformed_key_set_is_an_error` in `jwks_cache.rs`.

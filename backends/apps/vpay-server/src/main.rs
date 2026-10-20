@@ -996,6 +996,35 @@ fn staff_login(
         );
     }
 
+    // `staff_auth.sso` (ADR-0030): the block's presence is the whole switch.
+    // A provider that cannot even be constructed is the fixed TLS stack
+    // failing, so it takes the SSO routes down (they answer "not configured")
+    // and leaves password + TOTP — the break-glass path — mounted.
+    let sso = config.staff_auth.sso.as_ref().and_then(|sso| {
+        match vpay_api::staff::sso::SsoProvider::new(sso, &dashboard.merchant_id) {
+            Ok(provider) => {
+                tracing::info!(
+                    issuer = %sso.issuer,
+                    client_id = %sso.client_id,
+                    required_group = %sso.required_group,
+                    "/dash/v1 offers staff SSO (ADR-0030): members are provisioned on first \
+                     sign-in into merchant {}, never as admins; password + TOTP stays mounted \
+                     as the break-glass path",
+                    dashboard.merchant_id,
+                );
+                Some(Arc::new(provider))
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    "staff_auth.sso is configured but its HTTP client could not be built; SSO is \
+                     NOT offered. Password + TOTP is unaffected"
+                );
+                None
+            }
+        }
+    });
+
     Some(Arc::new(vpay_api::staff::StaffLogin {
         credentials,
         dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
@@ -1007,6 +1036,7 @@ fn staff_login(
         limiter: vpay_api::staff::rate_limit::SignInLimiter::new(config.staff_auth.rate_limits),
         trusted_proxies,
         issuer_label: config.deployment.name.clone(),
+        sso,
     }))
 }
 

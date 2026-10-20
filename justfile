@@ -3038,7 +3038,15 @@ expected_ignored := "0"
 # fails, so a binary that vanished and a binary that was added are told apart
 # by reading it. Measured after adding it: `cargo nextest list --workspace`
 # gives **48** binaries, **1772** total, **0** ignored.
-expected_suites := "48"
+#
+# **48 -> 50 on 2026-10-20 (ADR-0030)**: two new binaries,
+# `backends/tests/integration/tests/staff_sso.rs` (the real router over a real
+# Postgres against an identity provider simulated over HTTP) and
+# `staff_sso_keycloak.rs` (one test, a real Keycloak 26.6.1 container). Each is
+# its own file because each boots its own stack and the second needs a JVM and
+# a pulled image the first does not. Measured after adding them: `cargo nextest
+# list --workspace` gives **50** binaries, **2198** total, **0** ignored.
+expected_suites := "50"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

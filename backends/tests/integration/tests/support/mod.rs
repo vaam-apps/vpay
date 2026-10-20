@@ -513,6 +513,15 @@ pub(crate) fn staff_login_for(
         )
         .expect("the suite's staff_auth.trusted_proxies are parseable"),
         issuer_label: config.deployment.name.clone(),
+        // From `staff_auth.sso`, exactly as `main.rs` derives it. `None` for
+        // every suite that writes no block, which is every suite but the SSO
+        // one.
+        sso: config.staff_auth.sso.as_ref().map(|sso| {
+            Arc::new(
+                vpay_api::staff::sso::SsoProvider::new(sso, &dashboard.merchant_id)
+                    .expect("the suite's SSO provider builds"),
+            )
+        }),
     }))
 }
 

@@ -1,6 +1,11 @@
 # ADR-0019: Credentials are their own object, generic over kind and subject
 
-- **Status:** Accepted
+- **Status:** Accepted. **Reserved decisions R1 (for the `oidc` kind), R2, R3
+  and R4 were taken on 2026-10-19 and recorded in
+  [ADR-0030](0030-staff-sign-in-federates-to-an-oidc-provider.md)**, which also
+  implements the `oidc` kind. The sections below are left as written; where they
+  say "reserved" or "no code path can reach `oidc`", read ADR-0030. R1 for the
+  other five unimplemented kinds is still reserved.
 - **Date:** 2026-09-13
 - **Deciders:** vpay maintainers (directed, 2026-09-13; amended the same day
   with the federation requirement)

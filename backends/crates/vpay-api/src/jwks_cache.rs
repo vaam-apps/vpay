@@ -177,6 +177,191 @@ impl JwksCache {
     }
 }
 
+// ---------------------------------------------------------------------------
+// A federated issuer's keys (ADR-0030)
+// ---------------------------------------------------------------------------
+
+/// Why a federated issuer's key set could not be obtained.
+///
+/// Crate-private: the only consumer is `staff::sso`, which turns it into its
+/// own refusal. No variant carries a body or a key.
+#[derive(Debug, thiserror::Error)]
+pub(crate) enum KeySetError {
+    /// The fetch itself failed: a refused connection, a timeout, a non-2xx
+    /// answer, or a body over [`MAX_KEY_SET_BYTES`].
+    #[error("the issuer's key set could not be fetched")]
+    Fetch,
+    /// The body was not a JWK Set.
+    #[error("the issuer's key set is not a JWK Set")]
+    Malformed,
+}
+
+/// The most of a key set this process will hold. A real one is a few
+/// kilobytes; the cap is about what a peer may make us allocate.
+const MAX_KEY_SET_BYTES: usize = 256 * 1024;
+
+/// How often a `kid` this cache has never seen may force a re-fetch.
+///
+/// [`JwksCache::get_key`] re-fetches on every miss and relies on its caller to
+/// throttle; this cache carries the throttle itself, because its caller is the
+/// SSO callback and the `kid` it looks up comes out of a token the issuer
+/// *just returned over TLS* rather than out of an attacker's request — so a
+/// forced re-fetch is rare, and bounding it here costs nothing and means no
+/// caller can forget.
+const KEY_SET_FORCED_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
+
+/// The signing keys of **one** federated issuer, fetched from the one
+/// `jwks_uri` that issuer's discovery document named.
+///
+/// # This is the "federated caller" ADR-0019 decision 5 anticipated
+///
+/// "The accepted issuers live in the vpay configuration document …
+/// `jwks_cache.rs` fetches keys for those and only those." A [`KeySetCache`]
+/// holds exactly one URI, built from exactly one configured issuer's
+/// discovery, and has no method that takes a URI: there is no way to ask it
+/// for another issuer's keys, which is the property, rather than a check
+/// somebody has to remember.
+///
+/// # Why this is not [`JwksCache`]
+///
+/// [`JwksCache`] stores `authkestra_resource`'s `Jwk`, which models RSA and
+/// Ed25519 keys only; an `ES256` key's `crv`, `x` and `y` are dropped on the
+/// way in. A federated provider is entitled to sign with elliptic curves, so
+/// this one stores `jsonwebtoken`'s own `Jwk`, which round-trips every key
+/// family `jsonwebtoken` can verify with. The caching policy — TTL, one
+/// critical section for the check and the store — is [`JwksCache`]'s, and a
+/// key that does not parse as a signing key is skipped rather than failing
+/// the set (Keycloak publishes `RSA-OAEP` encryption keys beside its signing
+/// keys, and one unknown algorithm name must not refuse every sign-in).
+pub(crate) struct KeySetCache {
+    jwks_uri: String,
+    client: reqwest::Client,
+    ttl: Duration,
+    keys: RwLock<Option<(Vec<jsonwebtoken::jwk::Jwk>, Instant)>>,
+    last_forced_refresh: std::sync::Mutex<Option<Instant>>,
+}
+
+impl KeySetCache {
+    /// A cold cache over `jwks_uri`.
+    pub(crate) fn new(jwks_uri: String, ttl: Duration, client: reqwest::Client) -> Self {
+        Self {
+            jwks_uri,
+            client,
+            ttl,
+            keys: RwLock::new(None),
+            last_forced_refresh: std::sync::Mutex::new(None),
+        }
+    }
+
+    /// The signing key `kid` names, or `None` if the issuer does not publish
+    /// it — after at most one forced re-fetch, in case the key was rotated in
+    /// since the last one.
+    ///
+    /// # Errors
+    ///
+    /// [`KeySetError`] if a fetch was needed and failed.
+    pub(crate) async fn get_key(
+        &self,
+        kid: &str,
+    ) -> Result<Option<jsonwebtoken::jwk::Jwk>, KeySetError> {
+        let keys = self.current().await?;
+        if let Some(found) = find(&keys, kid) {
+            return Ok(Some(found));
+        }
+        if !self.claim_forced_refresh() {
+            return Ok(None);
+        }
+        let keys = self.refresh().await?;
+        Ok(find(&keys, kid))
+    }
+
+    /// The cached set, fetching when cold or past its TTL.
+    async fn current(&self) -> Result<Vec<jsonwebtoken::jwk::Jwk>, KeySetError> {
+        {
+            let read = self.keys.read().await;
+            if let Some((keys, at)) = read.as_ref()
+                && at.elapsed() < self.ttl
+            {
+                return Ok(keys.clone());
+            }
+        }
+        let mut write = self.keys.write().await;
+        // Re-checked under the write guard, for `JwksCache::refresh_if_stale`'s
+        // reason: callers that queued behind the first must serve what it
+        // stored rather than fetch again.
+        if let Some((keys, at)) = write.as_ref()
+            && at.elapsed() < self.ttl
+        {
+            return Ok(keys.clone());
+        }
+        self.fetch_into(&mut write).await
+    }
+
+    /// An unconditional fetch, for the rotation path.
+    async fn refresh(&self) -> Result<Vec<jsonwebtoken::jwk::Jwk>, KeySetError> {
+        let mut write = self.keys.write().await;
+        self.fetch_into(&mut write).await
+    }
+
+    async fn fetch_into(
+        &self,
+        write: &mut RwLockWriteGuard<'_, Option<(Vec<jsonwebtoken::jwk::Jwk>, Instant)>>,
+    ) -> Result<Vec<jsonwebtoken::jwk::Jwk>, KeySetError> {
+        let response = self
+            .client
+            .get(&self.jwks_uri)
+            .send()
+            .await
+            .map_err(|_| KeySetError::Fetch)?;
+        let (status, body) = vpay_provider::http::bounded_body(response, MAX_KEY_SET_BYTES)
+            .await
+            .map_err(|_| KeySetError::Fetch)?;
+        if !status.is_success() {
+            return Err(KeySetError::Fetch);
+        }
+        let keys = parse_key_set(&body)?;
+        **write = Some((keys.clone(), Instant::now()));
+        Ok(keys)
+    }
+
+    /// Whether this call may force a re-fetch, claiming the slot if so.
+    fn claim_forced_refresh(&self) -> bool {
+        let Ok(mut last) = self.last_forced_refresh.lock() else {
+            // A poisoned lock fails closed: no forced fetch.
+            return false;
+        };
+        let due = last.is_none_or(|at| at.elapsed() >= KEY_SET_FORCED_REFRESH_INTERVAL);
+        if due {
+            *last = Some(Instant::now());
+        }
+        due
+    }
+}
+
+/// The key with this `kid` that is usable for signatures.
+fn find(keys: &[jsonwebtoken::jwk::Jwk], kid: &str) -> Option<jsonwebtoken::jwk::Jwk> {
+    keys.iter()
+        .find(|key| key.common.key_id.as_deref() == Some(kid))
+        .cloned()
+}
+
+/// Parses a JWK Set key by key, keeping those `jsonwebtoken` understands and
+/// that are not declared for encryption.
+fn parse_key_set(body: &[u8]) -> Result<Vec<jsonwebtoken::jwk::Jwk>, KeySetError> {
+    let document: serde_json::Value =
+        serde_json::from_slice(body).map_err(|_| KeySetError::Malformed)?;
+    let entries = document
+        .get("keys")
+        .and_then(serde_json::Value::as_array)
+        .ok_or(KeySetError::Malformed)?;
+
+    Ok(entries
+        .iter()
+        .filter(|entry| entry.get("use").and_then(serde_json::Value::as_str) != Some("enc"))
+        .filter_map(|entry| serde_json::from_value::<jsonwebtoken::jwk::Jwk>(entry.clone()).ok())
+        .collect())
+}
+
 /// Resolves `kid` against `cache` and verifies `token` with the key it names.
 ///
 /// The port of `authkestra_resource::jwt::validate_jwt_generic`
@@ -387,5 +572,133 @@ mod tests {
             2,
             "a miss costs the TTL fetch plus the rotation fetch"
         );
+    }
+
+    // --- KeySetCache (ADR-0030) ---
+
+    fn rsa_jwk(kid: &str) -> serde_json::Value {
+        json!({"kty": "RSA", "use": "sig", "alg": "RS256", "kid": kid, "n": "AQAB", "e": "AQAB"})
+    }
+
+    fn key_set_cache(server: &MockServer) -> KeySetCache {
+        KeySetCache::new(
+            format!("{}/jwks.json", server.uri()),
+            Duration::from_secs(300),
+            crate::http_client::client().expect("the vendored-roots client builds"),
+        )
+    }
+
+    /// An encryption key beside the signing key — Keycloak publishes one —
+    /// neither breaks the set nor can be asked for as a signing key; and an EC
+    /// key keeps its coordinates (which authkestra's `Jwk` would drop).
+    #[tokio::test]
+    async fn a_key_set_skips_encryption_keys_and_keeps_ec_keys_whole() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"keys": [
+                rsa_jwk("sig-1"),
+                {"kty": "RSA", "use": "enc", "alg": "RSA-OAEP", "kid": "enc-1", "n": "AQAB", "e": "AQAB"},
+                {"kty": "EC", "crv": "P-256", "use": "sig", "kid": "ec-1", "x": "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", "y": "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0"},
+                {"kty": "nonsense", "kid": "bad-1"},
+            ]})))
+            .mount(&server)
+            .await;
+        let cache = key_set_cache(&server);
+
+        assert!(cache.get_key("sig-1").await.expect("fetch").is_some());
+        assert!(
+            cache.get_key("enc-1").await.expect("fetch").is_none(),
+            "an encryption key is not a signing key"
+        );
+        let ec = cache
+            .get_key("ec-1")
+            .await
+            .expect("fetch")
+            .expect("the EC key is kept");
+        assert!(matches!(
+            ec.algorithm,
+            jsonwebtoken::jwk::AlgorithmParameters::EllipticCurve(_)
+        ));
+    }
+
+    /// An unknown `kid` costs ONE forced re-fetch, and the next unknown `kid`
+    /// inside the interval costs none: the throttle is the cache's own, so no
+    /// caller can forget it.
+    #[tokio::test]
+    async fn an_unknown_kid_forces_one_refetch_and_then_is_throttled() {
+        let server = jwks_server().await;
+        let cache = key_set_cache(&server);
+
+        assert!(cache.get_key("nope-1").await.expect("fetch").is_none());
+        assert_eq!(
+            fetch_count(&server).await,
+            2,
+            "the TTL fetch plus the rotation fetch"
+        );
+
+        assert!(cache.get_key("nope-2").await.expect("fetch").is_none());
+        assert_eq!(
+            fetch_count(&server).await,
+            2,
+            "a second unknown kid inside the interval fetches nothing"
+        );
+    }
+
+    /// A key published after the cache's last fetch is found by the forced
+    /// re-fetch — the rotation case it exists for.
+    #[tokio::test]
+    async fn a_rotated_in_key_is_found_by_the_forced_refetch() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(json!({"keys": [rsa_jwk("old")]})),
+            )
+            .up_to_n_times(1)
+            .mount(&server)
+            .await;
+        let cache = key_set_cache(&server);
+        assert!(cache.get_key("old").await.expect("fetch").is_some());
+
+        server.reset().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"keys": [rsa_jwk("old"), rsa_jwk("new")]})),
+            )
+            .mount(&server)
+            .await;
+        assert!(
+            cache.get_key("new").await.expect("fetch").is_some(),
+            "published since the last fetch, found by the one forced re-fetch"
+        );
+    }
+
+    /// A failing issuer is an error, never an empty key set.
+    #[tokio::test]
+    async fn a_failing_or_malformed_key_set_is_an_error() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            key_set_cache(&server).get_key("k").await,
+            Err(KeySetError::Fetch)
+        ));
+
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("<html>not a key set</html>"))
+            .mount(&server)
+            .await;
+        assert!(matches!(
+            key_set_cache(&server).get_key("k").await,
+            Err(KeySetError::Malformed)
+        ));
     }
 }

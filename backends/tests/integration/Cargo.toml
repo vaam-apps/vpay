@@ -164,3 +164,9 @@ tracing-subscriber.workspace = true
 # would drift on is the rail host — which is the one field a poll must agree
 # with the confirm about.
 serde_yaml_ng.workspace = true
+# `tests/staff_sso.rs`: the identity provider. A WireMock host over real HTTP —
+# discovery, a JWKS, a token endpoint — exactly as a rail is simulated
+# (AGENTS.md rule 1: reachable from a test, never linked into `vpay-server`).
+# The id_tokens it serves are signed by a key the test generates.
+wiremock.workspace = true
+

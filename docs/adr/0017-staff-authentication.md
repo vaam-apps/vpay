@@ -1,6 +1,10 @@
 # ADR-0017: How a staff member signs in to `/dash/v1`
 
-- **Status:** Accepted
+- **Status:** Accepted. **Amended 2026-10-19 by
+  [ADR-0030](0030-staff-sign-in-federates-to-an-oidc-provider.md):** decision 1
+  describes the only way a staff member signed in until that date. Staff may now
+  also sign in through an OpenID Connect provider; password + TOTP, as decided
+  here, is unchanged in every particular and is the break-glass path.
 - **Date:** 2026-09-07
 - **Deciders:** vpay maintainers (delegate, 2026-09-06)
 - **Supersedes:** the audience half of

@@ -4,6 +4,12 @@
   keeps Stripe-shaped `sk_live_`/`sk_test_` API keys — is **superseded** by
   [ADR-0010](0010-merchant-auth-private-key-jwt.md). Everything else in this
   ADR, including the `/dash/v1` decision itself, stands.
+  **Amended 2026-10-19 by [ADR-0030](0030-staff-sign-in-federates-to-an-oidc-provider.md):**
+  the Context's "rather than federating to an external IdP" is true of the
+  _tokens_ `/dash/v1` accepts and no longer of the _human authentication step_,
+  which can now federate to an OpenID Connect provider. vpay is still the OP
+  for `/dash/v1`; ADR-0030 decision 1 says exactly what federates and what
+  does not.
 - **Date:** 2026-08-09
 - **Deciders:** vpay maintainers
 

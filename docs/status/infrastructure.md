@@ -96,6 +96,8 @@ Measured, 2026-09-16.)_
 
 ## Migrations
 
+**50 as of 2026-10-20.** `0050_create-staff-sso-attempts.sql` (ADR-0030) creates `staff_sso_attempts`, one row per SSO sign-in in flight: the SHA-256 of the pending token, the `state` and the `nonce`, the sealed PKCE verifier, `is_retry`, and a ten-minute `expires_at`, with four length CHECKs, `expires_at > created_at`, and the index a sweep needs. Not a `staff_sessions` row, because `staff_sessions.staff_id` is `NOT NULL` and a first sign-in has no staff member yet. Its drift cost was measured, not predicted: [status/cratestack.md](cratestack.md) § 2026-10-20. `cargo xtask verify-migrations`: ok — 50 files match `MANIFEST.sha256`. The Helm chart gained `networkPolicy.idpEgress` for an identity provider on a private address or non-443 port; `just helm-check` passed (see the verification page).
+
 **49 as of 2026-09-23.** `0049_manual-payments.sql` (RFC-0004 § 6) adds
 `invoices.paid_out_of_band` — `BOOLEAN NOT NULL`, backfilled `false` by the
 ADD's own DEFAULT and the DEFAULT dropped in the next statement, `0042`'s

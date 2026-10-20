@@ -36,11 +36,23 @@ decision belongs in an ADR once it is taken.
   the default is not a policy decision. See
   [ADR-0017](adr/0017-staff-authentication.md).
 - **Additional staff credentials:** decide whether a live payment deployment
-  may accept any single-factor credential beyond the implemented password and
-  TOTP pair. See [ADR-0019](adr/0019-credential-model.md).
-- **Federated staff provisioning:** decide whether IdP claims may grant admin,
+  may accept any single-factor credential beyond the implemented password,
+  TOTP and OIDC. See [ADR-0019](adr/0019-credential-model.md) § R1. _(Taken for
+  the `oidc` kind on 2026-10-19 — an id_token must prove a second factor,
+  [ADR-0030](adr/0030-staff-sign-in-federates-to-an-oidc-provider.md) decision 6. Still open for `hotp`, `magic_link`, `email_otp`, `phone_otp` and
+  `webauthn`.)_
+- ~~**Federated staff provisioning:** decide whether IdP claims may grant admin,
   whether issuer allow-lists are deployment- or merchant-scoped, and how SSO
-  members are provisioned. See [ADR-0019](adr/0019-credential-model.md).
+  members are provisioned.~~ _Taken 2026-10-19 (ADR-0019 § R2, R3, R4), recorded
+  in [ADR-0030](adr/0030-staff-sign-in-federates-to-an-oidc-provider.md): no
+  claim drives `is_admin` or `merchant_id`; one issuer per deployment; members
+  are provisioned on first sign-in, gated by an IdP group, linked by
+  `(iss, sub)` only._
+- **Linking an existing staff member to an SSO identity:** no claim may link by
+  email and no operator command links by `(iss, sub)`, so a password member
+  cannot move to SSO. A `staff link` subcommand is the obvious answer and is the
+  maintainer's call. See
+  [ADR-0030](adr/0030-staff-sign-in-federates-to-an-oidc-provider.md) decision 7.
 - **Privacy and operator policy:** all decisions D1-D13 remain open in
   [RFC-0002](rfc/0002-gdpr-policy-and-operator-decisions.md). Do not implement
   an answer without its named owner.
