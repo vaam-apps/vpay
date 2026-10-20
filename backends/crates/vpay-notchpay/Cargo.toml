@@ -29,8 +29,9 @@ serde_json.workspace = true
 
 [dev-dependencies]
 # One test sends a request to a closed loopback port, to prove a transport
-# failure is `Transport` and never a refusal. No server, no double.
-tokio.workspace = true
+# failure is `Transport` and never a refusal. No server, no double. `net` and
+# `io-util` serve the probe's redirect test, a plain TCP listener.
+tokio = { workspace = true, features = ["net", "io-util"] }
 # The rest serve `examples/sandbox_probe.rs` only, which a person runs
 # against Notch Pay's real sandbox from docs/runbooks/notchpay-sandbox-test.md:
 # fresh references, and item 7's signature check. All four are already in the
@@ -39,3 +40,17 @@ uuid.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 hex.workspace = true
+# `--ca-bundle` only (cloud sessions, see the probe's module doc): the probe
+# builds its own client over the vendored roots plus the bundle, so it needs
+# the two crates `vpay_provider::http` builds the shared one from. Both are
+# already in the workspace's lockfile; no shipping target gains them.
+rustls.workspace = true
+webpki-roots = "1"
+
+# `test = true`: the probe's own unit tests (the `--ca-bundle` flag is off by
+# default, a bad path fails before any request, redirects stay refused) run
+# under `cargo nextest run --workspace`. That makes the example a test binary,
+# which `justfile`'s `expected_suites` counts.
+[[example]]
+name = "sandbox_probe"
+test = true

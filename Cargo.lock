@@ -4947,6 +4947,7 @@ dependencies = [
  "hex",
  "hmac 0.12.1",
  "reqwest",
+ "rustls",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4954,6 +4955,7 @@ dependencies = [
  "uuid",
  "vpay-core",
  "vpay-provider",
+ "webpki-roots",
 ]
 
 [[package]]

@@ -10,6 +10,22 @@
 //! cargo run -p vpay-notchpay --example sandbox_probe -- verify-signature --body <file> --signature <hex>
 //! ```
 //!
+//! **`--ca-bundle <path>` (cloud only, off by default).** The three calling
+//! phases take it: every PEM certificate at `<path>` is trusted *in addition
+//! to* the vendored `webpki_roots`, for this probe's own HTTP client only.
+//! It exists for one environment, a cloud session whose egress gateway
+//! re-terminates TLS with its own CA (`/root/.ccr/ca-bundle.crt` there), so
+//! that step 1 can run from such a session. It is test tooling: this
+//! example ships in no image, and the same option must **never** be added to
+//! `vpay-server`, `vpay-worker`, `vpay_provider::http`'s shared constructors
+//! or any shipping configuration, because ADR-0003 forbids an environment
+//! branch in shipping code. The client it builds keeps both of
+//! `vpay_provider::http`'s removals: redirects are not followed (so
+//! `X-Grant` is never replayed at another host) and proxy variables are
+//! ignored. A path that does not exist, does not parse, or holds no
+//! certificate stops the probe before any request. See the runbook's
+//! "Cloud sessions" section.
+//!
 //! **The keys never leave the process.** They are read from
 //! `NOTCHPAY_TEST_PUBLIC_KEY`, `NOTCHPAY_TEST_PRIVATE_KEY` and (for
 //! `verify-signature` only) `NOTCHPAY_TEST_HASH_KEY`. Nothing prints them.
@@ -37,7 +53,8 @@
 
 use std::error::Error;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use hmac::{Hmac, Mac};
@@ -101,12 +118,7 @@ struct Probe {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let flag = |name: &str| {
-        args.iter()
-            .position(|a| a == name)
-            .and_then(|i| args.get(i + 1))
-            .cloned()
-    };
+    let flag = |name: &str| flag(&args, name);
     let phase = args.first().map(String::as_str).unwrap_or_default();
     if phase == "verify-signature" {
         let body = flag("--body").ok_or("verify-signature needs --body <file>")?;
@@ -116,16 +128,19 @@ fn main() -> Result<()> {
     if !matches!(phase, "read" | "payments" | "webhooks") {
         return Err(
             "usage: sandbox_probe read|payments|webhooks --out <report.json> [--webhook-url <url>] \
-             | verify-signature --body <file> --signature <hex>"
+             [--ca-bundle <pem>] | verify-signature --body <file> --signature <hex>"
                 .into(),
         );
     }
     let out = PathBuf::from(flag("--out").ok_or("--out <report.json> is required")?);
+    // Built before the runtime, the keys and any request: a bad bundle path
+    // fails here.
+    let http = http_client(ca_bundle(&args)?.as_deref())?;
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()?;
     runtime.block_on(async {
-        let mut probe = Probe::new()?;
+        let mut probe = Probe::new(http)?;
         let started = now();
         let result = match phase {
             "read" => probe.read_phase().await,
@@ -145,6 +160,81 @@ fn main() -> Result<()> {
     })
 }
 
+/// The value after `name`, if `name` is present.
+fn flag(args: &[String], name: &str) -> Option<String> {
+    args.iter()
+        .position(|a| a == name)
+        .and_then(|i| args.get(i + 1))
+        .cloned()
+}
+
+/// `--ca-bundle <path>`, or `None` when the flag is absent: off by default.
+/// A flag with no value is an error rather than "off", so a typo never
+/// silently falls back to a client that cannot connect.
+fn ca_bundle(args: &[String]) -> Result<Option<PathBuf>> {
+    if !args.iter().any(|a| a == "--ca-bundle") {
+        return Ok(None);
+    }
+    match flag(args, "--ca-bundle") {
+        Some(path) if !path.starts_with("--") => Ok(Some(PathBuf::from(path))),
+        _ => Err("--ca-bundle needs a path to a PEM file".into()),
+    }
+}
+
+/// The probe's HTTP client. Without a bundle it is exactly
+/// `vpay_provider::http::client()`, what `vpay-server` builds.
+fn http_client(ca_bundle: Option<&Path>) -> Result<reqwest::Client> {
+    match ca_bundle {
+        None => Ok(vpay_provider::http::client()?),
+        Some(path) => client_with_extra_roots(path),
+    }
+}
+
+/// `vpay_provider::http::client()`'s configuration with the certificates at
+/// `path` added to the vendored roots. Cloud-only test tooling: see the
+/// module doc, and do not copy this into anything that ships (ADR-0003).
+/// It repeats the shared builder rather than extending it on purpose,
+/// because the shared builder must have no way to take extra roots.
+fn client_with_extra_roots(path: &Path) -> Result<reqwest::Client> {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject as _;
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let extra = CertificateDer::pem_file_iter(path)
+        .map_err(|e| format!("--ca-bundle {}: {e}", path.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|e| format!("--ca-bundle {}: {e}", path.display()))?;
+    if extra.is_empty() {
+        return Err(format!("--ca-bundle {}: no PEM certificate in it", path.display()).into());
+    }
+    let (added, ignored) = roots.add_parsable_certificates(extra);
+    if added == 0 {
+        return Err(format!(
+            "--ca-bundle {}: none of its {ignored} certificate(s) is a usable root",
+            path.display()
+        )
+        .into());
+    }
+    say(&format!(
+        "--ca-bundle: {added} extra root(s) trusted for this run ({ignored} ignored); cloud-only aid"
+    ));
+    let mut tls = rustls::ClientConfig::builder_with_provider(Arc::new(
+        rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()?
+    .with_root_certificates(roots)
+    .with_no_client_auth();
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(reqwest::Client::builder()
+        .tls_backend_preconfigured(tls)
+        // The two removals `vpay_provider::http` makes, kept: a followed
+        // redirect would replay `X-Grant` at whatever host answered.
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
+        .build()?)
+}
+
 fn test_key(name: &str) -> Result<String> {
     let value = std::env::var(name).map_err(|_| format!("{name} is not set"))?;
     if !TEST_KEY_MARKERS.iter().any(|m| value.contains(m)) {
@@ -157,12 +247,11 @@ fn test_key(name: &str) -> Result<String> {
 }
 
 impl Probe {
-    fn new() -> Result<Self> {
+    fn new(http: reqwest::Client) -> Result<Self> {
         let public_key = test_key(PUBLIC_KEY)?;
         let private_key = test_key(PRIVATE_KEY)?;
         let base_url =
             std::env::var("NOTCHPAY_BASE_URL").unwrap_or_else(|_| DEFAULT_BASE_URL.to_owned());
-        let http = vpay_provider::http::client()?;
         let client = Client::new(
             http.clone(),
             &base_url,
@@ -758,4 +847,84 @@ fn now() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_ca_bundle_is_off_unless_the_flag_is_given() {
+        let none = ca_bundle(&args(&["read", "--out", "r.json"])).unwrap();
+        assert_eq!(none, None);
+        let some = ca_bundle(&args(&["read", "--ca-bundle", "/x.pem", "--out", "r.json"])).unwrap();
+        assert_eq!(some, Some(PathBuf::from("/x.pem")));
+    }
+
+    #[test]
+    fn a_ca_bundle_flag_without_a_path_is_refused() {
+        assert!(ca_bundle(&args(&["read", "--out", "r.json", "--ca-bundle"])).is_err());
+        assert!(ca_bundle(&args(&["read", "--ca-bundle", "--out", "r.json"])).is_err());
+    }
+
+    #[test]
+    fn a_missing_bundle_fails_before_any_request() {
+        let error = http_client(Some(Path::new("/nonexistent/vpay-probe/ca.pem")))
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("--ca-bundle"), "{error}");
+    }
+
+    #[test]
+    fn a_bundle_with_no_certificate_is_refused() {
+        let dir = std::env::temp_dir().join(format!("vpay-probe-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&dir).unwrap();
+        let empty = dir.join("empty.pem");
+        fs::write(&empty, "not a certificate\n").unwrap();
+        let error = http_client(Some(&empty)).unwrap_err().to_string();
+        fs::remove_dir_all(&dir).unwrap();
+        assert!(error.contains("no PEM certificate"), "{error}");
+    }
+
+    fn fixture() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("examples/fixtures/isrg-root-x1.pem")
+    }
+
+    /// The client built with a bundle still refuses redirects: a 307 to a
+    /// second listener is returned as-is, and the second listener is never
+    /// reached, so `X-Grant` is not replayed.
+    #[tokio::test]
+    async fn a_client_with_a_bundle_does_not_follow_redirects() {
+        use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+        use tokio::net::TcpListener;
+
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let redirector = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let redirector_addr = redirector.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut socket, _) = redirector.accept().await.unwrap();
+            let mut buf = [0_u8; 4096];
+            let _ = socket.read(&mut buf).await.unwrap();
+            let answer = format!(
+                "HTTP/1.1 307 Temporary Redirect\r\nLocation: http://{target_addr}/stolen\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            socket.write_all(answer.as_bytes()).await.unwrap();
+        });
+
+        let client = http_client(Some(&fixture())).unwrap();
+        let response = client
+            .get(format!("http://{redirector_addr}/payments/x"))
+            .header("X-Grant", "probe-grant-not-a-key")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status().as_u16(), 307);
+        let reached = tokio::time::timeout(Duration::from_millis(300), target.accept()).await;
+        assert!(reached.is_err(), "the redirect was followed");
+    }
 }

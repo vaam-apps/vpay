@@ -57,6 +57,7 @@ What was run, in a container that cannot reach Notch Pay, was this:
    ```
 
    The issuer must be a public CA, not your company's or a gateway's.
+   The one exception is a Claude Code cloud session, below.
 
 4. **Vary the numbers.** Notch Pay's fraud system is active in the sandbox
    and watches for many payments to one number. The probe varies amounts.
@@ -85,7 +86,8 @@ Load it in every terminal with `set -a; . ~/.config/vpay/notchpay-sandbox.env; s
 ## Part A — the sandbox probe (step 1)
 
 `backends/crates/vpay-notchpay/examples/sandbox_probe.rs` is a cargo
-example, not a test. It builds every request body from `vpay-notchpay`'s own
+example. Its own unit tests run in `just ci`; the probe itself never does.
+It builds every request body from `vpay-notchpay`'s own
 wire types and decodes every answer with them. Each read is also made
 through `vpay_notchpay::Client`. It writes one JSON report, appending a run
 per phase. Run it from the repository root:
@@ -95,6 +97,24 @@ cargo build -p vpay-notchpay --example sandbox_probe
 PROBE=./target/debug/examples/sandbox_probe
 REPORT=~/notchpay-sandbox-report.json      # outside the repository
 ```
+
+### Cloud sessions only: `--ca-bundle`
+
+A Claude Code cloud session's egress gateway re-terminates TLS with its own
+CA, so the probe's vendored roots refuse `api.notchpay.co` there (ground
+rule 3). In such a session, and only there, add
+`--ca-bundle /root/.ccr/ca-bundle.crt` to each of `read`, `payments` and
+`webhooks`. The probe then trusts that file's PEM certificates **in
+addition to** the vendored roots, for its own client only. Redirects stay
+refused and proxy variables stay ignored, exactly as in
+`vpay_provider::http`. A missing, unreadable or certificate-less file stops
+the probe before any request. The flag is off unless given.
+
+This is a cloud-only aid for step 1. It is not in `vpay-server`,
+`vpay-worker`, `vpay_provider::http` or any shipping configuration, and must
+not be added to them: ADR-0003 forbids an environment branch in shipping
+code. Step 5 therefore cannot run from such a session; it stays on a machine
+whose egress presents Notch Pay's own certificate.
 
 ### A1. Read-only first
 

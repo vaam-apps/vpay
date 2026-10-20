@@ -3064,7 +3064,14 @@ expected_ignored := "0"
 # change tests went into binaries that already existed (the conformance
 # suite's `notchpay` row, `vpay-server`'s `cli.rs`, `vpay-config`,
 # `vpay-api`, `vpay-provider`, `vpay-notchpay`, both SDKs).
-expected_suites := "52"
+#
+# **52 -> 53 on 2026-10-20 (RFC-0012 step 1, `--ca-bundle`)**: one new binary,
+# the unit tests of `backends/crates/vpay-notchpay/examples/sandbox_probe.rs`,
+# now that its `[[example]]` entry says `test = true`. An example is not a test
+# binary until it does. Its five tests pin the cloud-only `--ca-bundle` flag:
+# off by default, a bad path refused before any request, redirects still not
+# followed. No other target changed.
+expected_suites := "53"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

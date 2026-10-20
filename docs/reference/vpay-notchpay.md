@@ -183,8 +183,19 @@ lists every one for the first sandbox session.
 `examples/sandbox_probe.rs` asks Notch Pay's real sandbox RFC-0012 § 10's
 sandbox questions, from
 [runbooks/notchpay-sandbox-test.md](../runbooks/notchpay-sandbox-test.md).
-It is an example, so `cargo nextest` never builds it and `verify-ignored`'s
-counts do not move. **Written 2026-10-20, never run against Notch Pay.**
+It is an example whose `[[example]]` entry says `test = true`, so its own
+unit tests are one of `verify-ignored`'s test binaries (52 → 53 on
+2026-10-20); the probe itself runs only by hand. **Written 2026-10-20,
+never run against Notch Pay.**
+
+`--ca-bundle <path>` is a cloud-only aid, off unless given: it adds that
+file's PEM certificates to the vendored roots for the probe's own client,
+so the probe can reach Notch Pay through a cloud session's TLS-terminating
+egress gateway. That client still refuses redirects and ignores proxy
+variables, and a bad path stops the probe before any request. It is not,
+and must not become, an option of `vpay_provider::http`, `vpay-server` or
+`vpay-worker` (ADR-0003). Its `rustls` and `webpki-roots` are
+`[dev-dependencies]`, like the four below.
 
 It sends every body from this crate's `wire` types and decodes every answer
 with them. Each read also goes through `Client`. The other calls go out by
