@@ -2212,9 +2212,18 @@ mod tests {
         let adapter = adapter();
         for refused in ["", ".", ".."] {
             let outcome = adapter.account_holder_name(refused, &config()).await;
-            assert!(
-                matches!(outcome, Err(ProviderError::Malformed { .. })),
-                "{refused:?} must be refused before the network: {outcome:?}"
+            // The message names the variant and never prints the outcome: a
+            // lookup's answer is a person's name, and a panic message is a
+            // log line (CodeQL `rust/cleartext-logging`, as in 61bce45e).
+            let got = match &outcome {
+                Ok(_) => "Ok",
+                Err(ProviderError::Malformed { .. }) => "Malformed",
+                Err(ProviderError::Transport { .. }) => "Transport",
+                Err(_) => "another error",
+            };
+            assert_eq!(
+                got, "Malformed",
+                "{refused:?} must be refused before the network"
             );
         }
     }
