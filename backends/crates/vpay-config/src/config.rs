@@ -312,6 +312,7 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
         setting_values: &[],
         currencies: &[],
         test_marked_credentials: &[],
+        livemode_acknowledgement: None,
     },
     RequiredRailKeys {
         code: "orange_money",
@@ -320,6 +321,7 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
         setting_values: &[],
         currencies: &[],
         test_marked_credentials: &[],
+        livemode_acknowledgement: None,
     },
     RequiredRailKeys {
         code: "notchpay",
@@ -339,6 +341,13 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
         // can only sit on the key (RFC-0012 § 2). A live key's prefix is not
         // documented (§ 10 item 8); the rule reads `test_` and nothing else.
         test_marked_credentials: &["public_key", "private_key"],
+        // ADR-0031 condition 4, as the maintainer amended it on 2026-10-20:
+        // in livemode the operator states, in the rail's own block, that
+        // they accept what `public_key` exposes. A sandbox only warns.
+        livemode_acknowledgement: Some(PublicKeyAcknowledgement {
+            setting: "accept_public_key_exposure",
+            credential: "public_key",
+        }),
     },
 ];
 
@@ -356,6 +365,19 @@ struct RequiredRailKeys {
     /// `credentials` keys whose value must contain [`TEST_KEY_MARKER`]
     /// exactly when the deployment is not livemode.
     test_marked_credentials: &'static [&'static str],
+    /// The `settings` key a livemode deployment must set to `"true"` before
+    /// the rail boots, for a rail admitted under ADR-0031's public-key limb.
+    livemode_acknowledgement: Option<PublicKeyAcknowledgement>,
+}
+
+/// [`RequiredRailKeys::livemode_acknowledgement`]: which setting
+/// acknowledges which credential's exposure.
+struct PublicKeyAcknowledgement {
+    /// The `settings` key. `"true"` or `"false"` when present, in any mode.
+    setting: &'static str,
+    /// The `credentials` key whose exposure it accepts — named in the
+    /// refusal, never its value.
+    credential: &'static str,
 }
 
 /// What a rail test key carries, for the rows that list
@@ -1719,6 +1741,28 @@ fn validate_required_rail_keys(provider: &ProviderHost, livemode: bool) -> Resul
                 key: (*key).to_owned(),
                 marker: if carries { "carries" } else { "lacks" },
                 livemode,
+            });
+        }
+    }
+    if let Some(acknowledgement) = &required.livemode_acknowledgement {
+        let value = provider
+            .settings
+            .get(acknowledgement.setting)
+            .map(|value| value.trim());
+        if value.is_some_and(|value| value != "true" && value != "false") {
+            return Err(ConfigError::ProviderSettingNotAllowed {
+                code: provider.code.clone(),
+                key: acknowledgement.setting.to_owned(),
+                allowed: "true, false".to_owned(),
+            });
+        }
+        // Outside livemode the boot warning is the whole of condition 4; the
+        // setting is read and refused nothing.
+        if livemode && value != Some("true") {
+            return Err(ConfigError::PublicKeyExposureNotAcknowledged {
+                code: provider.code.clone(),
+                setting: acknowledgement.setting,
+                credential: acknowledgement.credential,
             });
         }
     }
@@ -3087,6 +3131,55 @@ mod tests {
         );
     }
 
+    /// The documented spelling — an unquoted YAML `true` under `settings` —
+    /// is the one that satisfies ADR-0031 condition 4 in livemode, and the
+    /// same file without it does not load.
+    #[test]
+    fn a_livemode_notchpay_block_written_as_the_docs_show_loads() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/livemode-notchpay-acknowledged.yml"
+        );
+        let env = example_env(BTreeMap::from([
+            (
+                "NOTCHPAY_PUBLIC_KEY".to_owned(),
+                NOTCHPAY_LIVE_PUBLIC.to_owned(),
+            ),
+            (
+                "NOTCHPAY_PRIVATE_KEY".to_owned(),
+                NOTCHPAY_LIVE_PRIVATE.to_owned(),
+            ),
+        ]));
+        let config = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect("an acknowledged livemode notchpay block must load");
+        let notchpay = config.providers.first().expect("one rail");
+        assert_eq!(
+            notchpay
+                .settings
+                .get("accept_public_key_exposure")
+                .map(String::as_str),
+            Some("true")
+        );
+
+        let raw = std::fs::read_to_string(path).expect("read the fixture");
+        let bare = raw.replace("      accept_public_key_exposure: true\n", "");
+        assert_ne!(bare, raw, "the fixture carries the line this test removes");
+        let dir = std::env::temp_dir().join(format!("vpay-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("temp dir");
+        let bare_path = dir.join("livemode-notchpay-bare.yml");
+        std::fs::write(&bare_path, bare).expect("write the bare copy");
+        let refused = Config::load_with_env(Some(&bare_path), "does-not-exist", &env);
+        let _ = std::fs::remove_file(&bare_path);
+        assert_eq!(
+            refused.err(),
+            Some(ConfigError::PublicKeyExposureNotAcknowledged {
+                code: "notchpay".to_owned(),
+                setting: "accept_public_key_exposure",
+                credential: "public_key",
+            })
+        );
+    }
+
     // ------------------------------------------------- webhook endpoints ---
 
     /// The smallest `Config` that passes every rule: one merchant, no rails,
@@ -3828,11 +3921,101 @@ mod tests {
         );
         assert_eq!(
             validate_required_rail_keys(
-                &notchpay(NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE),
+                &acknowledged(notchpay(NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE)),
                 true
             ),
             Ok(())
         );
+    }
+
+    fn acknowledged(mut host: ProviderHost) -> ProviderHost {
+        host.settings
+            .insert("accept_public_key_exposure".to_owned(), "true".to_owned());
+        host
+    }
+
+    /// ADR-0031 condition 4 as amended on 2026-10-20: livemode refuses a
+    /// `notchpay` block that does not accept the public key's exposure, and
+    /// `false` is not acceptance.
+    #[test]
+    fn a_livemode_notchpay_block_without_the_acknowledgement_is_refused() {
+        let refused = Err(ConfigError::PublicKeyExposureNotAcknowledged {
+            code: "notchpay".to_owned(),
+            setting: "accept_public_key_exposure",
+            credential: "public_key",
+        });
+        let bare = notchpay(NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE);
+        assert_eq!(validate_required_rail_keys(&bare, true), refused);
+        let mut declined = bare;
+        declined
+            .settings
+            .insert("accept_public_key_exposure".to_owned(), "false".to_owned());
+        assert_eq!(validate_required_rail_keys(&declined, true), refused);
+    }
+
+    #[test]
+    fn the_acknowledgement_refusal_names_the_setting_and_the_key_never_a_value() {
+        let error = validate_required_rail_keys(
+            &notchpay(NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE),
+            true,
+        )
+        .expect_err("livemode without the acknowledgement");
+        for rendered in [error.to_string(), format!("{error:?}")] {
+            for key in [NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE] {
+                assert!(!rendered.contains(key), "{rendered}");
+            }
+            assert!(
+                rendered.contains("accept_public_key_exposure"),
+                "{rendered}"
+            );
+            assert!(rendered.contains("public_key"), "{rendered}");
+        }
+        let message = error.to_string();
+        assert!(message.contains("ADR-0031"), "{message}");
+        assert!(
+            message.contains("docs/flows/adapter-notchpay.md"),
+            "{message}"
+        );
+    }
+
+    /// A sandbox needs no acknowledgement: there, the boot warning is the
+    /// whole of condition 4. Setting it is allowed and changes nothing.
+    #[test]
+    fn a_sandbox_notchpay_block_needs_no_acknowledgement() {
+        let bare = notchpay(NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE);
+        assert_eq!(validate_required_rail_keys(&bare, false), Ok(()));
+        assert_eq!(
+            validate_required_rail_keys(&acknowledged(bare), false),
+            Ok(())
+        );
+    }
+
+    /// Only `true` and `false`, in either mode: a `yes` that reads as
+    /// acceptance to a person and as nothing to the check is refused rather
+    /// than guessed at.
+    #[test]
+    fn the_acknowledgement_is_true_or_false_and_nothing_else() {
+        for livemode in [false, true] {
+            let (public_key, private_key) = if livemode {
+                (NOTCHPAY_LIVE_PUBLIC, NOTCHPAY_LIVE_PRIVATE)
+            } else {
+                (NOTCHPAY_TEST_PUBLIC, NOTCHPAY_TEST_PRIVATE)
+            };
+            for value in ["yes", "1", "True ", ""] {
+                let mut host = notchpay(public_key, private_key);
+                host.settings
+                    .insert("accept_public_key_exposure".to_owned(), value.to_owned());
+                let refused = validate_required_rail_keys(&host, livemode);
+                assert!(
+                    matches!(
+                        refused,
+                        Err(ConfigError::ProviderSettingNotAllowed { .. }
+                            | ConfigError::PublicKeyExposureNotAcknowledged { .. })
+                    ),
+                    "{value:?} under livemode {livemode}: {refused:?}"
+                );
+            }
+        }
     }
 
     /// ADR-0031 condition 2: the public key alone never boots, and neither
@@ -3961,6 +4144,7 @@ mod tests {
             assert!(row.test_marked_credentials.is_empty(), "{}", row.code);
             assert!(row.setting_values.is_empty(), "{}", row.code);
             assert!(row.currencies.is_empty(), "{}", row.code);
+            assert!(row.livemode_acknowledgement.is_none(), "{}", row.code);
         }
     }
 

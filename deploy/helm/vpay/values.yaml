@@ -643,8 +643,10 @@ rails:
   # authenticates the status read. Whoever holds it can read, initialize,
   # process (a USSD prompt to ANY number, in the merchant's name) and cancel
   # payments on the merchant's account. Both Deployments log this at WARN on
-  # every boot. Read docs/flows/adapter-notchpay.md § "Production risks"
-  # before you take real payments on it.
+  # every boot, and in livemode refuse to boot unless the overlay's notchpay
+  # block sets `settings.accept_public_key_exposure: true` (ADR-0031
+  # condition 4). Read docs/flows/adapter-notchpay.md § "Production risks"
+  # before you set it.
 
   # STAFF SINGLE SIGN-ON ADDS ONE KEY, AND ONLY IF YOU TURN IT ON.
   #

@@ -124,11 +124,16 @@ and none is specific to Notch Pay.
    default), and boot logs a `warn!` for every **configured** rail that
    declares one, naming the exposure and the page that explains it. In
    livemode the line says so, in capitals, and adds that real money is at
-   stake. The line never prints a key. Boot does **not** refuse: the
-   maintainer asked for a warning, not a gate. Whether livemode should also
-   require an explicit acknowledgement key is an open question put to the
-   maintainer in the pull request that carries this record; nothing is built
-   for it until it is answered.
+   stake. The line never prints a key. **In livemode, boot also refuses the
+   rail until its block carries an explicit acknowledgement** — on Notch Pay
+   `settings.accept_public_key_exposure: true`, a column of
+   `vpay_config::config::REQUIRED_RAIL_KEYS` — and the refusal names the
+   setting and the key, never a value. A sandbox only warns. An acknowledged
+   livemode boot still logs the warning: the acknowledgement admits the rail,
+   it does not make the key private. _Amended 2026-10-20, the day this record
+   was written:_ it first said boot does not refuse and put the
+   acknowledgement to the maintainer as a question, and the maintainer
+   answered "Livemode acknowledgement: YES, require it."
 5. **Integrity is checked on the answer.** A success the read reports is
    accepted only if its amount and currency equal the charge's. That check
    matters more on a provider whose key others may hold.
@@ -177,8 +182,10 @@ the port, or it is not admitted.
   of every port capability.
 - Every boot of a deployment that configures `notchpay` prints a warning. A
   log line every operator will learn to scroll past is a weak control, and it
-  is recorded as weak: it is the control the maintainer asked for, and the
-  stronger one is the open question in condition 4.
+  is recorded as weak, which is why livemode does not rely on it alone: a
+  livemode deployment must also set the rail's acknowledgement (condition 4),
+  so the exposure is accepted by someone writing a line of configuration and
+  not only by someone not reading a log.
 - The merchant's exposure is real and unchanged by anything vpay does. vpay
   keeps the key server-side; a merchant who also embeds it in a front end, as
   Notch Pay's documentation invites, has given every public-key operation to
@@ -193,12 +200,14 @@ the port, or it is not admitted.
 - **An exception for Notch Pay only.** Refused. RFC-0012 required that the
   change be argued as a policy, and an exception is the same exposure without
   conditions a reviewer can apply to the next provider.
-- **Refuse to boot in livemode.** Not what the maintainer asked for ("warn the
-  developer about the risks in prod"). It would make the adapter usable only
-  in a sandbox, which is a different decision.
-- **Require an acknowledgement key in livemode** (for example
-  `settings.accept_public_key_exposure: true`). A middle way between a warning
-  and a refusal. Not built: put to the maintainer as a question in the pull
-  request.
+- **Refuse to boot in livemode, unconditionally.** Not what the maintainer
+  asked for ("warn the developer about the risks in prod"). It would make the
+  adapter usable only in a sandbox, which is a different decision. The
+  acknowledgement below is the refusal an operator can lift on purpose.
+- **Require an acknowledgement key in livemode**
+  (`settings.accept_public_key_exposure: true`). A middle way between a warning
+  and a refusal. First left unbuilt and put to the maintainer as a question;
+  **chosen** on 2026-10-20 when they answered "YES, require it", and now part
+  of condition 4.
 - **Build under the public key and call rule 3 satisfied.** Refused by
   RFC-0012 as way B done silently, and refused here for the same reason.

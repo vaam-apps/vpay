@@ -313,6 +313,30 @@ pub enum ConfigError {
         /// What `deployment.livemode` says.
         livemode: bool,
     },
+    /// A livemode deployment configures a rail admitted under ADR-0031's
+    /// public-key limb without the acknowledgement its row names
+    /// (`settings.accept_public_key_exposure: true` for `notchpay`).
+    ///
+    /// ADR-0031 condition 4, as amended on 2026-10-20: a sandbox only warns
+    /// at boot, and livemode refuses to boot until the operator has stated,
+    /// in the rail's own block, that they accept what the public key lets
+    /// anyone holding it do. Setting it does not silence the warning.
+    ///
+    /// **The message names the setting and the credential, never a value.**
+    #[error(
+        "provider {code} is admitted under ADR-0031: credentials.{credential} is a key the \
+         provider documents as public, and whoever holds it can act on the account; under \
+         deployment.livemode: true, set settings.{setting}: true to accept that exposure \
+         (docs/flows/adapter-{code}.md, \"Production risks\")"
+    )]
+    PublicKeyExposureNotAcknowledged {
+        /// The `providers[].code`.
+        code: String,
+        /// The `settings` key that acknowledges it.
+        setting: &'static str,
+        /// The exposed credential's key — never its value.
+        credential: &'static str,
+    },
     /// "Currency exponent matches the canonical table"
     /// (`docs/flows/configuration.md`'s boot-guard table) — the exponent is
     /// a property of the currency itself, never configurable per deployment

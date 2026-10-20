@@ -597,7 +597,13 @@ than a feature it added:**
   cannot work without — MTN: `settings.target_environment`,
   `settings.api_user`, `credentials.subscription_key`, `credentials.api_key`;
   Orange: `credentials.merchant_key`, `credentials.client_id`,
-  `credentials.client_secret`. A present-but-empty value counts as missing.
+  `credentials.client_secret`; Notch Pay (2026-10-20):
+  `settings.channel` (exactly `cm.mobile`), `credentials.public_key`,
+  `credentials.private_key`, currency `XAF`, a `test_` marker on both keys
+  that agrees with `deployment.livemode`, and **in livemode only**
+  `settings.accept_public_key_exposure: true`, ADR-0031 condition 4's
+  acknowledgement (see [adapter-notchpay.md](adapter-notchpay.md) §
+  "Configuration"). A present-but-empty value counts as missing.
   This is a provider-code match outside an adapter crate, which ADR-0002
   forbids; it is a deliberate, recorded interim —
   [ADR-0012](../adr/0012-rail-configuration-requirements-in-config.md) — and

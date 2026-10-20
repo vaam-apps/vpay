@@ -85,7 +85,9 @@ Notes on cells that a word cannot carry:
   the rule-3 decision" until the same day.)_
 - **`notchpay` carries a production risk no other row does**: whoever holds
   the merchant's public key can read, initialize, process to any number and
-  cancel payments on that account. See
+  cancel payments on that account. Every boot logs it at `WARN`, and a
+  livemode boot refuses the rail unless its block says
+  `settings.accept_public_key_exposure: true` (ADR-0031 condition 4). See
   [adapter-notchpay.md](../flows/adapter-notchpay.md) § "Production risks".
 - **`notchpay` and `flutterwave` "Methods" are the provider's own claims**, read
   from their documentation; neither has been called.

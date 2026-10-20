@@ -260,6 +260,13 @@ Boot refusals, in `vpay_config::config::REQUIRED_RAIL_KEYS` per ADR-0012:
   applied to a rail key, as RFC-0010 § 2 applies it to Stripe's. A live key's
   prefix is not documented ("To confirm" item 8).
 - `settings.channel` must be a `cm.` channel the adapter knows.
+- **In livemode, `settings.accept_public_key_exposure` must be `true`.**
+  _Added when built, 2026-10-20_, on the maintainer's answer "Livemode
+  acknowledgement: YES, require it." It is ADR-0031 condition 4: the operator
+  accepts in writing what the public key exposes (§ 9), and boot refuses
+  without it, naming the setting and `credentials.public_key`, never a value.
+  A sandbox only warns. Any value other than `true` or `false` is refused in
+  either mode.
 - `currency` must be `XAF`. Notch Pay's XOF channels are other countries and
   another RFC.
 
@@ -548,8 +555,10 @@ the operator's copy, and
 [threat-models/notchpay.md](../security/threat-models/notchpay.md) the
 STRIDE model.
 
-Whether livemode should also require an explicit acknowledgement key is a
-question put to the maintainer; nothing is built for it.
+In livemode boot also refuses the rail until its block carries
+`settings.accept_public_key_exposure: true` (§ 2; ADR-0031 condition 4, as
+the maintainer amended it on 2026-10-20: "Livemode acknowledgement: YES,
+require it."). Setting it admits the rail; it does not silence the warning.
 
 - **An account per merchant.** Opened online, with Notch Pay's KYC. The
   agreement reserves the service to "natural persons aged 18 and over,

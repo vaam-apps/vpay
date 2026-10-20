@@ -39,14 +39,14 @@ emailed Notch Pay and got no answer. `notchpay` is **admitted under ADR-0031
 
 The six conditions ADR-0031 puts on that admission, and where each is met:
 
-| Condition                                          | Here                                                                                                                                              |
-| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1. Every secret is sent on every call              | `vpay_notchpay::Client` sends `X-Grant: <private_key>` on every request; the stub's mappings match only requests that carry it                    |
-| 2. Boot refuses a configuration without the secret | `vpay_config::config::REQUIRED_RAIL_KEYS`, `notchpay` row: `public_key` and `private_key`                                                         |
-| 3. The exposure is written where an operator reads | § "Production risks" below; RFC-0012 § 9; comments beside the keys in `config/application.yml`, `.env.example` and `deploy/helm/vpay/values.yaml` |
-| 4. The process says it too                         | `ProviderAdapter::accepted_exposure`, logged by `vpay_api::boot::warn_about_accepted_exposures` at every boot of `serve` and `worker`             |
-| 5. Integrity is checked on the answer              | a success is `Succeeded` only for the charge's own amount and currency; otherwise `Malformed`                                                     |
-| 6. The written question stays open                 | RFC-0012 § 10 item 1, unanswered                                                                                                                  |
+| Condition                                          | Here                                                                                                                                                                                                                      |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1. Every secret is sent on every call              | `vpay_notchpay::Client` sends `X-Grant: <private_key>` on every request; the stub's mappings match only requests that carry it                                                                                            |
+| 2. Boot refuses a configuration without the secret | `vpay_config::config::REQUIRED_RAIL_KEYS`, `notchpay` row: `public_key` and `private_key`                                                                                                                                 |
+| 3. The exposure is written where an operator reads | § "Production risks" below; RFC-0012 § 9; comments beside the keys in `config/application.yml`, `.env.example` and `deploy/helm/vpay/values.yaml`                                                                         |
+| 4. The process says it too                         | `ProviderAdapter::accepted_exposure`, logged by `vpay_api::boot::warn_about_accepted_exposures` at every boot of `serve` and `worker`; in livemode, boot also refuses without `settings.accept_public_key_exposure: true` |
+| 5. Integrity is checked on the answer              | a success is `Succeeded` only for the charge's own amount and currency; otherwise `Malformed`                                                                                                                             |
+| 6. The written question stays open                 | RFC-0012 § 10 item 1, unanswered                                                                                                                                                                                          |
 
 ## Production risks
 
@@ -89,9 +89,12 @@ What else an operator takes on, from RFC-0012 § 9:
 
 Every boot of a deployment that configures `notchpay` logs this risk at
 `WARN`. In livemode the line opens with `LIVEMODE, REAL MONEY`. It never
-prints a key. Boot does **not** refuse: the maintainer asked for a warning.
-Whether livemode should also need an explicit acknowledgement key is an open
-question to the maintainer, and nothing is built for it.
+prints a key. **In livemode, boot refuses the rail until its block says
+`settings.accept_public_key_exposure: true`** (ADR-0031 condition 4, as the
+maintainer amended it on 2026-10-20: "Livemode acknowledgement: YES, require
+it."). Setting it is the operator's written acceptance of every risk above. It
+does not silence the warning, and in a sandbox it is optional and changes
+nothing.
 
 ## Configuration
 
@@ -105,6 +108,7 @@ providers:
     settings:
       channel: cm.mobile # the only one allowed today
       description: Payment # optional; the one free-text field Notch Pay receives
+      accept_public_key_exposure: true # livemode refuses to boot without it; see Production risks
     credentials:
       public_key: ${NOTCHPAY_PUBLIC_KEY}
       private_key: ${NOTCHPAY_PRIVATE_KEY}
@@ -122,7 +126,12 @@ Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
 - **the livemode rule is on the keys**: in livemode a key containing `test_`
   refuses to boot, and outside livemode a key without it does. Notch Pay
   serves its sandbox and its production from one host, so the host rule
-  cannot tell them apart. The error names the key and never prints it.
+  cannot tell them apart. The error names the key and never prints it;
+- **in livemode, `settings.accept_public_key_exposure` exactly `true`**
+  (ADR-0031 condition 4). Absent or `false`, boot refuses, naming the setting
+  and `credentials.public_key` and never a value. Outside livemode it may be
+  absent. In either mode a value other than `true` or `false` is refused
+  rather than guessed at.
 
 ## The calls
 

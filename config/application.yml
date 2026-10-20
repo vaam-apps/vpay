@@ -105,7 +105,10 @@ providers:
   # in the merchant's name) and cancel payments on this merchant's account,
   # and vpay cannot stop a leaked or front-end-embedded copy being used. vpay
   # keeps it server-side and sends `private_key` (X-Grant) on every call.
-  # Every boot of a deployment that configures this rail logs that at WARN.
+  # Every boot of a deployment that configures this rail logs that at WARN,
+  # and in livemode boot REFUSES the rail until its settings carry
+  # `accept_public_key_exposure: true` (ADR-0031 condition 4): setting it is
+  # the operator's written acceptance of that risk. It does not stop the WARN.
   #
   # Why commented rather than `enabled: false`: boot requires both keys
   # non-blank (ADR-0031 condition 2) for every CONFIGURED rail, enabled or
@@ -129,6 +132,8 @@ providers:
   #   settings:
   #     channel: cm.mobile                   # the only channel allowed today
   #     description: Payment                 # optional; sent to Notch Pay
+  #     # Livemode refuses to boot without it; optional in a sandbox.
+  #     accept_public_key_exposure: true
   #   credentials:
   #     # Notch Pay calls this key public. Keep it server-side, never in a
   #     # front end.

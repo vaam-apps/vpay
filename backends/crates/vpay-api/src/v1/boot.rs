@@ -209,10 +209,14 @@ pub fn accepted_exposures(
 /// exposure: what the key the provider calls public lets anyone who holds it
 /// do on the merchant's account, and the page that explains it.
 ///
-/// `warn!` in both modes, because the maintainer asked for a warning and not
-/// a refusal ("warn the developer about the risks in prod"). In livemode the
-/// line says so in capitals and adds that real money is at stake; that is
-/// the "louder", and an operator filtering on `livemode=true` finds it.
+/// `warn!` in both modes, because the maintainer asked for a warning ("warn
+/// the developer about the risks in prod"). In livemode the line says so in
+/// capitals and adds that real money is at stake; that is the "louder", and
+/// an operator filtering on `livemode=true` finds it. A livemode boot only
+/// gets here at all if the rail's block carries its acknowledgement
+/// (ADR-0031 condition 4 as amended on 2026-10-20, enforced by
+/// `vpay-config`'s rail-key table); the acknowledgement admits the rail and
+/// does not silence this.
 ///
 /// **Never prints a key.** The declaration names the credential by its
 /// configuration key, and nothing here reads `credentials`.
@@ -233,8 +237,10 @@ pub fn warn_about_accepted_exposures(
                  authenticated by credentials.{credential}, a key the provider calls PUBLIC. \
                  Anyone who holds that key can: {operations}. vpay keeps it server-side and \
                  sends the private key on every call; it cannot stop a leaked or front-end-\
-                 embedded copy being used against this merchant's account. Read {document} \
-                 (\"Production risks\") before taking real payments.",
+                 embedded copy being used against this merchant's account. This deployment \
+                 acknowledged that exposure in the rail's settings; the acknowledgement admits \
+                 the rail, it does not make the key private. Read {document} \
+                 (\"Production risks\").",
                 credential = exposure.credential,
                 document = exposure.document,
             );
@@ -247,7 +253,8 @@ pub fn warn_about_accepted_exposures(
                 "rail {code} is admitted under ADR-0031: its status read is authenticated by \
                  credentials.{credential}, a key the provider calls public. Anyone who holds \
                  that key can: {operations}. In production this is the merchant's accepted \
-                 exposure; see {document} (\"Production risks\").",
+                 exposure, and a livemode boot refuses this rail until its settings acknowledge \
+                 it; see {document} (\"Production risks\").",
                 credential = exposure.credential,
                 document = exposure.document,
             );
@@ -697,6 +704,14 @@ mod tests {
                 assert!(log.contains(expected), "{expected} missing from {log}");
             }
             assert_eq!(log.contains("LIVEMODE, REAL MONEY"), livemode, "{log}");
+            // Livemode only boots acknowledged, and the line still says the
+            // key is not private; a sandbox is told livemode will refuse.
+            assert_eq!(
+                log.contains("does not make the key private"),
+                livemode,
+                "{log}"
+            );
+            assert_eq!(log.contains("livemode boot refuses"), !livemode, "{log}");
             assert!(
                 !log.contains("public-key-test_0001"),
                 "a key reached the log: {log}"

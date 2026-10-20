@@ -24,9 +24,10 @@ from `master` at `b8be107`. Linux (the cloud container), Rust 1.98.0,
   and not run here.
 - **`verify-ignored`'s binary count is counted, not measured.** 51 → 52 from
   `cargo metadata --no-deps` diffed against `master`: the one new target is
-  `vpay-adapter-notchpay`'s lib. The expected total is **2300**, derived as
-  `master`'s 2232 (its own CI measurement) plus the 68 tests this change adds
-  (below). CI is the measurement.
+  `vpay-adapter-notchpay`'s lib. The expected total is **2306**, derived as
+  `master`'s 2232 (its own CI measurement) plus the 74 tests this change adds
+  (below: 68 in the first commit, six with the livemode acknowledgement). CI
+  is the measurement.
 - **No e2e or demo walk.** No compose stack enables `notchpay`, so
   `just test-e2e` would not touch it and was not run.
 
@@ -60,19 +61,21 @@ from `master` at `b8be107`. Linux (the cloud container), Rust 1.98.0,
 
 `cargo nextest run`, by package, every one this change touched:
 
-| Package                  | Tests | Ignored | This change added                                            |
-| ------------------------ | ----: | ------: | ------------------------------------------------------------ |
-| `vpay-adapter-notchpay`  |    29 |       0 | 29 (new crate: 17 in `tests.rs`, 12 in `mapping.rs`)         |
-| `vpay-notchpay`          |    35 |       0 | 1 (the per-request deadline)                                 |
-| `vpay-provider`          |    40 |       0 | 1 (`Measured` forwards the exposure)                         |
-| `vpay-config`            |   137 |       0 | 7 (the `notchpay` boot rules)                                |
-| `vpay-api`               |   429 |       0 | 2 (which rails are warned about; the warning's text)         |
-| `vpay-server`            |    50 |       0 | 2 (the real binary's boot warning; only `notchpay` declares) |
-| `vpay-sdk` (Rust)        |   187 |       0 | 1 (confirm on `notchpay`)                                    |
-| `xtask`                  |   315 |       0 | 0                                                            |
-| `vpay-tests-conformance` |    92 |       0 | 25 (the `notchpay` row, against a real WireMock container)   |
+| Package                  | Tests | Ignored | This change added                                                                  |
+| ------------------------ | ----: | ------: | ---------------------------------------------------------------------------------- |
+| `vpay-adapter-notchpay`  |    29 |       0 | 29 (new crate: 17 in `tests.rs`, 12 in `mapping.rs`)                               |
+| `vpay-notchpay`          |    35 |       0 | 1 (the per-request deadline)                                                       |
+| `vpay-provider`          |    40 |       0 | 1 (`Measured` forwards the exposure)                                               |
+| `vpay-config`            |   142 |       0 | 12 (the `notchpay` boot rules; 5 of them the acknowledgement)                      |
+| `vpay-api`               |   429 |       0 | 2 (which rails are warned about; the warning's text)                               |
+| `vpay-server`            |    51 |       0 | 3 (the real binary's boot warning, sandbox and livemode; only `notchpay` declares) |
+| `vpay-sdk` (Rust)        |   187 |       0 | 1 (confirm on `notchpay`)                                                          |
+| `xtask`                  |   315 |       0 | 0                                                                                  |
+| `vpay-tests-conformance` |    92 |       0 | 25 (the `notchpay` row, against a real WireMock container)                         |
 
-The first eight in one invocation: **1222 run, 1222 passed, 0 skipped**. The
+The first eight in one invocation: **1222 run, 1222 passed, 0 skipped**,
+before the livemode acknowledgement; `vpay-config`, `vpay-api` and
+`vpay-server` were re-run after it (below). The
 conformance suite on its own: **92 run, 92 passed**, 169 s.
 
 `backends/tests/integration`, four binaries, against a real Postgres: **47
@@ -120,3 +123,31 @@ in the output. The livemode text (`LIVEMODE, REAL MONEY: …`) is asserted in
 `vpay-api`'s
 `the_boot_warning_names_the_exposure_louder_in_livemode_and_never_a_key`, on
 a captured subscriber. No livemode process was booted.
+
+## The livemode acknowledgement (added the same day)
+
+The maintainer answered the question this change's pull request put to them:
+"Livemode acknowledgement: YES, require it." ADR-0031 condition 4 was amended
+in place. `REQUIRED_RAIL_KEYS` gained a fourth column,
+`livemode_acknowledgement`, set on the `notchpay` row to
+`settings.accept_public_key_exposure` for `credentials.public_key`, and
+`ConfigError::PublicKeyExposureNotAcknowledged` is the refusal.
+
+| Case                                       | Test                                                                                                                                                                       |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Livemode, no acknowledgement or `false`    | `a_livemode_notchpay_block_without_the_acknowledgement_is_refused` (config); the first half of `a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns` (binary) |
+| The refusal names, and never prints a key  | `the_acknowledgement_refusal_names_the_setting_and_the_key_never_a_value` (config); both halves of the binary test assert neither key reaches the output                   |
+| Livemode, acknowledged: boots, still warns | `a_livemode_notchpay_block_written_as_the_docs_show_loads` (config, an unquoted YAML `true`); the binary test's second half, which asserts `LIVEMODE, REAL MONEY`          |
+| Sandbox, no acknowledgement: warns only    | `a_sandbox_notchpay_block_needs_no_acknowledgement` (config); `a_notchpay_rail_is_warned_about_at_boot_and_its_keys_are_never_printed` (binary, unchanged)                 |
+| Only `true` or `false`                     | `the_acknowledgement_is_true_or_false_and_nothing_else`                                                                                                                    |
+
+`cargo nextest run -p vpay-config`: **142 run, 142 passed**. The `notchpay`
+tests of `vpay-server` (3) and the exposure tests of `vpay-api` (2): all
+passed. **Mutation**: disabling the livemode check (`if false && livemode …`)
+fails three `vpay-config` tests —
+`a_livemode_notchpay_block_without_the_acknowledgement_is_refused`,
+`a_livemode_notchpay_block_written_as_the_docs_show_loads` and
+`the_acknowledgement_refusal_names_the_setting_and_the_key_never_a_value` —
+and was reverted. The binary test was run against the real `vpay-server`;
+it stops on the missing signing key after the warning, so no livemode
+process served traffic and nothing called Notch Pay.
