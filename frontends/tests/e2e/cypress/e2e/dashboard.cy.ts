@@ -1209,8 +1209,14 @@ describe("the dashboard", { testIsolation: false }, () => {
         cy.contains("button", "Continue").click();
       });
 
-    // Straight to the payments list: the one-time password is behind them
-    // now, so `/login/password` is not on the way any more.
-    cy.location("pathname").should("eq", "/payments");
+    // Straight to `HOME_PATH`: the one-time password is behind them now, so
+    // `/login/password` is not on the way any more. That is the Overview
+    // since 2026-10-21, as in leg 5 of the first sign-in above. This line
+    // still said `/payments` until later that day, and it failed in a way
+    // that pointed elsewhere: the first attempt signed in and failed here,
+    // and Cypress's retries then opened `/login` while signed in, were sent
+    // on to the Overview, and reported "never found
+    // `#dashboard-signin-email`", which is all the run printed.
+    cy.location("pathname").should("eq", "/overview");
   });
 });

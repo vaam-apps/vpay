@@ -156,6 +156,10 @@ per navigation instead of two). No read moved to the browser and no write
 was added. Evidence on
 [dashboard/status-styling-and-demo.md](dashboard/status-styling-and-demo.md)
 and [../status/verification/2026-10-21-dashboard-md3e.md](../status/verification/2026-10-21-dashboard-md3e.md).
+Its theme script failed hydration under Cypress, and `dashboard.cy.ts`
+went 17 of 18 red on `master` the same day until the script moved to the
+start of `<body>`:
+[../status/verification/2026-10-21-dashboard-hydration.md](../status/verification/2026-10-21-dashboard-hydration.md).
 
 **The one thing a reader must not conclude from this document is that the
 dashboard is finished.** A staff member can sign in and read this merchant's
