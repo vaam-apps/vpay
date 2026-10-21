@@ -224,3 +224,41 @@ exits 1 on `binding 127.0.0.1:PORT`. If that is it, it is the same test lost to
 a second race, and the fix is for the server to bind `:0` and the test to read
 the port back from the `listening addr=` line, which is a larger change than
 this one and was left for that reason.
+
+## On the merged tree, and the gates
+
+`master` moved while this was being written: #310 (`e28292d3`) merged, and it
+changes `vpay-server`'s `main.rs` (a log string) and `compose.yml`. It was
+merged in, with one conflict, in `docs/status/README.md`'s index and counts
+alone — the same file as every merge on this page's neighbours — resolved by
+keeping both entries, newest first, and recounting: **86** files, **63** named.
+On the merged tree:
+
+- `just verify`: **all fifteen gates passed**, exit 0 (`verify-links` 2491 links
+  in 467 files; `verify-doc-counts` 13 counts agree). `check-schema` warned that
+  the CrateStack CLI on `PATH` is 0.15.1 against the 0.15.0 pin and ran in full
+  against the newer grammar; that is this machine, not the change.
+- `cargo test -p vpay-server --test cli`, five in a row: **40 passed**, 0 failed,
+  **0 ignored** each (11.77 s – 13.26 s).
+- `cargo nextest run -p vpay-server --test cli`: **40 passed, 0 skipped**, 62.0 s.
+- Before the merge, which touched no Rust file of this branch, both clean:
+  `cargo fmt --all -- --check`, and
+  `cargo clippy -p vpay-server --all-targets -- -D warnings`.
+- `prettier@3.9.6 --check` on both changed Markdown files: clean.
+  `markdownlint-cli2@0.20.0` with super-linter's default config: 0 errors on
+  both, with a deliberately misaligned table linted in the same invocation to
+  show the tool ran (it reported 3).
+
+## Not run
+
+- **`just ci` as a whole.** The workspace `test-rust` and `test-doc`,
+  `verify-ignored`, `lint-web`, `test-web`, `audit-web` and `deny` were not run;
+  CI runs them. Only `vpay-server`'s `tests/cli.rs` was run, because it is the
+  only file whose behaviour changed.
+- **Linux.** Everything above is one macOS machine. CI's `cargo nextest` is
+  serialised on that file by `.config/nextest.toml`, so CI could not see this.
+- **The unfixed file under two concurrent binaries, and the unfixed file against
+  a held 9090 for more than one test.** Named under "After".
+- **The red run's cause.** See "The red run".
+- **`vpay-skills`.** No gate, route, `NotImplemented` token, toolchain pin or
+  cited path moved, so no companion PR (`AGENTS.md` § "Docs↔skills parity").
