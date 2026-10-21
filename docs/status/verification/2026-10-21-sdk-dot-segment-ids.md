@@ -1,7 +1,12 @@
 # 2026-10-21 — the merchant SDKs refuse an empty or all-dots id
 
 Branch `claude/determined-ptolemy-c39f3b`, from `master` at `e95dc3d8`
-(#293), where everything below was run. Both merchant SDKs, their tests,
+(#293), where everything below was run. `master` was then merged in at
+`f7c7ae33` (#303), which touches Notch Pay code and docs only. The merge
+conflicted in this directory's index alone. On the merged tree, `just
+verify` passed again (`verify-doc-counts` reads 83 pages now),
+`vpay-sdk` 191/191, `sdks/nodejs` 234/234, and `fmt-check-rust` and
+clippy on the SDK and both Notch Pay crates were clean. Both merchant SDKs, their tests,
 their READMEs and the status pages. **No route, no server code, no
 migration, no gate and no `NotImplemented` token moved.**
 
