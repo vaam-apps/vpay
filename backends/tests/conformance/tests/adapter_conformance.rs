@@ -44,7 +44,8 @@
 //! it on the `X-Reference-Id` header, Orange on the body's `order_id` (which
 //! is `ChargeRef::reference_id` rendered as a string, per
 //! `docs/flows/adapter-orange-money.md`), and Notch Pay on the initialize
-//! body's `reference` and the read's path (`docs/flows/adapter-notchpay.md`).
+//! body's `reference` and, since 2026-10-21, the `trx.test_{reference}` its
+//! stub mints for the process and read paths (`docs/flows/adapter-notchpay.md`).
 //! So every rail's mapping directory stubs the *same* UUIDs, and adding a
 //! rail means adding one mappings directory and one row per table function
 //! rather than editing a case — which is what `notchpay` did on 2026-10-20,
@@ -92,21 +93,27 @@
 //! deliberately not an *empty* charge: it stands in for a charge whose `submit`
 //! has already run, because that is the only kind of charge a `query_status`
 //! ever sees in production. So it carries the key material that rail's `submit`
-//! would have returned, selected by capability exactly as `payer_ref` is:
+//! would have returned, from the per-rail table [`submitted_key_material`],
+//! and a `payer_ref` selected by capability:
 //!
-//! - a **push** rail is addressed by the reference we generated, so there is
-//!   nothing else to carry; it needs a `payer_ref` instead, because it prompts
-//!   the payer's own instrument.
+//! - a **push** rail prompts the payer's own instrument, so it needs a
+//!   `payer_ref`. MTN is addressed by the reference we generated and carries
+//!   nothing else; Notch Pay is addressed by the `trx.…` *it* returned at
+//!   initialize, so `ref_extra` carries a `notchpay_reference` (since
+//!   2026-10-21; until then the table was chosen by flow, push meaning
+//!   empty).
 //! - a **redirect** rail is addressed by the token *it* returned at submit —
 //!   the rail will not answer for our reference alone — so `ref_extra` carries
-//!   a `pay_token`. Handing a redirect rail a charge with none is not a
-//!   "reference the rail has never heard of": it is key material we lost for a
-//!   charge the rail may well have settled, which is why the adapters answer
-//!   `ProviderError::Config` and never `ChargeStatus::NotFound`
-//!   (`docs/flows/crash-safety.md`). Seeding it here keeps
-//!   [`not_found_is_never_on_its_own_a_failure`] a test of the rail's 404 and
-//!   not an accidental test of our own missing-token branch — that branch has
-//!   its own unit test in the adapter crate.
+//!   a `pay_token`.
+//!
+//! Handing a rail addressed by its own token a charge with none is not a
+//! "reference the rail has never heard of": it is key material we lost for a
+//! charge the rail may well have settled, which is why the adapters answer
+//! `ProviderError::Config` and never `ChargeStatus::NotFound`
+//! (`docs/flows/crash-safety.md`). Seeding it here keeps
+//! [`not_found_is_never_on_its_own_a_failure`] a test of the rail's 404 and
+//! not an accidental test of our own missing-token branch — that branch has
+//! its own unit test in each adapter crate.
 //!
 //! `return_url` is the one field [`Rail::charge`] deliberately does **not**
 //! select by capability: every conformance charge carries one, push rail
@@ -1262,9 +1269,11 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
 /// the rail under the same reference. Each flow states that differently, and
 /// each is asserted below on capability rather than on a rail name:
 ///
-/// * **push** — the rail is addressed by the reference we already hold, so
-///   its 409 `RESOURCE_ALREADY_EXIST` carries no key material and none may
-///   be invented. An empty `ref_extra` is the whole of the correct answer.
+/// * **push** — the duplicate must come back with exactly the key material
+///   the charge already holds. On MTN, addressed by the reference we hold,
+///   that is none, and none may be invented. On Notch Pay, addressed by its
+///   own `trx.…`, it is the `notchpay_reference` the charge holds, read back
+///   by it (a charge holding none is `notchpay_a_duplicate_it_cannot_resolve_fails_closed`).
 /// * **redirect** — the rail is addressed by the token *it* minted, so the
 ///   duplicate must come back with the token already minted for this
 ///   `order_id`. A second, different `pay_token` would mean two hosted pages
@@ -1291,8 +1300,7 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
 /// pinned where the status is still visible, by
 /// `vpay_adapter_mtn_momo`'s `a_duplicate_reference_is_a_success_not_an_error`
 /// over `submit_outcome`. This case's job on a push rail is the other half:
-/// that whatever the rail answered, no key material was invented for a
-/// charge addressed solely by our own reference.
+/// that whatever the rail answered, no key material was invented or lost.
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
