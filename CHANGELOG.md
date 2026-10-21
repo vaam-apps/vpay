@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.9.1](https://github.com/vaam-apps/vpay/compare/v0.9.0...v0.9.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **notchpay:** address process and read by Notch Pay's trx. reference ([#304](https://github.com/vaam-apps/vpay/issues/304)) ([5b4c583](https://github.com/vaam-apps/vpay/commit/5b4c583cd8987a91b8fe92130cdab7687038ffaa))
+* **sdks:** refuse an empty or all-dots id before any request ([#306](https://github.com/vaam-apps/vpay/issues/306)) ([1ffd148](https://github.com/vaam-apps/vpay/commit/1ffd14840b6466c65272be4c3e8970c06ff47ae3))
+
+
+### Documentation
+
+* **notchpay:** RFC-0012 step 1 against Notch Pay's real sandbox; refuse a short "complete" ([#303](https://github.com/vaam-apps/vpay/issues/303)) ([f7c7ae3](https://github.com/vaam-apps/vpay/commit/f7c7ae33c3aeb7febb2ca70cc015f6f0c80be52d))
+
 ## [0.9.0](https://github.com/vaam-apps/vpay/compare/v0.8.0...v0.9.0) (2026-10-20)
 
 
