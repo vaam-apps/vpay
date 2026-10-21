@@ -899,8 +899,8 @@ async fn a_callback_does_not_accelerate_a_poll_that_is_already_about_to_run() ->
     assert_eq!(
         response.status().as_u16(),
         202,
-        "a rail must still be told its notification was accepted; answering anything else \
-         buys a retry loop"
+        "a rail must still be told its notification was accepted, even when the poll it \
+         would pull forward is already about to run"
     );
 
     assert_eq!(
@@ -1089,9 +1089,11 @@ async fn an_unparseable_callback_body_is_refused_and_moves_no_job(
 /// deployment never generated is accepted anyway — `202`, no job, one `info`
 /// line.
 ///
-/// A `404` here would buy a retry loop no amount of retrying can fix (both
-/// rails retry a non-2xx) and would turn this route into an oracle for which
-/// references exist. See the module docs of `vpay_api::provider_callback`.
+/// A `404` here would turn this route into an oracle for which references
+/// exist. See the module docs of `vpay_api::provider_callback`. _(This also
+/// said a `404` "would buy a retry loop … (both rails retry a non-2xx)" until
+/// 2026-10-21; MTN documents that it never retries a callback, and those
+/// module docs say where.)_
 ///
 /// The reference is also posted to the *other* rail's callback path, which
 /// must answer the same 202: `Charges::get_by_provider_reference` is scoped
@@ -1121,7 +1123,7 @@ async fn a_reference_this_deployment_has_no_charge_for_is_accepted_anyway(
     assert_eq!(
         response.status().as_u16(),
         202,
-        "{rail}: a rail must not be told to retry a reference we will never know"
+        "{rail}: an unknown reference must get the known one's 202, or the route is an oracle"
     );
 
     // The same charge's *real* reference, through the other rail's path.

@@ -95,18 +95,29 @@ with the deployment's own success.
 
 ### Why an unknown reference is a 202 and an unknown rail code is a 404
 
-Both rails retry a non-2xx on their own schedules, so answering `404` to a
-reference this deployment has no charge for buys a retry loop that can never
-succeed. It would also make the endpoint an oracle for "does this charge
-exist", which is the argument [`browser`](../vpay-api.md#the-router)'s uniform 404 already
-makes about an unauthenticated surface. So the two 202s — "queued" and "never
-heard of it" — are the same response, and the second is logged at `info` where
-an operator debugging a misregistered callback host will find it.
+Answering `404` to a reference this deployment has no charge for would make
+the endpoint an oracle for "does this charge exist", which is the argument
+[`browser`](../vpay-api.md#the-router)'s uniform 404 already makes about an
+unauthenticated surface. So the two 202s — "queued" and "never heard of it" —
+are the same response, and the second is logged at `info` where an operator
+debugging a misregistered callback host will find it.
+
+_(This section opened "Both rails retry a non-2xx on their own schedules, so
+answering `404` … buys a retry loop that can never succeed" until 2026-10-21.
+MTN's own callback documentation
+(<https://momodeveloper.mtn.com/api-documentation/callback>, read 2026-10-20)
+says MTN sends a callback once, has no retry mechanism, and recommends
+polling. No official Orange Money Web Payment source says either way; this
+repository's Orange knowledge is a reconstruction from community SDKs
+([adapter-orange-money.md](../../flows/adapter-orange-money.md)). The oracle
+argument never depended on retries, so the answer did not move. RFC-0013
+§ 11, item 1, is where this was found; of the rails linked today, only Notch
+Pay's reference mentions retrying, and it asks for a `200` — RFC-0013 § 12,
+item 12, which is open.)_
 
 An unknown _rail code_ is different and stays a 404: it is a statement about
 this deployment's route table, which is public (a merchant learns the same set
-from `payment_method_types`), and a rail whose code nobody linked is not a rail
-that is going to retry. The handler produces it by calling `crate::not_found`
+from `payment_method_types`). The handler produces it by calling `crate::not_found`
 rather than by building its own `ApiError`, so "byte-identical to a mistyped
 path" is structural instead of two literals that happen to agree —
 `the_provider_nest_is_unauthenticated_and_its_404_is_the_routers_own` compares

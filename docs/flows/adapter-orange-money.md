@@ -108,7 +108,8 @@ pins the eight, and
 across both rails.
 
 If Orange turns out to document sub-reasons for `FAILED` at onboarding, they
-become rows in `STATUS_TABLE` and nothing else changes — that is item 9 below.
+become rows in `STATUS_TABLE` and nothing else changes — that is item 10 below.
+_(This said "item 9" until 2026-10-21; item 9 is the hosted page's window.)_
 
 ## Why refunds are unbuilt
 
@@ -216,6 +217,41 @@ breaking, where turning it on later is not.
     adapter maps the status alone. If sub-reasons exist, they become rows in
     `STATUS_TABLE`, `PRODUCED_FAILURE_CODES` grows, and the shop's
     `cannotExpress` list shrinks — all three checked against each other.
+11. **Whether the notification carries `order_id` at all** (added
+    2026-10-21, from [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)
+    § 11, item 3; § 12, item 17 asks Orange). `parse_callback`
+    (`vpay-adapter-orange-money/src/lib.rs`, its `order_id` check) requires
+    one and answers `Malformed` without it, which the callback route turns
+    into a `400` and a `warn`. RFC-0013 names two third-party sources that
+    describe the body as `status`, `notif_token` and `txnid`, with no
+    `order_id`:
+    - [SamK107/hayaflash#33](https://github.com/SamK107/hayaflash/pull/33),
+      a Mali integration, quotes the three-field body it received from a
+      real payment on 2026-09-27 (re-read 2026-10-21);
+    - [Paynote's integration guide](https://www.paynote.africa/comment-deployer-lapi-orange-money/),
+      which could not be fetched on 2026-10-21, so this repository has only
+      RFC-0013's reading of it and does not know which country it describes.
+
+    A third agrees and was re-read on 2026-10-21:
+    [pretix-orange-money-mdg's `notify` view](https://github.com/mikaoelitiana/pretix-orange-money-mdg/blob/e9d206d58c97b08a4b3203e00f6a27b5fc1f8d4c/pretix_orange_money_mdg/views.py)
+    (Madagascar) shows the same body in a comment citing Orange's own
+    "Transaction Notification" section, on a page
+    (`developer.orange.com/apis/om-webpay-dev/getting-started`) that answered
+    `404` on 2026-10-21. One machine-generated spec registry (afrotools,
+    Orange Mali) lists `order_id` and cites no source. **None that was read
+    is Orange Cameroun, and none is Orange's specification**, so nothing here is
+    changed on their word. If the three-field body is what Orange Cameroun
+    sends, **every real Orange callback is refused**. That costs latency
+    only: a callback is a hint, and the worker's poll resolves the charge
+    through `transactionstatus` at its next rung either way. The repair is
+    not a one-line relaxation: `parse_callback` would have to name the charge
+    some other way. The `notif_token` that `submit` already keeps in the
+    charge's `ref_extra` (`mapping.rs`) is one candidate, but no read in
+    `vpay-db` finds a charge by it today; a reference carried in `notif_url`
+    itself is another. Item 1 above asks the narrower version of this
+    question. Whether Orange resends a notification that is refused is not
+    documented in any official source found by 2026-10-21, and the
+    third-party claims contradict each other.
 
 ## Status
 
@@ -362,6 +398,10 @@ measured from the _send_, not the answer
   an error, but this is an assumption about Orange, not an observation.
 - Item 1 of the list above (does the notification carry `pay_token`?). The
   adapter carries it through _when present_ and never requires it.
+- Item 11 of the list above (does the notification carry `order_id` at all?),
+  added 2026-10-21. The adapter **requires** it, and two third-party sources
+  say Orange's notification has none, which would refuse every real Orange
+  callback; the poll ladder still settles the charge.
 - `notif_token` equality is **not** performed by the adapter — it holds no
   state — and, since Step 8 (2026-09-04), ~~comparing it with the stored one is
   the callback route's job, and that route is not built yet~~ **not by the
