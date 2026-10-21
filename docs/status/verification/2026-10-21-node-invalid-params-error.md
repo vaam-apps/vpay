@@ -1,7 +1,12 @@
 # 2026-10-21 — every local refusal in `sdks/nodejs` is a `VpayError`
 
 Branch `claude/node-refusals-vpay-error`, from `master` at `73a5b5af` (#312),
-where everything below was run. One SDK, its tests, its README and the
+where everything below was run. `master` was then merged in at `73c3a7cf`
+(#309, #311, #318). The conflicts were only in this directory's index and in
+`merchant-sdks.md`, where #309's payer row and this change's row landed in
+the same place. Both rows are kept. On the merged tree `just verify` passed
+again: `verify-sdk-parity` reads 790 proving tests (#309 added ten) at 44
+gaps, and `verify-doc-counts` reads 90 pages. `sdks/nodejs` is 236/236. One SDK, its tests, its README and the
 status pages. **No route, no server code, no wire byte, no migration, no
 gate and no `NotImplemented` token moved.**
 
