@@ -15,8 +15,11 @@ here, it is still in the repository; start from
 
 ## Overall
 
-> **vpay is a scaffold.** It compiles, lints clean, and its tests pass — but it
-> cannot take a payment. Do not deploy it.
+> **vpay is in live testing, not generally available.** It is no longer a
+> scaffold: on 2026-10-21 the repository owner stated that vpay is being
+> tested for live use on some clusters. That statement moves no row on any
+> page below. Every 🟡 and ⛔ stands until a test or a dated verification page
+> moves it, and what was unproven is still unproven.
 
 **Historical claim from 2026-09-03 (Step 3), retired by the addendum below:
 no HTTP call to a real rail has ever been made.** Every payment in this repository's history
@@ -77,7 +80,21 @@ _(Attribution corrected 2026-10-20: this said "the maintainer" performed the
 tests until later the same day. The maintainer states that Valantine Suh ran
 them.)_
 
-That banner was narrowed by ten dated addenda rather than replaced — Steps 2,
+**Banner replaced 2026-10-21, on the owner's statement (docs only):** the
+repository owner states that vpay is no longer a scaffold and is being tested
+for live use on some clusters, ahead of general availability. That retires
+four clauses and nothing else: "vpay is a scaffold", "it cannot take a
+payment" and "Do not deploy it", together with "no cluster has ever run vpay"
+in the addendum above, which now reads as _no cluster run is on record_. The
+statement records no result from those clusters, so the load-bearing sentence
+stands: no real payer, no production rail, and no rail other than MTN's
+sandbox are on record as touched. The Infrastructure row's "no pod has ever
+run" below likewise means no pod run is on record; it moves when a dated page
+under [status/verification/](status/verification/) records one. No test was
+run for this entry and no capability moved. The step is recorded in
+[status/overall-history.md](status/overall-history.md).
+
+Before that, the banner was narrowed by ten dated addenda rather than replaced — Steps 2,
 3, 4, 5c, 7 (twice), 8, 9 and exp31, each retiring a specific claim on a
 specific date, and the live-sandbox test of 2026-09-15 retiring the "no real
 rail" sentence itself. The whole chain, unedited, is in
