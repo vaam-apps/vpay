@@ -874,7 +874,7 @@ async fn submit_again(
             Ok(submitted)
         }
         Err(error) => {
-            record_failure(repositories, attempt_id, &error).await?;
+            record_submit_failure(repositories, attempt_id, &error).await?;
             Err(JobError::Provider(error))
         }
     }
@@ -1810,7 +1810,7 @@ async fn query_status(
             Ok(status)
         }
         Err(error) => {
-            record_failure(repositories, attempt_id, &error).await?;
+            record_read_failure(repositories, attempt_id, &error).await?;
             Err(JobError::Provider(error))
         }
     }
@@ -1837,13 +1837,40 @@ async fn record_answer(
     Ok(())
 }
 
-/// Records an attempt that got no answer at all.
+/// Records a `submit` that ended in an error. **Always unanswered**, whatever
+/// the error.
 ///
-/// `status_code` stays `NULL`, which is the encoding for "no response was
-/// received" and the thing a recovery sweep looks for. `error_kind` carries
-/// the error's own classification code — operator-facing, never a merchant's
-/// vocabulary.
-async fn record_failure(
+/// `status_code` stays `NULL`, which for a `submit` means "the outcome is
+/// unknown" rather than "the rail said nothing", and `error_kind` carries the
+/// error's own classification code — operator-facing, never a merchant's
+/// vocabulary. This is the one place the row is deliberately **not** derived
+/// from the error's variant, and [`record_read_failure`] is where it is.
+///
+/// The reason is that this row is not only an audit trail:
+/// [`submit_evidence`] reads it back through `latest_submit_attempt`, and
+/// [`recovery_step`] turns any non-`NULL` status into
+/// [`RecoveryAction::Advance`] — "the rail accepted the submit and only our
+/// bookkeeping is behind". That is false of every error that can arrive here:
+///
+/// * [`ProviderError::Malformed`] on a submit is **fail-closed on purpose**.
+///   `vpay-adapter-notchpay` returns it for an initialize that answered `409`
+///   when the charge holds no Notch Pay reference, precisely so the charge's
+///   fate stays *unknown* and an operator reconciles it. A row that said
+///   "answered" would have recovery advance that charge to `submitted` as if
+///   the rail had accepted it. `vpay-api`'s `finish_confirm` makes the same
+///   choice for the first submit.
+/// * [`ProviderError::Rejected`] is a decline, not an acceptance. `finish_confirm`
+///   records it as answered because it then fails the charge in the same
+///   handler, so recovery does not ordinarily read the row. Nothing here does:
+///   a `Rejected` is `Retry::NewAttempt`, so the loop drops the job and leaves
+///   the charge `submitting`, and the row is still recovery's input.
+/// * [`ProviderError::Transport`] and the rest are "may have been asked,
+///   never answered" — the `NULL` encoding's own definition.
+///
+/// What a declined resubmit *should* do — fail the charge, as the first
+/// submit does — is not decided here; `docs/reference/vpay-worker.md`
+/// §"What a refused answer is recorded as" records it as open.
+async fn record_submit_failure(
     repositories: &dyn Repositories,
     attempt_id: i64,
     error: &ProviderError,
@@ -1852,6 +1879,64 @@ async fn record_failure(
         .record_response(attempt_id, None, Some(error.code()))
         .await?;
     Ok(())
+}
+
+/// Records a `query_status` that ended in an error, as answered or not
+/// according to [`read_failure_status`].
+async fn record_read_failure(
+    repositories: &dyn Repositories,
+    attempt_id: i64,
+    error: &ProviderError,
+) -> Result<(), JobError> {
+    repositories
+        .record_response(attempt_id, read_failure_status(error), Some(error.code()))
+        .await?;
+    Ok(())
+}
+
+/// What `provider_requests.status_code` says about a status **read** that
+/// ended in `error`: the sentinel for "the rail answered", `None` for "no
+/// answer is known to have been received".
+///
+/// The two variants whose own definition is that the rail spoke are
+/// *answered*: `Malformed` ("the rail answered something this adapter cannot
+/// act on") and `Rejected` ("the rail decided"). Before this function both
+/// were written as `NULL`, so a Notch Pay `complete` whose `amounts.total`
+/// the adapter refused showed up as 11 reads "with no answer".
+///
+/// A read can say "answered" where a submit may not ([`record_submit_failure`])
+/// because a read moves no money and nothing decides anything from a
+/// `query_status` row: `latest_submit_attempt` filters `operation = 'submit'`
+/// and the refund guards filter `'refund'`. The only thing `NULL` could still
+/// do on a read is send an operator, or a future sweep, looking for money that
+/// is not in flight.
+///
+/// **Not exact, and the port cannot make it exact**: a [`ProviderError`] does
+/// not say whether anything was sent. `Transport` is a union of "never
+/// reached the rail" and "the rail answered `5xx`/`408`/`429`", and `Config` of
+/// "refused before any request" and "the rail answered a `4xx` we read as our
+/// own misconfiguration", so both stay `NULL` rather than guess — a `NULL`
+/// under-claims, a `0` would over-claim. `NotImplemented` and `Unsupported`
+/// are raised before a socket opens, which is the `NULL` encoding's own
+/// example. The residual in the other direction is `Malformed` for a request
+/// that never left the process: `vpay_provider::http::path_segment` raises it
+/// for a `trx.…` reference made only of dots, reachable only if Notch Pay
+/// returned one, and it would cost one mislabelled audit row on a read.
+/// Fixing either direction means the port carrying what was sent (ADR-0002),
+/// which is its own decision.
+///
+/// The `match` is exhaustive on purpose: a seventh [`ProviderError`] variant
+/// is a compile error here, and somebody has to decide which side it is on.
+fn read_failure_status(error: &ProviderError) -> Option<i32> {
+    match error {
+        ProviderError::Malformed { .. } | ProviderError::Rejected { .. } => {
+            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT)
+        }
+        ProviderError::Transport { .. }
+        | ProviderError::Config(_)
+        | ProviderError::Unsupported
+        | ProviderError::NotImplemented(_) => None,
+    }
 }
 
 /// The rail-facing view of a charge.
@@ -2313,10 +2398,12 @@ mod tests {
     /// worth pinning at its edge: `>=`, so a charge exactly 24 hours old is
     /// past it, and one a second short is not.
     ///
-    /// These three are the only unit tests in this file, and they do not
-    /// contradict the module header: `charge_age` and `past_the_horizon` are
-    /// pure functions of a timestamp pair and a policy, not one of the write
-    /// sequences that header is about.
+    /// These four are the only unit tests in this file, and they do not
+    /// contradict the module header: `charge_age`, `past_the_horizon` and
+    /// `read_failure_status` are pure functions of a timestamp pair and a
+    /// policy, or of one error, not one of the write sequences that header is
+    /// about. The write that uses the last of them is proven against a real
+    /// Postgres, in `backends/tests/integration/tests/worker_recovery.rs`.
     #[test]
     fn the_horizon_is_twenty_four_hours_of_real_time() {
         let policy = RecoveryPolicy::default();
@@ -2391,6 +2478,65 @@ mod tests {
             past_the_horizon(by_this_host, &policy),
             "the case is only decisive while the host clock disagrees with the fixture's \
              `db_now`; a machine set to 1970 would make it prove nothing"
+        );
+    }
+
+    /// A refused status read is **answered** when the rail spoke and
+    /// **unknown** otherwise — all six variants, so a change to one arm is a
+    /// failing row here and a seventh variant is a compile error in the
+    /// function under test.
+    ///
+    /// The `Malformed` row is the one Notch Pay's sandbox produced eleven
+    /// times: a `complete` the adapter refused for a short `amounts.total`
+    /// (RFC-0012 step 5). It was written as `NULL`, "no answer", although
+    /// the answer had been read and parsed. `Transport` is the row that keeps
+    /// the test honest in the other direction: a case that only checked the
+    /// two answered variants would pass for a function that returned the
+    /// sentinel for everything.
+    #[test]
+    fn a_refused_read_is_recorded_as_answered_only_when_the_rail_spoke() {
+        let answered = Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT);
+        let cases: [(ProviderError, Option<i32>); 6] = [
+            (
+                ProviderError::malformed(
+                    "notchpay: the read reports complete for this charge's amount, but \
+                     amounts.total is not that amount",
+                ),
+                answered,
+            ),
+            (
+                ProviderError::Rejected {
+                    code: FailureCode::ProviderAccountBlocked,
+                    message: "the rail refused our key".to_owned(),
+                },
+                answered,
+            ),
+            (
+                ProviderError::transport("notchpay: Notch Pay answered 503"),
+                None,
+            ),
+            (
+                ProviderError::Config("notchpay: the charge holds no `trx` reference".to_owned()),
+                None,
+            ),
+            (ProviderError::Unsupported, None),
+            (
+                ProviderError::NotImplemented("mtn_momo::query_status"),
+                None,
+            ),
+        ];
+
+        for (error, expected) in &cases {
+            assert_eq!(
+                read_failure_status(error),
+                *expected,
+                "{error:?} is recorded with the wrong `status_code`"
+            );
+        }
+        assert_eq!(
+            answered,
+            Some(0),
+            "the answered encoding is the sentinel, never an HTTP status the port does not carry"
         );
     }
 }

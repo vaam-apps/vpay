@@ -73,6 +73,20 @@ The middle row needs **both** conditions, never either: three polls can happen
 in under a second on the first rungs of the ladder, and a rail that is merely
 slow to index a new charge would look identical to one that never got it.
 
+**Added 2026-10-21. The table reads `submit` rows only, and `NULL` there means
+the outcome is unknown, not that the rail said nothing.** A resubmit the adapter
+refuses — `Malformed`, which Notch Pay's unresolvable `409` and MTN's unfollowed
+`307` both are, so that the charge's fate stays unknown — is written `NULL`
+with its `error_kind`, so the next poll reads the middle row and polls rather
+than the bottom row and advances. The same goes for a `Rejected` resubmit,
+which the worker does not yet turn into a failed charge
+([vpay-worker.md](../reference/vpay-worker.md) § "What a refused answer is
+recorded as"). A **status read** is a different operation and no row of this
+table reads it: a read the rail answered and the adapter refused is written
+with the `0` sentinel, because `NULL` on a read would claim "no answer" for an
+answer that came. Before 2026-10-21 both were `NULL`; Notch Pay's sandbox
+produced eleven of the second kind in one run.
+
 **The table applies only while the charge is `submitting`.** Past that state the
 rail has answered our submit and, on a redirect rail, the payer holds a URL —
 so the "abandon it" row below would discard a live payment. A `NotFound` on a

@@ -853,3 +853,53 @@ was available.
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the gates, the counts, the two mutations the conformance row was
   checked against, and what was not run.
+
+## A refused answer is recorded as answered on a status read, and still as unresolved on a submit (2026-10-21)
+
+**`provider_requests` no longer says "no answer" for a status read the rail
+answered and the adapter refused.** RFC-0012 step 5 ran three test-mode
+payments through vpay against Notch Pay's real sandbox
+([#310](https://github.com/vaam-apps/vpay/pull/310), draft). One payment's reads
+came back `complete` with an `amounts.total` that was not its amount; the
+adapter refused each as `ProviderError::Malformed`, and the worker wrote each of
+those eleven rows `status_code IS NULL, responded_at IS NULL` — the encoding
+`vpay_db::provider_requests` defines as "the only durable evidence that a rail
+may have been asked to move money and never answered".
+
+- **`vpay_worker::handlers::record_failure` is two functions.**
+  `record_read_failure` writes the `0` sentinel for `Malformed` and `Rejected`
+  and `NULL` for `Transport`, `Config`, `Unsupported` and `NotImplemented`
+  (`read_failure_status`, a pure function over all six variants).
+  `record_submit_failure` writes `NULL` for every error, unchanged.
+- **The submit side is deliberately not changed.** `recovery_step` reads
+  `submit` rows only, and turns any status into `Advance` — "the rail accepted
+  it". A resubmit the adapter refused as `Malformed` (Notch Pay's unresolvable
+  `409`, MTN's unfollowed `307`) has an unknown fate, and a declined one is a
+  decline; neither is an acceptance. `vpay-api`'s confirm and refund paths
+  already agree for `Malformed` and `Transport`.
+- **Proven against a real Postgres and WireMock** (`worker_recovery.rs`, three
+  new cases, each caught by a named mutation) and at the column
+  (`vpay-db`'s `an_answer_the_caller_refused_is_stored_as_answered_and_keeps_its_reason`).
+  The decision table, the two diagrams and the residuals are in
+  [vpay-worker.md § "What a refused answer is recorded as"](../reference/vpay-worker.md#what-a-refused-answer-is-recorded-as).
+- **A stale claim, corrected.** `vpay_db::provider_requests` said "Nothing reads
+  this table … the worker job loop is not started" from 2026-09-03; the
+  recovery table has read `submit` rows on every poll of a `submitting` charge
+  since Step 4 the same day. [#310](https://github.com/vaam-apps/vpay/pull/310)'s
+  page repeats the old sentence ("Today 'Nothing reads this table'"); it was
+  not edited here.
+- **Open, not fixed: a declined resubmit leaves the charge `submitting`.**
+  `Rejected` is `Retry::NewAttempt`, so the loop finishes the resubmit job and
+  nothing fails the charge, unlike `vpay-api`'s first submit. Run: the first
+  decline leaves the charge `submitting` with an unanswered row. Read from the
+  code and not run: that the next `NotFound` streak resubmits again, until the
+  24-hour horizon escalates.
+- **Not exact, by design.** `Transport` and `Config` each mix "never reached the
+  rail" with "the rail answered a 5xx/4xx", and the port does not say which, so
+  a 503 the rail sent is still `NULL` on a read; one formally reachable
+  `Malformed` (a dots-only `trx.…` reference refused by `path_segment`) is
+  recorded as answered although nothing was sent.
+
+No route, migration, gate or `NotImplemented` token moved. Gates, counts and
+what was not run:
+[verification/2026-10-21-provider-requests-refused-answers.md](verification/2026-10-21-provider-requests-refused-answers.md).
