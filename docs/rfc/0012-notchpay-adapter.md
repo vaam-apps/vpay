@@ -611,8 +611,9 @@ In writing (W) or in the sandbox (S):
 2. **(S)** Does the payments path take the merchant's reference, Notch Pay's
    `trx.…` reference, or both? _(Contradicted [2026-10-21][sandbox-run] — Notch
    Pay's `trx.…` only. Ours is `404` "Payment Not Found" on process and read; it
-   comes back as `trxref` and `merchant_reference`. The adapter is not yet
-   fixed, so its `submit` fails before any prompt.)_
+   comes back as `trxref` and `merchant_reference`. The adapter was fixed
+   the same day: it keeps the `trx.…` as `ref_extra` key material
+   ([verification](../status/verification/2026-10-21-notchpay-trx-reference.md)).)_
 3. **(S)** Does `cm.mobile` resolve the network from the number, and do the
    outcome numbers work under it? _(Answered [2026-10-21][sandbox-run] — yes, for
    MTN and Orange numbers.)_

@@ -43,16 +43,17 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Payment initialized\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{jsonPath request.body '$.reference'}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}"
+        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Payment initialized\",\"transaction\":{\"reference\":\"trx.test_{{jsonPath request.body '$.reference'}}\",\"trxref\":\"{{jsonPath request.body '$.reference'}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}"
       },
       "metadata": {
         "why": [
-          "Transcribed from openapi.yaml 2.1.0's initializePayment (201) and NOT from Notch Pay: nothing in",
-          "this repository has called Notch Pay. Matching on X-Grant is a CONTRACT of this stub, not a",
-          "claim about Notch Pay, whose specification asks only for Authorization here: ADR-0031",
-          "condition 1 says the private key rides on every call, and an adapter that stopped sending it",
-          "matches no mapping and gets WireMock's 404, which it reads as Config. The body pattern holds",
-          "RFC-0012 section 3's shape: our reference, XAF, a +-prefixed Cameroonian number, and an",
+          "openapi.yaml 2.1.0's initializePayment (201), corrected to the shape Notch Pay's sandbox answered",
+          "on 2026-10-21: `reference` is Notch Pay's own (trx.test_<our reference> here), `trxref` is ours, and",
+          "there is no `id`. The adapter keeps the trx. reference as `notchpay_reference` key material. Matching on",
+          "X-Grant is a CONTRACT of this stub, not a claim about Notch Pay, whose specification asks only for",
+          "Authorization here: ADR-0031 condition 1 says the private key rides on every call, and an adapter that",
+          "stopped sending it matches no mapping and gets WireMock's 404, which it reads as Config. The body",
+          "pattern holds RFC-0012 section 3's shape: our reference, XAF, a +-prefixed Cameroonian number, and an",
           "amount at or above Notch Pay's documented minimum of 100."
         ]
       }
@@ -113,16 +114,20 @@
           "Content-Type": "application/json"
         },
         "jsonBody": {
-          "code": 409,
+          "code": "409",
           "status": "Conflict",
-          "message": "A payment with this reference already exists"
+          "message": "Reference already existing",
+          "errors": {
+            "reference": ["Reference already existing"]
+          }
         }
       },
       "metadata": {
         "why": [
-          "REF_DUPLICATE. From Notch Pay's errors page; ABSENT from openapi.yaml 2.1.0 (RFC-0012 section 10",
-          "item 4). The adapter reads the payment (the retrieve catch-all answers complete) and reports",
-          "Submitted with no key material: the crash-retry case."
+          "REF_DUPLICATE. The sandbox answered a repeated reference 409 'Reference already existing' on",
+          "2026-10-21 (item 4). The adapter reads the payment by the Notch Pay reference the charge already holds",
+          "(the retrieve catch-all answers complete) and reports Submitted with that key material. A charge",
+          "holding none cannot be resolved and is Malformed (notchpay_a_duplicate_it_cannot_resolve_fails_closed)."
         ]
       }
     },
@@ -170,7 +175,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Payment initialized\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000302\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}"
+        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Payment initialized\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000302\",\"trxref\":\"00000000-0000-0000-0000-000000000302\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}"
       },
       "metadata": {
         "why": "redirects_are_refused_and_never_followed asserts the journal never shows this path."

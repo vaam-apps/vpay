@@ -85,11 +85,14 @@ Notes on cells that a word cannot carry:
   `vpay-notchpay`'s probe and not the adapter
   ([verification/2026-10-21-notchpay-sandbox-run.md](verification/2026-10-21-notchpay-sandbox-run.md)).
   Notch Pay's sandbox **contradicted the adapter's addressing**: process and
-  read take Notch Pay's `trx.…` reference, and ours is a `404`. So against
-  the real rail the adapter's `submit` fails before any prompt, and no money
-  moves. That is not fixed yet, and step 5 cannot pass until it is. The
-  cells below therefore stay "stub-only; never called": step 1 is evidence
-  about Notch Pay, not proof of the adapter. The Collect and Status read cells
+  read take Notch Pay's `trx.…` reference, and ours is a `404`. The adapter
+  was fixed the same day to keep that reference as key material and address
+  both by it
+  ([verification/2026-10-21-notchpay-trx-reference.md](verification/2026-10-21-notchpay-trx-reference.md)),
+  with a crash window Notch Pay offers no way to close. The fix has not met
+  Notch Pay. The cells below therefore stay "stub-only; never called": step
+  1 is evidence about Notch Pay, not proof of the adapter, and only step 5
+  can move them. The Collect and Status read cells
   move to "proven; sandbox" plus a date only on a dated verification page.
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the evidence. _(This note read "client … no binary links it … waits on

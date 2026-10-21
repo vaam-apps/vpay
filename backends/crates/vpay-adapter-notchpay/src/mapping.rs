@@ -8,10 +8,9 @@
 //! sandbox's outcome numbers read, with no failure reason (item 5), and a
 //! repeated reference is a `409` (item 4). Changed on that evidence: a
 //! success needs `amounts.total` to be the charge's, `canceled` is
-//! `payer_declined`, and a success with no `id` records `reference`. **Not
-//! fixed here: the path takes Notch Pay's `trx.…` reference, not ours**
-//! (item 2), so this adapter's process call is refused and `submit` fails
-//! before any prompt. `processing`, `incomplete`, `refunded`,
+//! `payer_declined`, and a success with no `id` records `reference`. The
+//! path takes Notch Pay's `trx.…` reference, not ours (item 2), so the
+//! adapter addresses process and read by it (`lib.rs`). `processing`, `incomplete`, `refunded`,
 //! `partialy-refunded`, `rejected` and `abandoned` were not observed, and
 //! `docs/flows/adapter-notchpay.md` § "To confirm" lists what is open.
 //!
@@ -230,7 +229,7 @@ pub(crate) enum Initialized {
 ///
 /// | Notch Pay answered | Result |
 /// | --- | --- |
-/// | `409` | [`Initialized::AlreadyExists`] — documented on the errors page, absent from the specification ("To confirm" item 4) |
+/// | `409` | [`Initialized::AlreadyExists`] — documented on the errors page, absent from the specification, and confirmed by the sandbox on 2026-10-21 ("Reference already existing", item 4) |
 /// | `400`, `422` | `Rejected { provider_error }` with Notch Pay's message |
 /// | `401`, `403` | `Rejected { provider_account_blocked }` |
 /// | `404` | `Config` |

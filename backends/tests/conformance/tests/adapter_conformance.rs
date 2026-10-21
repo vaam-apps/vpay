@@ -44,7 +44,8 @@
 //! it on the `X-Reference-Id` header, Orange on the body's `order_id` (which
 //! is `ChargeRef::reference_id` rendered as a string, per
 //! `docs/flows/adapter-orange-money.md`), and Notch Pay on the initialize
-//! body's `reference` and the read's path (`docs/flows/adapter-notchpay.md`).
+//! body's `reference` and, since 2026-10-21, the `trx.test_{reference}` its
+//! stub mints for the process and read paths (`docs/flows/adapter-notchpay.md`).
 //! So every rail's mapping directory stubs the *same* UUIDs, and adding a
 //! rail means adding one mappings directory and one row per table function
 //! rather than editing a case — which is what `notchpay` did on 2026-10-20,
@@ -92,21 +93,27 @@
 //! deliberately not an *empty* charge: it stands in for a charge whose `submit`
 //! has already run, because that is the only kind of charge a `query_status`
 //! ever sees in production. So it carries the key material that rail's `submit`
-//! would have returned, selected by capability exactly as `payer_ref` is:
+//! would have returned, from the per-rail table [`submitted_key_material`],
+//! and a `payer_ref` selected by capability:
 //!
-//! - a **push** rail is addressed by the reference we generated, so there is
-//!   nothing else to carry; it needs a `payer_ref` instead, because it prompts
-//!   the payer's own instrument.
+//! - a **push** rail prompts the payer's own instrument, so it needs a
+//!   `payer_ref`. MTN is addressed by the reference we generated and carries
+//!   nothing else; Notch Pay is addressed by the `trx.…` *it* returned at
+//!   initialize, so `ref_extra` carries a `notchpay_reference` (since
+//!   2026-10-21; until then the table was chosen by flow, push meaning
+//!   empty).
 //! - a **redirect** rail is addressed by the token *it* returned at submit —
 //!   the rail will not answer for our reference alone — so `ref_extra` carries
-//!   a `pay_token`. Handing a redirect rail a charge with none is not a
-//!   "reference the rail has never heard of": it is key material we lost for a
-//!   charge the rail may well have settled, which is why the adapters answer
-//!   `ProviderError::Config` and never `ChargeStatus::NotFound`
-//!   (`docs/flows/crash-safety.md`). Seeding it here keeps
-//!   [`not_found_is_never_on_its_own_a_failure`] a test of the rail's 404 and
-//!   not an accidental test of our own missing-token branch — that branch has
-//!   its own unit test in the adapter crate.
+//!   a `pay_token`.
+//!
+//! Handing a rail addressed by its own token a charge with none is not a
+//! "reference the rail has never heard of": it is key material we lost for a
+//! charge the rail may well have settled, which is why the adapters answer
+//! `ProviderError::Config` and never `ChargeStatus::NotFound`
+//! (`docs/flows/crash-safety.md`). Seeding it here keeps
+//! [`not_found_is_never_on_its_own_a_failure`] a test of the rail's 404 and
+//! not an accidental test of our own missing-token branch — that branch has
+//! its own unit test in each adapter crate.
 //!
 //! `return_url` is the one field [`Rail::charge`] deliberately does **not**
 //! select by capability: every conformance charge carries one, push rail
@@ -447,6 +454,9 @@ const SHORT_REQUEST_TIMEOUT: Duration = Duration::from_millis(100);
 /// container itself — which must stay alive for the duration of the test,
 /// because dropping it stops and removes the stub.
 struct Rail {
+    /// Which rail this is, for the per-rail data tables only
+    /// ([`submitted_key_material`] among them); never branched on in a case.
+    under_test: RailUnderTest,
     adapter: Box<dyn ProviderAdapter>,
     config: ProviderConfig,
     /// `http://127.0.0.1:{mapped port}` — the stub's origin, which is *not*
@@ -473,18 +483,10 @@ impl Rail {
                 ProviderFlow::Push => Some("237600000000".to_owned()),
                 ProviderFlow::Redirect => None,
             },
-            ref_extra: match flow {
-                // Symmetrically: a push rail's status read is addressed by the
-                // reference we generated and carries no rail key material at
-                // all, so an empty map is the truthful state.
-                ProviderFlow::Push => BTreeMap::new(),
-                // A redirect rail's status read is addressed by the token the
-                // rail handed back at submit, so a charge that reached the
-                // point of being queryable has one.
-                ProviderFlow::Redirect => {
-                    BTreeMap::from([("pay_token".to_owned(), format!("pay-{reference_id}"))])
-                }
-            },
+            // Whatever this rail's `submit` returns as key material: see
+            // [`submitted_key_material`]. Selected by rail, not by flow, since
+            // 2026-10-21: Notch Pay is a push rail addressed by its own token.
+            ref_extra: submitted_key_material(self.under_test, reference_id),
             // Not selected by flow, unlike the two fields above — see "What a
             // conformance charge stands for" in the module doc.
             return_url: Some(RETURN_URL.to_owned()),
@@ -678,6 +680,7 @@ async fn start(rail: RailUnderTest, credentials: Credentials, request_timeout: D
     };
 
     Rail {
+        under_test: rail,
         adapter,
         config,
         stub_origin: host,
@@ -762,6 +765,32 @@ struct DocumentedDecline {
     reason: &'static str,
     /// What the core must make of it.
     code: FailureCode,
+}
+
+/// The key material each rail's `submit` returns for `reference_id`, which
+/// [`Rail::charge`] seeds into its post-submit stand-in. Rail-specific data,
+/// like [`documented_declines`]; the cases branch on none of it.
+///
+/// - `mtn_momo`: nothing. MTN is addressed by the reference we generated.
+/// - `orange_money`: the `pay_token` Orange minted. Its read will not answer
+///   for our reference alone.
+/// - `notchpay`: Notch Pay's own reference, under `notchpay_reference`. Its
+///   sandbox answered `404` to every process and read by ours on 2026-10-21
+///   (RFC-0012 § 10 item 2). Its stub mints `trx.test_{reference_id}`.
+///
+/// Until 2026-10-21 this was chosen by flow (push: empty, redirect: a
+/// token), which Notch Pay, a push rail addressed by its own token, broke.
+fn submitted_key_material(rail: RailUnderTest, reference_id: Uuid) -> BTreeMap<String, String> {
+    match rail {
+        RailUnderTest::MtnMomo => BTreeMap::new(),
+        RailUnderTest::OrangeMoney => {
+            BTreeMap::from([("pay_token".to_owned(), format!("pay-{reference_id}"))])
+        }
+        RailUnderTest::NotchPay => BTreeMap::from([(
+            vpay_adapter_notchpay::NOTCHPAY_REFERENCE.to_owned(),
+            format!("trx.test_{reference_id}"),
+        )]),
+    }
 }
 
 /// The declines each rail documents, one row per mapped rail reason.
@@ -1200,6 +1229,15 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
 
     // The one place the two flows differ, expressed as a branch on a
     // *capability* rather than on a rail name.
+    // Every key the rail is addressed by comes back from `submit`, on either
+    // flow: a charge that cannot be read again is lost (crash-safety.md).
+    for key in rail.charge(REF_ACCEPTED).ref_extra.keys() {
+        assert!(
+            submitted.ref_extra.contains_key(key),
+            "submit must return `{key}`, the key material this rail is addressed by: {:?}",
+            submitted.ref_extra
+        );
+    }
     match rail.adapter.capabilities().flow {
         ProviderFlow::Push => assert_eq!(
             submitted.redirect_url, None,
@@ -1231,9 +1269,11 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
 /// the rail under the same reference. Each flow states that differently, and
 /// each is asserted below on capability rather than on a rail name:
 ///
-/// * **push** — the rail is addressed by the reference we already hold, so
-///   its 409 `RESOURCE_ALREADY_EXIST` carries no key material and none may
-///   be invented. An empty `ref_extra` is the whole of the correct answer.
+/// * **push** — the duplicate must come back with exactly the key material
+///   the charge already holds. On MTN, addressed by the reference we hold,
+///   that is none, and none may be invented. On Notch Pay, addressed by its
+///   own `trx.…`, it is the `notchpay_reference` the charge holds, read back
+///   by it (a charge holding none is `notchpay_a_duplicate_it_cannot_resolve_fails_closed`).
 /// * **redirect** — the rail is addressed by the token *it* minted, so the
 ///   duplicate must come back with the token already minted for this
 ///   `order_id`. A second, different `pay_token` would mean two hosted pages
@@ -1260,8 +1300,7 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
 /// pinned where the status is still visible, by
 /// `vpay_adapter_mtn_momo`'s `a_duplicate_reference_is_a_success_not_an_error`
 /// over `submit_outcome`. This case's job on a push rail is the other half:
-/// that whatever the rail answered, no key material was invented for a
-/// charge addressed solely by our own reference.
+/// that whatever the rail answered, no key material was invented or lost.
 #[rstest]
 #[case::mtn_momo(RailUnderTest::MtnMomo)]
 #[case::orange_money(RailUnderTest::OrangeMoney)]
@@ -1287,12 +1326,12 @@ async fn duplicate_submit_reports_submitted_not_an_error(#[case] rail: RailUnder
 
     match rail.adapter.capabilities().flow {
         ProviderFlow::Push => {
-            assert!(
-                second.ref_extra.is_empty(),
-                "a push rail's duplicate answer carries no key material — the reference we \
-                 generated is the whole address, and inventing a value here would put \
-                 something in `provider_ref_extra` that names nothing: {:?}",
-                second.ref_extra
+            assert_eq!(
+                second.ref_extra, charge.ref_extra,
+                "a push rail's duplicate answer carries exactly the key material the charge \
+                 already holds: none on a rail addressed by our reference (MTN), and the \
+                 rail's own reference on one addressed by that (Notch Pay). Anything else \
+                 would put something in `provider_ref_extra` that names nothing"
             );
             assert_eq!(
                 second.redirect_url, None,
@@ -1346,6 +1385,34 @@ async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
     assert!(
         !matches!(status, ChargeStatus::Failed { .. }),
         "NotFound must never be reported as a failure"
+    );
+}
+
+/// Notch Pay only: a `409` for a charge that holds no Notch Pay reference is
+/// [`ProviderError::Malformed`], never `Submitted` and never a decline.
+///
+/// Rail-specific on purpose. Notch Pay finds a payment by its own reference
+/// only (`GET /payments?search=` did not match ours in the sandbox on
+/// 2026-10-21), so a retry that lost the initialize answer cannot find the
+/// payment again. Failing closed leaves the charge's fate unknown for an
+/// operator: the maintainer's decision, 2026-10-21. MTN and Orange resolve
+/// the same `409` by our reference or by the token, so they have no such case.
+#[tokio::test]
+async fn notchpay_a_duplicate_it_cannot_resolve_fails_closed() {
+    let rail = start(
+        RailUnderTest::NotchPay,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let mut charge = rail.charge(REF_DUPLICATE);
+    charge.ref_extra.clear();
+
+    let outcome = rail.adapter.submit(&charge, &rail.config).await;
+
+    assert!(
+        matches!(outcome, Err(ProviderError::Malformed { .. })),
+        "an unresolvable 409 must be Malformed, never Submitted or a decline: {outcome:?}"
     );
 }
 

@@ -1,8 +1,9 @@
 # Adapter: Notch Pay (mobile money through an aggregator)
 
 `notchpay` is a **push** rail: the payer is prompted on their own handset, the
-charge is addressed on Notch Pay by the reference vpay generated, and the
-authenticated read is what moves money. Notch Pay is an aggregator, so one
+payment is addressed on Notch Pay by **Notch Pay's own reference** (`trx.…`,
+held in `ref_extra` as `notchpay_reference`), and the authenticated read is
+what moves money. Notch Pay is an aggregator, so one
 merchant account collects MTN MoMo and Orange Money in Cameroon through the
 `cm.mobile` channel. Design: [RFC-0012](../rfc/0012-notchpay-adapter.md).
 Code: `backends/crates/vpay-adapter-notchpay` on the client
@@ -14,9 +15,10 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
 > § 10's sandbox items through `vpay-notchpay`'s probe, not through this
 > adapter ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
 > **It contradicted the adapter's addressing:** process and read take Notch
-> Pay's `trx.…` reference, and ours is a `404`. So `submit` fails before any
-> prompt, and no money moves. That is not fixed yet. Read § "To confirm with
-> Notch Pay" before trusting any row.
+> Pay's `trx.…` reference, and ours is a `404`. Fixed on 2026-10-21: the
+> adapter keeps the `trx.…` from the initialize answer and addresses both by
+> it. That fix has never met Notch Pay either (step 5). Read § "To confirm
+> with Notch Pay" before trusting any row.
 
 ## Preconditions
 
@@ -156,33 +158,51 @@ client follows no redirect: a `3xx` is `Malformed`.
    `phone` (the payer's number, `+`-prefixed E.164), `reference` (the
    charge's own UUID) and the optional `description`. Nothing else of the
    payer's is sent: no email, no name, no callback, no return URL.
-2. `POST /payments/{reference}` with `{ "channel": "cm.mobile", "data": {
-"phone": … } }`. This is the call that prompts the payer.
+2. `POST /payments/{notchpay_reference}`, where `notchpay_reference` is the
+   `trx.…` call 1 returned in `transaction.reference`, with `{ "channel":
+"cm.mobile", "data": { "phone": … } }`. This is the call that prompts the
+   payer.
 
-| Call 1 answered                  | Then                                                                                                |
-| -------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `201`, `pending`                 | call 2. `202` is `Submitted`, with no redirect and **no key material**                              |
-| `201`, another documented status | `Submitted`; the poll resolves it                                                                   |
-| `409` (reference already exists) | the crash-retry case: read it. `pending` → call 2; another status → `Submitted`; none → `Malformed` |
-| `400`, `422`                     | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused       |
-| `401`, `403`                     | `Rejected { provider_account_blocked }`, which pages                                                |
-| `404`                            | `Config`                                                                                            |
-| `408`, `429`, `5xx`, no answer   | `Transport`: the fate is unknown, never a decline                                                   |
+| Call 1 answered                                                   | Then                                                                                                                |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| `201`, `pending`                                                  | call 2 by `notchpay_reference`. `202` is `Submitted`, with no redirect and `notchpay_reference` as its key material |
+| `201`, another documented status                                  | `Submitted` with `notchpay_reference`; the poll resolves it                                                         |
+| `201` with no Notch Pay reference, or a `trxref` that is not ours | `Malformed`; nothing is sent to the payer                                                                           |
+| `409`, the charge holds `notchpay_reference`                      | the crash-retry case: read it. `pending` → call 2; another status → `Submitted`; none → `Malformed`                 |
+| `409`, the charge holds none                                      | `Malformed`: the fate is unknown, never `Submitted`, never a decline (below)                                        |
+| `400`, `422`                                                      | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused                       |
+| `401`, `403`                                                      | `Rejected { provider_account_blocked }`, which pages                                                                |
+| `404`                                                             | `Config`                                                                                                            |
+| `408`, `429`, `5xx`, no answer                                    | `Transport`: the fate is unknown, never a decline                                                                   |
 
 Call 2's `422` "Payment has already been processed" is not a decline. The
 adapter reads the payment and answers `Submitted`, unless the read still says
 `pending`, which is `Malformed`.
 
-**The read** is `GET /payments/{reference}`, by **our** reference. That is how
-the specification's example addresses it, and **it is wrong**: on 2026-10-21
-Notch Pay's sandbox answered `404` "Payment Not Found" to every process and
-read by our reference, and accepted only its own `trx.…` (§ 10 item 2,
-contradicted). The same is true of call 2 above, which is why `submit` fails
-today. RFC-0012 § 3 had the adapter prefer Notch Pay's reference when it held
-one. That was dropped on 2026-10-20 for a rule that needs no `ref_extra`; the
-sandbox overturned it. The fix carries Notch Pay's reference in `ref_extra`,
-and has a crash window that Notch Pay's `search` does not close
+**The read** is `GET /payments/{notchpay_reference}`, and the answer must
+name the charge's own reference as its `trxref`, or it is `Malformed`. A
+charge with no `notchpay_reference` is `Config`, before any request: that is
+key material vpay lost, not a payment Notch Pay never heard of, so it is
+never `NotFound` (the same rule as Orange's missing `pay_token`).
+
+Until 2026-10-21 every call addressed the payment by **our** reference, as
+the specification's example does. Notch Pay's sandbox answered `404`
+"Payment Not Found" to every process and read by it, and accepted only its
+own `trx.…` (§ 10 item 2, contradicted). RFC-0012 § 3 had designed "prefer
+Notch Pay's reference when held"; the build dropped it on 2026-10-20 for a
+rule that needed no `ref_extra`, and the sandbox overturned the build.
+
+**The crash window this leaves.** Notch Pay's reference exists only in the
+initialize answer, and is durable only once `submit` returns. Notch Pay
+finds a payment by its own reference alone: `GET /payments?search=` matched
+neither our reference nor the description in the sandbox, and list items
+carry no `trxref`
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md#the-crash-window-measured-search-does-not-close-it)).
+So a crash between call 1 and `submit` returning leaves a payment vpay
+cannot read. Before call 2, the payer was never prompted and the payment
+expires. After it, the payer may pay, and only Notch Pay's dashboard shows
+it. The retry's `409` answers `Malformed`, which leaves the charge's fate
+unknown for an operator (the maintainer's decision, 2026-10-21).
 
 | The read answered                           | `ChargeStatus`                                                                                                                                                        |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -219,10 +239,14 @@ Notch Pay in writing.
 ## Callbacks
 
 `parse_callback` reads Notch Pay's event `{ id, type, created_at, data }` and
-returns `data.reference` as the charge reference, with an **empty**
+returns `data.trxref` as the charge reference, or `data.reference` when
+`trxref` is not one of our UUIDs, with an **empty**
 `ref_extra`. It refuses, as `Malformed`, any `type` but the five payment
 events (`payment.created`, `.complete`, `.failed`, `.canceled`, `.expired`),
-a missing or non-UUID `data.reference`, and `{}`. The event's own status is
+a `data` naming no vpay UUID in either field, and `{}`. `trxref` comes first
+because the sandbox's payment answers carried ours there and Notch Pay's
+`trx.…` in `reference`; no webhook was received to confirm the event's
+`data` has the same shape. The event's own status is
 not read: the client does not model it. The route then pulls the charge's
 poll forward, and only the authenticated read moves money.
 
@@ -247,8 +271,8 @@ each is marked below. The ones that decide whether the adapter is right:
    payment operations be disabled? A yes retires § "Production risks" items
    1–4 and the boot warning.
 2. **(S)** Does the payment path take our reference, Notch Pay's `trx.…`, or
-   both? **Contradicted 2026-10-21: `trx.…` only.** Not yet fixed in the
-   adapter.
+   both? **Contradicted 2026-10-21: `trx.…` only.** Fixed the same day; the
+   fix has not met Notch Pay (step 5).
 3. **(S)** Does `cm.mobile` resolve the network from the number? **Answered
    2026-10-21: yes**, for MTN and Orange outcome numbers.
 4. **(S)** Is a repeated reference answered `409`? **Answered 2026-10-21:
@@ -281,6 +305,9 @@ without the `+`. The adapter sends the `+` form the documentation shows.
 Notch Pay's sandbox answered RFC-0012 step 1 on 2026-10-21, through the
 probe, and contradicted the adapter's addressing**
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
+The addressing was fixed the same day
+([verification](../status/verification/2026-10-21-notchpay-trx-reference.md)),
+and that fix has not met Notch Pay.
 
 - **Built and tested in process:** the adapter (`vpay-adapter-notchpay`, its
   unit tests in `src/tests.rs` and `src/mapping.rs`); the boot rules
@@ -289,19 +316,21 @@ probe, and contradicted the adapter's addressing**
   (`vpay-api`'s `boot.rs`); the client's per-request deadline.
 - **Proven against WireMock:** the shared conformance suite's
   `RailUnderTest::NotchPay` row, against
-  `backends/tests/conformance/wiremock/notchpay/mappings/`. This proves the
-  adapter against a stub transcribed from Notch Pay's specification. It
-  proves nothing about Notch Pay.
+  `backends/tests/conformance/wiremock/notchpay/mappings/`. Since 2026-10-21
+  the stub answers in the shape Notch Pay's sandbox did: paths by
+  `trx.test_…`, our reference as `trxref`, no `id`, an `amounts.total`. It
+  proves the adapter against that stub, and nothing about Notch Pay.
 - **Step 1 done 2026-10-21** from a cloud session, with the probe's
   cloud-only `--ca-bundle`, on the maintainer's approval in that session:
   items 3, 4, 5 and 15 answered; 2, 13 and 16 contradicted; 7 and 11 not
   measured. Fixed on that evidence: the `amounts.total` check, `canceled` as
-  `payer_declined`, `reference` as `provider_txn_id`. **Not fixed: item 2**,
-  so `submit` fails closed against the real rail. Three webhook endpoints
-  the probe created could not be deleted (`DELETE` answered `404`); the
-  verification page names them for the maintainer.
+  `payer_declined`, `reference` as `provider_txn_id`, and then item 2 (the
+  adapter addresses process and read by Notch Pay's `trx.…`). Three webhook
+  endpoints the probe created could not be deleted (`DELETE` answered
+  `404`); the maintainer deleted them by hand.
 - **Not done:** RFC-0012 delivery step 5 (the first test-mode call through
-  the adapter). It cannot pass until item 2 is fixed. No test-mode key was
+  the adapter). It is the first time the item 2 fix would meet Notch Pay.
+  No test-mode key was
   available when the adapter landed. A session later on 2026-10-20 had the
   keys and **still made no request**: its permission policy refused the
   calls, and its egress re-terminates TLS, which vpay's vendored-roots client

@@ -64,6 +64,44 @@ fn charge() -> ChargeRef {
     }
 }
 
+/// Notch Pay's reference for [`charge`], shaped as the sandbox's
+/// (`trx.test_…`).
+const TRX: &str = "trx.test_0000000000000202";
+
+/// [`charge`] after a `submit`: it holds Notch Pay's reference, the only one
+/// Notch Pay's paths answer for.
+fn submitted_charge() -> ChargeRef {
+    let mut charge = charge();
+    charge
+        .ref_extra
+        .insert(NOTCHPAY_REFERENCE.to_owned(), TRX.to_owned());
+    charge
+}
+
+/// Reads one HTTP request from `socket` in full and returns its request line.
+async fn read_request_line(socket: &mut tokio::net::TcpStream) -> String {
+    let mut seen = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    loop {
+        let read = socket.read(&mut buffer).await.expect("reads");
+        seen.extend_from_slice(buffer.get(..read).expect("within the buffer"));
+        let text = String::from_utf8_lossy(&seen).to_string();
+        if let Some((head, rest)) = text.split_once("\r\n\r\n") {
+            let length = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|value| value.trim().parse::<usize>().unwrap_or(0))
+                })
+                .unwrap_or(0);
+            if rest.len() >= length {
+                return head.lines().next().unwrap_or_default().to_owned();
+            }
+        }
+    }
+}
+
 /// Listens on loopback, reads one HTTP request in full, answers it with
 /// `status_line` and an empty JSON body, and hands back the request's text.
 async fn capture_one(status_line: &'static str) -> (String, tokio::task::JoinHandle<String>) {
@@ -161,7 +199,10 @@ async fn keys_never_reach_a_debug_or_an_error() {
         format!("{adapter:?}"),
         format!("{config:?}"),
         format!("{:?}", adapter.submit(&charge(), &config).await),
-        format!("{:?}", adapter.query_status(&charge(), &config).await),
+        format!(
+            "{:?}",
+            adapter.query_status(&submitted_charge(), &config).await
+        ),
     ];
     for text in rendered {
         for key in [PUBLIC, PRIVATE] {
@@ -179,7 +220,10 @@ async fn a_missing_key_is_refused_by_name_before_any_request() {
         config.credentials.remove(missing);
         for outcome in [
             adapter().submit(&charge(), &config).await.map(|_| ()),
-            adapter().query_status(&charge(), &config).await.map(|_| ()),
+            adapter()
+                .query_status(&submitted_charge(), &config)
+                .await
+                .map(|_| ()),
         ] {
             match outcome {
                 Err(ProviderError::Config(message)) => assert!(message.contains(missing)),
@@ -236,7 +280,7 @@ async fn an_unreachable_rail_is_transport_never_a_decline() {
     for outcome in [
         adapter().submit(&charge(), &closed()).await.map(|_| ()),
         adapter()
-            .query_status(&charge(), &closed())
+            .query_status(&submitted_charge(), &closed())
             .await
             .map(|_| ()),
     ] {
@@ -293,21 +337,197 @@ async fn the_initialize_body_carries_the_phone_and_nothing_else_of_the_payers() 
     assert!(!request.contains("/provider/notchpay/callback"));
 }
 
-/// The read is addressed by our reference, carries both keys, and applies the
-/// configured deadline rather than the shared client's.
+/// The read is addressed by Notch Pay's reference from `ref_extra`, never by
+/// ours (RFC-0012 § 10 item 2: the sandbox answered `404` to ours), and
+/// carries both keys.
 #[tokio::test]
-async fn the_read_is_addressed_by_our_reference_and_carries_both_keys() {
+async fn the_read_is_addressed_by_notch_pays_reference_and_carries_both_keys() {
     let (origin, request) = capture_one("HTTP/1.1 503 Service Unavailable").await;
-    let _ = adapter().query_status(&charge(), &config(&origin)).await;
+    let _ = adapter()
+        .query_status(&submitted_charge(), &config(&origin))
+        .await;
     let request = request
         .await
         .expect("the listener finishes")
         .to_ascii_lowercase();
     assert!(
-        request.starts_with(&format!("get /payments/{} ", Uuid::from_u128(0x0202))),
+        request.starts_with(&format!("get /payments/{} ", TRX.to_ascii_lowercase())),
         "{request}"
     );
     assert!(request.contains(&format!("x-grant: {}", PRIVATE.to_ascii_lowercase())));
+}
+
+/// A charge with no Notch Pay reference is key material vpay lost, not a
+/// payment Notch Pay never heard of: `Config`, before any request, and never
+/// `NotFound`.
+#[tokio::test]
+async fn a_read_without_notch_pays_reference_is_config_before_any_request() {
+    let outcome = adapter().query_status(&charge(), &closed()).await;
+    assert!(
+        matches!(&outcome, Err(ProviderError::Config(message)) if message.contains(NOTCHPAY_REFERENCE)),
+        "{outcome:?}"
+    );
+}
+
+/// Serves `answers` in order, one per connection, and returns each request
+/// line it read.
+async fn serve(
+    answers: Vec<(&'static str, String)>,
+) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let origin = format!("http://{}", listener.local_addr().expect("an address"));
+    let handle = tokio::spawn(async move {
+        let mut lines = Vec::new();
+        for (status_line, body) in answers {
+            let (mut socket, _) = listener.accept().await.expect("a connection");
+            lines.push(read_request_line(&mut socket).await);
+            let answer = format!(
+                "{status_line}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            socket.write_all(answer.as_bytes()).await.expect("writes");
+        }
+        lines
+    });
+    (origin, handle)
+}
+
+fn payment_body(code: u16, trxref: &str, status: &str) -> String {
+    format!(
+        r#"{{"code":{code},"transaction":{{"reference":"{TRX}","trxref":"{trxref}","amount":5000,"amounts":{{"total":5000}},"currency":"XAF","status":"{status}"}}}}"#
+    )
+}
+
+/// The process call goes to Notch Pay's reference from the initialize
+/// answer, and `Submitted` carries it.
+#[tokio::test]
+async fn the_process_call_is_addressed_by_the_reference_initialize_returned() {
+    let ours = Uuid::from_u128(0x0202).to_string();
+    let (origin, server) = serve(vec![
+        ("HTTP/1.1 201 Created", payment_body(201, &ours, "pending")),
+        (
+            "HTTP/1.1 202 Accepted",
+            payment_body(202, &ours, "processing"),
+        ),
+    ])
+    .await;
+    let submitted = adapter()
+        .submit(&charge(), &config(&origin))
+        .await
+        .expect("an accepted submit");
+    let lines = server.await.expect("the server finishes");
+    assert_eq!(
+        lines,
+        vec![
+            "POST /payments HTTP/1.1".to_owned(),
+            format!("POST /payments/{TRX} HTTP/1.1"),
+        ]
+    );
+    assert_eq!(
+        submitted
+            .ref_extra
+            .get(NOTCHPAY_REFERENCE)
+            .map(String::as_str),
+        Some(TRX)
+    );
+}
+
+/// An initialize answer about another merchant reference is refused before
+/// the prompt: nothing is sent to the payer.
+#[tokio::test]
+async fn an_initialize_answer_for_another_reference_never_prompts() {
+    let (origin, server) = serve(vec![(
+        "HTTP/1.1 201 Created",
+        payment_body(201, "00000000-0000-0000-0000-00000000beef", "pending"),
+    )])
+    .await;
+    let outcome = adapter().submit(&charge(), &config(&origin)).await;
+    assert!(
+        matches!(outcome, Err(ProviderError::Malformed { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        server.await.expect("finishes").len(),
+        1,
+        "only initialize was sent"
+    );
+}
+
+/// A `409` for a charge that holds no Notch Pay reference cannot be
+/// resolved: Notch Pay finds payments by its own reference only. It is
+/// `Malformed` (fate unknown), never `Submitted` and never a decline, and
+/// nothing more is sent.
+#[tokio::test]
+async fn a_duplicate_with_no_held_reference_is_malformed_and_sends_nothing_more() {
+    let (origin, server) = serve(vec![(
+        "HTTP/1.1 409 Conflict",
+        r#"{"code":"409","status":"Conflict","message":"Reference already existing","errors":{"reference":["Reference already existing"]}}"#.to_owned(),
+    )])
+    .await;
+    let outcome = adapter().submit(&charge(), &config(&origin)).await;
+    assert!(
+        matches!(&outcome, Err(ProviderError::Malformed { .. })),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        server.await.expect("finishes").len(),
+        1,
+        "only initialize was sent"
+    );
+}
+
+/// A `409` for a charge that holds Notch Pay's reference reads it by that
+/// reference, and a payment past `pending` is `Submitted` with no second
+/// prompt.
+#[tokio::test]
+async fn a_duplicate_with_a_held_reference_reads_it_and_does_not_prompt_again() {
+    let ours = Uuid::from_u128(0x0202).to_string();
+    let (origin, server) = serve(vec![
+        (
+            "HTTP/1.1 409 Conflict",
+            r#"{"code":"409","status":"Conflict","message":"Reference already existing"}"#
+                .to_owned(),
+        ),
+        ("HTTP/1.1 200 OK", payment_body(200, &ours, "processing")),
+    ])
+    .await;
+    let submitted = adapter()
+        .submit(&submitted_charge(), &config(&origin))
+        .await
+        .expect("a resolvable duplicate is Submitted");
+    let lines = server.await.expect("finishes");
+    assert_eq!(
+        lines,
+        vec![
+            "POST /payments HTTP/1.1".to_owned(),
+            format!("GET /payments/{TRX} HTTP/1.1"),
+        ]
+    );
+    assert_eq!(
+        submitted
+            .ref_extra
+            .get(NOTCHPAY_REFERENCE)
+            .map(String::as_str),
+        Some(TRX)
+    );
+}
+
+/// A read addressed by Notch Pay's reference that names another merchant
+/// reference must not settle this charge.
+#[tokio::test]
+async fn a_read_naming_another_trxref_is_never_a_success() {
+    let (origin, _server) = serve(vec![(
+        "HTTP/1.1 200 OK",
+        payment_body(200, "00000000-0000-0000-0000-00000000beef", "complete"),
+    )])
+    .await;
+    let outcome = adapter()
+        .query_status(&submitted_charge(), &config(&origin))
+        .await;
+    assert!(
+        matches!(outcome, Err(ProviderError::Malformed { .. })),
+        "{outcome:?}"
+    );
 }
 
 #[tokio::test]
@@ -323,7 +543,7 @@ async fn a_configured_deadline_fires_against_a_silent_rail() {
     let mut config = config(&origin);
     config.request_timeout = Duration::from_millis(100);
     let started = std::time::Instant::now();
-    let outcome = adapter().query_status(&charge(), &config).await;
+    let outcome = adapter().query_status(&submitted_charge(), &config).await;
     assert!(
         matches!(outcome, Err(ProviderError::Transport { .. })),
         "{outcome:?}"
@@ -417,4 +637,23 @@ fn an_origin_rail_parses_no_destination() {
         adapter().parse_destination(&raw),
         Err(ProviderError::Unsupported)
     ));
+}
+
+/// The payment object's shape Notch Pay's sandbox answered with on
+/// 2026-10-21: `reference` is Notch Pay's `trx.…`, `trxref` is ours. A
+/// callback in that shape names our charge. (No webhook was received, so the
+/// event's own `data` is assumed, not measured, to share the shape.)
+#[test]
+fn a_callback_in_the_sandboxs_payment_shape_names_our_charge_by_trxref() {
+    let reference = Uuid::from_u128(0x0202);
+    let body = serde_json::json!({
+        "id": "evt.test_0001",
+        "type": "payment.complete",
+        "data": { "reference": TRX, "trxref": reference.to_string(), "status": "complete" }
+    });
+    let parsed = adapter()
+        .parse_callback(body.to_string().as_bytes())
+        .expect("trxref names our charge");
+    assert_eq!(parsed.reference_id, reference);
+    assert!(parsed.ref_extra.is_empty());
 }
