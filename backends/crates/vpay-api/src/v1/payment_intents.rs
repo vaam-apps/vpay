@@ -1366,11 +1366,37 @@ async fn submit_to_rail(
 /// Which shape runs is decided by the *error's* own classification, never by
 /// anything this file knows about rails.
 ///
+/// # Which write comes first, and why it differs by outcome
+///
+/// The attempt row and the state write are two commits, so a failure between
+/// them leaves a `submitting` charge beside a row, and `recovery_step` reads
+/// that pair: an **answered** `submit` row means "the rail accepted it" and
+/// becomes `Advance`. The order is therefore chosen by what recovery should do
+/// with the pair:
+///
+/// * **Accepted — row first.** `Advance` is the right reading of "the rail took
+///   it and our bookkeeping lags" (kill point 3, `docs/flows/crash-safety.md`),
+///   so recording the answer before the state write is what makes that pair
+///   *true*.
+/// * **Declined — charge first.** `Advance` would move a charge the rail refused
+///   to `submitted` and poll it to the 24-hour horizon. So the charge is failed
+///   ([`persist_decline`], one transaction) and only then is the row recorded.
+///   A refused settlement returns before the row is touched, leaving
+///   `submitting` and unanswered — what a crash would leave, which the worker
+///   resolves by resubmitting into the same decline and failing the charge
+///   itself (`vpay_worker::handlers::submit_again`). This was the other way
+///   round until 2026-10-21, and was found in review of that worker change.
+///
 /// # Errors
 ///
 /// `409` `charge_declined` for a [`ProviderError::Rejected`]; the rail error's
 /// own classification for anything else; [`ApiError::Db`] if the bookkeeping
 /// write fails, which leaves the recovery state behind rather than an answer.
+///
+/// The one bookkeeping write that does **not** fail the request is the attempt
+/// row *after* a settled decline: the charge is terminal and the merchant's
+/// answer is the decline, so a row that cannot be completed is logged and the
+/// `409` is still returned.
 async fn finish_confirm(
     repositories: &dyn Repositories,
     scope: &MerchantScope,
@@ -1408,14 +1434,12 @@ async fn finish_confirm(
                 // A rail *decision*, not a rail failure (`docs/flows/errors.md`).
                 // The charge is terminal, and the intent goes back to the
                 // status it never left, now carrying why.
+                //
+                // **Settle first, record second** — the opposite of the accepted
+                // arm above, on purpose: an answered row beside a `submitting`
+                // charge is what `recovery_step` reads as `Advance`, which is
+                // wrong for a decline. See this function's doc.
                 ProviderError::Rejected { code, message } => {
-                    repositories
-                        .record_response(
-                            attempt.request_id,
-                            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
-                            Some(error_kind(&error)),
-                        )
-                        .await?;
                     persist_decline(
                         repositories,
                         scope,
@@ -1426,6 +1450,27 @@ async fn finish_confirm(
                         &vpay_core::Classify::public_message(&error),
                     )
                     .await?;
+                    // Audit only from here: the charge is terminal and nothing
+                    // reads a `submit` row for it. A failure to complete the
+                    // row must not turn a settled decline into a `5xx`, so it
+                    // is logged and the row stays pending.
+                    if let Err(write_error) = repositories
+                        .record_response(
+                            attempt.request_id,
+                            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                            Some(error_kind(&error)),
+                        )
+                        .await
+                    {
+                        tracing::error!(
+                            payment_intent_id = %intent.id,
+                            charge_id = %attempt.charge.id,
+                            provider_request_id = attempt.request_id,
+                            error = %write_error,
+                            "a declined charge was settled but its attempt row could not be \
+                             completed; the row stays pending"
+                        );
+                    }
                 }
                 // Everything else means we do not know what the rail did with
                 // the request, so nothing moves: the charge stays `submitting`,

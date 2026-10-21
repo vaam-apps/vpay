@@ -966,3 +966,41 @@ reason, until the 24-hour horizon would have ended it in `unresolved`.
 No route, migration, gate or `NotImplemented` token moved. Counts, mutations and
 what was not run:
 [verification/2026-10-21-declined-resubmit-fails-the-charge.md](verification/2026-10-21-declined-resubmit-fails-the-charge.md).
+
+## A declined confirm fails the charge before it records the attempt (2026-10-21)
+
+**`vpay-api`'s `finish_confirm` now settles a decline first and completes the
+attempt row second, the order the worker's resubmit already uses.** Review of
+the worker change found that it recorded the row answered and _then_ called
+`persist_decline`, two commits, so a failure between them left a `submitting`
+charge beside an answered `submit` row — the pair `recovery_step` reads as
+`Advance` ("the rail accepted it"). Measured: that needs no crash. With the
+database refusing the settlement, the confirm answered `503` and left
+`0` + `charge_declined` beside a `submitting` charge; against a rail that declines
+and then has no record, the pair was advanced to `submitted` on the first poll and
+read at every rung after, never failed, never resubmitted.
+
+- **The order is by what recovery should do with the pair.** Declined: charge
+  first, so a refused settlement leaves `submitting` and unanswered (a crash's
+  state), which the worker resolves by resubmitting into the same decline and
+  failing the charge (#316). Accepted: row first, unchanged — there the pair is
+  `Advance`'s own input.
+- **A row that cannot be completed after a settled decline no longer fails the
+  request.** The charge is terminal and the event is out; the merchant's answer
+  stays the `409` `charge_declined`, the failure is logged, and the row stays
+  pending. It used to be a `503` with the charge still `submitting`.
+- **Unchanged for the merchant** on a settled decline: the envelope, the intent,
+  the event.
+- **Proven** against real Postgres by two cases in `confirm_rails.rs` (the
+  database refusing each write in turn, injected by trigger) that failed on the
+  unfixed code with the values above, and one in `worker_recovery.rs` (the
+  leftover state heals through the worker); three mutations, each caught by the
+  case meant to catch it. [vpay-worker.md § "What a refused answer is recorded as"](../reference/vpay-worker.md#what-a-refused-answer-is-recorded-as)
+  has the argument.
+- **Not done:** no crash is injected (a refused write is the reachable form of the
+  window); a refund's `Rejected` also records first, but nothing reads a `refund`
+  row's status, so it was left.
+
+No route, response, migration, gate or `NotImplemented` token moved. Counts and
+what was not run:
+[verification/2026-10-21-confirm-decline-order.md](verification/2026-10-21-confirm-decline-order.md).

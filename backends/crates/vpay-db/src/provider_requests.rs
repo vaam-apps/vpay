@@ -27,13 +27,15 @@
 //!   charge). For a `submit`, then, `NULL` means **the outcome is unknown**,
 //!   which is wider than "the rail said nothing": a submit the adapter
 //!   refused as `Malformed` is also `NULL`, deliberately, because the charge's
-//!   fate is unknown. In `vpay_worker`, a submit the rail **declined** is the one
-//!   error written answered, and only after it has failed the charge, so that no
-//!   worker path leaves a `submitting` charge beside an answered row. **`vpay-api`'s
-//!   confirm does not hold that line:** it records the answered row first and
-//!   fails the charge in a second commit, so a crash between them leaves exactly
-//!   that pair (found in review of vaam-apps/vpay#316; it predates it and is not
-//!   changed there).
+//!   fate is unknown. A submit the rail **declined** is the one error written
+//!   answered, and both writers — `vpay_worker`'s resubmit and `vpay-api`'s
+//!   confirm — do it only after failing the charge, so that no path leaves a
+//!   `submitting` charge beside an answered row. (`vpay-api`'s confirm recorded
+//!   the row first until 2026-10-21, which a crash or a refused settlement turned
+//!   into exactly that pair; found in review of vaam-apps/vpay#316.) The
+//!   *accepted* case is the opposite on purpose: there the pair is `Advance`'s
+//!   own input, "the rail took it and our bookkeeping lags", so the row is
+//!   recorded first.
 //! * The refund-cancel guards read whether a **`refund`** row exists, never
 //!   its status.
 //!
@@ -85,9 +87,9 @@ use crate::error::{DbError, classify_write};
 ///
 /// The sentinel means "answered" and **nothing about whether the rail
 /// accepted**: recovery reads it on a `submit` row as acceptance, which is why
-/// `vpay_worker` writes it for a `submit` that ended in an error only for a
-/// decline, and only after it has failed the charge (`vpay-api`'s confirm
-/// writes it first; module header).
+/// `vpay_worker` and `vpay-api` write it for a `submit` that ended in an error
+/// only for a decline, and only after they have failed the charge (module
+/// header).
 pub const STATUS_CODE_NOT_CARRIED_BY_THE_PORT: i32 = 0;
 
 #[async_trait::async_trait]
@@ -141,8 +143,7 @@ pub trait ProviderRequests: Send + Sync {
     /// exception the caller makes on purpose and this method does not police —
     /// recovery reads an answered `submit` row as acceptance, so a caller should
     /// pass the sentinel for one only for a decline whose charge it has already
-    /// failed — `vpay_worker` does; `vpay-api`'s confirm records first (module
-    /// header).
+    /// failed — `vpay_worker` and `vpay-api` both do (module header).
     ///
     /// # Errors
     ///

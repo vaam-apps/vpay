@@ -155,7 +155,8 @@ it is the worker's).
   was pointed out in review of #316 (`lightbridge-assistant`), and the doc
   sentences that implied otherwise — the `provider_requests.rs` module header, the
   unresolved-charges runbook and the crash-safety note — are corrected here.
-  Reordering it is its own change, not made.
+  Reordering it was its own change, **made later the same day**
+  ([2026-10-21-confirm-decline-order.md](2026-10-21-confirm-decline-order.md)).
 - **The order argument is a reading, not a measurement.** "Row first would leave a
   `submitting` charge beside an answered row" is the consequence of
   `recovery_step`'s table, which has its own unit and integration cases; no test

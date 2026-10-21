@@ -2682,6 +2682,115 @@ async fn a_declined_resubmit_is_not_resent_by_the_poll_that_follows() -> anyhow:
     Ok(())
 }
 
+/// What `vpay-api`'s confirm leaves when it **could not settle** a decline — a
+/// `submitting` charge and a pending attempt row — heals: the worker resubmits
+/// into the same decline and fails the charge.
+///
+/// This is the second half of the argument for the confirm path's order
+/// (`confirm_rails.rs`'s `a_decline_the_database_refuses_to_settle_leaves_the_attempt_unanswered`
+/// shows the first: the refused settlement leaves this state and no other). The
+/// row is staged at kill point 2 — the same pair — against the honest stub pair:
+/// `…0404` is `NotFound` on every read and MSISDN `237670000400` is declined on
+/// every submit, so the production table has to do the work: `Unanswered` →
+/// poll → three `NotFound`s over the window → resubmit → `Rejected` →
+/// `settle_failed_with` (vaam-apps/vpay#316). Nothing here is staged past the
+/// first row.
+///
+/// Asserted as the end state and its cost: charge `failed` with the rail's code,
+/// the intent told once, **three** status reads and **two** submit rows (the
+/// staged pending one and the answered `charge_declined` one), and nothing left
+/// in the queue.
+#[tokio::test]
+async fn a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker() -> anyhow::Result<()>
+{
+    let h = harness().await?;
+    let policy = RecoveryPolicy {
+        not_found_streak: 3,
+        not_found_window: Duration::from_millis(50),
+        ..RecoveryPolicy::default()
+    };
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        PUSH_RAIL,
+        NOT_FOUND_REF,
+        AMOUNT,
+        CURRENCY,
+        Some(DECLINED_PAYER_MSISDN),
+    )
+    .await?;
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        PUSH_RAIL,
+        NOT_FOUND_REF,
+        None,
+    )
+    .await?;
+
+    let mut steps = 0;
+    while charge(&h.pool, &charge_id).await?.state == "submitting" {
+        steps += 1;
+        anyhow::ensure!(
+            steps <= 12,
+            "a charge the rail declined was still `submitting` after {steps} steps"
+        );
+        make_every_job_runnable(&h.pool).await?;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        h.step(&policy).await?;
+    }
+
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(stored.state, "failed");
+    assert_eq!(
+        stored.failure_code.as_deref(),
+        Some(vpay_core::FailureCode::InvalidPayer.as_str())
+    );
+    assert_eq!(
+        event_types(&h.pool, &intent).await?,
+        vec!["payment_intent.payment_failed".to_owned()],
+        "the merchant is told once"
+    );
+    assert_eq!(
+        status_queries(&h.pool, &charge_id).await?,
+        3,
+        "the streak is three reads, and the resubmit that failed the charge ends the asking"
+    );
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "submit").await?,
+        vec![
+            StoredAttempt {
+                status_code: None,
+                answered: false,
+                error_kind: None,
+            },
+            StoredAttempt {
+                status_code: Some(ANSWERED_SENTINEL),
+                answered: true,
+                error_kind: Some("charge_declined".to_owned()),
+            },
+        ],
+        "the staged pending row stays as the crash left it; the resubmit's row says what the \
+         rail said"
+    );
+
+    // The leftover poll job finds a terminal charge and finishes without asking.
+    make_every_job_runnable(&h.pool).await?;
+    let leftover = h.step(&policy).await?;
+    assert_eq!(leftover.disposition, Disposition::Finished);
+    assert!(jobs(&h.pool).await?.is_empty());
+    Ok(())
+}
+
 /// Parks the five singleton jobs so nothing but the loop's own reaper can
 /// free a lease.
 ///

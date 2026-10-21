@@ -2102,6 +2102,211 @@ async fn a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read() -> 
 
 // ------------------------------------------------------------------ test 4
 
+/// A decline whose **settlement** the database refuses leaves the attempt
+/// **unanswered**, so recovery still polls and resubmits it instead of advancing
+/// it.
+///
+/// `finish_confirm` used to record the attempt answered (`0` +
+/// `charge_declined`) and *then* call `persist_decline`. Two commits, so any
+/// failure of the second — a deadlock, a pool timeout, a connection that went
+/// away, or a crash — left a `submitting` charge beside an answered `submit`
+/// row. `recovery_step` reads that pair as `Advance` ("the rail accepted it"),
+/// so a charge the rail had **declined** was moved to `submitted` and polled
+/// until the 24-hour horizon. It is reachable without a crash, which is what
+/// this case shows: the refused write is an ordinary `DbError`.
+///
+/// The order is now the worker's (`vpay_worker::handlers::submit_again`): fail
+/// the charge, *then* record the row. A refused settlement therefore returns
+/// before the row is touched, and what is left is exactly the state a crash
+/// before the answer would leave — `submitting` and unanswered — which the
+/// recovery table already resolves (the worker's `worker_recovery.rs` case
+/// `a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker`).
+///
+/// # Why the failure is injected in Postgres
+///
+/// As `payment_intents.rs`'s `a_failed_store_releases_the_key_so_the_retry_re_executes`
+/// says at length: the honest way to make a real write fail is to make the real
+/// database refuse it. The trigger fires only for the `UPDATE … SET state =
+/// 'failed'` that `mark_failed` issues, so the charge insert, the `submitting`
+/// state and the attempt row's insert are untouched, and the server never
+/// learns anything is unusual.
+///
+/// Decisive: swap the two calls in `finish_confirm` back and the attempt
+/// assertion fails — the row is answered beside a `submitting` charge.
+#[tokio::test]
+async fn a_decline_the_database_refuses_to_settle_leaves_the_attempt_unanswered()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnMomo),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_failed_charge() RETURNS trigger AS $$ \
+         BEGIN RAISE EXCEPTION 'injected: failing a charge was refused'; END; \
+         $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER refuse_failed_charge BEFORE UPDATE ON charges \
+         FOR EACH ROW WHEN (NEW.state = 'failed') EXECUTE FUNCTION refuse_failed_charge();",
+    )
+    .execute(&harness.pool)
+    .await
+    .context("installing the fault injection must succeed")?;
+
+    let error = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo(UNKNOWN_PAYER_MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a decline that could not be settled is not a decline the merchant can read");
+    let (status, _kind, _code, _param) = api_error(error);
+    assert_eq!(
+        status,
+        vpay_core::Category::Storage.http_status(),
+        "the settlement is vpay's to write; failing to write it is vpay's failure and is \
+         reported as one, not as the rail's decline"
+    );
+
+    sqlx::raw_sql("DROP TRIGGER refuse_failed_charge ON charges;")
+        .execute(&harness.pool)
+        .await
+        .context("lifting the fault injection must succeed")?;
+
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+    assert_eq!(
+        charge.state, "submitting",
+        "nothing was settled, so the charge is where a crash would have left it"
+    );
+
+    let (status_code, error_kind, answered) = stored_attempt(&harness.pool, &charge.id).await?;
+    assert_eq!(
+        (status_code, error_kind.as_deref(), answered),
+        (None, None, false),
+        "an answered row beside a `submitting` charge is what recovery reads as `Advance`, \
+         moving a charge the rail declined to `submitted`; the row must stay pending until \
+         the charge has been failed"
+    );
+    let latest = harness
+        .repositories
+        .latest_submit_attempt(&charge.id)
+        .await
+        .context("the read recovery makes")?
+        .context("the confirm left no attempt row")?;
+    assert_eq!(
+        latest.status_code, None,
+        "`SubmitAttempt::Unanswered` is what `recovery_step` must see"
+    );
+
+    let after = client
+        .payment_intents()
+        .retrieve(&intent.id)
+        .await
+        .context("re-reading the intent")?;
+    assert_eq!(after.status, IntentStatus::RequiresPaymentMethod);
+    assert_eq!(
+        after.last_payment_error, None,
+        "the refused transaction took the error stamp with it"
+    );
+    assert!(
+        event_types_for(&harness.pool, &intent.id).await?.is_empty(),
+        "and the event, which commits in the same transaction"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// An attempt row that cannot be **completed** after the decline has been
+/// settled does not turn the decline into a `500`.
+///
+/// With the order fixed (fail the charge, then record the row), the second
+/// write is audit only: the charge is terminal, the intent carries the reason,
+/// the event is committed, and `recovery_step` never reads a `submit` row for a
+/// `failed` charge. The merchant's answer is therefore the decline, which is
+/// what is committed, and a lost audit row is logged, not raised. Before the
+/// reorder this write came *first*, so refusing it returned a `500` with the
+/// charge still `submitting` — a different outcome, now unreachable.
+///
+/// The row is left unanswered, which is honest: nothing recorded the answer.
+/// Injected as above, on the `UPDATE` only, so `insert_pending` still runs.
+///
+/// Decisive: put the `?` back on the `record_response` after `persist_decline`
+/// and the `409` assertion fails with a `500`.
+#[tokio::test]
+async fn an_attempt_row_that_cannot_be_completed_after_a_settled_decline_is_still_the_decline()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnMomo),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+
+    sqlx::raw_sql(
+        "CREATE FUNCTION refuse_attempt_completion() RETURNS trigger AS $$ \
+         BEGIN RAISE EXCEPTION 'injected: completing an attempt row was refused'; END; \
+         $$ LANGUAGE plpgsql; \
+         CREATE TRIGGER refuse_attempt_completion BEFORE UPDATE ON provider_requests \
+         FOR EACH ROW EXECUTE FUNCTION refuse_attempt_completion();",
+    )
+    .execute(&harness.pool)
+    .await
+    .context("installing the fault injection must succeed")?;
+
+    let error = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo(UNKNOWN_PAYER_MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a payer the rail has no record of cannot produce a submitted charge");
+    let (status, kind, code, _param) = api_error(error);
+    assert_eq!(
+        (status, kind.as_str(), code.as_deref()),
+        (409, "invalid_request_error", Some("charge_declined")),
+        "the decline was settled; the merchant is told the decline, not that vpay failed"
+    );
+
+    sqlx::raw_sql("DROP TRIGGER refuse_attempt_completion ON provider_requests;")
+        .execute(&harness.pool)
+        .await
+        .context("lifting the fault injection must succeed")?;
+
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+    assert_eq!(charge.state, "failed");
+    assert_eq!(charge.failure_code.as_deref(), Some("invalid_payer"));
+    assert_eq!(
+        event_types_for(&harness.pool, &intent.id).await?,
+        vec!["payment_intent.payment_failed".to_owned()],
+        "the merchant is told once, in the settlement's own transaction"
+    );
+    let (status_code, error_kind, answered) = stored_attempt(&harness.pool, &charge.id).await?;
+    assert_eq!(
+        (status_code, error_kind.as_deref(), answered),
+        (None, None, false),
+        "the audit row could not be completed, and says so by staying pending"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 /// A rail that cannot be reached: the `Category::Rail` answer, and **nothing
 /// moved**.
 ///

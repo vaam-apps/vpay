@@ -512,12 +512,23 @@ charge is not polled, so vpay would not see a payment that rail then took. All
 three shipped adapters answer a duplicate as `Submitted` (MTN's `409`, Notch
 Pay's `AlreadyExists`; Orange is never resubmitted).
 
-**What this does not close.** The ordering above is the worker's. `vpay-api`'s
-confirm path does the opposite for the same answer: `finish_confirm` records the
-row answered, then calls `persist_decline`, two commits, so a crash between them
-leaves a `submitting` charge beside an answered row — the pair
-`recovery_step` reads as `Advance`. That predates this change, is not changed by
-it, and was pointed out in review of it (vaam-apps/vpay#316).
+**The API's confirm has the same order now.** This section said the ordering was
+the worker's alone: `vpay-api`'s `finish_confirm` recorded the row answered and
+_then_ called `persist_decline`, two commits, so a crash — or a refused
+settlement, which needs no crash — left a `submitting` charge beside an answered
+row, the pair `recovery_step` reads as `Advance`. It was pointed out in review of
+#316 and measured the same day: with the settlement refused by the database, the
+confirm answered `503` and left `0` + `charge_declined` beside a `submitting`
+charge, and against a rail that declines and then has no record, that pair was
+advanced to `submitted` on the first poll and read at every rung after, never
+failed and never resubmitted. `finish_confirm` now fails the charge first, so a
+refused settlement leaves `submitting` and unanswered — the state a crash before
+the answer leaves — and the worker resubmits into the same decline and fails it
+(`a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker`). The
+other direction, a row that cannot be completed _after_ a settled decline, no
+longer fails the request: the charge is terminal and the merchant's answer is the
+decline, so it is logged and the row stays pending. The _accepted_ arm keeps its
+order — row first — because there the pair is `Advance`'s own input.
 
 **What stays as it was.** A `Rejected` on a status _read_ does not fail the
 charge: Notch Pay raises it "only for our own refused keys", which is a fact

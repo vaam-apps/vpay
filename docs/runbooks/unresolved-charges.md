@@ -98,13 +98,14 @@ you are here to answer.
      adapter refused (`error_kind = 'provider_error'` — for example a
      `complete` whose `amounts.total` is not the charge's amount: the rail
      spoke, and vpay would not act on it). On a `submit` row it means the rail
-     **declined** (`charge_declined`) and the charge is `failed`: the worker's
-     resubmit fails the charge first and records the row second, while
-     `vpay-api`'s confirm records the row first and fails the charge in a second
-     commit — so a crash between the two leaves a `submitting` charge beside a
-     `0` row, which recovery reads as "the rail accepted it". If you find that
-     pair on a declined charge, the rail declined it. It is never written for a
-     `submit` that ended in any other error.
+     **declined** (`charge_declined`) and the charge is `failed`: both the
+     worker's resubmit and `vpay-api`'s confirm fail the charge first and record
+     the row second. A `submitting` charge beside a `0` row is therefore not a
+     declined charge — recovery reads it as "the rail accepted it" and advances
+     it. (Before 2026-10-21 `vpay-api`'s confirm recorded the row first, so on a
+     charge that old that pair can be a decline whose settlement was lost; check
+     the rail.) It is never written for a `submit` that ended in any other
+     error.
    - **A real HTTP status** → the rail answered with it.
 
    The `error_kind` vocabulary is `vpay_core::Classify::code` on the
