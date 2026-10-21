@@ -182,6 +182,16 @@ pages). Re-run on that tree: `just verify` exit 0, all fifteen gates
 `provider_callback` 54 passed, 0 ignored. The other suites in the table are
 pre-merge numbers.
 
+**A third time, at `63c395df`** (#323: the dashboard's theme script and re-sign-in
+route — `frontends/` only, plus its two flow docs), conflicting in the status index
+alone (it now counts 96 pages, 73 listed, the same 23 apart). Re-run on that tree:
+`just verify` exit 0, all fifteen gates (`verify-links` 2563 links in 477 files);
+rustfmt and clippy clean. **No Rust changed in that merge, so the Rust suites were
+not re-run.** #323 also edits `dashboard.cy.ts`, the spec file whose 17 failures
+made `e2e (compose)` red on `master` and on this PR before it, so this head is the
+first to carry that change; whether the check turns green is for its own run to
+say, not for this page.
+
 The full-workspace `cargo nextest run` was **not** run for this change; the suites
 above are the ones its one code change (`finish_confirm`) can reach.
 
