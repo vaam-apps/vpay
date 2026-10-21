@@ -21,6 +21,7 @@
  */
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
+import { VpayInvalidParamsError } from "../errors.js";
 import { assertIntegerAmount, pathSegment } from "../validate.js";
 import type {
   CreateInvoiceItemParams,
@@ -260,7 +261,8 @@ export class InvoicesResource {
    * `invoice.paid` emitted, no intent, no checkout, no URL, and nothing
    * verified or posted to any ledger. While an intent that is not canceled is
    * attached it is the same `409` as `void`; cancel the intent first. A URL
-   * beside `outOfBand` is refused with a `TypeError` before any request.
+   * beside `outOfBand` is refused with a `VpayInvalidParamsError` naming it,
+   * before any request.
    */
   async pay(
     id: string,
@@ -277,8 +279,9 @@ export class InvoicesResource {
           param
         ];
         if (value !== undefined && value !== "") {
-          throw new TypeError(
-            `${param} has no meaning when recording a payment made outside vpay (outOfBand is set)`,
+          throw new VpayInvalidParamsError(
+            param,
+            "has no meaning when recording a payment made outside vpay (outOfBand is set)",
           );
         }
       }
@@ -351,7 +354,7 @@ export class InvoiceItemsResource {
    * `POST /v1/invoice_items` — adds a line to a draft, and the invoice's
    * `amount_due` moves with it.
    *
-   * Throws `TypeError` before any request when `unit_amount` is not a
+   * Throws `VpayInvalidParamsError` before any request when `unit_amount` is not a
    * non-negative safe integer; a `400` naming `invoice` when it is not one of
    * your drafts.
    */
@@ -388,7 +391,7 @@ export class InvoiceItemsResource {
    * `POST /v1/invoice_items/{id}` — **draft parent only**, with `amount`
    * recomputed.
    *
-   * Throws `TypeError` before any request for a `unit_amount` outside the
+   * Throws `VpayInvalidParamsError` before any request for a `unit_amount` outside the
    * bound; a `409` once the parent is no longer a draft.
    */
   async update(

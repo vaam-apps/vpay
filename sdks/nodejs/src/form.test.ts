@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { VpayInvalidParamsError } from "./errors.js";
 import { encodeForm, type FormValue } from "./form.js";
 
 describe("encodeForm", () => {
@@ -100,25 +101,25 @@ describe("encodeForm", () => {
     expect(imitation).not.toBe(structure);
   });
 
-  it("throws TypeError on a Date rather than dropping it silently", () => {
+  it("throws VpayInvalidParamsError on a Date rather than dropping it silently", () => {
     expect(() =>
       encodeForm({ created: new Date(0) as unknown as FormValue }),
-    ).toThrow(TypeError);
+    ).toThrow(VpayInvalidParamsError);
   });
 
-  it("throws TypeError on a Map or a class instance rather than dropping it silently", () => {
+  it("throws VpayInvalidParamsError on a Map or a class instance rather than dropping it silently", () => {
     class Widget {
       readonly kind = "widget";
     }
     expect(() =>
       encodeForm({ m: new Map([["a", "b"]]) as unknown as FormValue }),
-    ).toThrow(TypeError);
+    ).toThrow(VpayInvalidParamsError);
     expect(() =>
       encodeForm({ w: new Widget() as unknown as FormValue }),
-    ).toThrow(TypeError);
+    ).toThrow(VpayInvalidParamsError);
     expect(() =>
       encodeForm({ metadata: { when: new Date(0) as unknown as FormValue } }),
-    ).toThrow(TypeError);
+    ).toThrow(VpayInvalidParamsError);
   });
 
   it("accepts a null-prototype object as a plain object", () => {
@@ -130,18 +131,20 @@ describe("encodeForm", () => {
 
   // Regression: `1e21` satisfies Number.isInteger and was emitted as
   // `amount=1e%2B21`, which is not a decimal integer in any parser.
-  it("throws TypeError on a number that renders with an exponent", () => {
-    expect(() => encodeForm({ amount: 1e21 })).toThrow(TypeError);
+  it("throws VpayInvalidParamsError on a number that renders with an exponent", () => {
+    expect(() => encodeForm({ amount: 1e21 })).toThrow(VpayInvalidParamsError);
     expect(() => encodeForm({ amount: 1e21 })).toThrow(/1e21|1e\+21/);
   });
 
-  it("throws TypeError on an unsafe integer or a non-integer", () => {
+  it("throws VpayInvalidParamsError on an unsafe integer or a non-integer", () => {
     expect(() => encodeForm({ amount: Number.MAX_SAFE_INTEGER + 1 })).toThrow(
-      TypeError,
+      VpayInvalidParamsError,
     );
-    expect(() => encodeForm({ amount: 50.5 })).toThrow(TypeError);
-    expect(() => encodeForm({ amount: NaN })).toThrow(TypeError);
-    expect(() => encodeForm({ amount: Infinity })).toThrow(TypeError);
+    expect(() => encodeForm({ amount: 50.5 })).toThrow(VpayInvalidParamsError);
+    expect(() => encodeForm({ amount: NaN })).toThrow(VpayInvalidParamsError);
+    expect(() => encodeForm({ amount: Infinity })).toThrow(
+      VpayInvalidParamsError,
+    );
   });
 
   it("accepts the largest safe integer and a negative safe integer", () => {

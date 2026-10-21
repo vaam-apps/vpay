@@ -1181,8 +1181,8 @@ export interface CreateInvoiceItemParams {
   quantity?: number | undefined;
   /**
    * The price of one, in integer minor units. A non-integer, a negative, or
-   * anything past `Number.MAX_SAFE_INTEGER` throws `TypeError` before any
-   * request — `sdks/rust` refuses the identical set.
+   * anything past `Number.MAX_SAFE_INTEGER` throws `VpayInvalidParamsError`
+   * before any request — `sdks/rust` refuses the identical set.
    */
   unit_amount: number;
 }
@@ -1208,7 +1208,8 @@ export interface UpdateInvoiceItemParams {
 export interface CreatePaymentIntentParams {
   /**
    * Integer minor units. A non-integer, a negative, or anything past
-   * `Number.MAX_SAFE_INTEGER` throws `TypeError` before any request.
+   * `Number.MAX_SAFE_INTEGER` throws `VpayInvalidParamsError` before any
+   * request.
    */
   amount: number;
   currency: string;

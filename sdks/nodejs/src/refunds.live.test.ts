@@ -50,7 +50,7 @@ import { inspect } from "node:util";
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { VpayClient } from "./client.js";
-import { VpayApiError } from "./errors.js";
+import { VpayApiError, VpayInvalidParamsError } from "./errors.js";
 import { readLiveEnv } from "./testing/live-env.js";
 
 /**
@@ -304,10 +304,11 @@ describe("refunds against a running vpay", () => {
     expect(Object.keys(updated.metadata)).not.toContain("stale");
 
     // A negative amount is refused one layer earlier still — before any
-    // request leaves this process, as a TypeError from `validate.ts`.
+    // request leaves this process, as a `VpayInvalidParamsError` from
+    // `validate.ts`.
     await expect(
       client.refunds.create({ payment_intent: intent, amount: -1 }),
-    ).rejects.toBeInstanceOf(TypeError);
+    ).rejects.toBeInstanceOf(VpayInvalidParamsError);
 
     const page = await client.refunds.list({ payment_intent: intent });
     expect(page.data.map((item) => item.id)).toContain(refund.id);

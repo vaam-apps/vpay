@@ -9,6 +9,8 @@ import {
   VpayApiError,
   VpayAuthError,
   VpayConfigError,
+  VpayError,
+  VpayInvalidParamsError,
   VpayTransportError,
   VpayUnexpectedResponseError,
 } from "./errors.js";
@@ -490,7 +492,7 @@ describe("resource methods", () => {
     expect(key).toMatch(/^[0-9a-f-]{36}$/i);
   });
 
-  it("payment_intents.create throws TypeError before sending a request for a non-integer amount", async () => {
+  it("payment_intents.create throws VpayInvalidParamsError before sending a request for a non-integer amount", async () => {
     const server = await withServer({
       resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
     });
@@ -502,7 +504,7 @@ describe("resource methods", () => {
         currency: "xaf",
         payment_method_types: ["mtn_momo"],
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(VpayInvalidParamsError);
     expect(server.requests).toHaveLength(0);
   });
 
@@ -2069,7 +2071,7 @@ describe("amount validation reaches the resource methods", () => {
         currency: "xaf",
         payment_method_types: ["mtn_momo"],
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(VpayInvalidParamsError);
     expect(server.requests).toHaveLength(0);
   });
 
@@ -2085,7 +2087,7 @@ describe("amount validation reaches the resource methods", () => {
         currency: "xaf",
         payment_method_types: ["mtn_momo"],
       }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(VpayInvalidParamsError);
     expect(server.requests).toHaveLength(0);
   });
 
@@ -2097,7 +2099,78 @@ describe("amount validation reaches the resource methods", () => {
 
     await expect(
       client.refunds.create({ payment_intent: "pi_123", amount: -1 }),
-    ).rejects.toThrow(TypeError);
+    ).rejects.toThrow(VpayInvalidParamsError);
+    expect(server.requests).toHaveLength(0);
+  });
+});
+
+describe("a local refusal is one of this SDK's own errors", () => {
+  /**
+   * The gap `docs/sdks/parity.md` dated 2026-09-03: every refusal below was a
+   * bare `TypeError`, so `catch (err) { if (err instanceof VpayError) … }` —
+   * the narrowing the README documents — let it through. One case per kind
+   * of refusal, each through the real request path, each asserting the
+   * server saw nothing at all: the body is encoded and the id checked before
+   * the token request.
+   */
+  it("every local refusal is a VpayInvalidParamsError naming its parameter, caught by instanceof VpayError, before any request", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: {} }),
+    });
+    const client = makeClient(server);
+
+    const refusals: [string, () => Promise<unknown>][] = [
+      [
+        "amount",
+        () =>
+          client.paymentIntents.create({
+            amount: -1,
+            currency: "xaf",
+            payment_method_types: ["mtn_momo"],
+          }),
+      ],
+      ["id", () => client.customers.del("..")],
+      [
+        "success_url",
+        () =>
+          client.invoices.pay("in_1", {
+            outOfBand: {},
+            success_url: "https://shop.example/paid",
+          } as unknown as PayInvoiceParams),
+      ],
+      [
+        "metadata[when]",
+        () =>
+          client.paymentIntents.create({
+            amount: 5000,
+            currency: "xaf",
+            payment_method_types: ["mtn_momo"],
+            metadata: { when: new Date(0) } as unknown as Record<
+              string,
+              string
+            >,
+          }),
+      ],
+    ];
+    for (const [param, call] of refusals) {
+      const error = await call().then(
+        () => undefined,
+        (e: unknown) => e,
+      );
+      expect(error, param).toBeInstanceOf(VpayError);
+      expect(error, param).toBeInstanceOf(VpayInvalidParamsError);
+      expect(error, param).not.toBeInstanceOf(TypeError);
+      expect((error as VpayInvalidParamsError).param).toBe(param);
+      expect(
+        (error as VpayInvalidParamsError).message.startsWith(
+          `invalid request parameter ${param}: `,
+        ),
+        param,
+      ).toBe(true);
+      expect((error as VpayInvalidParamsError).name).toBe(
+        "VpayInvalidParamsError",
+      );
+    }
     expect(server.requests).toHaveLength(0);
   });
 });
@@ -2212,7 +2285,7 @@ describe("an id that is empty or only dots", () => {
           (e: unknown) => e,
         );
         expect(error, `${name}(${JSON.stringify(id)})`).toBeInstanceOf(
-          TypeError,
+          VpayInvalidParamsError,
         );
       }
     }
@@ -2226,9 +2299,13 @@ describe("an id that is empty or only dots", () => {
     const client = makeClient(server);
 
     for (const id of DOT_IDS) {
-      await expect(client.customers.del(id)).rejects.toThrow(
-        new TypeError(DOT_ID_REFUSAL),
+      const error = await client.customers.del(id).then(
+        () => undefined,
+        (e: unknown) => e,
       );
+      expect(error, JSON.stringify(id)).toBeInstanceOf(VpayInvalidParamsError);
+      expect((error as VpayInvalidParamsError).param).toBe("id");
+      expect((error as VpayInvalidParamsError).message).toBe(DOT_ID_REFUSAL);
     }
   });
 
@@ -3734,10 +3811,10 @@ describe("invoices", () => {
           description: "Hosting",
           unit_amount: amount,
         }),
-      ).rejects.toThrow(TypeError);
+      ).rejects.toThrow(VpayInvalidParamsError);
       await expect(
         client.invoiceItems.update("ii_123", { unit_amount: amount }),
-      ).rejects.toThrow(TypeError);
+      ).rejects.toThrow(VpayInvalidParamsError);
     }
 
     expect(

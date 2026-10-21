@@ -225,6 +225,7 @@ works as a catch-all; narrow further with `instanceof` on a specific subclass:
 | `VpayUnexpectedResponseError` | A response that isn't the shape this SDK expects — a proxy's HTML 502, an empty body, or a token-endpoint 200 that is not `{ access_token, token_type: "Bearer", expires_in }` (a non-`Bearer` `token_type` lands here, not in `VpayAuthError`: nothing failed to authenticate, the SDK simply cannot present that token). | `status`, `bodyPrefix` (first 500 bytes)     |
 | `VpayTransportError`          | DNS, TLS, connection refused, timeout.                                                                                                                                                                                                                                                                                     | `cause` (the underlying error)               |
 | `VpayConfigError`             | The SDK was misconfigured — caught at construction where possible.                                                                                                                                                                                                                                                         | —                                            |
+| `VpayInvalidParamsError`      | A request parameter this SDK refuses to send, caught before anything is sent: an amount outside `0..=2^53-1`, a value the form encoder cannot put on the wire exactly (a non-safe-integer number, a `Date`, a `Map`), an empty or all-dots path `id`, a URL beside `outOfBand`. Not a `TypeError` (2026-10-21).            | `param`, `message`                           |
 | `WebhookSignatureError`       | `verifyWebhook` rejected a signature.                                                                                                                                                                                                                                                                                      | —                                            |
 
 ```ts
@@ -591,6 +592,21 @@ VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token \
 
 ## Status
 
+**Breaking, 2026-10-21: every local refusal is a `VpayInvalidParamsError`,
+not a `TypeError`.** An amount outside `0..=2^53-1`, a value the form
+encoder cannot put on the wire exactly, an empty or all-dots path `id` and a
+URL beside `outOfBand` on `invoices.pay` now reject with the new exported
+`VpayInvalidParamsError`. It extends `VpayError`, so the README's
+`instanceof VpayError` catch-all finally catches it, and its `param` names
+the parameter, like `sdks/rust`'s `Error::InvalidParams { param, .. }`. Its
+`message` is that variant's `Display` text,
+`invalid request parameter {param}: {detail}`. **A caller that tested
+`instanceof TypeError` for these no longer matches**, and cannot be made to:
+a class has one superclass, and making `VpayError` a `TypeError` would make
+every error here one, a network failure included. Switch to
+`instanceof VpayInvalidParamsError`. No signature changed and nothing that
+was sent before is refused now.
+
 **Behaviour change, 2026-10-21: an empty or all-dots `id` is refused before
 any request.** Every one of the twenty-one methods that put an `id` in the
 path now rejects with a `TypeError` for `""`, `.`, `..` or any longer run of
@@ -605,7 +621,10 @@ each is on
 A caller catching `VpayApiError` for those inputs now gets a `TypeError`,
 and so does one narrowing on `VpayError`: like the amount refusal, it is not
 one (a dated gap in [docs/sdks/parity.md](../../docs/sdks/parity.md)).
-`sdks/rust` refuses the same ids with `Error::InvalidParams`.
+`sdks/rust` refuses the same ids with `Error::InvalidParams`. _(Corrected
+later the same day: the refusal is a `VpayInvalidParamsError` now, so a
+`VpayError` narrowing catches it and the gap is closed — the paragraph
+above.)_
 
 **Corrected 2026-09-03.** This section used to say "what it does **not**
 have is a single `/v1` resource route" — true when it was written on
@@ -688,8 +707,12 @@ none of them touches the network:
   session's `url`, which carries the same value — are redacted from
   `util.inspect` while `JSON.stringify` stays faithful.
 - The form encoder's nested-object/array/boolean/percent-encoding rules, and
-  that a non-integer `amount` throws `TypeError` before any request is sent.
-- That an empty or all-dots `id` throws `TypeError` on all twenty-one
+  that a non-integer `amount` throws `VpayInvalidParamsError` before any
+  request is sent.
+- That every kind of local refusal — an amount, an id, an out-of-band URL, a
+  `Date` in `metadata` — is a `VpayInvalidParamsError` naming its parameter,
+  caught by `instanceof VpayError` and not a `TypeError`, with nothing sent.
+- That an empty or all-dots `id` throws `VpayInvalidParamsError` on all twenty-one
   id-taking methods before any request, the token request included, with one
   fixed message that never quotes it; that an id with dots in it that is not
   only dots (`a..b`, `.a`, `%2E%2E`) is still sent as exactly one segment;
@@ -719,8 +742,8 @@ none of them touches the network:
   both URLs and answers an invoice still `"open"` with a `payment_intent` and
   a `hosted_invoice_url`; the four `invoiceItems` methods, including that
   neither `currency` nor `amount` is ever in the body; and that a
-  `unit_amount` outside the safe-integer range throws `TypeError` before any
-  request. Every body string is the one `sdks/rust/tests/resources.rs` pins,
+  `unit_amount` outside the safe-integer range throws `VpayInvalidParamsError`
+  before any request. Every body string is the one `sdks/rust/tests/resources.rs` pins,
   asserted as a literal on both sides.
 - **Against a real `vpay-server`, not a stub** (added 2026-09-08):
   `src/invoices.live.test.ts` creates a customer, drafts an invoice, bills two

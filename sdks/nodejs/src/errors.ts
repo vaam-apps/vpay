@@ -87,6 +87,37 @@ export class VpayUnexpectedResponseError extends VpayError {
   }
 }
 
+/**
+ * A request parameter this SDK refuses to put on the wire, caught before
+ * anything is sent — no token is minted and no request is built. The twin
+ * of `sdks/rust`'s `Error::InvalidParams { param, message }`, and its
+ * `message` is that variant's `Display` text: `invalid request parameter
+ * {param}: {detail}`.
+ *
+ * Thrown for an amount outside `0..=2^53-1`, a value the form encoder cannot
+ * put on the wire exactly (a non-safe-integer number, a `Date`, a `Map`, a
+ * class instance), a path `id` that is empty or only dots, and a URL beside
+ * `outOfBand` on `invoices.pay`.
+ *
+ * **Not a `TypeError`, since 2026-10-21.** Every one of these was a bare
+ * `TypeError` until then, which the one narrowing this package documents —
+ * `instanceof VpayError` — missed. It cannot be both: a class has one
+ * superclass, and making `VpayError` extend `TypeError` would make every
+ * error this package throws a `TypeError`, a network failure included.
+ */
+export class VpayInvalidParamsError extends VpayError {
+  /**
+   * The offending parameter's wire name — `amount`, `unit_amount`, `id`,
+   * `success_url`, or a nested form path such as `metadata[order_id]`.
+   */
+  readonly param: string;
+
+  constructor(param: string, detail: string) {
+    super(`invalid request parameter ${param}: ${detail}`);
+    this.param = param;
+  }
+}
+
 /** A transport-level failure — DNS, TLS, connection refused, timeout. */
 export class VpayTransportError extends VpayError {
   constructor(message: string, options?: ErrorOptions) {
