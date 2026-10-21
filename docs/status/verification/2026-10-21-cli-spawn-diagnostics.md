@@ -194,9 +194,9 @@ premise did not hold.
 On the final tree, which has the same Rust as every run counted as "final code"
 above (checked by `diff` against the saved copy before the batches):
 
-- `just verify`: **all fifteen gates passed**, exit 0, on the tree after the merge
-  below (`verify-links` 2518 links in 471 files; `verify-doc-counts` 13 counts agree,
-  with the directory at 90 files and the index naming 67).
+- `just verify`: **all fifteen gates passed**, exit 0, on the tree after the last merge
+  below (`verify-doc-counts` 13 counts agree, with the directory at 92 files and the
+  index naming 69; `verify-links` figures are in the merge note).
 - Both clean: `cargo fmt --all -- --check`, and
   `cargo clippy -p vpay-server --all-targets -- -D warnings`.
 - Plain `cargo test -p vpay-server --test cli`, **twelve in a row**, second batch:
@@ -221,6 +221,11 @@ so this branch's version, which is that plus this change, was taken whole. The t
 history sentence named neither #311's page nor #318's, so the counts here are 90 and
 67 and the history sentence says so. The pull request was retargeted
 from #311's branch to `master`, whose diff is now these four files.
+
+`master` moved again before this was reviewed (#314), and the index had been made
+consistent there at 91 files and 68 entries, so a second merge conflicted in the same
+file alone. It was resolved by keeping `master`'s entries and sentence as they stood
+and adding this page's entry at the head, which makes the counts 92 and 69.
 
 On the merged tree: `just verify` passed (above); plain `cargo test -p vpay-server
 --test cli` five times, **43 passed, 0 failed, 0 ignored** each (12.37 s – 14.81 s);
