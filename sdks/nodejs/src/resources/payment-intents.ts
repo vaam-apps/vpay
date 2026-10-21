@@ -1,6 +1,6 @@
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
-import { assertIntegerAmount } from "../validate.js";
+import { assertIntegerAmount, pathSegment } from "../validate.js";
 import type {
   ConfirmPaymentIntentParams,
   CreatePaymentIntentParams,
@@ -48,7 +48,7 @@ export class PaymentIntentsResource {
   async retrieve(id: string): Promise<PaymentIntent> {
     return this.#http.request<PaymentIntent>(
       "GET",
-      `/payment_intents/${encodeURIComponent(id)}`,
+      `/payment_intents/${pathSegment(id)}`,
     );
   }
 
@@ -65,7 +65,7 @@ export class PaymentIntentsResource {
     }
     return this.#http.request<PaymentIntent>(
       "POST",
-      `/payment_intents/${encodeURIComponent(id)}/confirm`,
+      `/payment_intents/${pathSegment(id)}/confirm`,
       body,
       options,
     );
@@ -74,7 +74,7 @@ export class PaymentIntentsResource {
   async cancel(id: string, options?: RequestOptions): Promise<PaymentIntent> {
     return this.#http.request<PaymentIntent>(
       "POST",
-      `/payment_intents/${encodeURIComponent(id)}/cancel`,
+      `/payment_intents/${pathSegment(id)}/cancel`,
       {},
       options,
     );

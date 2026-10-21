@@ -315,15 +315,15 @@ Two types, deliberately:
   who want one `?`-able type.
 - **`Error`** — everything that happens on, or instead of, the wire:
 
-| Variant                     | When                                                                                                           | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent               |
-| --------------------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------- |
-| `Error::Api`                | A non-2xx `/v1` response shaped like `vpay_api::error_envelope`.                                               | `status`, `kind` (the envelope's `type`), `code`, `message`, `param` | `VpayApiError`                                 |
-| `Error::TokenEndpoint`      | The token endpoint refused (`invalid_client`, …). **Never retried.**                                           | `error`, `description`                                               | `VpayAuthError` (`error` / `errorDescription`) |
-| `Error::UnexpectedResponse` | A response that is not that envelope — a proxy's HTML 502, an empty body, a success body that will not decode. | `status`, `body_prefix` (bounded to 500 bytes)                       | `VpayUnexpectedResponseError`                  |
-| `Error::Transport`          | DNS, TLS, timeout, connection refused — no HTTP response to classify.                                          | the underlying message                                               | `VpayTransportError`                           |
-| `Error::InvalidParams`      | A parameter this SDK refuses to send — an amount that is negative or past 2^53-1. Nothing reaches the wire.    | `param`, `message`                                                   | a `TypeError` from `assertIntegerAmount`       |
-| `Error::Config`             | A `ConfigError` surfaced through a request path.                                                               | the `ConfigError`                                                    | `VpayConfigError`                              |
-| `Error::Webhook`            | `webhooks::verify` rejected a delivery.                                                                        | a `WebhookError`                                                     | `WebhookSignatureError`                        |
+| Variant                     | When                                                                                                                                                                      | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent                          |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------- |
+| `Error::Api`                | A non-2xx `/v1` response shaped like `vpay_api::error_envelope`.                                                                                                          | `status`, `kind` (the envelope's `type`), `code`, `message`, `param` | `VpayApiError`                                            |
+| `Error::TokenEndpoint`      | The token endpoint refused (`invalid_client`, …). **Never retried.**                                                                                                      | `error`, `description`                                               | `VpayAuthError` (`error` / `errorDescription`)            |
+| `Error::UnexpectedResponse` | A response that is not that envelope — a proxy's HTML 502, an empty body, a success body that will not decode.                                                            | `status`, `body_prefix` (bounded to 500 bytes)                       | `VpayUnexpectedResponseError`                             |
+| `Error::Transport`          | DNS, TLS, timeout, connection refused — no HTTP response to classify.                                                                                                     | the underlying message                                               | `VpayTransportError`                                      |
+| `Error::InvalidParams`      | A parameter this SDK refuses to send — an amount that is negative or past 2^53-1, or (since 2026-10-21) a path `id` that is empty or only dots. Nothing reaches the wire. | `param`, `message`                                                   | a `TypeError` from `assertIntegerAmount` or `pathSegment` |
+| `Error::Config`             | A `ConfigError` surfaced through a request path.                                                                                                                          | the `ConfigError`                                                    | `VpayConfigError`                                         |
+| `Error::Webhook`            | `webhooks::verify` rejected a delivery.                                                                                                                                   | a `WebhookError`                                                     | `WebhookSignatureError`                                   |
 
 The distinction is not cosmetic: retrying a `Transport` failure is correct and
 retrying an `Api` `400` is a bug, and only a caller who can tell them apart
@@ -435,6 +435,22 @@ Where the two type systems land differently, and why:
 
 ## Status
 
+**Behaviour change, 2026-10-21: an empty or all-dots `id` is refused before
+any request.** Every one of the twenty-one methods that put an `id` in the
+path — `retrieve`, `update`, `del`, `confirm`, `cancel`, `expire`, `finalize`,
+`void`, `mark_uncollectible`, `pay` — now returns `Error::InvalidParams` with
+`param == "id"` for `""`, `.`, `..` or any longer run of dots, without minting
+a token or sending anything. No signature changed: each already returned
+`Result<_, Error>`, `Error` is `#[non_exhaustive]`, and `InvalidParams`
+already existed. What changes is the outcome for those inputs. They used to
+be sent, and the URL parser resolved them before the request left, so
+`customers().del("..")` was a `DELETE /v1/` and
+`payment_intents().retrieve("")` a `GET /v1/payment_intents/`. What vpay
+answered for each is on
+[the dated verification page](../../docs/status/verification/2026-10-21-sdk-dot-segment-ids.md).
+A caller matching on `Error::Api { status: 404, .. }` for those inputs now
+gets `InvalidParams`. `sdks/nodejs` refuses the same ids with a `TypeError`.
+
 **Breaking, 2026-09-23 (RFC-0004 § 5).** `ListPaymentIntentsParams`,
 `ListCheckoutSessionsParams` and `ListRefundsParams` each gained a public
 `customer: Option<String>`. Code that builds one of the three with a struct
@@ -509,6 +525,12 @@ customers or invoices), run by `just test-sdk-rust`:
   `2^53-1` itself is still sent.
 - That an id containing `/`, `?` or `#` is percent-encoded into the path
   rather than changing which route is addressed.
+- That an empty or all-dots `id` is refused on all twenty-one id-taking
+  methods before any request, the token request included, with one fixed
+  message that never quotes it; that an id with dots in it that is not only
+  dots (`a..b`, `.a`, `%2E%2E`) is still sent as exactly one segment; and,
+  as the premise, that the URL parser reqwest uses resolves `..`, `%2E%2E`
+  and `.%2e` alike.
 - That a `Client` builds in a process where no rustls `CryptoProvider` has
   been installed, and that the SDK does not install one itself
   (`tests/tls.rs`). Under reqwest 0.13's `rustls-no-provider` — the only
@@ -582,29 +604,32 @@ Each of these was checked to **fail** when the behaviour it names is broken —
 by making the change and running the suite, not by reading the test. The list
 is exact, because a mutation list nobody re-ran is worth less than no list:
 
-| Mutation                                                           | What fails                                                                                                                      |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
-| release the cache mutex before the token fetch (no single-flight)  | `concurrent_first_calls_share_one_token_request` — 8 token requests against `.expect(1)`                                        |
-| regenerate the `Idempotency-Key` on the retry                      | all three `a_reauthed_*` tests                                                                                                  |
-| send an empty body on the retry                                    | `a_reauthed_post_replays_the_callers_own_idempotency_key_and_body`, `a_reauthed_confirm_replays_its_nested_body_byte_for_byte`  |
-| clear the token cache unconditionally on a `401`                   | `a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`                                                 |
-| HMAC over `t` re-rendered as a number                              | `the_hmac_covers_the_literal_t_text_not_a_re_rendered_number`                                                                   |
-| accept any `t` that parses as an integer                           | `a_t_that_is_not_a_run_of_decimal_digits_is_malformed`, `a_malformed_header_is_rejected`                                        |
-| hard-fail on a header part with no `=`                             | `an_unparseable_part_and_an_unknown_key_are_both_ignored`                                                                       |
-| keep an empty `v1=` as a signature candidate                       | `an_empty_v1_is_never_treated_as_a_match`                                                                                       |
-| tolerance `>` → `>=`                                               | `a_timestamp_exactly_on_the_tolerance_boundary_is_accepted`                                                                     |
-| drop either amount check                                           | `an_amount_outside_the_cross_sdk_safe_range_is_refused_before_any_request`                                                      |
-| interpolate a path id unescaped                                    | `an_id_with_url_metacharacters_is_percent_encoded_into_the_path`, `confirm_and_cancel_encode_the_id_too`                        |
-| truncate a body prefix without backing off a character             | `bounded_prefix_cuts_on_a_character_boundary…`, `an_oversized_multibyte_error_body_is_cut_on_a_character_boundary`              |
-| let reqwest configure TLS itself                                   | both `tests/tls.rs` tests — with the exact `No rustls crypto provider is configured` panic                                      |
-| hard-code the assertion `jti`                                      | `mints_a_fresh_jti_on_every_call`                                                                                               |
-| remove the token cache                                             | the caching test                                                                                                                |
-| remove the `401` retry                                             | both re-auth tests                                                                                                              |
-| change the assertion's `sub`, or drop its `kid`                    | the OP-conformance tests                                                                                                        |
-| revert the escaping rule to RFC 3986's                             | the Node-parity tests                                                                                                           |
-| collapse `UpdateInvoiceParams`' `Option<Option<T>>` to `Option<T>` | `an_invoice_update_tells_leave_alone_set_and_clear_apart_on_the_wire` — `due_date=` vanishes and a due date becomes unclearable |
-| delete any `KnownEventType::Invoice*` variant                      | `the_four_invoice_event_types_are_known_and_their_payloads_decode`                                                              |
-| drop the `check_amount` call in `invoice_items().create()`         | `an_invoice_lines_unit_amount_is_refused_before_any_request`                                                                    |
+| Mutation                                                              | What fails                                                                                                                      |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| release the cache mutex before the token fetch (no single-flight)     | `concurrent_first_calls_share_one_token_request` — 8 token requests against `.expect(1)`                                        |
+| regenerate the `Idempotency-Key` on the retry                         | all three `a_reauthed_*` tests                                                                                                  |
+| send an empty body on the retry                                       | `a_reauthed_post_replays_the_callers_own_idempotency_key_and_body`, `a_reauthed_confirm_replays_its_nested_body_byte_for_byte`  |
+| clear the token cache unconditionally on a `401`                      | `a_second_concurrent_401_does_not_discard_the_token_the_first_one_just_fetched`                                                 |
+| HMAC over `t` re-rendered as a number                                 | `the_hmac_covers_the_literal_t_text_not_a_re_rendered_number`                                                                   |
+| accept any `t` that parses as an integer                              | `a_t_that_is_not_a_run_of_decimal_digits_is_malformed`, `a_malformed_header_is_rejected`                                        |
+| hard-fail on a header part with no `=`                                | `an_unparseable_part_and_an_unknown_key_are_both_ignored`                                                                       |
+| keep an empty `v1=` as a signature candidate                          | `an_empty_v1_is_never_treated_as_a_match`                                                                                       |
+| tolerance `>` → `>=`                                                  | `a_timestamp_exactly_on_the_tolerance_boundary_is_accepted`                                                                     |
+| drop either amount check                                              | `an_amount_outside_the_cross_sdk_safe_range_is_refused_before_any_request`                                                      |
+| interpolate a path id unescaped                                       | `an_id_with_url_metacharacters_is_percent_encoded_into_the_path`, `confirm_and_cancel_encode_the_id_too`                        |
+| drop the dot-id guard, or refuse only `""`, `.` and `..` (2026-10-21) | `an_empty_or_all_dots_id_is_refused_before_any_request`, `the_dot_id_refusal_is_one_fixed_message_naming_id`                    |
+| bypass the guard on one method (`invoices.void`, 2026-10-21)          | `an_empty_or_all_dots_id_is_refused_before_any_request`, naming `invoices.void("")`                                             |
+| refuse any id containing `..` (2026-10-21)                            | `an_id_with_dots_that_is_not_only_dots_is_still_sent_as_one_segment`                                                            |
+| truncate a body prefix without backing off a character                | `bounded_prefix_cuts_on_a_character_boundary…`, `an_oversized_multibyte_error_body_is_cut_on_a_character_boundary`              |
+| let reqwest configure TLS itself                                      | both `tests/tls.rs` tests — with the exact `No rustls crypto provider is configured` panic                                      |
+| hard-code the assertion `jti`                                         | `mints_a_fresh_jti_on_every_call`                                                                                               |
+| remove the token cache                                                | the caching test                                                                                                                |
+| remove the `401` retry                                                | both re-auth tests                                                                                                              |
+| change the assertion's `sub`, or drop its `kid`                       | the OP-conformance tests                                                                                                        |
+| revert the escaping rule to RFC 3986's                                | the Node-parity tests                                                                                                           |
+| collapse `UpdateInvoiceParams`' `Option<Option<T>>` to `Option<T>`    | `an_invoice_update_tells_leave_alone_set_and_clear_apart_on_the_wire` — `due_date=` vanishes and a due date becomes unclearable |
+| delete any `KnownEventType::Invoice*` variant                         | `the_four_invoice_event_types_are_known_and_their_payloads_decode`                                                              |
+| drop the `check_amount` call in `invoice_items().create()`            | `an_invoice_lines_unit_amount_is_refused_before_any_request`                                                                    |
 
 What this does **not** prove: **that TLS works.** Nothing in this repository
 serves TLS — `wiremock` is plaintext HTTP and no test reaches the network — so

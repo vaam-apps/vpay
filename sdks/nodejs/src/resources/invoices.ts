@@ -21,7 +21,7 @@
  */
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
-import { assertIntegerAmount } from "../validate.js";
+import { assertIntegerAmount, pathSegment } from "../validate.js";
 import type {
   CreateInvoiceItemParams,
   CreateInvoiceParams,
@@ -108,10 +108,7 @@ export class InvoicesResource {
    * never existed.
    */
   async retrieve(id: string): Promise<Invoice> {
-    return this.#http.request<Invoice>(
-      "GET",
-      `/invoices/${encodeURIComponent(id)}`,
-    );
+    return this.#http.request<Invoice>("GET", `/invoices/${pathSegment(id)}`);
   }
 
   /**
@@ -145,7 +142,7 @@ export class InvoicesResource {
     }
     return this.#http.request<Invoice>(
       "POST",
-      `/invoices/${encodeURIComponent(id)}`,
+      `/invoices/${pathSegment(id)}`,
       body,
       options,
     );
@@ -171,7 +168,7 @@ export class InvoicesResource {
   async del(id: string, options?: RequestOptions): Promise<DeletedInvoice> {
     return this.#http.request<DeletedInvoice>(
       "DELETE",
-      `/invoices/${encodeURIComponent(id)}`,
+      `/invoices/${pathSegment(id)}`,
       undefined,
       options,
     );
@@ -301,7 +298,7 @@ export class InvoicesResource {
         : { success_url: params.success_url, cancel_url: params.cancel_url };
     return this.#http.request<Invoice>(
       "POST",
-      `/invoices/${encodeURIComponent(id)}/pay`,
+      `/invoices/${pathSegment(id)}/pay`,
       body,
       options,
     );
@@ -323,7 +320,7 @@ export class InvoicesResource {
   ): Promise<Invoice> {
     return this.#http.request<Invoice>(
       "POST",
-      `/invoices/${encodeURIComponent(id)}/${name}`,
+      `/invoices/${pathSegment(id)}/${name}`,
       {},
       options,
     );
@@ -383,7 +380,7 @@ export class InvoiceItemsResource {
   async retrieve(id: string): Promise<InvoiceLine> {
     return this.#http.request<InvoiceLine>(
       "GET",
-      `/invoice_items/${encodeURIComponent(id)}`,
+      `/invoice_items/${pathSegment(id)}`,
     );
   }
 
@@ -414,7 +411,7 @@ export class InvoiceItemsResource {
     }
     return this.#http.request<InvoiceLine>(
       "POST",
-      `/invoice_items/${encodeURIComponent(id)}`,
+      `/invoice_items/${pathSegment(id)}`,
       body,
       options,
     );
@@ -427,7 +424,7 @@ export class InvoiceItemsResource {
   async del(id: string, options?: RequestOptions): Promise<DeletedInvoiceItem> {
     return this.#http.request<DeletedInvoiceItem>(
       "DELETE",
-      `/invoice_items/${encodeURIComponent(id)}`,
+      `/invoice_items/${pathSegment(id)}`,
       undefined,
       options,
     );

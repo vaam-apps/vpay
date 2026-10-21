@@ -166,8 +166,13 @@ pub enum Error {
     Transport(String),
 
     /// A request parameter this SDK refuses to put on the wire, caught
-    /// before the request was built — today, only an amount outside
-    /// `0..=2^53-1` (see [`crate::CreatePaymentIntentParams::amount`]).
+    /// before the request was built: an amount outside `0..=2^53-1` (see
+    /// [`crate::CreatePaymentIntentParams::amount`]), a URL a combination of
+    /// fields gives no meaning to, and — since 2026-10-21 — a path `id` that
+    /// is empty or only dots, on every method that takes one. Such an id
+    /// would have addressed a different endpoint once the URL was parsed;
+    /// that refusal's `message` is one fixed sentence that never quotes the
+    /// id.
     ///
     /// A variant of [`enum@Error`] rather than of [`ConfigError`] even
     /// though nothing reached the wire: [`ConfigError`] is what

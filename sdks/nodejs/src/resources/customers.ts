@@ -36,6 +36,7 @@
  */
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
+import { pathSegment } from "../validate.js";
 import type {
   AddressParams,
   CreateCustomerParams,
@@ -136,10 +137,7 @@ export class CustomersResource {
 
   /** `GET /v1/customers/{id}`. */
   async retrieve(id: string): Promise<Customer> {
-    return this.#http.request<Customer>(
-      "GET",
-      `/customers/${encodeURIComponent(id)}`,
-    );
+    return this.#http.request<Customer>("GET", `/customers/${pathSegment(id)}`);
   }
 
   /**
@@ -183,7 +181,7 @@ export class CustomersResource {
     }
     return this.#http.request<Customer>(
       "POST",
-      `/customers/${encodeURIComponent(id)}`,
+      `/customers/${pathSegment(id)}`,
       body,
       options,
     );
@@ -226,7 +224,7 @@ export class CustomersResource {
   async del(id: string, options?: RequestOptions): Promise<DeletedCustomer> {
     return this.#http.request<DeletedCustomer>(
       "DELETE",
-      `/customers/${encodeURIComponent(id)}`,
+      `/customers/${pathSegment(id)}`,
       undefined,
       options,
     );

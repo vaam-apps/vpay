@@ -41,7 +41,7 @@ use vpay_sdk::{
     Client, CreateRefundParams, Credentials, Error, IntentStatus, KnownEventType, ListEventsParams,
     NextAction, RefundStatus, RequestOptions,
 };
-use wiremock::matchers::{method, path};
+use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 mod support;
@@ -1508,6 +1508,288 @@ async fn confirm_and_cancel_encode_the_id_too() {
         .cancel(raw_id, RequestOptions::new())
         .await
         .unwrap();
+}
+
+/// How many `pub async fn`s in `src/resources.rs` take an `id: &str`, read off
+/// the source text. [`every_id_taking_call`] must list exactly that many, so
+/// a method added without a line there fails the dot-id case rather than
+/// going uncovered by it.
+fn id_taking_methods_declared() -> usize {
+    include_str!("../src/resources.rs")
+        .split("pub async fn ")
+        .skip(1)
+        .filter(|tail| {
+            tail.split_once(") ->")
+                .is_some_and(|(signature, _)| signature.contains("id: &str"))
+        })
+        .count()
+}
+
+/// Every method that puts an `id` in the path, called with `id`, each
+/// outcome reduced to `Ok(())` or the error. Twenty-one, the same twenty-one
+/// `sdks/nodejs/src/client.test.ts`'s `everyIdTakingCall` lists; a method
+/// added without a line here is a method the dot-id cases below do not cover,
+/// which is why [`id_taking_methods_declared`] counts them.
+async fn every_id_taking_call(client: &Client, id: &str) -> Vec<(&'static str, Result<(), Error>)> {
+    fn done<T>(result: Result<T, Error>) -> Result<(), Error> {
+        result.map(|_| ())
+    }
+    let opts = RequestOptions::new;
+    vec![
+        (
+            "payment_intents.retrieve",
+            done(client.payment_intents().retrieve(id).await),
+        ),
+        (
+            "payment_intents.confirm",
+            done(
+                client
+                    .payment_intents()
+                    .confirm(
+                        id,
+                        ConfirmPaymentIntentParams::mtn_momo("237670000000"),
+                        opts(),
+                    )
+                    .await,
+            ),
+        ),
+        (
+            "payment_intents.cancel",
+            done(client.payment_intents().cancel(id, opts()).await),
+        ),
+        (
+            "checkout.sessions.retrieve",
+            done(client.checkout().sessions().retrieve(id).await),
+        ),
+        (
+            "checkout.sessions.expire",
+            done(client.checkout().sessions().expire(id, opts()).await),
+        ),
+        (
+            "customers.retrieve",
+            done(client.customers().retrieve(id).await),
+        ),
+        (
+            "customers.update",
+            done(
+                client
+                    .customers()
+                    .update(id, UpdateCustomerParams::default(), opts())
+                    .await,
+            ),
+        ),
+        (
+            "customers.del",
+            done(client.customers().del(id, opts()).await),
+        ),
+        (
+            "invoices.retrieve",
+            done(client.invoices().retrieve(id).await),
+        ),
+        (
+            "invoices.update",
+            done(
+                client
+                    .invoices()
+                    .update(id, UpdateInvoiceParams::default(), opts())
+                    .await,
+            ),
+        ),
+        (
+            "invoices.del",
+            done(client.invoices().del(id, opts()).await),
+        ),
+        (
+            "invoices.finalize",
+            done(client.invoices().finalize(id, opts()).await),
+        ),
+        (
+            "invoices.void",
+            done(client.invoices().void(id, opts()).await),
+        ),
+        (
+            "invoices.mark_uncollectible",
+            done(client.invoices().mark_uncollectible(id, opts()).await),
+        ),
+        (
+            "invoices.pay",
+            done(
+                client
+                    .invoices()
+                    .pay(
+                        id,
+                        PayInvoiceParams::new(
+                            "https://shop.example/paid",
+                            "https://shop.example/cart",
+                        ),
+                        opts(),
+                    )
+                    .await,
+            ),
+        ),
+        (
+            "invoice_items.retrieve",
+            done(client.invoice_items().retrieve(id).await),
+        ),
+        (
+            "invoice_items.update",
+            done(
+                client
+                    .invoice_items()
+                    .update(id, UpdateInvoiceItemParams::default(), opts())
+                    .await,
+            ),
+        ),
+        (
+            "invoice_items.del",
+            done(client.invoice_items().del(id, opts()).await),
+        ),
+        (
+            "refunds.retrieve",
+            done(client.refunds().retrieve(id).await),
+        ),
+        (
+            "refunds.update",
+            done(
+                client
+                    .refunds()
+                    .update(id, UpdateRefundParams::default(), opts())
+                    .await,
+            ),
+        ),
+        (
+            "refunds.cancel",
+            done(client.refunds().cancel(id, opts()).await),
+        ),
+    ]
+}
+
+/// The ids no escaping keeps in place. `""`, `.` and `..` are the two dot
+/// segments and the empty one; `...` and `....` are refused by decision
+/// (`docs/reference/rails.md` § "A path segment the caller chose").
+const DOT_IDS: [&str; 5] = ["", ".", "..", "...", "...."];
+
+/// What `path_segment`'s refusal says, for every input — and so never the
+/// input. Pinned as a literal, byte-identical to the Node SDK's.
+const DOT_ID_REFUSAL: &str = "an id that is empty or only dots would address a different endpoint once the URL is parsed; nothing was sent";
+
+#[tokio::test]
+async fn the_url_parser_resolves_a_dot_segment_id_before_the_request_leaves() {
+    // The premise of the refusal, pinned against the parser reqwest uses.
+    // `encodeURIComponent`'s rule leaves `.` alone, and escaping it would not
+    // help: `%2E%2E` and `.%2e` resolve exactly as `..` does. If this ever
+    // stops being true the refusal is still harmless, but the reason
+    // `path_segment`'s doc gives would be wrong.
+    for (segment, resolved) in [
+        ("", "/v1/customers/"),
+        (".", "/v1/customers/"),
+        ("..", "/v1/"),
+        ("%2E%2E", "/v1/"),
+        (".%2e", "/v1/"),
+        ("...", "/v1/customers/..."),
+    ] {
+        let url = reqwest::Url::parse(&format!("https://api.vpay.example/v1/customers/{segment}"))
+            .unwrap();
+        assert_eq!(url.path(), resolved, "{segment:?}");
+    }
+}
+
+#[tokio::test]
+async fn an_empty_or_all_dots_id_is_refused_before_any_request() {
+    // `customers().del("..")` was a `DELETE /v1/` and `retrieve("")` a
+    // `GET /v1/payment_intents/` — what vpay answered for each is on
+    // `docs/status/verification/2026-10-21-sdk-dot-segment-ids.md`. The
+    // refusal comes before the token request too: a refused id must not
+    // spend an assertion `jti` or an idempotency key, which is why the
+    // server must have seen nothing at all, not merely no resource call.
+    let (server, client) = fixture().await;
+
+    assert_eq!(id_taking_methods_declared(), 21);
+    for id in DOT_IDS {
+        let outcomes = every_id_taking_call(&client, id).await;
+        assert_eq!(outcomes.len(), id_taking_methods_declared());
+        for (name, outcome) in outcomes {
+            match outcome {
+                Err(Error::InvalidParams { param, .. }) => {
+                    assert_eq!(param, "id", "{name}({id:?})");
+                }
+                other => panic!("{name}({id:?}) was not refused: {other:?}"),
+            }
+        }
+    }
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests.is_empty(),
+        "nothing may reach the wire, the token endpoint included: {:?}",
+        requests.iter().map(|r| r.url.path()).collect::<Vec<_>>()
+    );
+}
+
+#[tokio::test]
+async fn the_dot_id_refusal_is_one_fixed_message_naming_id() {
+    let (_server, client) = fixture().await;
+
+    for id in DOT_IDS {
+        let err = client
+            .customers()
+            .del(id, RequestOptions::new())
+            .await
+            .unwrap_err();
+        let Error::InvalidParams { param, message } = &err else {
+            panic!("{id:?}: expected InvalidParams, got {err:?}");
+        };
+        assert_eq!(param, "id");
+        assert_eq!(message, DOT_ID_REFUSAL, "{id:?}");
+        assert_eq!(
+            err.to_string(),
+            format!("invalid request parameter id: {DOT_ID_REFUSAL}"),
+            "{id:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn an_id_with_dots_that_is_not_only_dots_is_still_sent_as_one_segment() {
+    // The refusal is for whole-segment dots only. A dot beside anything else
+    // is an ordinary segment, and a `%` the caller wrote is escaped to `%25`,
+    // so `%2E%2E` arrives as the literal text it is rather than as `..`.
+    let (server, client) = fixture().await;
+    Mock::given(method("GET"))
+        .and(path_regex(r"^/v1/customers/[^/]+$"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(support::customer_json("cus_1")))
+        .mount(&server)
+        .await;
+
+    let cases = [
+        ("a..b", "a..b"),
+        (".a", ".a"),
+        ("a.", "a."),
+        ("..a", "..a"),
+        ("cus_1.", "cus_1."),
+        ("%2E%2E", "%252E%252E"),
+        (".%2e", ".%252e"),
+        (". ", ".%20"),
+        ("./", ".%2F"),
+        ("..\\", "..%5C"),
+    ];
+    for (id, _) in cases {
+        client.customers().retrieve(id).await.unwrap();
+    }
+
+    let sent: Vec<String> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| r.url.path().to_string())
+        .filter(|p| p.starts_with("/v1/customers"))
+        .collect();
+    let expected: Vec<String> = cases
+        .iter()
+        .map(|(_, encoded)| format!("/v1/customers/{encoded}"))
+        .collect();
+    assert_eq!(sent, expected);
 }
 
 #[tokio::test]

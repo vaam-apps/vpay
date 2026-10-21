@@ -21,3 +21,38 @@ export function assertIntegerAmount(amount: number, field = "amount"): void {
     );
   }
 }
+
+/**
+ * The one message {@link pathSegment}'s refusal carries, whatever the id.
+ *
+ * Fixed so that it cannot quote the id, and byte-identical to `sdks/rust`'s
+ * `DOT_SEGMENT_REFUSAL` behind the same `invalid request parameter id: `
+ * prefix that crate's `Error::InvalidParams` displays.
+ */
+const DOT_SEGMENT_REFUSAL =
+  "an id that is empty or only dots would address a different endpoint once the URL is parsed; nothing was sent";
+
+/**
+ * Percent-encodes one merchant-supplied id for a URL path, and refuses the
+ * ids escaping cannot keep in place.
+ *
+ * `encodeURIComponent` keeps a `/`, `?` or `#` inside its segment, but it
+ * leaves `.` alone, so `""`, `.` and `..` pass through, and as whole segments
+ * `fetch`'s URL parser resolves them before the request leaves:
+ * `customers.del("..")` was a `DELETE /v1/`. Escaping the dots would not
+ * help, because WHATWG parsing reads `%2E%2E` as `..` too. So an empty or
+ * all-dots id throws before anything is sent, the token request included —
+ * `sdks/rust`'s `path_segment` refuses the same ids with
+ * `Error::InvalidParams`. `...` is refused by decision rather than by the
+ * standard: `docs/reference/rails.md` § "A path segment the caller chose"
+ * says why.
+ *
+ * A `TypeError`, like {@link assertIntegerAmount}'s refusal, and not a
+ * `VpayError` — the dated gap `docs/sdks/parity.md` records for both.
+ */
+export function pathSegment(id: string): string {
+  if (/^\.*$/u.test(id)) {
+    throw new TypeError(`invalid request parameter id: ${DOT_SEGMENT_REFUSAL}`);
+  }
+  return encodeURIComponent(id);
+}

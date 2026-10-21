@@ -35,7 +35,7 @@
  */
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
-import { assertIntegerAmount } from "../validate.js";
+import { assertIntegerAmount, pathSegment } from "../validate.js";
 import type {
   CreateRefundParams,
   List,
@@ -116,10 +116,7 @@ export class RefundsResource {
    * order.
    */
   async retrieve(id: string): Promise<Refund> {
-    return this.#http.request<Refund>(
-      "GET",
-      `/refunds/${encodeURIComponent(id)}`,
-    );
+    return this.#http.request<Refund>("GET", `/refunds/${pathSegment(id)}`);
   }
 
   /**
@@ -146,7 +143,7 @@ export class RefundsResource {
     }
     return this.#http.request<Refund>(
       "POST",
-      `/refunds/${encodeURIComponent(id)}`,
+      `/refunds/${pathSegment(id)}`,
       body,
       options,
     );
@@ -172,7 +169,7 @@ export class RefundsResource {
   async cancel(id: string, options?: RequestOptions): Promise<Refund> {
     return this.#http.request<Refund>(
       "POST",
-      `/refunds/${encodeURIComponent(id)}/cancel`,
+      `/refunds/${pathSegment(id)}/cancel`,
       {},
       options,
     );

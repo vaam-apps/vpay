@@ -1,4 +1,5 @@
 import { verify } from "node:crypto";
+import { readdirSync, readFileSync } from "node:fs";
 import type { ServerResponse } from "node:http";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -2098,6 +2099,170 @@ describe("amount validation reaches the resource methods", () => {
       client.refunds.create({ payment_intent: "pi_123", amount: -1 }),
     ).rejects.toThrow(TypeError);
     expect(server.requests).toHaveLength(0);
+  });
+});
+
+/**
+ * How many public resource methods take an `id: string` first, read off
+ * the source text of `src/resources/` (`#transition`, private, is not one). {@link everyIdTakingCall} must list
+ * exactly that many, so a method added without a line there fails the
+ * dot-id case rather than going uncovered by it.
+ */
+function idTakingMethodsDeclared(): number {
+  const dir = new URL("./resources/", import.meta.url);
+  return readdirSync(dir)
+    .filter((name) => name.endsWith(".ts"))
+    .map((name) => readFileSync(new URL(name, dir), "utf8"))
+    .reduce(
+      (n, source) =>
+        n + (source.match(/async\s+\w+\(\s*id: string/gu)?.length ?? 0),
+      0,
+    );
+}
+
+/**
+ * Every method that puts an `id` in the path. Twenty-one, the same
+ * twenty-one `sdks/rust/tests/resources.rs`'s `every_id_taking_call` lists;
+ * a method added without a line here is a method the dot-id cases below do
+ * not cover, which is why {@link idTakingMethodsDeclared} counts them.
+ */
+const everyIdTakingCall: [
+  string,
+  (c: VpayClient, id: string) => Promise<unknown>,
+][] = [
+  ["payment_intents.retrieve", (c, id) => c.paymentIntents.retrieve(id)],
+  [
+    "payment_intents.confirm",
+    (c, id) =>
+      c.paymentIntents.confirm(id, {
+        payment_method_data: {
+          type: "mtn_momo",
+          mtn_momo: { msisdn: "237670000000" },
+        },
+      }),
+  ],
+  ["payment_intents.cancel", (c, id) => c.paymentIntents.cancel(id)],
+  ["checkout.sessions.retrieve", (c, id) => c.checkout.sessions.retrieve(id)],
+  ["checkout.sessions.expire", (c, id) => c.checkout.sessions.expire(id)],
+  ["customers.retrieve", (c, id) => c.customers.retrieve(id)],
+  ["customers.update", (c, id) => c.customers.update(id, {})],
+  ["customers.del", (c, id) => c.customers.del(id)],
+  ["invoices.retrieve", (c, id) => c.invoices.retrieve(id)],
+  ["invoices.update", (c, id) => c.invoices.update(id, {})],
+  ["invoices.del", (c, id) => c.invoices.del(id)],
+  ["invoices.finalize", (c, id) => c.invoices.finalize(id)],
+  ["invoices.void", (c, id) => c.invoices.void(id)],
+  ["invoices.markUncollectible", (c, id) => c.invoices.markUncollectible(id)],
+  [
+    "invoices.pay",
+    (c, id) =>
+      c.invoices.pay(id, {
+        success_url: "https://shop.example/paid",
+        cancel_url: "https://shop.example/cart",
+      }),
+  ],
+  ["invoice_items.retrieve", (c, id) => c.invoiceItems.retrieve(id)],
+  ["invoice_items.update", (c, id) => c.invoiceItems.update(id, {})],
+  ["invoice_items.del", (c, id) => c.invoiceItems.del(id)],
+  ["refunds.retrieve", (c, id) => c.refunds.retrieve(id)],
+  ["refunds.update", (c, id) => c.refunds.update(id, {})],
+  ["refunds.cancel", (c, id) => c.refunds.cancel(id)],
+];
+
+/**
+ * The ids no escaping keeps in place. `""`, `.` and `..` are the two dot
+ * segments and the empty one; `...` and `....` are refused by decision
+ * (`docs/reference/rails.md` § "A path segment the caller chose").
+ */
+const DOT_IDS = ["", ".", "..", "...", "...."];
+
+/** What the refusal says for every input — and so never the input. */
+const DOT_ID_REFUSAL =
+  "invalid request parameter id: an id that is empty or only dots would address a different endpoint once the URL is parsed; nothing was sent";
+
+describe("an id that is empty or only dots", () => {
+  it("the URL parser resolves a dot-segment id before the request leaves", () => {
+    // The premise of the refusal, pinned against the parser `fetch` uses.
+    // `encodeURIComponent` leaves `.` alone, and escaping it would not help:
+    // `%2E%2E` and `.%2e` resolve exactly as `..` does.
+    const resolved = (segment: string) =>
+      new URL(`https://api.vpay.example/v1/customers/${segment}`).pathname;
+    expect(resolved("")).toBe("/v1/customers/");
+    expect(resolved(".")).toBe("/v1/customers/");
+    expect(resolved("..")).toBe("/v1/");
+    expect(resolved("%2E%2E")).toBe("/v1/");
+    expect(resolved(".%2e")).toBe("/v1/");
+    expect(resolved("...")).toBe("/v1/customers/...");
+  });
+
+  it("an empty or all-dots id is refused on every method that takes one, before any request", async () => {
+    // `customers.del("..")` was a `DELETE /v1/`. The refusal comes before
+    // the token request too, so the server must have seen nothing at all.
+    const server = await withServer({
+      resource: () => ({ status: 200, body: {} }),
+    });
+    const client = makeClient(server);
+
+    expect(idTakingMethodsDeclared()).toBe(21);
+    expect(everyIdTakingCall).toHaveLength(idTakingMethodsDeclared());
+    for (const id of DOT_IDS) {
+      for (const [name, call] of everyIdTakingCall) {
+        const error = await call(client, id).then(
+          () => undefined,
+          (e: unknown) => e,
+        );
+        expect(error, `${name}(${JSON.stringify(id)})`).toBeInstanceOf(
+          TypeError,
+        );
+      }
+    }
+    expect(server.requests).toHaveLength(0);
+  });
+
+  it("the dot-id refusal is one fixed message naming id", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: {} }),
+    });
+    const client = makeClient(server);
+
+    for (const id of DOT_IDS) {
+      await expect(client.customers.del(id)).rejects.toThrow(
+        new TypeError(DOT_ID_REFUSAL),
+      );
+    }
+  });
+
+  it("an id with dots that is not only dots is still sent, as one segment", async () => {
+    // A dot beside anything else is an ordinary segment, and a `%` the caller
+    // wrote is escaped to `%25`, so `%2E%2E` arrives as the literal text it
+    // is rather than as `..`.
+    const server = await withServer({
+      resource: () => ({ status: 200, body: {} }),
+    });
+    const client = makeClient(server);
+
+    const cases: [string, string][] = [
+      ["a..b", "a..b"],
+      [".a", ".a"],
+      ["a.", "a."],
+      ["..a", "..a"],
+      ["cus_1.", "cus_1."],
+      ["%2E%2E", "%252E%252E"],
+      [".%2e", ".%252e"],
+      [". ", ".%20"],
+      ["./", ".%2F"],
+      ["..\\", "..%5C"],
+    ];
+    for (const [id] of cases) {
+      await client.customers.retrieve(id);
+    }
+
+    const urls = server.requests
+      .filter((r) => r.url !== TOKEN_PATH)
+      .map((r) => r.url);
+    expect(urls).toEqual(
+      cases.map(([, encoded]) => `/v1/customers/${encoded}`),
+    );
   });
 });
 

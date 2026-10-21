@@ -55,18 +55,43 @@ impl RequestOptions {
     }
 }
 
-/// Percent-encodes one path segment before it is interpolated into a URL.
+/// Percent-encodes one path segment before it is interpolated into a URL,
+/// and refuses the ids escaping cannot keep in place.
 ///
 /// An id is merchant-controlled input: an unescaped `/` would move the
 /// request to a different route, and a `?` or `#` would truncate the path and
-/// turn the rest into a query or fragment. `sdks/nodejs/src/resources/
-/// payment-intents.ts` wraps every id in `encodeURIComponent` for the same
-/// reason, and `crate::form::percent_encode` is that function's exact rule
-/// (see `crate::form`'s module doc), so the two SDKs request the same URL for
-/// the same id.
-fn path_segment(id: &str) -> String {
-    crate::form::percent_encode(id)
+/// turn the rest into a query or fragment. `crate::form::percent_encode` is
+/// `encodeURIComponent`'s exact rule (see `crate::form`'s module doc), which
+/// `sdks/nodejs/src/validate.ts`'s `pathSegment` applies too, so the two
+/// SDKs request the same URL for the same id.
+///
+/// That rule leaves `.` unescaped, so `""`, `.` and `..` pass through, and
+/// as whole segments the URL parser resolves them before the request leaves:
+/// `customers().del("..")` was a `DELETE /v1/`. Escaping the dots would not
+/// help, because the parser reads `%2E%2E` as `..` too. So an empty or
+/// all-dots id is [`crate::Error::InvalidParams`] naming `id`, with one fixed
+/// message that never quotes the input, before any request — the token
+/// request included. `...` is refused by decision rather than by the
+/// standard: `docs/reference/rails.md` § "A path segment the caller chose"
+/// is the server-side port's decision, and its "The merchant SDKs"
+/// paragraph says why the SDKs take the same one and what vpay answered
+/// before they did.
+fn path_segment(id: &str) -> Result<String, crate::Error> {
+    if id.bytes().all(|byte| byte == b'.') {
+        return Err(crate::Error::InvalidParams {
+            param: "id".to_string(),
+            message: DOT_SEGMENT_REFUSAL.to_string(),
+        });
+    }
+    Ok(crate::form::percent_encode(id))
 }
+
+/// The one message [`path_segment`]'s refusal carries, whatever the input.
+///
+/// Fixed so that it cannot quote the id. Byte-identical to the message
+/// `sdks/nodejs/src/validate.ts` puts after `invalid request parameter id: `,
+/// which is the prefix this crate's `Display` for `InvalidParams` writes.
+const DOT_SEGMENT_REFUSAL: &str = "an id that is empty or only dots would address a different endpoint once the URL is parsed; nothing was sent";
 
 fn metadata_form(metadata: &BTreeMap<String, String>) -> FormValue {
     if metadata.is_empty() {
@@ -1599,10 +1624,13 @@ impl PaymentIntentsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn retrieve(&self, id: &str) -> Result<PaymentIntent, crate::Error> {
         get(
             self.client,
-            &format!("/payment_intents/{}", path_segment(id)),
+            &format!("/payment_intents/{}", path_segment(id)?),
             None,
         )
         .await
@@ -1612,6 +1640,9 @@ impl PaymentIntentsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn confirm(
         &self,
         id: &str,
@@ -1620,7 +1651,7 @@ impl PaymentIntentsResource<'_> {
     ) -> Result<PaymentIntent, crate::Error> {
         post(
             self.client,
-            &format!("/payment_intents/{}/confirm", path_segment(id)),
+            &format!("/payment_intents/{}/confirm", path_segment(id)?),
             params.to_form(),
             opts,
         )
@@ -1631,6 +1662,9 @@ impl PaymentIntentsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn cancel(
         &self,
         id: &str,
@@ -1638,7 +1672,7 @@ impl PaymentIntentsResource<'_> {
     ) -> Result<PaymentIntent, crate::Error> {
         post(
             self.client,
-            &format!("/payment_intents/{}/cancel", path_segment(id)),
+            &format!("/payment_intents/{}/cancel", path_segment(id)?),
             FormValue::Object(Vec::new()),
             opts,
         )
@@ -1711,10 +1745,13 @@ impl CheckoutSessionsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn retrieve(&self, id: &str) -> Result<CheckoutSession, crate::Error> {
         get(
             self.client,
-            &format!("/checkout/sessions/{}", path_segment(id)),
+            &format!("/checkout/sessions/{}", path_segment(id)?),
             None,
         )
         .await
@@ -1743,6 +1780,9 @@ impl CheckoutSessionsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn expire(
         &self,
         id: &str,
@@ -1750,7 +1790,7 @@ impl CheckoutSessionsResource<'_> {
     ) -> Result<CheckoutSession, crate::Error> {
         post(
             self.client,
-            &format!("/checkout/sessions/{}/expire", path_segment(id)),
+            &format!("/checkout/sessions/{}/expire", path_segment(id)?),
             FormValue::Object(Vec::new()),
             opts,
         )
@@ -1791,10 +1831,13 @@ impl CustomersResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn retrieve(&self, id: &str) -> Result<Customer, crate::Error> {
         get(
             self.client,
-            &format!("/customers/{}", path_segment(id)),
+            &format!("/customers/{}", path_segment(id)?),
             None,
         )
         .await
@@ -1809,6 +1852,9 @@ impl CustomersResource<'_> {
     /// # Errors
     /// See [`enum@crate::Error`]. A patch that would clear the customer's
     /// **last** identifier is a `400` naming `name`.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn update(
         &self,
         id: &str,
@@ -1817,7 +1863,7 @@ impl CustomersResource<'_> {
     ) -> Result<Customer, crate::Error> {
         post(
             self.client,
-            &format!("/customers/{}", path_segment(id)),
+            &format!("/customers/{}", path_segment(id)?),
             params.to_form(),
             opts,
         )
@@ -1850,13 +1896,16 @@ impl CustomersResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn del(
         &self,
         id: &str,
         opts: RequestOptions,
     ) -> Result<DeletedCustomer, crate::Error> {
         self.client
-            .delete(&format!("/customers/{}", path_segment(id)), opts)
+            .delete(&format!("/customers/{}", path_segment(id)?), opts)
             .await
     }
 }
@@ -1905,10 +1954,13 @@ impl InvoicesResource<'_> {
     /// # Errors
     /// See [`enum@crate::Error`]. Another merchant's `in_…` is the same
     /// `404`, byte for byte, as one that never existed.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn retrieve(&self, id: &str) -> Result<Invoice, crate::Error> {
         get(
             self.client,
-            &format!("/invoices/{}", path_segment(id)),
+            &format!("/invoices/{}", path_segment(id)?),
             None,
         )
         .await
@@ -1925,6 +1977,9 @@ impl InvoicesResource<'_> {
     /// See [`enum@crate::Error`]. A `409` naming the status once the invoice
     /// is no longer a draft — an issued document's terms are what was sent to
     /// the payer.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn update(
         &self,
         id: &str,
@@ -1933,7 +1988,7 @@ impl InvoicesResource<'_> {
     ) -> Result<Invoice, crate::Error> {
         post(
             self.client,
-            &format!("/invoices/{}", path_segment(id)),
+            &format!("/invoices/{}", path_segment(id)?),
             params.to_form(),
             opts,
         )
@@ -1961,13 +2016,16 @@ impl InvoicesResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`]. A `409` for anything but a draft.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn del(
         &self,
         id: &str,
         opts: RequestOptions,
     ) -> Result<DeletedInvoice, crate::Error> {
         self.client
-            .delete(&format!("/invoices/{}", path_segment(id)), opts)
+            .delete(&format!("/invoices/{}", path_segment(id)?), opts)
             .await
     }
 
@@ -1985,10 +2043,13 @@ impl InvoicesResource<'_> {
     /// See [`enum@crate::Error`]. A `400` naming `invoice` when it has no
     /// lines, or when its total is past `2^53-1` minor units; a `409` when it
     /// is not a draft.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn finalize(&self, id: &str, opts: RequestOptions) -> Result<Invoice, crate::Error> {
         post(
             self.client,
-            &format!("/invoices/{}/finalize", path_segment(id)),
+            &format!("/invoices/{}/finalize", path_segment(id)?),
             FormValue::Object(Vec::new()),
             opts,
         )
@@ -2004,10 +2065,13 @@ impl InvoicesResource<'_> {
     /// See [`enum@crate::Error`]. A `409` when it is not open, and a `409`
     /// while a payment intent is attached and not yet canceled — cancel that
     /// intent first.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn void(&self, id: &str, opts: RequestOptions) -> Result<Invoice, crate::Error> {
         post(
             self.client,
-            &format!("/invoices/{}/void", path_segment(id)),
+            &format!("/invoices/{}/void", path_segment(id)?),
             FormValue::Object(Vec::new()),
             opts,
         )
@@ -2025,6 +2089,9 @@ impl InvoicesResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`]. As [`Self::void`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn mark_uncollectible(
         &self,
         id: &str,
@@ -2032,7 +2099,7 @@ impl InvoicesResource<'_> {
     ) -> Result<Invoice, crate::Error> {
         post(
             self.client,
-            &format!("/invoices/{}/mark_uncollectible", path_segment(id)),
+            &format!("/invoices/{}/mark_uncollectible", path_segment(id)?),
             FormValue::Object(Vec::new()),
             opts,
         )
@@ -2064,6 +2131,9 @@ impl InvoicesResource<'_> {
     /// invoice was paid outside vpay: `open` → `paid`, `invoice.paid`
     /// emitted, no intent and no checkout, nothing verified and nothing posted
     /// to any ledger.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn pay(
         &self,
         id: &str,
@@ -2073,7 +2143,7 @@ impl InvoicesResource<'_> {
         params.check()?;
         post(
             self.client,
-            &format!("/invoices/{}/pay", path_segment(id)),
+            &format!("/invoices/{}/pay", path_segment(id)?),
             params.to_form(),
             opts,
         )
@@ -2118,10 +2188,13 @@ impl InvoiceItemsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn retrieve(&self, id: &str) -> Result<InvoiceLine, crate::Error> {
         get(
             self.client,
-            &format!("/invoice_items/{}", path_segment(id)),
+            &format!("/invoice_items/{}", path_segment(id)?),
             None,
         )
         .await
@@ -2134,6 +2207,9 @@ impl InvoiceItemsResource<'_> {
     /// See [`enum@crate::Error`]. [`crate::Error::InvalidParams`] for a
     /// `unit_amount` outside the bound; a `409` once the parent is no longer
     /// a draft.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn update(
         &self,
         id: &str,
@@ -2145,7 +2221,7 @@ impl InvoiceItemsResource<'_> {
         }
         post(
             self.client,
-            &format!("/invoice_items/{}", path_segment(id)),
+            &format!("/invoice_items/{}", path_segment(id)?),
             params.to_form(),
             opts,
         )
@@ -2157,13 +2233,16 @@ impl InvoiceItemsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn del(
         &self,
         id: &str,
         opts: RequestOptions,
     ) -> Result<DeletedInvoiceItem, crate::Error> {
         self.client
-            .delete(&format!("/invoice_items/{}", path_segment(id)), opts)
+            .delete(&format!("/invoice_items/{}", path_segment(id)?), opts)
             .await
     }
 }
@@ -2225,6 +2304,9 @@ impl RefundsResource<'_> {
     /// See [`enum@crate::Error`] — a `404` for a refund this merchant has
     /// none of, and a `400` naming the parameter for anything but
     /// `metadata`, which this params type has no way to send.
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn update(
         &self,
         id: &str,
@@ -2233,7 +2315,7 @@ impl RefundsResource<'_> {
     ) -> Result<Refund, crate::Error> {
         post(
             self.client,
-            &format!("/refunds/{}", path_segment(id)),
+            &format!("/refunds/{}", path_segment(id)?),
             params.to_form(),
             opts,
         )
@@ -2267,10 +2349,13 @@ impl RefundsResource<'_> {
     /// See [`enum@crate::Error`] — a `404` for a refund this merchant has
     /// none of, and a `409` for one that is no longer
     /// [`Pending`](crate::RefundStatus::Pending).
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn cancel(&self, id: &str, opts: RequestOptions) -> Result<Refund, crate::Error> {
         post(
             self.client,
-            &format!("/refunds/{}/cancel", path_segment(id)),
+            &format!("/refunds/{}/cancel", path_segment(id)?),
             FormValue::Object(vec![]),
             opts,
         )
@@ -2287,8 +2372,16 @@ impl RefundsResource<'_> {
     ///
     /// # Errors
     /// See [`enum@crate::Error`].
+    ///
+    /// [`crate::Error::InvalidParams`] naming `id`, before any request, if
+    /// `id` is empty or only dots.
     pub async fn retrieve(&self, id: &str) -> Result<Refund, crate::Error> {
-        get(self.client, &format!("/refunds/{}", path_segment(id)), None).await
+        get(
+            self.client,
+            &format!("/refunds/{}", path_segment(id)?),
+            None,
+        )
+        .await
     }
 }
 

@@ -591,6 +591,22 @@ VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token \
 
 ## Status
 
+**Behaviour change, 2026-10-21: an empty or all-dots `id` is refused before
+any request.** Every one of the twenty-one methods that put an `id` in the
+path now rejects with a `TypeError` for `""`, `.`, `..` or any longer run of
+dots, without minting a token or sending anything. No signature changed —
+each already returned a `Promise` — but the outcome for those inputs did.
+They used to be sent, and `fetch`'s URL parser resolved them before the
+request left, so `customers.del("..")` was a `DELETE /v1/` and
+`paymentIntents.retrieve("")` a `GET /v1/payment_intents/`; escaping cannot
+help, because the parser reads `%2E%2E` as `..` too. What vpay answered for
+each is on
+[the dated verification page](../../docs/status/verification/2026-10-21-sdk-dot-segment-ids.md).
+A caller catching `VpayApiError` for those inputs now gets a `TypeError`,
+and so does one narrowing on `VpayError`: like the amount refusal, it is not
+one (a dated gap in [docs/sdks/parity.md](../../docs/sdks/parity.md)).
+`sdks/rust` refuses the same ids with `Error::InvalidParams`.
+
 **Corrected 2026-09-03.** This section used to say "what it does **not**
 have is a single `/v1` resource route" — true when it was written on
 2026-09-02, and false since Step 2 landed the next day.
@@ -673,6 +689,12 @@ none of them touches the network:
   `util.inspect` while `JSON.stringify` stays faithful.
 - The form encoder's nested-object/array/boolean/percent-encoding rules, and
   that a non-integer `amount` throws `TypeError` before any request is sent.
+- That an empty or all-dots `id` throws `TypeError` on all twenty-one
+  id-taking methods before any request, the token request included, with one
+  fixed message that never quotes it; that an id with dots in it that is not
+  only dots (`a..b`, `.a`, `%2E%2E`) is still sent as exactly one segment;
+  and, as the premise, that WHATWG `URL` resolves `..`, `%2E%2E` and `.%2e`
+  alike.
 - Error mapping for a Stripe-shaped `400`, an unexpected `502` HTML body, a
   connection failure, and a token-endpoint `401` (which is never retried).
 - Webhook verification: valid/invalid signatures, timestamp tolerance,

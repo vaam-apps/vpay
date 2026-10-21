@@ -301,12 +301,43 @@ What pins it:
 - Four mutations, each caught, are recorded on
   [the dated verification page](../status/verification/2026-10-20-path-segment-dot-segments.md).
 
-**Not changed: the merchant SDKs.** `sdks/rust`'s private `path_segment`, which
+~~**Not changed: the merchant SDKs.** `sdks/rust`'s private `path_segment`, which
 applies `encodeURIComponent`'s rule, and the Node SDK's `encodeURIComponent`
 itself pass `.`, `..` and `""` through as well. That is a merchant's own request, under
 the merchant's own credentials, to vpay's own API, which is a different harm
 from this one. What vpay answers for, say, `GET /v1/payment_intents/` has not
-been measured, so it is named here rather than fixed silently.
+been measured, so it is named here rather than fixed silently.~~
+
+**The merchant SDKs. Corrected 2026-10-21: measured, then changed.** The
+paragraph above was true for one day. What vpay answered is now measured, on
+[the dated verification page](../status/verification/2026-10-21-sdk-dot-segment-ids.md).
+Both SDKs sent 21 methods × `""`, `.`, `..`, `...` and got identical
+answers. Nothing succeeded, but the answers misled: `invoices.finalize(".")`
+reached **`invoices.update`** for an invoice named `finalize`, three
+sub-resource calls got a bodiless `405`, and a pinned `Idempotency-Key`
+spent on a write that reached a route refused the corrected retry for 24
+hours. So both SDKs
+now refuse those ids before any request, the token request included.
+`sdks/rust`'s `path_segment` returns `Result<String, crate::Error>` and
+refuses with `Error::InvalidParams { param: "id", .. }`. The Node SDK's
+`pathSegment` in `src/validate.ts` throws a `TypeError`. Both use one fixed
+message that never quotes the id.
+
+The decision here is reused, not re-argued. **`...` is refused too**, and
+**the guard is the only path in**: neither SDK keeps an unchecked
+interpolation, and each SDK's test enumerates every id-taking method and
+counts them off the source. An SDK differs from this port in three ways,
+none of which changes the decision:
+
+- **The harm is smaller.** The request carries the merchant's own token to
+  vpay's own `/v1`. It cannot reach a rail, and no single segment leaves
+  `/v1`. It is still a request to an endpoint the caller did not choose.
+- **Every id these methods take is prefixed** (`pi_`, `cs_`, `cus_`, `in_`,
+  `ii_`, `re_`, in `vpay-core`'s `ids.rs`), so "nothing legitimate is all
+  dots" is a fact about vpay's own ids rather than a rail's. The unread hops
+  are the merchant's egress proxy and vpay's own ingress.
+- **The refusal is not `Malformed`.** An SDK has its own error types, so the
+  compromise `Malformed` makes here is not needed there.
 
 ---
 

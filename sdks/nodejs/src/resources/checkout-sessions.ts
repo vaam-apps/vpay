@@ -20,6 +20,7 @@
  */
 import type { HttpClient } from "../http.js";
 import type { FormValue } from "../form.js";
+import { pathSegment } from "../validate.js";
 import type {
   CheckoutSession,
   CreateCheckoutSessionParams,
@@ -145,7 +146,7 @@ export class CheckoutSessionsResource {
     return withRedactedInspect(
       await this.#http.request<CheckoutSession>(
         "GET",
-        `/checkout/sessions/${encodeURIComponent(id)}`,
+        `/checkout/sessions/${pathSegment(id)}`,
       ),
     );
   }
@@ -175,7 +176,7 @@ export class CheckoutSessionsResource {
     return withRedactedInspect(
       await this.#http.request<CheckoutSession>(
         "POST",
-        `/checkout/sessions/${encodeURIComponent(id)}/expire`,
+        `/checkout/sessions/${pathSegment(id)}/expire`,
         {},
         options,
       ),
