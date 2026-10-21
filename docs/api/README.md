@@ -994,8 +994,8 @@ not a `500` claiming the router is broken. Three integration suites exercise
 it against a real Postgres: `staff_sign_in.rs`, `dashboard_read_surface.rs`
 and `dashboard_procedure_transport.rs`
 (`backends/tests/integration/tests/`). **Implemented and tested is not
-deployed**: per `docs/status.md`, no cluster has ever run vpay, so this
-surface does not run anywhere today. See
+deployed**: per `docs/status.md`, no cluster run of vpay is on record, so
+this surface is not recorded as running anywhere today. See
 [../flows/dashboard-auth.md](../flows/dashboard-auth.md) for the session
 model and [docs/status.md](../status.md) for the deployment picture.
 
