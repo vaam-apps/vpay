@@ -1,21 +1,15 @@
-import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
-
-import { AppShell } from "../../../src/components/app-shell";
-import { ReadFailure } from "../../../src/components/read-failure";
+import { DELIVERIES_SCREEN } from "../../../src/dash/list-screens";
+import { ProcedureListScreen } from "../../../src/components/procedure-list-screen";
 import {
   IdCell,
-  ProcedureTable,
   type ProcedureColumn,
 } from "../../../src/components/procedure-table";
-import { ProcedurePager } from "../../../src/components/procedure-pager";
+import { IsoInstant } from "../../../src/components/values";
 import { WEBHOOK_DELIVERIES } from "../../../src/dash/resource-name";
 import {
-  formatIsoInstant,
-  offsetFrom,
-  readProcedurePage,
-} from "../../../src/dash/procedure-list";
-import { signOut } from "../../../src/server/actions";
-import { requireStaff } from "../../../src/server/session";
+  asDeliveryState,
+  DeliveryStatePill,
+} from "../../../src/status-systems";
 
 /** Exactly the fields `type WebhookDeliverySummary` declares. */
 interface DeliveryRow {
@@ -51,7 +45,21 @@ const COLUMNS: readonly ProcedureColumn<DeliveryRow>[] = [
   {
     key: "event_type",
     header: "Event",
-    render: (r) => r.event_type,
+    render: (r) => (
+      <span className="font-mono text-body-small">{r.event_type}</span>
+    ),
+  },
+  {
+    key: "state",
+    header: "State",
+    render: (r) => {
+      const state = asDeliveryState(r.state);
+      return state === null ? (
+        r.state
+      ) : (
+        <DeliveryStatePill state={state} size="sm" />
+      );
+    },
   },
   {
     key: "event_id",
@@ -59,25 +67,29 @@ const COLUMNS: readonly ProcedureColumn<DeliveryRow>[] = [
     header: "Event id",
     render: (r) => <IdCell value={r.event_id} />,
   },
-  { key: "state", header: "State", render: (r) => r.state },
-  { key: "url", secondary: true, header: "Endpoint", render: (r) => r.url },
+  {
+    key: "url",
+    secondary: true,
+    header: "Endpoint",
+    render: (r) => <span className="break-all">{r.url}</span>,
+  },
   {
     key: "created_at",
     secondary: true,
-    header: "Created",
-    render: (r) => formatIsoInstant(r.created_at),
+    header: "Created (UTC)",
+    render: (r) => <IsoInstant value={r.created_at} />,
   },
   {
     key: "sent_at",
     secondary: true,
     header: "Sent",
-    render: (r) => formatIsoInstant(r.sent_at),
+    render: (r) => <IsoInstant value={r.sent_at} />,
   },
   {
     key: "next_attempt_at",
     secondary: true,
     header: "Next attempt",
-    render: (r) => formatIsoInstant(r.next_attempt_at),
+    render: (r) => <IsoInstant value={r.next_attempt_at} />,
   },
 ];
 
@@ -86,56 +98,15 @@ export default async function DeliveriesPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const gate = await requireStaff();
-  if (gate.kind === "outage") {
-    return (
-      <ScreenStack>
-        <h2>Deliveries</h2>
-        <ReadFailure failure={gate.failure} />
-      </ScreenStack>
-    );
-  }
-  const staff = gate.staff;
-  const offset = offsetFrom(await searchParams);
-  const result = await readProcedurePage<DeliveryRow>(
-    staff,
-    WEBHOOK_DELIVERIES,
-    offset,
-  );
-
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
-      <ScreenStack>
-        <h2>Deliveries</h2>
-        {!result.ok ? (
-          <ReadFailure failure={result.failure} />
-        ) : result.value.items.length === 0 ? (
-          <InlineEmptyState
-            variant="standalone"
-            message="No deliveries. Nothing has been delivered for this merchant yet."
-          />
-        ) : (
-          <>
-            <ProcedureTable
-              rows={result.value.items}
-              columns={COLUMNS}
-              idOf={(r) => r.id}
-              caption="Webhook deliveries"
-            />
-            <ProcedurePager
-              basePath="/deliveries"
-              offset={offset}
-              returned={result.value.items.length}
-              totalCount={result.value.totalCount}
-              hasNext={result.value.pageInfo.hasNextPage}
-            />
-          </>
-        )}
-      </ScreenStack>
-    </AppShell>
+    <ProcedureListScreen<DeliveryRow>
+      {...DELIVERIES_SCREEN}
+      resource={WEBHOOK_DELIVERIES}
+      basePath="/deliveries"
+      params={await searchParams}
+      columns={COLUMNS}
+      idOf={(r) => r.id}
+      emptyMessage="No deliveries. Nothing has been delivered for this merchant yet."
+    />
   );
 }

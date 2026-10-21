@@ -54,11 +54,12 @@ name: release-please
 #     `pubspec.yaml`, and mutually inconsistent with each other already.
 #     Whether a release should touch them is a real question nobody has
 #     answered; guessing here would be the wrong kind of tidy.
-#   - `sdks/flutter/.../example/pubspec.lock`, which pins the plugin as a
-#     path dependency at its version. Nothing enforces it (no
-#     `--enforce-lockfile` anywhere) and `flutter pub get` rewrites it, so it
-#     self-heals on the next run. Syncing it here would mean installing the
-#     Flutter SDK in this workflow for one line.
+#   (`sdks/flutter/.../example/pubspec.lock` was on this list until
+#   2026-10-21, on the grounds that `flutter pub get` rewrites it and that
+#   syncing it here needed the Flutter SDK. Neither held up: it went stale
+#   from 0.1.1 to 0.9.1, and the one line that moves can be rewritten
+#   without Flutter. It is synced on the release branch now, beside
+#   Cargo.lock; see "Sync the Flutter example's pubspec.lock" below.)
 #
 # ---------------------------------------------------------------------------
 # Why a GitHub App token and not GITHUB_TOKEN
@@ -193,6 +194,33 @@ jobs:
             echo "::endgroup::"
           done
 
+      # The Flutter example's pubspec.lock records the plugin, a path
+      # dependency, at the plugin's own version. It was on the "deliberately
+      # NOT bumped" list above until 2026-10-21, on the grounds that
+      # `flutter pub get` rewrites it. It does, but in whichever unrelated
+      # PR next runs Flutter: it was hand-synced once (0.1.0 -> 0.1.1,
+      # 2026-09-17) and then sat at 0.1.1 through every release to 0.9.1.
+      # That is the drift the Cargo.lock comment above calls worse than a
+      # red check. Exactly one line moves, and it is the line `flutter pub
+      # get` itself writes, so rewriting it needs no Flutter SDK. The awk
+      # fails, rather than passing silently, if the block's shape changes.
+      - name: Sync the Flutter example's pubspec.lock
+        if: steps.release.outputs.prs_created == 'true'
+        run: |
+          set -euo pipefail
+          plugin=sdks/flutter/vpay_checkout_flutter
+          version="$(sed -n 's/^version: \([0-9][^ ]*\) # x-release-please-version$/\1/p' "${plugin}/pubspec.yaml")"
+          test -n "$version"
+          lock="${plugin}/example/pubspec.lock"
+          awk -v version="$version" '
+            /^  vpay_checkout_flutter:$/ { in_block = 1; print; next }
+            /^  [^ ]/ { in_block = 0 }
+            in_block && /^    version: "/ { print "    version: \"" version "\""; in_block = 0; found = 1; next }
+            { print }
+            END { if (!found) { print "no vpay_checkout_flutter version line in the lockfile" > "/dev/stderr"; exit 1 } }
+          ' "$lock" > "${lock}.tmp"
+          mv "${lock}.tmp" "$lock"
+
       - name: Commit the lockfile, if the version bump moved it
         if: steps.release.outputs.prs_created == 'true'
         env:
@@ -208,15 +236,15 @@ jobs:
           HEAD_REF: ${{ fromJSON(steps.release.outputs.pr || '{}').headBranchName }}
         run: |
           set -euo pipefail
-          if git diff --quiet -- '*Cargo.lock'; then
+          if git diff --quiet -- '*Cargo.lock' '*pubspec.lock'; then
             echo "no lockfile changed — nothing to push"
             exit 0
           fi
           git config user.name  'release-please[bot]'
           git config user.email 'release-please[bot]@users.noreply.github.com'
-          git add -- '*Cargo.lock'
-          git commit -m 'chore: sync Cargo.lock with the release version'
+          git add -- '*Cargo.lock' '*pubspec.lock'
+          git commit -m 'chore: sync the lockfiles with the release version'
           git push "https://x-access-token:${TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
             "HEAD:refs/heads/${HEAD_REF}"
-          echo "### Lockfile synced" >> "$GITHUB_STEP_SUMMARY"
-          git diff --stat HEAD~1 -- '*Cargo.lock' >> "$GITHUB_STEP_SUMMARY"
+          echo "### Lockfiles synced" >> "$GITHUB_STEP_SUMMARY"
+          git diff --stat HEAD~1 -- '*Cargo.lock' '*pubspec.lock' >> "$GITHUB_STEP_SUMMARY"

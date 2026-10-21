@@ -15,6 +15,7 @@
  */
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it } from "vitest";
+import type { StripeError } from "./errors.js";
 import { loadStripe } from "./index.js";
 import {
   errorEnvelope,
@@ -25,6 +26,7 @@ import {
   type BrowserStub,
   type StubHandler,
 } from "./testing/browser-stub.js";
+import { UNROUTABLE_CLIENT_SECRETS } from "./testing/unroutable-secrets.js";
 import type { PaymentIntentResult, Stripe } from "./types.js";
 
 const PK = "pk_test_abcdefghijklmnop";
@@ -354,6 +356,94 @@ describe("client secret parsing", () => {
     const result = await stripe.confirmPayment({ clientSecret: "nope" });
     expect(result.error?.param).toBe("clientSecret");
     expect(stub.requests).toHaveLength(0);
+  });
+});
+
+// `parseClientSecret` is the only thing keeping `.` and `..` out of a path
+// this package builds — `encodeURIComponent` leaves dots alone, and `fetch`
+// resolves a dot segment before the request leaves. The four tests below
+// drive every public method that builds a `/v1/browser` path through
+// `testing/unroutable-secrets.ts`; `embedded.test.ts` does the same for the
+// frame's `/e/{id}`.
+describe("no payer route puts a dot segment in a path", () => {
+  /** Asserts one result is the parser's refusal, naming `name` on failure. */
+  function expectRefused(
+    name: string,
+    result: { error?: StripeError | undefined },
+  ): void {
+    expect(result.error?.type, name).toBe("invalid_request_error");
+    expect(result.error?.param, name).toBe("clientSecret");
+  }
+
+  it("refuses a client secret whose id is empty or only dots on every payment-intent read, sending nothing", async () => {
+    const { stub, stripe } = await withStub(
+      answering(200, samplePaymentIntent()).handler,
+    );
+
+    for (const [name, secret] of UNROUTABLE_CLIENT_SECRETS) {
+      expectRefused(name, await stripe.retrievePaymentIntent(secret));
+      expectRefused(
+        name,
+        await stripe.handleNextAction({ clientSecret: secret }),
+      );
+      expectRefused(name, await stripe.waitForPaymentIntent(secret));
+    }
+
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it("refuses a client secret whose id is empty or only dots on confirm, before any charge could be attempted", async () => {
+    const { stub, stripe } = await withStub(
+      answering(200, samplePaymentIntent()).handler,
+    );
+
+    for (const [name, secret] of UNROUTABLE_CLIENT_SECRETS) {
+      expectRefused(
+        name,
+        await stripe.confirmPayment({ clientSecret: secret }),
+      );
+      expectRefused(
+        name,
+        await stripe.confirmMobileMoneyPayment(secret, {
+          type: "mtn_momo",
+          msisdn: "237670000000",
+        }),
+      );
+    }
+
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it("refuses a client secret whose id is empty or only dots on retrieveCheckoutSession, sending nothing", async () => {
+    const { stub, stripe } = await withStub(
+      answering(200, samplePaymentIntent()).handler,
+    );
+
+    for (const [name, secret] of UNROUTABLE_CLIENT_SECRETS) {
+      expectRefused(name, await stripe.retrieveCheckoutSession(secret));
+    }
+
+    expect(stub.requests).toHaveLength(0);
+  });
+
+  it("keeps an id that carries /../ inside one path segment on every route", async () => {
+    // The other half of the rule: an id that *passes* the prefix check may
+    // still hold a `/`, and only `encodeURIComponent` keeps `pi_/../x` from
+    // resolving to `payment_intents/x`. The stub sees the raw request line,
+    // after `fetch`'s URL parser has had its chance.
+    const { stub, stripe } = await withStub(
+      answering(200, samplePaymentIntent()).handler,
+    );
+
+    await stripe.retrievePaymentIntent(`pi_/../x_secret_${SUFFIX}`);
+    await stripe.confirmPayment({ clientSecret: `pi_/../x_secret_${SUFFIX}` });
+    await stripe.retrieveCheckoutSession(`cs_/../x_secret_${SUFFIX}`);
+
+    expect(stub.requests.map((request) => request.url.split("?")[0])).toEqual([
+      "/v1/browser/payment_intents/pi_%2F..%2Fx",
+      "/v1/browser/payment_intents/pi_%2F..%2Fx/confirm",
+      "/v1/browser/checkout/sessions/cs_%2F..%2Fx",
+    ]);
   });
 });
 

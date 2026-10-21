@@ -115,8 +115,24 @@ impl Drop for ChildGuard {
     }
 }
 
+/// A `vpay-server` command whose observability listener is already on an
+/// OS-assigned loopback port.
+///
+/// Every boot path binds the observability listener, last
+/// (`start_observability` in `main.rs`), and its default is the fixed
+/// `0.0.0.0:9090`. Cargo runs this file's tests on parallel threads, so two
+/// servers alive at once — or any other process holding 9090, such as a
+/// second checkout's test run — made the later one exit 1 with `Address
+/// already in use` *after* logging that it was listening on its traffic port.
+/// `/healthz` never answered, and the test failed as `left: None, right:
+/// Some(200)` after its 5 s budget, in whichever test lost the race.
+/// `cargo nextest` hid it only because `.config/nextest.toml` serialises this
+/// package's tests. Port `0` cannot collide; a test that reads the listener
+/// sets `VPAY_OBSERVABILITY_BIND` itself, afterwards, and that wins.
 fn bin() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_vpay-server"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_vpay-server"));
+    command.env("VPAY_OBSERVABILITY_BIND", "127.0.0.1:0");
+    command
 }
 
 /// A minimal, valid `vpay_config::Config` YAML file — see the fixture's own

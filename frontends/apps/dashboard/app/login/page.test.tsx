@@ -29,7 +29,7 @@ vi.mock("../../src/config/runtime", () => ({
 vi.mock("../../src/server/actions", () => ({ signIn: vi.fn() }));
 vi.mock("../../src/server/session", () => ({
   alreadySignedIn: () => Promise.resolve(mocks.signedIn.value),
-  HOME_PATH: "/payments",
+  HOME_PATH: "/overview",
 }));
 vi.mock("../../src/server/api", () => ({
   getSsoStatus: mocks.getSsoStatus,
@@ -132,7 +132,7 @@ describe("the login page", () => {
     mocks.signedIn.value = true;
     await expect(
       LoginPage({ searchParams: Promise.resolve({}) }),
-    ).rejects.toThrow("redirect:/payments");
+    ).rejects.toThrow("redirect:/overview");
     expect(mocks.getSsoStatus).not.toHaveBeenCalled();
   });
 });

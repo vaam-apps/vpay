@@ -32,7 +32,7 @@ export interface EnrolmentPanelProps {
 export function EnrolmentPanel({ qrDataUrl, secret }: EnrolmentPanelProps) {
   return (
     <ScreenStack>
-      <h2 className="text-title-sm font-medium text-foreground">
+      <h2 className="font-display text-headline-small text-foreground">
         Set up your authenticator
       </h2>
       <p className="text-body text-muted-foreground">

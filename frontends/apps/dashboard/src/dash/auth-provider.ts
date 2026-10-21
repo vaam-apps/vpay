@@ -55,8 +55,6 @@ export function isSignOut(error: unknown): boolean {
 export interface DashAuthActions {
   /** The existing `signOut` Server Action — it revokes BEFORE clearing the cookie. */
   readonly signOut: () => Promise<void>;
-  /** The existing gate, as a client-callable check. Returns whether the session is live. */
-  readonly check: () => Promise<boolean>;
 }
 
 export function dashAuthProvider(actions: DashAuthActions): AuthProvider {
@@ -88,12 +86,26 @@ export function dashAuthProvider(actions: DashAuthActions): AuthProvider {
       return { success: true, redirectTo: "/login" };
     },
 
-    check: async () => {
-      const live = await actions.check();
-      return live
-        ? { authenticated: true }
-        : { authenticated: false, redirectTo: "/login" };
-    },
+    /**
+     * **No network, deliberately — the gate is the server's.**
+     *
+     * This called the `checkSession` Server Action until 2026-10-21. Refine
+     * calls `check()` from its internal `RouteChangeHandler` on EVERY
+     * pathname change and discards the answer (`.catch(() => false)`, read
+     * in `@refinedev/core`'s `dist/index.mjs`), so every navigation paid a
+     * Server Action round trip and a second `GET /dash/v1/staff/session`
+     * for a value nothing read — measured: two session reads per page where
+     * the page itself needed one. Nothing else asks: this app renders no
+     * `<Authenticated>` and calls no `useIsAuthenticated`, and
+     * `auth-provider.test.ts` fails if either appears.
+     *
+     * What actually gates is unchanged: every page under `app/(dash)` runs
+     * `requireStaff()` on the server before it renders, and a `401` from a
+     * read reaches `onError` below. So by the time any Refine hook can call
+     * this, the server has already decided the session was live for this
+     * render — which is all this answer says.
+     */
+    check: () => Promise.resolve({ authenticated: true }),
 
     // Pure function of the status, returned as a promise for the same
     // reason `login` is.

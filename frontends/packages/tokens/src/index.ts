@@ -108,3 +108,69 @@ export const statusLabel: Record<PaymentStatus, string> = {
   succeeded: "Succeeded",
   canceled: "Canceled",
 };
+
+/**
+ * The same five statuses in two words or fewer, for a place too narrow for
+ * {@link statusLabel} — the Overview's count tiles. Still one copy per
+ * state, here beside the long one, so a tile cannot invent its own word for
+ * a status the pill spells differently.
+ */
+export const statusShortLabel: Record<PaymentStatus, string> = {
+  requires_payment_method: "Awaiting method",
+  requires_action: "Awaiting payer",
+  processing: "In flight",
+  succeeded: "Succeeded",
+  canceled: "Canceled",
+};
+
+/**
+ * The dashboard's three other state vocabularies, and the words an operator
+ * reads for each. Same rule as `statusLabel`: the copy for a state lives
+ * here, once, so a refund cannot read "Pending" on one screen and "Waiting"
+ * on another.
+ *
+ * Each list is the database's own `CHECK` constraint, verbatim, not a
+ * guess at it: `refunds.status` (`RefundStatus` in `schemas/vpay.cstack`),
+ * `webhook_deliveries.state_is_known` (migration 0022) and
+ * `checkout_sessions.status_is_known` (migration 0028). A value outside a
+ * list is rendered by the dashboard as plain text, never coloured as
+ * something it is not.
+ */
+export const REFUND_STATUS = [
+  "pending",
+  "succeeded",
+  "failed",
+  "canceled",
+] as const;
+export type RefundStatus = (typeof REFUND_STATUS)[number];
+export const refundStatusLabel: Record<RefundStatus, string> = {
+  pending: "Pending",
+  succeeded: "Refunded",
+  failed: "Failed",
+  canceled: "Canceled",
+};
+
+export const DELIVERY_STATE = [
+  "pending",
+  "succeeded",
+  "failed",
+  "exhausted",
+] as const;
+export type DeliveryState = (typeof DELIVERY_STATE)[number];
+export const deliveryStateLabel: Record<DeliveryState, string> = {
+  // `pending` means "owed an attempt" — including a retry after a failure
+  // (migration 0022's own column comment) — so the label says that, rather
+  // than "Pending", which reads as "not sent yet".
+  pending: "Attempt owed",
+  succeeded: "Delivered",
+  failed: "Failed",
+  exhausted: "Retries exhausted",
+};
+
+export const CHECKOUT_STATUS = ["open", "complete", "expired"] as const;
+export type CheckoutStatus = (typeof CHECKOUT_STATUS)[number];
+export const checkoutStatusLabel: Record<CheckoutStatus, string> = {
+  open: "Open",
+  complete: "Complete",
+  expired: "Expired",
+};

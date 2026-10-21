@@ -34,15 +34,12 @@
  *    surface sits behind it. Composited over `--color-base-100`, per the
  *    "honest limit" below.
  *
- * **Honest limit, stated once here rather than left implicit**: every
- * `InlineBanner` and every `PaymentStatusPill` this app renders sits
- * directly on the page background (`ScreenStack` → `<main>` → `<body>`,
- * none of which sets its own background class) or inside a plain
- * `<section>`/`<div role="…">` that does not either — confirmed by reading
- * every call site listed above. If one is ever placed inside a `Card` or
- * `bg-surface-1`/`bg-surface-2` container, this backdrop is the wrong one
- * and every ratio below would need recomputing against that surface
- * instead.
+ * **Grounds.** Since the Material 3 Expressive revamp (2026-10-21) pills
+ * and banners sit either on the page (`--color-base-100`) or inside a
+ * `Card` (`--color-base-300`), so every pair is measured over both, in both
+ * themes. The `InstrumentPanel` ground is the library's own measurement
+ * (its contrast gate) and `instrument-register.test.ts` holds this app to
+ * the one rule it derives.
  *
  * `src/testing/contrast.ts`'s own header explains why this is a port of
  * the checkout's helper rather than a shared import.
@@ -55,8 +52,8 @@ import tailwind from "@tailwindcss/postcss";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 
-import { PAYMENT_STATUS_SYSTEM } from "./payment-status";
-import { contrastRatio, hexToSrgb255, themeColours } from "./testing/contrast";
+import { STATUS_SYSTEMS } from "./status-systems";
+import { contrastRatio, themeColours } from "./testing/contrast";
 
 // A relative path to this app's OWN compiled stylesheet — the same file
 // `styling-gate.test.ts` compiles, and for the same reason `just ci` never
@@ -80,139 +77,128 @@ const compiled = await postcss([tailwind()]).process(
 );
 
 /**
- * `--color-base-100`, read from `@vaam-apps/ui/dist/styles/theme.css`
- * directly rather than derived: it is the ground every `PaymentStatusPill`
- * glyph and every `InlineBanner`'s alpha `-bg` composites against on this
- * app's pages (see the header comment's "honest limit"), and nothing in
- * this app overrides it at runtime — unlike the checkout, the dashboard has
- * no `branding.yaml` colour override and no `config/theme.ts` to apply one.
+ * The grounds a pill glyph or a banner actually sits on in this app, read
+ * from the compiled theme rather than typed in. Two of them since the
+ * Material 3 Expressive revamp (2026-10-21): the page (`--color-base-100`,
+ * M3's `surface`) and the card every list and detail section now sits in
+ * (`--color-base-300`, `Card`'s `surface-container`). This said one ground,
+ * hard-coded as `#0a0b0d`, until `@vaam-apps/ui@0.5.0` replaced the palette
+ * — at which point the literal was simply wrong, and a ground nobody
+ * paints any more is the thing this suite exists to refuse.
  */
-const PAGE_BACKGROUND_255 = hexToSrgb255("#0a0b0d") as [number, number, number];
+const GROUNDS = ["base-100", "base-300"] as const;
+const THEMES = ["dark", "light"] as const;
 
-const colours = themeColours(compiled.root, { over: PAGE_BACKGROUND_255 });
+const colourSets = THEMES.flatMap((theme) =>
+  GROUNDS.map((ground) => ({
+    theme,
+    ground,
+    colours: themeColours(compiled.root, { over: ground, theme }),
+  })),
+);
 
 /**
- * Every hue `PAYMENT_STATUS_SYSTEM` actually assigns, deduplicated in
- * table order rather than hand-listed: `requires_payment_method` (neutral),
- * `requires_action` (warning), `processing` (parked), `succeeded`
- * (success), `canceled` (warning again, already counted). Deriving this
- * from the table itself — rather than typing `["neutral", "warning",
- * "parked", "success"]` — means a hue added or changed here is measured
+ * Every hue the app's status systems actually assign, deduplicated rather
+ * than hand-listed, so a hue added or changed in a table is measured
  * automatically instead of by remembering to update a second list.
  */
 const STATUS_PILL_HUES = [
-  ...new Set(Object.values(PAYMENT_STATUS_SYSTEM).map((meta) => meta.hue)),
+  ...new Set(
+    STATUS_SYSTEMS.flatMap((system) =>
+      Object.values(system).map((meta) => meta.hue),
+    ),
+  ),
 ];
 
 /**
- * The `InlineBanner` variants this app actually renders, per the header
- * comment's `git grep`. Hand-listed, not derived: unlike
- * `PAYMENT_STATUS_SYSTEM`, nothing in this app owns a typed table of "every
- * banner variant in use" the way `checkoutOutcomeVariant` does for the
- * checkout — these are six independent JSX literals across six files.
+ * The `InlineBanner` variants this app renders. Hand-listed: nothing owns a
+ * typed table of "every banner variant in use". `uncertain` is the
+ * Overview's "a count could not be read" notice.
  */
-const BANNER_VARIANTS = ["danger", "warning"];
+const BANNER_VARIANTS = ["danger", "warning", "uncertain"];
 
 describe("dashboard status colours, contrast measured from the compiled theme", () => {
   // (0) THE ANTI-VACUITY CASE. `themeColours` silently skips any
-  // declaration whose value it cannot parse — that is how a themeColours
-  // still shaped for `oklch(...)`-only input would report a clean run over
-  // this hex-and-rgb() theme having resolved ZERO colours. A count, before
-  // any ratio, on the real compiled sheet.
-  it("parses a non-zero number of colours out of the compiled sheet", () => {
-    expect(
-      colours.size,
-      "themeColours resolved nothing — the parser and the theme disagree",
-    ).toBeGreaterThan(20);
-  });
-
-  // (1) Every token the status pill actually names resolves, plus the
-  // ground every glyph is measured against.
-  it("resolves a colour for every status-pill hue's glyph token, and for the page ground", () => {
-    expect(colours.get("base-100"), "--color-base-100").toBeDefined();
-    for (const hue of STATUS_PILL_HUES) {
-      expect(colours.get(`state-${hue}-fg`), `--state-${hue}-fg`).toBeDefined();
-    }
-  });
-
-  // (2) Every token the InlineBanner variants this app renders actually
-  // name resolves.
-  it("resolves a colour for every InlineBanner variant this app renders", () => {
-    for (const variant of BANNER_VARIANTS) {
+  // declaration whose value it cannot resolve — which is how the 0.5.0 bump
+  // first surfaced: every token a `var()`, zero colours resolved. A count,
+  // per theme and ground, before any ratio.
+  for (const { theme, ground, colours } of colourSets) {
+    it(`parses a non-zero number of colours (${theme}, over ${ground})`, () => {
       expect(
-        colours.get(`state-${variant}-fg`),
-        `--state-${variant}-fg`,
-      ).toBeDefined();
-      expect(
-        colours.get(`state-${variant}-bg`),
-        `--state-${variant}-bg`,
-      ).toBeDefined();
-    }
-  });
-
-  // (3) A KNOWN NUMBER, so a parser that returns plausible garbage is
-  // caught. #fdba74 text on rgb(251 146 60 / 0.1) over #0a0b0d, computed
-  // independently (`<SP>/dashui-G-hand-calc.mjs`) from the three hex values
-  // `@vaam-apps/ui/dist/styles/theme.css` declares for `--state-warning-fg`,
-  // `--state-warning-bg`'s own channel triplet, and `--color-base-100` —
-  // not from this file's own machinery.
-  it("agrees with a hand-computed ratio on the InlineBanner warning pair", () => {
-    const fg = colours.get("state-warning-fg");
-    const bg = colours.get("state-warning-bg");
-    expect(fg && bg).toBeTruthy();
-    const ratio = contrastRatio(
-      fg as [number, number, number],
-      bg as [number, number, number],
-    );
-    expect(ratio).toBeCloseTo(10.28, 1);
-  });
-
-  // (4) The pair `StatusPill` actually paints for a quiet pill (every pill
-  // this app renders): the glyph's `--state-<hue>-fg` directly against the
-  // page ground. WCAG 1.4.11 (non-text contrast), 3:1 — the glyph is a
-  // graphical object conveying state, not text — is the applicable
-  // success criterion, not 1.4.3's 4.5:1 for text.
-  for (const hue of STATUS_PILL_HUES) {
-    it(`status hue "${hue}": the glyph clears WCAG non-text contrast (3:1) against the page ground`, () => {
-      const fg = colours.get(`state-${hue}-fg`);
-      const ground = colours.get("base-100");
-      expect(
-        fg && ground,
-        `--state-${hue}-fg and --color-base-100`,
-      ).toBeTruthy();
-      const ratio = contrastRatio(
-        fg as [number, number, number],
-        ground as [number, number, number],
-      );
-      expect(
-        ratio,
-        `status hue "${hue}" glyph vs page ground: ${ratio.toFixed(2)}:1`,
-      ).toBeGreaterThanOrEqual(3);
+        colours.size,
+        "themeColours resolved nothing — the parser and the theme disagree",
+      ).toBeGreaterThan(20);
+      expect(colours.get(ground), `--color-${ground}`).toBeDefined();
+      for (const hue of STATUS_PILL_HUES) {
+        expect(
+          colours.get(`state-${hue}-fg`),
+          `--state-${hue}-fg`,
+        ).toBeDefined();
+      }
+      for (const variant of BANNER_VARIANTS) {
+        expect(colours.get(`state-${variant}-fg`)).toBeDefined();
+        expect(colours.get(`state-${variant}-bg`)).toBeDefined();
+      }
     });
   }
 
-  // (5) The pair `InlineBanner` actually paints for the variants this app
-  // renders: `--state-<hue>-fg` text on `--state-<hue>-bg`, composited over
-  // the page ground because the bg is `rgb(… / 0.1)`. This is real body
-  // text (`FormAlert`'s error sentence, `EnrolmentPanel`'s warning), so
-  // WCAG 1.4.3 AA (4.5:1) applies — the same bar `outcome-contrast.test.ts`
-  // holds the checkout's own `InlineBanner` text to.
-  for (const variant of BANNER_VARIANTS) {
-    it(`InlineBanner variant="${variant}": clears WCAG AA (4.5:1) as actually rendered`, () => {
-      const fg = colours.get(`state-${variant}-fg`);
-      const bg = colours.get(`state-${variant}-bg`);
-      expect(
-        fg && bg,
-        `--state-${variant}-fg and --state-${variant}-bg (composited over --color-base-100)`,
-      ).toBeTruthy();
+  // (1) A KNOWN NUMBER, so a parser that returns plausible garbage is
+  // caught. `--state-warning-fg` text on `--state-warning-bg` composited
+  // over `--md-sys-color-surface`, computed independently in Python from
+  // the three literals `@vaam-apps/ui@0.5.0`'s theme.css declares — dark:
+  // #ffb599 on rgb(255 181 153 / 0.12) over #0f0c1b = 9.131; light:
+  // #963e17 on rgb(150 62 23 / 0.08) over #fdf7ff = 5.889 — not from this
+  // file's own machinery.
+  it("agrees with a hand-computed ratio on the InlineBanner warning pair", () => {
+    const expected = { dark: 9.131, light: 5.889 } as const;
+    for (const { theme, ground, colours } of colourSets) {
+      if (ground !== "base-100") continue;
+      const fg = colours.get("state-warning-fg");
+      const bg = colours.get("state-warning-bg");
+      expect(fg && bg).toBeTruthy();
       const ratio = contrastRatio(
         fg as [number, number, number],
         bg as [number, number, number],
       );
-      expect(
-        ratio,
-        `InlineBanner variant="${variant}": ${ratio.toFixed(2)}:1`,
-      ).toBeGreaterThanOrEqual(4.5);
-    });
+      expect(ratio, theme).toBeCloseTo(expected[theme], 2);
+    }
+  });
+
+  // (2) The pair a status pill paints: the glyph's `--state-<hue>-fg`
+  // against the ground it sits on. WCAG 1.4.11 (non-text contrast), 3:1 —
+  // the glyph is a graphical object conveying state. Both themes, both
+  // grounds: light became selectable in 0.1.2 and nothing measured it here
+  // until this revamp.
+  for (const { theme, ground, colours } of colourSets) {
+    for (const hue of STATUS_PILL_HUES) {
+      it(`status hue "${hue}" (${theme}, on ${ground}): the glyph clears 3:1`, () => {
+        const fg = colours.get(`state-${hue}-fg`);
+        const bg = colours.get(ground);
+        expect(fg && bg).toBeTruthy();
+        const ratio = contrastRatio(
+          fg as [number, number, number],
+          bg as [number, number, number],
+        );
+        expect(ratio, `${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+
+  // (3) The pair `InlineBanner` paints: `--state-<hue>-fg` text on
+  // `--state-<hue>-bg` composited over the ground. Real body text, so WCAG
+  // 1.4.3 AA (4.5:1).
+  for (const { theme, ground, colours } of colourSets) {
+    for (const variant of BANNER_VARIANTS) {
+      it(`InlineBanner variant="${variant}" (${theme}, on ${ground}) clears 4.5:1`, () => {
+        const fg = colours.get(`state-${variant}-fg`);
+        const bg = colours.get(`state-${variant}-bg`);
+        expect(fg && bg).toBeTruthy();
+        const ratio = contrastRatio(
+          fg as [number, number, number],
+          bg as [number, number, number],
+        );
+        expect(ratio, `${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(4.5);
+      });
+    }
   }
 });

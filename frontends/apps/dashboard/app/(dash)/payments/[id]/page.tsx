@@ -1,12 +1,10 @@
-import { ScreenStack } from "@vaam-apps/ui";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
-import { AppShell } from "../../../../src/components/app-shell";
+import { PaymentDetailHeader } from "../../../../src/components/payment-detail";
 import { ReadFailure } from "../../../../src/components/read-failure";
 import type { InitialOne } from "../../../../src/dash/initial";
 import { dashProvider, PAYMENT_INTENTS } from "../../../../src/dash/provider";
-import { signOut } from "../../../../src/server/actions";
 import { requireStaff } from "../../../../src/server/session";
 import { PaymentScreen } from "./payment-screen";
 
@@ -38,14 +36,13 @@ export default async function PaymentDetailPage({
   if (gate.kind === "outage") {
     // A vpay this page cannot reach is not a sign-out — see `payments/page.tsx`.
     return (
-      <ScreenStack>
-        <h2>Payment</h2>
+      <>
+        <PaymentDetailHeader />
         <ReadFailure failure={gate.failure} />
-      </ScreenStack>
+      </>
     );
   }
   const staff = gate.staff;
-  const { session } = staff;
   const { id } = await params;
 
   const result = await dashProvider(staff).getOne({
@@ -60,14 +57,8 @@ export default async function PaymentDetailPage({
     : { ok: false, failure: result.failure };
 
   return (
-    <AppShell
-      email={session.email}
-      merchantId={session.merchant_id}
-      signOut={signOut}
-    >
-      <Suspense fallback={null}>
-        <PaymentScreen id={id} initial={initial} />
-      </Suspense>
-    </AppShell>
+    <Suspense fallback={null}>
+      <PaymentScreen id={id} initial={initial} />
+    </Suspense>
   );
 }
