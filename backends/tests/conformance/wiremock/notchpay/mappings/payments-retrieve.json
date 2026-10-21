@@ -20,14 +20,15 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{request.pathSegments.[1]}}\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"complete\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{request.pathSegments.[1]}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"}}"
       },
       "metadata": {
         "why": [
-          "openapi.yaml 2.1.0's retrievePayment documents 202 on success, with the payment under",
-          "`transaction`. Some API reference pages show `data` instead (RFC-0012 section 10 item 15);",
-          "the client follows the specification. The amount and currency are the conformance charge's,",
-          "because the adapter refuses a success for any other money (ADR-0031 condition 5)."
+          "openapi.yaml 2.1.0's retrievePayment documents 202 on success; Notch Pay's sandbox answered 200",
+          "on 2026-10-21, with the payment under `transaction` (item 15, answered) and an `amounts` object whose",
+          "`total` the adapter now requires to be the charge's. The path carries OUR reference, which the sandbox",
+          "answers 404 (item 2, contradicted): this stub keeps the adapter's current addressing and must move",
+          "with its fix. The amount and currency are the conformance charge's (ADR-0031 condition 5)."
         ]
       }
     },
@@ -103,7 +104,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000560\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"pending\"}}",
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000560\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}",
         "fixedDelayMilliseconds": 2000
       },
       "metadata": {
@@ -130,7 +131,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"transaction\":{\"id\":\"pay.test_0b16\",\"reference\":\"00000000-0000-0000-0000-000000000b16\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"complete\"},\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
+        "body": "{\"code\":202,\"transaction\":{\"id\":\"pay.test_0b16\",\"reference\":\"00000000-0000-0000-0000-000000000b16\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"},\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
       },
       "metadata": {
         "why": "REF_HUGE. A valid complete read padded past MAX_RAIL_BODY_BYTES (256 KiB), so without the bound the adapter would answer Succeeded."
@@ -156,10 +157,10 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f01\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"failed\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f01\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"failed\"}}"
       },
       "metadata": {
-        "why": "Notch Pay's read names no reason (RFC-0012 section 4): failed is provider_error until the sandbox shows otherwise."
+        "why": "Notch Pay's read names no reason (RFC-0012 section 4). On 2026-10-21 the sandbox's failure-(other reason) number read failed and nothing else: provider_error."
       }
     },
     {
@@ -182,10 +183,10 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f02\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"canceled\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f02\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"canceled\"}}"
       },
       "metadata": {
-        "why": "'canceled by the merchant or customer' -- and the public key can cancel (ADR-0031). provider_error, never payer_declined."
+        "why": "Notch Pay's sandbox read its canceled-by-user number (+237670000004) as canceled on 2026-10-21, the evidence RFC-0012 section 4 named: payer_declined. The public key can also cancel (ADR-0031), so it is evidence of a decline, not proof of whose."
       }
     },
     {
@@ -208,7 +209,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f03\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"rejected\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f03\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"rejected\"}}"
       },
       "metadata": {
         "why": "'rejected by our system or by operator', including Notch Pay's fraud system. provider_error."
@@ -234,7 +235,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f04\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"expired\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f04\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"expired\"}}"
       },
       "metadata": {
         "why": "'expired after 3 hours'. payer_timeout."
@@ -260,10 +261,63 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f05\",\"amount\":5000,\"currency\":\"XAF\",\"status\":\"abandoned\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f05\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"abandoned\"}}"
       },
       "metadata": {
         "why": "'abandoned the payment on our hosted page' -- a push charge should never read it; payer_timeout if it does."
+      }
+    },
+    {
+      "name": "read: complete, but amounts.total is short of the charge -- transcribed from the sandbox's insufficient-funds read",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/payments/00000000-0000-0000-0000-000000000f10",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 200,
+          "status": "OK",
+          "message": "Transaction retrieved",
+          "transaction": {
+            "amount": 5000,
+            "amounts": {
+              "converted": 5000,
+              "currency": "XAF",
+              "rate": 1,
+              "total": 4980
+            },
+            "callback": null,
+            "charge": "business",
+            "currency": "XAF",
+            "fees": [],
+            "merchant_reference": "00000000-0000-0000-0000-000000000f10",
+            "reference": "trx.test_00000000000000f10",
+            "sandbox": 1,
+            "status": "complete",
+            "trxref": "00000000-0000-0000-0000-000000000f10"
+          }
+        }
+      },
+      "metadata": {
+        "why": [
+          "REF_SHORT_COLLECTION. Notch Pay's sandbox, 2026-10-21: its insufficient-funds test number (+237670000001)",
+          "read complete with amount 107 and amounts.total 105; on every other answer that day total equalled",
+          "amount. This is that read's shape (identifiers replaced, amounts scaled to the conformance charge's",
+          "5000 XAF). The adapter must answer Malformed, never Succeeded."
+        ]
       }
     }
   ]

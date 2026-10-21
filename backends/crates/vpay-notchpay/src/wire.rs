@@ -162,8 +162,11 @@ impl fmt::Debug for PaymentEnvelope {
 /// `reference` and `trxref` are the field the specification and the
 /// direct-charge guide disagree about: the specification's example puts the
 /// merchant's reference in `reference`, and the guide's example puts Notch
-/// Pay's own (`trx.…`) there and the merchant's in `trxref`. Both are read,
-/// and which one a caller should trust is RFC-0012's "To confirm" item 2.
+/// Pay's own (`trx.…`) there and the merchant's in `trxref`. **Notch Pay's
+/// sandbox answered with the guide's shape on 2026-10-21**: `reference` was
+/// `trx.test_…`, and `trxref` (and an unmodelled `merchant_reference`) the
+/// merchant's. It also sent no `id` (RFC-0012 § 10 item 2;
+/// `docs/status/verification/2026-10-21-notchpay-sandbox-run.md`).
 ///
 /// `amount` is a JSON number (`type: number`). It is held as
 /// [`serde_json::Number`] rather than `i64` so that a body which renders it
@@ -183,6 +186,34 @@ pub struct Payment {
     pub currency: Option<String>,
     #[serde(rename = "status")]
     pub status: Option<String>,
+    /// `amounts`, absent from `openapi.yaml` 2.1.0 and present on every
+    /// payment answer Notch Pay's sandbox gave on 2026-10-21
+    /// (`docs/status/verification/2026-10-21-notchpay-sandbox-run.md`).
+    #[serde(rename = "amounts")]
+    pub amounts: Option<Amounts>,
+}
+
+/// A payment's `amounts` object: `{ "converted", "currency", "rate",
+/// "total" }`. Only `total` is read.
+///
+/// On 2026-10-21 `total` equalled `amount` on every sandbox answer but one:
+/// the read of Notch Pay's "insufficient funds" test number, which said
+/// `complete` with `amount` 107 and `total` 105. So `total` is what was
+/// collected, and a success whose `total` is not the charge's amount is not
+/// a success (`vpay_adapter_notchpay`'s mapping).
+#[derive(Debug, Deserialize)]
+pub struct Amounts {
+    #[serde(rename = "total")]
+    pub total: Option<serde_json::Number>,
+}
+
+impl Amounts {
+    /// `total` as whole minor units, on [`Payment::amount_minor`]'s terms: a
+    /// float or a missing value is `None`.
+    #[must_use]
+    pub fn total_minor(&self) -> Option<i64> {
+        self.total.as_ref().and_then(serde_json::Number::as_i64)
+    }
 }
 
 impl Payment {
@@ -211,6 +242,7 @@ impl fmt::Debug for Payment {
             .field("amount", &self.amount)
             .field("currency", &self.currency)
             .field("status", &self.status)
+            .field("amounts_total", &self.amounts.as_ref().map(|a| &a.total))
             .finish()
     }
 }
