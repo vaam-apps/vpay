@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.10.1](https://github.com/vaam-apps/vpay/compare/v0.10.0...v0.10.1) (2026-10-21)
+
+
+### Bug Fixes
+
+* **dashboard:** the theme script runs first in body, and the re-sign-in lands on /overview ([#323](https://github.com/vaam-apps/vpay/issues/323)) ([63c395d](https://github.com/vaam-apps/vpay/commit/63c395dfaf27e44eb6f943969dc08f59d7696e43))
+
+
+### Documentation
+
+* **callbacks:** no rail is documented to retry a callback; MTN PUT/POST and Orange order_id recorded as open (RFC-0013 step 0, items 1-3) ([#319](https://github.com/vaam-apps/vpay/issues/319)) ([0706cd5](https://github.com/vaam-apps/vpay/commit/0706cd57f0baf57bc5a9fbf43b8c1cb058e5bd38))
+* **callbacks:** no rail is documented to retry a callback; record MTN's PUT/POST and Orange's order_id as open (RFC-0013 step 0, items 1-3) ([0706cd5](https://github.com/vaam-apps/vpay/commit/0706cd57f0baf57bc5a9fbf43b8c1cb058e5bd38))
+
 ## [0.10.0](https://github.com/vaam-apps/vpay/compare/v0.9.1...v0.10.0) (2026-10-21)
 
 
