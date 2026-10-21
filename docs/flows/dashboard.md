@@ -148,6 +148,15 @@ themselves, exactly as before Refine, and hand the answer to the hooks as
 page issues. Evidence, and the two defects the browser-side read produced, on
 [dashboard/status-read-seam-and-bff.md](dashboard/status-read-seam-and-bff.md).
 
+**Redesigned and made reload-free, 2026-10-21** — Material 3 Expressive on
+`@vaam-apps/ui` 0.5.0, an Overview home screen of exact procedure counts,
+status chips on every list, and navigation that no longer reloads the
+document (6 → 1 document loads over one fixed click-through, one session read
+per navigation instead of two). No read moved to the browser and no write
+was added. Evidence on
+[dashboard/status-styling-and-demo.md](dashboard/status-styling-and-demo.md)
+and [../status/verification/2026-10-21-dashboard-md3e.md](../status/verification/2026-10-21-dashboard-md3e.md).
+
 **The one thing a reader must not conclude from this document is that the
 dashboard is finished.** A staff member can sign in and read this merchant's
 payments. What the dashboard still cannot do is anything at all to them.

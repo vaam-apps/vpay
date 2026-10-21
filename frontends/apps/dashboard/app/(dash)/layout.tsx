@@ -1,87 +1,57 @@
-"use client";
-
-import { Refine } from "@refinedev/core";
-import routerProvider from "@refinedev/nextjs-router";
-import { Suspense } from "react";
-
-import { dashAuthProvider } from "../../src/dash/auth-provider";
-import { dashDataProvider } from "../../src/dash/data-provider";
-import { REFINE_RESOURCES } from "../../src/dash/resources";
-import { checkSession, signOut } from "../../src/server/actions";
+import { AppShell } from "../../src/components/app-shell";
+import { DashProviders } from "../../src/dash/providers";
+import { signOut } from "../../src/server/actions";
+import { requireStaff } from "../../src/server/session";
 
 /**
- * The signed-in shell — Lane 3 of
- * `docs/plans/exp55-refine-seam-bff-notes/refine-plan.md`.
+ * The signed-in layout: the gate, then the shell, then the page.
  *
- * # The `<Suspense>` is load-bearing, and not where you would guess
+ * # Why the shell lives here and not in every page
  *
- * `<Refine>` **itself** calls `useSearchParams()`, through its internal
- * `Telemetry` component — not only the data hooks do. Without a boundary
- * here, `next build` fails at prerender with
- * *"useSearchParams() should be wrapped in a suspense boundary"* for every
- * route in this group.
+ * Until 2026-10-21 each page rendered its own `AppShell`. A layout is the
+ * only place Next keeps a subtree mounted across navigations, so with the
+ * shell inside the page every navigation unmounted and remounted the rail,
+ * the app bar and the account block — the floating rails, being portalled
+ * after hydration, visibly disappeared and came back — and nothing on screen
+ * said a navigation was in progress until the next page had fully arrived.
+ * Here the shell stays put, and each route's `loading.tsx` fills `<main>` the
+ * instant a link is followed.
  *
- * Wrapping the individual screens is **not** enough: measured, the trace
- * simply moves from `useList` to `Telemetry`. The boundary belongs around
- * `<Refine>`, which is why it is in the layout and not in each page.
+ * # The gate still runs on every page
  *
- * # This is a client component and its children are still server components
+ * `requireStaff` is memoised per request (`src/server/session.ts`), so a
+ * full render costs one session read for this layout and its page together.
+ * On a client-side navigation Next re-renders the page but not this layout,
+ * and every page still calls `requireStaff()` itself before it reads
+ * anything — so the gate runs on every navigation, exactly as before, and
+ * this layout's call only decides whether there is a shell to draw.
  *
- * Next passes `children` as a slot, so every page inside this group keeps
- * running `requireStaff()` on the server before anything renders. That
- * matters: the 80 %-of-TTL re-mint and the `401`-vs-outage distinction stay
- * on the server, where the token is, and this file has never seen one.
+ * A vpay this layout cannot reach (`outage`) is rendered by the page, which
+ * meets the same memoised answer and renders the failure with the cookie
+ * kept (issue #88 item 2) — without a shell, because there is no session to
+ * say who is signed in.
  */
-export default function DashLayout({
+export const dynamic = "force-dynamic";
+
+export default async function DashLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const gate = await requireStaff();
   return (
-    <Suspense fallback={null}>
-      <Refine
-        routerProvider={routerProvider}
-        dataProvider={dashDataProvider("/api/dash")}
-        authProvider={dashAuthProvider({ signOut, check: checkSession })}
-        resources={[...REFINE_RESOURCES]}
-        options={{
-          // The banner is a network call and an opinion about this product
-          // that this product did not ask for.
-          disableTelemetry: true,
-          syncWithLocation: true,
-          warnWhenUnsavedChanges: false,
-          reactQuery: {
-            clientConfig: {
-              defaultOptions: {
-                queries: {
-                  /**
-                   * **One attempt, and then say so.**
-                   *
-                   * TanStack Query retries a failed read three times with
-                   * backoff by default, and Refine does not change that. On
-                   * this surface that is the wrong trade twice over: a
-                   * refusal from `/dash/v1` is a decision, not a blip — a
-                   * `401` is the session being over and a `403` is a
-                   * deployment problem, and retrying either just delays the
-                   * answer — while an outage leaves an operator watching a
-                   * skeleton for several seconds before `ReadFailure` ever
-                   * appears.
-                   *
-                   * Measured while writing `screens.test.tsx`: with the
-                   * default, a rejected read still rendered the loading
-                   * skeleton a second later and the error branch was
-                   * unreachable in a test. That is what an operator would
-                   * have seen too.
-                   */
-                  retry: false,
-                },
-              },
-            },
-          },
-        }}
-      >
-        {children}
-      </Refine>
-    </Suspense>
+    <DashProviders>
+      {gate.kind === "ready" ? (
+        <AppShell
+          email={gate.staff.session.email}
+          merchantId={gate.staff.session.merchant_id}
+          signOut={signOut}
+        >
+          {children}
+        </AppShell>
+      ) : (
+        children
+      )}
+    </DashProviders>
   );
 }

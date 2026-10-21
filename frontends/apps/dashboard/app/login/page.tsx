@@ -45,7 +45,7 @@ export default async function LoginPage({
   if (config === null) {
     return (
       <ScreenStack>
-        <h2 className="text-title-sm font-medium text-foreground">
+        <h2 className="font-display text-headline-small text-foreground">
           No sign-in is configured
         </h2>
         <div role="status">
@@ -79,7 +79,9 @@ export default async function LoginPage({
 
   return (
     <ScreenStack>
-      <h2 className="text-title-sm font-medium text-foreground">Sign in</h2>
+      <h2 className="font-display text-headline-small text-foreground">
+        Sign in
+      </h2>
       <p className="text-body text-muted-foreground">
         Staff accounts are created with <Code>vpay-server staff add</Code>.
         There is no sign-up.

@@ -28,25 +28,27 @@
  * fixes and does not attempt.
  */
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { ScreenStack } from "@vaam-apps/ui";
 import { expect, fn, userEvent, waitFor, within } from "storybook/test";
 
 import { AppShell } from "./app-shell";
 import { EnrolmentPanel } from "./enrolment-panel";
+import { FilterChips } from "./filter-chips";
 import { FormAlert } from "./form-alert";
 import { PasswordForm } from "./password-form";
+import { PageHeader } from "./layout";
 import { PaymentDetailHeader, PaymentDetailView } from "./payment-detail";
 import { PaymentSkeleton } from "./payment-skeleton";
 import { PaymentsFilters } from "./payments-filters";
 import { PaymentsPager } from "./payments-pager";
 import { PAYMENTS_DESCRIPTION, PaymentsSkeleton } from "./payments-skeleton";
 import { PaymentsTable } from "./payments-table";
+import { ProcedurePager } from "./procedure-pager";
 import { ReadFailure } from "./read-failure";
 import { SignedInBar } from "./signed-in-bar";
 import { SignInForm } from "./sign-in-form";
 import { TimelineGap } from "./timeline-gap";
 import { TotpForm } from "./totp-form";
-import { NAV_ENTRIES } from "../dash/resources";
+import { NAV_GROUPS, OVERVIEW_NAV } from "../dash/resources";
 import { DETAIL, INTENT, OTHER_INTENT } from "../testing/fixtures";
 import type { FormAction } from "../form-state";
 
@@ -282,6 +284,13 @@ async function nothingOffScreen(
   }
 }
 
+/** The status chip row, by its accessible name. */
+function statusChips(canvasElement: HTMLElement): HTMLElement {
+  return within(canvasElement).getByRole("navigation", {
+    name: "Filter payments by status",
+  });
+}
+
 /**
  * The filters with a range set, at 1280×800: the date field at its longest
  * value, and the only desktop `Filters` story whose trigger carries a
@@ -292,23 +301,19 @@ async function nothingOffScreen(
  * doc claims and jsdom cannot see:
  *
  * - the trigger is named by its visible label and described by the dates;
- * - at 1280px the three controls are one line and nothing scrolls;
+ * - nothing ends past the row's edge and nothing scrolls sideways;
  * - the value is not truncated, and leaves at most 8px of its slot unused
  *   (it leaves ~4px: the root's tracking, which `ch` does not see);
  * - with the root at 20px (Chrome's "Large" default font size), which grows
  *   the trigger's rem-sized chrome and not its 14px value, the value is
  *   still not truncated;
- * - "Status" and "Created between" share a top edge, and so do their
- *   controls;
- * - squeezed to 496px, too narrow for one line (the app shell's content
- *   column at a 640px window), the row wraps — Apply goes down; whether the
- *   date field goes with it depends on the sans face, so that is not
- *   asserted — nothing ends past its edge, nothing scrolls sideways, and
- *   the field neither narrows nor truncates;
- * - cleared, the field keeps its width, so picking or clearing a range
- *   does not move the row.
+ * - squeezed to 496px (the app shell's content column at a 640px window),
+ *   the chips wrap rather than spill, nothing scrolls sideways, and the
+ *   field neither narrows nor truncates;
  *
- * The mutations that fail it, each alone, are listed in that module doc.
+ * The Status select and Apply button this story used to measure are gone
+ * (2026-10-21): status is a row of filter chips that are links, and a
+ * range applies on the picker's Save.
  */
 export const FiltersWithRange: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
@@ -319,12 +324,8 @@ export const FiltersWithRange: Story = {
     await expect(trigger).toHaveAccessibleDescription(
       "2026-09-01 → 2026-09-07",
     );
-    const select = canvas.getByRole("combobox", { name: "Status" });
-    const apply = canvas.getByRole("button", { name: "Apply" });
-    const controls = [select, trigger, apply];
-
-    await expect(top(trigger)).toBe(top(select));
-    await expect(top(apply)).toBe(top(select));
+    const chips = statusChips(canvasElement);
+    const controls = [chips, trigger];
     await nothingOffScreen(canvasElement, controls);
 
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
@@ -334,10 +335,6 @@ export const FiltersWithRange: Story = {
       value.getBoundingClientRect().width - text.getBoundingClientRect().width;
     await expect(unused).toBeGreaterThanOrEqual(0);
     await expect(unused).toBeLessThanOrEqual(8);
-
-    const status = canvas.getByText("Status", { selector: "label" });
-    const created = canvas.getByText("Created between", { selector: "label" });
-    await expect(top(status)).toBe(top(created));
 
     // Restored in `finally`: every later story in this page shares the root.
     const root = canvasElement.ownerDocument.documentElement;
@@ -350,17 +347,17 @@ export const FiltersWithRange: Story = {
 
     const width = trigger.getBoundingClientRect().width;
     canvasElement.style.width = "496px";
-    await expect(top(apply)).toBeGreaterThan(top(select));
     await nothingOffScreen(canvasElement, controls);
     await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     await expect(trigger.getBoundingClientRect().width).toBe(width);
     canvasElement.style.width = "";
-
-    await userEvent.click(
+    // Clearing is no longer measured here: it navigates (the URL is the
+    // filter's only state), and this story's router is a no-op, so the
+    // field keeps the dates it was rendered with. `payments-filters.test.tsx`
+    // holds what Clear pushes.
+    await expect(
       canvas.getByRole("button", { name: "Clear the dates" }),
-    );
-    await expect(trigger).toHaveAccessibleDescription("Any time");
-    await expect(trigger.getBoundingClientRect().width).toBe(width);
+    ).toBeVisible();
   },
 };
 
@@ -370,53 +367,41 @@ export const FiltersWithRange: Story = {
  * stack.
  *
  * The `play` function checks it at the story's own width and squeezed to
- * the app shell's content column at a 375px and a 320px window (327px and
- * 272px): nothing ends past the row's right edge, neither the row nor the
- * page scrolls sideways, the date field sits on a line below Status, and
- * the range is not truncated. The row going back to one line that scrolls
- * (`flex-nowrap` with `overflow-x-auto`) fails it.
+ * the app shell's content column at a 375px window (343px): nothing ends
+ * past the row's right edge, neither the row nor the page scrolls
+ * sideways, the date field sits below the chips, and the range is not
+ * truncated. Then at a 232px column, narrower than the date field's own
+ * width: the field shrinks to the column rather than push the page
+ * sideways, and the dates stay whole in the trigger's description.
  *
- * Then at the column of a 280px window, 232px, narrower than the date
- * field's own 265.9px: the field shrinks to the column and truncates its
- * value rather than push the page sideways, so the same "nothing ends past
- * the edge, nothing scrolls" holds, and the dates stay whole in the
- * trigger's description. Dropping `max-w-full` from the trigger or from its
- * `FormField` fails it.
- *
- * Last, the same 232px column with the root at 20px (Chrome's "Large"
- * default font size), where the Status select's widest option outgrows the
- * column too: capped by its `FormField`'s `max-w-full`, nothing ends past
- * the edge. Dropping that `max-w-full` fails it.
+ * At a 320px window (288px column) the field is wider than the column and
+ * truncates its value since 2026-10-21: the self-hosted JetBrains Mono's
+ * dates need 25ch where the system monospace fitted in 23, and the field
+ * was widened to fit them. The full range is still the trigger's
+ * description.
+ * Dropping `max-w-full` from the trigger or from its `FormField` fails it.
  */
 export const FiltersWithRangePhone: Story = {
   render: () => <PaymentsFilters values={FILTERED} />,
   globals: { viewport: { value: "phone", isRotated: false } },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement);
     const { trigger, value } = await dateField(canvasElement);
-    const select = canvas.getByRole("combobox", { name: "Status" });
-    const apply = canvas.getByRole("button", { name: "Apply" });
+    const chips = statusChips(canvasElement);
 
-    for (const width of ["", "327px", "272px"]) {
+    for (const width of ["", "343px"]) {
       canvasElement.style.width = width;
-      await nothingOffScreen(canvasElement, [select, trigger, apply]);
-      await expect(top(trigger)).toBeGreaterThan(top(select));
+      await nothingOffScreen(canvasElement, [chips, trigger]);
+      await expect(top(trigger)).toBeGreaterThan(top(chips));
       await expect(value.scrollWidth).toBeLessThanOrEqual(value.clientWidth);
     }
 
     canvasElement.style.width = "232px";
-    await nothingOffScreen(canvasElement, [select, trigger, apply]);
-    await expect(trigger).toHaveAccessibleDescription(
-      "2026-09-01 → 2026-09-07",
-    );
-
-    // Restored in `finally`: every later story in this page shares the root.
-    const root = canvasElement.ownerDocument.documentElement;
-    root.style.fontSize = "20px";
     try {
-      await nothingOffScreen(canvasElement, [select, trigger, apply]);
+      await nothingOffScreen(canvasElement, [chips, trigger]);
+      await expect(trigger).toHaveAccessibleDescription(
+        "2026-09-01 → 2026-09-07",
+      );
     } finally {
-      root.style.fontSize = "";
       canvasElement.style.width = "";
     }
   },
@@ -426,99 +411,115 @@ export const FiltersWithRangePhone: Story = {
 
 /**
  * The payments screen's loading state above the part of its loaded state
- * the skeleton stands in for — the heading, the description and the filter
- * row, composed as `payments-screen.tsx`'s loaded branch composes them.
+ * the skeleton stands in for — the header and the filter row, composed as
+ * `payments-screen.tsx`'s loaded branch composes them, in the same
+ * `flex-col gap-6` column `AppShell` gives every screen.
  */
 function SkeletonAboveScreen() {
   return (
     <div className="flex flex-col gap-12">
       <PaymentsSkeleton />
-      <ScreenStack>
-        <h2>Payments</h2>
-        <p className="text-body text-muted-foreground">
-          {PAYMENTS_DESCRIPTION}
-        </p>
+      <div className="flex flex-col gap-6" data-loaded="">
+        <PageHeader title="Payments" description={PAYMENTS_DESCRIPTION} />
         <PaymentsFilters
           values={{ status: "", createdFrom: "", createdTo: "" }}
         />
-      </ScreenStack>
+      </div>
     </div>
   );
 }
 
 /**
- * Where a filter row's boxes sit in their own screen stack: the row and
- * each of its three children, as offsets from the stack's top-left corner
- * and sizes, and how many lines the row wrapped onto (its children are
- * `items-end`, so one line is one shared bottom edge).
+ * Each element's box, as an offset from `origin`'s top-left, and its size.
+ *
+ * Width only where `withWidth` says so: the loaded title, description and
+ * field label are block elements as wide as their column, while their
+ * placeholders are as wide as their text — the same line, the same height,
+ * a different box width, and the width of a block says nothing about where
+ * the eye lands.
  */
-function rowLayout(stack: Element, row: Element) {
-  const origin = stack.getBoundingClientRect();
-  const boxes = [row, ...row.children].map((element) => {
+function boxesFrom(
+  origin: Element,
+  elements: readonly (readonly [Element, boolean])[],
+) {
+  const o = origin.getBoundingClientRect();
+  return elements.map(([element, withWidth]) => {
     const box = element.getBoundingClientRect();
-    return [
-      box.left - origin.left,
-      box.top - origin.top,
-      box.width,
-      box.height,
-    ];
+    return withWidth
+      ? [box.left - o.left, box.top - o.top, box.width, box.height]
+      : [box.left - o.left, box.top - o.top, box.height];
   });
-  const bottoms = [...row.children].map((child) =>
-    Math.round(child.getBoundingClientRect().bottom),
-  );
-  return { lines: new Set(bottoms).size, boxes };
 }
 
 /**
- * The skeleton's filter row lands on the real one: the same number of
- * lines, and every box within a pixel, at each column width given and
- * then again at a 20px root. The canvas width and the root are restored
- * in `finally`, since every later story in this page shares them.
+ * The boxes a reader's eye lands on, in reading order: the title, the
+ * description, every status chip, the date field's label and the field.
+ * `loaded` finds them by role; the skeleton by position, since it is all
+ * `aria-hidden` blocks — the order `list-skeleton.tsx` and
+ * `PaymentsFiltersSkeleton` build them in.
+ */
+function loadedBoxes(column: HTMLElement) {
+  const canvas = within(column);
+  return boxesFrom(column, [
+    [canvas.getByRole("heading", { name: "Payments" }), false],
+    [canvas.getByText(PAYMENTS_DESCRIPTION), false],
+    ...within(
+      canvas.getByRole("navigation", { name: "Filter payments by status" }),
+    )
+      .getAllByRole("listitem")
+      .map((chip) => [chip, true] as const),
+    [canvas.getByText("Created between", { selector: "label" }), false],
+    [canvas.getByRole("button", { name: "Created between" }), true],
+  ]);
+}
+
+function skeletonBoxes(loading: Element) {
+  const [header, filters] = [...loading.children].filter(
+    (child) => getComputedStyle(child).position !== "absolute",
+  );
+  const titleAndDescription = [...(header?.firstElementChild?.children ?? [])];
+  const [chipHalf, dateHalf] = [...(filters?.children ?? [])];
+  const chips = [...(chipHalf?.firstElementChild?.children ?? [])];
+  const date = [...(dateHalf?.children ?? [])];
+  const [label, field] = date;
+  return boxesFrom(loading, [
+    ...titleAndDescription.map((block) => [block, false] as const),
+    ...chips.map((chip) => [chip, true] as const),
+    [label as Element, false],
+    [field as Element, true],
+  ]);
+}
+
+/**
+ * The skeleton's header and filter row land on the real ones: every box
+ * within a pixel, at each column width given and then again at a 20px
+ * root. The canvas width and the root are restored in `finally`, since
+ * every later story in this page shares them.
  */
 async function skeletonLandsOnTheRow(
   canvasElement: HTMLElement,
   widths: readonly string[],
 ) {
-  // Found by what they are, not by the layout classes under test.
-  const canvas = within(canvasElement);
   const loading = canvasElement.querySelector('[role="status"]');
-  const skeleton = loading?.querySelector("[inert]");
-  const select = canvas.getByRole("combobox", { name: "Status" });
-  const stack = canvas.getByRole("heading", { name: "Payments" }).parentElement;
-  const row = [...(stack?.children ?? [])].find((child) =>
-    child.contains(select),
-  );
+  const column = canvasElement.querySelector<HTMLElement>("[data-loaded]");
   await expect(loading).not.toBeNull();
-  await expect(skeleton).not.toBeNull();
-  await expect(row).toBeDefined();
-
-  // The select and the button inside the skeleton are there to be measured,
-  // never seen or reached: unpainted, and focus does not land on them.
-  const copies = [...(skeleton?.querySelectorAll("select, button") ?? [])];
-  await expect(copies).toHaveLength(2);
-  for (const copy of copies) {
-    await expect(getComputedStyle(copy).visibility).toBe("hidden");
-    (copy as HTMLElement).focus();
-    await expect(copy.ownerDocument.activeElement).not.toBe(copy);
-  }
+  await expect(column).not.toBeNull();
   const root = canvasElement.ownerDocument.documentElement;
   try {
     for (const rootSize of ["", "20px"]) {
       root.style.fontSize = rootSize;
       for (const width of widths) {
         canvasElement.style.width = width;
-        const expected = rowLayout(stack as Element, row as Element);
-        const actual = rowLayout(loading as Element, skeleton as Element);
+        const expected = loadedBoxes(column as HTMLElement);
+        const actual = skeletonBoxes(loading as Element);
         const where = `root ${rootSize || "16px"}, column ${width || "full"}`;
-        await expect(actual.lines, where).toBe(expected.lines);
-        const off = actual.boxes.flatMap((box, i) =>
-          box.map((value, j) =>
-            Math.abs(value - (expected.boxes[i]?.[j] ?? 0)),
-          ),
+        await expect(actual.length, where).toBe(expected.length);
+        const off = actual.flatMap((box, i) =>
+          box.map((value, j) => Math.abs(value - (expected[i]?.[j] ?? 0))),
         );
         await expect(
           Math.max(...off),
-          `${where}: skeleton ${JSON.stringify(actual.boxes)}, row ${JSON.stringify(expected.boxes)}`,
+          `${where}: skeleton ${JSON.stringify(actual)}, loaded ${JSON.stringify(expected)}`,
         ).toBeLessThanOrEqual(1);
       }
     }
@@ -530,35 +531,93 @@ async function skeletonLandsOnTheRow(
 
 /**
  * The payments screen's loading state, at 1280×800, above the loaded
- * heading, description and filter row it stands in for.
+ * header and filter row it stands in for.
  *
- * The `play` function is the guard on `PaymentsSkeleton` and
- * `PaymentsFiltersSkeleton`: at the story's own width and squeezed to the
- * app shell's content column at 726, 700 and 640px windows (582, 556 and
- * 496px: one line, then two with Apply wrapped, then two however the sans
- * face breaks them), and again at a 20px root, the skeleton's filter row
- * has as many lines as the real row and every box within a pixel of it.
- * The mutations that fail it are in `payments-skeleton.tsx`'s module doc.
+ * The `play` function is the guard on `PaymentsSkeleton`: at the story's
+ * own width and squeezed to the app shell's content column at a 1024px
+ * window (880px; narrower columns are below `lg`, where the row stacks,
+ * and are `PaymentsLoadingPhone`'s), and again at a 20px root, every placeholder — title,
+ * description, each chip, the date label and field — is within a pixel of
+ * the box it stands for. A guessed width anywhere (a chip block of fixed
+ * width, the title's placeholder in another type size) fails it.
  */
 export const PaymentsLoading: Story = {
   render: () => <SkeletonAboveScreen />,
   globals: { viewport: { value: "desktop", isRotated: false } },
   play: async ({ canvasElement }) => {
-    await skeletonLandsOnTheRow(canvasElement, ["", "582px", "556px", "496px"]);
+    await skeletonLandsOnTheRow(canvasElement, ["", "880px"]);
   },
 };
 
 /**
- * The same at 375×812, where the real row is three lines and the
- * description two: at the story's own width and squeezed to the shell's
- * column at 375, 320 and 280px windows (327, 272 and 232px, the last where
- * the date field truncates), at both roots.
+ * The same at 375×812, where the chips wrap and the description is two
+ * lines: at the story's own width and squeezed to the shell's column at
+ * 375 and 320px windows (343 and 288px), at both roots.
  */
 export const PaymentsLoadingPhone: Story = {
   render: () => <SkeletonAboveScreen />,
   globals: { viewport: { value: "phone", isRotated: false } },
   play: async ({ canvasElement }) => {
-    await skeletonLandsOnTheRow(canvasElement, ["", "327px", "272px", "232px"]);
+    await skeletonLandsOnTheRow(canvasElement, ["", "343px", "288px"]);
+  },
+};
+
+// --------------------------------------------------------------- FilterChips
+
+/**
+ * The filter chips every list filters with, one selected — in both themes,
+ * so axe measures the selected chip's `on-primary-container` text and the
+ * unselected chips' `on-surface-variant` text against their grounds.
+ */
+const CHIPS = [
+  { href: "/refunds", label: "All", active: false },
+  { href: "/refunds?status=pending", label: "Pending", active: false },
+  { href: "/refunds?status=failed", label: "Failed", active: true },
+  { href: "/refunds?status=succeeded", label: "Refunded", active: false },
+];
+
+export const Chips: Story = {
+  render: () => (
+    <FilterChips label="Filter refunds by status" options={CHIPS} />
+  ),
+  play: async ({ canvasElement }) => {
+    const links = within(canvasElement).getAllByRole("link");
+    await expect(
+      links.filter((link) => link.getAttribute("aria-current") === "true"),
+    ).toHaveLength(1);
+  },
+};
+
+export const ChipsLight: Story = {
+  render: () => (
+    <FilterChips label="Filter refunds by status" options={CHIPS} />
+  ),
+  globals: { theme: "light" },
+};
+
+// ------------------------------------------------------------- ProcedurePager
+
+export const ProcedurePagerMiddle: Story = {
+  render: () => (
+    <ProcedurePager
+      basePath="/refunds"
+      offset={20}
+      returned={20}
+      totalCount={57}
+      hasNext
+      query="status=failed"
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    // Paging a filtered list keeps the filter, on both links.
+    await expect(
+      canvas.getByRole("link", { name: /previous/i }),
+    ).toHaveAttribute("href", "/refunds?status=failed");
+    await expect(canvas.getByRole("link", { name: /next/i })).toHaveAttribute(
+      "href",
+      "/refunds?status=failed&offset=40",
+    );
   },
 };
 
@@ -626,36 +685,36 @@ export const DetailWithChargeLight: Story = {
 
 /**
  * One payment's loading state above the loaded page it stands in for —
- * `PaymentDetailHeader` and `PaymentDetailView` in a `ScreenStack`, as
- * `payment-screen.tsx`'s loaded branch composes them.
+ * `PaymentDetailHeader` and `PaymentDetailView` in the shell's
+ * `flex-col gap-6` column, as `payment-screen.tsx`'s loaded branch composes
+ * them.
  */
 function PaymentSkeletonAbovePage() {
   return (
     <div className="flex flex-col gap-12">
       <PaymentSkeleton />
-      <ScreenStack>
+      <div className="flex flex-col gap-6" data-loaded="">
         <PaymentDetailHeader />
         <PaymentDetailView detail={DETAIL} />
-      </ScreenStack>
+      </div>
     </div>
   );
 }
 
 /**
  * The boxes a payment's loading state claims, each as an offset from its
- * own screen stack's top-left corner and a size: the header, the panel,
- * the panel's title-and-caption block, its figure row, each figure, the
- * Summary section's position and width (not its height: the rows under
- * the heading are data), and the Summary heading.
+ * column's top-left corner and a size: the back link, the title, the
+ * panel's position and width (not its height: the tiles are data), the
+ * panel's title-and-caption block, and the tile grid's position and width.
  *
- * Both stacks are read by position, the same position in each: the page
- * is `[header, view]` and the skeleton `[Loading…, header, view]`, where
- * `view` is `[panel, Summary, …]`, `panel` is `[title and caption,
- * figures]` and `Summary` is `[heading, rows]`.
+ * Read by position, the same position in each: the column is `[header,
+ * panel, …]` (the skeleton's first child is its `sr-only` text, which is
+ * absolutely positioned and skipped), the header is `[[back, title]]`, and
+ * the panel is `[title and caption, tiles]`.
  */
-function pageBoxes(stack: Element, header: Element) {
-  const origin = stack.getBoundingClientRect();
-  const at = (element: Element | undefined, withHeight = true) => {
+function pageBoxes(column: Element) {
+  const origin = column.getBoundingClientRect();
+  const at = (element: Element | undefined | null, withHeight = true) => {
     const box = (element as Element).getBoundingClientRect();
     const edges = [
       box.left - origin.left,
@@ -665,17 +724,20 @@ function pageBoxes(stack: Element, header: Element) {
     ];
     return withHeight ? edges : edges.slice(0, 3);
   };
-  const view = header.nextElementSibling as Element;
-  const [panel, summary] = [...view.children];
-  const [titled, figures] = [...(panel as Element).children];
+  const [header, panel] = [...column.children].filter(
+    (child) => getComputedStyle(child).position !== "absolute",
+  );
+  const [back, title] = [...(header?.firstElementChild?.children ?? [])];
+  const [titled, tiles] = [...(panel?.children ?? [])];
+  // The title's width is left out: the loaded `<h2>` is a block as wide as
+  // its column, the placeholder as wide as the word.
+  const [titleLeft = 0, titleTop = 0, , titleHeight = 0] = at(title);
   return [
-    at(header),
-    at(panel),
+    at(back),
+    [titleLeft, titleTop, titleHeight],
+    at(panel, false),
     at(titled),
-    at(figures),
-    ...[...(figures as Element).children].map((figure) => at(figure)),
-    at(summary, false),
-    at((summary as Element).firstElementChild as Element),
+    at(tiles, false),
   ];
 }
 
@@ -689,17 +751,15 @@ async function paymentSkeletonLandsOnThePage(
   canvasElement: HTMLElement,
   widths: readonly string[],
 ) {
-  // Found by what they are, not by the layout classes under test.
-  const canvas = within(canvasElement);
   const loading = canvasElement.querySelector(
     '[role="status"][aria-busy="true"]',
   );
-  const heading = canvas.getByRole("heading", { name: "Payment" });
-  const header = heading.parentElement as Element;
-  const page = header.parentElement as Element;
+  const column = canvasElement.querySelector("[data-loaded]");
   await expect(loading).not.toBeNull();
-  await expect(header.tagName).toBe("HEADER");
-  const skeletonHeader = (loading as Element).children[1] as Element;
+  await expect(column).not.toBeNull();
+  await expect(
+    within(column as HTMLElement).getByRole("heading", { name: "Payment" }),
+  ).toBeVisible();
 
   const root = canvasElement.ownerDocument.documentElement;
   try {
@@ -707,8 +767,8 @@ async function paymentSkeletonLandsOnThePage(
       root.style.fontSize = rootSize;
       for (const width of widths) {
         canvasElement.style.width = width;
-        const expected = pageBoxes(page, header);
-        const actual = pageBoxes(loading as Element, skeletonHeader);
+        const expected = pageBoxes(column as Element);
+        const actual = pageBoxes(loading as Element);
         const where = `root ${rootSize || "16px"}, column ${width || "full"}`;
         await expect(actual.length, where).toBe(expected.length);
         const off = actual.flatMap((box, i) =>
@@ -734,10 +794,9 @@ async function paymentSkeletonLandsOnThePage(
  *
  * The `play` function is the guard on `PaymentSkeleton`: at the story's
  * own width and squeezed to the app shell's content column at 1100 and
- * 640px windows (956 and 496px), and again at a 20px root, the header,
- * the panel and each of its parts, and the Summary heading are within a
- * pixel of the loaded page's. The mutations that fail it are in
- * `payment-skeleton.tsx`'s module doc.
+ * 640px windows (956 and 496px), and again at a 20px root, the back link,
+ * the title, the panel, its title-and-caption block and its tile grid are
+ * within a pixel of the loaded page's.
  */
 export const PaymentLoading: Story = {
   render: () => <PaymentSkeletonAbovePage />,
@@ -748,16 +807,15 @@ export const PaymentLoading: Story = {
 };
 
 /**
- * The same at 375×812, where the panel's caption is two lines and its
- * three figures wrap: at the story's own width and squeezed to the
- * shell's column at 375 and 320px windows (327 and 272px — two figure
- * lines, then three), at both roots.
+ * The same at 375×812, where the panel's caption is two lines: at the
+ * story's own width and squeezed to the shell's column at 375 and 320px
+ * windows (343 and 288px), at both roots.
  */
 export const PaymentLoadingPhone: Story = {
   render: () => <PaymentSkeletonAbovePage />,
   globals: { viewport: { value: "phone", isRotated: false } },
   play: async ({ canvasElement }) => {
-    await paymentSkeletonLandsOnThePage(canvasElement, ["", "327px", "272px"]);
+    await paymentSkeletonLandsOnThePage(canvasElement, ["", "343px", "288px"]);
   },
 };
 
@@ -960,8 +1018,8 @@ export const ShellPhone: Story = {
  * The `play` function checks `<main>`'s left padding ends at least 16px
  * past the rail's right edge — `sm:pl-24` (96px) against a rail ending at
  * x=80, the gutter 0.3.0's release notes asked for — then that the drawer
- * lists every `NAV_ENTRIES` destination, in order, and works by pointer
- * and keyboard.
+ * lists the Overview and every `NAV_GROUPS` destination, in order, and
+ * works by pointer and keyboard.
  */
 export const ShellRail: Story = {
   render: () => shellStory(),
@@ -978,7 +1036,11 @@ export const ShellRail: Story = {
       within(sheet)
         .getAllByRole("link")
         .map((link) => link.getAttribute("href")),
-    ).toEqual(NAV_ENTRIES.map((entry) => entry.href));
+    ).toEqual(
+      [OVERVIEW_NAV, ...NAV_GROUPS.flatMap((group) => group.items)].map(
+        (entry) => entry.href,
+      ),
+    );
     await closeSheet(body, more);
 
     await moreSheetWorks(body);

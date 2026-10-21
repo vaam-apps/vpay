@@ -1,4 +1,5 @@
 import { Button, Code } from "@vaam-apps/ui";
+import { LogOut } from "lucide-react";
 
 export interface SignedInBarProps {
   /** The address this session signed in with. */
@@ -28,30 +29,71 @@ export interface SignedInBarProps {
  * "Sign out" control on a page where nobody is signed in is the same kind of
  * claim as a nav entry for a page nobody wrote.
  */
-export function SignedInBar({ email, merchantId, signOut }: SignedInBarProps) {
-  return (
-    <div className="flex flex-wrap items-center justify-between gap-4">
-      <span className="text-body text-muted-foreground">
-        Signed in as <strong>{email}</strong> · merchant{" "}
-        <Code>{merchantId}</Code>
+export function SignedInBar({
+  email,
+  merchantId,
+  signOut,
+  layout = "stacked",
+}: SignedInBarProps & {
+  /**
+   * `stacked` (default) — the account block in the sidebar and the More
+   * sheet: who, which merchant, then a full-width Sign out. `inline` — the
+   * top app bar from 640 to 1279px, where the rail has no room for an
+   * address: one row, the merchant left to the bar's own chip.
+   */
+  readonly layout?: "stacked" | "inline";
+}) {
+  const initial = email.trim().charAt(0).toUpperCase() || "?";
+  const avatar = (
+    <span
+      aria-hidden="true"
+      className="block rounded-full bg-primary-container"
+    >
+      <span className="grid size-9 place-items-center text-on-primary-container">
+        <span className="font-display text-title-medium">{initial}</span>
       </span>
-      <form action={signOut}>
-        {/*
-          `destructive`, the package's own variant, and NOT a red class of
-          this app's choosing. `@vaam-apps/ui`'s one rule is that a state's
-          colour is declared once and rendered by the library — an app that
-          spells its own red is how the same meaning ends up amber on one
-          screen and crimson on another. `verify-ui` refuses a raw
-          status-colour token here for exactly that reason.
-
-          Sign-out is destructive in the sense the variant means: it ends the
-          session and revokes the token, and it is the one control on this
-          bar an operator should never hit by accident.
-        */}
-        <Button type="submit" variant="destructive" size="sm">
-          Sign out
-        </Button>
-      </form>
+    </span>
+  );
+  /*
+    `secondary`, M3's outlined button: sign-out ends this session and
+    revokes its token, but it destroys nothing an operator would need back,
+    so it is not painted in the danger hue the status system reserves for
+    failures. A filled red button in every account block was the loudest
+    thing on every screen, louder than a failed payment.
+  */
+  const signOutForm = (
+    <form action={signOut}>
+      <Button type="submit" variant="secondary" size="sm" className="w-full">
+        <LogOut size={16} aria-hidden="true" />
+        Sign out
+      </Button>
+    </form>
+  );
+  if (layout === "inline") {
+    return (
+      <div className="flex min-w-0 items-center gap-3">
+        {avatar}
+        <span className="truncate text-label-large text-foreground">
+          {email}
+        </span>
+        {signOutForm}
+      </div>
+    );
+  }
+  return (
+    <div className="flex min-w-0 flex-col gap-3">
+      <div className="flex min-w-0 items-center gap-3">
+        {avatar}
+        <span className="flex min-w-0 flex-col">
+          <span className="truncate text-label-large text-foreground">
+            {email}
+          </span>
+          <span className="truncate text-body-small text-muted-foreground">
+            merchant <Code>{merchantId}</Code>
+          </span>
+        </span>
+      </div>
+      {signOutForm}
     </div>
   );
 }

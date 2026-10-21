@@ -258,7 +258,7 @@ describe("GET /api/auth/sso/callback", () => {
     const response = await handleSsoCallback(callbackRequest(GOOD_QUERY));
 
     expect(response.status).toBe(303);
-    expect(response.headers.get("location")).toBe("/payments");
+    expect(response.headers.get("location")).toBe("/overview");
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("referrer-policy")).toBe("no-referrer");
 
@@ -307,7 +307,7 @@ describe("GET /api/auth/sso/callback", () => {
 
     const response = await handleSsoCallback(callbackRequest(GOOD_QUERY));
 
-    expect(response.headers.get("location")).toBe("/payments");
+    expect(response.headers.get("location")).toBe("/overview");
     expect(response.cookies.get(SESSION_COOKIE)?.value).toBe(
       "NEW-SESSION-TOKEN",
     );

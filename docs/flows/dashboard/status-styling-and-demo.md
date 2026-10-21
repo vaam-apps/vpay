@@ -228,3 +228,19 @@ on 2026-09-12 ran `dashboard.cy.ts` **18 passing, 0 failing**, and
 sentence is the record of it and not a pointer to a file — shows the signed-in
 list at 1000×660 with the identity bar, the filter row and the table where
 they were: nothing indented, nothing clipped, no empty band down the left.
+
+**Redesigned, 2026-10-21 (`@vaam-apps/ui` 0.5.0, Material 3 Expressive).**
+The shell is mounted once by `app/(dash)/layout.tsx` and the rail's plain
+anchors are routed client-side, which ended the full document load on every
+rail click; Refine's `check` no longer re-reads the session on every
+navigation; a server-seeded query is no longer read a second time by the
+browser. The home route is `/overview`, twelve exact counts from the search
+procedures, each a link to the rows it counts — the "vpay exposes no
+aggregates" caption on the payment detail is still true of sums, and nothing
+on the Overview is one. Every list filters with chips that are links, the
+four procedure lists share one server component, and every route has a
+skeleton sized by invisible copies of its real strings. Numbers, gates, the
+guards seen failing and what was not run (Cypress; a real vpay — the
+measurements ran against a fake of the `/dash/v1` contract kept outside the
+repository):
+[../../status/verification/2026-10-21-dashboard-md3e.md](../../status/verification/2026-10-21-dashboard-md3e.md).

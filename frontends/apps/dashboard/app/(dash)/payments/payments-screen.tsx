@@ -1,8 +1,9 @@
 "use client";
 
 import { useList } from "@refinedev/core";
-import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
+import { Card, InlineEmptyState } from "@vaam-apps/ui";
 
+import { PageHeader } from "../../../src/components/layout";
 import { PaymentsFilters } from "../../../src/components/payments-filters";
 import { PaymentsPager } from "../../../src/components/payments-pager";
 import {
@@ -102,11 +103,11 @@ export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
     // `authProvider.onError`, which signs the person out of a session the
     // server had just decided to keep.
     return (
-      <ScreenStack>
-        <h2>Payments</h2>
+      <>
+        <PageHeader title="Payments" description={PAYMENTS_DESCRIPTION} />
         <PaymentsFilters values={{ status, createdFrom, createdTo }} />
         <ReadFailure failure={serverFailure} />
-      </ScreenStack>
+      </>
     );
   }
 
@@ -121,11 +122,11 @@ export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
     // An outage renders here and the session is untouched — `onError` only
     // signs anyone out on a 401. See `auth-provider.ts`.
     return (
-      <ScreenStack>
-        <h2>Payments</h2>
+      <>
+        <PageHeader title="Payments" description={PAYMENTS_DESCRIPTION} />
         <PaymentsFilters values={{ status, createdFrom, createdTo }} />
         <ReadFailure failure={failureFromError(listQuery.error)} />
-      </ScreenStack>
+      </>
     );
   }
 
@@ -136,29 +137,27 @@ export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
     status.length > 0 || createdFrom.length > 0 || createdTo.length > 0;
 
   return (
-    <ScreenStack>
+    <>
       {/*
-        A plain <h2>, not `ScreenHeader` — that component renders an <h1>,
-        and the app's <h1> is the brand in the rail. Thirteen assertions in
-        `dashboard.cy.ts` pin `h2` + "Payments", and the existing hierarchy
-        (one <h1> naming the app, an <h2> naming the section) is already
-        tested and already passes axe. Changing a tested contract because a
-        component prefers a different level is not a reason.
+        `PageHeader` renders a plain <h2>, not `ScreenHeader` — that
+        component renders an <h1>, and the app's <h1> is in the shell.
+        Thirteen assertions in `dashboard.cy.ts` pin `h2` + "Payments".
       */}
-      <h2>Payments</h2>
-      <p className="text-body text-muted-foreground">{PAYMENTS_DESCRIPTION}</p>
+      <PageHeader title="Payments" description={PAYMENTS_DESCRIPTION} />
       <PaymentsFilters values={{ status, createdFrom, createdTo }} />
       {rows.length === 0 ? (
-        <InlineEmptyState
-          variant="standalone"
-          message={
-            filtered
-              ? "No payments. No payment matched these filters. Widen the range or clear the status."
-              : "No payments. This merchant has no payment intents yet."
-          }
-        />
+        <Card>
+          <InlineEmptyState
+            variant="standalone"
+            message={
+              filtered
+                ? "No payments. No payment matched these filters. Widen the range or clear the status."
+                : "No payments. This merchant has no payment intents yet."
+            }
+          />
+        </Card>
       ) : (
-        <>
+        <Card className="overflow-hidden">
           <PaymentsTable rows={rows} />
           {/*
             `PaymentsPager`, not `@vaam-apps/ui`'s `Pagination`: that one
@@ -167,14 +166,31 @@ export function PaymentsScreen({ query, initial }: PaymentsScreenProps) {
             legs assert on `<a href>`. Its own module doc records the
             decision; this screen keeps it.
           */}
-          <PaymentsPager
-            {...pagerHrefsFromCursors(query, {
-              newer: cursor?.prev ?? null,
-              older: cursor?.next ?? null,
-            })}
-          />
-        </>
+          <PaymentsPagerFooter query={query} cursor={cursor} />
+        </Card>
       )}
-    </ScreenStack>
+    </>
+  );
+}
+
+/** The pager as the card's footer, or nothing on a single-page list. */
+function PaymentsPagerFooter({
+  query,
+  cursor,
+}: {
+  readonly query: PaymentsQuery;
+  readonly cursor: { next?: string; prev?: string } | undefined;
+}) {
+  const hrefs = pagerHrefsFromCursors(query, {
+    newer: cursor?.prev ?? null,
+    older: cursor?.next ?? null,
+  });
+  if (hrefs.previousHref === null && hrefs.nextHref === null) {
+    return null;
+  }
+  return (
+    <div className="border-t border-edge px-4 py-3">
+      <PaymentsPager {...hrefs} />
+    </div>
   );
 }

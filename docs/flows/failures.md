@@ -4,19 +4,19 @@
 their rail's error strings into it. Merchants integrate against this list once
 and it does not grow when a rail is added.
 
-| Code                       | Meaning                                 | Payer can retry?    | Notch Pay (stub only)                                                    | Whose problem                          |
-| -------------------------- | --------------------------------------- | ------------------- | ------------------------------------------------------------------------ | -------------------------------------- |
-| `insufficient_funds`       | Not enough balance                      | Yes, new intent     | —                                                                        | Payer                                  |
-| `payer_timeout`            | Never approved in time                  | Yes, new intent     | `expired`, `abandoned`                                                   | Payer; Notch Pay `…0f04`, `…0f05`      |
-| `payer_declined`           | Actively rejected the prompt            | Yes, new intent     | —                                                                        | Payer                                  |
-| `invalid_payer`            | Identifier not valid on this rail       | No — fix the number | —                                                                        | Payer/merchant                         |
-| `payer_limit_reached`      | Wallet or KYC-tier limit                | Later               | —                                                                        | Payer                                  |
-| `payer_account_blocked`    | Payer account not active                | No                  | —                                                                        | Payer                                  |
-| `invalid_payee`            | Merchant's receiving account invalid    | No                  | —                                                                        | Merchant config                        |
-| `payee_account_blocked`    | Merchant's receiving account not active | No                  | —                                                                        | Merchant config                        |
-| `provider_account_blocked` | **Your** partner account is blocked     | No                  | HTTP 401/403                                                             | **Page yourself**, on all three rails  |
-| `provider_unavailable`     | Rail down or timing out                 | Yes, later          | —                                                                        | You                                    |
-| `provider_error`           | Unmapped; carries the raw reason        | Unknown             | `failed`, `canceled`, `rejected`, a `400`/`422` on initialize or process | Investigate; Notch Pay `…0f01`–`…0f03` |
+| Code                       | Meaning                                 | Payer can retry?    | Notch Pay (stub only)                                        | Whose problem                           |
+| -------------------------- | --------------------------------------- | ------------------- | ------------------------------------------------------------ | --------------------------------------- |
+| `insufficient_funds`       | Not enough balance                      | Yes, new intent     | —                                                            | Payer                                   |
+| `payer_timeout`            | Never approved in time                  | Yes, new intent     | `expired`, `abandoned`                                       | Payer; Notch Pay `…0f04`, `…0f05`       |
+| `payer_declined`           | Actively rejected the prompt            | Yes, new intent     | `canceled`                                                   | Payer; Notch Pay `…0f02`                |
+| `invalid_payer`            | Identifier not valid on this rail       | No — fix the number | —                                                            | Payer/merchant                          |
+| `payer_limit_reached`      | Wallet or KYC-tier limit                | Later               | —                                                            | Payer                                   |
+| `payer_account_blocked`    | Payer account not active                | No                  | —                                                            | Payer                                   |
+| `invalid_payee`            | Merchant's receiving account invalid    | No                  | —                                                            | Merchant config                         |
+| `payee_account_blocked`    | Merchant's receiving account not active | No                  | —                                                            | Merchant config                         |
+| `provider_account_blocked` | **Your** partner account is blocked     | No                  | HTTP 401/403                                                 | **Page yourself**, on all three rails   |
+| `provider_unavailable`     | Rail down or timing out                 | Yes, later          | —                                                            | You                                     |
+| `provider_error`           | Unmapped; carries the raw reason        | Unknown             | `failed`, `rejected`, a `400`/`422` on initialize or process | Investigate; Notch Pay `…0f01`, `…0f03` |
 
 ## Which rail can produce which code
 
@@ -27,19 +27,19 @@ given buyer copy by `examples/shop`, and no adapter emitted it
 ([issue #59](https://github.com/vaam-apps/vpay/issues/59)). Nothing failed,
 because nothing compared a promise to a producer.
 
-| Code                       | MTN MoMo                                    | Orange Money                | Notch Pay (stub only)                                                    | Proven by                                                                              |
-| -------------------------- | ------------------------------------------- | --------------------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
-| `insufficient_funds`       | `NOT_ENOUGH_FUNDS`                          | —                           | —                                                                        | `…0f01`                                                                                |
-| `payer_timeout`            | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED`  | `EXPIRED`                   | `expired`, `abandoned`                                                   | MTN `…0f02`, `…0f04`; Orange `…0f01`; Notch Pay `…0f04`, `…0f05`                       |
-| `payer_declined`           | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | —                           | —                                                                        | MTN `…0f05`, `…0f06`                                                                   |
-| `invalid_payer`            | `PAYER_NOT_FOUND`                           | —                           | —                                                                        | `…0f07`                                                                                |
-| `payer_limit_reached`      | `PAYER_LIMIT_REACHED`                       | —                           | —                                                                        | `…0f08`                                                                                |
-| `payer_account_blocked`    | `SENDER_ACCOUNT_NOT_ACTIVE` †               | —                           | —                                                                        | `…0f09`                                                                                |
-| `invalid_payee`            | `PAYEE_NOT_FOUND`                           | —                           | —                                                                        | `…0f0a`                                                                                |
-| `payee_account_blocked`    | `PAYEE_NOT_ALLOWED_TO_RECEIVE`              | —                           | —                                                                        | `…0f0b`                                                                                |
-| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403                 | HTTP 401/403                | HTTP 401/403                                                             | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem`, on all three rails |
-| `provider_unavailable`     | `SERVICE_UNAVAILABLE` on a `FAILED` body    | —                           | —                                                                        | `…0f0c`                                                                                |
-| `provider_error`           | anything unmapped                           | `FAILED`, anything unmapped | `failed`, `canceled`, `rejected`, a `400`/`422` on initialize or process | MTN `…0f0d`; Orange `…0f02`; Notch Pay `…0f01`–`…0f03`                                 |
+| Code                       | MTN MoMo                                    | Orange Money                | Notch Pay (stub only)                                        | Proven by                                                                              |
+| -------------------------- | ------------------------------------------- | --------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------- |
+| `insufficient_funds`       | `NOT_ENOUGH_FUNDS`                          | —                           | —                                                            | `…0f01`                                                                                |
+| `payer_timeout`            | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED`  | `EXPIRED`                   | `expired`, `abandoned`                                       | MTN `…0f02`, `…0f04`; Orange `…0f01`; Notch Pay `…0f04`, `…0f05`                       |
+| `payer_declined`           | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | —                           | `canceled`                                                   | MTN `…0f05`, `…0f06`; Notch Pay `…0f02`                                                |
+| `invalid_payer`            | `PAYER_NOT_FOUND`                           | —                           | —                                                            | `…0f07`                                                                                |
+| `payer_limit_reached`      | `PAYER_LIMIT_REACHED`                       | —                           | —                                                            | `…0f08`                                                                                |
+| `payer_account_blocked`    | `SENDER_ACCOUNT_NOT_ACTIVE` †               | —                           | —                                                            | `…0f09`                                                                                |
+| `invalid_payee`            | `PAYEE_NOT_FOUND`                           | —                           | —                                                            | `…0f0a`                                                                                |
+| `payee_account_blocked`    | `PAYEE_NOT_ALLOWED_TO_RECEIVE`              | —                           | —                                                            | `…0f0b`                                                                                |
+| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403                 | HTTP 401/403                | HTTP 401/403                                                 | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem`, on all three rails |
+| `provider_unavailable`     | `SERVICE_UNAVAILABLE` on a `FAILED` body    | —                           | —                                                            | `…0f0c`                                                                                |
+| `provider_error`           | anything unmapped                           | `FAILED`, anything unmapped | `failed`, `rejected`, a `400`/`422` on initialize or process | MTN `…0f0d`; Orange `…0f02`; Notch Pay `…0f01`, `…0f03`                                |
 
 `…0fxx` is the charge reference a WireMock mapping keys on, under
 `backends/tests/conformance/wiremock/{mtn,orange,notchpay}/mappings/`.
@@ -67,25 +67,27 @@ its truth.
 is a documented reservation: the vocabulary is a wire contract, and removing a
 variant would break a merchant deserialising it.
 
-**Notch Pay produces three codes, and its column is transcription, not
-observation** (2026-10-20, RFC-0012 § 4). Its read, as `openapi.yaml` 2.1.0
-documents it, carries a status and no reason, so a payer with no funds and a
-payer who never answered both read `failed`. `insufficient_funds` and
-`payer_declined` are therefore unreachable there, and `canceled` is
-`provider_error` rather than `payer_declined`, because the merchant's public
-key can cancel a payment too (ADR-0031). A `503` or a timeout is
-`ProviderError::Transport`, never a decline, which is why
-`provider_unavailable` is a dash on that rail.
+**Notch Pay produces four codes** (`PRODUCED_FAILURE_CODES` in
+`vpay-adapter-notchpay`). Its read carries a status and no reason, so
+`insufficient_funds` is unreachable there: the sandbox's "insufficient funds"
+number read `complete` with a short `amounts.total`, not a decline. A payer
+who never answers reads `expired` or `abandoned`, which is `payer_timeout`.
+`canceled` is `payer_declined` (stub `…0f02`). That is evidence of a decline,
+not proof of whose: the merchant's public key can cancel a payment too
+(ADR-0031), and the read names no actor, so such a cancel is recorded as the
+payer's ([adapter-notchpay.md](adapter-notchpay.md) § "Production risks",
+item 4). A `503` or a timeout is `ProviderError::Transport`, never a decline,
+which is why `provider_unavailable` is a dash on that rail. The column heads
+say "stub only" because each row's proof is a WireMock case: the adapter's
+2026-10-21 sandbox run
+([step 5](../status/verification/2026-10-21-notchpay-step5.md)) witnessed
+`failed` becoming `provider_error`, and no other row.
 
-_(This paragraph also said "Nothing has called Notch Pay. The sandbox's
-outcome numbers are what will show whether the live read says more, and
-[adapter-notchpay.md](adapter-notchpay.md) § "To confirm" item 5 carries it"
-until 2026-10-21. Notch Pay's sandbox has been called, and its read names no
-reason, as this paragraph expected. The rest of the paragraph and the "stub
-only" column heads in the tables are the 2026-10-20 transcription and have
-not been brought up to date here: for the mapping as observed, read
-[adapter-notchpay.md](adapter-notchpay.md) § "The calls", where `canceled` is
-`payer_declined`.)_
+_(This paragraph said "Notch Pay produces three codes" and that `canceled` is
+`provider_error` rather than `payer_declined`, from the 2026-10-20
+transcription of RFC-0012 § 4, until 2026-10-21. The mapping, the conformance
+case `…0f02` and `PRODUCED_FAILURE_CODES` had already moved `canceled` to
+`payer_declined`; the tables above now say so too.)_
 
 **† `SENDER_ACCOUNT_NOT_ACTIVE` is not in MTN's published `ErrorReason` enum**,
 nor is `COULD_NOT_PERFORM_TRANSACTION`. Both are mapped and both are declared

@@ -5,6 +5,7 @@ import {
   checkoutOutcomeTone,
   checkoutOutcomeVariant,
   statusLabel,
+  statusShortLabel,
 } from "./index.js";
 
 describe("status tokens", () => {
@@ -14,7 +15,16 @@ describe("status tokens", () => {
     }
   });
 
+  it("covers every status with a short label of two words at most", () => {
+    for (const s of PAYMENT_STATUS) {
+      const short = statusShortLabel[s];
+      expect(short, `short label for ${s}`).toBeTruthy();
+      expect(short.split(" ").length, short).toBeLessThanOrEqual(2);
+    }
+  });
+
   it("never labels processing as nearly-done", () => {
+    expect(statusShortLabel.processing.toLowerCase()).not.toContain("almost");
     expect(statusLabel.processing.toLowerCase()).not.toContain("almost");
     expect(statusLabel.processing.toLowerCase()).not.toContain("complete");
   });
@@ -76,5 +86,22 @@ describe("checkout outcome variants (@vaam-apps/ui vocabulary)", () => {
   it("keeps canceled a warning in both, not the alarming tone", () => {
     expect(checkoutOutcomeTone.canceled).toBe("warning");
     expect(checkoutOutcomeVariant.canceled).toBe("warning");
+  });
+});
+
+describe("the dashboard's other state vocabularies", () => {
+  it("labels every value of every list, and invents none", async () => {
+    const t = await import("./index.js");
+    const pairs: [readonly string[], Record<string, string>][] = [
+      [t.REFUND_STATUS, t.refundStatusLabel],
+      [t.DELIVERY_STATE, t.deliveryStateLabel],
+      [t.CHECKOUT_STATUS, t.checkoutStatusLabel],
+    ];
+    for (const [list, labels] of pairs) {
+      expect(Object.keys(labels).sort()).toEqual([...list].sort());
+      for (const value of list) {
+        expect(labels[value], value).toBeTruthy();
+      }
+    }
   });
 });

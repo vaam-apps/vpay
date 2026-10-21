@@ -1,11 +1,11 @@
-import { PAYMENT_STATUS } from "@vpay/tokens";
+import { PAYMENT_STATUS, statusLabel } from "@vpay/tokens";
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-// `PaymentsFilters` now applies by calling `useRouter().push(...)` (see its
-// own module doc for why a controlled `DateRangePicker` forced that) rather
-// than submitting a `method="get"` form, so every case below needs a router
-// to push into. `vi.hoisted` — not a plain top-level `const` — because
+// The status chips are links (`FilterChips`), but the date range applies by
+// calling `useRouter().push(...)` when the picker's Save commits — a
+// controlled `DateRangePicker` has no form submission to ride on — so the
+// date cases below need a router to push into. `vi.hoisted` — not a plain top-level `const` — because
 // `vi.mock` is hoisted above imports, and a factory that closes over an
 // un-hoisted variable throws "Cannot access 'push' before initialization".
 const { push } = vi.hoisted(() => ({ push: vi.fn() }));
@@ -33,8 +33,21 @@ const SEPTEMBER = {
   createdTo: "2026-09-07",
 };
 
-function clickApply(): void {
-  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+/** The status chips' links, in order, by their visible label. */
+function chipLinks(): HTMLAnchorElement[] {
+  const nav = screen.getByRole("navigation", {
+    name: "Filter payments by status",
+  });
+  return within(nav).getAllByRole("link");
+}
+
+/** One chip's href, resolved so its query can be read. */
+function chipUrl(label: string): URL {
+  const link = chipLinks().find((a) => a.textContent === label);
+  expect(link, `a chip labelled ${label}`).toBeDefined();
+  const url = new URL(link!.getAttribute("href")!, "https://dashboard.test");
+  expect(url.pathname).toBe("/payments");
+  return url;
 }
 
 /**
@@ -104,7 +117,7 @@ function clickSave(): void {
  * `new URL` accepts the relative path `push` actually receives.
  *
  * Asserts exactly one call rather than reading `push.mock.calls[0]`
- * unconditionally — a case that clicks Apply without the component having
+ * unconditionally — a case that presses Save without the component having
  * wired the handler up at all would otherwise read `undefined` and fail on
  * `new URL(undefined, ...)` with a message that says nothing about what's
  * actually wrong.
@@ -132,51 +145,47 @@ describe("the payments filters", () => {
     push.mockClear();
   });
 
-  it("pushes a URL on Apply, so the filters live in the URL", () => {
-    // Not a `method="get"` form's own navigation any more (see the module
-    // doc), but the property that mattered — a filtered list is
-    // bookmarkable, reloadable and pasteable into a ticket, and
-    // `PaymentsScreen` has one source of truth in `searchParams` rather than
-    // a second copy of these picks in a prop — survives: `router.push`
-    // still lands on `/payments` with no filters when none are set.
-    render(<PaymentsFilters values={EMPTY} />);
-    clickApply();
-    expect(pushedUrl().search).toBe("");
+  it("links the All chip to the bare list, so the filters live in the URL", () => {
+    // A chip is a link to the filtered URL rather than state held here: a
+    // filtered list stays bookmarkable, reloadable and pasteable into a
+    // ticket, and `PaymentsScreen` has one source of truth in `searchParams`.
+    render(<PaymentsFilters values={{ ...EMPTY, status: "succeeded" }} />);
+    expect(chipUrl("All").search).toBe("");
   });
 
   it("carries the status as `status`, which is the parameter vpay reads", () => {
-    // THE case this file exists for. `Select` is a Headless UI listbox and
-    // not a native `<select>`; if this component read its value the way
-    // that one is read, the status filter would render, look right, be
-    // clickable, and silently do nothing.
-    render(<PaymentsFilters values={{ ...EMPTY, status: "succeeded" }} />);
-    clickApply();
-    expect(pushedUrl().searchParams.get("status")).toBe("succeeded");
+    render(<PaymentsFilters values={EMPTY} />);
+    expect(chipUrl(statusLabel.succeeded).searchParams.get("status")).toBe(
+      "succeeded",
+    );
+    expect(chipUrl(statusLabel.canceled).searchParams.get("status")).toBe(
+      "canceled",
+    );
   });
 
-  it("carries the status an operator PICKS, not the one the URL arrived with", () => {
-    // The case above seeds `values.status` and asserts it comes back out,
-    // which the component would pass with its `<select>`'s `onChange`
-    // deleted entirely — measured: replacing it with `() => {}` left every
-    // other case in this file green. Under the `method="get"` form this
-    // replaced there was no handler to delete (the browser read the DOM at
-    // submit time); there is one now, and this is what holds it.
-    render(<PaymentsFilters values={{ ...EMPTY, status: "succeeded" }} />);
-    fireEvent.change(screen.getByLabelText("Status"), {
-      target: { value: "canceled" },
-    });
-    clickApply();
-    expect(pushedUrl().searchParams.get("status")).toBe("canceled");
+  it("marks the chip on screen, and only that one", () => {
+    render(<PaymentsFilters values={{ ...EMPTY, status: "processing" }} />);
+    const current = chipLinks().filter((a) => a.hasAttribute("aria-current"));
+    expect(current.map((a) => a.textContent)).toEqual([statusLabel.processing]);
+  });
+
+  it("keeps the dates when the status changes", () => {
+    render(<PaymentsFilters values={SEPTEMBER} />);
+    const url = chipUrl(statusLabel.succeeded);
+    expect(url.searchParams.get("created_from")).toBe("2026-09-01");
+    expect(url.searchParams.get("created_to")).toBe("2026-09-07");
   });
 
   it("carries the two dates under the names the page reads", () => {
-    render(<PaymentsFilters values={SEPTEMBER} />);
-    clickApply();
-    const url = pushedUrl();
     // `created_from`/`created_to`, this app's own vocabulary — `payments-query.ts`
     // translates them into the API's `created_gte`/`created_lte` instants.
+    render(<PaymentsFilters values={{ ...SEPTEMBER, status: "succeeded" }} />);
+    fireEvent.click(dateFieldByLabel());
+    clickSave();
+    const url = pushedUrl();
     expect(url.searchParams.get("created_from")).toBe("2026-09-01");
     expect(url.searchParams.get("created_to")).toBe("2026-09-07");
+    expect(url.searchParams.get("status")).toBe("succeeded");
   });
 
   it("names the date field by its visible label, and reads the dates as its description", () => {
@@ -194,8 +203,8 @@ describe("the payments filters", () => {
     // it finds a `<label>` pointing at it (`labels`, read after mount), so a
     // screen reader hears the label, then the dates.
     expect(trigger).toHaveAccessibleDescription("2026-09-01 → 2026-09-07");
-    // Clicking the label focuses the field and opens nothing — the same
-    // thing clicking "Status" does to the select. `FormField`'s `Label` is
+    // Clicking the label focuses the field and opens nothing. `FormField`'s
+    // `Label` is
     // Headless UI's, which cancels the native label click (on a button that
     // would be a click, and would open the picker) and focuses instead.
     fireEvent.click(label);
@@ -243,7 +252,6 @@ describe("the payments filters", () => {
     pickSeptember(/Thursday, September 10th, 2026/);
     pickSeptember(/Friday, September 18th, 2026/);
     clickSave();
-    clickApply();
     const url = pushedUrl();
     expect(url.searchParams.get("created_from")).toBe("2026-09-10");
     expect(url.searchParams.get("created_to")).toBe("2026-09-18");
@@ -262,7 +270,6 @@ describe("the payments filters", () => {
     fireEvent.click(dateFieldByLabel());
     pickSeptember(/Thursday, September 10th, 2026/);
     clickSave();
-    clickApply();
     const url = pushedUrl();
     expect(url.searchParams.get("created_from")).toBe("2026-09-10");
     expect(url.searchParams.has("created_to")).toBe(false);
@@ -274,40 +281,38 @@ describe("the payments filters", () => {
     // were already looking at and no sign that the control did nothing.
     render(<PaymentsFilters values={SEPTEMBER} />);
     fireEvent.click(screen.getByRole("button", { name: "Clear the dates" }));
-    clickApply();
     const url = pushedUrl();
     expect(url.searchParams.has("created_from")).toBe(false);
     expect(url.searchParams.has("created_to")).toBe(false);
   });
 
-  it("carries no cursor, so applying a filter starts from the first page", () => {
-    // `starting_after` names a row in the PREVIOUS result set; carrying it
+  it("carries no cursor, so changing a filter starts from the first page", () => {
+    // `after`/`before` name a row in the PREVIOUS result set; carrying one
     // across a filter change asks for "the page after a payment that is no
     // longer in this list", and the answer looks like a working page.
     render(<PaymentsFilters values={{ ...EMPTY, status: "succeeded" }} />);
-    clickApply();
-    const url = pushedUrl();
-    expect(url.searchParams.has("after")).toBe(false);
-    expect(url.searchParams.has("before")).toBe(false);
+    for (const link of chipLinks()) {
+      const url = new URL(link.getAttribute("href")!, "https://dashboard.test");
+      expect(url.searchParams.has("after"), link.textContent ?? "").toBe(false);
+      expect(url.searchParams.has("before"), link.textContent ?? "").toBe(
+        false,
+      );
+    }
   });
 
-  it("offers every status the badge can render, and no others", () => {
+  it("offers every status the pill can render, and no others", () => {
     // One vocabulary: a status cannot be filterable but unrenderable, or the
-    // other way round. vpay answers 400 naming `status` for a value outside
-    // its own vocabulary, which is right of vpay and a refusal this form
-    // cannot provoke.
-    //
-    // **This asserted only that a control labelled "Status" existed**, which
-    // is not what its name claims and not what the claim is worth: deleting
-    // four of the five options (`PAYMENT_STATUS.slice(0, 1)`) left it green.
-    // The option VALUES are the vocabulary, so those are what is compared,
-    // in order, against the token list itself rather than a copy of it.
+    // other way round. Compared in order against the token list itself,
+    // not a copy of it — deleting four of the five chips must fail here.
     render(<PaymentsFilters values={EMPTY} />);
-    const options = within(screen.getByLabelText("Status")).getAllByRole(
-      "option",
-    );
     expect(
-      options.map((option) => (option as HTMLOptionElement).value),
+      chipLinks().map(
+        (link) =>
+          new URL(
+            link.getAttribute("href")!,
+            "https://dashboard.test",
+          ).searchParams.get("status") ?? "",
+      ),
     ).toEqual(["", ...PAYMENT_STATUS]);
   });
 });
