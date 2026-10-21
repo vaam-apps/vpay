@@ -103,6 +103,29 @@ const DECLINED_REF: Uuid = Uuid::from_u128(0x0f01);
 /// says out loud which value it is staging kill point 3 with.
 const ANSWERED_SENTINEL: i32 = 0;
 
+/// The reference `requesttopay-status.json` answers a 300 KB body to, past
+/// `vpay_provider::http::MAX_RAIL_BODY_BYTES`: the rail **answered**, and the
+/// adapter refuses what it answered as `ProviderError::Malformed`. The input to
+/// "a status read the rail answered and vpay would not act on". The body is a
+/// valid `SUCCESSFUL` on purpose, so the case cannot pass by the adapter
+/// reading it.
+const HUGE_ANSWER_REF: Uuid = Uuid::from_u128(0x0b16);
+
+/// The `X-Reference-Id` `requesttopay.json` answers a `307` to on a **submit**.
+/// The adapter does not follow it and answers `Malformed`, "never a decline:
+/// the charge's fate is unknown" (`vpay-adapter-mtn-momo`'s `submit_outcome`).
+const REDIRECTED_SUBMIT_REF: Uuid = Uuid::from_u128(0x0302);
+
+/// The `X-Reference-Id` `requesttopay.json` answers `400 PAYER_NOT_FOUND` to on
+/// a **submit** — a rail decision, `ProviderError::Rejected`.
+const DECLINED_SUBMIT_REF: Uuid = Uuid::from_u128(0x0400);
+
+/// The payer `requesttopay.json` declines on **any** reference
+/// (`400 PAYER_NOT_FOUND`, selected by `$.payer.partyId`). Paired with
+/// [`NOT_FOUND_REF`] it is a rail that declines every submit and has no record
+/// of every read — which is what a real decline looks like from the poll's side.
+const DECLINED_PAYER_MSISDN: &str = "237670000400";
+
 // ------------------------------------------------------------------ harness
 
 /// Postgres, both rail stubs, and everything `run_once` needs.
@@ -395,6 +418,54 @@ async fn status_queries(pool: &PgPool, charge_id: &str) -> anyhow::Result<i64> {
     .fetch_one(pool)
     .await
     .context("counting the status queries")
+}
+
+/// One `provider_requests` row, as the table holds it.
+///
+/// `answered` is `responded_at IS NOT NULL`, read separately from
+/// `status_code` so a row that carried one without the other would show here
+/// — `response_is_paired` makes that unwritable, and an assertion that read
+/// only one column would not notice if it ever were.
+#[derive(Debug, PartialEq, Eq, sqlx::FromRow)]
+struct StoredAttempt {
+    status_code: Option<i32>,
+    answered: bool,
+    error_kind: Option<String>,
+}
+
+/// Every attempt of `operation` against a charge, oldest first.
+async fn attempts_of(
+    pool: &PgPool,
+    charge_id: &str,
+    operation: &str,
+) -> anyhow::Result<Vec<StoredAttempt>> {
+    sqlx::query_as::<_, StoredAttempt>(
+        "SELECT status_code, (responded_at IS NOT NULL) AS answered, error_kind \
+         FROM provider_requests WHERE charge_id = $1 AND operation = $2 ORDER BY id",
+    )
+    .bind(charge_id)
+    .bind(operation)
+    .fetch_all(pool)
+    .await
+    .context("reading the attempt rows")
+}
+
+/// The payment intent a charge belongs to.
+async fn intent_of(pool: &PgPool, charge_id: &str) -> anyhow::Result<String> {
+    sqlx::query_scalar::<_, String>("SELECT payment_intent_id FROM charges WHERE id = $1")
+        .bind(charge_id)
+        .fetch_one(pool)
+        .await
+        .context("reading the charge's intent")
+}
+
+/// The `type` of every event an intent has, in order.
+async fn event_types(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<String>> {
+    Ok(events(pool, object_id)
+        .await?
+        .into_iter()
+        .map(|(event_type, _)| event_type)
+        .collect())
 }
 
 async fn events(pool: &PgPool, object_id: &str) -> anyhow::Result<Vec<(String, String)>> {
@@ -2241,6 +2312,373 @@ async fn a_decline_past_the_horizon_settles_an_unresolved_charge_and_clears_the_
          charge"
     );
     assert_one_reference(&h.pool, &charge_id, DECLINED_REF).await;
+    Ok(())
+}
+
+/// A status read the rail **answered** and the adapter refused is recorded as
+/// answered; one that got a `503` is not.
+///
+/// The defect, measured on 2026-10-21 against Notch Pay's real sandbox
+/// (RFC-0012 step 5): eleven reads of one charge, each a `complete` whose
+/// `amounts.total` the adapter refused as `Malformed`, each written to
+/// `provider_requests` as `status_code IS NULL, responded_at IS NULL` — "no
+/// answer", although the rail had answered and the adapter had parsed it. The
+/// `UPDATE` is what is asserted, read back from the table: the worker's
+/// `read_failure_status` is a pure function, and a unit test of it proves the
+/// table of variants, not that the row says so.
+///
+/// The `503` is the other half of the case, and it keeps it honest: a fix that
+/// recorded *every* refused read as answered would pass the first charge and
+/// fail the second. A `503` is `Transport`, and `Transport` stays `NULL` because
+/// the port cannot tell "the rail answered 5xx" from "the rail was never
+/// reached" (`handlers::read_failure_status`) — which means this row
+/// under-claims, and the assertion says so rather than hiding it.
+///
+/// Both charges are staged at kill point 3 so the recovery table advances the
+/// bookkeeping and the poll reaches the rail, which is the point under test.
+#[tokio::test]
+async fn a_status_read_the_adapter_refused_is_recorded_as_answered_and_a_503_is_not()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy::default();
+
+    let mut charge_ids = Vec::new();
+    for reference in [HUGE_ANSWER_REF, UNAVAILABLE_REF] {
+        let intent = confirmed_intent(
+            h.repositories.as_ref(),
+            MERCHANT,
+            PUSH_RAIL,
+            AMOUNT,
+            CURRENCY,
+        )
+        .await?;
+        let charge_id = crashed_charge(
+            h.repositories.as_ref(),
+            &intent,
+            PUSH_RAIL,
+            reference,
+            AMOUNT,
+            CURRENCY,
+            Some(MSISDN),
+        )
+        .await?;
+        age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+        record_submit_attempt(
+            h.repositories.as_ref(),
+            &charge_id,
+            PUSH_RAIL,
+            reference,
+            Some(ANSWERED_SENTINEL),
+        )
+        .await?;
+        charge_ids.push(charge_id);
+    }
+    let [huge, unavailable] = charge_ids.as_slice() else {
+        panic!("two charges were staged");
+    };
+
+    // One poll each. Neither read settles anything, so each job is
+    // rescheduled on the ladder rather than finished.
+    for _ in 0..2 {
+        let settled = h.step(&policy).await?;
+        assert_eq!(settled.kind, "poll_charge");
+        assert!(
+            matches!(settled.disposition, Disposition::Rescheduled(_)),
+            "a read that settles nothing keeps its charge on the ladder; got {:?}, error: {:?}",
+            settled.disposition,
+            settled.error
+        );
+    }
+
+    assert_eq!(
+        attempts_of(&h.pool, huge, "query_status").await?,
+        vec![StoredAttempt {
+            status_code: Some(ANSWERED_SENTINEL),
+            answered: true,
+            error_kind: Some("provider_error".to_owned()),
+        }],
+        "the rail answered this read with a body the adapter refused; recording it as `NULL` \
+         is the 2026-10-21 defect — 'no answer' for eleven reads Notch Pay had answered"
+    );
+    assert_eq!(
+        attempts_of(&h.pool, unavailable, "query_status").await?,
+        vec![StoredAttempt {
+            status_code: None,
+            answered: false,
+            error_kind: Some("provider_unavailable".to_owned()),
+        }],
+        "`Transport` stays unanswered: the port cannot say whether a 503 reached us, so the \
+         row under-claims rather than claims an answer it cannot prove"
+    );
+
+    // Nothing about the submit rows or the charges moved: this is a change to
+    // how a refused *read* is written, and to nothing a settlement reads.
+    for charge_id in [huge, unavailable] {
+        assert_eq!(charge(&h.pool, charge_id).await?.state, "submitted");
+        assert_eq!(
+            attempts_of(&h.pool, charge_id, "submit").await?,
+            vec![StoredAttempt {
+                status_code: Some(ANSWERED_SENTINEL),
+                answered: true,
+                error_kind: None,
+            }],
+            "the staged submit row is not this change's to touch"
+        );
+    }
+    Ok(())
+}
+
+/// A charge a crash left in `submitting` with nothing ever sent (kill point 1),
+/// old enough for the recovery table to apply to it, whose rail reference the
+/// WireMock tree answers specially.
+async fn never_sent_charge(h: &Harness, reference: Uuid) -> anyhow::Result<String> {
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        PUSH_RAIL,
+        reference,
+        AMOUNT,
+        CURRENCY,
+        Some(MSISDN),
+    )
+    .await?;
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+    assert!(
+        attempted_references(&h.pool, &charge_id).await?.is_empty(),
+        "kill point 1 must be staged with no attempt row at all"
+    );
+    Ok(charge_id)
+}
+
+/// Runs the two jobs a never-sent charge needs — the poll that enqueues the
+/// resubmit, then the resubmit — and returns what the **resubmit** settled as.
+async fn run_the_resubmit(
+    h: &Harness,
+    policy: &RecoveryPolicy,
+    charge_id: &str,
+) -> anyhow::Result<Settled> {
+    let poll = h.step(policy).await?;
+    assert_eq!(poll.kind, "poll_charge");
+    make_every_job_runnable(&h.pool).await?;
+    let resubmit = h.step(policy).await?;
+    assert_eq!(
+        resubmit.kind, "resubmit_charge",
+        "the second job for {charge_id} must be the resubmit the first one enqueued"
+    );
+    Ok(resubmit)
+}
+
+/// A resubmit whose answer the adapter refused as `Malformed` stays
+/// **unanswered**, and recovery still reads it as unresolved.
+///
+/// This is the half of the fix that must *not* change. `submit_again` shares
+/// its failure path's shape with `query_status`, and the tempting one-line fix
+/// for the 2026-10-21 defect is to make both record `Malformed` as answered.
+/// That is wrong on a submit: `recovery_step` turns an answered `submit` row
+/// into `RecoveryAction::Advance` — "the rail accepted it; advance the charge" —
+/// and a `307` the adapter would not follow, like Notch Pay's unresolvable `409`
+/// (`vpay-adapter-notchpay`), is `Malformed` precisely because the charge's
+/// fate is *unknown*. The row is read back through `latest_submit_attempt`,
+/// the statement `recovery_action` runs, so what is asserted is the evidence
+/// recovery would act on.
+#[tokio::test]
+async fn a_resubmit_the_adapter_refuses_as_malformed_stays_unanswered_for_recovery()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy::default();
+    let charge_id = never_sent_charge(&h, REDIRECTED_SUBMIT_REF).await?;
+
+    let resubmit = run_the_resubmit(&h, &policy, &charge_id).await?;
+    assert!(
+        matches!(resubmit.disposition, Disposition::Rescheduled(_)),
+        "a `Malformed` leaves the fate unknown, so the resubmit is retried on the ladder; \
+         got {:?}, error: {:?}",
+        resubmit.disposition,
+        resubmit.error
+    );
+
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "submit").await?,
+        vec![StoredAttempt {
+            status_code: None,
+            answered: false,
+            error_kind: Some("provider_error".to_owned()),
+        }],
+        "a refused answer to a submit is not an acceptance, so it must not be written the way \
+         one is: recovery would advance the charge"
+    );
+    let latest = h
+        .repositories
+        .latest_submit_attempt(&charge_id)
+        .await?
+        .context("the resubmit left no attempt row")?;
+    assert_eq!(
+        latest.status_code, None,
+        "`SubmitAttempt::Unanswered` is what `recovery_step` must see after this"
+    );
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "submitting");
+    assert_one_reference(&h.pool, &charge_id, REDIRECTED_SUBMIT_REF).await;
+    Ok(())
+}
+
+/// A resubmit the rail **declines** fails the charge, and only then is its
+/// attempt row marked answered.
+///
+/// This case used to be named `a_resubmit_the_rail_declines_stays_unanswered_
+/// because_nothing_fails_the_charge` and pinned the opposite: the loop finished
+/// the job and nothing wrote the charge, so it stayed `submitting` beside an
+/// unanswered row (vaam-apps/vpay#314). Now the worker settles it the way
+/// `vpay-api`'s first submit does — charge `failed` with the rail's failure
+/// code, the intent back to `requires_payment_method` carrying the error pair,
+/// and one `payment_intent.payment_failed` event, in one transaction — and the
+/// row then says what the rail said: the sentinel and `charge_declined`, the
+/// row `vpay-api`'s confirm writes for the same answer.
+///
+/// The row is asserted **together with** the charge, not instead of it. An
+/// answered `submit` row beside a `submitting` charge is the combination
+/// `recovery_step` reads as `Advance` ("the rail accepted it"), so a change
+/// that wrote the row and not the settlement would pass the row assertion and
+/// fail the state one — which is the pair that matters.
+///
+/// The job is still `Finished`: the error is raised unchanged after the
+/// settlement, so `Classify::retry` (`Retry::NewAttempt`) still decides that,
+/// and `log_failure` still counts it and still pages a blocked partner account.
+#[tokio::test]
+async fn a_resubmit_the_rail_declines_fails_the_charge_and_is_recorded_as_answered()
+-> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy::default();
+    let charge_id = never_sent_charge(&h, DECLINED_SUBMIT_REF).await?;
+    let intent = intent_of(&h.pool, &charge_id).await?;
+
+    let resubmit = run_the_resubmit(&h, &policy, &charge_id).await?;
+    assert_eq!(
+        resubmit.disposition,
+        Disposition::Finished,
+        "a `Rejected` is `Retry::NewAttempt`: the loop finishes the job; error: {:?}",
+        resubmit.error
+    );
+
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(
+        stored.state, "failed",
+        "a declined resubmit must fail the charge; left `submitting` it is resent after every \
+         third poll until the 24-hour horizon"
+    );
+    assert_eq!(
+        stored.failure_code.as_deref(),
+        Some(vpay_core::FailureCode::InvalidPayer.as_str()),
+        "MTN's `PAYER_NOT_FOUND` is `invalid_payer` in the closed vocabulary"
+    );
+    assert_eq!(
+        intent_status(&h.pool, &intent).await?,
+        (
+            "requires_payment_method".to_owned(),
+            Some(vpay_core::FailureCode::InvalidPayer.as_str().to_owned())
+        ),
+        "the intent goes back to the payer with the reason, as it does for a decline at confirm"
+    );
+    assert_eq!(
+        event_types(&h.pool, &intent).await?,
+        vec!["payment_intent.payment_failed".to_owned()],
+        "the merchant is told exactly once"
+    );
+
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "submit").await?,
+        vec![StoredAttempt {
+            status_code: Some(ANSWERED_SENTINEL),
+            answered: true,
+            error_kind: Some("charge_declined".to_owned()),
+        }],
+        "the rail answered, and the charge is terminal, so the row may say so"
+    );
+    assert_one_reference(&h.pool, &charge_id, DECLINED_SUBMIT_REF).await;
+    Ok(())
+}
+
+/// After a declined resubmit **nothing asks the rail again**.
+///
+/// The measurement this replaces: against a rail that declines every submit and
+/// answers `404` to every read, a charge left `submitting` was resubmitted after
+/// every third poll — submits 1, 2, 3, 4 at steps 2, 6, 10, 14 of sixteen, with
+/// eleven status reads between them — and the intent stayed
+/// `requires_payment_method` with no reason, for as long as the charge lived.
+/// The stub pair is what makes the rail honest: `…0404` is `NotFound` on every
+/// read and MSISDN `237670000400` is declined on every submit, so a charge that
+/// stays live is resubmitted by the production table and not by a staged payload.
+///
+/// Asserted as an empty queue and as counts, not as "sixteen steps passed": the
+/// leftover poll job finds a terminal charge and finishes without a status read,
+/// so the rail is asked for a submit once and for a status never.
+#[tokio::test]
+async fn a_declined_resubmit_is_not_resent_by_the_poll_that_follows() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let policy = RecoveryPolicy {
+        not_found_streak: 3,
+        not_found_window: Duration::from_millis(50),
+        ..RecoveryPolicy::default()
+    };
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        PUSH_RAIL,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        PUSH_RAIL,
+        NOT_FOUND_REF,
+        AMOUNT,
+        CURRENCY,
+        Some(DECLINED_PAYER_MSISDN),
+    )
+    .await?;
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+
+    let resubmit = run_the_resubmit(&h, &policy, &charge_id).await?;
+    assert_eq!(resubmit.disposition, Disposition::Finished);
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "failed");
+
+    // The poll job the first step rescheduled is still queued. Past the window
+    // it would have started a `NotFound` streak against `…0404` and resubmitted
+    // on the third; on a terminal charge it must finish without asking.
+    tokio::time::sleep(Duration::from_millis(60)).await;
+    make_every_job_runnable(&h.pool).await?;
+    let leftover = h.step(&policy).await?;
+    assert_eq!(leftover.kind, "poll_charge");
+    assert_eq!(
+        leftover.disposition,
+        Disposition::Finished,
+        "a terminal charge's poll is done work; error: {:?}",
+        leftover.error
+    );
+
+    assert!(
+        jobs(&h.pool).await?.is_empty(),
+        "a job is still queued for a charge the rail declined, so something will ask again"
+    );
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "submit").await?.len(),
+        1,
+        "the rail was sent the declined charge more than once"
+    );
+    assert_eq!(
+        status_queries(&h.pool, &charge_id).await?,
+        0,
+        "a terminal charge must not cost the rail a status read"
+    );
     Ok(())
 }
 

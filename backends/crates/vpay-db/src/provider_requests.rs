@@ -16,12 +16,39 @@
 //! `responded_at` NULL rather than stamping it with the time the failure
 //! was noticed — see [`ProviderRequests::record_response`].
 //!
-//! # Not yet swept
+//! # What reads these rows, and what that makes `NULL` mean
 //!
-//! **Nothing reads this table.** The recovery sweep described above does
-//! not exist (the worker job loop is not started — `docs/status.md`), so
-//! today these rows are written and never looked at. That is a recorded
-//! gap, not a claim of crash recovery.
+//! Two readers, each filtered by `operation`:
+//!
+//! * `Settlement::latest_submit_attempt` reads the newest **`submit`** row,
+//!   and `vpay_worker`'s `recovery_step` branches on it: `NULL` is "the call
+//!   may have gone out and nothing came back" (poll, and resubmit only after
+//!   a `NotFound` streak), a status is "the rail accepted it" (advance the
+//!   charge). For a `submit`, then, `NULL` means **the outcome is unknown**,
+//!   which is wider than "the rail said nothing": a submit the adapter
+//!   refused as `Malformed` is also `NULL`, deliberately, because the charge's
+//!   fate is unknown. In `vpay_worker`, a submit the rail **declined** is the one
+//!   error written answered, and only after it has failed the charge, so that no
+//!   worker path leaves a `submitting` charge beside an answered row. **`vpay-api`'s
+//!   confirm does not hold that line:** it records the answered row first and
+//!   fails the charge in a second commit, so a crash between them leaves exactly
+//!   that pair (found in review of vaam-apps/vpay#316; it predates it and is not
+//!   changed there).
+//! * The refund-cancel guards read whether a **`refund`** row exists, never
+//!   its status.
+//!
+//! **Nothing reads a `query_status` row.** A status read moves no money, so
+//! `NULL` on one is not evidence of anything in flight, and a row for a read
+//! the rail answered but the adapter refused carries the sentinel
+//! ([`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`]) like any other answered attempt
+//! (`vpay_worker::handlers`, `read_failure_status`). There is no sweep over
+//! every `NULL` row; a future one has to filter by `operation` for the same
+//! reason.
+//!
+//! This section said "Nothing reads this table … the worker job loop is not
+//! started" until 2026-10-21, and had been wrong since the worker's recovery
+//! table landed (Step 4, 2026-09-03): `latest_submit_attempt` has read it on
+//! every poll of a `submitting` charge since then.
 
 use uuid::Uuid;
 
@@ -50,9 +77,17 @@ use crate::error::{DbError, classify_write};
 ///   and a per-rail one at that — this layer would have to guess which,
 ///   which is precisely the rail-shaped branch the port forbids.
 ///
-/// Operators tell the two answered cases apart by `error_kind`: `NULL` for a
-/// submit the rail accepted, the error's own classification code for one it
-/// declined.
+/// Operators tell the answered cases apart by `error_kind`: `NULL` for a
+/// submit the rail accepted, the status read's own label (`pending`,
+/// `succeeded`, …) for a read, and the error's own classification code for an
+/// answer the caller refused — a decline (`charge_declined`), or, on a status
+/// read, an answer the adapter could not act on (`provider_error`).
+///
+/// The sentinel means "answered" and **nothing about whether the rail
+/// accepted**: recovery reads it on a `submit` row as acceptance, which is why
+/// `vpay_worker` writes it for a `submit` that ended in an error only for a
+/// decline, and only after it has failed the charge (`vpay-api`'s confirm
+/// writes it first; module header).
 pub const STATUS_CODE_NOT_CARRIED_BY_THE_PORT: i32 = 0;
 
 #[async_trait::async_trait]
@@ -99,7 +134,15 @@ pub trait ProviderRequests: Send + Sync {
     /// An attempt the rail *did* answer, but whose status the port does not
     /// carry, passes [`STATUS_CODE_NOT_CARRIED_BY_THE_PORT`] rather than `None`
     /// — see that constant for why "answered" and "unanswered" must not be
-    /// spelled the same way here.
+    /// spelled the same way here. A rail's answer that the caller then
+    /// *refused* is still an answer: a status read the adapter could not act
+    /// on passes the sentinel **with** its `error_kind`, the one combination
+    /// that says "heard, and refused". A `submit` that ended in an error is the
+    /// exception the caller makes on purpose and this method does not police —
+    /// recovery reads an answered `submit` row as acceptance, so a caller should
+    /// pass the sentinel for one only for a decline whose charge it has already
+    /// failed — `vpay_worker` does; `vpay-api`'s confirm records first (module
+    /// header).
     ///
     /// # Errors
     ///

@@ -74,19 +74,37 @@ you are here to answer.
 2. Read the `provider_requests` timeline. Did we ever get a response to submit?
    Read it off `status_code`, which has **three** meanings — the pairing is
    enforced by the `response_is_paired` CHECK and documented on the column
-   itself (migrations `0016` and `0020`):
-   - **`status_code IS NULL`** (with `responded_at IS NULL`) → **no answer was
-     received.** `error_kind` says what went wrong on our side of the wire:
+   itself (migrations `0016` and `0020`). **Read the `operation` column
+   first: the same `error_kind` means different things on a `submit` row and
+   on a `query_status` row** (since 2026-10-21; before it, both were `NULL`).
+   - **`status_code IS NULL`** (with `responded_at IS NULL`) → **on a
+     `submit` row, the outcome is unknown.** `error_kind` says what went wrong:
      `provider_unavailable` (transport — connection refused, TLS failure,
-     deadline expired) or `provider_error` (bytes came back and did not
-     parse). On a redirect rail the payer was never given a URL, so no
-     payment can have occurred; on a **push** rail this is exactly the
-     ambiguous case — the rail may be holding the request. Do not fail the
-     charge on this evidence alone; go to step 3.
+     deadline expired, or a `5xx` the rail did send) or `provider_error` (an
+     answer came back and the adapter would not act on it — deliberately
+     left unresolved on a submit, because the charge's fate is unknown). On a
+     redirect rail the payer was never given a URL, so no payment can have
+     occurred; on a **push** rail this is exactly the ambiguous case — the
+     rail may be holding the request. Do not fail the charge on this evidence
+     alone; go to step 3. On a **`query_status`** row `NULL` still means "no
+     answer is known to have been received" (`provider_unavailable`), and the
+     port cannot tell a `503` the rail sent from a rail that was never reached.
    - **`status_code = 0`** → the rail **answered**, but the provider port
      carries no HTTP status for that answer. This is a sentinel, not an HTTP
-     code. It appears for an accepted submit (`error_kind IS NULL`) and for a
-     decline (`error_kind = 'charge_declined'`).
+     code. It appears for an accepted submit (`error_kind IS NULL`), for a
+     decline (`error_kind = 'charge_declined'`), for a status read that was
+     answered (`error_kind` is the read's own label — `pending`, `succeeded`,
+     `failed` …), and, on a **`query_status`** row only, for an answer the
+     adapter refused (`error_kind = 'provider_error'` — for example a
+     `complete` whose `amounts.total` is not the charge's amount: the rail
+     spoke, and vpay would not act on it). On a `submit` row it means the rail
+     **declined** (`charge_declined`) and the charge is `failed`: the worker's
+     resubmit fails the charge first and records the row second, while
+     `vpay-api`'s confirm records the row first and fails the charge in a second
+     commit — so a crash between the two leaves a `submitting` charge beside a
+     `0` row, which recovery reads as "the rail accepted it". If you find that
+     pair on a declined charge, the rail declined it. It is never written for a
+     `submit` that ended in any other error.
    - **A real HTTP status** → the rail answered with it.
 
    The `error_kind` vocabulary is `vpay_core::Classify::code` on the

@@ -109,14 +109,22 @@ from a permanent one.
    application logs for the (truncated) body.
 
    Reading `provider_requests` for that: `status_code IS NULL` means no
-   answer was received; `status_code = 0` is a sentinel meaning the rail
-   answered but the port carries no HTTP status (an accepted submit, or a
-   decline) — see migration `0020`; anything else is the real HTTP status.
-   `error_kind` is the error's own classification code, the same vocabulary
-   the merchant's envelope uses: `provider_unavailable` (transport),
-   `provider_error` (unparseable answer), `charge_declined` (the rail
-   decided), `misconfigured` (our YAML or credentials — fix the deployment,
-   not the mapping), `operation_unsupported_by_rail`, `not_implemented`.
+   answer is known to have been received (on a `submit` row: the outcome is
+   unknown); `status_code = 0` is a sentinel meaning the rail answered but the
+   port carries no HTTP status (an accepted submit, a decline, an answered
+   status read, or — on a `query_status` row, since 2026-10-21 — an answer the
+   adapter refused) — see migration `0020`; anything else is the real HTTP
+   status. `error_kind` is the error's own classification code, the same
+   vocabulary the merchant's envelope uses: `provider_unavailable`
+   (transport), `provider_error` (unparseable answer), `charge_declined` (the
+   rail decided), `misconfigured` (our YAML or credentials — fix the
+   deployment, not the mapping), `operation_unsupported_by_rail`,
+   `not_implemented`. A `provider_error` on a **submit** row is `NULL`
+   whatever the rail said; on a **`query_status`** row it is `0`, so
+   `operation = 'query_status' AND error_kind = 'provider_error' AND
+status_code = 0` is "the rail answered and we could not use it" — the
+   shape Notch Pay's sandbox produced eleven times for one charge on
+   2026-10-21.
 
 5. **A rising `provider_error` rate with `status_code = 0` and
    `error_kind = 'charge_declined'`** is the mapping-drift case this runbook
