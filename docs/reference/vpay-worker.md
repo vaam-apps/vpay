@@ -512,6 +512,13 @@ charge is not polled, so vpay would not see a payment that rail then took. All
 three shipped adapters answer a duplicate as `Submitted` (MTN's `409`, Notch
 Pay's `AlreadyExists`; Orange is never resubmitted).
 
+**What this does not close.** The ordering above is the worker's. `vpay-api`'s
+confirm path does the opposite for the same answer: `finish_confirm` records the
+row answered, then calls `persist_decline`, two commits, so a crash between them
+leaves a `submitting` charge beside an answered row — the pair
+`recovery_step` reads as `Advance`. That predates this change, is not changed by
+it, and was pointed out in review of it (vaam-apps/vpay#316).
+
 **What stays as it was.** A `Rejected` on a status _read_ does not fail the
 charge: Notch Pay raises it "only for our own refused keys", which is a fact
 about our credentials and not about the payment. Only the resubmit's `Rejected`

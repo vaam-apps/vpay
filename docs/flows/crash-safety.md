@@ -82,7 +82,9 @@ than the bottom row and advances. A `Rejected` resubmit is different, and
 since 2026-10-21 it ends the table for that charge: the worker fails it (charge
 `failed`, intent back to the payer with the reason, one
 `payment_intent.payment_failed` event) and only then marks the attempt row
-answered, so the bottom row is never read for a charge the rail declined. Before
+answered, so no worker path leaves the bottom row to be read for a charge the
+rail declined (`vpay-api`'s confirm records its row first and fails the charge in a
+second commit, so a crash between them still can). Before
 that the charge stayed `submitting` and the middle row resubmitted it again after
 every third `NotFound` until the 24-hour horizon
 ([vpay-worker.md](../reference/vpay-worker.md) § "What a refused answer is

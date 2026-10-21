@@ -147,6 +147,15 @@ it is the worker's).
 
 ## Not done, and not run
 
+- **`vpay-api`'s confirm has the window this change closes for the worker.**
+  `finish_confirm` records the answered row, then calls `persist_decline`, two
+  commits, so a crash between them leaves a `submitting` charge beside an answered
+  row, which `recovery_step` reads as `Advance` ("the rail accepted it") for a
+  charge the rail declined. It predates this change and is not changed by it. It
+  was pointed out in review of #316 (`lightbridge-assistant`), and the doc
+  sentences that implied otherwise — the `provider_requests.rs` module header, the
+  unresolved-charges runbook and the crash-safety note — are corrected here.
+  Reordering it is its own change, not made.
 - **The order argument is a reading, not a measurement.** "Row first would leave a
   `submitting` charge beside an answered row" is the consequence of
   `recovery_step`'s table, which has its own unit and integration cases; no test
