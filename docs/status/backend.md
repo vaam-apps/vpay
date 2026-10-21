@@ -854,12 +854,31 @@ was available.
   has the gates, the counts, the two mutations the conformance row was
   checked against, and what was not run.
 
+## The `notchpay` adapter meets Notch Pay's sandbox (2026-10-21, RFC-0012 step 5)
+
+**Notch Pay has now been called through vpay, in its sandbox only.** Three
+test-mode payments (210, 220 and 230 XAF, to MTN's documented outcome numbers)
+went through `vpay-server`, its worker and Postgres with `livemode=false`.
+`+237670000000` **succeeded** (one balanced 210 XAF ledger transaction,
+`provider_txn_id` Notch Pay's `trx.test_…`). `+237670000002` **failed**
+(`provider_error`, intent back to `requires_payment_method`). `+237670000001`
+was read 12 times: the first read answered `pending`, and each of the next
+eleven said `complete` with a short `amounts.total` and was refused as
+`Malformed`. It was still `pending` at 15 minutes.
+
+**The last sentence of the section above, "Not proven against Notch Pay, in
+any respect", stopped being true on 2026-10-21 for the sandbox only.** That
+section is left as written. Still unproven: production and a live key, Orange
+through vpay, webhooks (RFC-0012 § 10 items 7 and 17) and refunds.
+[verification/2026-10-21-notchpay-step5.md](verification/2026-10-21-notchpay-step5.md)
+has every output and what was not run.
+
 ## A refused answer is recorded as answered on a status read, and still as unresolved on a submit (2026-10-21)
 
 **`provider_requests` no longer says "no answer" for a status read the rail
 answered and the adapter refused.** RFC-0012 step 5 ran three test-mode
 payments through vpay against Notch Pay's real sandbox
-([#310](https://github.com/vaam-apps/vpay/pull/310), draft). One payment's reads
+([#310](https://github.com/vaam-apps/vpay/pull/310)). One payment's reads
 came back `complete` with an `amounts.total` that was not its amount; the
 adapter refused each as `ProviderError::Malformed`, and the worker wrote each of
 those eleven rows `status_code IS NULL, responded_at IS NULL` — the encoding
@@ -886,8 +905,8 @@ may have been asked to move money and never answered".
   this table … the worker job loop is not started" from 2026-09-03; the
   recovery table has read `submit` rows on every poll of a `submitting` charge
   since Step 4 the same day. [#310](https://github.com/vaam-apps/vpay/pull/310)'s
-  page repeats the old sentence ("Today 'Nothing reads this table'"); it was
-  not edited here.
+  page repeated the old sentence ("Today 'Nothing reads this table'"); it now
+  carries a dated correction.
 - **Open, not fixed: a declined resubmit leaves the charge `submitting`.**
   `Rejected` is `Retry::NewAttempt`, so the loop finishes the resubmit job and
   nothing fails the charge, unlike `vpay-api`'s first submit. Run: the first

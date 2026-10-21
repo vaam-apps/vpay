@@ -1,7 +1,10 @@
 # 2026-10-21 — a refused status read is an answered one; a refused submit stays unresolved
 
 Branch `claude/epic-bose-09916e`, from `master` at `4ca1fed0` (#308), where the
-baseline below was run. The change: `vpay-worker`'s `handlers.rs` (one function
+baseline below was run. `master` was then merged in at `e28292d3` (#310, the
+RFC-0012 step 5 page this change answers), which conflicted in the two status
+indexes alone (`docs/status/README.md`, `docs/status/backend.md`); both sides
+were kept, and the index now counts 86 pages. The change: `vpay-worker`'s `handlers.rs` (one function
 split in two, one pure function, one unit test), documentation in `vpay-db`'s
 `provider_requests.rs`, one `vpay-db` test, three Postgres-and-WireMock cases in
 `worker_recovery.rs`, and the docs. **No route, migration, gate or
@@ -10,7 +13,7 @@ split in two, one pure function, one unit test), documentation in `vpay-db`'s
 ## What was wrong
 
 RFC-0012 step 5 ran three test-mode payments through vpay against Notch Pay's
-real sandbox ([#310](https://github.com/vaam-apps/vpay/pull/310), draft). One
+real sandbox ([#310](https://github.com/vaam-apps/vpay/pull/310), merged as `e28292d3` while this change was in review). One
 payment's reads came back `complete` with an `amounts.total` that was not its
 amount, and the adapter refused each as `ProviderError::Malformed`. The worker
 wrote every one of those reads to `provider_requests` as
@@ -168,9 +171,9 @@ row, and `vpay-api` is untouched; that is a reading and not a measurement.
   `latest_submit_attempt` has read it on every poll of a `submitting` charge
   since Step 4, the same day. [#310](https://github.com/vaam-apps/vpay/pull/310)'s
   page repeats the old sentence ("Today 'Nothing reads this table', … so the
-  consequence is audit imprecision, not money"); it was **not** edited here. The
-  consequence it names is right for a `query_status` row and was not right for a
-  `submit` one.
+  consequence is audit imprecision, not money"); it carries a dated correction now,
+  added by this change. The consequence it names was right for a `query_status` row
+  and was not right for a `submit` one.
 - **A declined resubmit leaves the charge `submitting`.** `ProviderError::Rejected`
   is `Retry::NewAttempt`, so the loop finishes the resubmit job and nothing fails
   the charge — unlike `vpay-api`'s first submit, which records the decline and
@@ -204,9 +207,10 @@ row, and `vpay-api` is untouched; that is a reading and not a measurement.
   on the changed files from outside the repository instead. No web code,
   dependency or lockfile moved.
 - **`cargo xtask verify-citations`** (network and a token) was not run. This page
-  and the docs cite #310, a draft PR that exists, and no CI run id.
-- **#310's page was not edited.** It repeats "Nothing reads this table", which was
-  true of `query_status` rows and not of `submit` ones.
+  and the docs cite #310, a merged PR that exists, and no CI run id.
+- **#310's finding was corrected in place, nothing else on its page was touched.**
+  It repeated "Nothing reads this table", which was true of `query_status` rows and
+  not of `submit` ones; the correction is dated and points here.
 - **`vpay-docs`** (the human documentation, pinned to a release tag) was not
   touched; AGENTS.md says its `release-parity` workflow reports at the next tag.
 - **The `vpay-skills` companion** is a draft PR, to merge after this one. Its

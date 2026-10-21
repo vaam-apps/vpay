@@ -73,11 +73,19 @@ documents it, carries a status and no reason, so a payer with no funds and a
 payer who never answered both read `failed`. `insufficient_funds` and
 `payer_declined` are therefore unreachable there, and `canceled` is
 `provider_error` rather than `payer_declined`, because the merchant's public
-key can cancel a payment too (ADR-0031). Nothing has called Notch Pay. The
-sandbox's outcome numbers are what will show whether the live read says
-more, and [adapter-notchpay.md](adapter-notchpay.md) § "To confirm" item 5
-carries it. A `503` or a timeout is `ProviderError::Transport`, never a
-decline, which is why `provider_unavailable` is a dash on that rail.
+key can cancel a payment too (ADR-0031). A `503` or a timeout is
+`ProviderError::Transport`, never a decline, which is why
+`provider_unavailable` is a dash on that rail.
+
+_(This paragraph also said "Nothing has called Notch Pay. The sandbox's
+outcome numbers are what will show whether the live read says more, and
+[adapter-notchpay.md](adapter-notchpay.md) § "To confirm" item 5 carries it"
+until 2026-10-21. Notch Pay's sandbox has been called, and its read names no
+reason, as this paragraph expected. The rest of the paragraph and the "stub
+only" column heads in the tables are the 2026-10-20 transcription and have
+not been brought up to date here: for the mapping as observed, read
+[adapter-notchpay.md](adapter-notchpay.md) § "The calls", where `canceled` is
+`payer_declined`.)_
 
 **† `SENDER_ACCOUNT_NOT_ACTIVE` is not in MTN's published `ErrorReason` enum**,
 nor is `COULD_NOT_PERFORM_TRANSACTION`. Both are mapped and both are declared

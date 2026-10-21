@@ -18,7 +18,7 @@ do, and how do I know it is fixed.
 | [demo.md](demo.md)                                           | Bringing vpay up from nothing and walking six payments through both rails — the one page here whose output is a real run                                                                            | —                                            |
 | [checkout.md](checkout.md)                                   | Integrating vpay's own payment page, hosted and embedded — and seeing an unregistered origin refused                                                                                                | —                                            |
 | [live-sandbox-test.md](live-sandbox-test.md)                 | Reproducing a payment against MTN's real **sandbox** (server, worker, payer page, dashboard) — the one page whose commands have been run against a real rail                                        | —                                            |
-| [notchpay-sandbox-test.md](notchpay-sandbox-test.md)         | Asking Notch Pay's real **sandbox** RFC-0012 § 10's questions (a probe) and taking one success and one failure through the `notchpay` adapter — **written 2026-10-20, never run against Notch Pay** | —                                            |
+| [notchpay-sandbox-test.md](notchpay-sandbox-test.md)         | Asking Notch Pay's real **sandbox** RFC-0012 § 10's questions (a probe) and taking three sandbox payments through the `notchpay` adapter — **written 2026-10-20, run against Notch Pay 2026-10-21** | —                                            |
 
 The `Alert` column names the rule in
 `deploy/helm/vpay/templates/prometheusrule.yaml` whose `runbook_url` points at
