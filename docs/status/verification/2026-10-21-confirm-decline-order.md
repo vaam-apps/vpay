@@ -134,7 +134,14 @@ change's paths), which conflicted in `docs/status/README.md` alone and kept both
 sides (the index now counts 94 pages), these were re-run on the merged tree and
 agree: `just verify` exit 0, all fifteen gates (`verify-links` 2537 links in 475
 files); rustfmt and clippy clean; `confirm_rails` + `worker_recovery` 43 passed, 0
-ignored. The other suites in the table are pre-merge numbers.
+ignored. **`master` moved again at `0706cd57`** (#319: rail-callback retries — code in
+`provider_callback.rs`, both `jobs.rs` and their tests, so on the neighbouring
+paths this time), conflicting in the status index alone again (it now counts 95
+pages). Re-run on that tree: `just verify` exit 0, all fifteen gates
+(`verify-links` 2557 links in 476 files); rustfmt and clippy clean; `vpay-api` +
+`vpay-worker` 505 passed, 0 ignored; `confirm_rails` + `worker_recovery` +
+`provider_callback` 54 passed, 0 ignored. The other suites in the table are
+pre-merge numbers.
 
 The full-workspace `cargo nextest run` was **not** run for this change; the suites
 above are the ones its one code change (`finish_confirm`) can reach.
