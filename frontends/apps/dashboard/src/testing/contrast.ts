@@ -200,29 +200,25 @@ function pinnedToOtherTheme(
 
 export function themeColours(
   root: postcss.Root,
-  opts: { over?: [number, number, number]; theme?: ThemeName } = {},
+  opts: {
+    over?: [number, number, number] | string;
+    theme?: ThemeName;
+  } = {},
 ): Map<string, [number, number, number]> {
   const theme: ThemeName = opts.theme ?? "dark";
-  const layered = new Map<string, [number, number, number]>();
-  const unlayered = new Map<string, [number, number, number]>();
+  // Pass 1: the raw text of every custom property this theme can see, with
+  // the cascade-layer rule applied (unlayered beats layered, later wins
+  // within a group). Raw, because since `@vaam-apps/ui@0.5.0` almost every
+  // token is a `var()` onto a generated Material 3 role
+  // (`--color-base-100: var(--md-sys-color-surface)`), and a parser that
+  // only reads literal colours resolves NOTHING. That is exactly how this
+  // suite failed on the bump: zero ground colour, so every ratio case
+  // reported a missing token rather than a number.
+  const layered = new Map<string, string>();
+  const unlayered = new Map<string, string>();
   root.walkDecls(/^--/, (decl) => {
-    const key = decl.prop.replace(/^--/, "").replace(/^color-/, "");
-    if (key.endsWith("-border")) {
-      return;
-    }
     if (pinnedToOtherTheme(decl, theme)) {
       return;
-    }
-    const parsed = parseCssColor(decl.value);
-    if (parsed === null) {
-      return;
-    }
-    let rgb255 = parsed.rgb;
-    if (parsed.alpha < 1) {
-      if (opts.over === undefined) {
-        return;
-      }
-      rgb255 = compositeOver(parsed.rgb, parsed.alpha, opts.over);
     }
     let inLayer = false;
     let node: postcss.Node | undefined = decl.parent;
@@ -233,7 +229,58 @@ export function themeColours(
       }
       node = node.parent;
     }
-    (inLayer ? layered : unlayered).set(key, srgb255ToLinear(rgb255));
+    (inLayer ? layered : unlayered).set(decl.prop, decl.value.trim());
   });
-  return new Map([...layered, ...unlayered]);
+  const raw = new Map([...layered, ...unlayered]);
+
+  // Pass 2: follow `var(--x)` / `var(--x, fallback)` the way the cascade
+  // does, to a literal. A cycle or a dead reference resolves to `null` and
+  // the token is skipped, never guessed.
+  const resolve = (value: string, depth = 0): string | null => {
+    if (depth > 16) {
+      return null;
+    }
+    const ref = /^var\(\s*(--[\w-]+)\s*(?:,\s*(.+))?\)$/.exec(value);
+    if (ref === null) {
+      return value;
+    }
+    const target = raw.get(ref[1] as string);
+    if (target !== undefined) {
+      return resolve(target, depth + 1);
+    }
+    return ref[2] === undefined ? null : resolve(ref[2].trim(), depth + 1);
+  };
+
+  const opaque = (prop: string): [number, number, number] | null => {
+    const text = raw.get(prop);
+    const value = text === undefined ? null : resolve(text);
+    const parsed = value === null ? null : parseCssColor(value);
+    return parsed !== null && parsed.alpha === 1 ? parsed.rgb : null;
+  };
+  const over =
+    typeof opts.over === "string"
+      ? opaque(`--color-${opts.over}`)
+      : (opts.over ?? null);
+
+  const out = new Map<string, [number, number, number]>();
+  for (const [prop, text] of raw) {
+    const key = prop.replace(/^--/, "").replace(/^color-/, "");
+    if (key.endsWith("-border")) {
+      continue;
+    }
+    const value = resolve(text);
+    const parsed = value === null ? null : parseCssColor(value);
+    if (parsed === null) {
+      continue;
+    }
+    let rgb255 = parsed.rgb;
+    if (parsed.alpha < 1) {
+      if (over === null) {
+        continue;
+      }
+      rgb255 = compositeOver(parsed.rgb, parsed.alpha, over);
+    }
+    out.set(key, srgb255ToLinear(rgb255));
+  }
+  return out;
 }

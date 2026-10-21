@@ -146,7 +146,20 @@ describe("the compiled globals.css — the styling gate just ci cannot provide",
     // The shipped default is still the dark one both apps pin with
     // `data-theme`. A release that changed it would be a visual change to
     // every screen and should not pass silently.
-    expect(matches, "the dark default is still emitted").toContain("#0a0b0d");
+    // Re-pinned 2026-10-21 for `@vaam-apps/ui@0.5.0`, which generates its
+    // palette from a Material 3 seed: `--color-base-100` is the `surface`
+    // role now, and the `#0a0b0d` literal this asserted no longer exists.
+    // Pinned instead: the chain, and the package's own dark `surface`
+    // value, read from the package rather than typed here.
+    expect(matches, "base-100 is the M3 surface role").toContain(
+      "var(--md-sys-color-surface)",
+    );
+    const darkSurface =
+      /\[data-theme="dark"\]\s*\{[^}]*?--md-sys-color-surface:\s*([^;]+);/.exec(
+        themeCss,
+      )?.[1];
+    expect(darkSurface, "the package declares a dark surface").toBeDefined();
+    expect(compiled).toContain(`--md-sys-color-surface: ${darkSurface}`);
     expect(
       compiled.match(/--color-base-100:\s*oklch\(/g),
       "daisyUI's own themes are still switched off",

@@ -78,3 +78,20 @@ describe("checkout outcome variants (@vaam-apps/ui vocabulary)", () => {
     expect(checkoutOutcomeVariant.canceled).toBe("warning");
   });
 });
+
+describe("the dashboard's other state vocabularies", () => {
+  it("labels every value of every list, and invents none", async () => {
+    const t = await import("./index.js");
+    const pairs: [readonly string[], Record<string, string>][] = [
+      [t.REFUND_STATUS, t.refundStatusLabel],
+      [t.DELIVERY_STATE, t.deliveryStateLabel],
+      [t.CHECKOUT_STATUS, t.checkoutStatusLabel],
+    ];
+    for (const [list, labels] of pairs) {
+      expect(Object.keys(labels).sort()).toEqual([...list].sort());
+      for (const value of list) {
+        expect(labels[value], value).toBeTruthy();
+      }
+    }
+  });
+});

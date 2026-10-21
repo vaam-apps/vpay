@@ -56,7 +56,7 @@ import tailwind from "@tailwindcss/postcss";
 import postcss from "postcss";
 import { describe, expect, it } from "vitest";
 
-import { contrastRatio, hexToSrgb255, themeColours } from "../testing/contrast";
+import { contrastRatio, themeColours } from "../testing/contrast";
 
 // A relative path to this app's OWN compiled stylesheet, not a package
 // resolution: after the cutover there is no `@vaam-apps/ui/styles.css` to
@@ -84,9 +84,11 @@ const compiled = await postcss([tailwind()]).process(
  * `--color-base-200`) this backdrop is the wrong one, and every ratio below
  * would need recomputing against `--color-base-200` instead.
  */
-const PAGE_BACKGROUND_255 = hexToSrgb255("#0a0b0d") as [number, number, number];
-
-const colours = themeColours(compiled.root, { over: PAGE_BACKGROUND_255 });
+// Re-pointed for `@vaam-apps/ui@0.5.0`, which replaced the palette: the
+// ground is now read from the compiled theme (`--color-base-100`, the M3
+// `surface` role) rather than typed in as the `#0a0b0d` literal the old
+// palette declared and the new one does not.
+const colours = themeColours(compiled.root, { over: "base-100" });
 
 /** The button every outcome screen with a destination renders — see the header comment. */
 const FORWARD_BUTTON_HUE = "primary";
@@ -122,10 +124,11 @@ describe("checkout outcome screens, contrast measured from the compiled theme (i
   });
 
   // (2) A KNOWN NUMBER, so a parser that returns plausible garbage is
-  // caught. #e8eaed on #0a0b0d, computed independently
-  // (`<SP>/dashui-D-contrast-calc.mjs`) from the two hex values
-  // `dist/styles/theme.css` declares for `--color-primary` /
-  // `--color-primary-content` — not from this file's own machinery.
+  // caught. `@vaam-apps/ui@0.5.0` maps `--color-primary` /
+  // `--color-primary-content` onto the M3 roles `primary` / `on-primary`,
+  // declared #cfcdff / #424179 in the dark theme; 6.109:1 computed
+  // independently (Python, 2026-10-21), not from this file's own machinery.
+  // It was #e8eaed on #0a0b0d, 16.34:1, before the palette was replaced.
   it("agrees with a hand-computed ratio on the forward button's pair", () => {
     const primary = colours.get("primary");
     const primaryContent = colours.get("primary-content");
@@ -134,7 +137,7 @@ describe("checkout outcome screens, contrast measured from the compiled theme (i
       primary as [number, number, number],
       primaryContent as [number, number, number],
     );
-    expect(ratio).toBeCloseTo(16.34, 1);
+    expect(ratio).toBeCloseTo(6.109, 2);
   });
 
   // (3) The pairs InlineBanner actually paints: --state-<hue>-fg over
