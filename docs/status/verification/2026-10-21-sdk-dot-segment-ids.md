@@ -168,6 +168,11 @@ ran the same 84 calls each. All 168 came back as the local refusal: 84
   `sdks/stripe-compat` is a private test harness whose paths the official
   `stripe` package builds. No test in any of them names a dot segment, so
   the protection is a property of the secret's shape, not a guard.
+  _(Later the same day: stripe-js and the Flutter plugin now have tests that
+  name one, on every route that builds a path. See
+  [2026-10-21-payer-dot-segment-ids.md](2026-10-21-payer-dot-segment-ids.md).
+  The protection is still the secret's shape; what changed is that a test
+  fails if it loosens.)_
 
 ## What ran, on 2026-10-21 (macOS arm64, rustc 1.98.0, cargo-nextest 0.9.137, Node 24.14.1)
 
@@ -255,6 +260,9 @@ at **21**.
 - **The payer surfaces' safety was established by reading, not by a test.**
   No test in `sdks/stripe-js`, the Flutter plugin or the Tauri plugin sends
   a dot-segment secret. Adding one is a follow-up, not part of this change.
+  _(Done later the same day, for stripe-js and the Flutter plugin. The Tauri
+  plugin builds no path and needs none:
+  [2026-10-21-payer-dot-segment-ids.md](2026-10-21-payer-dot-segment-ids.md).)_
 - **The Node refusal is still not a `VpayError`.** That dated gap is widened
   here, not closed.
 - `just fmt-check-web` fails on this machine, on one file:

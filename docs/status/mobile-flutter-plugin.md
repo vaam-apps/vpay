@@ -447,6 +447,33 @@ ported — the string exists in both locales and nothing reads it.
 `dart analyze --fatal-infos` clean on both. Evidence:
 [verification/2026-09-17-flutter-remember-msisdn-read.md](verification/2026-09-17-flutter-remember-msisdn-read.md).
 
+## A client secret whose id is empty or only dots (2026-10-21)
+
+Tests only; no shipping code changed. When vaam-apps/vpay#306 made the
+merchant SDKs refuse an empty or all-dots path id, this plugin was read and
+found not exposed: `_tryParseClientSecret` (`lib/src/browser_client.dart`)
+takes the id out of a `pi_…_secret_…`/`cs_…_secret_…` secret and requires it
+to start with that prefix and be longer than it. Nothing tested it, and that
+parser is the only thing keeping `.` and `..` out of a `/v1/browser` path:
+`Uri.encodeComponent` leaves dots alone, and `Uri.parse` resolves `..` and
+`%2E%2E` while building the request (re-measured on Dart 3.14).
+
+Four tests in `test/browser_client_test.dart`, named in a new row of
+[../sdks/parity.md](../sdks/parity.md)'s Flutter table, now pin it. Three
+drive `retrievePaymentIntent`, `confirmPaymentIntent` and
+`retrieveCheckoutSession` through sixteen secrets, a copy of the list in
+`sdks/stripe-js/src/testing/unroutable-secrets.ts` (`""`, `.`, `..`,
+`%2e%2e`, bare `pi_`/`cs_`, a dot or empty id, a bare-prefix id, an empty
+suffix, another object's prefix). Each must be refused with
+`param: 'clientSecret'` while the `MockClient` records no request. The
+fourth pins that an id passing the prefix rule but carrying `/../` stays one
+`%2F`-escaped segment. Dropping the prefix rule turns the first three red,
+and dropping `Uri.encodeComponent` on the intent read turns the fourth red;
+both mutations were reverted. **No parser changed: no test found a hole.**
+`flutter test` **341 passed, 0 skipped, 0 failed** on Flutter
+3.50.0-0.1.pre, by hand, because no CI job runs it (D-M3). Evidence:
+[verification/2026-10-21-payer-dot-segment-ids.md](verification/2026-10-21-payer-dot-segment-ids.md).
+
 ## What is still not real
 
 - **No `just ci` gate** (D-M3). `install-flutter`/`analyze-flutter`/
@@ -541,3 +568,8 @@ ported — the string exists in both locales and nothing reads it.
   redirect to `paid` in `examples/shop`'s own database, one genuine
   mid-payment dismissal proven never to fabricate `canceled`, every
   session/intent/order id, and exactly what this lane did not touch.
+- [verification/2026-10-21-payer-dot-segment-ids.md](verification/2026-10-21-payer-dot-segment-ids.md)
+  — the four dot-segment tests: `flutter test` 341/0,
+  `dart analyze --fatal-infos` and `dart format` clean, and the two
+  mutations with the tests each turned red. The stripe-js half is on the
+  same page.
