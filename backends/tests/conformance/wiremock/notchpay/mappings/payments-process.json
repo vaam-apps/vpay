@@ -1,11 +1,11 @@
 {
   "mappings": [
     {
-      "name": "process accepted (202, processing) -- cm.mobile and a +-prefixed number under data.phone",
+      "name": "process accepted (202, processing) -- by Notch Pay's trx. reference, cm.mobile and a +-prefixed number under data.phone",
       "priority": 10,
       "request": {
         "method": "POST",
-        "urlPathPattern": "/payments/[0-9a-f-]{36}",
+        "urlPathPattern": "/payments/trx\\.test_[0-9a-f-]{36}",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -34,16 +34,16 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment is being processed\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{request.pathSegments.[1]}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"processing\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment is being processed\",\"transaction\":{\"reference\":\"{{request.pathSegments.[1]}}\",\"trxref\":\"{{regexExtract request.path '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"processing\"}}"
       },
       "metadata": {
         "why": [
-          "openapi.yaml 2.1.0's processPayment (202), with the path carrying OUR reference, as the",
-          "specification's example does. Notch Pay's sandbox CONTRADICTED this on 2026-10-21: it answers 404",
-          "'Payment Not Found' to a process call by our reference and accepts only its own trx. reference",
-          "(RFC-0012 section 10 item 2; docs/status/verification/2026-10-21-notchpay-sandbox-run.md). This stub",
-          "keeps the adapter's current addressing so the suite still exercises it; it must move with the",
-          "adapter's fix. data.phone and cm.mobile were accepted by the sandbox."
+          "Process, addressed by Notch Pay's own reference (trx.test_<our reference> in this stub), as",
+          "Notch Pay's sandbox required on 2026-10-21: it answered 404 to a process call by our reference",
+          "(RFC-0012 section 10 item 2; docs/status/verification/2026-10-21-notchpay-sandbox-run.md). An adapter",
+          "that addressed it by ours matches nothing and gets WireMock's 404, which is Malformed on a process",
+          "call. The answer names our reference as trxref and carries no id, as the sandbox's did.",
+          "data.phone and cm.mobile were accepted by the sandbox."
         ]
       }
     }

@@ -1,9 +1,13 @@
 //! The `notchpay` rail: Notch Pay's direct mobile-money charge, behind the
 //! provider port, on the [`vpay_notchpay`] client.
 //!
-//! A push rail, as `mtn_momo` is: the payer is prompted on their own handset,
-//! the charge is addressed on the rail by the reference **we** generated, and
-//! the authenticated read is what moves money. Notch Pay is an aggregator, so
+//! A push rail, as `mtn_momo` is: the payer is prompted on their own handset
+//! and the authenticated read is what moves money. Unlike `mtn_momo`, the
+//! payment is addressed on the rail by **Notch Pay's** reference (`trx.…`),
+//! returned by the initialize call and carried in `ref_extra` under
+//! [`NOTCHPAY_REFERENCE`]: Notch Pay's sandbox answered `404` to every
+//! process and read by our own reference (RFC-0012 § 10 item 2,
+//! `docs/status/verification/2026-10-21-notchpay-sandbox-run.md`). Notch Pay is an aggregator, so
 //! one account collects MTN MoMo and Orange Money in Cameroon through the
 //! `cm.mobile` channel ([RFC-0012]).
 //!
@@ -22,10 +26,21 @@
 //!
 //! # What is not proven
 //!
-//! **Nothing in this crate has called Notch Pay.** Every mapping is
-//! transcribed from Notch Pay's documentation and `openapi.yaml` 2.1.0, and
-//! every wire assertion runs against a WireMock stub transcribed from the
-//! same pages. The `mapping` module's header names the open items.
+//! **This crate has never called Notch Pay** (RFC-0012 step 5 has not run).
+//! Its calls were transcribed from Notch Pay's documentation and corrected
+//! from what Notch Pay's sandbox answered `vpay-notchpay`'s probe on
+//! 2026-10-21 (step 1). Every wire assertion runs against a WireMock stub.
+//! The `mapping` module's header names what was confirmed and what is open.
+//!
+//! **A crash window the rail does not let us close.** Notch Pay's reference
+//! exists only in the initialize answer, and becomes durable only when
+//! `submit` returns. Notch Pay finds a payment by its own reference alone
+//! (`GET /payments?search=` does not match ours). So a crash after the
+//! process call and before `submit` returns leaves a prompted payment vpay
+//! cannot read. A retry then gets `409` and answers `Malformed`: the
+//! charge's fate is unknown, never `Submitted` and never a decline, and an
+//! operator reconciles it in Notch Pay's dashboard (the maintainer's
+//! decision, 2026-10-21).
 //!
 //! Refunds are a declared [`ProviderError::NotImplemented`] token
 //! (`notchpay::refund`): Notch Pay documents `POST /refunds` in a guide only,
@@ -67,6 +82,10 @@ const PRIVATE_KEY: &str = "private_key";
 const CHANNEL: &str = "channel";
 /// The optional `settings` key for the one free-text field Notch Pay receives.
 const DESCRIPTION: &str = "description";
+
+/// The `ref_extra` key holding Notch Pay's own reference for the payment
+/// (`trx.…`), the only one its process and read paths answer for.
+pub const NOTCHPAY_REFERENCE: &str = "notchpay_reference";
 
 /// The channels this adapter sends. `cm.mobile` only: Notch Pay's channel
 /// table lists it as "MTN / Orange, Cameroon, XAF", so the network is Notch
@@ -161,65 +180,124 @@ impl Adapter {
             .with_request_timeout(config.request_timeout))
     }
 
-    /// Call 2, `POST /payments/{reference}`: the USSD prompt.
+    /// Call 2, `POST /payments/{notchpay_reference}`: the USSD prompt.
     async fn process(
         &self,
         client: &Client,
         charge: &ChargeRef,
         config: &ProviderConfig,
         phone: &str,
+        notchpay_reference: &str,
     ) -> Result<Submitted, ProviderError> {
-        let reference = charge.reference_id.to_string();
         let body = ProcessPayment {
             channel: channel(config)?,
             data: ProcessData { phone },
         };
-        match client.process_payment(&reference, &body).await? {
-            Answer::Success(_) => Ok(submitted()),
+        match client.process_payment(notchpay_reference, &body).await? {
+            Answer::Success(_) => Ok(submitted(notchpay_reference)),
             Answer::Refused(refusal) => match mapping::process_refusal(&refusal) {
                 // Not a decline (RFC-0012 § 3). The payment left `pending`
                 // under someone's process call — ours, before a crash — so it
                 // is submitted, unless the read says it never moved.
-                Processed::AlreadyProcessed => match self.read(client, &reference).await? {
-                    Some(PaymentStatus::Pending) => Err(ProviderError::malformed(
-                        "notchpay: a process call was refused as already processed, and the \
+                Processed::AlreadyProcessed => {
+                    match self.read(client, charge, notchpay_reference).await? {
+                        Some(PaymentStatus::Pending) => Err(ProviderError::malformed(
+                            "notchpay: a process call was refused as already processed, and the \
                              payment still reads pending",
-                    )),
-                    _ => Ok(submitted()),
-                },
+                        )),
+                        _ => Ok(submitted(notchpay_reference)),
+                    }
+                }
                 Processed::Refused(error) => Err(error),
             },
         }
     }
 
-    /// The read, reduced to the payment's status, for the two submit paths
-    /// that have to decide whether to send the prompt. `None` is "no such
+    /// The read, reduced to the payment's status, for the submit paths that
+    /// have to decide whether to send the prompt. `None` is "no such
     /// payment".
     async fn read(
         &self,
         client: &Client,
-        reference: &str,
+        charge: &ChargeRef,
+        notchpay_reference: &str,
     ) -> Result<Option<PaymentStatus>, ProviderError> {
-        match client.retrieve_payment(reference).await? {
-            Answer::Success(envelope) => known_status(&envelope.transaction).map(Some),
+        match client.retrieve_payment(notchpay_reference).await? {
+            Answer::Success(envelope) => {
+                require_our_payment(&envelope.transaction, charge)?;
+                known_status(&envelope.transaction).map(Some)
+            }
             Answer::Refused(refusal) => mapping::read_refusal(&refusal).map(|()| None),
         }
     }
 }
 
-/// A push rail's `Submitted`: no redirect, and **no key material**.
-///
-/// The charge is addressed on Notch Pay by the reference we generated, in the
-/// body of call 1 and in the path of calls 2 and 3, as `openapi.yaml` 2.1.0
-/// shows it. So there is nothing to persist, and inventing a value here
-/// would put something in `provider_ref_extra` that names nothing. Whether
-/// the path in fact wants Notch Pay's own `trx.…` reference, as one guide
-/// shows, is RFC-0012 § 10 item 2.
-fn submitted() -> Submitted {
+/// A push rail's `Submitted`: no redirect, and Notch Pay's reference as the
+/// key material, because it is the only address Notch Pay answers for.
+fn submitted(notchpay_reference: &str) -> Submitted {
     Submitted {
-        ref_extra: RefExtra::new(),
+        ref_extra: RefExtra::from([(NOTCHPAY_REFERENCE.to_owned(), notchpay_reference.to_owned())]),
         redirect_url: None,
     }
+}
+
+/// Notch Pay's reference out of the initialize answer.
+///
+/// # Errors
+///
+/// [`ProviderError::Malformed`] if the answer carries none, or carries ours
+/// back in its place: without Notch Pay's own reference the payment cannot
+/// be processed or read, so nothing is sent and the charge's fate is left
+/// unknown.
+fn notchpay_reference_of(payment: &Payment, charge: &ChargeRef) -> Result<String, ProviderError> {
+    require_our_payment(payment, charge)?;
+    payment
+        .reference
+        .as_deref()
+        .filter(|reference| !reference.is_empty() && *reference != charge.reference_id.to_string())
+        .map(str::to_owned)
+        .ok_or_else(|| {
+            ProviderError::malformed(
+                "notchpay: the initialize answer carries no Notch Pay reference to address the \
+                 payment by; nothing was sent to the payer",
+            )
+        })
+}
+
+/// Refuses an answer about another payment: its `trxref` must be our
+/// reference. Notch Pay's sandbox put ours there on every payment answer on
+/// 2026-10-21. A read addressed by a `trx.…` that came back naming another
+/// merchant reference must not settle this charge.
+fn require_our_payment(payment: &Payment, charge: &ChargeRef) -> Result<(), ProviderError> {
+    if payment.trxref.as_deref() == Some(charge.reference_id.to_string().as_str()) {
+        return Ok(());
+    }
+    Err(ProviderError::malformed(
+        "notchpay: the payment answer does not name this charge's reference as its trxref",
+    ))
+}
+
+/// The charge's Notch Pay reference from `ref_extra`.
+///
+/// # Errors
+///
+/// [`ProviderError::Config`] if there is none: that is key material vpay
+/// lost for a payment Notch Pay may well have settled, not a payment Notch
+/// Pay never heard of, so it is never [`ChargeStatus::NotFound`]
+/// (`docs/flows/crash-safety.md`; Orange's missing `pay_token` is the same
+/// rule).
+fn held_notchpay_reference(charge: &ChargeRef) -> Result<&str, ProviderError> {
+    charge
+        .ref_extra
+        .get(NOTCHPAY_REFERENCE)
+        .map(String::as_str)
+        .filter(|reference| !reference.is_empty())
+        .ok_or_else(|| {
+            ProviderError::Config(format!(
+                "notchpay: the charge holds no `{NOTCHPAY_REFERENCE}`, so Notch Pay cannot be \
+                 asked about it; reconcile it in Notch Pay's dashboard"
+            ))
+        })
 }
 
 /// A payment status this adapter knows, from a successful answer.
@@ -326,19 +404,25 @@ impl ProviderAdapter for Adapter {
         Some(EXPOSURE)
     }
 
-    /// Call 1, `POST /payments`, then call 2, `POST /payments/{reference}`
-    /// (RFC-0012 § 3).
+    /// Call 1, `POST /payments`, then call 2, `POST /payments/{notchpay_reference}`
+    /// (RFC-0012 § 3), where `notchpay_reference` is the `trx.…` call 1
+    /// returned.
     ///
     /// | Call 1 answered | Then |
     /// | --- | --- |
-    /// | `201`, `pending` | call 2 |
-    /// | `201`, any other documented status | `Submitted`; the poll resolves it |
-    /// | `409`, a payment with this reference already exists | read it: `pending` → call 2; any other status → `Submitted`; none → `Malformed` |
+    /// | `201`, `pending` | call 2 by Notch Pay's reference; `Submitted` carries it |
+    /// | `201`, any other documented status | `Submitted` carrying it; the poll resolves it |
+    /// | `201` without Notch Pay's reference, or about another `trxref` | `Malformed`; nothing is sent to the payer |
+    /// | `409`, and the charge already holds Notch Pay's reference | read it: `pending` → call 2; any other status → `Submitted`; none → `Malformed` |
+    /// | `409`, and the charge holds none | `Malformed`: the payment cannot be found again (below) |
     /// | anything else | `mapping::initialize_refusal` |
     ///
     /// The `409` is the crash-retry case: a submit that reached Notch Pay and
-    /// lost its answer. The read decides whether the prompt was sent, so a
-    /// retry never prompts twice and never leaves a payment unprompted.
+    /// lost its answer. With Notch Pay's reference held, the read decides
+    /// whether the prompt was sent, so a retry never prompts twice. Without
+    /// it, Notch Pay offers no way to find the payment by our reference
+    /// (2026-10-21: `search` matches its own reference only), so the answer
+    /// is `Malformed`: fate unknown, not `Submitted`, not a decline.
     ///
     /// # Errors
     ///
@@ -377,34 +461,55 @@ impl ProviderAdapter for Adapter {
             "initialize answered"
         );
         match answer {
-            Answer::Success(envelope) => match known_status(&envelope.transaction)? {
-                PaymentStatus::Pending => self.process(&client, charge, config, &phone).await,
-                _ => Ok(submitted()),
-            },
-            Answer::Refused(refusal) => match mapping::initialize_refusal(&refusal) {
-                Initialized::AlreadyExists => match self.read(&client, &reference).await? {
-                    Some(PaymentStatus::Pending) => {
-                        self.process(&client, charge, config, &phone).await
+            Answer::Success(envelope) => {
+                let notchpay_reference = notchpay_reference_of(&envelope.transaction, charge)?;
+                match known_status(&envelope.transaction)? {
+                    PaymentStatus::Pending => {
+                        self.process(&client, charge, config, &phone, &notchpay_reference)
+                            .await
                     }
-                    Some(_) => Ok(submitted()),
-                    None => Err(ProviderError::malformed(
-                        "notchpay: initialize answered 409 for this reference and the read \
-                             finds no such payment",
-                    )),
-                },
+                    _ => Ok(submitted(&notchpay_reference)),
+                }
+            }
+            Answer::Refused(refusal) => match mapping::initialize_refusal(&refusal) {
+                Initialized::AlreadyExists => {
+                    let Some(notchpay_reference) = charge
+                        .ref_extra
+                        .get(NOTCHPAY_REFERENCE)
+                        .filter(|reference| !reference.is_empty())
+                    else {
+                        return Err(ProviderError::malformed(
+                            "notchpay: initialize answered 409 for this reference and the charge \
+                             holds no Notch Pay reference; Notch Pay cannot find the payment by \
+                             ours, so its fate is unknown and an operator must reconcile it",
+                        ));
+                    };
+                    match self.read(&client, charge, notchpay_reference).await? {
+                        Some(PaymentStatus::Pending) => {
+                            self.process(&client, charge, config, &phone, notchpay_reference)
+                                .await
+                        }
+                        Some(_) => Ok(submitted(notchpay_reference)),
+                        None => Err(ProviderError::malformed(
+                            "notchpay: initialize answered 409 for this reference and the read \
+                             by the held Notch Pay reference finds no such payment",
+                        )),
+                    }
+                }
                 Initialized::Refused(error) => Err(error),
             },
         }
     }
 
-    /// Call 3, `GET /payments/{reference}`: the authoritative read, and the
-    /// only thing that moves money. `mapping::charge_status` and
+    /// Call 3, `GET /payments/{notchpay_reference}`: the authoritative read,
+    /// and the only thing that moves money. The answer must name this
+    /// charge's reference as its `trxref`. `mapping::charge_status` and
     /// `mapping::read_refusal` are the whole table.
     ///
     /// # Errors
     ///
-    /// `Config` for a missing key or a `404` that is not Notch Pay's
-    /// "Payment not found"; `Rejected` only for our own refused keys;
+    /// `Config` for a missing key, a charge with no Notch Pay reference in
+    /// `ref_extra`, or a `404` that is not Notch Pay's "Payment not found"; `Rejected` only for our own refused keys;
     /// `Transport` and `Malformed` as for `submit`. A payment Notch Pay has no
     /// record of is [`ChargeStatus::NotFound`], not an error.
     async fn query_status(
@@ -412,10 +517,9 @@ impl ProviderAdapter for Adapter {
         charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> Result<ChargeStatus, ProviderError> {
+        let notchpay_reference = held_notchpay_reference(charge)?;
         let client = self.client(config)?;
-        let answer = client
-            .retrieve_payment(&charge.reference_id.to_string())
-            .await?;
+        let answer = client.retrieve_payment(notchpay_reference).await?;
         tracing::debug!(
             rail = CODE,
             reference_id = %charge.reference_id,
@@ -424,6 +528,7 @@ impl ProviderAdapter for Adapter {
         );
         match answer {
             Answer::Success(envelope) => {
+                require_our_payment(&envelope.transaction, charge)?;
                 mapping::charge_status(&envelope.transaction, charge.amount)
             }
             Answer::Refused(refusal) => {
@@ -448,8 +553,9 @@ impl ProviderAdapter for Adapter {
     ///
     /// [`ProviderError::Malformed`] for a body that is not an event, a `type`
     /// other than the five payment events in
-    /// [`vpay_notchpay::wire::PAYMENT_EVENTS`], or a `data.reference` that is
-    /// missing or not one of ours (a UUID). The message never quotes the body.
+    /// [`vpay_notchpay::wire::PAYMENT_EVENTS`], or a `data` whose `trxref` and
+    /// `reference` are both missing or not ours (a UUID). The message never
+    /// quotes the body.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
         let event = vpay_notchpay::parse_event(body)?;
         let handled = event
@@ -461,16 +567,24 @@ impl ProviderAdapter for Adapter {
                 "notchpay: the webhook is not one of the five payment events vpay handles",
             ));
         }
-        let reference_id = event
-            .data
-            .reference
-            .as_deref()
-            .and_then(|reference| Uuid::parse_str(reference).ok())
-            .ok_or_else(|| {
-                ProviderError::malformed(
-                    "notchpay: the webhook's data.reference is missing or is not a vpay reference",
-                )
-            })?;
+        // `data.trxref` first: on every payment answer Notch Pay's sandbox
+        // gave (2026-10-21), `trxref` was ours and `reference` its own
+        // `trx.…`. No webhook was received to confirm the event's `data` has
+        // the same shape, so `data.reference` stays as the fallback for the
+        // specification's form.
+        let reference_id = [
+            event.data.trxref.as_deref(),
+            event.data.reference.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .find_map(|reference| Uuid::parse_str(reference).ok())
+        .ok_or_else(|| {
+            ProviderError::malformed(
+                "notchpay: the webhook's data names no vpay reference (neither trxref nor \
+                     reference is one)",
+            )
+        })?;
         Ok(CallbackRef {
             reference_id,
             ref_extra: RefExtra::new(),

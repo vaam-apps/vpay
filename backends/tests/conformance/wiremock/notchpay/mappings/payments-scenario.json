@@ -8,7 +8,7 @@
       "newScenarioState": "settled",
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000ce0",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000ce0",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -23,7 +23,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000ce0\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"processing\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000ce0\",\"trxref\":\"00000000-0000-0000-0000-000000000ce0\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"processing\"}}"
       },
       "metadata": {
         "why": "query_status reports what the rail says now and never caches a first answer."
@@ -36,7 +36,7 @@
       "requiredScenarioState": "settled",
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000ce0",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000ce0",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -51,7 +51,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000ce0\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000ce0\",\"trxref\":\"00000000-0000-0000-0000-000000000ce0\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"}}"
       }
     }
   ]

@@ -1,11 +1,11 @@
 {
   "mappings": [
     {
-      "name": "read: any payment of ours reads complete, for the charge's 5000 XAF",
+      "name": "read: any payment of ours, by Notch Pay's reference, reads complete for the charge's 5000 XAF",
       "priority": 10,
       "request": {
         "method": "GET",
-        "urlPathPattern": "/payments/[0-9a-f-]{36}",
+        "urlPathPattern": "/payments/trx\\.test_[0-9a-f-]{36}",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -20,15 +20,15 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"{{request.pathSegments.[1]}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"{{request.pathSegments.[1]}}\",\"trxref\":\"{{regexExtract request.path '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'}}\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"}}"
       },
       "metadata": {
         "why": [
-          "openapi.yaml 2.1.0's retrievePayment documents 202 on success; Notch Pay's sandbox answered 200",
-          "on 2026-10-21, with the payment under `transaction` (item 15, answered) and an `amounts` object whose",
-          "`total` the adapter now requires to be the charge's. The path carries OUR reference, which the sandbox",
-          "answers 404 (item 2, contradicted): this stub keeps the adapter's current addressing and must move",
-          "with its fix. The amount and currency are the conformance charge's (ADR-0031 condition 5)."
+          "The read, addressed by Notch Pay's own reference as the sandbox required (item 2), answering",
+          "with the sandbox's shape: transaction (item 15), our reference as trxref, no id, and amounts.total,",
+          "which the adapter requires to be the charge's. 202 is openapi.yaml 2.1.0's documented status; the",
+          "sandbox answered 200, and the client accepts any 2xx. The amount and currency are the conformance",
+          "charge's (ADR-0031 condition 5)."
         ]
       }
     },
@@ -37,7 +37,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000404",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000404",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -67,7 +67,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-0000000005aa",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-0000000005aa",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -89,7 +89,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000560",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000560",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -104,7 +104,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000560\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}",
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000560\",\"trxref\":\"00000000-0000-0000-0000-000000000560\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"pending\"}}",
         "fixedDelayMilliseconds": 2000
       },
       "metadata": {
@@ -116,7 +116,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000b16",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000b16",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -131,7 +131,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"transaction\":{\"id\":\"pay.test_0b16\",\"reference\":\"00000000-0000-0000-0000-000000000b16\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"},\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
+        "body": "{\"code\":202,\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000b16\",\"trxref\":\"00000000-0000-0000-0000-000000000b16\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"complete\"},\"padding\":\"{{randomValue length=300000 type='ALPHANUMERIC'}}\"}"
       },
       "metadata": {
         "why": "REF_HUGE. A valid complete read padded past MAX_RAIL_BODY_BYTES (256 KiB), so without the bound the adapter would answer Succeeded."
@@ -142,7 +142,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000f01",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000f01",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -157,7 +157,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f01\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"failed\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000f01\",\"trxref\":\"00000000-0000-0000-0000-000000000f01\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"failed\"}}"
       },
       "metadata": {
         "why": "Notch Pay's read names no reason (RFC-0012 section 4). On 2026-10-21 the sandbox's failure-(other reason) number read failed and nothing else: provider_error."
@@ -168,7 +168,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000f02",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000f02",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -183,7 +183,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f02\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"canceled\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000f02\",\"trxref\":\"00000000-0000-0000-0000-000000000f02\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"canceled\"}}"
       },
       "metadata": {
         "why": "Notch Pay's sandbox read its canceled-by-user number (+237670000004) as canceled on 2026-10-21, the evidence RFC-0012 section 4 named: payer_declined. The public key can also cancel (ADR-0031), so it is evidence of a decline, not proof of whose."
@@ -194,7 +194,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000f03",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000f03",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -209,7 +209,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f03\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"rejected\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000f03\",\"trxref\":\"00000000-0000-0000-0000-000000000f03\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"rejected\"}}"
       },
       "metadata": {
         "why": "'rejected by our system or by operator', including Notch Pay's fraud system. provider_error."
@@ -220,7 +220,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000f04",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000f04",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -235,7 +235,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f04\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"expired\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000f04\",\"trxref\":\"00000000-0000-0000-0000-000000000f04\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"expired\"}}"
       },
       "metadata": {
         "why": "'expired after 3 hours'. payer_timeout."
@@ -246,7 +246,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000f05",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000f05",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -261,7 +261,7 @@
         "headers": {
           "Content-Type": "application/json"
         },
-        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"id\":\"pay.test_{{randomValue length=12 type='ALPHANUMERIC'}}\",\"reference\":\"00000000-0000-0000-0000-000000000f05\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"abandoned\"}}"
+        "body": "{\"code\":202,\"status\":\"Accepted\",\"message\":\"Payment retrieved\",\"transaction\":{\"reference\":\"trx.test_00000000-0000-0000-0000-000000000f05\",\"trxref\":\"00000000-0000-0000-0000-000000000f05\",\"amount\":5000,\"amounts\":{\"converted\":5000,\"currency\":\"XAF\",\"rate\":1,\"total\":5000},\"currency\":\"XAF\",\"status\":\"abandoned\"}}"
       },
       "metadata": {
         "why": "'abandoned the payment on our hosted page' -- a push charge should never read it; payer_timeout if it does."
@@ -272,7 +272,7 @@
       "priority": 1,
       "request": {
         "method": "GET",
-        "urlPath": "/payments/00000000-0000-0000-0000-000000000f10",
+        "urlPath": "/payments/trx.test_00000000-0000-0000-0000-000000000f10",
         "headers": {
           "X-Grant": {
             "matches": ".+"
@@ -304,7 +304,7 @@
             "currency": "XAF",
             "fees": [],
             "merchant_reference": "00000000-0000-0000-0000-000000000f10",
-            "reference": "trx.test_00000000000000f10",
+            "reference": "trx.test_00000000-0000-0000-0000-000000000f10",
             "sandbox": 1,
             "status": "complete",
             "trxref": "00000000-0000-0000-0000-000000000f10"
