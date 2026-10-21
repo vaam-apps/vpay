@@ -1,10 +1,10 @@
 import { callDashProcedure, type ProcedurePage } from "../server/dash-read";
 import type { ApiResult } from "../server/api";
 import type { StaffContext } from "../server/session";
+import { PAGE_SIZE } from "./procedure-paging";
 import { PROCEDURE_OF } from "./resource-name";
 
-/** How many rows a procedure-backed screen asks for. */
-export const PAGE_SIZE = 20;
+export { offsetFrom, PAGE_SIZE, singleParam } from "./procedure-paging";
 
 /**
  * Read one page of a procedure-backed resource, server side.
@@ -18,11 +18,19 @@ export const PAGE_SIZE = 20;
  * empty list and a refused read look identical on screen unless the screen
  * is told which it got, and rendering a refusal as "no rows" is the failure
  * `CLAUDE.md` names.
+ *
+ * `filter` is passed through as the procedure's own `filter` argument — the
+ * named fields its `*ListFilter` type declares (`status` for refunds and
+ * checkouts, `state` for deliveries). A value the procedure does not know is
+ * refused by vpay with a `400` naming the field, and that refusal is what
+ * the screen renders: never an empty page that reads as "none".
  */
 export async function readProcedurePage<Row>(
   staff: StaffContext,
   resource: string,
   offset: number,
+  filter: Readonly<Record<string, string>> = {},
+  limit: number = PAGE_SIZE,
 ): Promise<ApiResult<ProcedurePage<Row>>> {
   const procedure = PROCEDURE_OF[resource];
   if (procedure === undefined) {
@@ -31,41 +39,16 @@ export async function readProcedurePage<Row>(
   return callDashProcedure<ProcedurePage<Row>>(
     staff.config,
     procedure,
-    { page: { limit: PAGE_SIZE, offset }, filter: {} },
+    { page: { limit, offset }, filter },
     staff.accessToken,
     staff.sessionToken,
   );
 }
 
-/** `?offset=` as a non-negative integer, or 0. */
-export function offsetFrom(
-  params: Record<string, string | string[] | undefined>,
-): number {
-  const raw = params["offset"];
-  const parsed = Number(Array.isArray(raw) ? raw[0] : raw);
-  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
-}
-
 /**
- * An RFC 3339 timestamp, as an operator reads it.
- *
- * **Not `format.ts`'s `formatInstant`, which takes unix seconds.** The REST
- * list serialises times the way the merchant API does — an integer — and a
- * CrateStack procedure serialises a `DateTime` as a string. Passing one to
- * the other's formatter yields `Invalid Date` or, worse, a plausible date in
- * 1970. The two formatters exist because the two wire shapes exist.
- *
- * An unparseable value is returned verbatim rather than replaced: if vpay
- * ever answers something this cannot read, an operator should see what it
- * actually said.
+ * `format.ts`'s `formatIsoInstant`, re-exported where the procedure lists
+ * have always imported it from. It lives in `format.ts` since 2026-10-21 so
+ * a client component can format an instant without importing this module,
+ * which reaches the server-only token code through `callDashProcedure`.
  */
-export function formatIsoInstant(value: string | null | undefined): string {
-  if (value === null || value === undefined) {
-    return "—";
-  }
-  const parsed = Date.parse(value);
-  if (Number.isNaN(parsed)) {
-    return value;
-  }
-  return new Date(parsed).toISOString().replace("T", " ").slice(0, 19) + " UTC";
-}
+export { formatIsoInstant } from "../format";

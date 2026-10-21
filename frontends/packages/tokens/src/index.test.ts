@@ -5,6 +5,7 @@ import {
   checkoutOutcomeTone,
   checkoutOutcomeVariant,
   statusLabel,
+  statusShortLabel,
 } from "./index.js";
 
 describe("status tokens", () => {
@@ -14,7 +15,16 @@ describe("status tokens", () => {
     }
   });
 
+  it("covers every status with a short label of two words at most", () => {
+    for (const s of PAYMENT_STATUS) {
+      const short = statusShortLabel[s];
+      expect(short, `short label for ${s}`).toBeTruthy();
+      expect(short.split(" ").length, short).toBeLessThanOrEqual(2);
+    }
+  });
+
   it("never labels processing as nearly-done", () => {
+    expect(statusShortLabel.processing.toLowerCase()).not.toContain("almost");
     expect(statusLabel.processing.toLowerCase()).not.toContain("almost");
     expect(statusLabel.processing.toLowerCase()).not.toContain("complete");
   });

@@ -1,7 +1,7 @@
-import { ScreenStack } from "@vaam-apps/ui";
 import { notFound } from "next/navigation";
 import { Suspense } from "react";
 
+import { PaymentDetailHeader } from "../../../../src/components/payment-detail";
 import { ReadFailure } from "../../../../src/components/read-failure";
 import type { InitialOne } from "../../../../src/dash/initial";
 import { dashProvider, PAYMENT_INTENTS } from "../../../../src/dash/provider";
@@ -36,10 +36,10 @@ export default async function PaymentDetailPage({
   if (gate.kind === "outage") {
     // A vpay this page cannot reach is not a sign-out — see `payments/page.tsx`.
     return (
-      <ScreenStack>
-        <h2>Payment</h2>
+      <>
+        <PaymentDetailHeader />
         <ReadFailure failure={gate.failure} />
-      </ScreenStack>
+      </>
     );
   }
   const staff = gate.staff;
@@ -57,8 +57,8 @@ export default async function PaymentDetailPage({
     : { ok: false, failure: result.failure };
 
   return (
-      <Suspense fallback={null}>
-        <PaymentScreen id={id} initial={initial} />
-      </Suspense>
+    <Suspense fallback={null}>
+      <PaymentScreen id={id} initial={initial} />
+    </Suspense>
   );
 }

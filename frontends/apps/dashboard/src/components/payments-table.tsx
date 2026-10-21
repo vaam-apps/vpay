@@ -1,7 +1,5 @@
-import NextLink from "next/link";
-
 import {
-  Code,
+  Badge,
   Table,
   TableBody,
   TableCell,
@@ -11,14 +9,10 @@ import {
 } from "@vaam-apps/ui";
 
 import { PaymentStatusPill } from "../payment-status";
-import {
-  ABSENT,
-  asPaymentStatus,
-  formatAmount,
-  formatInstant,
-  formatMethods,
-} from "../format";
+import { ABSENT, asPaymentStatus } from "../format";
 import type { PaymentIntentObject } from "../server/api";
+import { PaymentLinkCell, PhoneAmount } from "./procedure-table";
+import { Amount, Instant } from "./values";
 
 export interface PaymentsTableProps {
   /** Exactly the rows `/dash/v1/payment_intents` answered with. */
@@ -59,26 +53,27 @@ export interface PaymentsTableProps {
 export function PaymentsTable({ rows }: PaymentsTableProps) {
   return (
     <Table>
+      <caption className="sr-only">Payments</caption>
       <TableHeader>
         <TableRow>
           <TableHead scope="col">Payment</TableHead>
           {/*
-            Created and Methods step aside below `sm`. `Table` already wraps
-            itself in `w-full overflow-x-auto`, so nothing was unreachable —
-            but at 375px five columns put three of them off-screen with no
-            affordance, and an operator who does not know to swipe reads the
-            id and a truncated timestamp as the whole row. Payment, Amount
-            and Status are what the screen is for; the other two return at
-            `sm`. Static classes, never computed: `verify-ui` refuses a
-            computed className in an app.
+            Below `sm` only Payment and Status are columns, and the amount
+            rides under the id (`PhoneAmount`): at 375px five columns put
+            three of them off-screen behind a swipe with no affordance, and
+            even three did once amounts stopped wrapping — the status pill
+            was the one clipped. `Table`'s `hideBelow` since `@vaam-apps/ui`
+            0.5.0 — a prop, so no computed class.
           */}
-          <TableHead scope="col" className="hidden sm:table-cell">
-            Created (UTC)
+          <TableHead scope="col" align="end" hideBelow="sm">
+            Amount
           </TableHead>
-          <TableHead scope="col">Amount</TableHead>
           <TableHead scope="col">Status</TableHead>
-          <TableHead scope="col" className="hidden sm:table-cell">
+          <TableHead scope="col" hideBelow="sm">
             Methods
+          </TableHead>
+          <TableHead scope="col" hideBelow="sm">
+            Created (UTC)
           </TableHead>
         </TableRow>
       </TableHeader>
@@ -89,33 +84,21 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
             <TableRow key={row.id} data-payment-id={row.id}>
               {/*
                 The id truncates below `sm`, and the row stays one line.
-
-                Measured at 375px, twice. Untouched, a 28-character
-                monospace id held this column open: the table came to 487px
-                inside a 311px box and `Status` sat at 338–527, off-screen
-                behind a swipe with no affordance. With `break-all` every
-                column fitted, but the id wrapped onto FIVE lines and a row
-                became taller than a phone shows of the list — trading one
-                unreadable screen for another.
-
-                So it truncates instead, and the earlier argument against
-                that ("an id is what an operator copies") is answered rather
-                than ignored: this cell is a link to `/payments/{id}`, and
-                the detail screen renders the id in full. It is one tap, not
-                a loss. `sm:max-w-none` gives the whole id back from 640px
-                up, where it fits on one line anyway.
+                Measured at 375px: untouched, a 28-character monospace id
+                held this column open and pushed Status off-screen; with
+                `break-all` the id wrapped onto five lines. So it truncates,
+                with CSS only — the link's text is the whole id, and the
+                detail screen renders it in full with a copy button.
               */}
               <TableCell>
-                <NextLink href={`/payments/${row.id}`}>
-                  <span className="block max-w-[11ch] truncate sm:max-w-none">
-                    <Code>{row.id}</Code>
-                  </span>
-                </NextLink>
+                <PaymentLinkCell id={row.id} />
+                <PhoneAmount>
+                  <Amount minor={row.amount} currency={row.currency} />
+                </PhoneAmount>
               </TableCell>
-              <TableCell className="hidden sm:table-cell">
-                {formatInstant(row.created)}
+              <TableCell align="end" hideBelow="sm">
+                <Amount minor={row.amount} currency={row.currency} />
               </TableCell>
-              <TableCell>{formatAmount(row.amount, row.currency)}</TableCell>
               <TableCell>
                 {/*
                   A status this build cannot name is rendered as the raw
@@ -126,11 +109,24 @@ export function PaymentsTable({ rows }: PaymentsTableProps) {
                 {status === null ? (
                   <span>{row.status}</span>
                 ) : (
-                  <PaymentStatusPill state={status} />
+                  <PaymentStatusPill state={status} size="sm" />
                 )}
               </TableCell>
-              <TableCell className="hidden sm:table-cell">
-                {formatMethods(row.payment_method_types)}
+              <TableCell hideBelow="sm">
+                {row.payment_method_types.length === 0 ? (
+                  ABSENT
+                ) : (
+                  <span className="flex flex-wrap gap-1">
+                    {row.payment_method_types.map((method) => (
+                      <Badge key={method} variant="outline">
+                        {method}
+                      </Badge>
+                    ))}
+                  </span>
+                )}
+              </TableCell>
+              <TableCell hideBelow="sm">
+                <Instant seconds={row.created} />
               </TableCell>
             </TableRow>
           );

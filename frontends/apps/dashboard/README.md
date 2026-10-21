@@ -20,12 +20,17 @@ rather than kept here, which is what makes signing out a revocation.
 
 | Route             | What it does                                                             |
 | ----------------- | ------------------------------------------------------------------------ |
-| `/`               | Redirects to `/payments` or `/login`. Nothing of its own                 |
+| `/`               | Redirects to `/overview` or `/login`. Nothing of its own                 |
 | `/login`          | Work email + argon2id password — leg one                                 |
 | `/login/totp`     | Six digits. A **first** sign-in also renders the enrolment QR and secret |
 | `/login/password` | Replaces the printed one-time password. Not optional — see below         |
-| `/payments`       | The bound merchant's intents; status and date filters, cursor paging     |
+| `/overview`       | Home since 2026-10-21. Exact counts, each a link to the rows it counts   |
+| `/payments`       | The bound merchant's intents; status chips, date range, cursor paging    |
 | `/payments/{id}`  | Intent, charge, refunds, last error, event timeline                      |
+| `/refunds`        | Refunds, status chips, offset paging; each links to its payment          |
+| `/deliveries`     | Webhook deliveries, state chips, offset paging                           |
+| `/checkouts`      | Checkout sessions, status chips, offset paging; links to the payment     |
+| `/customers`      | Saved customers, offset paging                                           |
 
 Every one of them is `dynamic = 'force-dynamic'`, and has to be: they all read
 cookies.
@@ -79,8 +84,8 @@ never reused, by the token the callback answers with:
 - `signed_in` — the new token is already authenticated; it is stored for the
   full 12 hours, the existing authorization-code leg
   (`completeAuthorizationCode`, the same one the TOTP success path runs) is
-  run, and the browser is sent to `/payments`. If that leg fails the browser is
-  still sent to `/payments`: the session is authenticated, and `requireStaff`
+  run, and the browser is sent to `/overview` (`HOME_PATH`; `/payments` until
+  2026-10-21). If that leg fails the browser is still sent there: the session is authenticated, and `requireStaff`
   already handles an unminted token (password-change redirect, retry, outage
   page, or sign-out). This answer does not carry `password_change_required`, so
   the gate is where that is discovered.
@@ -287,6 +292,48 @@ functions** — a constant or a route path exported from there is a build error,
 not a lint warning. That is why `FormState` and `NO_ERROR` live in
 `src/form-state.ts` and the route paths in `src/server/session.ts`.
 
+## The shell, the screens, and why nothing reloads (2026-10-21)
+
+**The shell is mounted once.** `app/(dash)/layout.tsx` runs `requireStaff()`
+and renders `DashProviders` (Refine, `src/dash/providers.tsx`) and `AppShell`
+around every signed-in page, so a navigation re-renders the page and keeps
+the rail, the top app bar and Refine's cache. `requireStaff` is wrapped in
+React's `cache()`, so the layout and the page share one session read per
+request rather than one each.
+
+**Rail clicks are client-side.** `SideNav` renders plain `<a href>` (the
+package has no Next dependency), which made every rail click a full document
+load. `AppShell` delegates one click handler around it and pushes an
+ordinary same-tab click through the app router (`src/client-navigation.ts`);
+modified, middle, `target` and `download` clicks are left to the browser.
+
+**Refine's `check` makes no request.** Refine calls `authProvider.check()` on
+every pathname change and discards the answer; it called a Server Action that
+re-read the session. Every page already gates on the server, so `check`
+answers without the network and `checkSession` is deleted.
+`auth-provider.test.ts` fails if anything starts to act on `check`.
+
+**A server-seeded query is not re-read by the browser** (`staleTime:
+Infinity`, `gcTime: 0` in `DashProviders`): the server's read is the answer.
+
+**Layout.** Material 3 Expressive through `@vaam-apps/ui` 0.5.0: the rail with
+an Overview top item and sections (Money, Customers, Integrations —
+`NAV_GROUPS`, derived from the registry), a sticky top app bar with the mark,
+the merchant, and a theme shortcut; `themeInitScript` applies the stored
+theme before the first paint; Roboto Flex and JetBrains Mono are
+self-hosted (`@fontsource-variable`). Every screen is `PageHeader` (an
+`<h2>`), then its filters, then a `Card`. Each route has a `loading.tsx`
+whose skeleton is sized by invisible copies of the real strings; the
+`PaymentsLoading` and `PaymentLoading` stories hold it to a pixel.
+
+**The Overview** reads twelve `totalCount`s from the search procedures
+(`src/dash/overview.ts`) — nothing summed, nothing estimated, a refused read
+drawn as a dash with the refusal — and links each number to the list
+filtered by the same value. **The lists filter with chips that are links**
+(`FilterChips`), so a filtered list is a URL; the four procedure lists share
+`ProcedureListScreen` and pass the procedure's own filter through
+(`status`, or `state` for deliveries).
+
 ## The rules this app is held to
 
 ### No computed `className`, no raw status colour
@@ -301,10 +348,10 @@ _computed_ class string (`cn(...)`, a template literal, a ternary — a
 hand-rolled variant system by another name), a raw status-colour token
 written directly instead of through a status system, and a class attribute
 over 60 characters. `Table`, `Field`→`FormField`, `Input`, `Button`,
-`InlineBanner` (replacing `Alert`), `Select`→a native `<select>`
-(`payments-filters.tsx` — `@vaam-apps/ui`'s `Select` cannot be named by a
-`<label>`), `InlineEmptyState` and `createStatusPill`/`defineStatusSystem`
-(replacing `StatusBadge`) still come from `@vaam-apps/ui`.
+`InlineBanner` (replacing `Alert`), `InlineEmptyState` and
+`createStatusPill`/`defineStatusSystem` (replacing `StatusBadge`) still come
+from `@vaam-apps/ui`. _(The native `<select>` the status filter used is gone
+since 2026-10-21: status is `FilterChips`, links, below.)_
 
 `data-theme` is `dark`, and `src/layout.test.tsx` pins it: `@vaam-apps/ui`
 registers two themes under daisyUI's built-in names — `dark`, its default,
@@ -353,9 +400,12 @@ Measured.
 `(group)`. Without that it reported every signed-in route as dangling the
 moment the routes moved into `(dash)` — which is how the gap was found.
 
-There is no "Sign out" in the nav, and that is the same rule: this layout
-renders on `/login` too. Who is signed in and the way out are in
-`SignedInBar`, which only the pages behind the gate render.
+Sign-out is in the rail's account block and, from 640 to 1279px, in the top
+app bar — both `SignedInBar`, and both inside `AppShell`, which only the
+pages behind the gate render; the signed-out layout has no rail at all.
+_(This said "there is no Sign out in the nav" until 2026-10-21; true when
+the nav also rendered on `/login`, and stale since `SideNav` took an account
+slot.)_
 
 ### Configuration fails closed
 

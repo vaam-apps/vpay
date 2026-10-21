@@ -1,6 +1,7 @@
-import NextLink from "next/link";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 
-import { PAGE_SIZE } from "../dash/procedure-list";
+import { PAGE_SIZE } from "../dash/procedure-paging";
+import { OutlinedLink } from "./layout";
 
 export interface ProcedurePagerProps {
   /** The screen's own route, e.g. `/refunds`. */
@@ -13,6 +14,11 @@ export interface ProcedurePagerProps {
   readonly totalCount: number | null;
   /** `pageInfo.hasNextPage` — the server's own answer, not a guess. */
   readonly hasNext: boolean;
+  /**
+   * The rest of the query to keep while paging — a filter, e.g.
+   * `status=failed`, already encoded. Empty for an unfiltered list.
+   */
+  readonly query?: string;
 }
 
 /**
@@ -42,6 +48,15 @@ export interface ProcedurePagerProps {
  * a page that carries no count says "1–20 so far" rather than "1–20 of
  * undefined", which is what this rendered before the camelCase mismatch in
  * `dash-read.ts` was found.
+ *
+ * # Drawn as the card's footer (2026-10-21)
+ *
+ * The range on the left, the two controls on the right as M3 outlined
+ * buttons that are still `<a rel>` links. An absent control is still
+ * omitted rather than drawn disabled — "an absent control is a sentence,
+ * never a disabled-looking one that does nothing" (`payments-pager.tsx`).
+ * A filter in the URL is carried on both links: paging a filtered list must
+ * not quietly drop the filter.
  */
 export function ProcedurePager({
   basePath,
@@ -49,27 +64,41 @@ export function ProcedurePager({
   returned,
   totalCount,
   hasNext,
+  query = "",
 }: ProcedurePagerProps) {
   const previousOffset = Math.max(0, offset - PAGE_SIZE);
   const hasPrevious = offset > 0;
   const first = offset + 1;
   const last = offset + returned;
+  const href = (at: number) => {
+    const search = new URLSearchParams(query);
+    if (at > 0) {
+      search.set("offset", String(at));
+    }
+    const rest = search.toString();
+    return rest.length > 0 ? `${basePath}?${rest}` : basePath;
+  };
 
   return (
-    <nav aria-label="Pagination" className="flex items-center gap-4">
-      <span className="text-caption text-muted-foreground">
-        {first}–{last}
-        {totalCount === null ? "" : ` of ${totalCount}`} so far
+    <nav aria-label="Pagination" className="flex flex-wrap items-center gap-3">
+      <span className="flex-1 text-body-medium text-muted-foreground">
+        <span className="font-mono tabular-nums">
+          {first}–{last}
+          {totalCount === null ? "" : ` of ${totalCount}`}
+        </span>{" "}
+        so far
       </span>
       {hasPrevious ? (
-        <NextLink href={`${basePath}?offset=${previousOffset}`} rel="prev">
+        <OutlinedLink href={href(previousOffset)} rel="prev">
+          <ChevronLeft size={18} aria-hidden="true" />
           Previous
-        </NextLink>
+        </OutlinedLink>
       ) : null}
       {hasNext ? (
-        <NextLink href={`${basePath}?offset=${offset + PAGE_SIZE}`} rel="next">
+        <OutlinedLink href={href(offset + PAGE_SIZE)} rel="next">
           Next
-        </NextLink>
+          <ChevronRight size={18} aria-hidden="true" />
+        </OutlinedLink>
       ) : null}
     </nav>
   );

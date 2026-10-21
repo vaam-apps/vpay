@@ -1,6 +1,7 @@
-import { ScreenStack } from "@vaam-apps/ui";
 import { Suspense } from "react";
 
+import { PageHeader } from "../../../src/components/layout";
+import { PAYMENTS_DESCRIPTION } from "../../../src/components/payments-skeleton";
 import { ReadFailure } from "../../../src/components/read-failure";
 import { refineCursor, type InitialList } from "../../../src/dash/initial";
 import { dashProvider, PAYMENT_INTENTS } from "../../../src/dash/provider";
@@ -58,10 +59,10 @@ export default async function PaymentsPage({
   const gate = await requireStaff();
   if (gate.kind === "outage") {
     return (
-      <ScreenStack>
-        <h2>Payments</h2>
+      <>
+        <PageHeader title="Payments" description={PAYMENTS_DESCRIPTION} />
         <ReadFailure failure={gate.failure} />
-      </ScreenStack>
+      </>
     );
   }
   const staff = gate.staff;
@@ -88,8 +89,8 @@ export default async function PaymentsPage({
     : { ok: false, failure: result.failure };
 
   return (
-      <Suspense fallback={null}>
-        <PaymentsScreen query={query} initial={initial} />
-      </Suspense>
+    <Suspense fallback={null}>
+      <PaymentsScreen query={query} initial={initial} />
+    </Suspense>
   );
 }

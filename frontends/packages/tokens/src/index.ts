@@ -110,6 +110,20 @@ export const statusLabel: Record<PaymentStatus, string> = {
 };
 
 /**
+ * The same five statuses in two words or fewer, for a place too narrow for
+ * {@link statusLabel} — the Overview's count tiles. Still one copy per
+ * state, here beside the long one, so a tile cannot invent its own word for
+ * a status the pill spells differently.
+ */
+export const statusShortLabel: Record<PaymentStatus, string> = {
+  requires_payment_method: "Awaiting method",
+  requires_action: "Awaiting payer",
+  processing: "In flight",
+  succeeded: "Succeeded",
+  canceled: "Canceled",
+};
+
+/**
  * The dashboard's three other state vocabularies, and the words an operator
  * reads for each. Same rule as `statusLabel`: the copy for a state lives
  * here, once, so a refund cannot read "Pending" on one screen and "Waiting"

@@ -52,8 +52,16 @@ export const LOGIN_PATH = "/login";
 export const TOTP_PATH = "/login/totp";
 /** Where a session still carrying the printed password is sent. */
 export const PASSWORD_PATH = "/login/password";
-/** The first page a signed-in staff member sees. */
-export const HOME_PATH = "/payments";
+/**
+ * The first page a signed-in staff member sees: the Overview.
+ *
+ * It was `/payments` until 2026-10-21. The Overview is the one screen that
+ * answers "is anything wrong right now" without a click per resource — six
+ * exact counts and the latest payments — and every count on it is a link
+ * into the list it counts, so landing there costs an operator nothing on
+ * the way to `/payments`.
+ */
+export const HOME_PATH = "/overview";
 /**
  * Where a page sends a browser whose session vpay refused.
  *
