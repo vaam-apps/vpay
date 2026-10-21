@@ -194,9 +194,9 @@ premise did not hold.
 On the final tree, which has the same Rust as every run counted as "final code"
 above (checked by `diff` against the saved copy before the batches):
 
-- `just verify`: **all fifteen gates passed**, exit 0 (`verify-links` 2496 links in
-  468 files; `verify-doc-counts` 13 counts agree, with the directory at 87 files and
-  the index naming 64).
+- `just verify`: **all fifteen gates passed**, exit 0, on the tree after the merge
+  below (`verify-links` 2518 links in 471 files; `verify-doc-counts` 13 counts agree,
+  with the directory at 90 files and the index naming 67).
 - Both clean: `cargo fmt --all -- --check`, and
   `cargo clippy -p vpay-server --all-targets -- -D warnings`.
 - Plain `cargo test -p vpay-server --test cli`, **twelve in a row**, second batch:
@@ -211,6 +211,21 @@ above (checked by `diff` against the saved copy before the batches):
   three, with a deliberately misaligned table linted in the same invocation to show
   the tool ran (it reported 3).
 - The page's one diagram was rendered in a browser and looked at.
+
+**Merged with `master` after #311 and #318 landed.** #311 was squash-merged, so this
+branch's history carried its original commits and conflicted in three files. Two,
+`tests/cli.rs` and #311's page, were byte-identical on `master` to #311's last commit,
+so this branch's version, which is that plus this change, was taken whole. The third,
+`docs/status/README.md`, was rebuilt from `master`'s with this page's entry added:
+`master` said 87 files and 64 named over a directory of 89 and an index of 66, and its
+history sentence named neither #311's page nor #318's, so the counts here are 90 and
+67 and the history sentence says so. The pull request was retargeted
+from #311's branch to `master`, whose diff is now these four files.
+
+On the merged tree: `just verify` passed (above); plain `cargo test -p vpay-server
+--test cli` five times, **43 passed, 0 failed, 0 ignored** each (12.37 s – 14.81 s);
+`cargo nextest run -p vpay-server --test cli --no-fail-fast`, **43 passed, 0 skipped**
+(64.4 s); and `cargo fmt --all -- --check` and clippy on the package clean.
 
 **Not run:** `just ci` as a whole (the workspace's `test-rust` and `test-doc`,
 `verify-ignored`, `lint-web`, `test-web`, `audit-web` and `deny`), which CI runs;
