@@ -221,8 +221,9 @@ So the fix keeps a residual risk, and it should be stated as one:
 
 - A crash **after initialize and before call 2** leaves a Notch Pay payment
   that was never prompted. No money can move; it expires. The retry's `409`
-  cannot be resolved to a payment, so it must fail closed (`Malformed`,
-  fate unknown), not report `Submitted` and not fail the charge.
+  cannot be resolved to a payment. What the fix answers then is undecided;
+  the proposal put to the maintainer is to fail closed (`Malformed`, fate
+  unknown), rather than report `Submitted` or fail the charge.
 - A crash **after call 2 was sent and before `ref_extra` is durable** is the
   real exposure. The payer was prompted and may pay, and vpay holds no
   reference Notch Pay will answer for. Recovering it would need Notch Pay's
