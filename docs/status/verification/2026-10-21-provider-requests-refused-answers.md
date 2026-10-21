@@ -132,6 +132,16 @@ change this PR exists to refuse, and both submit cases catch it.
 | `just test-doc` (`cargo test --doc --workspace`)       | 130 passed, 0 failed, **1 ignored** — the same one `verify-docs` reports; no doctest was added |
 | `just verify-ignored`                                  | 0 ignored (expected 0), 53 test binaries (expected 53), 2339 total (minimum 1080)              |
 
+**After the merge of `master` at `e28292d3`** (which changed the Notch Pay adapter,
+`vpay-server`'s `main.rs`, the conformance suite and `compose.yml`, none of them
+on this change's paths), these were run again on the merged tree and agree:
+`vpay-worker` 76 passed, 0 ignored; the two `vpay-db` provider-request cases 2
+passed; `worker_recovery` + `worker_e2e` 29 passed, 0 ignored; `doc_count_tests`
+23 passed; `just verify` exit 0 with all fifteen gates (`verify-links` 2498 links
+in 467 files); `rustfmt` and `clippy --workspace --all-targets -D warnings`
+clean. `worker_kill9`, the doctests, `verify-ignored` and the interrupted
+workspace run below are **pre-merge** numbers and were not repeated.
+
 **The workspace run was not completed, and that is on me.** `cargo nextest run
 --workspace` was stopped at **1817 of 2339** (212 s of test time) when I read the
 slow end of it as stalled; it had only reached the container-booting
