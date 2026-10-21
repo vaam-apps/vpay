@@ -844,11 +844,43 @@ async fn next_submit_attempt(
 /// answer is distinguishable from one that was never made
 /// (`docs/flows/crash-safety.md`).
 ///
+/// **A rail that declines the resubmit fails the charge here**, in the same way
+/// `vpay-api`'s first submit does, and still raises the error afterwards. The
+/// order is deliberate and is the whole reason this is not two lines:
+///
+/// 1. [`settle_failed_with`] — one transaction: the charge `failed`, the intent
+///    back to `requires_payment_method` with the failure pair, and the
+///    `payment_intent.payment_failed` event.
+/// 2. [`record_declined_submit`] — only then is the attempt row marked answered.
+///    The other order has a crash window that leaves the charge `submitting`
+///    beside an *answered* row, which `recovery_step` reads as `Advance` ("the
+///    rail accepted it"); this order leaves a terminal charge beside an
+///    unanswered row, which nothing reads.
+/// 3. The error is raised unchanged, so [`log_failure`] still counts it and a
+///    blocked partner account (`ProviderAccountBlocked`, a `Severity::Page`)
+///    still pages, and the loop still derives `Decision::Terminal` from
+///    `Classify::retry` rather than from this function.
+///
+/// Before 2026-10-21 nothing failed the charge: it stayed `submitting`, the
+/// next `NotFound` streak resubmitted it again and the rail declined it again,
+/// until the 24-hour horizon (measured, `docs/status/verification/2026-10-21-declined-resubmit-fails-the-charge.md`).
+///
+/// # Why a decline here is a decline
+///
+/// A resubmit happens only when the table says nothing was ever sent, or after
+/// three consecutive `NotFound` reads over the window — so the rail has no
+/// record of the reference — and the port's contract is that a duplicate is
+/// reported as `Submitted`, never as an error. A `Rejected` is therefore the
+/// rail declining *this* request. A rail that declines a duplicate instead of
+/// reporting `Submitted` breaks that contract, and a terminal charge is not
+/// polled, so vpay would not see a payment that rail then took.
+///
 /// # Errors
 ///
-/// [`JobError::Db`] for the attempt row, and [`JobError::Provider`] for a rail
-/// that refused or would not answer — recorded against the attempt row before
-/// it is raised.
+/// [`JobError::Db`] for the attempt row or the settlement, and
+/// [`JobError::Provider`] for a rail that refused or would not answer — the
+/// attempt row is completed before it is raised, except when the settlement
+/// itself fails, which leaves the row unanswered for the retry to supersede.
 async fn submit_again(
     repositories: &dyn Repositories,
     adapter: &dyn ProviderAdapter,
@@ -874,7 +906,27 @@ async fn submit_again(
             Ok(submitted)
         }
         Err(error) => {
-            record_submit_failure(repositories, attempt_id, &error).await?;
+            match &error {
+                ProviderError::Rejected { code, message } => {
+                    settle_failed_with(
+                        repositories,
+                        job,
+                        charge,
+                        *code,
+                        message,
+                        "the rail declined a resubmitted charge",
+                    )
+                    .await?;
+                    record_declined_submit(repositories, attempt_id, &error).await?;
+                }
+                ProviderError::Malformed { .. }
+                | ProviderError::Transport { .. }
+                | ProviderError::Config(_)
+                | ProviderError::Unsupported
+                | ProviderError::NotImplemented(_) => {
+                    record_unresolved_submit(repositories, attempt_id, &error).await?;
+                }
+            }
             Err(JobError::Provider(error))
         }
     }
@@ -1837,8 +1889,8 @@ async fn record_answer(
     Ok(())
 }
 
-/// Records a `submit` that ended in an error. **Always unanswered**, whatever
-/// the error.
+/// Records a `submit` that ended in an error **other than a decline**:
+/// unanswered, whatever the error.
 ///
 /// `status_code` stays `NULL`, which for a `submit` means "the outcome is
 /// unknown" rather than "the rail said nothing", and `error_kind` carries the
@@ -1859,24 +1911,41 @@ async fn record_answer(
 ///   "answered" would have recovery advance that charge to `submitted` as if
 ///   the rail had accepted it. `vpay-api`'s `finish_confirm` makes the same
 ///   choice for the first submit.
-/// * [`ProviderError::Rejected`] is a decline, not an acceptance. `finish_confirm`
-///   records it as answered because it then fails the charge in the same
-///   handler, so recovery does not ordinarily read the row. Nothing here does:
-///   a `Rejected` is `Retry::NewAttempt`, so the loop drops the job and leaves
-///   the charge `submitting`, and the row is still recovery's input.
 /// * [`ProviderError::Transport`] and the rest are "may have been asked,
 ///   never answered" — the `NULL` encoding's own definition.
 ///
-/// What a declined resubmit *should* do — fail the charge, as the first
-/// submit does — is not decided here; `docs/reference/vpay-worker.md`
-/// §"What a refused answer is recorded as" records it as open.
-async fn record_submit_failure(
+/// A [`ProviderError::Rejected`] does not come through here: it fails the
+/// charge first and is recorded by [`record_declined_submit`].
+async fn record_unresolved_submit(
     repositories: &dyn Repositories,
     attempt_id: i64,
     error: &ProviderError,
 ) -> Result<(), JobError> {
     repositories
         .record_response(attempt_id, None, Some(error.code()))
+        .await?;
+    Ok(())
+}
+
+/// Records a `submit` the rail **declined**, as answered — and only after the
+/// charge has been failed ([`submit_again`] §Errors, step 2).
+///
+/// The sentinel plus `charge_declined` is the row `vpay-api`'s confirm writes
+/// for the same answer, so a decline reads the same in `provider_requests`
+/// whichever process met it. It is safe to write only because the charge is
+/// already terminal: `recovery_step` reads `submit` rows for a `submitting`
+/// charge, and would turn an answered one into `Advance`.
+async fn record_declined_submit(
+    repositories: &dyn Repositories,
+    attempt_id: i64,
+    error: &ProviderError,
+) -> Result<(), JobError> {
+    repositories
+        .record_response(
+            attempt_id,
+            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+            Some(error.code()),
+        )
         .await?;
     Ok(())
 }
@@ -1904,7 +1973,7 @@ async fn record_read_failure(
 /// were written as `NULL`, so a Notch Pay `complete` whose `amounts.total`
 /// the adapter refused showed up as 11 reads "with no answer".
 ///
-/// A read can say "answered" where a submit may not ([`record_submit_failure`])
+/// A read can say "answered" where a submit may not ([`record_unresolved_submit`])
 /// because a read moves no money and nothing decides anything from a
 /// `query_status` row: `latest_submit_attempt` filters `operation = 'submit'`
 /// and the refund guards filter `'refund'`. The only thing `NULL` could still

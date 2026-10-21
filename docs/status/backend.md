@@ -889,7 +889,9 @@ may have been asked to move money and never answered".
   `record_read_failure` writes the `0` sentinel for `Malformed` and `Rejected`
   and `NULL` for `Transport`, `Config`, `Unsupported` and `NotImplemented`
   (`read_failure_status`, a pure function over all six variants).
-  `record_submit_failure` writes `NULL` for every error, unchanged.
+  `record_submit_failure` writes `NULL` for every error, unchanged. _(Amended the
+  same day, below: it is `record_unresolved_submit` now, and a `Rejected`
+  submit is recorded answered, after the charge is failed.)_
 - **The submit side is deliberately not changed.** `recovery_step` reads
   `submit` rows only, and turns any status into `Advance` — "the rail accepted
   it". A resubmit the adapter refused as `Malformed` (Notch Pay's unresolvable
@@ -907,12 +909,13 @@ may have been asked to move money and never answered".
   since Step 4 the same day. [#310](https://github.com/vaam-apps/vpay/pull/310)'s
   page repeated the old sentence ("Today 'Nothing reads this table'"); it now
   carries a dated correction.
-- **Open, not fixed: a declined resubmit leaves the charge `submitting`.**
-  `Rejected` is `Retry::NewAttempt`, so the loop finishes the resubmit job and
-  nothing fails the charge, unlike `vpay-api`'s first submit. Run: the first
-  decline leaves the charge `submitting` with an unanswered row. Read from the
-  code and not run: that the next `NotFound` streak resubmits again, until the
-  24-hour horizon escalates.
+- **Was open, fixed the same day: a declined resubmit left the charge
+  `submitting`.** `Rejected` is `Retry::NewAttempt`, so the loop finished the
+  resubmit job and nothing failed the charge, unlike `vpay-api`'s first submit.
+  Run: the first decline left the charge `submitting` with an unanswered row. Read
+  from the code and not run: that the next `NotFound` streak resubmits again,
+  until the 24-hour horizon escalates. **Measured and fixed by the section
+  below**, which also says what the code reading got right.
 - **Not exact, by design.** `Transport` and `Config` each mix "never reached the
   rail" with "the rail answered a 5xx/4xx", and the port does not say which, so
   a 503 the rail sent is still `NULL` on a read; one formally reachable
@@ -922,3 +925,44 @@ may have been asked to move money and never answered".
 No route, migration, gate or `NotImplemented` token moved. Gates, counts and
 what was not run:
 [verification/2026-10-21-provider-requests-refused-answers.md](verification/2026-10-21-provider-requests-refused-answers.md).
+
+## A declined resubmit fails the charge (2026-10-21)
+
+**The worker's resubmit now settles a charge the rail declined, the way
+`vpay-api`'s first submit does.** The section above recorded this as open:
+`ProviderError::Rejected` is `Retry::NewAttempt`, so the loop finished the
+resubmit job and nothing wrote the charge. Measured (a rail that declines every
+submit and answers `404` to every read, sixteen steps): the charge stayed
+`submitting` and was resubmitted after every third poll — four submits by step
+14, eleven status reads — with the intent still `requires_payment_method` and no
+reason, until the 24-hour horizon would have ended it in `unresolved`.
+
+- **`submit_again` settles, then records, then raises.** On `Rejected` it calls
+  `settle_failed_with` (charge `failed`, intent back to the payer with the error
+  pair, one `payment_intent.payment_failed` event — one transaction, the poll
+  path's own), then `record_declined_submit` (the `0` sentinel and
+  `charge_declined`), then returns the error unchanged, so `log_failure` still
+  counts it, a blocked partner account still pages, and `Classify::retry` still
+  decides `Terminal`.
+- **Settlement first, on purpose.** An answered `submit` row beside a
+  `submitting` charge is what `recovery_step` reads as `Advance`; the other order
+  has a crash window that leaves it. This order leaves a `failed` charge beside an
+  unanswered row, which nothing reads. That is a reading, not an injected crash.
+- **What it trusts.** A resubmit happens only after "nothing was sent" or three
+  `NotFound` reads over the window, and the port reports a duplicate as
+  `Submitted`; so a `Rejected` is a decline of this request. A rail that declined a
+  duplicate instead would break the contract, and a terminal charge is not polled,
+  so vpay would not see a payment that rail then took. The same assumption
+  `vpay-api` makes for a first submit; a maintainer should read it.
+- **Unchanged:** `Malformed` on a resubmit still leaves the fate unknown and the
+  row unanswered; a `Rejected` on a status _read_ (Notch Pay: "our own refused
+  keys") does not fail the charge.
+- **Proven** by `worker_recovery.rs` against real Postgres and WireMock: one case
+  replaced (it had pinned the gap) and one added (nothing asks the rail again),
+  each caught by named mutations, including the "answered row, charge not failed"
+  pair. [vpay-worker.md § "What a refused answer is recorded as"](../reference/vpay-worker.md#what-a-refused-answer-is-recorded-as)
+  has the table and the diagrams.
+
+No route, migration, gate or `NotImplemented` token moved. Counts, mutations and
+what was not run:
+[verification/2026-10-21-declined-resubmit-fails-the-charge.md](verification/2026-10-21-declined-resubmit-fails-the-charge.md).

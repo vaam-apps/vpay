@@ -398,6 +398,7 @@ sequenceDiagram
     participant W as worker (handlers.rs)
     participant A as adapter
     participant P as provider_requests
+    participant C as charge and intent
     participant R as recovery_step
 
     Note over W,P: a status read the adapter refuses
@@ -411,29 +412,41 @@ sequenceDiagram
     W->>P: insert_pending(submit), status NULL
     W->>A: submit
     A-->>W: Err(Malformed) — fate unknown
-    W->>P: record_submit_failure: status stays NULL, error_kind provider_error
+    W->>P: record_unresolved_submit: status stays NULL, error_kind provider_error
     R->>P: latest_submit_attempt
     P-->>R: status NULL, so Unanswered
     R-->>W: Poll, never Advance
+
+    Note over W,P: a resubmit the rail declines
+    W->>P: insert_pending(submit), status NULL
+    W->>A: submit
+    A-->>W: Err(Rejected) — a decision
+    W->>C: settle_failed_with: charge failed, intent back to the payer, payment_failed event
+    W->>P: record_declined_submit: status 0, error_kind charge_declined
+    Note over C,R: a failed charge is not polled
 ```
 
 ```mermaid
 stateDiagram-v2
     [*] --> Pending: insert_pending, before the call
     Pending --> Accepted: adapter Ok, status 0
-    Pending --> Unresolved: adapter Err of any kind, status NULL plus error_kind
+    Pending --> Declined: adapter Err Rejected, charge failed first, then status 0 plus charge_declined
+    Pending --> Unresolved: any other adapter Err, status NULL plus error_kind
+    Declined --> [*]: the charge is terminal, nothing reads the row
     Accepted --> Advance: recovery_step reads Answered, charge leaves submitting
     Unresolved --> PollOrResubmit: recovery_step reads Unanswered
     note right of Pending
-        The worker never writes Accepted for an Err. Recovery reads
-        Accepted as "the rail took it", and no Err means that.
+        Only a decline is written answered,
+        and only after the charge is failed.
+        Recovery reads an answered row on a
+        submitting charge as: the rail took it.
     end note
 ```
 
 | `ProviderError`                 | `submit` row | `query_status` row      | Why                                                                                                                                                                                                                        |
 | ------------------------------- | ------------ | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `Malformed`                     | `NULL`       | `0` + `provider_error`  | A read: "the rail answered something this adapter cannot act on". A submit: fail-closed, the charge's fate is unknown — Notch Pay's unresolvable `409` and MTN's unfollowed `307` are `Malformed` for exactly that reason. |
-| `Rejected`                      | `NULL`       | `0` + `charge_declined` | A read: the rail decided. A submit: it is a decline, and recovery would read an answered row as acceptance. See the open gap below.                                                                                        |
+| `Rejected`                      | `NULL`       | `0` + `charge_declined` | A read: the rail decided. A submit: a decline — the worker fails the charge first, then records the row answered; recorded before that, recovery would read it as acceptance.                                              |
 | `Transport`                     | `NULL`       | `NULL`                  | A union the port cannot split: "never reached the rail" and "the rail answered `5xx`/`408`/`429`".                                                                                                                         |
 | `Config`                        | `NULL`       | `NULL`                  | Also a union: refused before any request, or a `4xx` the adapter reads as our own misconfiguration (Orange's `404`, MTN's `500` with a configuration code).                                                                |
 | `Unsupported`, `NotImplemented` | `NULL`       | `NULL`                  | Raised before a socket opens — the `NULL` encoding's own example.                                                                                                                                                          |
@@ -468,16 +481,48 @@ two documented uses for a request that never left the process —
 `path_segment` above, and `parse_destination` (a refund's destination), which
 `query_status` and `submit` never reach.
 
-**The open gap.** `vpay-api`'s confirm path records a decline as answered and
-fails the charge in the same handler, so recovery never reads the row. The
-worker's resubmit does not: `Rejected` is `Retry::NewAttempt`, the loop
-finishes the job, and the charge stays `submitting` with a `NULL` row, so the
-next poll reads `Unanswered`. That much is run
-(`a_resubmit_the_rail_declines_stays_unanswered_because_nothing_fails_the_charge`).
-That the next `NotFound` streak then resubmits again, until the 24-hour horizon
-escalates, is read from the code and **not run**. The fix is to fail the charge
-on a declined resubmit the way the first submit does; it is a change to the
-money path and not made here, and the row can then say "answered".
+**A declined resubmit fails the charge, and only then is its row answered.**
+This section called that an open gap until 2026-10-21: `vpay-api`'s confirm path
+fails the charge in the handler that records a decline, and the worker's
+resubmit did not — `Rejected` is `Retry::NewAttempt`, the loop finished the job,
+and the charge stayed `submitting`. Measured the same day against a rail that
+declines every submit and answers `404` to every read: the charge was resubmitted
+after every third poll (submits 1, 2, 3, 4 at steps 2, 6, 10 and 14 of sixteen,
+eleven status reads between them), and the intent stayed
+`requires_payment_method` with no reason, for as long as the charge lived — the
+24-hour horizon was the only end to it, and it ends in `unresolved` and an alert
+about a charge the rail had declined. Now `submit_again` calls
+`settle_failed_with` — one transaction: charge `failed`, intent back to
+`requires_payment_method` with the failure pair, one `payment_intent.payment_failed`
+event — and then marks the row answered, and raises the error unchanged so
+`log_failure` still counts it, a blocked partner account still pages, and
+`Classify::retry` still decides `Terminal`. The order matters: settle first, so
+the crash window leaves a terminal charge beside an unanswered row (nothing
+reads it) and not a `submitting` charge beside an answered one (which
+`recovery_step` reads as `Advance`).
+
+**Why a decline of a resubmit can be trusted.** A resubmit happens only when the
+table says nothing was ever sent, or after three consecutive `NotFound` reads
+over the window, so the rail has no record of the reference; and the port's
+contract is that a duplicate is reported as `Submitted`, never as an error. A
+`Rejected` is the rail declining _this_ request. The assumption is the same one
+`vpay-api` makes for a first submit, and the same weakness: a rail that declines
+a duplicate instead of reporting `Submitted` breaks the contract, and a terminal
+charge is not polled, so vpay would not see a payment that rail then took. All
+three shipped adapters answer a duplicate as `Submitted` (MTN's `409`, Notch
+Pay's `AlreadyExists`; Orange is never resubmitted).
+
+**What this does not close.** The ordering above is the worker's. `vpay-api`'s
+confirm path does the opposite for the same answer: `finish_confirm` records the
+row answered, then calls `persist_decline`, two commits, so a crash between them
+leaves a `submitting` charge beside an answered row — the pair
+`recovery_step` reads as `Advance`. That predates this change, is not changed by
+it, and was pointed out in review of it (vaam-apps/vpay#316).
+
+**What stays as it was.** A `Rejected` on a status _read_ does not fail the
+charge: Notch Pay raises it "only for our own refused keys", which is a fact
+about our credentials and not about the payment. Only the resubmit's `Rejected`
+is a decision about the charge.
 
 Seen on 2026-10-21 against Notch Pay's real sandbox (RFC-0012 step 5): eleven
 reads of one charge, each a `complete` whose `amounts.total` the adapter
@@ -975,11 +1020,13 @@ The **pure parts are unit-tested and doctested here**, which is why they are
 separate modules at all: the two ladders, the recovery table, the settlement
 table (in `vpay-core`), the payload encoding, the signature, the rendering and
 digest, `EndpointRegistry`, `fan_out_disposition`, `past_the_horizon` and
-`read_failure_status` — whose one-line effect, the row it writes, is three
-cases in `worker_recovery.rs` against Postgres and WireMock:
+`read_failure_status` — whose one-line effect, the row it writes, and the decline
+that fails a charge are four cases in `worker_recovery.rs` against Postgres and
+WireMock:
 `a_status_read_the_adapter_refused_is_recorded_as_answered_and_a_503_is_not`,
-`a_resubmit_the_adapter_refuses_as_malformed_stays_unanswered_for_recovery` and
-`a_resubmit_the_rail_declines_stays_unanswered_because_nothing_fails_the_charge`
+`a_resubmit_the_adapter_refuses_as_malformed_stays_unanswered_for_recovery`,
+`a_resubmit_the_rail_declines_fails_the_charge_and_is_recorded_as_answered` and
+`a_declined_resubmit_is_not_resent_by_the_poll_that_follows`
 (§ "What a refused answer is recorded as").
 
 The one place those two meet is the confirm/worker race: the age guard's
