@@ -45,18 +45,39 @@ happen in" is answerable by reading a dozen lines.
 Step 6 has three shapes, and which one runs is decided by the _error's_ own
 classification rather than by anything this file knows about rails:
 
-- **the rail accepted it** — one transaction moves the charge to `submitted`
-  with the rail's key material and the intent to `processing`/`requires_action`,
-  it commits, and only then is a response built (`persist_submitted`, and
-  crash-safety.md's "the commit is the gate on the redirect");
+- **the rail accepted it** — the attempt row is completed (answered) first, then
+  one transaction moves the charge to `submitted` with the rail's key material
+  and the intent to `processing`/`requires_action`, it commits, and only then is
+  a response built (`persist_submitted`, and crash-safety.md's "the commit is the
+  gate on the redirect");
 - **the rail declined it** (`ProviderError::Rejected`) — one transaction fails
   the charge with its `failure_code` and stamps `last_payment_error` on the
   intent, which stays `requires_payment_method` because the lifecycle has no
-  `failed` status; the merchant gets the `409` `charge_declined`;
+  `failed` status; **only then** is the attempt row completed (answered,
+  `charge_declined`); the merchant gets the `409` `charge_declined`;
 - **anything else** — we do not know what the rail did, so _nothing_ moves. The
   `submitting` charge row and the status-less `provider_requests` row stay
   behind on purpose: they are exactly the state a crash between steps 4 and 6
   would leave, and are what the recovery pass reads.
+
+**Which write comes first differs by outcome, on purpose.** The attempt row and
+the state write are two commits, and `recovery_step` reads the pair they leave:
+an _answered_ `submit` row beside a `submitting` charge is `Advance`, "the rail
+accepted it and only our bookkeeping is behind". For an acceptance that reading
+is the true one, so the answer is recorded first and a crash between the two
+commits is kill point 3 of crash-safety.md. For a decline it is false — `Advance`
+would move a charge the rail refused to `submitted` and poll it to the 24-hour
+horizon (or, on a redirect rail, fail it as `provider_unavailable`) — so the
+charge is failed first. A refused settlement then leaves `submitting` and
+unanswered, which is what a crash before the answer leaves and is what the
+worker resolves by resubmitting into the same decline. The row written
+_after_ a settled decline is audit only (the charge is terminal and recovery
+reads `submit` rows only for a `submitting` one), so a failure to write it is
+logged and the `409` still stands. The decline arm recorded the row first until
+2026-10-21 ([#320](https://github.com/vaam-apps/vpay/issues/320), fixed by
+[#322](https://github.com/vaam-apps/vpay/pull/322));
+[verification/2026-10-21-confirm-decline-order.md](../../status/verification/2026-10-21-confirm-decline-order.md)
+has the measurement.
 
 `Malformed` is the one arm where "no answer" is not literally true — bytes came
 back, they just did not parse — and it is grouped with the unknown cases

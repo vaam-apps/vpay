@@ -83,10 +83,11 @@ since 2026-10-21 it ends the table for that charge: the worker fails it (charge
 `failed`, intent back to the payer with the reason, one
 `payment_intent.payment_failed` event) and only then marks the attempt row
 answered, so no path leaves the bottom row to be read for a charge the rail
-declined — and `vpay-api`'s confirm, which recorded its row first until later the
-same day, now fails the charge first too (a refused settlement leaves `submitting`
-and unanswered, the middle row, which the worker resolves by resubmitting into the
-same decline). The accepted case is the opposite and stays so: row first, because
+declined. **Amended 2026-10-21 ([#320](https://github.com/vaam-apps/vpay/issues/320),
+[#322](https://github.com/vaam-apps/vpay/pull/322)): the API path is closed too.**
+`vpay-api`'s confirm recorded its row first until then; it now fails the charge
+first as well (a refused settlement leaves `submitting` and unanswered, the middle
+row, which the worker resolves by resubmitting into the same decline). The accepted case is the opposite and stays so: row first, because
 there the pair is the bottom row's own input. Before that the charge stayed `submitting` and the middle row resubmitted it again after
 every third `NotFound` until the 24-hour horizon
 ([vpay-worker.md](../reference/vpay-worker.md) § "What a refused answer is

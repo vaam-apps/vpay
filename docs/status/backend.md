@@ -997,6 +997,13 @@ read at every rung after, never failed, never resubmitted.
   leftover state heals through the worker); three mutations, each caught by the
   case meant to catch it. [vpay-worker.md § "What a refused answer is recorded as"](../reference/vpay-worker.md#what-a-refused-answer-is-recorded-as)
   has the argument.
+- **Closes [#320](https://github.com/vaam-apps/vpay/issues/320), by its Option 2**
+  (settle first, record second), not Option 1 (one transaction): `vpay-db` has no
+  in-transaction `provider_requests` write, and the order alone removes the
+  advanced-decline harm. The residue — a `NULL` row beside a `failed` charge — is
+  documented as "not evidence" in `provider_requests.rs`. A redirect rail still
+  loses a decline code if the settlement itself is lost (`FailDeadOrder` ignores
+  the row), under either option.
 - **Not done:** no crash is injected (a refused write is the reachable form of the
   window); a refund's `Rejected` also records first, but nothing reads a `refund`
   row's status, so it was left.

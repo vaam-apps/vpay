@@ -2738,7 +2738,8 @@ async fn a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker() -
     .await?;
 
     let mut steps = 0;
-    while charge(&h.pool, &charge_id).await?.state == "submitting" {
+    let mut state = charge(&h.pool, &charge_id).await?.state;
+    while state == "submitting" {
         steps += 1;
         anyhow::ensure!(
             steps <= 12,
@@ -2747,6 +2748,12 @@ async fn a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker() -
         make_every_job_runnable(&h.pool).await?;
         tokio::time::sleep(Duration::from_millis(60)).await;
         h.step(&policy).await?;
+        state = charge(&h.pool, &charge_id).await?.state;
+        anyhow::ensure!(
+            state != "submitted",
+            "recovery advanced a charge the rail declined to `submitted` at step {steps}; a \
+             pending row beside a `submitting` charge is `Unanswered`, never `Advance`"
+        );
     }
 
     let stored = charge(&h.pool, &charge_id).await?;

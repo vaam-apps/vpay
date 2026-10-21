@@ -80,6 +80,45 @@ settlement is `503` before and after (`Category::Storage`), and a row that canno
 be completed after a settled decline used to be a `503` (with the charge still
 `submitting`) and is now the `409`.
 
+## Against issue #320
+
+[#320](https://github.com/vaam-apps/vpay/issues/320) (filed by the maintainer from
+the review of #316) asked for one of two fixes. **This implements Option 2 —
+settle first, record second — and not Option 1, the preferred single
+transaction.**
+
+| #320 acceptance criterion                                                                  | Where it stands                                                                                                                                                                                                                                                               |
+| ------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| One transaction, or failed-first then answered-second                                      | Option 2: `finish_confirm`'s `Rejected` arm. Option 1 is **not** done (below)                                                                                                                                                                                                 |
+| A test that drives the failure between the two writes                                      | `a_decline_the_database_refuses_to_settle_leaves_the_attempt_unanswered` injects the refusal in Postgres; `a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker` runs the production table over the resulting rows and fails if the charge is ever `submitted` |
+| `crash-safety.md` parenthesis replaced by a dated note naming the ticket and PR            | `docs/flows/crash-safety.md`, "Amended 2026-10-21 (#320, #322)"                                                                                                                                                                                                               |
+| `vpay-api.md` § "the confirm path" describes the new order                                 | `docs/reference/vpay-api/confirm-path.md` (the reference lives under `vpay-api/` since the split), "Which write comes first differs by outcome, on purpose"                                                                                                                   |
+| Status pages, a dated verification page, a skills companion if a skill describes the crash | `docs/status/backend.md`, this page, the index; the skills companion is **not yet opened**, by design (below)                                                                                                                                                                 |
+| Option 2's required sentence in `provider_requests.rs`                                     | the module header: "**A `NULL` `submit` row beside a terminal charge is not evidence.**"                                                                                                                                                                                      |
+
+**Why Option 2.** `vpay-db` has no in-transaction write to `provider_requests`:
+Option 1 means a new `TxRepositories` method, its `PendingTransaction`
+implementation and the call inside `persist_decline`'s closure — a change to the
+repository seam in a money-path transaction, behind `verify-repositories`. The
+order alone removes the harm #320 measured (a `submitting` charge beside an
+answered row, advanced), and what it leaves is a state the production table
+already resolves. **What Option 1 would add** and Option 2 does not: no crash
+window at all, no unanswered row beside a terminal charge (the residue the new
+sentence documents), and no log-and-continue — a row that could not be written
+would roll the decline back and the worker would redo it. That is a real
+advantage, and a maintainer who prefers it is asking for a second, small change
+on top of this one; nothing here has to be undone for it.
+
+**A redirect rail is not helped by either option, and #320's summary says it
+would be.** If the settlement is lost on a redirect rail the charge stays
+`submitting`, and `recovery_step` answers `FailDeadOrder` before it reads the
+row ("it holds whatever the attempt row says"), so it is failed as
+`provider_unavailable` and not with the rail's code. The row's order is
+irrelevant there, and so is Option 1: what was lost is the settlement itself. The
+reorder removes the push-rail hole (a hidden decline waiting 24 hours) and leaves
+the redirect-rail one — a lost decline code — as it was. Not changed, and not run
+against Orange (the harness case uses the push rail).
+
 ## Tests, and what each mutation did to them
 
 Three tests are new. The first two run the real server and Postgres in

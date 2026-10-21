@@ -36,6 +36,14 @@
 //!   *accepted* case is the opposite on purpose: there the pair is `Advance`'s
 //!   own input, "the rail took it and our bookkeeping lags", so the row is
 //!   recorded first.
+//!
+//!   **A `NULL` `submit` row beside a terminal charge is not evidence.** Settling
+//!   first means a crash between the two writes leaves exactly that pair: a
+//!   `failed` charge and an unanswered row. `recovery_step` never reads it (it
+//!   applies to a `submitting` charge only), and a future sweep over `NULL` rows
+//!   must join to the charge's state and skip every terminal one — the `NULL`
+//!   there says "the audit write was lost", not "the rail may have been asked
+//!   and never answered" (vaam-apps/vpay#320).
 //! * The refund-cancel guards read whether a **`refund`** row exists, never
 //!   its status.
 //!
