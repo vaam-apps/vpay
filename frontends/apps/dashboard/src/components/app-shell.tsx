@@ -4,8 +4,9 @@ import { SideNav, ThemeSwitcher } from "@vaam-apps/ui";
 
 import { SignedInBar } from "./signed-in-bar";
 import { CreditCard } from "lucide-react";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 
+import { inAppNavigationTarget } from "../client-navigation";
 import { NAV_ENTRIES } from "../dash/resources";
 
 /**
@@ -74,7 +75,21 @@ export function AppShell({
   children,
 }: AppShellProps) {
   const pathname = usePathname();
+  const router = useRouter();
   const first = NAV_ENTRIES[0];
+  /**
+   * `SideNav` renders plain `<a href>`, so without this every rail click
+   * was a full document load — see `src/client-navigation.ts`. React's
+   * synthetic click bubbles here from the portalled rails and More sheet
+   * too, after the library's own handlers (closing the sheet) have run.
+   */
+  const routeRailClick = (event: React.MouseEvent) => {
+    const to = inAppNavigationTarget(event, window.location.origin);
+    if (to !== null) {
+      event.preventDefault();
+      router.push(to);
+    }
+  };
 
   return (
     <div className="flex min-h-screen">
@@ -130,7 +145,10 @@ export function AppShell({
         adds no box at all, which keeps every measurement in the comment on
         `<main>` below exactly as it was.
       */}
-      <div className="contents xl:sticky xl:top-0 xl:block xl:h-screen">
+      <div
+        className="contents xl:sticky xl:top-0 xl:block xl:h-screen"
+        onClick={routeRailClick}
+      >
         <SideNav
           /*
           A distinct icon from the group below. `topItem` and the one

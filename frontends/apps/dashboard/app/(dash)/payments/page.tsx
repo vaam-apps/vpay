@@ -1,12 +1,10 @@
 import { ScreenStack } from "@vaam-apps/ui";
 import { Suspense } from "react";
 
-import { AppShell } from "../../../src/components/app-shell";
 import { ReadFailure } from "../../../src/components/read-failure";
 import { refineCursor, type InitialList } from "../../../src/dash/initial";
 import { dashProvider, PAYMENT_INTENTS } from "../../../src/dash/provider";
 import { queryFrom } from "../../../src/payments-query";
-import { signOut } from "../../../src/server/actions";
 import { requireStaff } from "../../../src/server/session";
 import { PaymentsScreen } from "./payments-screen";
 
@@ -67,7 +65,6 @@ export default async function PaymentsPage({
     );
   }
   const staff = gate.staff;
-  const { session } = staff;
 
   const query = queryFrom(await searchParams);
   const result = await dashProvider(staff).getList({
@@ -91,14 +88,8 @@ export default async function PaymentsPage({
     : { ok: false, failure: result.failure };
 
   return (
-    <AppShell
-      email={session.email}
-      merchantId={session.merchant_id}
-      signOut={signOut}
-    >
       <Suspense fallback={null}>
         <PaymentsScreen query={query} initial={initial} />
       </Suspense>
-    </AppShell>
   );
 }

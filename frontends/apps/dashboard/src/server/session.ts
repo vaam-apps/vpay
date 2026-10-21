@@ -32,6 +32,7 @@
  */
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { cache } from "react";
 
 import { dashboardConfig } from "../config/runtime";
 import type { DashboardConfig } from "../config/settings";
@@ -201,7 +202,7 @@ export async function readSessionStage(
  * property ADR-0017 decision 2 rests on. A token cached across requests would
  * break it; a token used by the request that created it cannot.
  */
-export async function requireStaff(): Promise<StaffGate> {
+async function gateThisRequest(): Promise<StaffGate> {
   const { config } = dashboardConfig();
   if (config === null) {
     // Nothing can be read without a registration; `/login` is where the
@@ -288,6 +289,25 @@ export async function requireStaff(): Promise<StaffGate> {
     },
   };
 }
+
+/**
+ * The gate every protected page — and, since the Material 3 Expressive
+ * revamp, the signed-in layout — opens with. See `gateThisRequest` above for
+ * what it decides.
+ *
+ * # Memoised per request, and that is what lets the shell live in a layout
+ *
+ * `app/(dash)/layout.tsx` renders the shell (the rail, the app bar, who is
+ * signed in) once, and Next keeps it mounted across navigations instead of
+ * tearing it down with every page. Both it and the page it wraps need the
+ * gate on a full render, and React's `cache` makes that one session read
+ * and at most one token mint per request rather than two — it is scoped to
+ * a single server render, never shared across requests, so the
+ * "every render reads the row" property ADR-0017 decision 2 rests on is
+ * untouched. On a client-side navigation Next re-renders only the page, so
+ * the page's call is the one that runs, and it still runs every time.
+ */
+export const requireStaff: () => Promise<StaffGate> = cache(gateThisRequest);
 
 /**
  * Whether this browser already holds a usable session, for the login pages.

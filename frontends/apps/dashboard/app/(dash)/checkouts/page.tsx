@@ -1,6 +1,5 @@
 import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
 
-import { AppShell } from "../../../src/components/app-shell";
 import { ReadFailure } from "../../../src/components/read-failure";
 import {
   IdCell,
@@ -15,7 +14,6 @@ import {
   readProcedurePage,
 } from "../../../src/dash/procedure-list";
 import { ABSENT } from "../../../src/format";
-import { signOut } from "../../../src/server/actions";
 import { requireStaff } from "../../../src/server/session";
 
 /** Exactly the fields `type CheckoutSessionSummary` declares. */
@@ -116,11 +114,6 @@ export default async function CheckoutsPage({
   );
 
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
       <ScreenStack>
         <h2>Checkouts</h2>
         {!result.ok ? (
@@ -148,6 +141,5 @@ export default async function CheckoutsPage({
           </>
         )}
       </ScreenStack>
-    </AppShell>
   );
 }

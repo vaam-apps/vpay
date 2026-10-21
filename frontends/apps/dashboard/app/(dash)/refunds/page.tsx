@@ -1,6 +1,5 @@
 import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
 
-import { AppShell } from "../../../src/components/app-shell";
 import { ReadFailure } from "../../../src/components/read-failure";
 import {
   IdCell,
@@ -14,7 +13,6 @@ import {
   readProcedurePage,
 } from "../../../src/dash/procedure-list";
 import { ABSENT, formatAmount } from "../../../src/format";
-import { signOut } from "../../../src/server/actions";
 import { requireStaff } from "../../../src/server/session";
 import { ProcedurePager } from "../../../src/components/procedure-pager";
 
@@ -99,11 +97,6 @@ export default async function RefundsPage({
   const result = await readProcedurePage<RefundRow>(staff, REFUNDS, offset);
 
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
       <ScreenStack>
         <h2>Refunds</h2>
         {!result.ok ? (
@@ -131,6 +124,5 @@ export default async function RefundsPage({
           </>
         )}
       </ScreenStack>
-    </AppShell>
   );
 }

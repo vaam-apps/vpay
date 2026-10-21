@@ -1,6 +1,5 @@
 import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
 
-import { AppShell } from "../../../src/components/app-shell";
 import { ReadFailure } from "../../../src/components/read-failure";
 import {
   IdCell,
@@ -14,7 +13,6 @@ import {
   offsetFrom,
   readProcedurePage,
 } from "../../../src/dash/procedure-list";
-import { signOut } from "../../../src/server/actions";
 import { requireStaff } from "../../../src/server/session";
 
 /** Exactly the fields `type WebhookDeliverySummary` declares. */
@@ -104,11 +102,6 @@ export default async function DeliveriesPage({
   );
 
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
       <ScreenStack>
         <h2>Deliveries</h2>
         {!result.ok ? (
@@ -136,6 +129,5 @@ export default async function DeliveriesPage({
           </>
         )}
       </ScreenStack>
-    </AppShell>
   );
 }

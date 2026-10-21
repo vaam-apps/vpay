@@ -1,6 +1,5 @@
 import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
 
-import { AppShell } from "../../../src/components/app-shell";
 import { ReadFailure } from "../../../src/components/read-failure";
 import {
   IdCell,
@@ -15,7 +14,6 @@ import {
   readProcedurePage,
 } from "../../../src/dash/procedure-list";
 import { ABSENT } from "../../../src/format";
-import { signOut } from "../../../src/server/actions";
 import { requireStaff } from "../../../src/server/session";
 
 /** Exactly the fields `type CustomerSummary` declares. */
@@ -117,11 +115,6 @@ export default async function CustomersPage({
   const result = await readProcedurePage<CustomerRow>(staff, CUSTOMERS, offset);
 
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
       <ScreenStack>
         <h2>Customers</h2>
         {!result.ok ? (
@@ -149,6 +142,5 @@ export default async function CustomersPage({
           </>
         )}
       </ScreenStack>
-    </AppShell>
   );
 }
