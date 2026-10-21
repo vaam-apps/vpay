@@ -157,24 +157,40 @@ fn require_the_charges_amount(
     status: PaymentStatus,
 ) -> Result<(), ProviderError> {
     let amount_matches = payment.amount_minor() == Some(expected.minor());
-    let total_matches = payment
+    let currency_matches = payment.currency.as_deref() == Some(expected.currency().code());
+    if !(amount_matches && currency_matches) {
+        return Err(ProviderError::malformed(format!(
+            "notchpay: the read reports {} for an amount or currency that is not this charge's \
+             (amount {}, currency {}); never a success",
+            status.wire(),
+            if amount_matches { "matches" } else { "differs" },
+            if currency_matches {
+                "matches"
+            } else {
+                "differs"
+            },
+        )));
+    }
+    // Added to the check above, not folded into it: the two failures mean
+    // different things to an operator.
+    match payment
         .amounts
         .as_ref()
         .and_then(vpay_notchpay::wire::Amounts::total_minor)
-        == Some(expected.minor());
-    let currency_matches = payment.currency.as_deref() == Some(expected.currency().code());
-    if amount_matches && total_matches && currency_matches {
-        return Ok(());
+    {
+        Some(total) if total == expected.minor() => Ok(()),
+        Some(_) => Err(ProviderError::malformed(format!(
+            "notchpay: the read reports {} for this charge's amount, but amounts.total is not \
+             that amount: Notch Pay moved money, and not this charge's amount. Never a success; \
+             the charge needs an operator to reconcile it with Notch Pay",
+            status.wire(),
+        ))),
+        None => Err(ProviderError::malformed(format!(
+            "notchpay: the read reports {} with no integer amounts.total, so what was collected \
+             is unknown; never a success",
+            status.wire(),
+        ))),
     }
-    let word = |matches: bool| if matches { "matches" } else { "differs" };
-    Err(ProviderError::malformed(format!(
-        "notchpay: the read reports {} for an amount, collected total or currency that is not \
-         this charge's (amount {}, amounts.total {}, currency {}); never a success",
-        status.wire(),
-        word(amount_matches),
-        word(total_matches),
-        word(currency_matches),
-    )))
 }
 
 /// What a refused read means.
@@ -489,6 +505,11 @@ mod tests {
         assert!(
             matches!(outcome, Err(ProviderError::Malformed { .. })),
             "a complete for 105 of 107 must be Malformed, got {outcome:?}"
+        );
+        let message = outcome.expect_err("refused").to_string();
+        assert!(
+            message.contains("moved money") && message.contains("operator"),
+            "the error must say money moved and an operator is needed: {message}"
         );
     }
 

@@ -667,7 +667,9 @@ In writing (W) or in the sandbox (S):
 19. **(S, W)** Does `GET /payments?search=` find a payment by the merchant's own
     reference? It decides whether carrying Notch Pay's reference in `ref_extra`
     (item 2's fix) can survive a crash between initialize and `ref_extra`
-    becoming durable. _(Added 2026-10-21; not called.)_
+    becoming durable. _(Added and answered 2026-10-21 — no: `search` matches
+    Notch Pay's `trx.…` only, not ours and not the description, and list
+    items carry no `trxref`. The crash window is a residual risk.)_
 20. **(W)** Why does `DELETE /webhooks/{id}` answer `404` "Resource Not Found"
     for an endpoint the list returns? _(Added 2026-10-21.)_
 21. **(W)** Where is a webhook endpoint's signing secret, since `POST /webhooks`

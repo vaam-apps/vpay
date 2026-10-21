@@ -7,6 +7,7 @@
 //! cargo run -p vpay-notchpay --example sandbox_probe -- read     --out <report.json>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- payments --out <report.json>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- webhooks --out <report.json> --webhook-url <url>
+//! cargo run -p vpay-notchpay --example sandbox_probe -- search   --out <report.json> --reference <ref> [--reference <ref> …]
 //! cargo run -p vpay-notchpay --example sandbox_probe -- verify-signature --body <file> --signature <hex>
 //! ```
 //!
@@ -125,10 +126,10 @@ fn main() -> Result<()> {
         let signature = flag("--signature").ok_or("verify-signature needs --signature <hex>")?;
         return verify_signature(&PathBuf::from(body), &signature);
     }
-    if !matches!(phase, "read" | "payments" | "webhooks") {
+    if !matches!(phase, "read" | "payments" | "webhooks" | "search") {
         return Err(
-            "usage: sandbox_probe read|payments|webhooks --out <report.json> [--webhook-url <url>] \
-             [--ca-bundle <pem>] | verify-signature --body <file> --signature <hex>"
+            "usage: sandbox_probe read|payments|webhooks|search --out <report.json> \
+             [--webhook-url <url>] [--reference <ref> …] [--ca-bundle <pem>] | verify-signature --body <file> --signature <hex>"
                 .into(),
         );
     }
@@ -145,6 +146,7 @@ fn main() -> Result<()> {
         let result = match phase {
             "read" => probe.read_phase().await,
             "payments" => probe.payments_phase().await,
+            "search" => probe.search_phase(&all_flags(&args, "--reference")).await,
             _ => {
                 let url = flag("--webhook-url").ok_or("webhooks needs --webhook-url <url>")?;
                 probe.webhooks_phase(&url).await
@@ -158,6 +160,16 @@ fn main() -> Result<()> {
         )?;
         result
     })
+}
+
+/// Every value after an occurrence of `name`.
+fn all_flags(args: &[String], name: &str) -> Vec<String> {
+    args.windows(2)
+        .filter_map(|pair| match pair {
+            [flag, value] if flag == name => Some(value.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 /// The value after `name`, if `name` is present.
@@ -537,6 +549,44 @@ impl Probe {
             }
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
+    }
+
+    /// RFC-0012 § 10 item 19: does `GET /payments?search=` find a payment by
+    /// the merchant's own reference? Read-only. Each reference is also read
+    /// directly, for comparison.
+    async fn search_phase(&mut self, references: &[String]) -> Result<()> {
+        if references.is_empty() {
+            return Err("search needs at least one --reference <ref>".into());
+        }
+        for reference in references {
+            let query: String = reference
+                .bytes()
+                .map(|b| {
+                    if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
+                        char::from(b).to_string()
+                    } else {
+                        format!("%{b:02X}")
+                    }
+                })
+                .collect();
+            self.exchange(
+                "19: search",
+                Method::GET,
+                &format!("/payments?search={query}"),
+                None,
+                Decode::Nothing,
+            )
+            .await?;
+            self.exchange(
+                "19: direct read, for comparison",
+                Method::GET,
+                &format!("/payments/{query}"),
+                None,
+                Decode::Payment,
+            )
+            .await?;
+        }
+        Ok(())
     }
 
     async fn webhooks_phase(&mut self, url: &str) -> Result<()> {

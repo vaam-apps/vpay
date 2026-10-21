@@ -71,7 +71,8 @@ this sandbox, call 2 gets the `404`, and `mapping::process_refusal` turns a
 fails before any USSD prompt is sent, and no money moves.** The rail does
 not work as written, but it fails closed. The fix (process and read by
 Notch Pay's reference, carried in `ref_extra`) is not in this change. Its
-crash window is an open decision, below.
+crash window was measured too, and Notch Pay offers nothing that closes it
+(below).
 
 ## The second finding: a "complete" that collected less
 
@@ -103,10 +104,15 @@ did not model it. The adapter's `require_the_charges_amount` compared
 `Succeeded`**: a false success on the money path. It cannot happen on
 `master` today, only because call 2 fails first.
 
-**Fixed in this change.** `Payment` now carries `amounts.total`, and a
-success requires `amount`, `amounts.total` and `currency` all to be the
-charge's. Anything else, including a missing `amounts` or a non-integer
-`total`, is `Malformed`, as a wrong `amount` already was. Pinned by
+**Fixed in this change.** `Payment` now carries `amounts.total`. The
+existing `amount` and `currency` check is unchanged, and a second check is
+added after it: `amounts.total` must be the charge's amount too. A short
+`total` is refused with its own error: **Notch Pay moved money, and not this
+charge's amount, so the charge needs an operator to reconcile it with Notch
+Pay.** It is not a plain "malformed answer". A missing `amounts` or a
+non-integer `total` is refused too, because what was collected is then
+unknown. All three are `ProviderError::Malformed`, which leaves the charge's
+fate unknown rather than failed. Pinned by
 `a_complete_that_collected_less_than_the_charge_is_never_a_success` and
 `a_success_with_no_collected_total_is_never_a_success` (unit), and by the
 conformance case
@@ -128,8 +134,10 @@ over a WireMock stub transcribed from that read (`REF_SHORT_COLLECTION`).
 | 15   | Payload under `transaction`/`endpoint`/`endpoints` or `data`  | **Answered: the specification's keys.** `transaction` on every payment answer, `endpoint` on create, `endpoints` on list. No `data`                                                                                  |
 | 16   | A webhook endpoint carries `active`                           | **Contradicted, differently.** No `active` flag. There is a `status`: `null` in the create answer, `"active"` in the list                                                                                            |
 | 17   | `payment.processing` is a real event                          | **Half answered.** `POST /webhooks` accepted it (`201`). Whether it is ever delivered needs a received webhook (item 7)                                                                                              |
+| 19   | `GET /payments?search=` finds a payment by our reference      | **Answered: no.** It matches Notch Pay's `trx.…` only, not ours and not the description; list items carry no `trxref` (below)                                                                                        |
 
-Items 1, 6, 8, 9, 10 and 12 are written questions, not sandbox ones.
+Items 1, 6, 8, 9, 10 and 12 are written questions, not sandbox ones; 18, 20
+and 21 were added as written questions by this run.
 ADR-0031's condition 6 keeps item 1 open; nothing here answers it.
 
 ### Item 5: what each number read
@@ -172,32 +180,57 @@ one.
   three endpoints just created and listed. The path is the one Notch Pay's
   API reference documents. So the probe could not clean up (below).
 
-## Webhook endpoints left on the maintainer's account
+## Webhook endpoints: created, not deletable by the API, deleted by hand
 
-The probe created three endpoints and could delete none of them. **The
-maintainer must delete them in Notch Pay's dashboard:**
+The probe created three endpoints and could delete none of them
+(`ep_test.Afe5yXKW1X4Dvnmb`, `ep_test.dNa3XwecBWRSXxdw`,
+`ep_test.PDfftDv55NkKhPQB`, all at the unresolvable
+`https://vpay-sandbox-probe.invalid/notchpay/webhook`). **The maintainer
+deleted them in Notch Pay's dashboard** the same morning. A later `read` run
+listed `"totals": 0` endpoints, which confirms it.
 
-- `ep_test.Afe5yXKW1X4Dvnmb`
-- `ep_test.dNa3XwecBWRSXxdw`
-- `ep_test.PDfftDv55NkKhPQB`
-
-All three point at `https://vpay-sandbox-probe.invalid/notchpay/webhook`, a
-name that cannot resolve, so nothing can be delivered to anyone meanwhile.
-
-## The open decision: the crash window
+## The crash window, measured: `search` does not close it
 
 The fix for item 2 is to keep Notch Pay's `trx.…` reference from the
 initialize answer in `ref_extra`, and to process and read by it. Its hole is
 a crash between initialize and `ref_extra` becoming durable. The retry's
-initialize then gets `409`, and with only our reference vpay can never find
-the payment again. If the USSD prompt had already gone out, the payer could
-pay and vpay would never read it.
+initialize then gets `409`, and vpay holds only its own reference.
 
-Notch Pay documents `GET /payments?search=` as "Search by reference". If it
-finds a payment by our reference, the hole closes. **It was not called**: it
-was not in the calls the maintainer approved. Until it is measured, this is
-a residual risk of the fix, not a solved problem, and the fix is not in this
-change.
+Notch Pay documents `GET /payments?search=` as "Search by reference". On the
+maintainer's go-ahead ("Proceed with any other testing (the search thing
+too)") it was called, read-only, in two `search` runs:
+
+| `search=`                                 | `totals` | Direct read of the same value |
+| ----------------------------------------- | -------- | ----------------------------- |
+| our reference, MTN success payment        | 0        | `404`                         |
+| our reference, the `…001` payment         | 0        | `404`                         |
+| `trx.test_9Er1Q1DBeNMjt55oeRSUY91Y`       | 1        | `200`                         |
+| a UUID that cannot exist (control)        | 0        | `404`                         |
+| `vpay sandbox probe` (our `description`)  | 0        | —                             |
+| `duplicate` (a word in one `description`) | 0        | —                             |
+
+**`search` finds a payment by Notch Pay's reference only.** It matches neither
+the merchant's reference nor the description. And a list item carries no
+`trxref` and no `merchant_reference` (its fields are `amount`, `amounts`,
+`callback`, `charge`, `created_at`, `currency`, `customer`, `description`,
+`fees`, `payment_method`, `reference`, `sandbox`, `status`), so paging the
+list cannot match our reference either. **RFC-0012 § 10 item 19 is answered:
+no.**
+
+So the fix keeps a residual risk, and it should be stated as one:
+
+- A crash **after initialize and before call 2** leaves a Notch Pay payment
+  that was never prompted. No money can move; it expires. The retry's `409`
+  cannot be resolved to a payment, so it must fail closed (`Malformed`,
+  fate unknown), not report `Submitted` and not fail the charge.
+- A crash **after call 2 was sent and before `ref_extra` is durable** is the
+  real exposure. The payer was prompted and may pay, and vpay holds no
+  reference Notch Pay will answer for. Recovering it would need Notch Pay's
+  webhook (whose `data.reference`, by the payment object's shape, is
+  probably the `trx.…`) or an operator in Notch Pay's dashboard.
+
+That window is narrow, but it is real, and no Notch Pay call measured here
+closes it.
 
 ## Questions for Notch Pay, in writing
 
@@ -207,8 +240,10 @@ Added to the written list (RFC-0012 § 10, items 18 to 21):
   `amounts.total` short of `amount`? On the live API, can a payment read
   `complete` having collected less than `amount`, and is `amounts.total` the
   collected amount?
-- Does `GET /payments?search=` find a payment by the merchant's own
-  reference (`trxref`)?
+- Can a payment be found by the merchant's own reference at all? `search`
+  does not match it (measured, above). Without that, a crash after the USSD
+  prompt and before vpay records Notch Pay's reference leaves a payment vpay
+  cannot read.
 - Why does `DELETE /webhooks/{id}` answer `404` for an endpoint the list
   returns?
 - Where is a webhook endpoint's signing secret, since `POST /webhooks` does
@@ -218,10 +253,10 @@ Added to the written list (RFC-0012 § 10, items 18 to 21):
 
 Run on 2026-10-21 on this branch, cut from `master` at `d14cbe9`, on Linux.
 
-- `cargo test -p vpay-notchpay -p vpay-adapter-notchpay`: **32 + 35 + 5
+- `cargo test -p vpay-notchpay -p vpay-adapter-notchpay`: **35 + 32 + 5
   passed, 0 ignored** (`vpay-notchpay`'s lib, `vpay-adapter-notchpay`'s
   lib, the probe's own tests). Doctests (`cargo test --doc`): 2 passed,
-  0 ignored. The three new mapping cases are among the 35.
+  0 ignored. The three new mapping cases are among the 32.
 - `cargo nextest run -p vpay-tests-conformance`: **93 passed, 0 skipped**,
   against WireMock in Docker. That includes 26 `notchpay` rows, among them the
   new `notchpay_a_complete_that_collected_less_than_the_charge_is_never_a_success`

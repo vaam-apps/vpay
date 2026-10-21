@@ -181,8 +181,8 @@ contradicted). The same is true of call 2 above, which is why `submit` fails
 today. RFC-0012 § 3 had the adapter prefer Notch Pay's reference when it held
 one. That was dropped on 2026-10-20 for a rule that needs no `ref_extra`; the
 sandbox overturned it. The fix carries Notch Pay's reference in `ref_extra`,
-and has a crash window that is still an open decision
-([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md#the-open-decision-the-crash-window)).
+and has a crash window that Notch Pay's `search` does not close
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md#the-crash-window-measured-search-does-not-close-it)).
 
 | The read answered                           | `ChargeStatus`                                                                                                                                                        |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -209,7 +209,9 @@ asked:** `amount` 107, `amounts.total` 105. On every other answer `total`
 equalled `amount`. The adapter compared `amount` only, so once the
 addressing is fixed that read would have been `Succeeded`. A success now
 needs `amounts.total` to be the charge's too, and a missing `amounts` is
-`Malformed`. The question is with Notch Pay in writing.
+`Malformed`. A short `total` has its own error: money moved, not this
+charge's amount, so the charge needs an operator. The question is with
+Notch Pay in writing.
 
 **A payment answer carries no `id`** in the sandbox, so a success records
 `reference` (`trx.…`) as `provider_txn_id` when `id` is absent.
@@ -267,6 +269,8 @@ each is marked below. The ones that decide whether the adapter is right:
     `amount`, and is `amounts.total` the collected amount? (§ 10 item 18)
 12. **(S)** Does `GET /payments?search=` find a payment by our reference?
     It decides whether the addressing fix is crash-safe. (§ 10 item 19)
+    **Answered 2026-10-21: no**, so the fix carries a residual crash
+    window.
 
 Also open, and not in the adapter's hands: whether Notch Pay accepts a number
 without the `+`. The adapter sends the `+` form the documentation shows.

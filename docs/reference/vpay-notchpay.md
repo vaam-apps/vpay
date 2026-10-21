@@ -206,6 +206,8 @@ Two limits that run showed: its poll reads by our reference only, which the
 sandbox always answers `404`, so it waits out the whole poll window and then
 reads once by Notch Pay's reference; and its webhook cleanup uses the
 documented `DELETE /webhooks/{id}`, which the sandbox answered `404`.
+Its `search` phase (added the same day) calls `GET /payments?search=` for
+each `--reference`, read-only, for item 19.
 
 `--ca-bundle <path>` is a cloud-only aid, off unless given: it adds that
 file's PEM certificates to the vendored roots for the probe's own client,
