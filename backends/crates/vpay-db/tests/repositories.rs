@@ -4539,6 +4539,78 @@ async fn provider_requests_record_attempts_and_keep_status_and_responded_at_in_s
     Ok(())
 }
 
+/// A rail's answer that the caller refused is stored as **answered, with its
+/// reason**: the sentinel and an `error_kind` in one row.
+///
+/// The sentinel-with-no-`error_kind` and `NULL`-with-`error_kind` rows are
+/// proven by the test above. This is the third combination, and it is the one
+/// `vpay_worker` writes for a status read the adapter answered but refused
+/// (Notch Pay's `complete` with a short `amounts.total`, RFC-0012 step 5):
+/// before it, that read was `NULL` / `NULL` / `provider_error`, i.e. "no
+/// answer". Read back with a plain `SELECT` rather than through the repository,
+/// so what is asserted is what the table holds and not that a write and a read
+/// agree.
+#[tokio::test]
+async fn an_answer_the_caller_refused_is_stored_as_answered_and_keeps_its_reason()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    repositories
+        .insert(&fixture_intent("pi_refused_read", "XAF"))
+        .await?;
+    let charge = one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_refused_read", "pi_refused_read"),
+    )
+    .await
+    .context("opening the charge must succeed")?;
+
+    let read = repositories
+        .insert_pending(
+            &charge.id,
+            "mtn_momo",
+            "query_status",
+            charge.provider_reference_id,
+            1,
+        )
+        .await
+        .context("recording the pending read must succeed")?;
+    repositories
+        .record_response(
+            read,
+            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+            Some("provider_error"),
+        )
+        .await
+        .context("recording a refused answer must succeed")?;
+
+    let stored: (Option<i32>, Option<time::OffsetDateTime>, Option<String>) = sqlx::query_as(
+        "SELECT status_code, responded_at, error_kind FROM provider_requests WHERE id = $1",
+    )
+    .bind(read)
+    .fetch_one(&pool)
+    .await
+    .context("reading the refused read back must succeed")?;
+    assert_eq!(
+        stored.0,
+        Some(0),
+        "the rail answered, and the port carries no HTTP status for it"
+    );
+    assert!(
+        stored.1.is_some(),
+        "an answered attempt carries the instant it was answered; `response_is_paired` \
+         would have refused the write otherwise"
+    );
+    assert_eq!(
+        stored.2.as_deref(),
+        Some("provider_error"),
+        "the reason the caller refused the answer is what tells this row from an accepted one"
+    );
+
+    Ok(())
+}
+
 /// A resubmit that answers with nothing must not erase the rail key material
 /// an earlier answer left.
 ///

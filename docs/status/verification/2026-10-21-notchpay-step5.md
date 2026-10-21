@@ -436,6 +436,16 @@ the way the brief expected would have been the wrong move on a payment system.
    not yet built, would look for it. Today "Nothing reads this table" (the
    same file, § "Not yet swept"), so the consequence is audit imprecision, not
    money. It is the worker's and `vpay-db`'s behaviour, not the adapter's.
+
+   **Corrected 2026-10-21, by the change that fixes this
+   ([verification/2026-10-21-provider-requests-refused-answers.md](2026-10-21-provider-requests-refused-answers.md)).**
+   "Today 'Nothing reads this table'" was not true: `latest_submit_attempt` has
+   read `submit` rows on every poll of a `submitting` charge since 2026-09-03,
+   so `NULL` on a submit row is recovery's input and not only an audit trail.
+   It was true of a `query_status` row, which is what these eleven were, so
+   "audit imprecision, not money" held for this case. The worker now records a
+   refused read as answered, and leaves a refused submit `NULL` on purpose.
+
 2. **"Needs an operator" wakes nobody for 24 hours** (above). The adapter's
    message says an operator must reconcile the charge with Notch Pay. The
    worker treats the same error as a transient rail fault until the horizon.
