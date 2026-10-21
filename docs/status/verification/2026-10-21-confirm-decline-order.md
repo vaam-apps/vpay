@@ -128,6 +128,14 @@ this branch:
 | `just verify` — the fifteen gates                                 | exit 0, all fifteen gates (`verify-links` 2529 links in 473 files; `verify-doc-counts` agrees at 92 verification pages) |
 | prettier 3.9.6 and `markdownlint-cli2@0.20.0` on the changed docs | prettier applied; markdownlint 0 errors on the seven changed docs                                                       |
 
+**After merging `master` at `e3931169`** (#307, #315, #317: the Node SDK's local
+refusals, `tests/cli.rs` diagnostics and the release branch — none on this
+change's paths), which conflicted in `docs/status/README.md` alone and kept both
+sides (the index now counts 94 pages), these were re-run on the merged tree and
+agree: `just verify` exit 0, all fifteen gates (`verify-links` 2537 links in 475
+files); rustfmt and clippy clean; `confirm_rails` + `worker_recovery` 43 passed, 0
+ignored. The other suites in the table are pre-merge numbers.
+
 The full-workspace `cargo nextest run` was **not** run for this change; the suites
 above are the ones its one code change (`finish_confirm`) can reach.
 
