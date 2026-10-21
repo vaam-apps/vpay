@@ -1,5 +1,38 @@
 # Changelog
 
+## [0.10.0](https://github.com/vaam-apps/vpay/compare/v0.9.1...v0.10.0) (2026-10-21)
+
+
+### ⚠ BREAKING CHANGES
+
+* **sdks:** these refusals are no longer a TypeError, and cannot be. A class has one superclass, and making VpayError extend TypeError would make every error the package throws a TypeError. Code that tested `instanceof TypeError` for them should test `instanceof VpayInvalidParamsError`. No signature changed, and nothing that was sent before is refused now.
+* **dashboard:** Material 3 Expressive redesign, Overview home, and no more page reloads ([#318](https://github.com/vaam-apps/vpay/issues/318))
+
+### Features
+
+* **dashboard:** Material 3 Expressive redesign, Overview home, and no more page reloads ([#318](https://github.com/vaam-apps/vpay/issues/318)) ([73c3a7c](https://github.com/vaam-apps/vpay/commit/73c3a7cf471cc4d612fa78faefd85d7b1991afc8))
+
+
+### Bug Fixes
+
+* **sdks:** every Node SDK local refusal is a VpayInvalidParamsError ([#315](https://github.com/vaam-apps/vpay/issues/315)) ([8796705](https://github.com/vaam-apps/vpay/commit/879670598ed3411116230872efa6d407e35be104))
+* **worker:** record a refused status read as answered, a refused submit as unresolved ([#314](https://github.com/vaam-apps/vpay/issues/314)) ([6d9dfbf](https://github.com/vaam-apps/vpay/commit/6d9dfbf5e56a8561d6f4ee3185225cdac0814ef6))
+
+
+### Documentation
+
+* **notchpay:** canceled is payer_declined in the risk list and failures tables ([#312](https://github.com/vaam-apps/vpay/issues/312)) ([73a5b5a](https://github.com/vaam-apps/vpay/commit/73a5b5af67efba91437f07375799fa8a5eda69f7))
+* **notchpay:** RFC-0012 step 5 against Notch Pay's real sandbox ([#310](https://github.com/vaam-apps/vpay/issues/310)) ([e28292d](https://github.com/vaam-apps/vpay/commit/e28292d3a96b7f5fa364da1a5e7140ea08faecf9))
+* **status:** vpay is in live testing on some clusters, not a scaffold ([#308](https://github.com/vaam-apps/vpay/issues/308)) ([4ca1fed](https://github.com/vaam-apps/vpay/commit/4ca1fed0672c1a40511a04d77b489eee92318649))
+
+
+### Tests
+
+* **dashboard:** regression tests for the SideNav duplicate key ([#163](https://github.com/vaam-apps/vpay/issues/163)) ([#274](https://github.com/vaam-apps/vpay/issues/274)) ([865420b](https://github.com/vaam-apps/vpay/commit/865420ba52af1efadcbac6793b3a05d7d97d78ab))
+* **sdks:** pin that no payer surface puts a dot segment in a path ([#309](https://github.com/vaam-apps/vpay/issues/309)) ([f554f87](https://github.com/vaam-apps/vpay/commit/f554f87160c36409024f486e5c3d9199c9db8a1b))
+* **vpay-server:** give each cli test server its own observability port ([#311](https://github.com/vaam-apps/vpay/issues/311)) ([71295d1](https://github.com/vaam-apps/vpay/commit/71295d1649ac6e0461e6795072b59e0fd7cc4a04))
+* **vpay-server:** make a failed boot in tests/cli.rs say why ([#317](https://github.com/vaam-apps/vpay/issues/317)) ([8db838d](https://github.com/vaam-apps/vpay/commit/8db838d6ad81559cfe035b2dc7aefb09e0ddcf3b))
+
 ## [0.9.1](https://github.com/vaam-apps/vpay/compare/v0.9.0...v0.9.1) (2026-10-21)
 
 
