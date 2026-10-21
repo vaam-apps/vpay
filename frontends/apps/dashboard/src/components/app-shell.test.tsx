@@ -23,7 +23,7 @@ vi.mock("next/navigation", () => ({
 }));
 
 const { AppShell } = await import("./app-shell");
-const { NAV_ENTRIES } = await import("../dash/resources");
+const { NAV_ENTRIES, OVERVIEW_NAV } = await import("../dash/resources");
 
 function renderShell() {
   return render(
@@ -76,12 +76,17 @@ describe("the signed-in shell", () => {
     const hrefs = [...container.querySelectorAll("a[href^='/']")].map((a) =>
       a.getAttribute("href"),
     );
-    for (const entry of NAV_ENTRIES) {
+    for (const entry of [OVERVIEW_NAV, ...NAV_ENTRIES]) {
       expect(hrefs, `the rail links to ${entry.href}`).toContain(entry.href);
     }
     // Nothing the registry does not declare. Two lists that can disagree is
-    // the failure Lane 4 exists to prevent.
-    const declared = new Set<string>(NAV_ENTRIES.map((entry) => entry.href));
+    // the failure Lane 4 exists to prevent. The Overview is the rail's top
+    // item, declared beside the registry (`OVERVIEW_NAV`) because it is a
+    // screen of counts, not a Refine resource.
+    const declared = new Set<string>([
+      OVERVIEW_NAV.href,
+      ...NAV_ENTRIES.map((entry) => entry.href),
+    ]);
     for (const href of hrefs) {
       expect(declared.has(href ?? ""), `${href} is not a declared route`).toBe(
         true,
@@ -231,7 +236,9 @@ describe("the signed-in shell", () => {
     if (link === undefined) throw new Error(`no rail link to ${target.href}`);
     const event = new MouseEvent("click", { bubbles: true, cancelable: true });
     fireEvent(link, event);
-    expect(event.defaultPrevented, "the browser must not follow the href").toBe(true);
+    expect(event.defaultPrevented, "the browser must not follow the href").toBe(
+      true,
+    );
     expect(push).toHaveBeenCalledWith(target.href);
   });
 });
