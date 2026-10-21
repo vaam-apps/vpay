@@ -1239,7 +1239,8 @@ export type OrangeMoneyPaymentMethodData = {
 /**
  * Notch Pay (RFC-0012, 2026-10-20): a push rail, so the same instrument as
  * MTN's, under this rail's own code. The server's adapter is proven against a
- * stub only and has never called Notch Pay.
+ * stub and took three test-mode payments through Notch Pay's real sandbox on
+ * 2026-10-21 (RFC-0012 step 5); it has never called Notch Pay's production.
  */
 export type NotchPayPaymentMethodData = {
   type: "notchpay";

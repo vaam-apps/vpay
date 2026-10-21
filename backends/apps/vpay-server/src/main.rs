@@ -364,13 +364,15 @@ async fn run() -> anyhow::Result<()> {
          /v1/refunds/{{id}} (update) and POST /v1/refunds/{{id}}/cancel (cancel). All three rail \
          adapters implement `submit` and `query_status`; over seven MTN Collections \
          payments succeeded against MTN's real sandbox on 2026-09-15, as confirmed on \
-         2026-10-20 by Valantine Suh, who performed the tests. NOTCH PAY HAS NEVER BEEN \
-         CALLED: `notchpay` (2026-10-20, ADR-0031) is proven against a WireMock stub only, \
-         and `notchpay::refund` answers a NotImplemented token. NO REFUND HAS EVER MOVED MONEY: \
-         `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN Disbursements \
-         credential exists in this project — the only one anywhere is the stub the e2e/demo \
-         stack points at a WireMock container — and the product has never been called; \
-         `orange_money::refund` answers a NotImplemented token, not Unsupported, so an \
+         2026-10-20 by Valantine Suh, who performed the tests. NOTCH PAY HAS BEEN CALLED IN ITS \
+         SANDBOX ONLY: `notchpay` (ADR-0031) took three test-mode payments through vpay against \
+         Notch Pay's real sandbox on 2026-10-21 — one succeeded, one failed, and one that read \
+         `complete` for less than its amount was refused, never a success; its production has \
+         never been called, and `notchpay::refund` answers a NotImplemented token. NO REFUND HAS \
+         EVER MOVED MONEY: `mtn_momo::refund` IS written (MTN Disbursements) but no REAL MTN \
+         Disbursements credential exists in this project — the only one anywhere is the stub \
+         the e2e/demo stack points at a WireMock container — and the product has never been \
+         called; `orange_money::refund` answers a NotImplemented token, not Unsupported, so an \
          Orange refund fails at once and gives its reservation back; and NOTHING SETTLES A \
          PENDING REFUND — there is no refund poll ladder, so a refund these routes create \
          stays `pending` until an operator moves it. Every other /v1 resource answers the \

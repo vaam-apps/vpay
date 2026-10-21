@@ -8,9 +8,15 @@
   rule; the rule was changed, openly, for every provider. Delivery step 0 is
   that ADR. Steps 2–4 are built in the same change as it, with every Notch
   Pay mapping taken from `openapi.yaml` 2.1.0 and marked "To confirm",
-  because no test-mode key was available to it: **nothing has called Notch
-  Pay**, and steps 1 and 5 are not done. `vpay-notchpay`, the client, landed
-  earlier on 2026-10-20 (§ 1).
+  because no test-mode key was available to it. **Steps 1 and 5 were done on
+  2026-10-21**: Notch Pay's real sandbox answered the probe (step 1,
+  [page][sandbox-run]), and took three test-mode payments through the adapter
+  (step 5, [page][step5]): one succeeded, one failed, and one that read
+  `complete` for less than its amount was refused and stayed `pending`.
+  Notch Pay's production has never been called. `vpay-notchpay`, the client,
+  landed earlier on 2026-10-20 (§ 1). _(This said "because no test-mode key
+  was available to it: **nothing has called Notch Pay**, and steps 1 and 5
+  are not done" until 2026-10-21.)_
 - **Author:** vpay maintainers
 - **Date:** 2026-10-20
 - **Related:** [ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
@@ -677,6 +683,7 @@ In writing (W) or in the sandbox (S):
     does not return one? _(Added 2026-10-21.)_
 
 [sandbox-run]: ../status/verification/2026-10-21-notchpay-sandbox-run.md
+[step5]: ../status/verification/2026-10-21-notchpay-step5.md
 
 ## Delivery
 
@@ -688,7 +695,7 @@ In writing (W) or in the sandbox (S):
 | 2    | `vpay-adapter-notchpay` on top of `vpay-notchpay`: `mapping.rs` filled from step 1, `lib.rs`, `refund` as a declared `NotImplemented` token; unit tests. **Built 2026-10-20 without step 1**: no test-mode key was available, so `mapping.rs` is filled from `openapi.yaml` 2.1.0 and every row is "To confirm"                                                                                                                                                                                                                                                                                                     | 0, 1                                  |
 | 3    | Mappings, the conformance rows, and RFC-0010 § 8's `callback_url_pattern` change if RFC-0010 has not landed it. **Built 2026-10-20**; this rail carried the `callback_url_pattern` change                                                                                                                                                                                                                                                                                                                                                                                                                           | 2                                     |
 | 4    | Wiring: `adapters()`/`adapter_codes()`, `REQUIRED_RAIL_KEYS`, `compose.yml` (`wiremock-notchpay`), `.env.example`, Helm, `config/application.yml`, `docs/api/`, both SDKs' value lists, `sdks/parity.md`, `examples/shop`'s crate map, `docs/flows/adapter-notchpay.md`, `docs/flows/failures.md`, the privacy inventory's recipient, `docs/status.md`'s token, the status pages. **Built 2026-10-20**, except that `config/application.yml` carries the block commented out and `examples/shop` gets a note rather than a test-number table (both in [adapter-notchpay.md](../flows/adapter-notchpay.md) § Status) | 3                                     |
-| 5    | The first test-mode call through the adapter, on a dated verification page. **Not done**: no test-mode key was available when the adapter landed, and the session that had one could not reach Notch Pay. Runs from [the runbook](../runbooks/notchpay-sandbox-test.md), Part B (`--profile notchpay-sandbox`); written, not yet run                                                                                                                                                                                                                                                                                | 4; test-mode keys                     |
+| 5    | The first test-mode call through the adapter, on a dated verification page. **Not done 2026-10-20**: no test-mode key was available when the adapter landed, and the session that had one could not reach Notch Pay. Runs from [the runbook](../runbooks/notchpay-sandbox-test.md), Part B (`--profile notchpay-sandbox`); written, not yet run. **Done 2026-10-21** on the maintainer's machine: a success, a failure, and a short collection refused as `Malformed` and left `pending`; every charge held Notch Pay's `trx.…` reference ([page](../status/verification/2026-10-21-notchpay-step5.md))             | 4; test-mode keys                     |
 | 6    | Refunds as a call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | item 6 answered                       |
 | 7    | Model B: `X-Sync`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | RFC-0009; item 9 answered             |
 | 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ADR-0029 D6 landed                    |
