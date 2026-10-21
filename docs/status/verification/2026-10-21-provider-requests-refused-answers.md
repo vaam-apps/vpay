@@ -194,6 +194,13 @@ row, and `vpay-api` is untouched; that is a reading and not a measurement.
   That the next `NotFound` streak then resubmits again, until the 24-hour horizon
   escalates, is read from the code and **not run**.
 
+  **Measured and fixed later the same day**
+  ([2026-10-21-declined-resubmit-fails-the-charge.md](2026-10-21-declined-resubmit-fails-the-charge.md)):
+  the loop is real, a declined resubmit now fails the charge, and `Rejected` on a
+  submit is recorded answered, after it. The decision table above is the state of
+  this change as reviewed; its `Rejected` / `submit` cell is `0` +
+  `charge_declined` now, and the test named above was replaced.
+
 ## What was not done, and not run
 
 - **Not re-run against Notch Pay.** The eleven reads of step 5 were not
@@ -206,8 +213,9 @@ row, and `vpay-api` is untouched; that is a reading and not a measurement.
   does not produce either from a stub in the tree; both are covered by the unit
   table and by the reasoning above, not by a row read back from Postgres.
 - **A declined resubmit's second pass.** That the next `NotFound` streak
-  resubmits again, until the 24-hour horizon escalates, is read from the code and
-  not run. Only the first decline is.
+  resubmits again, until the 24-hour horizon escalates, was read from the code and
+  not run when this page was written; it was run, and fixed, later the same day
+  (see above).
 - **The workspace test run, the rest of it** — the 522 listed above, other than
   `worker_recovery`, `worker_e2e` and `worker_kill9`.
 - **`just ci`'s web half.** `just fmt-check`'s whole-tree `prettier --check .`,

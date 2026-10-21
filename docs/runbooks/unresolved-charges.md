@@ -97,9 +97,10 @@ you are here to answer.
      `failed` …), and, on a **`query_status`** row only, for an answer the
      adapter refused (`error_kind = 'provider_error'` — for example a
      `complete` whose `amounts.total` is not the charge's amount: the rail
-     spoke, and vpay would not act on it). The worker never writes it for a
-     `submit` that ended in an error; only `vpay-api`'s confirm does, for a
-     decline, and it fails the charge in the same handler.
+     spoke, and vpay would not act on it). On a `submit` row it means the rail
+     **declined** (`charge_declined`) and the charge is already `failed` — the
+     worker's resubmit and `vpay-api`'s confirm both fail the charge first. It
+     is never written for a `submit` that ended in any other error.
    - **A real HTTP status** → the rail answered with it.
 
    The `error_kind` vocabulary is `vpay_core::Classify::code` on the
