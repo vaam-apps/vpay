@@ -1,0 +1,137 @@
+# 2026-10-21 — the dashboard failed hydration under Cypress, and `dashboard.cy.ts` went 17 of 18 red
+
+Branch `claude/happy-hopper-r3h6rz`, from `master` at `0706cd5` (#319). One
+change, in `frontends/apps/dashboard` only. The theme script moves from
+`<head>` to the first child of `<body>`, and one unit case pins it there.
+**No route, no server code, no migration and no `NotImplemented` token
+moved.**
+
+## What failed
+
+`master` CI run 39610100683 on `0706cd5`, job `e2e (compose)`, step "the
+browser specs". It was the first run on `master` to reach that step since
+#318 merged. Every `master` run from `e28292d` on had been cancelled by the
+next merge, and #318's own run had not finished when it merged. Its
+verification page ([2026-10-21-dashboard-md3e.md](2026-10-21-dashboard-md3e.md))
+says `dashboard.cy.ts` was "updated in this change and not run".
+
+```text
+  Running:  dashboard.cy.ts                                                                 (2 of 3)
+  1 passing (2m)
+  17 failing
+  ✔  checkout.cy.ts       1 passing
+  ✖  dashboard.cy.ts     18 tests, 1 passing, 17 failing
+  ✔  shop-hosted.cy.ts    4 passing
+```
+
+The first failure, and most of the rest:
+
+```text
+  1) the dashboard
+       sends an unauthenticated visitor to the sign-in form, and no further:
+     Error: The following error originated from your application code, not from Cypress.
+  > Minified React error #418; visit https://react.dev/errors/418?args[]=HTML&args[]= …
+```
+
+The tests that did not fail on #418 failed on its consequence: the spec runs
+with `testIsolation: false` in order, and the sign-in in its second test never
+completed. One example is "the session cookie" missing in test 3.
+
+**v0.10.0 (`e393116`) carries the same layout.** Its `vpay-dashboard` images
+were built from it between 13:38 and 13:40 UTC. That is the code this run failed on: #319
+changes no dashboard file.
+
+## Why
+
+The dashboard served in development mode under the same Cypress (15.21.1)
+gives React's full message and the diff:
+
+```text
+  > Hydration failed because the server rendered HTML didn't match the client. …
+                        <html lang="en" data-theme="dark" suppressHydrationWarning={true}>
+                          <head>
++                           <script dangerouslySetInnerHTML={{__html:"(function(..."}}>
+-                           {" "}
+```
+
+#318 added `themeInitScript` as the one child React itself renders in
+`<head>`. React therefore hydrated `<head>` expecting that `<script>` as its
+first node. In the document Cypress serves, the first node of `<head>` is a
+whitespace text node, because Cypress rewrites the document it drives.
+`suppressHydrationWarning` on `<html>` covers that element's attributes, not
+its children's structure.
+
+**Without Cypress, the same build hydrates cleanly.** Headless Chromium
+(Playwright's `chromium-1194`), loading the production build's `/login`,
+`/` and `/payments` in both `prefers-color-scheme` values, logged no
+hydration error. Neither did a run that injected a `<script>` with no
+whitespace at the start of `<head>`. So what is measured here is that the
+layout fails under any agent that puts a node at the start of `<head>`, and
+that Cypress is one. No real user's browser was measured. A hydration failure
+in a React 19 production build is recoverable: the document is re-rendered on
+the client, and Cypress fails the test only because the error is uncaught.
+
+## The fix, and what it was measured against
+
+`app/layout.tsx` renders no `<head>` children. The theme script is the
+first child of `<body>`. A parser reaches it before any of the body's
+content, so it still runs before anything paints.
+
+Cypress 15.21.1 (its bundled Electron), one test copied from
+`dashboard.cy.ts`'s first case (`cy.clearCookies()`, `cy.visit("/payments")`,
+expect `/login` and the "Sign in" `<h2>`). The dashboard ran on this machine,
+configured with the e2e stack's five `VPAY_DASH*` variables and no vpay
+behind them, which is enough for the sign-in form:
+
+| Dashboard                   | Before (`0706cd5`)                           | After (this branch) |
+| --------------------------- | -------------------------------------------- | ------------------- |
+| `next build` + `next start` | 1 failing (`uncaught exception`, 3 attempts) | **1 passing**       |
+| `next dev`                  | 1 failing (the diff above)                   | **1 passing**       |
+
+The theme is still applied before React runs. Headless Chromium on the
+production build, with `vaam-ui:theme` preset in `localStorage`, reads
+`data-theme` at `DOMContentLoaded`:
+
+```text
+light   theme@DCL light   theme now light
+system  theme@DCL dark    theme now dark     (colorScheme: dark)
+```
+
+Each load logged one `404`, the same before and after, and no hydration
+error.
+
+## Tests and gates
+
+- `src/layout.test.tsx`, new case "runs the theme script as the body's first
+  child, and puts nothing in `<head>`". It passes on this branch. **With
+  `app/layout.tsx` restored to `0706cd5`'s it fails**, and only it does
+  (1 failed, 10 passed).
+- `pnpm --filter @vpay/dashboard test`: 35 files, **456 passed, 1 skipped**.
+  The skipped case is unchanged by this branch; the README's latest figure
+  was 455 passed, 1 skipped.
+- `pnpm --filter @vpay/dashboard typecheck` and `lint`: clean.
+  `prettier --check` on every changed file: clean.
+- `cargo xtask`, with this page staged, exit 0 for each:
+
+  ```text
+  verify-no-mocks: ok — no test double reachable from a shipping binary
+  verify-status: ok — 2 unimplemented item(s), all declared in docs/status.md and all still in shipping code
+  verify-errors: ok — 20 error type(s), all classified; …
+  verify-sdk-parity: ok — 790 proving test(s) named in docs/sdks/parity.md all exist, 44 dated gap(s), …
+  verify-links: ok — 2558 repository link(s) in 476 tracked markdown file(s) resolve to a tracked path …
+  verify-npm-scope, verify-serde, verify-repositories, verify-toolchain, verify-migrations: ok
+  verify-versions: ok — 26 version references all say 0.10.0
+  verify-privacy-inventory: ok — 314 database column(s) classified …
+  verify-doc-counts: ok — 13 documented count(s) in 11 of 294 markdown file(s) agree with what this tree measures
+  ```
+
+  `verify-ui` and `check-schema` were not run here (the first is not an
+  `xtask` command and the second needs the CrateStack CLI); CI's
+  `self-checks` runs both.
+
+**Not run here:** the whole of `dashboard.cy.ts` against the compose stack.
+It needs vpay, its OP and a staff member, and only CI's `e2e (compose)` runs
+it. That job on this branch is the evidence that the other 17 cases pass once
+the first one does. #318's other changes to the spec (the landing route, the
+chip filter) have never been run, so a second, unrelated failure there is
+possible and would be this PR's to report, not to hide.

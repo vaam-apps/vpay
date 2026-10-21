@@ -38,6 +38,18 @@ export const metadata: Metadata = {
  * read as the page reloading. `suppressHydrationWarning` is for exactly
  * that one attribute, which the script may change before React hydrates.
  *
+ * It is the **first child of `<body>`**, not a child of `<head>`. A parser
+ * reaches it before any of the body's content, so the theme is still set
+ * before the first paint. In `<head>` it was the one element React itself
+ * rendered there, so React hydrated `<head>` expecting that `<script>` as its
+ * first node. Anything that put a node in front of it made hydration fail
+ * with React error #418, and the whole document re-rendered on the client.
+ * Cypress does that to the documents it drives: its injected `<head>` content
+ * leaves a whitespace text node first. On `master` at `0706cd5` (2026-10-21)
+ * that failed 17 of `dashboard.cy.ts`'s 18 tests: some on #418 itself, the
+ * rest because the sign-in before them never happened. `layout.test.tsx`
+ * pins the placement.
+ *
  * # The fonts are self-hosted
  *
  * `theme.css` names Roboto Flex and JetBrains Mono and ships neither; until
@@ -52,13 +64,11 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en" data-theme="dark" suppressHydrationWarning>
-      <head>
+      <body className="min-h-dvh bg-base-100 text-foreground antialiased">
         <script
           // A fixed literal exported by the package, nothing interpolated.
           dangerouslySetInnerHTML={{ __html: themeInitScript }}
         />
-      </head>
-      <body className="min-h-dvh bg-base-100 text-foreground antialiased">
         {children}
       </body>
     </html>

@@ -92,6 +92,20 @@ describe("the root layout", () => {
     // the same kind of claim as a nav entry for a page nobody wrote.
     expect(markup()).not.toMatch(/sign out/i);
   });
+
+  it("runs the theme script as the body's first child, and puts nothing in <head>", () => {
+    // In <head> it was the one node React expected there, so any node put in
+    // front of it failed hydration (React #418). Cypress puts a whitespace
+    // text node there in the documents it drives: on 2026-10-21 that failed 17
+    // of dashboard.cy.ts's 18 tests. First in <body> it still runs before
+    // anything paints. See app/layout.tsx.
+    const html = markup();
+    // React writes the <head> element itself; the layout puts nothing in it.
+    expect(html).toContain("<head></head>");
+    expect(html).toMatch(
+      /<body[^>]*><script>\(function\(\)\{try\{var k="vaam-ui:theme"/,
+    );
+  });
 });
 
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "app");

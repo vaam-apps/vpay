@@ -244,3 +244,14 @@ guards seen failing and what was not run (Cypress; a real vpay — the
 measurements ran against a fake of the `/dash/v1` contract kept outside the
 repository):
 [../../status/verification/2026-10-21-dashboard-md3e.md](../../status/verification/2026-10-21-dashboard-md3e.md).
+
+**`dashboard.cy.ts` was red on `master` until the theme script moved,
+2026-10-21.** The first run of the spec after the redesign, on `0706cd5`,
+failed 17 of its 18 cases. `themeInitScript` sat in `<head>` as the one
+node React rendered there, and the document Cypress serves puts a
+whitespace text node in front of it, so hydration failed (React #418). The
+other cases followed, because the spec runs in order on one sign-in. It
+is the first child of `<body>` now, which still runs before anything
+paints; `src/layout.test.tsx` pins it. A production build passes the spec's
+first case under Cypress, and the whole spec is CI's `e2e (compose)` to
+show: [../../status/verification/2026-10-21-dashboard-hydration.md](../../status/verification/2026-10-21-dashboard-hydration.md).
