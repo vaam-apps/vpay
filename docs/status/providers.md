@@ -76,13 +76,20 @@ Notes on cells that a word cannot carry:
   sits on the client `vpay-notchpay` ([reference](../reference/vpay-notchpay.md)),
   `vpay-server` links it, and the shared conformance suite's `notchpay` row
   passes against a WireMock stub transcribed from Notch Pay's specification
-  2.1.0. **Nothing has called Notch Pay.** RFC-0012 delivery steps 1 and 5,
-  the sandbox session and the first test-mode call through the adapter, are
-  not done. When the adapter landed no test-mode key was available. A later
-  session the same day had keys and still made no request
+  2.1.0. **The adapter has never called Notch Pay.** When it landed no
+  test-mode key was available. A later session the same day had keys and
+  still made no request
   ([verification/2026-10-20-notchpay-sandbox.md](verification/2026-10-20-notchpay-sandbox.md)).
   It found that the real test keys carry `test.` rather than `test_`, and
-  corrected the boot rule. The Collect and Status read cells
+  corrected the boot rule. **RFC-0012 step 1 ran on 2026-10-21**, through
+  `vpay-notchpay`'s probe and not the adapter
+  ([verification/2026-10-21-notchpay-sandbox-run.md](verification/2026-10-21-notchpay-sandbox-run.md)).
+  Notch Pay's sandbox **contradicted the adapter's addressing**: process and
+  read take Notch Pay's `trx.…` reference, and ours is a `404`. So against
+  the real rail the adapter's `submit` fails before any prompt, and no money
+  moves. That is not fixed yet, and step 5 cannot pass until it is. The
+  cells below therefore stay "stub-only; never called": step 1 is evidence
+  about Notch Pay, not proof of the adapter. The Collect and Status read cells
   move to "proven; sandbox" plus a date only on a dated verification page.
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the evidence. _(This note read "client … no binary links it … waits on

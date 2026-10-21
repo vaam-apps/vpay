@@ -221,6 +221,17 @@ What to paste back from A4:
 
 Do not paste the bodies or the signatures.
 
+### A5. Search by reference (item 19)
+
+```bash
+$PROBE search --out "$REPORT" --reference <our reference> --reference <trx.… reference>
+```
+
+Read-only. For each value it calls `GET /payments?search=` and then reads
+the same value directly. Take the references from `payments`' report. On
+2026-10-21 `search` found Notch Pay's `trx.…` and not ours
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
+
 ### What to paste back from Part A
 
 The whole of `$REPORT`, after reading it. It holds request and response

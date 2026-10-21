@@ -357,6 +357,10 @@ const REF_SCENARIO: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_
 const REF_REDIRECT: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0302);
 /// A reference whose status query the rail answers with an oversized body.
 const REF_HUGE: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0b16);
+/// Notch Pay only: a `complete` read whose `amounts.total` is short of the
+/// charge, transcribed from the sandbox's 2026-10-21 "insufficient funds"
+/// read. In the decline block's range, past every rail's decline rows.
+const REF_SHORT_COLLECTION: Uuid = Uuid::from_u128(0x0000_0000_0000_0000_0000_0000_0000_0f10);
 
 // The account-holder family (issue #47). Digits only, all of them, and that
 // is not cosmetic: `GET /v1/account_holders` validates Cameroon E.164
@@ -825,12 +829,14 @@ fn documented_declines(rail: RailUnderTest) -> Vec<DocumentedDecline> {
             row(0x0f02, "FAILED", FailureCode::ProviderError),
         ],
         // RFC-0012 section 4. Notch Pay's read names no failure reason, so
-        // its status word is the whole of what it says, and only two codes
-        // are reachable. Transcribed, not observed: the sandbox's outcome
-        // numbers are what will show whether the read can say more.
+        // its status word is the whole of what it says. On 2026-10-21 the
+        // sandbox read `failed`, `expired` and `canceled` for its failure,
+        // timeout and canceled-by-user numbers, and nothing more; `canceled`
+        // became `payer_declined` on that evidence, as section 4 said it
+        // would. `rejected` and `abandoned` were not observed.
         RailUnderTest::NotchPay => vec![
             row(0x0f01, "failed", FailureCode::ProviderError),
-            row(0x0f02, "canceled", FailureCode::ProviderError),
+            row(0x0f02, "canceled", FailureCode::PayerDeclined),
             row(0x0f03, "rejected", FailureCode::ProviderError),
             row(0x0f04, "expired", FailureCode::PayerTimeout),
             row(0x0f05, "abandoned", FailureCode::PayerTimeout),
@@ -1340,6 +1346,33 @@ async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
     assert!(
         !matches!(status, ChargeStatus::Failed { .. }),
         "NotFound must never be reported as a failure"
+    );
+}
+
+/// Notch Pay only: a `complete` read that collected less than the charge is
+/// [`ProviderError::Malformed`], never [`ChargeStatus::Succeeded`].
+///
+/// Rail-specific on purpose. Notch Pay's sandbox read its "insufficient
+/// funds" test number as `complete` on 2026-10-21, with `amount` 107 and
+/// `amounts.total` 105 (`docs/status/verification/2026-10-21-notchpay-sandbox-run.md`).
+/// Neither other rail reports a collected total distinct from the requested
+/// amount, so there is no shared shape to assert. The stub is that read's
+/// shape, scaled to this suite's 5000 XAF charge.
+#[tokio::test]
+async fn notchpay_a_complete_that_collected_less_than_the_charge_is_never_a_success() {
+    let rail = start(
+        RailUnderTest::NotchPay,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let charge = rail.charge(REF_SHORT_COLLECTION);
+
+    let outcome = rail.adapter.query_status(&charge, &rail.config).await;
+
+    assert!(
+        matches!(outcome, Err(ProviderError::Malformed { .. })),
+        "a complete for 4980 of 5000 XAF must be Malformed, never a success: {outcome:?}"
     );
 }
 

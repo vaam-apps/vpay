@@ -8,11 +8,15 @@ merchant account collects MTN MoMo and Orange Money in Cameroon through the
 Code: `backends/crates/vpay-adapter-notchpay` on the client
 `backends/crates/vpay-notchpay` ([reference](../reference/vpay-notchpay.md)).
 
-> **Nothing here has called Notch Pay.** Every call, status and error below
-> is transcribed from Notch Pay's documentation and its `openapi.yaml`
-> **2.1.0** (read 2026-10-20). The adapter is proven against a WireMock stub
-> transcribed from the same pages. Read § "To confirm with Notch Pay" before
-> trusting any row.
+> **The adapter has never called Notch Pay.** Its calls were transcribed
+> from Notch Pay's documentation and `openapi.yaml` **2.1.0** (read
+> 2026-10-20). On 2026-10-21 Notch Pay's real sandbox answered RFC-0012
+> § 10's sandbox items through `vpay-notchpay`'s probe, not through this
+> adapter ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
+> **It contradicted the adapter's addressing:** process and read take Notch
+> Pay's `trx.…` reference, and ours is a `404`. So `submit` fails before any
+> prompt, and no money moves. That is not fixed yet. Read § "To confirm with
+> Notch Pay" before trusting any row.
 
 ## Preconditions
 
@@ -170,29 +174,47 @@ adapter reads the payment and answers `Submitted`, unless the read still says
 `pending`, which is `Malformed`.
 
 **The read** is `GET /payments/{reference}`, by **our** reference. That is how
-the specification's example addresses it. Notch Pay's direct-charge guide
-passes its own `trx.…` reference instead, and which one the live API takes
-is § 10 item 2. RFC-0012 § 3 had the adapter prefer Notch Pay's reference
-when it held one. That was dropped on 2026-10-20: one rule survives a crash
-unchanged, needs no `ref_extra`, and is the one the specification shows.
+the specification's example addresses it, and **it is wrong**: on 2026-10-21
+Notch Pay's sandbox answered `404` "Payment Not Found" to every process and
+read by our reference, and accepted only its own `trx.…` (§ 10 item 2,
+contradicted). The same is true of call 2 above, which is why `submit` fails
+today. RFC-0012 § 3 had the adapter prefer Notch Pay's reference when it held
+one. That was dropped on 2026-10-20 for a rule that needs no `ref_extra`; the
+sandbox overturned it. The fix carries Notch Pay's reference in `ref_extra`,
+and has a crash window that Notch Pay's `search` does not close
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md#the-crash-window-measured-search-does-not-close-it)).
 
-| The read answered                           | `ChargeStatus`                                                                                                           |
-| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `pending`, `processing`, `incomplete`       | `Pending`. `incomplete` (paid less than asked) is never a success                                                        |
-| `complete`, `refunded`, `partialy-refunded` | `Succeeded { provider_txn_id: transaction.id }`, **only if** amount and currency are the charge's; otherwise `Malformed` |
-| `failed`, `canceled`, `rejected`            | `Failed { provider_error }`, the status word as `raw`                                                                    |
-| `expired`, `abandoned`                      | `Failed { payer_timeout }`                                                                                               |
-| any other status, or none                   | `Malformed`, naming it                                                                                                   |
-| `404` "Payment not found"                   | `NotFound`: never on its own a failure ([crash-safety.md](crash-safety.md))                                              |
-| any other `404`                             | `Config`: a wrong base path or an unknown Sync account                                                                   |
-| `401`, `403`                                | `Rejected { provider_account_blocked }`                                                                                  |
+| The read answered                           | `ChargeStatus`                                                                                                                                                        |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`, `processing`, `incomplete`       | `Pending`. `incomplete` (paid less than asked) is never a success                                                                                                     |
+| `complete`, `refunded`, `partialy-refunded` | `Succeeded { provider_txn_id: transaction.id, or transaction.reference }`, **only if** `amount`, `amounts.total` and currency are the charge's; otherwise `Malformed` |
+| `canceled`                                  | `Failed { payer_declined }`, the status word as `raw`                                                                                                                 |
+| `failed`, `rejected`                        | `Failed { provider_error }`, the status word as `raw`                                                                                                                 |
+| `expired`, `abandoned`                      | `Failed { payer_timeout }`                                                                                                                                            |
+| any other status, or none                   | `Malformed`, naming it                                                                                                                                                |
+| `404` "Payment not found"                   | `NotFound`: never on its own a failure ([crash-safety.md](crash-safety.md))                                                                                           |
+| any other `404`                             | `Config`: a wrong base path or an unknown Sync account                                                                                                                |
+| `401`, `403`                                | `Rejected { provider_account_blocked }`                                                                                                                               |
 
-**The read names no failure reason** in Notch Pay's specification. A payer
-with no funds and a payer who never answered both read `failed`. So
-`insufficient_funds` and `payer_declined` are not produced by this rail
-(`PRODUCED_FAILURE_CODES` is `payer_timeout`, `provider_error`,
-`provider_account_blocked`). The sandbox's outcome numbers are what will show
-whether that is true of the live API.
+**The read names no failure reason.** On 2026-10-21 the sandbox's outcome
+numbers read `complete` (MTN and Orange success), `failed` (other failure),
+`expired` (timeout) and `canceled` (canceled by user), with no reason field.
+`canceled` therefore became `payer_declined`, as RFC-0012 § 4 said it would
+on that evidence. `PRODUCED_FAILURE_CODES` is `payer_timeout`,
+`payer_declined`, `provider_error`, `provider_account_blocked`.
+`insufficient_funds` is not produced.
+
+**The "insufficient funds" number read `complete`, for less than was
+asked:** `amount` 107, `amounts.total` 105. On every other answer `total`
+equalled `amount`. The adapter compared `amount` only, so once the
+addressing is fixed that read would have been `Succeeded`. A success now
+needs `amounts.total` to be the charge's too, and a missing `amounts` is
+`Malformed`. A short `total` has its own error: money moved, not this
+charge's amount, so the charge needs an operator. The question is with
+Notch Pay in writing.
+
+**A payment answer carries no `id`** in the sandbox, so a success records
+`reference` (`trx.…`) as `provider_txn_id` when `id` is absent.
 
 ## Callbacks
 
@@ -216,33 +238,49 @@ confirms a replay-safe refund in writing (§ 10 item 6).
 
 ## To confirm with Notch Pay
 
-RFC-0012 § 10 is the full list of seventeen. The ones that decide whether the
-adapter is right:
+RFC-0012 § 10 is the full list, twenty-one since 2026-10-21. The sandbox
+answered several on that date
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md));
+each is marked below. The ones that decide whether the adapter is right:
 
 1. **(W)** Can the read require the private key, and can the public key's
    payment operations be disabled? A yes retires § "Production risks" items
    1–4 and the boot warning.
 2. **(S)** Does the payment path take our reference, Notch Pay's `trx.…`, or
-   both?
-3. **(S)** Does `cm.mobile` resolve the network from the number?
-4. **(S)** Is a repeated reference answered `409`?
+   both? **Contradicted 2026-10-21: `trx.…` only.** Not yet fixed in the
+   adapter.
+3. **(S)** Does `cm.mobile` resolve the network from the number? **Answered
+   2026-10-21: yes**, for MTN and Orange outcome numbers.
+4. **(S)** Is a repeated reference answered `409`? **Answered 2026-10-21:
+   yes**, "Reference already existing".
 5. **(S)** What does the read say for each sandbox outcome number (`…000001`
    insufficient funds, `…000002` other failure, `…000003` timeout, `…000004`
-   canceled)? Any reason field?
+   canceled)? Any reason field? **Answered 2026-10-21:** `complete` for
+   less than asked, `failed`, `expired`, `canceled`; no reason field.
 6. **(W, S)** Is `POST /refunds` real, and how is it made safe to replay?
-7. **(S)** Is the webhook signature over the raw body?
+7. **(S)** Is the webhook signature over the raw body? **Not measured:** no
+   public URL to receive one.
 8. **(W)** What prefix does a live key carry?
 9. **(W)** Does an `incomplete` payment expire as a `pending` one does?
 10. **(S)** Are answers under `transaction`, as the specification says, or
-    under `data`, as some API reference pages show? A `data`-shaped answer
-    is `Malformed` today.
+    under `data`, as some API reference pages show? **Answered 2026-10-21:
+    `transaction`.**
+11. **(W)** Can a live payment read `complete` having collected less than
+    `amount`, and is `amounts.total` the collected amount? (§ 10 item 18)
+12. **(S)** Does `GET /payments?search=` find a payment by our reference?
+    It decides whether the addressing fix is crash-safe. (§ 10 item 19)
+    **Answered 2026-10-21: no**, so the fix carries a residual crash
+    window.
 
 Also open, and not in the adapter's hands: whether Notch Pay accepts a number
 without the `+`. The adapter sends the `+` form the documentation shows.
 
 ## Status
 
-**Built 2026-10-20, never called against Notch Pay.**
+**Built 2026-10-20. Its calls have never been made through the adapter.
+Notch Pay's sandbox answered RFC-0012 step 1 on 2026-10-21, through the
+probe, and contradicted the adapter's addressing**
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
 
 - **Built and tested in process:** the adapter (`vpay-adapter-notchpay`, its
   unit tests in `src/tests.rs` and `src/mapping.rs`); the boot rules
@@ -254,8 +292,16 @@ without the `+`. The adapter sends the `+` form the documentation shows.
   `backends/tests/conformance/wiremock/notchpay/mappings/`. This proves the
   adapter against a stub transcribed from Notch Pay's specification. It
   proves nothing about Notch Pay.
-- **Not done:** RFC-0012 delivery step 1 (the first sandbox session) and step
-  5 (the first test-mode call through the adapter). No test-mode key was
+- **Step 1 done 2026-10-21** from a cloud session, with the probe's
+  cloud-only `--ca-bundle`, on the maintainer's approval in that session:
+  items 3, 4, 5 and 15 answered; 2, 13 and 16 contradicted; 7 and 11 not
+  measured. Fixed on that evidence: the `amounts.total` check, `canceled` as
+  `payer_declined`, `reference` as `provider_txn_id`. **Not fixed: item 2**,
+  so `submit` fails closed against the real rail. Three webhook endpoints
+  the probe created could not be deleted (`DELETE` answered `404`); the
+  verification page names them for the maintainer.
+- **Not done:** RFC-0012 delivery step 5 (the first test-mode call through
+  the adapter). It cannot pass until item 2 is fixed. No test-mode key was
   available when the adapter landed. A session later on 2026-10-20 had the
   keys and **still made no request**: its permission policy refused the
   calls, and its egress re-terminates TLS, which vpay's vendored-roots client
@@ -265,10 +311,11 @@ without the `+`. The adapter sends the `+` form the documentation shows.
   On the maintainer's decision the same day, both steps run on a real
   machine from [runbooks/notchpay-sandbox-test.md](../runbooks/notchpay-sandbox-test.md)
   (a probe, `vpay-notchpay --example sandbox_probe`, and the
-  `notchpay-sandbox` profile). **Written, not yet run against Notch Pay.**
-  Until a dated verification page records steps 1 and 5, the
-  Collect and Status read cells of [status/providers.md](../status/providers.md)
-  say "stub-only", never "sandbox".
+  `notchpay-sandbox` profile). Step 1 later ran from a cloud session (above).
+  Step 1 is evidence about Notch Pay, not about the adapter: until a dated
+  verification page records step 5, the Collect and Status read cells of
+  [status/providers.md](../status/providers.md) say "stub-only", never
+  "sandbox" or "proven".
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft);

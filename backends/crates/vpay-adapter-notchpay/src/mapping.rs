@@ -1,13 +1,19 @@
 //! What a Notch Pay answer means for a charge: RFC-0012 §§ 3 and 4, as code.
 //!
-//! **Every row here is transcribed from Notch Pay's documentation and
-//! `openapi.yaml` 2.1.0, and none has been confirmed against Notch Pay.** No
-//! test-mode key was available when this was written (2026-10-20), so RFC-0012
-//! § 10's sandbox items — which reference the path takes (2), whether the
-//! read names a failure reason (5), whether `incomplete` expires (11) — are
-//! still open, and the table below is what the documents say, not what the
-//! rail does. `docs/flows/adapter-notchpay.md` § "To confirm" is the list, and
-//! the first sandbox session (delivery step 1) is what moves it.
+//! **Written 2026-10-20 from Notch Pay's documentation and `openapi.yaml`
+//! 2.1.0; partly confirmed against Notch Pay's sandbox on 2026-10-21**
+//! (`docs/status/verification/2026-10-21-notchpay-sandbox-run.md`, delivery
+//! step 1, through `vpay-notchpay`'s probe and not through this adapter).
+//! Confirmed: `complete`, `failed`, `expired` and `canceled` are what the
+//! sandbox's outcome numbers read, with no failure reason (item 5), and a
+//! repeated reference is a `409` (item 4). Changed on that evidence: a
+//! success needs `amounts.total` to be the charge's, `canceled` is
+//! `payer_declined`, and a success with no `id` records `reference`. **Not
+//! fixed here: the path takes Notch Pay's `trx.…` reference, not ours**
+//! (item 2), so this adapter's process call is refused and `submit` fails
+//! before any prompt. `processing`, `incomplete`, `refunded`,
+//! `partialy-refunded`, `rejected` and `abandoned` were not observed, and
+//! `docs/flows/adapter-notchpay.md` § "To confirm" lists what is open.
 //!
 //! The split with `vpay-notchpay` is the one the other two adapters draw
 //! between `wire.rs` and `mapping.rs`, at a crate boundary: the client reports
@@ -23,20 +29,23 @@ use vpay_provider::{ChargeStatus, ProviderError};
 
 /// Every [`FailureCode`] this adapter can produce, and nothing else.
 ///
-/// `payer_timeout` (`expired`, `abandoned`), `provider_error` (`failed`,
-/// `canceled`, `rejected`, a refused initialize or process) and
-/// `provider_account_blocked` (a `401`/`403` on our own keys). The conformance
-/// suite's `the_declines_prove_every_code_each_rail_can_produce` compares this
-/// list against the declines it drives, in both directions.
+/// `payer_timeout` (`expired`, `abandoned`), `payer_declined` (`canceled`),
+/// `provider_error` (`failed`, `rejected`, a refused initialize or process)
+/// and `provider_account_blocked` (a `401`/`403` on our own keys). The
+/// conformance suite's `the_declines_prove_every_code_each_rail_can_produce`
+/// compares this list against the declines it drives, in both directions.
 ///
-/// **Short on purpose.** Notch Pay's read, as documented, names no failure
-/// reason: a payer with no funds and a payer who never answered both read
-/// `failed`. Mapping either to `insufficient_funds` or `payer_declined` would
-/// be inventing the reason; RFC-0012 § 4 says why, and the sandbox's outcome
-/// numbers (`…000001` to `…000004`) are what will show whether the read can
-/// tell them apart.
-pub const PRODUCED_FAILURE_CODES: [FailureCode; 3] = [
+/// **Short on purpose.** Notch Pay's read names no failure reason: on
+/// 2026-10-21 the sandbox's "failure (other reason)" number read `failed`
+/// and nothing else, and its "insufficient funds" number did not fail at
+/// all (it read `complete` for less than was asked; see
+/// `require_the_charges_amount`). So nothing maps to `insufficient_funds`.
+/// Its "canceled by user" number read `canceled`, which is the evidence
+/// RFC-0012 § 4 named for `payer_declined`; its "timeout" number read
+/// `expired`, which was already `payer_timeout`.
+pub const PRODUCED_FAILURE_CODES: [FailureCode; 4] = [
     FailureCode::PayerTimeout,
+    FailureCode::PayerDeclined,
     FailureCode::ProviderError,
     FailureCode::ProviderAccountBlocked,
 ];
@@ -58,15 +67,19 @@ const PROSE_LIMIT: usize = 200;
 /// | Notch Pay `status` | `ChargeStatus` |
 /// | --- | --- |
 /// | `pending`, `processing`, `incomplete` | `Pending` — `incomplete` is never a success |
-/// | `complete`, `refunded`, `partialy-refunded` | `Succeeded`, **only if** the amount and currency are the charge's; otherwise `Malformed` |
-/// | `failed`, `canceled`, `rejected` | `Failed { provider_error }`, with the status as `raw` |
+/// | `complete`, `refunded`, `partialy-refunded` | `Succeeded`, **only if** the amount, the collected `amounts.total` and the currency are the charge's; otherwise `Malformed` |
+/// | `canceled` | `Failed { payer_declined }`, with the status as `raw` |
+/// | `failed`, `rejected` | `Failed { provider_error }`, with the status as `raw` |
 /// | `expired`, `abandoned` | `Failed { payer_timeout }` |
 /// | anything else, or none | `Malformed`, naming it |
 ///
-/// `canceled` is `provider_error` and not `payer_declined`: Notch Pay says a
-/// payment is canceled "by the merchant or customer", vpay never cancels one,
-/// and the public key can (ADR-0031) — so a `canceled` read is not evidence
-/// the payer said no.
+/// `canceled` is `payer_declined`, since Notch Pay's sandbox read its
+/// "canceled by user" test number (`+237670000004`) as `canceled` on
+/// 2026-10-21: the evidence RFC-0012 § 4 named for this row. It was
+/// `provider_error` before. The caveat stays: Notch Pay says a payment is
+/// canceled "by the merchant or customer", and the public key can cancel one
+/// (ADR-0031), so a `canceled` read is evidence of a decline, not proof of
+/// whose. Either way the charge fails and no money moves.
 ///
 /// # Errors
 ///
@@ -94,20 +107,32 @@ pub(crate) fn charge_status(
         PaymentStatus::Complete | PaymentStatus::Refunded | PaymentStatus::PartiallyRefunded => {
             require_the_charges_amount(payment, expected, status)?;
             ChargeStatus::Succeeded {
-                provider_txn_id: payment.id.clone(),
+                provider_txn_id: provider_txn_id(payment),
             }
         }
-        PaymentStatus::Failed | PaymentStatus::Canceled | PaymentStatus::Rejected => {
-            ChargeStatus::Failed {
-                code: FailureCode::ProviderError,
-                raw: status.wire().to_owned(),
-            }
-        }
+        PaymentStatus::Canceled => ChargeStatus::Failed {
+            code: FailureCode::PayerDeclined,
+            raw: status.wire().to_owned(),
+        },
+        PaymentStatus::Failed | PaymentStatus::Rejected => ChargeStatus::Failed {
+            code: FailureCode::ProviderError,
+            raw: status.wire().to_owned(),
+        },
         PaymentStatus::Expired | PaymentStatus::Abandoned => ChargeStatus::Failed {
             code: FailureCode::PayerTimeout,
             raw: status.wire().to_owned(),
         },
     })
+}
+
+/// The payment's identifier on Notch Pay, for `provider_txn_id`.
+///
+/// `id` where the answer has one, as `openapi.yaml` 2.1.0 shapes it. Notch
+/// Pay's sandbox sent no `id` on any payment answer on 2026-10-21; its
+/// identifier was `reference` (`trx.…`), the value its own paths take
+/// (RFC-0012 § 10 item 2). So `reference` is the fallback.
+fn provider_txn_id(payment: &Payment) -> Option<String> {
+    payment.id.clone().or_else(|| payment.reference.clone())
 }
 
 /// Refuses a success for any money but the charge's.
@@ -117,6 +142,15 @@ pub(crate) fn charge_status(
 /// answers, but a mapping that took any `complete` as this charge's would
 /// settle a charge on another payment's word. A float amount is refused
 /// rather than rounded (`vpay_notchpay::wire::Payment::amount_minor`).
+///
+/// **`amounts.total` must be the charge's amount too.** On 2026-10-21
+/// Notch Pay's sandbox read its "insufficient funds" test number as
+/// `complete`, with `amount` 107 (what was asked) and `amounts.total` 105.
+/// On every other answer that day `total` equalled `amount`. A `complete`
+/// that collected less than the charge is not this charge's success, so it
+/// is `Malformed`, as a wrong `amount` is. A success with no `amounts`, or
+/// no integer `total`, is refused on the same terms: every sandbox answer
+/// carried one (`docs/status/verification/2026-10-21-notchpay-sandbox-run.md`).
 fn require_the_charges_amount(
     payment: &Payment,
     expected: Money,
@@ -124,20 +158,39 @@ fn require_the_charges_amount(
 ) -> Result<(), ProviderError> {
     let amount_matches = payment.amount_minor() == Some(expected.minor());
     let currency_matches = payment.currency.as_deref() == Some(expected.currency().code());
-    if amount_matches && currency_matches {
-        return Ok(());
+    if !(amount_matches && currency_matches) {
+        return Err(ProviderError::malformed(format!(
+            "notchpay: the read reports {} for an amount or currency that is not this charge's \
+             (amount {}, currency {}); never a success",
+            status.wire(),
+            if amount_matches { "matches" } else { "differs" },
+            if currency_matches {
+                "matches"
+            } else {
+                "differs"
+            },
+        )));
     }
-    Err(ProviderError::malformed(format!(
-        "notchpay: the read reports {} for an amount or currency that is not this charge's \
-         (amount {}, currency {}); never a success",
-        status.wire(),
-        if amount_matches { "matches" } else { "differs" },
-        if currency_matches {
-            "matches"
-        } else {
-            "differs"
-        },
-    )))
+    // Added to the check above, not folded into it: the two failures mean
+    // different things to an operator.
+    match payment
+        .amounts
+        .as_ref()
+        .and_then(vpay_notchpay::wire::Amounts::total_minor)
+    {
+        Some(total) if total == expected.minor() => Ok(()),
+        Some(_) => Err(ProviderError::malformed(format!(
+            "notchpay: the read reports {} for this charge's amount, but amounts.total is not \
+             that amount: Notch Pay moved money, and not this charge's amount. Never a success; \
+             the charge needs an operator to reconcile it with Notch Pay",
+            status.wire(),
+        ))),
+        None => Err(ProviderError::malformed(format!(
+            "notchpay: the read reports {} with no integer amounts.total, so what was collected \
+             is unknown; never a success",
+            status.wire(),
+        ))),
+    }
 }
 
 /// What a refused read means.
@@ -338,6 +391,7 @@ mod tests {
             "id": "pay.test_0001",
             "reference": "00000000-0000-0000-0000-000000000202",
             "amount": amount,
+            "amounts": { "converted": amount, "currency": currency, "rate": 1, "total": amount },
             "currency": currency,
             "status": status,
         }))
@@ -374,7 +428,7 @@ mod tests {
             ("refunded", succeeded.clone()),
             ("partialy-refunded", succeeded),
             ("failed", failed(FailureCode::ProviderError, "failed")),
-            ("canceled", failed(FailureCode::ProviderError, "canceled")),
+            ("canceled", failed(FailureCode::PayerDeclined, "canceled")),
             ("rejected", failed(FailureCode::ProviderError, "rejected")),
             ("expired", failed(FailureCode::PayerTimeout, "expired")),
             ("abandoned", failed(FailureCode::PayerTimeout, "abandoned")),
@@ -427,6 +481,80 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// Notch Pay's sandbox, 2026-10-21: the "insufficient funds" test number
+    /// (`+237670000001`) read `complete` with `amount` 107 and
+    /// `amounts.total` 105. Transcribed from that read, minus identifiers.
+    /// Before this check it mapped to `Succeeded`.
+    #[test]
+    fn a_complete_that_collected_less_than_the_charge_is_never_a_success() {
+        let short: Payment = serde_json::from_value(serde_json::json!({
+            "amount": 107,
+            "amounts": { "converted": 107, "currency": "XAF", "rate": 1, "total": 105 },
+            "charge": "business",
+            "currency": "XAF",
+            "fees": [],
+            "reference": "trx.test_0001",
+            "sandbox": 1,
+            "status": "complete",
+            "trxref": "00000000-0000-0000-0000-000000000202",
+        }))
+        .expect("the sandbox's shape decodes");
+        let outcome = charge_status(&short, xaf(107));
+        assert!(
+            matches!(outcome, Err(ProviderError::Malformed { .. })),
+            "a complete for 105 of 107 must be Malformed, got {outcome:?}"
+        );
+        let message = outcome.expect_err("refused").to_string();
+        assert!(
+            message.contains("moved money") && message.contains("operator"),
+            "the error must say money moved and an operator is needed: {message}"
+        );
+    }
+
+    #[test]
+    fn a_success_with_no_collected_total_is_never_a_success() {
+        for amounts in [
+            serde_json::Value::Null,
+            serde_json::json!({ "total": null }),
+            serde_json::json!({ "total": 5_000.0 }),
+        ] {
+            let payment: Payment = serde_json::from_value(serde_json::json!({
+                "reference": "trx.test_0001",
+                "amount": 5_000,
+                "amounts": amounts,
+                "currency": "XAF",
+                "status": "complete",
+            }))
+            .expect("decodes");
+            let outcome = charge_status(&payment, xaf(5_000));
+            assert!(
+                matches!(outcome, Err(ProviderError::Malformed { .. })),
+                "amounts {amounts} must be Malformed, got {outcome:?}"
+            );
+        }
+    }
+
+    /// The sandbox's payment answers carry no `id`: `reference` (`trx.…`) is
+    /// the payment's identifier, and is what a success records.
+    #[test]
+    fn a_success_with_no_id_records_notch_pays_reference() {
+        let payment: Payment = serde_json::from_value(serde_json::json!({
+            "reference": "trx.test_0001",
+            "trxref": "00000000-0000-0000-0000-000000000202",
+            "amount": 5_000,
+            "amounts": { "total": 5_000 },
+            "currency": "XAF",
+            "status": "complete",
+        }))
+        .expect("decodes");
+        assert_eq!(
+            charge_status(&payment, xaf(5_000)).expect("a success"),
+            ChargeStatus::Succeeded {
+                provider_txn_id: Some("trx.test_0001".to_owned())
+            }
+        );
     }
 
     #[test]

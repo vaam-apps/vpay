@@ -1,0 +1,5145 @@
+{
+  "runs": [
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792553733,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "read-only first call; 15",
+          "method": "GET",
+          "path": "/payments/vpay-probe-cd99ec4e-78a9-4cd3-8e58-46736dc7df90",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553733,
+          "item": "read-only first call",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "vpay-probe-cd99ec4e-78a9-4cd3-8e58-46736dc7df90",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792553733,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "endpoints": [],
+            "last_page": 1,
+            "message": "Webhook endpoints retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": true,
+          "item": "16; 15",
+          "method": "GET",
+          "path": "/webhooks?page=1",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "endpoints",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792553733,
+          "item": "mode",
+          "note": "no field naming test, sandbox or live mode in these answers; check the dashboard says Test mode before `payments`"
+        }
+      ],
+      "phase": "read",
+      "started_unix": 1792553733
+    },
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792553748,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 100,
+              "amounts": {
+                "converted": 100,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 100
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:35:48.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "25712643-07dd-4987-bdee-e877df1689f4",
+              "reference": "trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "25712643-07dd-4987-bdee-e877df1689f4"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2, 3, 5: MTN: success",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 100,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1)",
+            "phone": "+237670000000",
+            "reference": "25712643-07dd-4987-bdee-e877df1689f4"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792553748,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2: process by our reference (MTN: success)",
+          "method": "POST",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000000"
+            }
+          },
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553748,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 100,
+              "amounts": {
+                "converted": 100,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 100
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:35:48.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "25712643-07dd-4987-bdee-e877df1689f4",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "25712643-07dd-4987-bdee-e877df1689f4"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: process by Notch Pay's reference (MTN: success)",
+          "method": "POST",
+          "path": "/payments/trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000000"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792553748,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553753,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553758,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553763,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553768,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553773,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553778,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553783,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553788,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553793,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553799,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553804,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553809,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553814,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553819,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553824,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553829,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553834,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553839,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553844,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553849,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553854,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553859,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553864,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553869,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553874,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553880,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553885,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553890,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553895,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553900,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553905,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553910,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553915,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553920,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553925,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553930,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553930,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 100,
+              "amounts": {
+                "converted": 100,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 100
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:35:48.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "25712643-07dd-4987-bdee-e877df1689f4",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+              "sandbox": 1,
+              "status": "complete",
+              "trxref": "25712643-07dd-4987-bdee-e877df1689f4"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: 2, 3, 5: MTN: success: read by Notch Pay's reference",
+          "method": "GET",
+          "path": "/payments/trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792553930,
+          "item": "2, 3, 5: MTN: success",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "25712643-07dd-4987-bdee-e877df1689f4",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792553930,
+          "item": "2, 3, 5: MTN: success",
+          "note": "no terminal status after 180s"
+        },
+        {
+          "at": 1792553930,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 107,
+              "amounts": {
+                "converted": 107,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 107
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:38:50.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_ouUxjbYTRtyjIwyy",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+              "reference": "trx.test_E8haL0TTPH5kVPU44wxnrCNz",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2, 3, 5: MTN: insufficient funds",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 107,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1)",
+            "phone": "+237670000001",
+            "reference": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792553930,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2: process by our reference (MTN: insufficient funds)",
+          "method": "POST",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000001"
+            }
+          },
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553930,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 107,
+              "amounts": {
+                "converted": 107,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 107
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:38:50.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_ouUxjbYTRtyjIwyy",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+              "payment_method": "pm.test_UCC08X2EazAkTSCQ",
+              "reference": "trx.test_E8haL0TTPH5kVPU44wxnrCNz",
+              "sandbox": 1,
+              "status": "pending",
+              "trxref": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: process by Notch Pay's reference (MTN: insufficient funds)",
+          "method": "POST",
+          "path": "/payments/trx.test_E8haL0TTPH5kVPU44wxnrCNz",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000001"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792553930,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553935,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553941,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553946,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553951,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553956,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553961,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553966,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553971,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553976,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553981,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553986,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553991,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792553996,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554001,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554006,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554011,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554016,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554021,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554027,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554032,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554037,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554042,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554047,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554052,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554057,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554062,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554067,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554072,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554077,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554082,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554087,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554092,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554097,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554102,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554107,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554113,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: insufficient funds: read by our reference",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554113,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 107,
+              "amounts": {
+                "converted": 107,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 105
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:38:50.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_ouUxjbYTRtyjIwyy",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+              "payment_method": "pm.test_UCC08X2EazAkTSCQ",
+              "reference": "trx.test_E8haL0TTPH5kVPU44wxnrCNz",
+              "sandbox": 1,
+              "status": "complete",
+              "trxref": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: 2, 3, 5: MTN: insufficient funds: read by Notch Pay's reference",
+          "method": "GET",
+          "path": "/payments/trx.test_E8haL0TTPH5kVPU44wxnrCNz",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792554113,
+          "item": "2, 3, 5: MTN: insufficient funds",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792554113,
+          "item": "2, 3, 5: MTN: insufficient funds",
+          "note": "no terminal status after 180s"
+        },
+        {
+          "at": 1792554113,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 114,
+              "amounts": {
+                "converted": 114,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 114
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:41:53.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_19Nth2IOMft4Szdl",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+              "reference": "trx.test_FNC4F7eYKS7XGZj9Y2HCy0Hs",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2, 3, 5: MTN: failure (other reason)",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 114,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1)",
+            "phone": "+237670000002",
+            "reference": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554113,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2: process by our reference (MTN: failure (other reason))",
+          "method": "POST",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000002"
+            }
+          },
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554113,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 114,
+              "amounts": {
+                "converted": 114,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 114
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:41:53.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_19Nth2IOMft4Szdl",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+              "payment_method": "pm.test_uXuo63TdGzlZ6LYs",
+              "reference": "trx.test_FNC4F7eYKS7XGZj9Y2HCy0Hs",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: process by Notch Pay's reference (MTN: failure (other reason))",
+          "method": "POST",
+          "path": "/payments/trx.test_FNC4F7eYKS7XGZj9Y2HCy0Hs",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000002"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554113,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554118,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554123,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554128,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554133,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554138,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554143,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554148,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554153,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554158,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554164,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554169,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554174,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554179,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554184,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554189,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554194,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554199,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554204,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554209,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554214,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554219,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554224,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554229,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554234,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554239,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554244,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554249,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554254,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554260,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554265,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554270,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554275,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554280,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554285,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554290,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554295,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: failure (other reason): read by our reference",
+          "method": "GET",
+          "path": "/payments/7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554295,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 114,
+              "amounts": {
+                "converted": 114,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 114
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:41:53.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_19Nth2IOMft4Szdl",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+              "payment_method": "pm.test_uXuo63TdGzlZ6LYs",
+              "reference": "trx.test_FNC4F7eYKS7XGZj9Y2HCy0Hs",
+              "sandbox": 1,
+              "status": "failed",
+              "trxref": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: 2, 3, 5: MTN: failure (other reason): read by Notch Pay's reference",
+          "method": "GET",
+          "path": "/payments/trx.test_FNC4F7eYKS7XGZj9Y2HCy0Hs",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792554295,
+          "item": "2, 3, 5: MTN: failure (other reason)",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "7bc4982a-009b-4fe3-9666-04b0dcce7a9f",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792554295,
+          "item": "2, 3, 5: MTN: failure (other reason)",
+          "note": "no terminal status after 180s"
+        },
+        {
+          "at": 1792554295,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 121,
+              "amounts": {
+                "converted": 121,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 121
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:44:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_gP20LOUxlUoVCz04",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "2dfb0112-2aef-4ae0-8875-97381a567d99",
+              "reference": "trx.test_Nyl77CGUXn9gvJngZMyXZJHW",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "2dfb0112-2aef-4ae0-8875-97381a567d99"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2, 3, 5: MTN: timeout (no response)",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 121,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1)",
+            "phone": "+237670000003",
+            "reference": "2dfb0112-2aef-4ae0-8875-97381a567d99"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554295,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2: process by our reference (MTN: timeout (no response))",
+          "method": "POST",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000003"
+            }
+          },
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554295,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 121,
+              "amounts": {
+                "converted": 121,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 121
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:44:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_gP20LOUxlUoVCz04",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "2dfb0112-2aef-4ae0-8875-97381a567d99",
+              "payment_method": "pm.test_rAFTg0QWyGk0cKti",
+              "reference": "trx.test_Nyl77CGUXn9gvJngZMyXZJHW",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "2dfb0112-2aef-4ae0-8875-97381a567d99"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: process by Notch Pay's reference (MTN: timeout (no response))",
+          "method": "POST",
+          "path": "/payments/trx.test_Nyl77CGUXn9gvJngZMyXZJHW",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000003"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554295,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554300,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554305,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554310,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554315,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554321,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554326,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554331,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554336,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554341,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554346,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554351,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554356,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554361,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554366,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554371,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554376,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554381,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554386,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554391,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554396,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554401,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554407,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554412,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554417,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554422,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554427,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554432,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554437,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554442,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554447,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554452,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554457,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554462,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554467,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554472,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554477,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: timeout (no response): read by our reference",
+          "method": "GET",
+          "path": "/payments/2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554477,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 121,
+              "amounts": {
+                "converted": 121,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 121
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:44:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_gP20LOUxlUoVCz04",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "2dfb0112-2aef-4ae0-8875-97381a567d99",
+              "payment_method": "pm.test_rAFTg0QWyGk0cKti",
+              "reference": "trx.test_Nyl77CGUXn9gvJngZMyXZJHW",
+              "sandbox": 1,
+              "status": "expired",
+              "trxref": "2dfb0112-2aef-4ae0-8875-97381a567d99"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: 2, 3, 5: MTN: timeout (no response): read by Notch Pay's reference",
+          "method": "GET",
+          "path": "/payments/trx.test_Nyl77CGUXn9gvJngZMyXZJHW",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792554477,
+          "item": "2, 3, 5: MTN: timeout (no response)",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "2dfb0112-2aef-4ae0-8875-97381a567d99",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792554477,
+          "item": "2, 3, 5: MTN: timeout (no response)",
+          "note": "no terminal status after 180s"
+        },
+        {
+          "at": 1792554477,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 128,
+              "amounts": {
+                "converted": 128,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 128
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:47:57.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_TZxN80h1Ps4BnccC",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "300b8e38-57b7-422e-8d4e-393ad3762ebe",
+              "reference": "trx.test_2GYdIuZp29ABN1tOUH2LB99L",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "300b8e38-57b7-422e-8d4e-393ad3762ebe"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2, 3, 5: MTN: canceled by user",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 128,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1)",
+            "phone": "+237670000004",
+            "reference": "300b8e38-57b7-422e-8d4e-393ad3762ebe"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554478,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2: process by our reference (MTN: canceled by user)",
+          "method": "POST",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000004"
+            }
+          },
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554478,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 128,
+              "amounts": {
+                "converted": 128,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 128
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:47:57.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_TZxN80h1Ps4BnccC",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "300b8e38-57b7-422e-8d4e-393ad3762ebe",
+              "payment_method": "pm.test_vH4Mf8Ji3X5QVQF7",
+              "reference": "trx.test_2GYdIuZp29ABN1tOUH2LB99L",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "300b8e38-57b7-422e-8d4e-393ad3762ebe"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: process by Notch Pay's reference (MTN: canceled by user)",
+          "method": "POST",
+          "path": "/payments/trx.test_2GYdIuZp29ABN1tOUH2LB99L",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000004"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554478,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554483,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554488,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554493,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554498,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554503,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554508,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554513,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554518,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554523,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554528,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554533,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554538,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554543,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554548,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554554,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554559,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554564,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554569,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554574,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554579,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554584,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554589,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554594,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554599,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554604,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554609,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554614,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554619,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554624,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554629,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554634,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554639,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554645,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554650,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554655,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554660,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: MTN: canceled by user: read by our reference",
+          "method": "GET",
+          "path": "/payments/300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554660,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 128,
+              "amounts": {
+                "converted": 128,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 128
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:47:57.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_TZxN80h1Ps4BnccC",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "300b8e38-57b7-422e-8d4e-393ad3762ebe",
+              "payment_method": "pm.test_vH4Mf8Ji3X5QVQF7",
+              "reference": "trx.test_2GYdIuZp29ABN1tOUH2LB99L",
+              "sandbox": 1,
+              "status": "canceled",
+              "trxref": "300b8e38-57b7-422e-8d4e-393ad3762ebe"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: 2, 3, 5: MTN: canceled by user: read by Notch Pay's reference",
+          "method": "GET",
+          "path": "/payments/trx.test_2GYdIuZp29ABN1tOUH2LB99L",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792554660,
+          "item": "2, 3, 5: MTN: canceled by user",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "300b8e38-57b7-422e-8d4e-393ad3762ebe",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792554660,
+          "item": "2, 3, 5: MTN: canceled by user",
+          "note": "no terminal status after 180s"
+        },
+        {
+          "at": 1792554660,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 135,
+              "amounts": {
+                "converted": 135,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 135
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:51:00.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_2hBXFsc4pRHNey2Q",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "9efc9574-5348-4c73-a053-20ae5886ecfa",
+              "reference": "trx.test_aAhrgFi6sHlQvVl2SiZUwUW5",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "9efc9574-5348-4c73-a053-20ae5886ecfa"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2, 3, 5: Orange: success",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 135,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1)",
+            "phone": "+237690000000",
+            "reference": "9efc9574-5348-4c73-a053-20ae5886ecfa"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554660,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2: process by our reference (Orange: success)",
+          "method": "POST",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237690000000"
+            }
+          },
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554660,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 135,
+              "amounts": {
+                "converted": 135,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 135
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:51:00.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_2hBXFsc4pRHNey2Q",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "9efc9574-5348-4c73-a053-20ae5886ecfa",
+              "payment_method": "pm.test_K52etBmsVC5FjSh2",
+              "reference": "trx.test_aAhrgFi6sHlQvVl2SiZUwUW5",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "9efc9574-5348-4c73-a053-20ae5886ecfa"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: process by Notch Pay's reference (Orange: success)",
+          "method": "POST",
+          "path": "/payments/trx.test_aAhrgFi6sHlQvVl2SiZUwUW5",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237690000000"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792554660,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554665,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554670,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554675,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554680,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554685,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554690,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554696,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554701,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554706,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554711,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554716,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554721,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554726,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554731,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554736,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554741,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554746,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554751,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554756,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554761,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554766,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554771,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554776,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554781,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554786,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554792,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554797,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554802,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554807,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554812,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554817,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554822,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554827,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554832,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554837,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554842,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "2, 3, 5: Orange: success: read by our reference",
+          "method": "GET",
+          "path": "/payments/9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554842,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 135,
+              "amounts": {
+                "converted": 135,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 135
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:51:00.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_2hBXFsc4pRHNey2Q",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "9efc9574-5348-4c73-a053-20ae5886ecfa",
+              "payment_method": "pm.test_K52etBmsVC5FjSh2",
+              "reference": "trx.test_aAhrgFi6sHlQvVl2SiZUwUW5",
+              "sandbox": 1,
+              "status": "complete",
+              "trxref": "9efc9574-5348-4c73-a053-20ae5886ecfa"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "2: 2, 3, 5: Orange: success: read by Notch Pay's reference",
+          "method": "GET",
+          "path": "/payments/trx.test_aAhrgFi6sHlQvVl2SiZUwUW5",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792554842,
+          "item": "2, 3, 5: Orange: success",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "9efc9574-5348-4c73-a053-20ae5886ecfa",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792554842,
+          "item": "2, 3, 5: Orange: success",
+          "note": "no terminal status after 180s"
+        },
+        {
+          "at": 1792554842,
+          "body": {
+            "code": "409",
+            "errors": {
+              "reference": ["Reference already existing"]
+            },
+            "message": "Reference already existing",
+            "status": "Conflict"
+          },
+          "decoded_by_vpay": null,
+          "item": "4: the same reference again",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 100,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 step 1) - duplicate",
+            "phone": "+237670000000",
+            "reference": "25712643-07dd-4987-bdee-e877df1689f4"
+          },
+          "status": 409,
+          "top_level_fields": ["code", "errors", "message", "status"]
+        },
+        {
+          "at": 1792554842,
+          "item": "4: the read after the duplicate",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "25712643-07dd-4987-bdee-e877df1689f4",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792554842,
+          "item": "11",
+          "note": "item 11 (an incomplete payment's expiry) is a written question; no outcome number produces `incomplete`"
+        }
+      ],
+      "phase": "payments",
+      "started_unix": 1792553747
+    },
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792554874,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "endpoints": [],
+            "last_page": 1,
+            "message": "Webhook endpoints retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": true,
+          "item": "16: list before",
+          "method": "GET",
+          "path": "/webhooks?page=1",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "endpoints",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": 201,
+            "endpoint": {
+              "created_at": "2026-10-21T03:54:34.000000Z",
+              "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+              "events": [
+                "payment.created",
+                "payment.complete",
+                "payment.failed",
+                "payment.canceled",
+                "payment.expired"
+              ],
+              "id": "ep_test.Afe5yXKW1X4Dvnmb",
+              "sandbox": true,
+              "status": null,
+              "updated_at": "2026-10-21T03:54:34.000000Z",
+              "url": null
+            },
+            "message": "Webhook endpoint created successfully",
+            "status": "Created"
+          },
+          "decoded_by_vpay": true,
+          "item": "13, 15, 16: create",
+          "method": "POST",
+          "path": "/webhooks",
+          "request_body": {
+            "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+            "events": [
+              "payment.created",
+              "payment.complete",
+              "payment.failed",
+              "payment.canceled",
+              "payment.expired"
+            ],
+            "url": "https://vpay-sandbox-probe.invalid/notchpay/webhook"
+          },
+          "status": 201,
+          "top_level_fields": ["code", "endpoint", "message", "status"]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": 201,
+            "endpoint": {
+              "created_at": "2026-10-21T03:54:34.000000Z",
+              "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+              "events": [
+                "payment.created",
+                "payment.complete",
+                "payment.failed",
+                "payment.canceled",
+                "payment.expired"
+              ],
+              "id": "ep_test.dNa3XwecBWRSXxdw",
+              "sandbox": true,
+              "status": null,
+              "updated_at": "2026-10-21T03:54:34.000000Z",
+              "url": null
+            },
+            "message": "Webhook endpoint created successfully",
+            "status": "Created"
+          },
+          "decoded_by_vpay": true,
+          "item": "14: create again at the same URL",
+          "method": "POST",
+          "path": "/webhooks",
+          "request_body": {
+            "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+            "events": [
+              "payment.created",
+              "payment.complete",
+              "payment.failed",
+              "payment.canceled",
+              "payment.expired"
+            ],
+            "url": "https://vpay-sandbox-probe.invalid/notchpay/webhook"
+          },
+          "status": 201,
+          "top_level_fields": ["code", "endpoint", "message", "status"]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": 201,
+            "endpoint": {
+              "created_at": "2026-10-21T03:54:34.000000Z",
+              "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+              "events": ["payment.processing"],
+              "id": "ep_test.PDfftDv55NkKhPQB",
+              "sandbox": true,
+              "status": null,
+              "updated_at": "2026-10-21T03:54:34.000000Z",
+              "url": null
+            },
+            "message": "Webhook endpoint created successfully",
+            "status": "Created"
+          },
+          "decoded_by_vpay": true,
+          "item": "17: create with payment.processing",
+          "method": "POST",
+          "path": "/webhooks",
+          "request_body": {
+            "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+            "events": ["payment.processing"],
+            "url": "https://vpay-sandbox-probe.invalid/notchpay/webhook"
+          },
+          "status": 201,
+          "top_level_fields": ["code", "endpoint", "message", "status"]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "endpoints": [
+              {
+                "created_at": "2026-10-21T03:54:34.000000Z",
+                "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+                "events": [
+                  "payment.created",
+                  "payment.complete",
+                  "payment.failed",
+                  "payment.canceled",
+                  "payment.expired"
+                ],
+                "id": "ep_test.Afe5yXKW1X4Dvnmb",
+                "sandbox": true,
+                "status": "active",
+                "updated_at": "2026-10-21T03:54:34.000000Z",
+                "url": null
+              },
+              {
+                "created_at": "2026-10-21T03:54:34.000000Z",
+                "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+                "events": [
+                  "payment.created",
+                  "payment.complete",
+                  "payment.failed",
+                  "payment.canceled",
+                  "payment.expired"
+                ],
+                "id": "ep_test.dNa3XwecBWRSXxdw",
+                "sandbox": true,
+                "status": "active",
+                "updated_at": "2026-10-21T03:54:34.000000Z",
+                "url": null
+              },
+              {
+                "created_at": "2026-10-21T03:54:34.000000Z",
+                "description": "vpay sandbox probe (RFC-0012 step 1) - delete me",
+                "events": ["payment.processing"],
+                "id": "ep_test.PDfftDv55NkKhPQB",
+                "sandbox": true,
+                "status": "active",
+                "updated_at": "2026-10-21T03:54:34.000000Z",
+                "url": null
+              }
+            ],
+            "last_page": 1,
+            "message": "Webhook endpoints retrieved",
+            "selected": 3,
+            "status": "OK",
+            "totals": 3
+          },
+          "decoded_by_vpay": true,
+          "item": "16: list after",
+          "method": "GET",
+          "path": "/webhooks?page=1",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "endpoints",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": "404",
+            "message": "Resource Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "cleanup",
+          "method": "DELETE",
+          "path": "/webhooks/ep_test.Afe5yXKW1X4Dvnmb",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": "404",
+            "message": "Resource Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "cleanup",
+          "method": "DELETE",
+          "path": "/webhooks/ep_test.dNa3XwecBWRSXxdw",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554874,
+          "body": {
+            "code": "404",
+            "message": "Resource Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "cleanup",
+          "method": "DELETE",
+          "path": "/webhooks/ep_test.PDfftDv55NkKhPQB",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792554874,
+          "item": "cleanup",
+          "note": "NOT deleted, delete by hand in the dashboard: [\"ep_test.Afe5yXKW1X4Dvnmb\", \"ep_test.dNa3XwecBWRSXxdw\", \"ep_test.PDfftDv55NkKhPQB\"]"
+        }
+      ],
+      "phase": "webhooks",
+      "started_unix": 1792554873
+    },
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792557246,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "items": [],
+            "last_page": 1,
+            "message": "Payments retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": null,
+          "item": "19: search",
+          "method": "GET",
+          "path": "/payments?search=25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "items",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "19: direct read, for comparison",
+          "method": "GET",
+          "path": "/payments/25712643-07dd-4987-bdee-e877df1689f4",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "items": [],
+            "last_page": 1,
+            "message": "Payments retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": null,
+          "item": "19: search",
+          "method": "GET",
+          "path": "/payments?search=16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "items",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "19: direct read, for comparison",
+          "method": "GET",
+          "path": "/payments/16ab2fc4-3acd-478f-a4c3-09f0ca2ff84e",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "items": [
+              {
+                "amount": 100,
+                "amounts": {
+                  "converted": 100,
+                  "currency": "XAF",
+                  "rate": null,
+                  "total": 100
+                },
+                "callback": null,
+                "charge": "business",
+                "created_at": "2026-10-21T03:35:48.000000Z",
+                "currency": "XAF",
+                "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+                "description": null,
+                "fees": [],
+                "payment_method": "pm.test_DkA37f7vq7SouqFH",
+                "reference": "trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+                "sandbox": 1,
+                "status": "complete"
+              }
+            ],
+            "last_page": 1,
+            "message": "Payments retrieved",
+            "selected": 1,
+            "status": "OK",
+            "totals": 1
+          },
+          "decoded_by_vpay": null,
+          "item": "19: search",
+          "method": "GET",
+          "path": "/payments?search=trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "items",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 100,
+              "amounts": {
+                "converted": 100,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 100
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-21T03:35:48.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 step 1)",
+              "fees": [],
+              "merchant_reference": "25712643-07dd-4987-bdee-e877df1689f4",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+              "sandbox": 1,
+              "status": "complete",
+              "trxref": "25712643-07dd-4987-bdee-e877df1689f4"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "19: direct read, for comparison",
+          "method": "GET",
+          "path": "/payments/trx.test_9Er1Q1DBeNMjt55oeRSUY91Y",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "items": [],
+            "last_page": 1,
+            "message": "Payments retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": null,
+          "item": "19: search",
+          "method": "GET",
+          "path": "/payments?search=00000000-0000-4000-8000-00000000dead",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "items",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "19: direct read, for comparison",
+          "method": "GET",
+          "path": "/payments/00000000-0000-4000-8000-00000000dead",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        }
+      ],
+      "phase": "search",
+      "started_unix": 1792557245
+    },
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792557246,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "read-only first call; 15",
+          "method": "GET",
+          "path": "/payments/vpay-probe-c281b5af-4d83-448b-a062-e26188c15e38",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792557246,
+          "item": "read-only first call",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "vpay-probe-c281b5af-4d83-448b-a062-e26188c15e38",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792557246,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "endpoints": [],
+            "last_page": 1,
+            "message": "Webhook endpoints retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": true,
+          "item": "16; 15",
+          "method": "GET",
+          "path": "/webhooks?page=1",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "endpoints",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557246,
+          "item": "mode",
+          "note": "no field naming test, sandbox or live mode in these answers; check the dashboard says Test mode before `payments`"
+        }
+      ],
+      "phase": "read",
+      "started_unix": 1792557246
+    },
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792557265,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "items": [],
+            "last_page": 1,
+            "message": "Payments retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": null,
+          "item": "19: search",
+          "method": "GET",
+          "path": "/payments?search=vpay%20sandbox%20probe",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "items",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557265,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "19: direct read, for comparison",
+          "method": "GET",
+          "path": "/payments/vpay%20sandbox%20probe",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792557265,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "items": [],
+            "last_page": 1,
+            "message": "Payments retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": null,
+          "item": "19: search",
+          "method": "GET",
+          "path": "/payments?search=duplicate",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "items",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792557265,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "19: direct read, for comparison",
+          "method": "GET",
+          "path": "/payments/duplicate",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        }
+      ],
+      "phase": "search",
+      "started_unix": 1792557264
+    }
+  ],
+  "tool": "vpay-notchpay sandbox_probe",
+  "note": "Written by `cargo run -p vpay-notchpay --example sandbox_probe` on 2026-10-21 against https://api.notchpay.co with test-mode keys, from a cloud session with --ca-bundle. Runs, in order: read, payments, webhooks, search, read (confirming the maintainer's manual deletion of the three endpoints), search (description text). Redacted by the probe (no key, hash key or signing secret appears; none was returned). authorization_url values omitted by hand. Read docs/status/verification/2026-10-21-notchpay-sandbox-run.md, which is the record; this file is its evidence."
+}

@@ -386,20 +386,20 @@ The Payments API documents six statuses. The Collect page documents eleven,
 including the six. The table covers all eleven, because a status the adapter
 does not know is a `Malformed`, never a guess.
 
-| Notch Pay `status`  | Notch Pay's description                             | `ChargeStatus`                                                                                                                                                                        |
-| ------------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`           | "initialized but not yet processed"                 | `Pending` — on this rail, call 2 has not landed (§ 3)                                                                                                                                 |
-| `processing`        | "being processed by the payment provider"           | `Pending`                                                                                                                                                                             |
-| `incomplete`        | "Customer pay less than payment amount"             | `Pending`. **Never** `Succeeded`. Whether it expires as `pending` does is "To confirm" item 11                                                                                        |
-| `complete`          | "successfully completed"                            | `Succeeded { provider_txn_id: transaction.id }`, **only if** `amount` and `currency` equal the charge's; otherwise `Malformed`                                                        |
-| `refunded`          | "successfully refunded to customer"                 | `Succeeded`, with the same check. The payment succeeded; its refunds are read separately                                                                                              |
-| `partialy-refunded` | Notch Pay's own spelling                            | `Succeeded`, with the same check                                                                                                                                                      |
-| `failed`            | "Transaction has failed"                            | `Failed { provider_error }` with the raw status — see below                                                                                                                           |
-| `canceled`          | "canceled by the merchant or customer"              | `Failed { provider_error }` — see below                                                                                                                                               |
-| `expired`           | "expired after 3 hours"                             | `Failed { payer_timeout }`                                                                                                                                                            |
-| `abandoned`         | "Customer abandoned the payment on our hosted page" | `Failed { payer_timeout }`. A push charge should never read it                                                                                                                        |
-| `rejected`          | "rejected by our system or by operator"             | `Failed { provider_error }`. Notch Pay's fraud system rejects, among other things, payments concentrated on one number ([testing](https://developer.notchpay.co/get-started/testing)) |
-| anything else       | —                                                   | `Malformed`, naming the status                                                                                                                                                        |
+| Notch Pay `status`  | Notch Pay's description                             | `ChargeStatus`                                                                                                                                                                                                                           |
+| ------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`           | "initialized but not yet processed"                 | `Pending` — on this rail, call 2 has not landed (§ 3)                                                                                                                                                                                    |
+| `processing`        | "being processed by the payment provider"           | `Pending`                                                                                                                                                                                                                                |
+| `incomplete`        | "Customer pay less than payment amount"             | `Pending`. **Never** `Succeeded`. Whether it expires as `pending` does is "To confirm" item 11                                                                                                                                           |
+| `complete`          | "successfully completed"                            | `Succeeded { provider_txn_id: transaction.id, else transaction.reference }`, **only if** `amount`, `amounts.total` and `currency` equal the charge's; otherwise `Malformed` (`amounts.total` and the fallback added 2026-10-21, item 18) |
+| `refunded`          | "successfully refunded to customer"                 | `Succeeded`, with the same check. The payment succeeded; its refunds are read separately                                                                                                                                                 |
+| `partialy-refunded` | Notch Pay's own spelling                            | `Succeeded`, with the same check                                                                                                                                                                                                         |
+| `failed`            | "Transaction has failed"                            | `Failed { provider_error }` with the raw status — see below                                                                                                                                                                              |
+| `canceled`          | "canceled by the merchant or customer"              | `Failed { payer_declined }` since 2026-10-21 — see below                                                                                                                                                                                 |
+| `expired`           | "expired after 3 hours"                             | `Failed { payer_timeout }`                                                                                                                                                                                                               |
+| `abandoned`         | "Customer abandoned the payment on our hosted page" | `Failed { payer_timeout }`. A push charge should never read it                                                                                                                                                                           |
+| `rejected`          | "rejected by our system or by operator"             | `Failed { provider_error }`. Notch Pay's fraud system rejects, among other things, payments concentrated on one number ([testing](https://developer.notchpay.co/get-started/testing))                                                    |
+| anything else       | —                                                   | `Malformed`, naming the status                                                                                                                                                                                                           |
 
 **The read names no failure reason.** The payment object in the
 specification has `id`, `reference`, `amount`, `currency`, `status`,
@@ -411,6 +411,11 @@ numbers make that measurable: a number ending `000001` is "Insufficient
 funds", `000002` "Failure (other reason)", `000003` "Timeout (no response)",
 `000004` "Canceled by user". The first sandbox session reads each one and
 fills this table from what comes back.
+
+**Moved 2026-10-21:** the sandbox read `canceled` for `…000004`, so the row
+above is now `payer_declined`
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
+The paragraph keeps its original reasoning.
 
 **`canceled` is not mapped to `payer_declined` on a verb.** Notch Pay says a
 payment is canceled "by the merchant or customer", vpay never cancels one,
@@ -604,17 +609,26 @@ In writing (W) or in the sandbox (S):
    account make it required? Can the public key's payment operations be
    disabled? This is the gate.
 2. **(S)** Does the payments path take the merchant's reference, Notch Pay's
-   `trx.…` reference, or both?
+   `trx.…` reference, or both? _(Contradicted [2026-10-21][sandbox-run] — Notch
+   Pay's `trx.…` only. Ours is `404` "Payment Not Found" on process and read; it
+   comes back as `trxref` and `merchant_reference`. The adapter is not yet
+   fixed, so its `submit` fails before any prompt.)_
 3. **(S)** Does `cm.mobile` resolve the network from the number, and do the
-   outcome numbers work under it?
+   outcome numbers work under it? _(Answered [2026-10-21][sandbox-run] — yes, for
+   MTN and Orange numbers.)_
 4. **(S)** Is a repeated `reference` on `POST /payments` answered `409`, and
-   does the read then return the first payment?
+   does the read then return the first payment? _(Answered
+   [2026-10-21][sandbox-run] — `409` "Reference already existing". The read by
+   our reference is `404`, as every read by our reference is: item 2.)_
 5. **(S)** What the read returns for each outcome number: the status, and any
-   field naming a reason.
+   field naming a reason. _(Answered [2026-10-21][sandbox-run] — `complete`,
+   `failed`, `expired`, `canceled`; no reason field. **The "insufficient funds"
+   number read `complete`** with `amounts.total` 105 of `amount` 107: item 18.)_
 6. **(W, S)** Does `POST /refunds` exist on the live API, how is it made safe
    to replay, and which events does it fire?
 7. **(S)** Is the webhook signature over the raw body, and is the header
-   always lower-case?
+   always lower-case? _(Not measured 2026-10-21: no public URL to receive
+   one.)_
 8. **(W)** What prefix does a live key carry? _(Its neighbour, the test
    key's shape, was measured on 2026-10-20: `test` followed by `.`, not the
    documented `test_`; § 2 carries the correction. The live prefix is still
@@ -626,25 +640,49 @@ In writing (W) or in the sandbox (S):
     partner bank?
 11. **(W)** Does an `incomplete` payment expire as a `pending` one does?
 12. **(W)** Do refunds require an allowlisted IP, as transfers do?
-13. **(S)** Does `POST /webhooks` return the endpoint's signing secret, as
-    the API reference says and the specification's schema does not?
+13. **(S)** Does `POST /webhooks` return the endpoint's signing secret, as the
+    API reference says and the specification's schema does not? _(Contradicted
+    [2026-10-21][sandbox-run] — no secret, in the create answer or the list.)_
 14. **(S)** Does `POST /webhooks` refuse a URL the account already has, or
-    create a second endpoint for it?
+    create a second endpoint for it? _(Answered [2026-10-21][sandbox-run] — a
+    second endpoint.)_
 15. **(S)** Is an answer's payload under the specification's keys
     (`transaction`, `endpoint`, `endpoints`) or under `data`, as the API
     reference pages show it? The client follows the specification, so a
-    `data`-shaped answer is `Malformed` until this is settled.
-16. **(S)** Does a webhook endpoint carry an `active` flag, as the API
-    reference page shows and the specification does not?
+    `data`-shaped answer is `Malformed` until this is settled. _(Answered
+    [2026-10-21][sandbox-run] — the specification's keys.)_
+16. **(S)** Does a webhook endpoint carry an `active` flag, as the API reference
+    page shows and the specification does not? _(Contradicted
+    [2026-10-21][sandbox-run] — no `active`; a `status`, `null` on create and
+    `"active"` in the list.)_
 17. **(S)** Is `payment.processing` a real event? The API reference lists it;
-    the specification's `createWebhook` enum does not.
+    the specification's `createWebhook` enum does not. _(Half answered
+    [2026-10-21][sandbox-run] — `POST /webhooks` accepts it. Delivery not
+    measured.)_
+18. **(W)** Why does the sandbox's "insufficient funds" number read `complete`
+    with `amounts.total` short of `amount`? On the live API, can a payment read
+    `complete` having collected less, and is `amounts.total` the collected
+    amount? _(Added 2026-10-21. The adapter refuses such a success as
+    `Malformed` meanwhile.)_
+19. **(S, W)** Does `GET /payments?search=` find a payment by the merchant's own
+    reference? It decides whether carrying Notch Pay's reference in `ref_extra`
+    (item 2's fix) can survive a crash between initialize and `ref_extra`
+    becoming durable. _(Added and answered 2026-10-21 — no: `search` matches
+    Notch Pay's `trx.…` only, not ours and not the description, and list
+    items carry no `trxref`. The crash window is a residual risk.)_
+20. **(W)** Why does `DELETE /webhooks/{id}` answer `404` "Resource Not Found"
+    for an endpoint the list returns? _(Added 2026-10-21.)_
+21. **(W)** Where is a webhook endpoint's signing secret, since `POST /webhooks`
+    does not return one? _(Added 2026-10-21.)_
+
+[sandbox-run]: ../status/verification/2026-10-21-notchpay-sandbox-run.md
 
 ## Delivery
 
 | Step | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            | Depends on                            |
 | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
 | 0    | **Rule 3 resolved**: Notch Pay's written answer to item 1, or an ADR amending ADR-0029 D1's third rule. **Done 2026-10-20: ADR-0031**                                                                                                                                                                                                                                                                                                                                                                                                                                                                               | the maintainer; Notch Pay             |
-| 1    | The first sandbox session: items 2–5, 7 and 11 on a dated verification page. No code. **Attempted 2026-10-20, no request made**; the key shape was measured and contradicted § 2 ([page](../status/verification/2026-10-20-notchpay-sandbox.md)). Runs on a real machine from [the runbook](../runbooks/notchpay-sandbox-test.md), Part A; written, not yet run                                                                                                                                                                                                                                                     | a test-mode account; may run before 0 |
+| 1    | The first sandbox session: items 2–5, 7 and 11 on a dated verification page. No code. **Attempted 2026-10-20, no request made**; the key shape was measured and contradicted § 2 ([page](../status/verification/2026-10-20-notchpay-sandbox.md)). **Done 2026-10-21** from a cloud session, with the probe's cloud-only `--ca-bundle`: 3, 4, 5 answered, 2 contradicted, 7 and 11 not measured ([page](../status/verification/2026-10-21-notchpay-sandbox-run.md))                                                                                                                                                  | a test-mode account; may run before 0 |
 | 1b   | `vpay-notchpay`, the client: initialize, process and read a payment, list and create webhooks, parse an event; unit tests. **Landed 2026-10-20**, ahead of step 0 at the maintainer's direction; linked by nothing                                                                                                                                                                                                                                                                                                                                                                                                  | nothing                               |
 | 2    | `vpay-adapter-notchpay` on top of `vpay-notchpay`: `mapping.rs` filled from step 1, `lib.rs`, `refund` as a declared `NotImplemented` token; unit tests. **Built 2026-10-20 without step 1**: no test-mode key was available, so `mapping.rs` is filled from `openapi.yaml` 2.1.0 and every row is "To confirm"                                                                                                                                                                                                                                                                                                     | 0, 1                                  |
 | 3    | Mappings, the conformance rows, and RFC-0010 § 8's `callback_url_pattern` change if RFC-0010 has not landed it. **Built 2026-10-20**; this rail carried the `callback_url_pattern` change                                                                                                                                                                                                                                                                                                                                                                                                                           | 2                                     |
