@@ -767,18 +767,6 @@ struct DocumentedDecline {
     code: FailureCode,
 }
 
-/// The declines each rail documents, one row per mapped rail reason.
-///
-/// Rail-specific *data*, one shared test body — the line that keeps this a
-/// port test. The rows are `docs/flows/adapter-mtn-momo.md`'s and
-/// `docs/flows/adapter-orange-money.md`'s mapping tables; a rail that grows a
-/// documented reason grows a row here and a mapping in its own directory.
-///
-/// **Every mapped reason has a row, since 2026-09-10 (issue #59).** It used
-/// to have three of MTN's nine and one of Orange's two, which meant the
-/// tables in the flow docs were mostly transcription nothing drove over a
-/// socket. `the_declines_prove_every_code_each_rail_can_produce` is what
-/// keeps that from happening again.
 /// The key material each rail's `submit` returns for `reference_id`, which
 /// [`Rail::charge`] seeds into its post-submit stand-in. Rail-specific data,
 /// like [`documented_declines`]; the cases branch on none of it.
@@ -805,6 +793,18 @@ fn submitted_key_material(rail: RailUnderTest, reference_id: Uuid) -> BTreeMap<S
     }
 }
 
+/// The declines each rail documents, one row per mapped rail reason.
+///
+/// Rail-specific *data*, one shared test body — the line that keeps this a
+/// port test. The rows are `docs/flows/adapter-mtn-momo.md`'s and
+/// `docs/flows/adapter-orange-money.md`'s mapping tables; a rail that grows a
+/// documented reason grows a row here and a mapping in its own directory.
+///
+/// **Every mapped reason has a row, since 2026-09-10 (issue #59).** It used
+/// to have three of MTN's nine and one of Orange's two, which meant the
+/// tables in the flow docs were mostly transcription nothing drove over a
+/// socket. `the_declines_prove_every_code_each_rail_can_produce` is what
+/// keeps that from happening again.
 fn documented_declines(rail: RailUnderTest) -> Vec<DocumentedDecline> {
     // `0f__` is this suite's decline block; the digits after it are arbitrary
     // and only have to agree with the rail's mapping directory.
