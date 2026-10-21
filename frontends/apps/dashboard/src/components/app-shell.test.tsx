@@ -13,13 +13,17 @@
  * measured in real Chromium by the `Shell*` stories in
  * `dashboard-screens.stories.tsx`, not asserted here.
  */
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
-vi.mock("next/navigation", () => ({ usePathname: () => "/payments" }));
+const push = vi.fn();
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/payments",
+  useRouter: () => ({ push }),
+}));
 
 const { AppShell } = await import("./app-shell");
-const { NAV_ENTRIES } = await import("../dash/resources");
+const { NAV_ENTRIES, OVERVIEW_NAV } = await import("../dash/resources");
 
 function renderShell() {
   return render(
@@ -72,12 +76,17 @@ describe("the signed-in shell", () => {
     const hrefs = [...container.querySelectorAll("a[href^='/']")].map((a) =>
       a.getAttribute("href"),
     );
-    for (const entry of NAV_ENTRIES) {
+    for (const entry of [OVERVIEW_NAV, ...NAV_ENTRIES]) {
       expect(hrefs, `the rail links to ${entry.href}`).toContain(entry.href);
     }
     // Nothing the registry does not declare. Two lists that can disagree is
-    // the failure Lane 4 exists to prevent.
-    const declared = new Set<string>(NAV_ENTRIES.map((entry) => entry.href));
+    // the failure Lane 4 exists to prevent. The Overview is the rail's top
+    // item, declared beside the registry (`OVERVIEW_NAV`) because it is a
+    // screen of counts, not a Refine resource.
+    const declared = new Set<string>([
+      OVERVIEW_NAV.href,
+      ...NAV_ENTRIES.map((entry) => entry.href),
+    ]);
     for (const href of hrefs) {
       expect(declared.has(href ?? ""), `${href} is not a declared route`).toBe(
         true,
@@ -210,5 +219,26 @@ describe("the signed-in shell", () => {
   it("renders its children", () => {
     renderShell();
     expect(screen.getByText("content")).toBeInTheDocument();
+  });
+
+  it("routes a rail click through the app router, not a document load", () => {
+    // `SideNav` renders plain `<a href>`, and until 2026-10-21 every rail
+    // click therefore fetched a new document (five of five, measured). The
+    // shell turns an ordinary click into `router.push`; delete its
+    // `onClick` and this goes red on both assertions.
+    push.mockClear();
+    renderShell();
+    const target = NAV_ENTRIES[NAV_ENTRIES.length - 1];
+    if (target === undefined) throw new Error("the registry is empty");
+    const link = screen
+      .getAllByRole("link")
+      .find((a) => a.getAttribute("href") === target.href);
+    if (link === undefined) throw new Error(`no rail link to ${target.href}`);
+    const event = new MouseEvent("click", { bubbles: true, cancelable: true });
+    fireEvent(link, event);
+    expect(event.defaultPrevented, "the browser must not follow the href").toBe(
+      true,
+    );
+    expect(push).toHaveBeenCalledWith(target.href);
   });
 });

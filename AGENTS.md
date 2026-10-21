@@ -458,10 +458,18 @@ including on a _new_ internal dependency, which is the realistic way this gets
 armed for the next person.
 
 Deliberately not bumped, each for a stated reason: every `0.0.0` private
-package, the Flutter plugin's podspec/gradle boilerplate (`0.0.1` /
+package, and the Flutter plugin's podspec/gradle boilerplate (`0.0.1` /
 `1.0-SNAPSHOT`, never wired to `pubspec.yaml` and already inconsistent with
-each other), and the Flutter example's `pubspec.lock` (nothing enforces it;
-`flutter pub get` rewrites it).
+each other).
+
+The Flutter example's `pubspec.lock` was on that list until 2026-10-21, on
+the grounds that nothing enforces it and `flutter pub get` rewrites it. It
+was hand-synced once, on 2026-09-17, and then recorded the plugin at `0.1.1`
+through every release up to `0.9.1`. Each local `flutter test` rewrote it
+into whatever unrelated change ran Flutter next. Now `release-please.yml`
+rewrites its one version line on the release branch, beside `Cargo.lock`.
+No Flutter SDK is needed, and the result is byte-identical to what
+`flutter pub get` writes (measured on a simulated `0.9.2` bump).
 
 `Chart.yaml`'s own `version:` **was** on that list — the chart had its own
 lifecycle and was hand-bumped — until 2026-09-20. It is the nineteenth

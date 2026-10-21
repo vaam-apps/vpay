@@ -93,7 +93,9 @@ describe("the payments screen", () => {
         cursor: { next: null, prev: null },
       }),
     );
-    expect(await screen.findByText(/5,000|5 000/)).toBeInTheDocument();
+    // Twice: the Amount column and its phone copy under the id
+    // (`PhoneAmount`); CSS shows one, jsdom applies none.
+    expect(await screen.findAllByText(/5,000|5 000/)).toHaveLength(2);
   });
 
   it("says 'no payments' for an empty list, and never over live rows", async () => {
@@ -143,7 +145,8 @@ describe("the payments screen", () => {
     });
     const loading = screen.getByRole("status");
     expect(loading).toHaveAttribute("aria-busy", "true");
-    expect(loading.querySelector("[inert]")?.children).toHaveLength(3);
+    // The filter row's two halves: the status chips and the date field.
+    expect(loading.querySelector("[inert]")?.children).toHaveLength(2);
     expect(container.querySelector("h2")).toBeNull();
   });
 
@@ -155,7 +158,7 @@ describe("the payments screen", () => {
         cursor: { next: null, prev: null },
       }),
     );
-    await screen.findByText(/5,000|5 000/);
+    await screen.findAllByText(/5,000|5 000/);
     expect(container.querySelector("h2")?.textContent).toBe("Payments");
     expect(container.querySelector("h1")).toBeNull();
   });
@@ -275,7 +278,7 @@ describe("the screens render the read the server already made", () => {
 
     // No `await`. This is the `load` event, which is where the browser leg
     // reads the document.
-    expect(screen.getByText(/5,000|5 000/)).toBeInTheDocument();
+    expect(screen.getAllByText(/5,000|5 000/)).toHaveLength(2);
     expect(screen.queryByText(/No payments/i)).toBeNull();
     expect(getList).not.toHaveBeenCalled();
   });

@@ -51,7 +51,7 @@ export default async function PasswordPage() {
     if (failure !== null && refusalFor(failure) === "outage") {
       return (
         <ScreenStack>
-          <h2 className="text-title-sm font-medium text-foreground">
+          <h2 className="font-display text-headline-small text-foreground">
             Choose a password
           </h2>
           <ReadFailure failure={failure} />
@@ -66,7 +66,7 @@ export default async function PasswordPage() {
 
   return (
     <ScreenStack>
-      <h2 className="text-title-sm font-medium text-foreground">
+      <h2 className="font-display text-headline-small text-foreground">
         Choose a password
       </h2>
       <div role="status">

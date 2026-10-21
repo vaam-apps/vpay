@@ -15,10 +15,12 @@
     "test-storybook": "vitest run --config vitest.storybook.config.ts"
   },
   "dependencies": {
+    "@fontsource-variable/jetbrains-mono": "^5.3.0",
+    "@fontsource-variable/roboto-flex": "^5.3.0",
     "@refinedev/core": "5.0.12",
     "@refinedev/nextjs-router": "7.0.5",
     "@tanstack/react-query": "^5.81.5",
-    "@vaam-apps/ui": "^0.4.0",
+    "@vaam-apps/ui": "^0.5.0",
     "@vpay/api-client": "workspace:*",
     "@vpay/config": "workspace:*",
     "@vpay/tokens": "workspace:*",

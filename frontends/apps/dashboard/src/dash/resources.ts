@@ -29,6 +29,7 @@
 import type { ResourceProps } from "@refinedev/core";
 import {
   CreditCard,
+  LayoutDashboard,
   ShoppingCart,
   RotateCcw,
   Users,
@@ -49,7 +50,17 @@ export interface DashResourceEntry {
   readonly resource: ResourceProps;
   readonly label: string;
   readonly icon: LucideIcon;
+  /**
+   * The rail's section header for this destination. A field on the entry
+   * rather than a second list of groups, so a resource cannot be routed by
+   * Refine and missing from the rail, or the other way round.
+   */
+  readonly group: NavGroupName;
 }
+
+/** The rail's sections, in the order they render. */
+export const NAV_GROUP_NAMES = ["Money", "Customers", "Integrations"] as const;
+export type NavGroupName = (typeof NAV_GROUP_NAMES)[number];
 
 export const DASH_RESOURCES: readonly DashResourceEntry[] = [
   {
@@ -64,6 +75,7 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
       meta: { label: "Payments", canDelete: false },
     },
     label: "Payments",
+    group: "Money",
     icon: CreditCard,
   },
   // The three Lane D slices. Each is a CrateStack procedure behind
@@ -78,6 +90,7 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
       meta: { label: "Refunds", canDelete: false },
     },
     label: "Refunds",
+    group: "Money",
     icon: RotateCcw,
   },
   {
@@ -87,6 +100,7 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
       meta: { label: "Deliveries", canDelete: false },
     },
     label: "Deliveries",
+    group: "Integrations",
     icon: Webhook,
   },
   {
@@ -96,6 +110,7 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
       meta: { label: "Checkouts", canDelete: false },
     },
     label: "Checkouts",
+    group: "Money",
     icon: ShoppingCart,
   },
   {
@@ -105,6 +120,7 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
       meta: { label: "Customers", canDelete: false },
     },
     label: "Customers",
+    group: "Customers",
     icon: Users,
   },
 ];
@@ -129,3 +145,33 @@ export const NAV_ENTRIES: readonly {
   label: entry.label,
   icon: entry.icon,
 }));
+
+/**
+ * The Overview: the rail's top item, and the one destination that is not a
+ * Refine resource — it lists nothing, it counts. `layout.test.tsx` holds it
+ * to the same rule as every resource: a page must exist at its href.
+ */
+export const OVERVIEW_NAV = {
+  href: "/overview",
+  label: "Overview",
+  icon: LayoutDashboard,
+} as const;
+
+/**
+ * `NAV_ENTRIES`, sectioned by each entry's `group`, in `NAV_GROUP_NAMES`
+ * order. Derived, never declared, so it holds exactly the entries the rail
+ * would otherwise have listed flat — `layout.test.tsx` checks that too.
+ */
+export const NAV_GROUPS: readonly {
+  readonly label: NavGroupName;
+  readonly items: readonly (typeof NAV_ENTRIES)[number][];
+}[] = NAV_GROUP_NAMES.map((label) => ({
+  label,
+  items: DASH_RESOURCES.filter(
+    (entry) => entry.group === label && typeof entry.resource.list === "string",
+  ).map((entry) => ({
+    href: entry.resource.list as string,
+    label: entry.label,
+    icon: entry.icon,
+  })),
+})).filter((group) => group.items.length > 0);

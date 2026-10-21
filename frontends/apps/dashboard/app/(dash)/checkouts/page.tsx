@@ -1,22 +1,17 @@
-import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
-
-import { AppShell } from "../../../src/components/app-shell";
-import { ReadFailure } from "../../../src/components/read-failure";
+import { CHECKOUTS_SCREEN } from "../../../src/dash/list-screens";
+import { ProcedureListScreen } from "../../../src/components/procedure-list-screen";
 import {
   IdCell,
-  ProcedureTable,
+  PaymentLinkCell,
   type ProcedureColumn,
 } from "../../../src/components/procedure-table";
-import { ProcedurePager } from "../../../src/components/procedure-pager";
+import { IsoInstant } from "../../../src/components/values";
 import { CHECKOUT_SESSIONS } from "../../../src/dash/resource-name";
-import {
-  formatIsoInstant,
-  offsetFrom,
-  readProcedurePage,
-} from "../../../src/dash/procedure-list";
 import { ABSENT } from "../../../src/format";
-import { signOut } from "../../../src/server/actions";
-import { requireStaff } from "../../../src/server/session";
+import {
+  asCheckoutStatus,
+  CheckoutStatusPill,
+} from "../../../src/status-systems";
 
 /** Exactly the fields `type CheckoutSessionSummary` declares. */
 interface CheckoutRow {
@@ -59,13 +54,24 @@ export const dynamic = "force-dynamic";
 
 const COLUMNS: readonly ProcedureColumn<CheckoutRow>[] = [
   { key: "id", header: "Checkout", render: (r) => <IdCell value={r.id} /> },
-  { key: "status", header: "Status", render: (r) => r.status },
+  {
+    key: "status",
+    header: "Status",
+    render: (r) => {
+      const status = asCheckoutStatus(r.status);
+      return status === null ? (
+        r.status
+      ) : (
+        <CheckoutStatusPill state={status} size="sm" />
+      );
+    },
+  },
   { key: "payment_status", header: "Payment", render: (r) => r.payment_status },
   {
     key: "payment_intent_id",
     secondary: true,
     header: "Intent",
-    render: (r) => <IdCell value={r.payment_intent_id} />,
+    render: (r) => <PaymentLinkCell id={r.payment_intent_id} compact />,
   },
   {
     key: "ui_mode",
@@ -77,19 +83,20 @@ const COLUMNS: readonly ProcedureColumn<CheckoutRow>[] = [
     key: "customer_id",
     secondary: true,
     header: "Customer",
-    render: (r) => (r.customer_id === null ? ABSENT : r.customer_id),
+    render: (r) =>
+      r.customer_id === null ? ABSENT : <IdCell value={r.customer_id} />,
   },
   {
     key: "expires_at",
     secondary: true,
-    header: "Expires",
-    render: (r) => formatIsoInstant(r.expires_at),
+    header: "Expires (UTC)",
+    render: (r) => <IsoInstant value={r.expires_at} />,
   },
   {
     key: "created_at",
     secondary: true,
-    header: "Created",
-    render: (r) => formatIsoInstant(r.created_at),
+    header: "Created (UTC)",
+    render: (r) => <IsoInstant value={r.created_at} />,
   },
 ];
 
@@ -98,56 +105,15 @@ export default async function CheckoutsPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const gate = await requireStaff();
-  if (gate.kind === "outage") {
-    return (
-      <ScreenStack>
-        <h2>Checkouts</h2>
-        <ReadFailure failure={gate.failure} />
-      </ScreenStack>
-    );
-  }
-  const staff = gate.staff;
-  const offset = offsetFrom(await searchParams);
-  const result = await readProcedurePage<CheckoutRow>(
-    staff,
-    CHECKOUT_SESSIONS,
-    offset,
-  );
-
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
-      <ScreenStack>
-        <h2>Checkouts</h2>
-        {!result.ok ? (
-          <ReadFailure failure={result.failure} />
-        ) : result.value.items.length === 0 ? (
-          <InlineEmptyState
-            variant="standalone"
-            message="No checkouts. This merchant has no checkout sessions yet."
-          />
-        ) : (
-          <>
-            <ProcedureTable
-              rows={result.value.items}
-              columns={COLUMNS}
-              idOf={(r) => r.id}
-              caption="Checkout sessions"
-            />
-            <ProcedurePager
-              basePath="/checkouts"
-              offset={offset}
-              returned={result.value.items.length}
-              totalCount={result.value.totalCount}
-              hasNext={result.value.pageInfo.hasNextPage}
-            />
-          </>
-        )}
-      </ScreenStack>
-    </AppShell>
+    <ProcedureListScreen<CheckoutRow>
+      {...CHECKOUTS_SCREEN}
+      resource={CHECKOUT_SESSIONS}
+      basePath="/checkouts"
+      params={await searchParams}
+      columns={COLUMNS}
+      idOf={(r) => r.id}
+      emptyMessage="No checkouts. This merchant has no checkout sessions yet."
+    />
   );
 }

@@ -80,7 +80,7 @@ export default async function TotpPage() {
   if (gate.kind === "outage") {
     return (
       <ScreenStack>
-        <h2 className="text-title-sm font-medium text-foreground">
+        <h2 className="font-display text-headline-small text-foreground">
           Enter your code
         </h2>
         <ReadFailure failure={gate.failure} />
@@ -94,7 +94,7 @@ export default async function TotpPage() {
   if (pending === null) {
     return (
       <ScreenStack>
-        <h2 className="text-title-sm font-medium text-foreground">
+        <h2 className="font-display text-headline-small text-foreground">
           Enter your code
         </h2>
         <p className="text-body text-muted-foreground">

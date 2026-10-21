@@ -1,5 +1,5 @@
 import {
-  Code,
+  IdDisplay,
   Table,
   TableBody,
   TableCell,
@@ -7,6 +7,8 @@ import {
   TableHeader,
   TableRow,
 } from "@vaam-apps/ui";
+import NextLink from "next/link";
+import type { ReactNode } from "react";
 
 /**
  * One column of a {@link ProcedureTable}.
@@ -33,10 +35,13 @@ export interface ProcedureColumn<Row> {
    * the whole answer. Marking the columns that are not the answer keeps
    * the phone view to the ones that are, and the rest return at `sm`.
    *
-   * This is a static class per column, never a computed one: `verify-ui`
-   * refuses a computed `className` anywhere in an app.
+   * `Table`'s own `hideBelow` prop carries it since `@vaam-apps/ui` 0.5.0
+   * (`verify-ui` refuses a computed `className` anywhere in an app, which is
+   * why this was two literal branches before).
    */
   readonly secondary?: boolean;
+  /** `"end"` for a number (an amount), so a column of them aligns. */
+  readonly align?: "start" | "end";
 }
 
 export interface ProcedureTableProps<Row> {
@@ -84,29 +89,30 @@ export function ProcedureTable<Row>({
       <caption className="sr-only">{caption}</caption>
       <TableHeader>
         <TableRow>
-          {columns.map((column) =>
-            column.secondary === true ? (
-              <TableHead key={column.key} className="hidden sm:table-cell">
-                {column.header}
-              </TableHead>
-            ) : (
-              <TableHead key={column.key}>{column.header}</TableHead>
-            ),
-          )}
+          {columns.map((column) => (
+            <TableHead
+              key={column.key}
+              scope="col"
+              align={column.align ?? "start"}
+              hideBelow={column.secondary === true ? "sm" : undefined}
+            >
+              {column.header}
+            </TableHead>
+          ))}
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((row) => (
           <TableRow key={idOf(row)}>
-            {columns.map((column) =>
-              column.secondary === true ? (
-                <TableCell key={column.key} className="hidden sm:table-cell">
-                  {column.render(row)}
-                </TableCell>
-              ) : (
-                <TableCell key={column.key}>{column.render(row)}</TableCell>
-              ),
-            )}
+            {columns.map((column) => (
+              <TableCell
+                key={column.key}
+                align={column.align ?? "start"}
+                hideBelow={column.secondary === true ? "sm" : undefined}
+              >
+                {column.render(row)}
+              </TableCell>
+            ))}
           </TableRow>
         ))}
       </TableBody>
@@ -114,7 +120,57 @@ export function ProcedureTable<Row>({
   );
 }
 
-/** An id, rendered the way every id in this app is rendered. */
+/**
+ * An id, rendered the way every id in this app is rendered: `IdDisplay`'s
+ * table variant — the prefix and the tail, the full value on hover and in
+ * its copy button — so a column of `re_…` ids stays one line on a phone.
+ */
 export function IdCell({ value }: { readonly value: string }) {
-  return <Code>{value}</Code>;
+  return <IdDisplay value={value} truncateTo={14} />;
+}
+
+/**
+ * A payment id that opens the payment — the one cross-link every list with a
+ * `payment_intent_id` gains (2026-10-21; before, refunds and checkouts
+ * printed the id and an operator had to paste it into the URL bar). The id
+ * truncates below `sm` with CSS only, so the link's text — and its
+ * accessible name — is always the whole id.
+ */
+export function PaymentLinkCell({
+  id,
+  compact = false,
+}: {
+  readonly id: string;
+  /**
+   * Truncate at every width, not only below `sm` — for a list where the
+   * payment is a cross-reference beside the row's own id (refunds,
+   * checkouts), so the columns that are the row's subject keep the room.
+   */
+  readonly compact?: boolean;
+}) {
+  return (
+    <NextLink
+      href={`/payments/${id}`}
+      className="block font-mono text-primary hover:underline"
+    >
+      {compact ? (
+        <span className="block max-w-[14ch] truncate">{id}</span>
+      ) : (
+        <span className="block max-w-[12ch] truncate sm:max-w-none">{id}</span>
+      )}
+    </NextLink>
+  );
+}
+
+/**
+ * A row's amount repeated under its id below `sm`, where the Amount column
+ * steps aside so the status still fits a phone's width without a sideways
+ * swipe. Hidden from `sm` up, where the column is back.
+ */
+export function PhoneAmount({ children }: { readonly children: ReactNode }) {
+  return (
+    <span className="block text-body-small text-muted-foreground sm:hidden">
+      {children}
+    </span>
+  );
 }

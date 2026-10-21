@@ -228,7 +228,8 @@ describe("the dashboard", { testIsolation: false }, () => {
     cy.contains("button", "Set password").click();
 
     // ---- leg 5: signed in, on a token the code exchange minted -----------
-    cy.location("pathname").should("eq", "/payments");
+    // `HOME_PATH` is the Overview since 2026-10-21 (`src/server/session.ts`).
+    cy.location("pathname").should("eq", "/overview");
     // Scoped to <main>, and the scope is load-bearing. Since
     // `@vaam-apps/ui` 0.4.0 the shell passes its account block to
     // `SideNav` at every width, so the sidebar's copy is in the DOM at this
@@ -1088,7 +1089,7 @@ describe("the dashboard", { testIsolation: false }, () => {
     //
     // No `cy.intercept`/`cy.wait` on `**/api/dash/**` here. `/payments` is a
     // Server Component (`app/(dash)/payments/page.tsx`) reading
-    // `searchParams`, and Apply navigates with `router.push`
+    // `searchParams`, and a status chip is a `next/link` navigation
     // (`payments-filters.tsx`) — a client-side transition Next resolves by
     // re-rendering that Server Component with fresh `initialData`, not a
     // browser fetch to the BFF. So there would be nothing for a `cy.wait` on
@@ -1114,8 +1115,11 @@ describe("the dashboard", { testIsolation: false }, () => {
       ).to.equal(25);
     });
 
-    cy.get("#payments-filter-status").select("succeeded");
-    cy.contains("button", "Apply").click();
+    // Status is a row of filter chips that are links since 2026-10-21 — one
+    // tap, no Apply (`payments-filters.tsx`).
+    cy.get('nav[aria-label="Filter payments by status"]')
+      .contains("a", "Succeeded")
+      .click();
 
     // The URL carries the filter, and starts from page 1 again — a cursor
     // from the page this navigated away from would ask for "the page after a

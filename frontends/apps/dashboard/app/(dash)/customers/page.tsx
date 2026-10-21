@@ -1,22 +1,12 @@
-import { InlineEmptyState, ScreenStack } from "@vaam-apps/ui";
-
-import { AppShell } from "../../../src/components/app-shell";
-import { ReadFailure } from "../../../src/components/read-failure";
+import { CUSTOMERS_SCREEN } from "../../../src/dash/list-screens";
+import { ProcedureListScreen } from "../../../src/components/procedure-list-screen";
 import {
   IdCell,
-  ProcedureTable,
   type ProcedureColumn,
 } from "../../../src/components/procedure-table";
-import { ProcedurePager } from "../../../src/components/procedure-pager";
+import { IsoInstant } from "../../../src/components/values";
 import { CUSTOMERS } from "../../../src/dash/resource-name";
-import {
-  formatIsoInstant,
-  offsetFrom,
-  readProcedurePage,
-} from "../../../src/dash/procedure-list";
 import { ABSENT } from "../../../src/format";
-import { signOut } from "../../../src/server/actions";
-import { requireStaff } from "../../../src/server/session";
 
 /** Exactly the fields `type CustomerSummary` declares. */
 interface CustomerRow {
@@ -70,13 +60,19 @@ const COLUMNS: readonly ProcedureColumn<CustomerRow>[] = [
     header: "Customer",
     render: (r) => <IdCell value={r.id} />,
   },
-  { key: "name", header: "Name", render: (r) => r.name ?? ABSENT },
+  {
+    key: "name",
+    header: "Name",
+    render: (r) => (
+      <span className="font-medium text-foreground">{r.name ?? ABSENT}</span>
+    ),
+  },
   { key: "email", header: "Email", render: (r) => r.email ?? ABSENT },
   {
     key: "phone",
     secondary: true,
     header: "Phone",
-    render: (r) => r.phone ?? ABSENT,
+    render: (r) => <span className="font-mono">{r.phone ?? ABSENT}</span>,
   },
   {
     key: "livemode",
@@ -87,14 +83,14 @@ const COLUMNS: readonly ProcedureColumn<CustomerRow>[] = [
   {
     key: "last_used_at",
     secondary: true,
-    header: "Last used",
-    render: (r) => formatIsoInstant(r.last_used_at),
+    header: "Last used (UTC)",
+    render: (r) => <IsoInstant value={r.last_used_at} />,
   },
   {
     key: "created_at",
     secondary: true,
-    header: "Created",
-    render: (r) => formatIsoInstant(r.created_at),
+    header: "Created (UTC)",
+    render: (r) => <IsoInstant value={r.created_at} />,
   },
 ];
 
@@ -103,52 +99,15 @@ export default async function CustomersPage({
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
-  const gate = await requireStaff();
-  if (gate.kind === "outage") {
-    return (
-      <ScreenStack>
-        <h2>Customers</h2>
-        <ReadFailure failure={gate.failure} />
-      </ScreenStack>
-    );
-  }
-  const staff = gate.staff;
-  const offset = offsetFrom(await searchParams);
-  const result = await readProcedurePage<CustomerRow>(staff, CUSTOMERS, offset);
-
   return (
-    <AppShell
-      email={staff.session.email}
-      merchantId={staff.session.merchant_id}
-      signOut={signOut}
-    >
-      <ScreenStack>
-        <h2>Customers</h2>
-        {!result.ok ? (
-          <ReadFailure failure={result.failure} />
-        ) : result.value.items.length === 0 ? (
-          <InlineEmptyState
-            variant="standalone"
-            message="No customers. This merchant has no customers yet."
-          />
-        ) : (
-          <>
-            <ProcedureTable
-              rows={result.value.items}
-              columns={COLUMNS}
-              idOf={(r) => r.id}
-              caption="Customers"
-            />
-            <ProcedurePager
-              basePath="/customers"
-              offset={offset}
-              returned={result.value.items.length}
-              totalCount={result.value.totalCount}
-              hasNext={result.value.pageInfo.hasNextPage}
-            />
-          </>
-        )}
-      </ScreenStack>
-    </AppShell>
+    <ProcedureListScreen<CustomerRow>
+      {...CUSTOMERS_SCREEN}
+      resource={CUSTOMERS}
+      basePath="/customers"
+      params={await searchParams}
+      columns={COLUMNS}
+      idOf={(r) => r.id}
+      emptyMessage="No customers. This merchant has no customers yet."
+    />
   );
 }

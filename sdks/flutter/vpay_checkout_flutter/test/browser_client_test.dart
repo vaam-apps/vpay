@@ -7,6 +7,42 @@ import 'package:vpay_checkout_flutter/vpay_checkout_flutter.dart';
 
 const _piSecret = 'pi_123_secret_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const _csSecret = 'cs_123_secret_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const _suffix = 'cccccccccccccccccccccccccccccccc';
+
+/// Client secrets whose id no route may turn into a path segment — the
+/// same list as `sdks/stripe-js/src/testing/unroutable-secrets.ts`.
+///
+/// `_tryParseClientSecret` is the **only** thing keeping `.` and `..` out of
+/// a `/v1/browser` path: `Uri.encodeComponent` leaves dots alone, and
+/// `Uri.parse` resolves a `..` segment — and a `%2E%2E` one — before any
+/// request is built (measured on Dart 3.14, 2026-10-21; the merchant SDKs
+/// had exactly this hole until #306). What closes it is the prefix rule: an
+/// id must start with `pi_`/`cs_` and be longer than that prefix. Every entry
+/// is refused by every route, whichever credential it expects.
+const List<(String, String)> _unroutableSecrets = [
+  ('an empty string', ''),
+  ('a bare ..', '..'),
+  ('a bare .', '.'),
+  ('a bare %2e%2e', '%2e%2e'),
+  ('a bare pi_', 'pi_'),
+  ('a bare cs_', 'cs_'),
+  ('.. as the id', '.._secret_$_suffix'),
+  ('. as the id', '._secret_$_suffix'),
+  ('%2e%2e as the id', '%2e%2e_secret_$_suffix'),
+  ('%2E%2E as the id', '%2E%2E_secret_$_suffix'),
+  ('an empty id', '_secret_$_suffix'),
+  ("another object's prefix", 're_123_secret_$_suffix'),
+  ('pi_ alone as the id', 'pi__secret_$_suffix'),
+  ('cs_ alone as the id', 'cs__secret_x'),
+  ('a pi_ id with an empty suffix', 'pi_x_secret_'),
+  ('a cs_ id with an empty suffix', 'cs_x_secret_'),
+];
+
+/// Asserts [error] is the parser's refusal, naming [name] on failure.
+void _expectRefused(String name, VpayError? error) {
+  expect(error?.type, 'invalid_request_error', reason: name);
+  expect(error?.param, 'clientSecret', reason: name);
+}
 
 http.Response _json(Object body, {int status = 200}) =>
     http.Response(jsonEncode(body), status);
@@ -519,6 +555,92 @@ void main() {
       expect(result.isError, isTrue);
       expect(result.error!.type, 'api_connection_error');
     });
+  });
+
+  group('BrowserClient — no route puts a dot segment in a path', () {
+    /// A client whose every request is recorded, so "nothing was sent" is
+    /// an assertion on a list rather than on a flag.
+    (BrowserClient, List<Uri>) recordingClient() {
+      final List<Uri> sent = <Uri>[];
+      final client = BrowserClient(
+        baseUrl: 'https://api.example',
+        publishableKey: 'pk_test_1',
+        httpClient: MockClient((request) async {
+          sent.add(request.url);
+          return _json(_paymentIntentJson());
+        }),
+      );
+      return (client, sent);
+    }
+
+    test('refuses a client secret whose id is empty or only dots on retrievePaymentIntent, sending nothing', () async {
+      final (client, sent) = recordingClient();
+
+      for (final (name, secret) in _unroutableSecrets) {
+        final result = await client.retrievePaymentIntent(secret);
+        expect(result.paymentIntent, isNull, reason: name);
+        _expectRefused(name, result.error);
+      }
+
+      expect(sent, isEmpty);
+    });
+
+    test('refuses a client secret whose id is empty or only dots on confirmPaymentIntent, sending nothing', () async {
+      final (client, sent) = recordingClient();
+
+      for (final (name, secret) in _unroutableSecrets) {
+        final result = await client.confirmPaymentIntent(
+          secret,
+          railCode: 'mtn_momo',
+          payerFields: const {'msisdn': '237690000000'},
+        );
+        expect(result.paymentIntent, isNull, reason: name);
+        _expectRefused(name, result.error);
+      }
+
+      expect(sent, isEmpty);
+    });
+
+    test('refuses a client secret whose id is empty or only dots on retrieveCheckoutSession, sending nothing', () async {
+      final (client, sent) = recordingClient();
+
+      for (final (name, secret) in _unroutableSecrets) {
+        final result = await client.retrieveCheckoutSession(secret);
+        expect(result.checkoutSession, isNull, reason: name);
+        _expectRefused(name, result.error);
+      }
+
+      expect(sent, isEmpty);
+    });
+
+    test(
+      'keeps an id that carries /../ inside one path segment on every route',
+      () async {
+        // The other half of the rule: an id that *passes* the prefix check may
+        // still hold a `/`, and only `Uri.encodeComponent` keeps `pi_/../x`
+        // from resolving to `payment_intents/x`. `request.url` is the `Uri`
+        // the client built, after `Uri.parse` has normalised it.
+        final (client, sent) = recordingClient();
+
+        await client.retrievePaymentIntent('pi_/../x_secret_$_suffix');
+        await client.confirmPaymentIntent(
+          'pi_/../x_secret_$_suffix',
+          railCode: 'mtn_momo',
+        );
+        await client.retrieveCheckoutSession('cs_/../x_secret_$_suffix');
+
+        expect(sent.map((uri) => uri.path).toList(), <String>[
+          '/v1/browser/payment_intents/pi_%2F..%2Fx',
+          '/v1/browser/payment_intents/pi_%2F..%2Fx/confirm',
+          '/v1/browser/checkout/sessions/cs_%2F..%2Fx',
+        ]);
+        expect(sent.map((uri) => uri.pathSegments).toList(), <List<String>>[
+          <String>['v1', 'browser', 'payment_intents', 'pi_/../x'],
+          <String>['v1', 'browser', 'payment_intents', 'pi_/../x', 'confirm'],
+          <String>['v1', 'browser', 'checkout', 'sessions', 'cs_/../x'],
+        ]);
+      },
+    );
   });
 }
 

@@ -17,7 +17,9 @@ describe("the payments table", () => {
 
   it("renders the amount in minor units as its currency spells it", () => {
     render(<PaymentsTable rows={[INTENT]} />);
-    expect(screen.getByText("5,000 XAF")).toBeInTheDocument();
+    // Twice: the Amount column (from `sm`) and the copy under the id
+    // (below `sm`); jsdom applies no CSS and sees both.
+    expect(screen.getAllByText("5,000 XAF")).toHaveLength(2);
   });
 
   it("takes the status pill presentation from one shared table, never a local map", () => {
@@ -71,7 +73,9 @@ describe("the payments table", () => {
       screen.getByRole("columnheader", { name: "Methods" }),
     ).toBeInTheDocument();
     expect(screen.queryByRole("columnheader", { name: "Rail" })).toBeNull();
-    expect(screen.getByText("mtn_momo, orange_money")).toBeInTheDocument();
+    // One badge per method, in the order the intent lists them.
+    expect(screen.getByText("mtn_momo")).toBeInTheDocument();
+    expect(screen.getByText("orange_money")).toBeInTheDocument();
   });
 
   it("has no payer column — the list response carries no payer field at all", () => {

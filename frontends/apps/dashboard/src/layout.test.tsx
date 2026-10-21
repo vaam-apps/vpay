@@ -39,7 +39,12 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import RootLayout from "../app/layout";
-import { DASH_RESOURCES, NAV_ENTRIES } from "./dash/resources";
+import {
+  DASH_RESOURCES,
+  NAV_ENTRIES,
+  NAV_GROUPS,
+  OVERVIEW_NAV,
+} from "./dash/resources";
 
 function markup(): string {
   return renderToStaticMarkup(
@@ -175,6 +180,20 @@ describe("the nav links only to pages that exist", () => {
       .sort();
     expect(NAV_ENTRIES.map((entry) => entry.href).sort()).toEqual(listRoutes);
     expect(listRoutes.length).toBeGreaterThan(0);
+  });
+
+  it("the Overview, the one destination that is not a resource, has a page too", () => {
+    expect(pageExists(OVERVIEW_NAV.href)).toBe(true);
+  });
+
+  it("the rail's sections hold every resource exactly once, and nothing else", () => {
+    // The sections are derived from each entry's `group`, so a destination
+    // can only go missing from the rail by being dropped here. Sorted by
+    // href so the section order does not matter to the comparison.
+    const sectioned = NAV_GROUPS.flatMap((group) => group.items)
+      .map((item) => item.href)
+      .sort();
+    expect(sectioned).toEqual(NAV_ENTRIES.map((entry) => entry.href).sort());
   });
 
   it("the helper it relies on is not vacuously true", () => {

@@ -76,8 +76,10 @@ account, without vpay ever learning of it:
 3. **process** a pending payment to **any** phone number, which sends that
    number a USSD prompt in the merchant's name;
 4. **cancel** any pending payment, including one of vpay's. That charge then
-   reads `canceled`, and vpay records it `provider_error`. It never records
-   `payer_declined`, because the cancel may not have been the payer's.
+   reads `canceled`, and vpay records it `payer_declined` (the mapping below):
+   Notch Pay's `canceled` carries no reason and no actor, so vpay cannot tell a
+   cancel by the key's holder from the payer declining. A cancel by someone
+   else is therefore recorded as the payer's decline.
 
 vpay keeps the key server-side, sends the private key beside it on every
 call, and never hands either to a browser or an app. That is all vpay can do.

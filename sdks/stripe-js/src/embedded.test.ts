@@ -17,6 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { loadStripe } from "./index.js";
+import { UNROUTABLE_CLIENT_SECRETS } from "./testing/unroutable-secrets.js";
 import type { EmbeddedCheckout, Stripe } from "./types.js";
 
 const PK = "pk_test_abcdefghijklmnop";
@@ -324,6 +325,42 @@ describe("initEmbeddedCheckout", () => {
       .catch((err: unknown) => {
         expect(String(err)).not.toContain(SUFFIX);
       });
+  });
+
+  it("refuses a session secret whose id is empty or only dots before building any frame src", async () => {
+    // `/e/{id}` is a path like any `/v1/browser` one, and an `iframe`
+    // resolves `/e/..` exactly as `fetch` would. `client.test.ts`'s "no
+    // payer route puts a dot segment in a path" covers the API routes.
+    const stripe = await stripeWithCheckout();
+
+    for (const [name, secret] of UNROUTABLE_CLIENT_SECRETS) {
+      await expect(
+        stripe.initEmbeddedCheckout({
+          fetchClientSecret: () => Promise.resolve(secret),
+        }),
+        name,
+      ).rejects.toThrow(TypeError);
+    }
+
+    expect(document.querySelector("iframe")).toBeNull();
+  });
+
+  it("keeps a session id that carries /../ inside one segment of the frame src", async () => {
+    const stripe = await stripeWithCheckout();
+    const secret = `cs_/../x_secret_${SUFFIX}`;
+    const handle = await stripe.initEmbeddedCheckout({
+      fetchClientSecret: () => Promise.resolve(secret),
+    });
+    handle.mount("#checkout");
+
+    const frame = document.querySelector("#checkout iframe");
+    expect(frame).toBeInstanceOf(HTMLIFrameElement);
+    // `src` (resolved) rather than `getAttribute`: what the browser would
+    // actually load, after its own URL parser has run.
+    expect(new URL((frame as HTMLIFrameElement).src).pathname).toBe(
+      "/e/cs_%2F..%2Fx",
+    );
+    handle.destroy();
   });
 
   it("propagates a rejection from fetchClientSecret unchanged", async () => {

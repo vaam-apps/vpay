@@ -1,4 +1,6 @@
-import NextLink from "next/link";
+import { ChevronLeft, ChevronRight } from "lucide-react";
+
+import { OutlinedLink } from "./layout";
 
 export interface PaymentsPagerProps {
   /** Href for the previous page, or `null` on the first one. */
@@ -34,20 +36,25 @@ export function PaymentsPager({ previousHref, nextHref }: PaymentsPagerProps) {
   }
 
   return (
-    <nav aria-label="Payments paging">
-      {previousHref === null ? (
-        <span>Newest first</span>
-      ) : (
-        <NextLink href={previousHref} rel="prev">
+    <nav
+      aria-label="Payments paging"
+      className="flex flex-wrap items-center gap-3"
+    >
+      <span className="flex-1 text-body-medium text-muted-foreground">
+        {previousHref === null ? "Newest first" : "Older payments"}
+        {nextHref === null ? " · end of results" : ""}
+      </span>
+      {previousHref === null ? null : (
+        <OutlinedLink href={previousHref} rel="prev">
+          <ChevronLeft size={18} aria-hidden="true" />
           Previous
-        </NextLink>
+        </OutlinedLink>
       )}
-      {nextHref === null ? (
-        <span>End of results</span>
-      ) : (
-        <NextLink href={nextHref} rel="next">
+      {nextHref === null ? null : (
+        <OutlinedLink href={nextHref} rel="next">
           Next
-        </NextLink>
+          <ChevronRight size={18} aria-hidden="true" />
+        </OutlinedLink>
       )}
     </nav>
   );

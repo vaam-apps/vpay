@@ -194,3 +194,27 @@ function isPlainDate(value: string): boolean {
     parsed.toISOString().slice(0, 10) === value
   );
 }
+
+/**
+ * An RFC 3339 timestamp, as an operator reads it.
+ *
+ * **Not `format.ts`'s `formatInstant`, which takes unix seconds.** The REST
+ * list serialises times the way the merchant API does — an integer — and a
+ * CrateStack procedure serialises a `DateTime` as a string. Passing one to
+ * the other's formatter yields `Invalid Date` or, worse, a plausible date in
+ * 1970. The two formatters exist because the two wire shapes exist.
+ *
+ * An unparseable value is returned verbatim rather than replaced: if vpay
+ * ever answers something this cannot read, an operator should see what it
+ * actually said.
+ */
+export function formatIsoInstant(value: string | null | undefined): string {
+  if (value === null || value === undefined) {
+    return ABSENT;
+  }
+  const parsed = Date.parse(value);
+  if (Number.isNaN(parsed)) {
+    return value;
+  }
+  return new Date(parsed).toISOString().replace("T", " ").slice(0, 19) + " UTC";
+}

@@ -7,13 +7,16 @@
  * session is over" signed every staff member out with no way to tell it from
  * a deliberate sign-out.
  */
+import { readFileSync, readdirSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { dashAuthProvider, isSignOut } from "./auth-provider";
 
 const noopActions = {
   signOut: () => Promise.resolve(),
-  check: () => Promise.resolve(true),
 };
 
 describe("onError — the one status that means the session is over", () => {
@@ -75,22 +78,41 @@ describe("logout revokes before it clears", () => {
   });
 });
 
-describe("check defers to the existing gate", () => {
-  it("sends an unauthenticated visitor to /login", async () => {
-    const provider = dashAuthProvider({
-      ...noopActions,
-      check: () => Promise.resolve(false),
-    });
-    const result = await provider.check({});
-    expect(result.authenticated).toBe(false);
-    expect(result.redirectTo).toBe("/login");
-  });
-
-  it("lets a live session through with no redirect", async () => {
-    const provider = dashAuthProvider(noopActions);
+describe("check is not a second gate, and costs nothing", () => {
+  it("answers without touching the network or the session", async () => {
+    // Refine calls this on every pathname change and throws the answer
+    // away. When it called the `checkSession` Server Action, every
+    // navigation paid a POST and an extra `GET /dash/v1/staff/session`
+    // (measured 2026-10-21). The server gates every page; this must not.
+    const fetchSpy = vi.spyOn(globalThis, "fetch");
+    const signOut = vi.fn(() => Promise.resolve());
+    const provider = dashAuthProvider({ signOut });
     const result = await provider.check({});
     expect(result.authenticated).toBe(true);
-    expect(result.redirectTo).toBeUndefined();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(signOut).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
+
+  it("is never acted on: nothing renders <Authenticated> or asks useIsAuthenticated", () => {
+    // `check` answering `true` without asking is only honest while no
+    // component makes a decision from it. Refine's two consumers are those
+    // two; the day one appears, this goes red and `check` has to ask again.
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+    const offenders: string[] = [];
+    for (const dir of ["app", "src"]) {
+      for (const entry of readdirSync(join(root, dir), { recursive: true })) {
+        const rel = entry.toString();
+        if (!/\.tsx?$/.test(rel) || rel.includes(".test.")) continue;
+        const code = readFileSync(join(root, dir, rel), "utf8")
+          .replace(/\/\*[\s\S]*?\*\//g, "")
+          .replace(/\/\/[^\n]*/g, "");
+        if (/<Authenticated[\s>]|useIsAuthenticated\(/.test(code)) {
+          offenders.push(`${dir}/${rel}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 });
 

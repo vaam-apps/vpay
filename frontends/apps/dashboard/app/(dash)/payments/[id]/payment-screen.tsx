@@ -1,7 +1,6 @@
 "use client";
 
 import { useOne } from "@refinedev/core";
-import { ScreenStack } from "@vaam-apps/ui";
 import { notFound } from "next/navigation";
 
 import {
@@ -66,10 +65,10 @@ export function PaymentScreen({ id, initial }: PaymentScreenProps) {
     // A `404` never reaches here: `page.tsx` answers it with `notFound()` on
     // the server, which is what keeps the two 404 bodies indistinguishable.
     return (
-      <ScreenStack>
-        <h2>Payment</h2>
+      <>
+        <PaymentDetailHeader />
         <ReadFailure failure={serverFailure} />
-      </ScreenStack>
+      </>
     );
   }
 
@@ -87,10 +86,10 @@ export function PaymentScreen({ id, initial }: PaymentScreenProps) {
       notFound();
     }
     return (
-      <ScreenStack>
-        <h2>Payment</h2>
+      <>
+        <PaymentDetailHeader />
         <ReadFailure failure={failure} />
-      </ScreenStack>
+      </>
     );
   }
 
@@ -100,9 +99,9 @@ export function PaymentScreen({ id, initial }: PaymentScreenProps) {
   }
 
   return (
-    <ScreenStack>
+    <>
       <PaymentDetailHeader />
       <PaymentDetailView detail={detail} />
-    </ScreenStack>
+    </>
   );
 }
