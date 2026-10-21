@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.2](https://github.com/vaam-apps/vpay/compare/v0.10.1...v0.10.2) (2026-10-21)
+
+
+### Bug Fixes
+
+* **api:** a declined confirm fails the charge before it records the attempt ([#322](https://github.com/vaam-apps/vpay/issues/322)) ([b7cc6c9](https://github.com/vaam-apps/vpay/commit/b7cc6c96bf5ea99c862997222743a8e15ead6251))
+* **deps:** Storybook 10.6.3 and vitest 4.1.12 clear three advisories that turned web red ([#325](https://github.com/vaam-apps/vpay/issues/325)) ([a522b86](https://github.com/vaam-apps/vpay/commit/a522b86dd4becaa761a97aa18daa6ec060d24ffe))
+
 ## [0.10.1](https://github.com/vaam-apps/vpay/compare/v0.10.0...v0.10.1) (2026-10-21)
 
 
