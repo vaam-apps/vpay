@@ -68,18 +68,20 @@ is a documented reservation: the vocabulary is a wire contract, and removing a
 variant would break a merchant deserialising it.
 
 **Notch Pay produces four codes** (`PRODUCED_FAILURE_CODES` in
-`vpay-adapter-notchpay`). Its read carries a status and no reason, so a payer
-with no funds and a payer who never answered both read `failed`, and
-`insufficient_funds` is unreachable there. `canceled` is `payer_declined`
-(stub `…0f02`). That is evidence of a decline, not proof of whose: the
-merchant's public key can cancel a payment too (ADR-0031), and the read names
-no actor, so such a cancel is recorded as the payer's
-([adapter-notchpay.md](adapter-notchpay.md) § "Production risks",
+`vpay-adapter-notchpay`). Its read carries a status and no reason, so
+`insufficient_funds` is unreachable there: the sandbox's "insufficient funds"
+number read `complete` with a short `amounts.total`, not a decline. A payer
+who never answers reads `expired` or `abandoned`, which is `payer_timeout`.
+`canceled` is `payer_declined` (stub `…0f02`). That is evidence of a decline,
+not proof of whose: the merchant's public key can cancel a payment too
+(ADR-0031), and the read names no actor, so such a cancel is recorded as the
+payer's ([adapter-notchpay.md](adapter-notchpay.md) § "Production risks",
 item 4). A `503` or a timeout is `ProviderError::Transport`, never a decline,
-which is why `provider_unavailable` is a dash on that rail. Notch Pay's
-sandbox was called on 2026-10-21 and its read named no reason; the column
-heads still say "stub only" because no adapter call has been verified against
-it.
+which is why `provider_unavailable` is a dash on that rail. The column heads
+say "stub only" because each row's proof is a WireMock case: the adapter's
+2026-10-21 sandbox run
+([step 5](../status/verification/2026-10-21-notchpay-step5.md)) witnessed
+`failed` becoming `provider_error`, and no other row.
 
 _(This paragraph said "Notch Pay produces three codes" and that `canceled` is
 `provider_error` rather than `payer_declined`, from the 2026-10-20
