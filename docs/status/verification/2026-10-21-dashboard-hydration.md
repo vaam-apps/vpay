@@ -163,5 +163,15 @@ assertion after a sign-in that #318 left at `/payments` (the others in the
 spec follow explicit visits to `/payments`). Each attempt took about 30 s,
 which is the TOTP wait plus a sign-in, not a 4 s miss. And the redirect for
 a signed-in `/login` is `app/login/page.tsx`'s own. The line now expects
-`/overview`, with a comment saying why. This PR's next `e2e (compose)` run
-is the test of that reading.
+`/overview`, with a comment saying why.
+
+**Confirmed by the next run.** On `b6889fb` (run 39626241491), `e2e (compose)`
+passed on the first attempt of every case, with no retry:
+
+```text
+  ✔  checkout.cy.ts       1 of 1
+  ✔  dashboard.cy.ts     18 of 18
+  ✔  shop-hosted.cy.ts    4 of 4
+  ✔  All specs passed!   23 of 23
+  ✔  shop-embedded.cy.ts  6 of 6   (the framed run)
+```
