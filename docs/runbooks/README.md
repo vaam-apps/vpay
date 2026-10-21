@@ -126,7 +126,7 @@ that page is evidence about MTN or Orange.
   [rotate-rail-credentials.md](rotate-rail-credentials.md) are written from
   the chart, the binaries' own shutdown and boot code, and their tests. **No
   `kubectl` or `helm` command in any of them has been run against a
-  cluster**, because no cluster has ever run vpay.
+  cluster**: no cluster run of vpay is on record.
 - [release.md](release.md): at the time it was written no tag had been pushed,
   `.github/workflows/release.yml` had never run, and no image existed to
   verify a signature on. ~~**Updated 2026-09-05: the workflow has since run 13

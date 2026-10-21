@@ -196,8 +196,8 @@ There are no down-migrations here. See [release.md](release.md) §5.
 
 - **No rotation has ever been performed on a deployment.** The evidence is
   unit and integration tests against ephemeral containers.
-- **The `kubectl` steps in §2 have never been run.** No cluster has ever run
-  vpay ([../status.md](../status.md)).
+- **The `kubectl` steps in §2 have never been run.** No cluster run of vpay
+  is on record ([../status.md](../status.md)).
 - **The 24 h overlap has never elapsed anywhere.** Nothing has observed a
   retired key dropping out of `/jwks.json` at its `expires_at`.
 - **The PEM is not zeroized.** `LoadedSigningKey::from_file` reads it into a

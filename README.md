@@ -13,7 +13,13 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 
 ---
 
-> ## ⚠️ vpay has never taken a real payment
+> ## ⚠️ vpay is in live testing, not generally available
+>
+> **vpay is no longer a scaffold.** On 2026-10-21 the repository owner stated
+> that vpay is being tested for live use on some clusters. It is not yet
+> generally available. That statement is not evidence for any capability: no
+> result from those clusters is recorded here yet, so everything below that
+> says "never" still describes what is on record.
 >
 > **What works, against stub rails.** A payment goes end to end: a merchant
 > authenticates, creates a PaymentIntent, confirms it, `vpay-worker` polls the
@@ -23,11 +29,12 @@ MTN MoMo and Orange Money are the first two adapters. Neither is the architectur
 > (`just test-e2e`). Every rail in every one of those runs is a
 > `wiremock/wiremock` container reached over HTTP.
 >
-> **What has never happened.** No payer has been prompted on a handset, no
+> **What is not on record.** No payer has been prompted on a handset, no
 > money has moved, no webhook has reached a merchant endpoint outside this
-> repository, no rail has ever refunded anything, and no cluster has ever run
-> vpay. The dashboard supports staff sign-in and tenant-bound reads against the
-> local test stack; it has not run in a deployment.
+> repository, no rail has ever refunded anything, and no cluster run of vpay
+> is recorded — the live testing above has produced no recorded result yet.
+> The dashboard supports staff sign-in and tenant-bound reads against the
+> local test stack; no deployment of it is on record.
 >
 > _(This said "no HTTP call to MTN's or Orange's own endpoints — not
 > production, not even their sandboxes" until 2026-09-16, and had been wrong

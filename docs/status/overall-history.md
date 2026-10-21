@@ -134,3 +134,14 @@ itself, and the load-bearing sentence that survived all nine, are still on
 > [September 15 verification record](verification/2026-09-15.md) separates
 > that example from the aggregate and records the correction from its
 > earlier three-run total.
+
+> **2026-10-21 (the owner's statement, docs only): the banner itself is
+> replaced.** The repository owner states that vpay is no longer a scaffold:
+> it is being tested for live use on some clusters, and it is not yet
+> generally available. [docs/status.md](../status.md) now opens with that
+> statement instead of "vpay is a scaffold … it cannot take a payment. Do not
+> deploy it." The statement retires those clauses, and "no cluster has ever
+> run vpay", on the owner's word; it is not a test result, records no outcome
+> from those clusters, and moves no row on any status page. **The load-bearing
+> sentence above is unchanged: no real payer, no production rail, and no rail
+> other than MTN's sandbox are on record as touched.**
