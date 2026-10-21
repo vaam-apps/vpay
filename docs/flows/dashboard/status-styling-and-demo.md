@@ -253,5 +253,8 @@ whitespace text node in front of it, so hydration failed (React #418). The
 other cases followed, because the spec runs in order on one sign-in. It
 is the first child of `<body>` now, which still runs before anything
 paints; `src/layout.test.tsx` pins it. A production build passes the spec's
-first case under Cypress, and the whole spec is CI's `e2e (compose)` to
-show: [../../status/verification/2026-10-21-dashboard-hydration.md](../../status/verification/2026-10-21-dashboard-hydration.md).
+first case under Cypress. With that fixed, CI passed 17 of 18 and exposed a
+second defect from the redesign: the last case still expected `/payments`
+after signing back in, where `HOME_PATH` is `/overview`. It is corrected in
+the same change:
+[../../status/verification/2026-10-21-dashboard-hydration.md](../../status/verification/2026-10-21-dashboard-hydration.md).

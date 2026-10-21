@@ -1,10 +1,11 @@
 # 2026-10-21 — the dashboard failed hydration under Cypress, and `dashboard.cy.ts` went 17 of 18 red
 
-Branch `claude/happy-hopper-r3h6rz`, from `master` at `0706cd5` (#319). One
-change, in `frontends/apps/dashboard` only. The theme script moves from
-`<head>` to the first child of `<body>`, and one unit case pins it there.
-**No route, no server code, no migration and no `NotImplemented` token
-moved.**
+Branch `claude/happy-hopper-r3h6rz`, from `master` at `0706cd5` (#319). Two
+changes. In `frontends/apps/dashboard`, the theme script moves from `<head>`
+to the first child of `<body>`, and one unit case pins it there. In
+`dashboard.cy.ts`, one stale assertion that #318 missed is corrected; that
+second failure is described below. **No route, no server code, no migration
+and no `NotImplemented` token moved.**
 
 ## What failed
 
@@ -131,7 +132,36 @@ error.
 
 **Not run here:** the whole of `dashboard.cy.ts` against the compose stack.
 It needs vpay, its OP and a staff member, and only CI's `e2e (compose)` runs
-it. That job on this branch is the evidence that the other 17 cases pass once
-the first one does. #318's other changes to the spec (the landing route, the
-chip filter) have never been run, so a second, unrelated failure there is
-possible and would be this PR's to report, not to hide.
+it.
+
+## The second failure, which the first one hid
+
+This branch's first CI run (`1b65619`, run 39620276267) passed **17 of
+`dashboard.cy.ts`'s 18** (`checkout.cy.ts` 1/1 and `shop-hosted.cy.ts` 4/4
+passed too). Only the last case still failed:
+
+```text
+  1) the dashboard
+       signs the same staff member back in with the password they set:
+     AssertionError: Timed out retrying after 4000ms: Expected to find element: `#dashboard-signin-email`, but never found it.
+      at Context.eval (webpack://@vpay/e2e/./cypress/e2e/dashboard.cy.ts:1193:7)
+```
+
+That error is the third attempt's; Cypress prints only the last one. #318
+moved `HOME_PATH` from `/payments` to `/overview` and updated the first
+sign-in's landing assertion (leg 5) to match. It did not update this case's
+last line, which still expected `/payments` after the re-sign-in. Here is
+what the run is consistent with:
+
+1. Attempt 1 signed in, landed on `/overview`, and failed on that line.
+2. Attempts 2 and 3 opened `/login` while signed in. `alreadySignedIn()`
+   redirected them to `HOME_PATH`, which has no email field.
+
+**This is inferred, not observed.** Attempt 1's message was not printed and
+no screenshot was uploaded. What supports it: this is the only landing
+assertion after a sign-in that #318 left at `/payments` (the others in the
+spec follow explicit visits to `/payments`). Each attempt took about 30 s,
+which is the TOTP wait plus a sign-in, not a 4 s miss. And the redirect for
+a signed-in `/login` is `app/login/page.tsx`'s own. The line now expects
+`/overview`, with a comment saying why. This PR's next `e2e (compose)` run
+is the test of that reading.
