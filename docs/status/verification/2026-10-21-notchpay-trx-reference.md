@@ -87,7 +87,10 @@ answers real HTTP:
 
 ## Gates and tests
 
-Run on 2026-10-21 on this branch, stacked on vaam-apps/vpay#303, on Linux.
+Run on 2026-10-21, on Linux, in two rounds.
+
+**First, while stacked on vaam-apps/vpay#303** (head `2fcc56f`, base the
+branch of vaam-apps/vpay#303 at `acb2028`):
 
 - `cargo test -p vpay-notchpay --lib`: **35 passed, 0 ignored**.
   `cargo test -p vpay-adapter-notchpay --lib`: **39 passed, 0 ignored**.
@@ -103,3 +106,18 @@ vpay-tests-conformance --all-targets -- -D warnings`: clean.
   added: the new tests are functions in existing binaries, so
   `expected_suites` (53) cannot move. CI runs it.
 - **Not run here:** `just ci` as a whole. CI runs it.
+
+**Then on the head merged with `master`** after #303 was squash-merged as
+`f7c7ae3`. The head was `1b57199`, base `master` at `f7c7ae3`. The merge
+conflicted only because of the squash: `git diff acb2028 f7c7ae3` is empty,
+so every conflict took this branch's side. The merged tree is identical to
+`2fcc56f`'s. Re-run on it:
+
+- `cargo nextest run -p vpay-tests-conformance -E 'test(notchpay)'`: **27
+  passed, 0 skipped**, against WireMock in Docker.
+- `just verify`: all fifteen gates passed.
+- CI on `1b57199`: `rust`, `web`, `e2e (compose)`, the self-checks and
+  "status.md matches the code" green. The `quality` workflow (Super-linter,
+  CodeQL, Trivy, link integrity) did not run on it, because it was pushed
+  before the PR was retargeted to `master`. The commit adding this paragraph
+  is what runs it.
