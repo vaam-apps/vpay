@@ -9,16 +9,26 @@ merchant account collects MTN MoMo and Orange Money in Cameroon through the
 Code: `backends/crates/vpay-adapter-notchpay` on the client
 `backends/crates/vpay-notchpay` ([reference](../reference/vpay-notchpay.md)).
 
-> **The adapter has never called Notch Pay.** Its calls were transcribed
-> from Notch Pay's documentation and `openapi.yaml` **2.1.0** (read
-> 2026-10-20). On 2026-10-21 Notch Pay's real sandbox answered RFC-0012
-> § 10's sandbox items through `vpay-notchpay`'s probe, not through this
-> adapter ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
+> **The adapter has called Notch Pay's real sandbox, and only its sandbox.**
+> Its calls were transcribed from Notch Pay's documentation and `openapi.yaml`
+> **2.1.0** (read 2026-10-20). On 2026-10-21 Notch Pay's sandbox answered
+> RFC-0012 § 10's sandbox items through `vpay-notchpay`'s probe (step 1)
+> ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
 > **It contradicted the adapter's addressing:** process and read take Notch
 > Pay's `trx.…` reference, and ours is a `404`. Fixed on 2026-10-21: the
 > adapter keeps the `trx.…` from the initialize answer and addresses both by
-> it. That fix has never met Notch Pay either (step 5). Read § "To confirm
-> with Notch Pay" before trusting any row.
+> it. The same day, step 5 took three test-mode payments through the adapter
+> itself, from the maintainer's machine: one succeeded, one failed, and one
+> read `complete` for less than its amount and was refused, never a success,
+> and the `trx.…` addressing worked on all three
+> ([verification](../status/verification/2026-10-21-notchpay-step5.md)).
+> Production has never been called, no webhook has been received, and
+> `refund` is a token. Read § "To confirm with Notch Pay" before trusting
+> any row.
+>
+> _(This banner opened "The adapter has never called Notch Pay" and said
+> "That fix has never met Notch Pay either (step 5)" until 2026-10-21, when
+> step 5 ran.)_
 
 ## Preconditions
 
@@ -231,10 +241,17 @@ addressing is fixed that read would have been `Succeeded`. A success now
 needs `amounts.total` to be the charge's too, and a missing `amounts` is
 `Malformed`. A short `total` has its own error: money moved, not this
 charge's amount, so the charge needs an operator. The question is with
-Notch Pay in writing.
+Notch Pay in writing. **Step 5 confirmed it through the adapter on
+2026-10-21:** `+237670000001` (230 XAF) read `complete` with a short
+`amounts.total` and was refused as `Malformed` on each read after the first,
+never `Succeeded`. After 15 minutes the charge was `pending` and the intent
+`processing`. That run did not record the `amounts.total` value; step 1 had
+105 of 107.
 
 **A payment answer carries no `id`** in the sandbox, so a success records
-`reference` (`trx.…`) as `provider_txn_id` when `id` is absent.
+`reference` (`trx.…`) as `provider_txn_id` when `id` is absent. Step 5 saw
+exactly this on 2026-10-21: the success's `provider_txn_id` is the
+`trx.test_…` that `provider_ref_extra.notchpay_reference` holds.
 
 ## Callbacks
 
@@ -271,8 +288,11 @@ each is marked below. The ones that decide whether the adapter is right:
    payment operations be disabled? A yes retires § "Production risks" items
    1–4 and the boot warning.
 2. **(S)** Does the payment path take our reference, Notch Pay's `trx.…`, or
-   both? **Contradicted 2026-10-21: `trx.…` only.** Fixed the same day; the
-   fix has not met Notch Pay (step 5).
+   both? **Contradicted 2026-10-21: `trx.…` only.** Fixed the same day, and
+   the fix met Notch Pay through the adapter in step 5 on 2026-10-21: every
+   charge held `ref_extra.notchpay_reference` (`trx.test_…`) after submit, and
+   every read by it was answered. _(This said "the fix has not met Notch Pay
+   (step 5)" until then.)_
 3. **(S)** Does `cm.mobile` resolve the network from the number? **Answered
    2026-10-21: yes**, for MTN and Orange outcome numbers.
 4. **(S)** Is a repeated reference answered `409`? **Answered 2026-10-21:
@@ -280,7 +300,10 @@ each is marked below. The ones that decide whether the adapter is right:
 5. **(S)** What does the read say for each sandbox outcome number (`…000001`
    insufficient funds, `…000002` other failure, `…000003` timeout, `…000004`
    canceled)? Any reason field? **Answered 2026-10-21:** `complete` for
-   less than asked, `failed`, `expired`, `canceled`; no reason field.
+   less than asked, `failed`, `expired`, `canceled`; no reason field. Through
+   the adapter (step 5, same day): `…000002` was `failed` and became
+   `provider_error`, and `…000001` was refused as `Malformed` on every read
+   after the first. `…000003` and `…000004` were not run through vpay.
 6. **(W, S)** Is `POST /refunds` real, and how is it made safe to replay?
 7. **(S)** Is the webhook signature over the raw body? **Not measured:** no
    public URL to receive one.
@@ -301,13 +324,21 @@ without the `+`. The adapter sends the `+` form the documentation shows.
 
 ## Status
 
-**Built 2026-10-20. Its calls have never been made through the adapter.
-Notch Pay's sandbox answered RFC-0012 step 1 on 2026-10-21, through the
-probe, and contradicted the adapter's addressing**
+**Built 2026-10-20. Its calls were first made through the adapter on
+2026-10-21, against Notch Pay's real sandbox (RFC-0012 step 5): one
+payment succeeded, one failed, and one that read `complete` for less than its
+amount was refused and stayed `pending`**
+([verification](../status/verification/2026-10-21-notchpay-step5.md)). Step 1
+the same day, through the probe, had contradicted the adapter's addressing
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
-The addressing was fixed the same day
+The addressing was fixed
 ([verification](../status/verification/2026-10-21-notchpay-trx-reference.md)),
-and that fix has not met Notch Pay.
+and the fix met Notch Pay in step 5 and worked. Production has never been
+called.
+
+_(This paragraph read "Its calls have never been made through the adapter",
+and ended "that fix has not met Notch Pay", until 2026-10-21, when step 5
+ran.)_
 
 - **Built and tested in process:** the adapter (`vpay-adapter-notchpay`, its
   unit tests in `src/tests.rs` and `src/mapping.rs`); the boot rules
@@ -320,6 +351,41 @@ and that fix has not met Notch Pay.
   the stub answers in the shape Notch Pay's sandbox did: paths by
   `trx.test_…`, our reference as `trxref`, no `id`, an `amounts.total`. It
   proves the adapter against that stub, and nothing about Notch Pay.
+- **Step 5 done 2026-10-21**, on the maintainer's MacBook (not a cloud
+  session, and no `--ca-bundle`), from `master` at `865420b`, which holds
+  the `trx.…` addressing fix: `vpay-server`, `vpay-worker` and Postgres 16 on
+  the `notchpay-sandbox` profile, `livemode=false`, test keys, on the
+  maintainer's approval in that session, which named the numbers, the amounts
+  and every call. Three payments on `cm.mobile`, XAF
+  ([verification](../status/verification/2026-10-21-notchpay-step5.md)):
+  - `+237670000000`, 210 XAF: charge and intent `succeeded` on the worker's
+    second read, about 15 s after create. `provider_txn_id` is
+    `trx.test_…`, Notch Pay's `reference`, because the answer carries no
+    `id`. Event `payment_intent.succeeded`; one balanced ledger transaction,
+    debit `payer_clearing` and credit `merchant_payable`, 210 XAF.
+  - `+237670000002`, 220 XAF: charge `failed` (`failure_raw` `failed`),
+    `failure_code` `provider_error`, intent `requires_payment_method`, event
+    `payment_intent.payment_failed`, on the worker's second read.
+  - `+237670000001`, 230 XAF ("insufficient funds"): read `complete` with
+    `amounts.total` short of the charge's amount. Its first read (about
+    0.5 s after submit) answered `pending`; each of the next eleven was
+    refused as `Malformed`, with the worker's WARN each time. At 15 minutes the charge was still `pending` and the
+    intent `processing`, with no event and no ledger entry. By the code it
+    reaches `unresolved` only at the 24 h horizon (`escalate_to_unresolved`);
+    that was not observed.
+  - Every charge held `provider_ref_extra.notchpay_reference`
+    (`trx.test_…`) after submit, and every read by it was answered. vpay sent
+    3 submits and 16 reads. The ADR-0031 `WARN` was logged at boot by the
+    server and the worker. No key appeared in either log.
+- **Two observations from step 5, neither an adapter defect, and no change
+  made:** the `provider_requests` rows for the 11 refused reads record "no
+  answer" (`status_code` and `responded_at` empty) although Notch Pay
+  answered each one, because the worker records every `ProviderError`
+  that way; and the adapter's "needs an operator" message wakes nobody for
+  24 h, because the worker retries a `Malformed` on the ladder with a `WARN`
+  until the horizon (read from the code, not observed past 15 minutes). Both
+  belong to the worker and the database, and the second is a design question
+  for the maintainer.
 - **Step 1 done 2026-10-21** from a cloud session, with the probe's
   cloud-only `--ca-bundle`, on the maintainer's approval in that session:
   items 3, 4, 5 and 15 answered; 2, 13 and 16 contradicted; 7 and 11 not
@@ -328,9 +394,9 @@ and that fix has not met Notch Pay.
   adapter addresses process and read by Notch Pay's `trx.…`). Three webhook
   endpoints the probe created could not be deleted (`DELETE` answered
   `404`); the maintainer deleted them by hand.
-- **Not done:** RFC-0012 delivery step 5 (the first test-mode call through
-  the adapter). It is the first time the item 2 fix would meet Notch Pay.
-  No test-mode key was
+- **Before step 5 ran (2026-10-20, kept as it was written).** RFC-0012
+  delivery step 5 (the first test-mode call through the adapter) was the
+  first time the item 2 fix would meet Notch Pay. No test-mode key was
   available when the adapter landed. A session later on 2026-10-20 had the
   keys and **still made no request**: its permission policy refused the
   calls, and its egress re-terminates TLS, which vpay's vendored-roots client
@@ -340,11 +406,26 @@ and that fix has not met Notch Pay.
   On the maintainer's decision the same day, both steps run on a real
   machine from [runbooks/notchpay-sandbox-test.md](../runbooks/notchpay-sandbox-test.md)
   (a probe, `vpay-notchpay --example sandbox_probe`, and the
-  `notchpay-sandbox` profile). Step 1 later ran from a cloud session (above).
-  Step 1 is evidence about Notch Pay, not about the adapter: until a dated
-  verification page records step 5, the Collect and Status read cells of
-  [status/providers.md](../status/providers.md) say "stub-only", never
-  "sandbox" or "proven".
+  `notchpay-sandbox` profile). Step 1 later ran from a cloud session (above),
+  and step 5 on the maintainer's machine (above). Step 1 is evidence about
+  Notch Pay, not about the adapter; step 5's dated page is what moved the
+  Collect and Status read cells of
+  [status/providers.md](../status/providers.md) from "stub-only" to "proven;
+  sandbox 2026-10-21". _(This bullet was headed "Not done" and ended "until a
+  dated verification page records step 5, the Collect and Status read cells
+  of status/providers.md say "stub-only", never "sandbox" or "proven"" until
+  2026-10-21.)_
+- **Not done**, after step 5: no webhook was received (runbook A4), so
+  RFC-0012 § 10 items 7 and 17 stay open, and webhook signature verification
+  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md)) is not built; Notch
+  Pay's production was never called and no live key was used, so item 8 (a
+  live key's prefix) stays a written question; no refund
+  (`notchpay::refund` is still a token); Orange (`+23769…`) was not run
+  through vpay, and step 1's probe is its only run; the 24 h escalation of the
+  short collection to `unresolved` was not observed, because the stack was
+  torn down at 15 minutes; and the `amounts.total` value Notch Pay returned
+  for `…000001` was not captured (vpay logs no response body, and no extra
+  read was made).
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft);

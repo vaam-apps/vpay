@@ -26,11 +26,15 @@
 //!
 //! # What is not proven
 //!
-//! **This crate has never called Notch Pay** (RFC-0012 step 5 has not run).
+//! **Notch Pay's sandbox has been called through this crate, and its production
+//! never has.** RFC-0012 step 5 took three test-mode payments through it on
+//! 2026-10-21 (`docs/status/verification/2026-10-21-notchpay-step5.md`).
 //! Its calls were transcribed from Notch Pay's documentation and corrected
 //! from what Notch Pay's sandbox answered `vpay-notchpay`'s probe on
-//! 2026-10-21 (step 1). Every wire assertion runs against a WireMock stub.
-//! The `mapping` module's header names what was confirmed and what is open.
+//! 2026-10-21 (step 1). Every wire assertion in this crate's tests still runs
+//! against a WireMock stub, which proves the adapter against that stub and
+//! nothing about Notch Pay. The `mapping` module's header names what was
+//! confirmed and what is open.
 //!
 //! **A crash window the rail does not let us close.** Notch Pay's reference
 //! exists only in the initialize answer, and becomes durable only when

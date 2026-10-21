@@ -7,23 +7,28 @@ the 2026-09-15 MTN sandbox tests the same way), with a Notch Pay
 - **Part A**, RFC-0012 delivery step 1: a probe that asks Notch Pay's sandbox
   the § 10 sandbox questions and writes a redacted report.
 - **Part B**, delivery step 5: vpay itself, with server, worker and Postgres,
-  taking one sandbox payment that succeeds and one that fails, through the
-  `notchpay` adapter.
+  taking one sandbox payment that succeeds, one that fails and one that
+  collects less than was asked, through the `notchpay` adapter.
 
 You paste the outputs back to a Claude session. It records them on dated
 pages under `docs/status/verification/` and corrects the adapter wherever
 Notch Pay disagrees with its specification.
 
-**What this page is not.** It is not evidence. Nothing has called Notch Pay
-until someone runs it and the outputs are recorded
-([`../status/verification/2026-10-20-notchpay-sandbox.md`](../status/verification/2026-10-20-notchpay-sandbox.md)
-says why the first attempt made no request). It is not a production test:
-every key here is a test key, and `deployment.livemode` stays `false`. It is
-not webhook signature verification, which is designed in
+**What this page is not.** It is not evidence on its own: the evidence is on
+the dated pages it points to. Part A ran on 2026-10-21 from a cloud session
+([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
+Part B ran on 2026-10-21 from the maintainer's machine
+([verification](../status/verification/2026-10-21-notchpay-step5.md)).
+_(This said "It is not evidence. Nothing has called Notch Pay until someone
+runs it and the outputs are recorded" until 2026-10-21;
+[the first attempt](../status/verification/2026-10-20-notchpay-sandbox.md) had
+made no request.)_ It is not a production test: every key here is a test key,
+and `deployment.livemode` stays `false`. It is not webhook signature
+verification, which is designed in
 [RFC-0014](../rfc/0014-verifying-rail-callbacks.md) and not built.
 
-Written 2026-10-20. Nothing on this page has been run yet against Notch Pay.
-What was run, in a container that cannot reach Notch Pay, was this:
+Written 2026-10-20. Before either part had been run against Notch Pay, what
+was run, in a container that cannot reach Notch Pay, was this:
 
 - the probe's three phases, against the repository's WireMock stub
   (`backends/tests/conformance/wiremock/notchpay`) on loopback, with fixture
@@ -32,8 +37,20 @@ What was run, in a container that cannot reach Notch Pay, was this:
 - `verify-signature` against HMACs computed independently with `openssl`;
 - B1 and B2 below, booted against a local Postgres with fixture keys, up to
   `healthz` and `livez`. Neither process calls the rail until a charge
-  exists, and B3 was not run. The first real run will find something this page
-  gets wrong; fix the page in the same change that records the run.
+  exists, and B3 was not run.
+
+_(This page said "Nothing on this page has been run yet against Notch Pay"
+and "The first real run will find something this page gets wrong; fix the
+page in the same change that records the run" until 2026-10-21.)_ **Part B's
+run on 2026-10-21 found four things this page got wrong**, corrected in the
+same change that records it: B1 left the server's observability listener on
+`0.0.0.0:9090`, and `/livez` is on that port, not on 8080; B3's loop never set
+`VPAY_AMOUNT`, so every payment carried the example's default 5 000 XAF,
+against ground rule 4; B3's timing text omitted the worker's immediate first
+read and said "about two minutes" where both outcomes arrived on the second
+read, about 15 s after create; and B3 expected `…000001` to reach
+`requires_payment_method`, which it does not (see B3). B3's query also gained
+the `provider_txn_id` and `notchpay_reference` columns.
 
 ---
 
@@ -275,8 +292,14 @@ set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
   --profile notchpay-sandbox --config config/application.yml \
   --database-url postgres://vpay:vpay@localhost:5434/vpay \
   --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
-  --bind 127.0.0.1:8080 --log-format text 2>&1 | tee ~/notchpay-server.log
+  --bind 127.0.0.1:8080 --observability-bind 127.0.0.1:9090 \
+  --log-format text 2>&1 | tee ~/notchpay-server.log
 ```
+
+`--observability-bind` keeps `/livez` and `/metrics` on loopback. Without it
+the server's observability listener bound `0.0.0.0:9090`, every interface, on
+the maintainer's laptop on 2026-10-21. `/livez` is on that port and not on
+8080, where only `/healthz` answers (`/livez` there is a `404`).
 
 A **WARN about the public key's exposure is expected** at every boot
 (ADR-0031 condition 4). A boot error naming `credentials.public_key` and
@@ -296,24 +319,30 @@ set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
 The worker's authenticated read is what moves the charge. Notch Pay cannot
 reach `localhost`, and no webhook is needed.
 
-### B3. Terminal 3: one success, one failure
+### B3. Terminal 3: one success, one failure, one short collection
 
 ```bash
-for n in 237670000000 237670000001; do
+for pair in 237670000000:210 237670000002:220 237670000001:230; do
+  n=${pair%%:*}; amt=${pair##*:}
   VPAY_BASE_URL=http://localhost:8080 VPAY_CLIENT_ID=notchpay-sandbox-merchant \
   VPAY_PRIVATE_KEY_FILE=.e2e/notchpay-sandbox-merchant/oauth-signing-key.pem \
-  VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=$n VPAY_ORDER="np-$n-$(date +%s)" \
+  VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=$n VPAY_AMOUNT=$amt VPAY_ORDER="np-$n-$(date +%s)" \
     node examples/merchant-node/index.mjs
 done
 ```
 
-Each prints `created pi_…` and `confirmed processing`. Wait about two
-minutes: the worker asks at 10, 20, 30, 45, 60 and 90 s. Then read the state
-from the database:
+Set `VPAY_AMOUNT`: the example's default is 5 000 XAF for every payment, and
+ground rule 4 says to vary the amounts. Each payment prints `created pi_…`
+and `confirmed processing`. The worker reads the charge once right after
+submit, then again after waits of 10, 20, 30, 45, 60 and 90 s, and every
+120 s after that (the waits are between reads, not from submit). On
+2026-10-21 both outcomes arrived on the second read, about 15 s after create.
+Wait a few minutes, then read the state from the database:
 
 ```bash
 psql postgres://vpay:vpay@localhost:5434/vpay -c \
- "select pi.id, pi.status, c.state, c.failure_code, c.provider_txn_id is not null as has_txn, c.updated_at
+ "select pi.id, pi.status, c.state, c.failure_code, c.provider_txn_id is not null as has_txn,
+         c.provider_txn_id, c.provider_ref_extra->>'notchpay_reference' as notchpay_reference, c.updated_at
     from payment_intents pi join charges c on c.payment_intent_id = pi.id order by c.created_at"
 psql postgres://vpay:vpay@localhost:5434/vpay -c \
  "select object_id, type, created_at from events order by seq"
@@ -322,13 +351,26 @@ psql postgres://vpay:vpay@localhost:5434/vpay -c \
 Expected if the mapping is right:
 
 - `…000000` reaches `succeeded`.
-- `…000001` reaches `requires_payment_method` with a `failure_code`.
+- `…000002` reaches `requires_payment_method`, charge `failed`,
+  `failure_code` `provider_error` (Notch Pay's read is `failed` and names no
+  reason).
+- `…000001`, the "insufficient funds" number, reaches neither. Notch Pay's
+  sandbox reads it `complete` with `amounts.total` short of `amount` (step 1
+  and step 5, 2026-10-21). The adapter refuses that as `Malformed`, which the
+  worker retries on the ladder with a WARN ("…the charge needs an operator to
+  reconcile it with Notch Pay"). The charge stays `pending` and the intent
+  `processing`, and the charge becomes `unresolved` only at the 24 h horizon.
+  **Any `succeeded` here is a defect.**
 
 Whatever you see is the answer. Do not adjust anything to match the
 expectation.
 
-If `…000001` never leaves `processing`, the read may not be reaching a
-terminal status. Leave it running for 15 minutes and paste what you have.
+If `…000000` or `…000002` never leaves `processing`, the read may not be
+reaching a terminal status. Leave it running for 15 minutes and paste what
+you have.
+
+_(B3 said `…000001` "reaches `requires_payment_method` with a `failure_code`"
+until 2026-10-21, and ran only two payments, `…000000` and `…000001`.)_
 
 ### What to paste back from Part B
 

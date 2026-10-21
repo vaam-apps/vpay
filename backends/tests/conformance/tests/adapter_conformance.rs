@@ -167,7 +167,8 @@ use vpay_testkit::containers::start_wiremock;
 ///
 /// `NotchPay` since 2026-10-20 (RFC-0012 step 3). Its row proves the adapter
 /// against a stub transcribed from Notch Pay's `openapi.yaml` 2.1.0, and
-/// nothing about Notch Pay: nothing in this repository has called it.
+/// nothing about Notch Pay. This suite never calls it; the sandbox was called
+/// through the adapter on 2026-10-21 (RFC-0012 step 5), from a runbook.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RailUnderTest {
     MtnMomo,

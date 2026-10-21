@@ -14,6 +14,13 @@
 //! `partialy-refunded`, `rejected` and `abandoned` were not observed, and
 //! `docs/flows/adapter-notchpay.md` § "To confirm" lists what is open.
 //!
+//! Confirmed through this adapter on 2026-10-21 (delivery step 5,
+//! `docs/status/verification/2026-10-21-notchpay-step5.md`): `complete` with
+//! `amounts.total` equal to the amount is `Succeeded`; `failed` is
+//! `Failed { provider_error }`; and the "insufficient funds" number answered
+//! `pending` on its first read, then a `complete` whose `amounts.total` was
+//! short, which was `Malformed` on each of the next eleven reads.
+//!
 //! The split with `vpay-notchpay` is the one the other two adapters draw
 //! between `wire.rs` and `mapping.rs`, at a crate boundary: the client reports
 //! what Notch Pay said, as `Answer::Success` or `Answer::Refused`, and this

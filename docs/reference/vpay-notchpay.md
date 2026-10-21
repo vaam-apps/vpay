@@ -10,8 +10,12 @@ be called by a `notchpay` adapter.
 links that adapter.** It is admitted under
 [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md),
 which amended ADR-0029 D1's third rule; see
-[adapter-notchpay.md](../flows/adapter-notchpay.md). **Nothing has called
-Notch Pay**, through this crate or any other.
+[adapter-notchpay.md](../flows/adapter-notchpay.md). **Notch Pay's sandbox
+has been called through this crate**, by the step 1 probe and by the adapter
+(step 5), both on 2026-10-21 ([step 1](../status/verification/2026-10-21-notchpay-sandbox-run.md),
+[step 5](../status/verification/2026-10-21-notchpay-step5.md)). Its
+production never has. _(This said "Nothing has called Notch Pay, through this
+crate or any other" until 2026-10-21.)_
 
 _(This paragraph read as follows until 2026-10-20, when the adapter landed.)_
 "No adapter uses it, and no binary links it.

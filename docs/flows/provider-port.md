@@ -237,9 +237,12 @@ Evidence:
   ADR-0031 admits a provider whose status read takes a key the provider calls
   public only if the process says so at boot. Nothing branches on it except
   the boot warning.
-- **Nothing about Notch Pay is proven against Notch Pay.** The conformance
-  suite's `notchpay` row runs against a stub transcribed from Notch Pay's
-  specification.
+- **The conformance suite's `notchpay` row proves nothing against Notch Pay.**
+  It runs against a stub transcribed from Notch Pay's specification. The
+  adapter has met Notch Pay's real sandbox, on 2026-10-21, in
+  [RFC-0012 step 5](../status/verification/2026-10-21-notchpay-step5.md).
+  _(This bullet said "Nothing about Notch Pay is proven against Notch Pay"
+  until then.)_
 
 **Updated 2026-10-17 (RFC-0010 § 7, delivery step 1): the `Origin` arm has an
 integration guard, and a refund's `ChargeRef` names the payment it unwinds.**
