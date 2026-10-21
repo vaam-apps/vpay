@@ -24,6 +24,7 @@ export {
   VpayUnexpectedResponseError,
   VpayTransportError,
   VpayConfigError,
+  VpayInvalidParamsError,
   WebhookSignatureError,
 } from "./errors.js";
 

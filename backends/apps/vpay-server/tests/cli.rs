@@ -105,14 +105,106 @@ fn free_addr() -> SocketAddr {
 }
 
 /// RAII guard: kills and reaps the child on drop, so a panicking assertion
-/// can never leak a process behind it.
-struct ChildGuard(Child);
+/// can never leak a process behind it. It also owns the files the child's
+/// output was sent to, and removes them with it.
+struct ChildGuard(Child, ServerLogs);
 
 impl Drop for ChildGuard {
     fn drop(&mut self) {
         let _ = self.0.kill();
         let _ = self.0.wait();
+        self.1.remove();
     }
+}
+
+/// Where a spawned server's output went, so a boot that fails can say why.
+///
+/// This file used to send both streams to `/dev/null`, and `poll_healthz`
+/// then polled five seconds for a server that had already exited: a server
+/// that lost a bind (see [`bin`]) and one that was merely slow both failed as
+/// `left: None, right: Some(200)`, and nothing told them apart. The fatal
+/// error of a boot is on stderr — `main` prints `vpay-server: {error:#}` there
+/// — and the lines before it are on stdout.
+///
+/// Files rather than pipes: nothing reads a pipe until a test fails, and an
+/// unread pipe fills and stalls the server. They live in
+/// `CARGO_TARGET_TMPDIR`, like [`SIGNING_KEY_FILE`], and are removed with the
+/// guard.
+struct ServerLogs {
+    stdout: PathBuf,
+    stderr: PathBuf,
+}
+
+/// Stdout lines [`ServerLogs::report`] keeps. The boot banner alone is one
+/// line of about 2 KB, so this is lines, not bytes, and each is cut too.
+const REPORTED_STDOUT_LINES: usize = 8;
+const REPORTED_LINE_CHARS: usize = 300;
+
+impl ServerLogs {
+    /// Everything a failure message wants to know about the server's output.
+    fn report(&self) -> String {
+        let stderr = std::fs::read(&self.stderr).unwrap_or_default();
+        let mut report = format!(
+            "--- stderr ---\n{}",
+            String::from_utf8_lossy(&stderr).trim_end()
+        );
+        let stdout = std::fs::read(&self.stdout).unwrap_or_default();
+        let stdout = String::from_utf8_lossy(&stdout);
+        let mut tail: Vec<String> = stdout
+            .lines()
+            .rev()
+            .take(REPORTED_STDOUT_LINES)
+            .map(|line| line.chars().take(REPORTED_LINE_CHARS).collect())
+            .collect();
+        tail.reverse();
+        report.push_str(&format!(
+            "\n--- stdout, last {} line(s) ---\n{}",
+            tail.len(),
+            tail.join("\n")
+        ));
+        report
+    }
+
+    fn remove(&self) {
+        let _ = std::fs::remove_file(&self.stdout);
+        let _ = std::fs::remove_file(&self.stderr);
+    }
+}
+
+/// Creates one log file for a server's `kind` of output (`"stdout"` or
+/// `"stderr"`) and returns its path with the `Stdio` that writes to it.
+///
+/// Named by this process's pid and a counter, so concurrent test binaries and
+/// the many spawns of one test never share a file.
+fn log_file(kind: &str) -> (PathBuf, std::fs::File) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static SEQUENCE: AtomicUsize = AtomicUsize::new(0);
+    let n = SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("vpay-server-{}-{n}.{kind}.log", pid()));
+    let file = std::fs::File::create(&path)
+        .expect("the server's log file is created in the cargo target tmpdir");
+    (path, file)
+}
+
+/// Spawns `cmd` with both of its output streams logged to files, and returns
+/// the guarded child. [`poll_healthz`] reads those files if the server dies.
+fn spawn_logged(cmd: &mut Command) -> ChildGuard {
+    let (stdout_path, stdout) = log_file("stdout");
+    let (stderr_path, stderr) = log_file("stderr");
+    let child = cmd
+        .stdout(Stdio::from(stdout))
+        .stderr(Stdio::from(stderr))
+        .spawn()
+        .expect("spawn vpay-server");
+    ChildGuard(
+        child,
+        ServerLogs {
+            stdout: stdout_path,
+            stderr: stderr_path,
+        },
+    )
 }
 
 /// A `vpay-server` command whose observability listener is already on an
@@ -245,9 +337,18 @@ fn provider_without_adapter_config_path() -> &'static str {
 /// Returns the HTTP response's status code, or `None` if the deadline
 /// passed without ever getting a parseable response. Bounded, no fixed
 /// sleep: returns as soon as the server is up.
-fn poll_healthz(addr: SocketAddr, timeout: Duration) -> Option<u16> {
+///
+/// **A server that has exited is not polled for the rest of the budget.** It
+/// panics at once with the exit status and what the server printed
+/// ([`ServerLogs::report`]), because a process that is gone will never answer
+/// and the only useful thing left to say is why it went. A server that is
+/// still running but silent returns `None`, as before, after writing the same
+/// report to the test's stderr — which libtest prints only for a test that
+/// fails — so "slow" and "stuck" are told apart too.
+fn poll_healthz(server: &mut ChildGuard, addr: SocketAddr, timeout: Duration) -> Option<u16> {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
+        assert_still_running(server, addr);
         if let Ok(mut stream) = TcpStream::connect(addr) {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(500)));
             let request = "GET /healthz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
@@ -267,7 +368,24 @@ fn poll_healthz(addr: SocketAddr, timeout: Duration) -> Option<u16> {
         }
         std::thread::sleep(Duration::from_millis(25));
     }
+    // The server can exit during the last sleep, which the loop would not see.
+    assert_still_running(server, addr);
+    eprintln!(
+        "vpay-server is still running but never answered /healthz on {addr} within {timeout:?}\n{}",
+        server.1.report()
+    );
     None
+}
+
+/// Panics, naming the exit status and the server's output, if `server` has
+/// already exited. See [`poll_healthz`].
+fn assert_still_running(server: &mut ChildGuard, addr: SocketAddr) {
+    if let Ok(Some(status)) = server.0.try_wait() {
+        panic!(
+            "vpay-server exited ({status}) before it answered /healthz on {addr}\n{}",
+            server.1.report()
+        );
+    }
 }
 
 /// Sends one HTTP/1.1 request over a fresh connection and returns
@@ -339,13 +457,21 @@ fn wait_with_timeout(child: &mut Child, timeout: Duration) -> Option<std::proces
 }
 
 /// Spawns `cmd` with its stdout piped, and streams that stdout line-by-line
-/// into a channel from a background thread. Returns the guarded child
-/// (stderr is discarded) plus the receiving end. Mirrors
-/// `vpay-worker-bin/tests/cli.rs`'s helper of the same name.
+/// into a channel from a background thread. Returns the guarded child plus
+/// the receiving end. Mirrors `vpay-worker-bin/tests/cli.rs`'s helper of the
+/// same name.
+///
+/// The reader thread also writes every line to the child's stdout log
+/// ([`ServerLogs`]), because the tests that boot a server through this helper
+/// are the ones that then wait on it — and a server that is alive but silent
+/// is only explicable by the last thing it said. Stderr goes to its log file
+/// directly.
 fn spawn_and_capture_stdout(mut cmd: Command) -> (ChildGuard, Receiver<String>) {
+    let (stdout_path, mut tee) = log_file("stdout");
+    let (stderr_path, stderr) = log_file("stderr");
     let mut child = cmd
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::from(stderr))
         .spawn()
         .expect("spawn vpay-server");
     let stdout = child.stdout.take().expect("piped stdout");
@@ -356,6 +482,7 @@ fn spawn_and_capture_stdout(mut cmd: Command) -> (ChildGuard, Receiver<String>) 
         for line in reader.lines() {
             match line {
                 Ok(l) => {
+                    let _ = writeln!(tee, "{l}");
                     if tx.send(l).is_err() {
                         break;
                     }
@@ -365,7 +492,11 @@ fn spawn_and_capture_stdout(mut cmd: Command) -> (ChildGuard, Receiver<String>) 
         }
     });
 
-    (ChildGuard(child), rx)
+    let logs = ServerLogs {
+        stdout: stdout_path,
+        stderr: stderr_path,
+    };
+    (ChildGuard(child, logs), rx)
 }
 
 /// Blocks (up to `timeout`) until a captured stdout line satisfying
@@ -938,19 +1069,15 @@ fn a_valid_config_lets_the_server_boot_and_serve_healthz() {
     with_live_postgres(|database_url| {
         let addr = free_addr();
         #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut guard = ChildGuard(
+        let mut guard = spawn_logged(
             bin()
                 .env("VPAY_BIND", addr.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn vpay-server"),
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path()),
         );
 
-        let status = poll_healthz(addr, Duration::from_secs(5));
+        let status = poll_healthz(&mut guard, addr, Duration::from_secs(5));
         assert_eq!(
             status,
             Some(200),
@@ -967,6 +1094,122 @@ fn a_valid_config_lets_the_server_boot_and_serve_healthz() {
             );
         }
     });
+}
+
+/// A server that dies while [`poll_healthz`] is waiting on it fails the test
+/// **at once**, naming its exit status and its own error — not as
+/// `left: None, right: Some(200)` after the whole budget.
+///
+/// That `None` is what two different failures looked like before this existed
+/// — a server that lost a bind and exited 1, and one that was merely slow — so
+/// a red run could not say which of them it was.
+///
+/// A config that fails validation is the cheapest way to make the real binary
+/// exit under the poll: it is exit `78` before the database, the signing key
+/// or any socket (`a_bad_config_is_exit_78_naming_the_problem`), so this needs
+/// no container. The budget is 30 s and the assertion is on 10, so a helper
+/// that waited the budget out would fail here rather than merely run slowly.
+#[test]
+fn a_server_that_exits_while_polled_fails_fast_and_says_why() {
+    let addr = free_addr();
+    let mut guard = spawn_logged(
+        bin()
+            .env("VPAY_BIND", addr.to_string())
+            .env("VPAY_CONFIG", invalid_config_path()),
+    );
+
+    let started = Instant::now();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        poll_healthz(&mut guard, addr, Duration::from_secs(30))
+    }));
+    let elapsed = started.elapsed();
+
+    let payload = outcome.expect_err("polling a server that has exited must fail, not return");
+    let message = payload
+        .downcast_ref::<String>()
+        .expect("the failure is a formatted panic message");
+    assert!(
+        message.contains("exit status: 78"),
+        "the failure should name the exit status, got:\n{message}"
+    );
+    assert!(
+        message.contains("livemode requires https"),
+        "the failure should carry the server's own stderr, got:\n{message}"
+    );
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "a dead server should fail the poll immediately, not after its budget; took {elapsed:?}"
+    );
+}
+
+/// The other half of [`a_server_that_exits_while_polled_fails_fast_and_says_why`]:
+/// a server that is **alive** but silent is not mistaken for a dead one.
+/// `poll_healthz` returns `None` at the deadline, exactly as it did before it
+/// took the child, and does not panic.
+///
+/// An unreachable database is the way to hold the real binary open without a
+/// container: `vpay_db::connect` retries for its full 5 s `ACQUIRE_TIMEOUT`
+/// before giving up (see [`UNREACHABLE_DATABASE_URL`]), so the process is
+/// running, bound to nothing and answering nothing, for far longer than the
+/// one second this polls it.
+#[test]
+fn a_server_that_is_alive_but_silent_times_out_with_none() {
+    let addr = free_addr();
+    let mut guard = spawn_logged(
+        bin()
+            .env("VPAY_BIND", addr.to_string())
+            .env("VPAY_CONFIG", valid_config_path())
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("DATABASE_URL", UNREACHABLE_DATABASE_URL),
+    );
+
+    let status = poll_healthz(&mut guard, addr, Duration::from_secs(1));
+
+    assert_eq!(
+        status, None,
+        "a server still connecting to its database answers nothing, and that is a timeout"
+    );
+    assert!(
+        guard.0.try_wait().expect("poll the child").is_none(),
+        "the server was meant to still be running when the poll gave up"
+    );
+}
+
+/// A server whose stdout the test reads through
+/// [`spawn_and_capture_stdout`]'s channel still has that stdout in its failure
+/// report.
+///
+/// The tests that wait on `/healthz` after booting through that helper are
+/// the two that failed as "alive but silent" in practice, and a report that
+/// said "stdout: read by the test itself" for them could not say how far the
+/// boot had got. The reader thread writes each line to the log **before** it
+/// sends it down the channel, so once `wait_for_line` has returned a line the
+/// report is guaranteed to contain it — which is what this relies on, and why
+/// it needs no sleep.
+#[test]
+fn the_report_of_a_server_read_through_a_channel_still_carries_its_stdout() {
+    let addr = free_addr();
+    let mut cmd = bin();
+    cmd.env("VPAY_BIND", addr.to_string())
+        .env("VPAY_CONFIG", valid_config_path())
+        .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+        .env("DATABASE_URL", UNREACHABLE_DATABASE_URL);
+    let (guard, rx) = spawn_and_capture_stdout(cmd);
+
+    wait_for_line(
+        &rx,
+        |l| l.contains("configuration loaded and validated"),
+        Duration::from_secs(10),
+    )
+    .expect("the server logs that its configuration loaded");
+
+    // Each reported line is cut to `REPORTED_LINE_CHARS`, so this matches a
+    // fragment of it rather than the whole line the test was handed.
+    let report = guard.1.report();
+    assert!(
+        report.contains("configuration loaded and validated"),
+        "the report should carry the line the test was just handed, got:\n{report}"
+    );
 }
 
 /// A syntactically well-formed RS256 JWT carrying a `kid` this deployment
@@ -1035,7 +1278,7 @@ fn a_server_with_no_os_trust_store_boots_and_still_validates_tokens() {
     with_live_postgres(|database_url| {
         let addr = free_addr();
         #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut guard = ChildGuard(
+        let mut guard = spawn_logged(
             bin()
                 .env("VPAY_BIND", addr.to_string())
                 .env("DATABASE_URL", &database_url)
@@ -1043,14 +1286,10 @@ fn a_server_with_no_os_trust_store_boots_and_still_validates_tokens() {
                 .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
                 // The whole point of the test: no readable trust store.
                 .env("SSL_CERT_FILE", "/nonexistent/certs.pem")
-                .env("SSL_CERT_DIR", "/nonexistent")
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn vpay-server"),
+                .env("SSL_CERT_DIR", "/nonexistent"),
         );
 
-        let status = poll_healthz(addr, Duration::from_secs(5));
+        let status = poll_healthz(&mut guard, addr, Duration::from_secs(5));
         assert_eq!(
             status,
             Some(200),
@@ -1113,20 +1352,16 @@ fn bind_and_log_format_env_vars_are_actually_applied() {
     with_live_postgres(|database_url| {
         let addr = free_addr();
         #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut guard = ChildGuard(
+        let mut guard = spawn_logged(
             bin()
                 .env("VPAY_BIND", addr.to_string())
                 .env("VPAY_LOG_FORMAT", "text")
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
-                .stdout(Stdio::null())
-                .stderr(Stdio::piped())
-                .spawn()
-                .expect("spawn vpay-server"),
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path()),
         );
 
-        let status = poll_healthz(addr, Duration::from_secs(5));
+        let status = poll_healthz(&mut guard, addr, Duration::from_secs(5));
         assert_eq!(
             status,
             Some(200),
@@ -1151,21 +1386,17 @@ fn an_explicit_flag_wins_over_a_conflicting_env_var() {
     with_live_postgres(|database_url| {
         let (flag_addr, env_addr) = two_free_addrs();
 
-        let mut guard = ChildGuard(
+        let mut guard = spawn_logged(
             bin()
                 .env("VPAY_BIND", env_addr.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
                 .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
-                .args(["--bind", &flag_addr.to_string()])
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn vpay-server"),
+                .args(["--bind", &flag_addr.to_string()]),
         );
 
         // The flagged address must come up...
-        let flag_status = poll_healthz(flag_addr, Duration::from_secs(5));
+        let flag_status = poll_healthz(&mut guard, flag_addr, Duration::from_secs(5));
         assert_eq!(
             flag_status,
             Some(200),
@@ -1217,7 +1448,7 @@ fn shutdown_grace_period_flag_still_allows_a_prompt_clean_exit_with_no_in_flight
         #[cfg_attr(not(unix), allow(unused_mut))]
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
-        let status = poll_healthz(addr, Duration::from_secs(5));
+        let status = poll_healthz(&mut guard, addr, Duration::from_secs(5));
         assert_eq!(status, Some(200), "server never became healthy on {addr}");
 
         #[cfg(unix)]
@@ -1265,24 +1496,20 @@ fn the_observability_listener_serves_livez_and_metrics_on_its_own_port_only() {
     with_live_postgres(|database_url| {
         let (traffic, observability) = two_free_addrs();
         #[cfg_attr(not(unix), allow(unused_mut))]
-        let mut guard = ChildGuard(
+        let mut guard = spawn_logged(
             bin()
                 .env("VPAY_BIND", traffic.to_string())
                 .env("VPAY_OBSERVABILITY_BIND", observability.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-                .expect("spawn vpay-server"),
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path()),
         );
 
         // The traffic port coming up means every fallible startup step
         // finished, which is also the precondition for the observability
         // listener having been bound at all (it is bound last, on purpose).
         assert_eq!(
-            poll_healthz(traffic, Duration::from_secs(5)),
+            poll_healthz(&mut guard, traffic, Duration::from_secs(5)),
             Some(200),
             "server never became healthy on {traffic}"
         );
@@ -1519,7 +1746,7 @@ fn an_in_flight_request_that_outlasts_the_grace_period_is_exit_1_and_says_so() {
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
         assert_eq!(
-            poll_healthz(traffic, Duration::from_secs(5)),
+            poll_healthz(&mut guard, traffic, Duration::from_secs(5)),
             Some(200),
             "server never became healthy on {traffic}"
         );

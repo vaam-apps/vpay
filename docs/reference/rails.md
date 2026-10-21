@@ -320,8 +320,10 @@ hours. So both SDKs
 now refuse those ids before any request, the token request included.
 `sdks/rust`'s `path_segment` returns `Result<String, crate::Error>` and
 refuses with `Error::InvalidParams { param: "id", .. }`. The Node SDK's
-`pathSegment` in `src/validate.ts` throws a `TypeError`. Both use one fixed
-message that never quotes the id.
+`pathSegment` in `src/validate.ts` throws a ~~`TypeError`~~
+`VpayInvalidParamsError` (corrected later on 2026-10-21, when every local
+refusal in that SDK stopped being a bare `TypeError`; it carries `param`
+like the Rust variant). Both use one fixed message that never quotes the id.
 
 The decision here is reused, not re-argued. **`...` is refused too**, and
 **the guard is the only path in**: neither SDK keeps an unchecked

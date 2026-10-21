@@ -225,6 +225,18 @@ a second race, and the fix is for the server to bind `:0` and the test to read
 the port back from the `listening addr=` line, which is a larger change than
 this one and was left for that reason.
 
+**Corrected later the same day, by
+[2026-10-21-cli-spawn-diagnostics.md](2026-10-21-cli-spawn-diagnostics.md).** Two
+things in this section did not survive measurement. The candidate above was
+tested by widening the free-then-bind window by 1.5 s for every test: in 30 runs
+no server lost its traffic port. And "evidence against a boot that merely outran
+the 5 s budget" is withdrawn: a server **alive but silent for the whole budget**
+occurred once in 25 ordinary runs and, with the window widened, in two tests at
+once, one with its stdout showing 4.3 s spent on the database connect and
+migrations. The saturated-CPU loop above did not reproduce it, so what slows the
+boot was not isolated — but a slow boot is the observed shape, and the stolen
+port is not.
+
 ## On the merged tree, and the gates
 
 `master` moved while this was being written: #310 (`e28292d3`) merged, and it

@@ -39,13 +39,13 @@ the order they were measured.
 
 **This list is not the whole of [verification/](verification/), and does not
 try to be.** Re-measured 2026-09-20, again 2026-09-22 when the Tauri
-plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged, once on 2026-10-17, for the origin-refund-core page, once on 2026-10-18, for the numeric-user page, and five times on 2026-10-20, for the staff-oidc-sso, notchpay-client, notchpay-adapter, notchpay-sandbox and path-segment-dot-segments pages, and nine times on 2026-10-21, for the notchpay-sandbox-run, notchpay-trx-reference, sdk-dot-segment-ids, notchpay-step5, payer-dot-segment-ids, flutter-example-lockfile, provider-requests-refused-answers, declined-resubmit-fails-the-charge and confirm-decline-order pages), when the super-linter
+plugin's page landed, and ten times on 2026-09-23 (twice more on 2026-10-08, for the chart-global-values and jti-purge-horizon pages, twice on 2026-10-09, for the npm-advisories page and when the protected-diagnostics page merged, once on 2026-10-17, for the origin-refund-core page, once on 2026-10-18, for the numeric-user page, and five times on 2026-10-20, for the staff-oidc-sso, notchpay-client, notchpay-adapter, notchpay-sandbox and path-segment-dot-segments pages, and eleven times on 2026-10-21, for the notchpay-sandbox-run, notchpay-trx-reference, sdk-dot-segment-ids, notchpay-step5, payer-dot-segment-ids, flutter-example-lockfile, provider-requests-refused-answers, declined-resubmit-fails-the-charge, cli-spawn-diagnostics, node-invalid-params-error and confirm-decline-order pages), when the super-linter
 page, the stale-claims page, the customer-filters page, the manual-payments
 page, the migrations-manifest page, the test-clock-skew page, the
-session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 92 <!-- count:files-with-suffix docs/status/verification .md --> files today;
-this list names 69 of them. This is a hand-maintained list, not a generated one,
+session-customer page, the erasure-through-checkout-sessions page, the skills-reverification page and the single-clock-scheduling page did: the directory holds 94 <!-- count:files-with-suffix docs/status/verification .md --> files today;
+this list names 71 of them. This is a hand-maintained list, not a generated one,
 and the 23 it omits were simply never appended to it. (It said 59 files and 36
-named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page, 74/51 when the protected-diagnostics page merged, 75/52 on 2026-10-17 with the origin-refund-core page, 76/53 on 2026-10-18 with the numeric-user page, 77/54 on 2026-10-20 with the staff-oidc-sso page, 78/55 the same day with the notchpay-client page, 79/56 the same day again with the notchpay-adapter page, 80/57 the same day with the notchpay-sandbox page, 81/58 with the path-segment-dot-segments page, 82/59 on 2026-10-21 with the notchpay-sandbox-run page, 83/60 the same day with the notchpay-trx-reference page, 84/61 the same day again with the sdk-dot-segment-ids page, 85/62 the same day with the notchpay-step5 page, 86/63 the same day with the payer-dot-segment-ids page, 87/64 the same day with the flutter-example-lockfile page, then 89/66 once the dashboard-md3e and cli-tests-observability-port pages had landed too (master's version of this sentence was not extended for those two; both are in the list below), 90/67 and 91/68 with the provider-requests-refused-answers and declined-resubmit-fails-the-charge pages, and 92/69 the same day with the confirm-decline-order page; each time both
+named until 2026-09-22, 60/37, 61/38, 62/39, 63/40, 64/41, 65/42, 66/43, 67/44, 68/45, 69/46 on 2026-09-23 and then 70/47 until 2026-10-08, when the chart-global-values page made it 71/48 and the jti-purge-horizon page 72/49, then 73/50 on 2026-10-09 with the npm-advisories page, 74/51 when the protected-diagnostics page merged, 75/52 on 2026-10-17 with the origin-refund-core page, 76/53 on 2026-10-18 with the numeric-user page, 77/54 on 2026-10-20 with the staff-oidc-sso page, 78/55 the same day with the notchpay-client page, 79/56 the same day again with the notchpay-adapter page, 80/57 the same day with the notchpay-sandbox page, 81/58 with the path-segment-dot-segments page, 82/59 on 2026-10-21 with the notchpay-sandbox-run page, 83/60 the same day with the notchpay-trx-reference page, 84/61 the same day again with the sdk-dot-segment-ids page, 85/62 the same day with the notchpay-step5 page, 86/63 the same day with the payer-dot-segment-ids page, 87/64 the same day with the flutter-example-lockfile page, then 89/66 once the dashboard-md3e and cli-tests-observability-port pages had landed too (master's version of this sentence was not extended for those two; both are in the list below), 90/67 and 91/68 with the provider-requests-refused-answers and declined-resubmit-fails-the-charge pages, 92/69 with the cli-spawn-diagnostics page, 93/70 the same day with the node-invalid-params-error page, and 94/71 with the confirm-decline-order page; each time both
 moved by one and one page was added, so the 23 is unchanged — the arithmetic
 is stated because the "23" is the only one of the three numbers no gate
 measures.) Most of the 23 are
@@ -67,6 +67,18 @@ rather than trusting this list to be exhaustive.
   charge, advanced to `submitted` on the first poll), the new order and why the
   accepted arm keeps the old one, the mutations, the counts, and what was not
   run.
+- [verification/2026-10-21-node-invalid-params-error.md](verification/2026-10-21-node-invalid-params-error.md) —
+  every local refusal in `sdks/nodejs` is a `VpayInvalidParamsError`, not a
+  bare `TypeError`, closing the parity gap dated 2026-09-03; why it cannot
+  also be a `TypeError`, the renamed tests, three caught mutations, the
+  gates, and what was not run.
+- [verification/2026-10-21-cli-spawn-diagnostics.md](verification/2026-10-21-cli-spawn-diagnostics.md) —
+  a `vpay-server` that fails to boot in `tests/cli.rs` now says why: the exit
+  status and its own stderr and stdout tail, at once, instead of `None` after 5 s;
+  three regression tests, each caught by a mutation; what it was used for — the
+  stolen-port candidate not supported in 30 widened runs, and every remaining red
+  in the path to Postgres (an alive-but-silent boot, an exit 69, `PortNotExposed`);
+  the one decision left, the 5 s budget.
 - [verification/2026-10-21-declined-resubmit-fails-the-charge.md](verification/2026-10-21-declined-resubmit-fails-the-charge.md) —
   a resubmit the rail declines now fails the charge; the measured loop it ended
   (a declined charge resent after every third poll, four submits and eleven

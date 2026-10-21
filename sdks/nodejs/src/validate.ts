@@ -1,6 +1,11 @@
 /**
  * Shared request-shape validation, run before anything reaches the wire.
+ *
+ * Every refusal here is a {@link VpayInvalidParamsError}, so it is caught by
+ * the same `instanceof VpayError` as every other error this package throws.
  */
+
+import { VpayInvalidParamsError } from "./errors.js";
 
 /**
  * Mirrors `@vpay/api-client`'s `formatAmount` integer check
@@ -13,11 +18,14 @@
  * `Number.MAX_SAFE_INTEGER`, where the value the caller wrote and the value
  * JavaScript holds have already diverged. An amount must be a non-negative
  * **safe** integer or nothing goes to the wire.
+ *
+ * @throws {VpayInvalidParamsError} naming `field`.
  */
 export function assertIntegerAmount(amount: number, field = "amount"): void {
   if (!Number.isSafeInteger(amount) || amount < 0) {
-    throw new TypeError(
-      `${field} must be a non-negative safe integer in minor units, got ${amount}`,
+    throw new VpayInvalidParamsError(
+      field,
+      `must be a non-negative safe integer in minor units, got ${amount}`,
     );
   }
 }
@@ -26,8 +34,9 @@ export function assertIntegerAmount(amount: number, field = "amount"): void {
  * The one message {@link pathSegment}'s refusal carries, whatever the id.
  *
  * Fixed so that it cannot quote the id, and byte-identical to `sdks/rust`'s
- * `DOT_SEGMENT_REFUSAL` behind the same `invalid request parameter id: `
- * prefix that crate's `Error::InvalidParams` displays.
+ * `DOT_SEGMENT_REFUSAL`. {@link VpayInvalidParamsError} puts the same
+ * `invalid request parameter id: ` prefix in front of it that crate's
+ * `Error::InvalidParams` displays.
  */
 const DOT_SEGMENT_REFUSAL =
   "an id that is empty or only dots would address a different endpoint once the URL is parsed; nothing was sent";
@@ -47,12 +56,11 @@ const DOT_SEGMENT_REFUSAL =
  * standard: `docs/reference/rails.md` § "A path segment the caller chose"
  * says why.
  *
- * A `TypeError`, like {@link assertIntegerAmount}'s refusal, and not a
- * `VpayError` — the dated gap `docs/sdks/parity.md` records for both.
+ * @throws {VpayInvalidParamsError} naming `id`.
  */
 export function pathSegment(id: string): string {
   if (/^\.*$/u.test(id)) {
-    throw new TypeError(`invalid request parameter id: ${DOT_SEGMENT_REFUSAL}`);
+    throw new VpayInvalidParamsError("id", DOT_SEGMENT_REFUSAL);
   }
   return encodeURIComponent(id);
 }

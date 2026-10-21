@@ -315,15 +315,15 @@ Two types, deliberately:
   who want one `?`-able type.
 - **`Error`** — everything that happens on, or instead of, the wire:
 
-| Variant                     | When                                                                                                                                                                      | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent                          |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------- |
-| `Error::Api`                | A non-2xx `/v1` response shaped like `vpay_api::error_envelope`.                                                                                                          | `status`, `kind` (the envelope's `type`), `code`, `message`, `param` | `VpayApiError`                                            |
-| `Error::TokenEndpoint`      | The token endpoint refused (`invalid_client`, …). **Never retried.**                                                                                                      | `error`, `description`                                               | `VpayAuthError` (`error` / `errorDescription`)            |
-| `Error::UnexpectedResponse` | A response that is not that envelope — a proxy's HTML 502, an empty body, a success body that will not decode.                                                            | `status`, `body_prefix` (bounded to 500 bytes)                       | `VpayUnexpectedResponseError`                             |
-| `Error::Transport`          | DNS, TLS, timeout, connection refused — no HTTP response to classify.                                                                                                     | the underlying message                                               | `VpayTransportError`                                      |
-| `Error::InvalidParams`      | A parameter this SDK refuses to send — an amount that is negative or past 2^53-1, or (since 2026-10-21) a path `id` that is empty or only dots. Nothing reaches the wire. | `param`, `message`                                                   | a `TypeError` from `assertIntegerAmount` or `pathSegment` |
-| `Error::Config`             | A `ConfigError` surfaced through a request path.                                                                                                                          | the `ConfigError`                                                    | `VpayConfigError`                                         |
-| `Error::Webhook`            | `webhooks::verify` rejected a delivery.                                                                                                                                   | a `WebhookError`                                                     | `WebhookSignatureError`                                   |
+| Variant                     | When                                                                                                                                                                      | Carries                                                              | `@vaam-apps/vpay-sdk` equivalent                               |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `Error::Api`                | A non-2xx `/v1` response shaped like `vpay_api::error_envelope`.                                                                                                          | `status`, `kind` (the envelope's `type`), `code`, `message`, `param` | `VpayApiError`                                                 |
+| `Error::TokenEndpoint`      | The token endpoint refused (`invalid_client`, …). **Never retried.**                                                                                                      | `error`, `description`                                               | `VpayAuthError` (`error` / `errorDescription`)                 |
+| `Error::UnexpectedResponse` | A response that is not that envelope — a proxy's HTML 502, an empty body, a success body that will not decode.                                                            | `status`, `body_prefix` (bounded to 500 bytes)                       | `VpayUnexpectedResponseError`                                  |
+| `Error::Transport`          | DNS, TLS, timeout, connection refused — no HTTP response to classify.                                                                                                     | the underlying message                                               | `VpayTransportError`                                           |
+| `Error::InvalidParams`      | A parameter this SDK refuses to send — an amount that is negative or past 2^53-1, or (since 2026-10-21) a path `id` that is empty or only dots. Nothing reaches the wire. | `param`, `message`                                                   | `VpayInvalidParamsError` (a bare `TypeError` until 2026-10-21) |
+| `Error::Config`             | A `ConfigError` surfaced through a request path.                                                                                                                          | the `ConfigError`                                                    | `VpayConfigError`                                              |
+| `Error::Webhook`            | `webhooks::verify` rejected a delivery.                                                                                                                                   | a `WebhookError`                                                     | `WebhookSignatureError`                                        |
 
 The distinction is not cosmetic: retrying a `Transport` failure is correct and
 retrying an `Api` `400` is a bug, and only a caller who can tell them apart
@@ -449,7 +449,9 @@ be sent, and the URL parser resolved them before the request left, so
 answered for each is on
 [the dated verification page](../../docs/status/verification/2026-10-21-sdk-dot-segment-ids.md).
 A caller matching on `Error::Api { status: 404, .. }` for those inputs now
-gets `InvalidParams`. `sdks/nodejs` refuses the same ids with a `TypeError`.
+gets `InvalidParams`. `sdks/nodejs` refuses the same ids with a `TypeError`
+(a `VpayInvalidParamsError` since later the same day, carrying `param` as
+`InvalidParams` does).
 
 **Breaking, 2026-09-23 (RFC-0004 § 5).** `ListPaymentIntentsParams`,
 `ListCheckoutSessionsParams` and `ListRefundsParams` each gained a public

@@ -30,7 +30,12 @@
  *   is decimal integers with no separators (docs/flows/money.md bans floating
  *   point in the money path outright), so a float or a `1e21` is a bug in the
  *   caller, not a value to transmit approximately.
+ *
+ * Both refusals are a {@link VpayInvalidParamsError} naming the value's form
+ * path (`amount`, `metadata[order_id]`), thrown before anything is sent.
  */
+
+import { VpayInvalidParamsError } from "./errors.js";
 
 /** A value the form encoder can flatten. `null` is treated like `undefined`: omitted. */
 export type FormValue =
@@ -42,7 +47,7 @@ export type FormValue =
   | readonly FormValue[]
   | { [key: string]: FormValue };
 
-/** Renders a path back into the bracket syntax, for error messages only. */
+/** Renders a path back into the bracket syntax, for an error's `param` only. */
 function describePath(path: readonly string[]): string {
   const [head, ...rest] = path;
   return `${head ?? ""}${rest.map((segment) => `[${segment}]`).join("")}`;
@@ -66,8 +71,9 @@ function isPlainObject(value: object): boolean {
 /** Renders a number for the wire, refusing anything that is not an exact decimal integer. */
 function encodeNumber(value: number, path: readonly string[]): string {
   if (!Number.isSafeInteger(value)) {
-    throw new TypeError(
-      `${describePath(path)} must be a safe integer, got ${value}`,
+    throw new VpayInvalidParamsError(
+      describePath(path),
+      `must be a safe integer, got ${value}`,
     );
   }
   const text = String(value);
@@ -78,8 +84,9 @@ function encodeNumber(value: number, path: readonly string[]): string {
   // format actually requires: no test can kill this branch on its own, and
   // the comment says so rather than implying it is covered.
   if (text.includes("e") || text.includes("E")) {
-    throw new TypeError(
-      `${describePath(path)} must encode as a plain decimal integer, got ${text}`,
+    throw new VpayInvalidParamsError(
+      describePath(path),
+      `must encode as a plain decimal integer, got ${text}`,
     );
   }
   return text;
@@ -101,8 +108,9 @@ function flattenValue(
   }
   if (typeof value === "object") {
     if (!isPlainObject(value)) {
-      throw new TypeError(
-        `${describePath(path)} must be a plain object, array or scalar, got ${
+      throw new VpayInvalidParamsError(
+        describePath(path),
+        `must be a plain object, array or scalar, got ${
           (value as object).constructor?.name ?? "an object"
         }`,
       );
