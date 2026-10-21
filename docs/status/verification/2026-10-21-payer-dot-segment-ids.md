@@ -142,13 +142,15 @@ $ just verify                                      exit 0
   verify-sdk-parity: ok — 788 proving test(s) named in docs/sdks/parity.md all exist, 45 dated gap(s),
     35 SDK method(s) enumerated across 41 row(s)
   verify-links: ok — 2476 repository link(s) in 466 tracked markdown file(s) resolve to a tracked path
+  (re-run after master was merged in at 73a5b5af and the flutter-example-lockfile page added:
+   verify: ok, verify-sdk-parity 788 / 45, verify-links 2507 links in 468 files, verify-doc-counts ok)
   verify-doc-counts: ok — 13 documented count(s) in 11 of 294 markdown file(s) agree with what this tree measures
 $ npx markdownlint-cli2@0.20.0, super-linter's default config, on the six Markdown files this change touches
                                                    0 errors (0 on master for the five that exist there)
 ```
 
 `verify-doc-counts` reads the verification directory's file count off
-[../README.md](../README.md), which this page moves from 84 to 85.
+[../README.md](../README.md), which this page moved from 84 to 85 (86 after `master`'s notchpay-step5 page landed, 87 with the flutter-example-lockfile page).
 
 ## What did not run
 
