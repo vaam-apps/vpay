@@ -172,11 +172,13 @@ pub(crate) async fn enqueue_in_tx(
 ///   module header describes.
 /// * `run_at > now() + floor` — a job that is already claimable, *or due
 ///   within `floor`*, needs nothing: it is about to run. Skipping the write
-///   is what makes a burst of duplicate callbacks (which both rails send)
-///   free rather than a row-lock queue on one job, and `floor` is what stops
-///   an unauthenticated caller from converting each POST into a rail request
-///   for a charge the queue was going to ask about in a moment anyway. See
-///   below.
+///   is what makes a burst of duplicate callbacks (which anyone who can
+///   reach the unauthenticated route can send) free rather than a row-lock
+///   queue on one job, and `floor` is what stops an unauthenticated caller
+///   from converting each POST into a rail request for a charge the queue
+///   was going to ask about in a moment anyway. See below. (The parenthesis
+///   read "which both rails send" until 2026-10-21; MTN documents one
+///   callback and no retry — `vpay_api::provider_callback`'s module docs.)
 /// * `run_at < 'infinity'` — a **dead letter** is parked precisely so that
 ///   nothing re-creates the work on a timer; `docs/reference/vpay-db.md`
 ///   §"Why a dead letter is parked and not deleted" names a callback as one

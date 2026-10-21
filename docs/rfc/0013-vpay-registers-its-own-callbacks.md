@@ -602,6 +602,18 @@ pass sees it within one interval.
 The research for this RFC found these. They are recorded here, not fixed
 here; Delivery step 0 fixes them as dated corrections.
 
+_(Updated 2026-10-21: Delivery step 0 has landed for items 1–3 and not for
+items 4 and 5. Item 1 is corrected in the three places it names and in every
+other place that said the same thing, item 2 is "To confirm with MTN" item 1 in
+[adapter-mtn-momo.md](../flows/adapter-mtn-momo.md), and item 3 is "To
+confirm with Orange Cameroun" item 11 in
+[adapter-orange-money.md](../flows/adapter-orange-money.md);
+[the verification page](../status/verification/2026-10-21-rail-callback-retries.md)
+lists every place. One detail in item 2 was narrower than it reads: a `GET`
+on `/provider/mtn_momo/callback` **is** measured, as a bare `405`, by
+`a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope` in
+`vpay-api`; a `PUT` is not.)_
+
 1. **"Both rails retry a non-2xx" is contradicted by MTN.** vpay says it in
    three places: `backends/crates/vpay-api/src/provider_callback.rs:81-85` ("A
    rail that gets anything other than a 2xx retries — MTN and Orange both do,

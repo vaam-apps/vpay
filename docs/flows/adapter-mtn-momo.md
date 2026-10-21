@@ -350,6 +350,32 @@ never treat 500 as blind-retry.
 | `target_environment` | `sandbox` ✅ (called 2026-09-15)                               | `mtncameroon` — **confirm; subsidiary-specific** |
 | `currency`           | **EUR only** ✅ (the 2026-09-15 payment was EUR)               | XAF                                              |
 
+## To confirm with MTN
+
+Opened 2026-10-21. Each item is a place where MTN's own documentation
+disagrees with itself or with this repository, and only a real callback can
+settle it. No MTN callback has ever reached vpay (§ "Not proven" below).
+[RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md) § 11 found the
+first; its § 12, item 16 is the same question.
+
+1. **Which HTTP method MTN sends the callback with.** MTN's pages disagree.
+   The callback page
+   (<https://momodeveloper.mtn.com/api-documentation/callback>, read
+   2026-10-20) says the callback "will be a POST request", and its own setup
+   steps tell partners to allow both `PUT` and `POST` on the listener host.
+   The "API Methods" section of
+   <https://momodeveloper.mtn.com/api-documentation/api-description> (read
+   2026-10-20) says `PUT` is the method the Open API uses when sending
+   callbacks. `vpay_api::provider_callback` mounts **`POST` only**, so a `PUT`
+   meets the same bare `405` from axum's method routing that a `GET` does
+   (`a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope` in
+   `vpay-api` pins the `GET`; no test sends a `PUT`). If MTN's sandbox or
+   Cameroon production sends `PUT`, every MTN callback is refused, and since
+   MTN sends each callback once, lost. That costs latency only: the poll
+   ladder settles the charge at its next rung. **Nothing was changed for
+   this.** Mounting `PUT` as well is a decision that should follow an
+   observation, not a count of which page says what.
+
 ## Status
 
 **Updated 2026-10-20: the account-holder lookup refuses a dot-segment
@@ -527,6 +553,20 @@ only and the body's `status` is deliberately not read: the authenticated
 status query is the only thing that moves money
 ([reconciler.md](reconciler.md)).
 
+**It is also sent once.** MTN's callback documentation
+(<https://momodeveloper.mtn.com/api-documentation/callback>, read 2026-10-20)
+says MTN sends the callback a single time, has no retry mechanism, and
+strongly recommends polling. vpay polls whether or not a callback arrives —
+the callback only pulls the next poll forward — so a callback vpay misses
+costs latency, and nothing resends it. _(Several places in this repository
+said until 2026-10-21 that both rails retry a callback that is not answered
+with a 2xx, and used it as one of two reasons for answering `202` to an
+unknown reference. None cited a source, and MTN's page says the opposite; the
+`202` stands on the other reason, the oracle argument in
+`vpay_api::provider_callback`'s module docs.
+[verification/2026-10-21-rail-callback-retries.md](../status/verification/2026-10-21-rail-callback-retries.md)
+lists every place corrected.)_
+
 The reference is recovered from `referenceId` when MTN echoes it, and
 otherwise from `externalId`. `externalId` works because it is what _we_ set on
 submit: `ChargeRef` carries no charge id — `reference_id` is the only
@@ -627,7 +667,9 @@ inherits three refusals that are not MTN-specific:
   is still a hint and the route writes no charge state.
   `backends/tests/integration/tests/provider_callback.rs` POSTs the body
   transcribed above to the URL MTN was handed on the submit, so **a body
-  faithful to this document but not to MTN would pass**.
+  faithful to this document but not to MTN would pass**. It also POSTs, and
+  MTN's documentation says `PUT` on one page and `POST` on another — item 1
+  of "To confirm with MTN" (added 2026-10-21).
 - **Over seven real sandbox payments succeeded, and none exercised the decline
   vocabulary — so this bullet is unchanged in substance.** `PAYMENT_NOT_APPROVED`,
   `APPROVAL_REJECTED` and `EXPIRED` are real strings

@@ -53,9 +53,20 @@ POST /provider/{code}/callback
 _(Corrected 2026-09-23. The sketch ended `→ 200 OK` and showed one path.
 `vpay_api::provider_callback`, mounted in Step 8 (2026-09-04), has answered
 `202` since that day, and answers `202` for an unknown reference too. The two
-are indistinguishable on purpose: a rail retries anything that is not a 2xx,
-and an unauthenticated route must not say which references exist. Its module
-docs, "The four answers", are the authority.)_
+are indistinguishable on purpose: an unauthenticated route must not say which
+references exist. Its module docs, "The four answers", are the authority.)_
+
+_(That note also said "a rail retries anything that is not a 2xx" until
+2026-10-21. MTN's own callback documentation
+(<https://momodeveloper.mtn.com/api-documentation/callback>, read 2026-10-20)
+says MTN sends a callback once, has no retry mechanism, and recommends
+polling; no official Orange source says either way
+([adapter-orange-money.md](adapter-orange-money.md) is a reconstruction). The
+`202` for an unknown reference stands on the oracle argument alone (RFC-0013
+§ 11, item 1). Of the rails linked today, only Notch Pay's reference mentions
+retrying, and it asks for a `200` (RFC-0013 § 12, item 12, which is open). A callback
+MTN sends and vpay misses is not resent, which costs latency and nothing
+else: the poll ladder above settles every charge whether or not one arrives.)_
 
 Mobile-money callbacks are typically unauthenticated and unsigned, unreliable,
 and sometimes duplicated. The authenticated status query is the only thing that
@@ -71,7 +82,10 @@ The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 Extended 2026-09-12 (issue #100) with the queue's own claim latency, measured
 and bounded — see the fourth bullet below; nothing in the loop changed,
 because the bound was met. Amended 2026-09-23: every job is scheduled on the
-database's clock (ADR-0026, the bullet after the claim latency's).**
+database's clock (ADR-0026, the bullet after the claim latency's). Corrected
+2026-10-21, with nothing in the loop changed: § "Callbacks are hints" no longer
+says a rail retries a callback that is not answered with a 2xx, because MTN
+documents that it does not.**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at

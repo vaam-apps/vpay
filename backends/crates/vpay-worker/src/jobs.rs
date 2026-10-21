@@ -351,8 +351,10 @@ impl Outcome {
 /// The `jobs.dedupe_key` for polling one charge.
 ///
 /// One live poll job per charge, forever: the unique index on `dedupe_key` is
-/// what turns "a callback arrived, and so did a retry of it, and the backstop
-/// scan also noticed" into a single row. `docs/flows/reconciler.md`: "the
+/// what turns "a callback arrived, and so did a copy of it, and the backstop
+/// scan also noticed" into a single row. (The copy said "a retry of it" until
+/// 2026-10-21. MTN documents that it never retries a callback; on an
+/// unauthenticated route a copy can come from anyone.) `docs/flows/reconciler.md`: "the
 /// `dedupe_key` is what stops duplicate callbacks becoming a job storm".
 #[must_use]
 pub fn poll_dedupe_key(charge_id: &str) -> String {

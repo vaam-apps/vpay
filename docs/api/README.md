@@ -1013,9 +1013,13 @@ transaction** — `enqueue_in_tx` (`ON CONFLICT DO NOTHING`, a no-op in the
 ordinary case, but it inserts a fresh poll job when the charge's job was deleted
 or already finished) and `pull_forward_in_tx`, an `UPDATE jobs SET run_at =
 now()`. **It writes no charge or intent state.** Unknown rail code → `404` (byte-identical to the router's
-fallback); unparseable body → `400`; unknown reference → `202` (a rail must not
-be told to retry forever, and a different answer would be an oracle); accepted →
-`202`. Body bounded at 16 KiB. **A `GET` on this path is axum's bare `405`, not
+fallback); unparseable body → `400`; unknown reference → `202` (a different
+answer would be an oracle for which references exist); accepted → `202`. _(The
+unknown-reference reason also read "a rail must not be told to retry forever"
+until 2026-10-21. MTN documents that it sends a callback once and never
+retries it — <https://momodeveloper.mtn.com/api-documentation/callback>, read
+2026-10-20 — and no Orange source says either way, so the oracle is the
+reason.)_ Body bounded at 16 KiB. **A `GET` on this path is axum's bare `405`, not
 the Stripe error envelope** — the same precedent `GET /v1/oauth/token` already
 sets. Neither rail signs a callback, so it is a hint on both, and every body the
 route has parsed was transcribed from `docs/flows/adapter-*.md` by this

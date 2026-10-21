@@ -78,20 +78,31 @@
 //! | the reference names no charge here | `202` |
 //! | the reference names a charge | `202` |
 //!
-//! The last two are the same response on purpose, and for two reasons. A
-//! rail that gets anything other than a 2xx retries — MTN and Orange both
-//! do, on their own schedules — so answering `404` to a reference we do not
-//! recognise buys a retry loop that can never succeed and costs a rail
-//! operator a support ticket. And an unauthenticated endpoint that answered
-//! differently for "this charge exists" would be an oracle for exactly that
-//! question, which is the same argument [`crate::browser`] makes about its
-//! uniform 404. The unknown reference is logged at `info`, which is where an
+//! The last two are the same response on purpose: an unauthenticated
+//! endpoint that answered differently for "this charge exists" would be an
+//! oracle for exactly that question, which is the same argument
+//! [`crate::browser`] makes about its uniform 404. That argument is enough
+//! on its own. The unknown reference is logged at `info`, which is where an
 //! operator debugging a misregistered callback host will find it.
+//!
+//! _(This gave two reasons until 2026-10-21. The other was that "a rail that
+//! gets anything other than a 2xx retries — MTN and Orange both do, on their
+//! own schedules", so a `404` would buy a retry loop. MTN's own callback
+//! documentation (<https://momodeveloper.mtn.com/api-documentation/callback>,
+//! read 2026-10-20) says the opposite: MTN sends a callback once, has no
+//! retry mechanism, and recommends polling — which is what the poll ladder
+//! already does whether or not a callback arrives. No official Orange Money
+//! Web Payment source says either way; this repository's Orange knowledge is
+//! a reconstruction from community SDKs (`docs/flows/adapter-orange-money.md`).
+//! The oracle argument never depended on retries, so the answer did not
+//! move. RFC-0013 § 11, item 1, is where this was found. Of the rails linked
+//! here, only Notch Pay's reference mentions retrying: RFC-0013 § 12, item
+//! 12, quotes it asking for a `200`, and whether Notch Pay treats this
+//! route's `202` as delivered is open there.)_
 //!
 //! A `404` for an unknown *rail code* is a different thing and stays: it is
 //! a statement about this deployment's route table, which is public — the
-//! same information a merchant gets from `payment_method_types` — and a rail
-//! whose code is not linked here is not a rail that is going to retry.
+//! same information a merchant gets from `payment_method_types`.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -247,8 +258,10 @@ pub(crate) fn routes() -> Router<crate::AppState> {
 /// [`ApiError::UnknownRoute`] for a rail code this process does not link;
 /// [`ApiError::InvalidParam`] for a body this rail's adapter cannot read;
 /// [`ApiError::Db`] if the enqueue transaction fails, which is the one case
-/// the rail *should* retry — the poll was not moved and nothing else will
-/// move it before the next rung.
+/// a resent notification would help — the poll was not moved and nothing
+/// else will move it before the next rung. MTN documents that it never
+/// resends one (module docs), so on that rail the next rung is what settles
+/// the charge: later, not never.
 async fn callback(
     State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
     State(repositories): State<Arc<dyn Repositories>>,
@@ -286,7 +299,7 @@ async fn callback(
             rail = %code,
             reference_id = %reference.reference_id,
             "a rail callback named a reference this deployment has no charge for; accepting it \
-             anyway so the rail stops retrying"
+             anyway, with the same 202 a known reference gets"
         );
         return Ok(StatusCode::ACCEPTED);
     };

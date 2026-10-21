@@ -798,9 +798,17 @@ ingress:
     # the only one there is, which is not true of `/v1`.
     #
     # 10 is PROPOSED, like every other number in this file. Legitimate traffic
-    # is two rails posting once per charge notification; the generous burst
-    # exists because both rails retry on a non-2xx and their retries arrive
-    # together.
+    # is a rail posting once per charge notification: MTN documents exactly
+    # one callback and no retry
+    # (https://momodeveloper.mtn.com/api-documentation/callback, read
+    # 2026-10-20), and no Orange source says either way. Notch Pay may be the
+    # exception: its reference asks for a `200` so that it does not retry,
+    # and this route answers `202` (RFC-0013 § 12, item 12, open). Until
+    # 2026-10-21 this comment justified the generous burst with "both rails
+    # retry on a non-2xx and their retries arrive together", which MTN's own
+    # documentation contradicts; the 5 is now headroom for several charges
+    # settling at once and for any Notch Pay retries, and is as unmeasured as
+    # the 10.
     limitRps: 10
     limitBurstMultiplier: 5
     # `nginx.ingress.kubernetes.io/whitelist-source-range`, rendered only when
