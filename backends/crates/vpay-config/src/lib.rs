@@ -1231,7 +1231,9 @@ pub enum ConfigError {
     /// registration pass that would create an endpoint at a rail that never
     /// calls it.
     #[error(
-        "provider {code} declares callback_url_mode: registered without delivers_callbacks; a          rail whose callback URL is registered with the account must be one that calls back          (the rule vpay_provider::Capabilities::callbacks_are_coherent encodes)"
+        "provider {code} declares callback_url_mode: registered without delivers_callbacks; a \
+         rail whose callback URL is registered with the account must be one that calls back \
+         (the rule vpay_provider::Capabilities::callbacks_are_coherent encodes)"
     )]
     IncoherentCallbackMode {
         /// The `providers[].code` from the YAML.
@@ -1247,7 +1249,8 @@ pub enum ConfigError {
     /// nothing is one somebody believes in. A **YAML** mistake, unlike
     /// [`Self::IncoherentCallbackMode`]: removing the block is the fix.
     #[error(
-        "providers[{code}].callbacks is set, but {code} is told its callback URL on every          request and has no endpoint to register; remove the callbacks block"
+        "providers[{code}].callbacks is set, but {code} is told its callback URL on every \
+         request and has no endpoint to register; remove the callbacks block"
     )]
     CallbacksOnPerRequestRail {
         /// The `providers[].code` from the YAML.

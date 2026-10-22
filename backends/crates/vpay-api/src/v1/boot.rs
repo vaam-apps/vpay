@@ -1028,6 +1028,10 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("silent_rail"), "{message}");
         assert!(message.contains("callbacks_are_coherent"), "{message}");
+        assert!(
+            !message.contains("  "),
+            "a wrapped #[error] literal must not keep its indentation: {message}"
+        );
     }
 
     /// RFC-0013 § 2 and § 10's "Boot" line: a `callbacks` block on a rail
@@ -1061,6 +1065,10 @@ mod tests {
             assert!(
                 error.to_string().contains("remove the callbacks block"),
                 "the message must say what the fix is: {error}"
+            );
+            assert!(
+                !error.to_string().contains("  "),
+                "a wrapped #[error] literal must not keep its indentation: {error}"
             );
 
             let registered = adapters_by_code(vec![Box::new(TestRail {
