@@ -157,6 +157,8 @@ breaking, where turning it on later is not.
 
 1. Exact `notif_url` payload, and whether it carries `pay_token` — this decides
    whether `parse_callback` can _repair_ a charge whose `ref_extra` write failed.
+   [Issue #331](https://github.com/vaam-apps/vpay/issues/331) records it
+   (item 11 below).
 2. Whether callbacks are verifiable beyond `notif_token`.
 3. Production `{env}` path segment and host for Cameroon.
 4. Whether `transactionstatus` stays queryable indefinitely, or ages out. If it
@@ -251,7 +253,12 @@ breaking, where turning it on later is not.
     itself is another. Item 1 above asks the narrower version of this
     question. Whether Orange resends a notification that is refused is not
     documented in any official source found by 2026-10-21, and the
-    third-party claims contradict each other.
+    third-party claims contradict each other. All three questions are
+    [issue #331](https://github.com/vaam-apps/vpay/issues/331), a human test
+    filed 2026-10-22: three payments in Orange's `dev` environment whose
+    notifications land on a request inspector. **It is blocked** until
+    someone holds Orange Cameroun Web Payment credentials for `dev`; nobody
+    on the project held them on 2026-10-22.
 
 ## Status
 

@@ -374,7 +374,12 @@ first; its § 12, item 16 is the same question.
    MTN sends each callback once, lost. That costs latency only: the poll
    ladder settles the charge at its next rung. **Nothing was changed for
    this.** Mounting `PUT` as well is a decision that should follow an
-   observation, not a count of which page says what.
+   observation, not a count of which page says what. That observation is
+   [issue #330](https://github.com/vaam-apps/vpay/issues/330), a human test
+   filed 2026-10-22 that anyone with a Collections sandbox key can run
+   today: three sandbox payments whose callbacks land on a request
+   inspector, recording each one's method and body and whether a refused one
+   is resent.
 
 ## Status
 
