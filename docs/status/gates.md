@@ -454,11 +454,19 @@ correction.
   downgrades itself reports success for a run in which nothing was checked;
   a 403 or 429 stops the whole run rather than reporting the remaining ids as
   missing, so a rate limit can never send somebody to delete true claims.
-  Three `(file, id)` pairs are exempt in `CITATIONS_THAT_ARE_NOT_CLAIMS`, all
-  of them the same invented eleven-digit id in a mutation record, because a
+  ~~Three `(file, id)` pairs are exempt in `CITATIONS_THAT_ARE_NOT_CLAIMS`, all
+  of them the same invented eleven-digit id in a mutation record~~ **Five
+  `(file, id)` pairs are exempt in `CITATIONS_THAT_ARE_NOT_CLAIMS` since
+  2026-10-22** (it said three until then). Three are the same invented
+  eleven-digit id in a mutation record, because a
   document reporting that substituting a nonexistent run id left every gate
-  green has to be able to print that id. The exemption is scoped per file, so
-  those digits anywhere else are still checked. **What it is not:** the `#n` rule needs a `PR`/`pull
+  green has to be able to print that id. Two are MTN's sandbox test MSISDN, in
+  the live-sandbox runbook and the 2026-09-15 verification page — the
+  phone-number false failure predicted below, which arrived on 2026-09-15 and
+  kept this command red on `master` until
+  [2026-10-22-msisdn-citation.md](verification/2026-10-22-msisdn-citation.md).
+  The exemption is scoped per file and per id, so those digits anywhere else
+  are still checked, and a real run cited in either file still is. **What it is not:** the `#n` rule needs a `PR`/`pull
 request`/`issue` cue, so an id cited _only_ without one is not checked —
   today that set is empty, because every bold `**#17**` in `docs/roadmap.md`
   is also written `PR #17` in the same file. Cross-repository references
@@ -469,7 +477,10 @@ request`/`issue` cue, so an id cited _only_ without one is not checked —
   zero-padded), but an eleven-digit phone number written in a document would
   still be looked up and reported missing. That is the price of matching every
   id in a list rather than only the one after the word `run`, and it is paid
-  in the direction that fails a correct document.
+  in the direction that fails a correct document. _(2026-10-22: still true.
+  The first such number to land is exempt by name in the two files that use it
+  as a payer; the rule did not change, so the next phone number written in a
+  document fails the gate the same way and needs its own reviewed pair.)_
 
 **New 2026-09-05: `cargo xtask verify-serde` is the eighth gate and
 `cargo xtask verify-repositories` the ninth**, both from

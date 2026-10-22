@@ -85,15 +85,25 @@ All matched files use Prettier code style!
 $ npx markdownlint-cli2@0.20.0 --config <super-linter's default> <every changed .md but AGENTS.md> <a misaligned control file>
 Summary: 2 error(s)        # both in the control file; 0 in the 15 changed files
 $ just docs-check-citations                     # exit 1, on one id this change does not touch
-  - run 46733123454 does not exist (HTTP 404), cited at docs/runbooks/live-sandbox-test.md:178, docs/runbooks/live-sandbox-test.md:236, docs/status/verification/2026-09-15.md:30
+  - run 4673…3454 does not exist (HTTP 404), cited at docs/runbooks/live-sandbox-test.md:178, docs/runbooks/live-sandbox-test.md:236, docs/status/verification/2026-09-15.md:30
 ```
 
 Every id this change cites resolves. 268 ids resolved, and the one failure is
-`46733123454`, which is MTN's stock sandbox test MSISDN and not a run. It is
+`4673…3454`, which is MTN's stock sandbox test MSISDN and not a run. It is
 eleven digits and standalone, so the check reads it as a run id; it fails the
-same way on `master`, in three files this change does not edit. The check is
-opt-in, so no CI job has caught it. Left for its own change, which would list
-those three `(file, id)` pairs as not claims.
+same way on `master`, in ~~three files~~ three places this change does not
+edit. The check is opt-in, so no CI job has caught it. Left for its own change,
+which would list ~~those three~~ those `(file, id)` pairs as not claims.
+
+_(Corrected 2026-10-22, the same day, by the change that landed that fix —
+[2026-10-22-msisdn-citation.md](2026-10-22-msisdn-citation.md). The three
+places are in **two** files, since the runbook writes the number twice, so the
+fix listed two pairs, not three. And the number above was printed in full until
+then, which made **this page** a third file citing it: `verify-citations` cannot
+tell a quotation of its own output from a claim. Two middle digits are dropped,
+as [2026-09-16-privacy-inventory-gate.md](2026-09-16-privacy-inventory-gate.md)
+already does for the same output, rather than this page being exempted too —
+a page recording a dangling citation must not become one.)_
 
 `verify-citations` reads any standalone eleven-digit number as a run of this
 repository. The vpay-docs runs above are therefore written
