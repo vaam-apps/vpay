@@ -108,8 +108,13 @@ run for this entry and no capability moved. The step is recorded in
 > production rail, and no rail other than the MTN and Notch Pay sandboxes are
 > on record as touched.** The payer numbers were Notch Pay's documented sandbox
 > outcome numbers. Orange Money's own API (the `orange_money` adapter) has
-> still never been called, and Orange was not run through vpay on Notch Pay
-> either; no webhook has been received from Notch Pay; `notchpay::refund` is
+> still never been called. Orange through vpay on Notch Pay was run on
+> 2026-10-22 by runbook B3b: `+237690000000`, 260 XAF, reached `succeeded`
+> with a 260 XAF capture, and the MTN timeout and canceled numbers failed
+> `payer_timeout` and `payer_declined`
+> ([verification](status/verification/2026-10-22-notchpay-b3b.md)). (This
+> said "and Orange was not run through vpay on Notch Pay either" until
+> 2026-10-22.) No webhook has been received from Notch Pay; `notchpay::refund` is
 > a `NotImplemented` token, so it has refunded nothing; and the short
 > collection's escalation to `unresolved`, which the code does at the 24 h
 > horizon, was not observed. See

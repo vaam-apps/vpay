@@ -4,7 +4,9 @@
 `notchpay` row re-measured the same day on `master` at `b8be107` plus the
 adapter's branch.** The `notchpay` row's Collect and Status read cells were
 re-measured on 2026-10-21 by RFC-0012 delivery step 5
-([verification](verification/2026-10-21-notchpay-step5.md)). One row per
+([verification](verification/2026-10-21-notchpay-step5.md)), and their note
+extended on 2026-10-22 by runbook B3b
+([verification](verification/2026-10-22-notchpay-b3b.md)). One row per
 payment provider, one column per thing the provider port asks of an adapter.
 The maintainer asked for it on 2026-10-20: every provider implements the same
 trait, a gap is an error the trait already has, and this page is where the
@@ -108,8 +110,19 @@ Notes on cells that a word cannot carry:
   cells held: a dated page records the run, and two of the three charges
   reached a terminal status through the worker's read. The Collect and Status
   read cells therefore say "proven; sandbox 2026-10-21", for MTN's outcome
-  numbers on `cm.mobile`. That does not cover Orange through vpay
-  (step 1's probe ran it; step 5 did not), a webhook (none was received), a
+  numbers on `cm.mobile`. **On 2026-10-22 runbook B3b ran the other three
+  outcome numbers through the same stack**
+  ([verification/2026-10-22-notchpay-b3b.md](verification/2026-10-22-notchpay-b3b.md)).
+  `+237670000003` (MTN timeout, 240 XAF) read `expired`: charge `failed`,
+  `payer_timeout`. `+237670000004` (MTN canceled, 250 XAF) read `canceled`:
+  charge `failed`, `payer_declined`. `+237690000000` (Orange success,
+  260 XAF) reached `succeeded`, with a ledger capture of 260 XAF. Each
+  reached its terminal status on the worker's second read, about 12 s after
+  create, and vpay sent 3 submits and 6 reads. So the cells' evidence now
+  covers an Orange payer on `cm.mobile` too, and their wording is unchanged:
+  they were already "proven", and the date is when that first held. That does
+  not cover Orange's failure path (Notch Pay documents no Orange failure
+  number), a webhook (none was received), a
   refund (`notchpay::refund` is still a token, and on 2026-10-22 the sandbox
   answered `403` to every `POST /refunds` the probe sent:
   [verification/2026-10-22-notchpay-refunds.md](verification/2026-10-22-notchpay-refunds.md)),
@@ -122,7 +135,8 @@ Notes on cells that a word cannot carry:
   ended "The fix has not met Notch Pay. The cells below therefore stay
   'stub-only; never called': step 1 is evidence about Notch Pay, not proof of
   the adapter, and only step 5 can move them" until 2026-10-21, when step 5
-  ran.)_
+  ran. It said "That does not cover Orange through vpay (step 1's probe ran
+  it; step 5 did not)" until 2026-10-22, when B3b ran.)_
 - **`notchpay` carries a production risk no other row does**: whoever holds
   the merchant's public key can read, initialize, process to any number and
   cancel payments on that account. Every boot logs it at `WARN`, and a
@@ -130,10 +144,14 @@ Notes on cells that a word cannot carry:
   `settings.accept_public_key_exposure: true` (ADR-0031 condition 4). See
   [adapter-notchpay.md](../flows/adapter-notchpay.md) § "Production risks".
 - **`notchpay` and `flutterwave` "Methods" are the provider's own claims**, read
-  from their documentation. Notch Pay's sandbox has been called: the MTN
-  outcome numbers through vpay on 2026-10-21 (step 5), and the MTN and Orange
-  outcome numbers through the probe the same day (step 1). `flutterwave` has
-  not been called. _(This said "neither has been called" until 2026-10-21.)_
+  from their documentation. Notch Pay's sandbox has been called: the MTN and
+  Orange outcome numbers through the probe on 2026-10-21 (step 1), and all
+  six of them through vpay, three on 2026-10-21 (step 5) and three on
+  2026-10-22 (runbook B3b, the Orange success among them). `flutterwave` has
+  not been called. _(This said "neither has been called" until 2026-10-21,
+  and "the MTN outcome numbers through vpay on 2026-10-21 (step 5), and the
+  MTN and Orange outcome numbers through the probe the same day (step 1)"
+  until 2026-10-22.)_
 - **`flutterwave` has no RFC and no code.** Re-measured on 2026-10-20 from
   its documentation alone (no account, no call). Its status reads are
   secret-authenticated — a Bearer secret key on v3, OAuth2 client credentials

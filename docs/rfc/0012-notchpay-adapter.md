@@ -441,6 +441,16 @@ answers reads `failed` or `expired`; which one Notch Pay reports for a
 `000003` number decides whether that charge fails within a few rungs or after
 three hours, and is part of the first sandbox session.
 
+**Measured in the sandbox, 2026-10-22, through vpay**
+([verification](../status/verification/2026-10-22-notchpay-b3b.md)):
+`+237670000003` read `pending` right after submit and `expired` on the next
+read, ten seconds later, so the charge failed `payer_timeout` about 12 s
+after create. The sandbox's timeout number does not wait out a payer. What a
+real unanswered prompt reads, and when, a test number cannot show; § 4's
+"expired after 3 hours" is still Notch Pay's word. (Step 1 had seen
+`expired` only by its final read, about 180 s after process: its poll loop
+read by vpay's reference, which is a `404`, item 2.)
+
 ### 6. Webhooks are callbacks, and callbacks are hints
 
 `parse_callback(body)` reads a Notch Pay event
@@ -633,7 +643,10 @@ In writing (W) or in the sandbox (S):
 5. **(S)** What the read returns for each outcome number: the status, and any
    field naming a reason. _(Answered [2026-10-21][sandbox-run] — `complete`,
    `failed`, `expired`, `canceled`; no reason field. **The "insufficient funds"
-   number read `complete`** with `amounts.total` 105 of `amount` 107: item 18.)_
+   number read `complete`** with `amounts.total` 105 of `amount` 107: item 18.
+   Through vpay, all six numbers since [2026-10-22][b3b]: `…000003` became
+   `payer_timeout` and `…000004` `payer_declined`, and the Orange success
+   `succeeded`, each on the worker's second read, about 12 s after create.)_
 6. **(W, S)** Does `POST /refunds` exist on the live API, how is it made safe
    to replay, and which events does it fire? _(Not answered
    [2026-10-22][refunds-probe] — in the sandbox, `GET /refunds` answers
@@ -696,6 +709,7 @@ In writing (W) or in the sandbox (S):
 [sandbox-run]: ../status/verification/2026-10-21-notchpay-sandbox-run.md
 [step5]: ../status/verification/2026-10-21-notchpay-step5.md
 [refunds-probe]: ../status/verification/2026-10-22-notchpay-refunds.md
+[b3b]: ../status/verification/2026-10-22-notchpay-b3b.md
 
 ## Delivery
 

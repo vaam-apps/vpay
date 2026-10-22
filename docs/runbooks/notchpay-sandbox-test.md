@@ -18,7 +18,9 @@ Notch Pay disagrees with its specification.
 the dated pages it points to. Part A ran on 2026-10-21 from a cloud session
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
 Part B ran on 2026-10-21 from the maintainer's machine
-([verification](../status/verification/2026-10-21-notchpay-step5.md)).
+([verification](../status/verification/2026-10-21-notchpay-step5.md)), and
+its B3b on 2026-10-22
+([verification](../status/verification/2026-10-22-notchpay-b3b.md)).
 _(This said "It is not evidence. Nothing has called Notch Pay until someone
 runs it and the outputs are recorded" until 2026-10-21;
 [the first attempt](../status/verification/2026-10-20-notchpay-sandbox.md) had
@@ -306,11 +308,17 @@ cargo xtask gen-signing-key --out secrets                                # the O
 cargo xtask gen-signing-key --out .e2e/notchpay-sandbox-merchant         # the merchant's keypair
 # put the printed kid and n into the env file as NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / _N
 pnpm install --filter "@vpay-examples/merchant-node..." && pnpm --filter @vaam-apps/vpay-sdk build
-docker run -d --name vpay-pg-notchpay -p 5434:5432 \
+docker run -d --name vpay-pg-notchpay -p 127.0.0.1:5434:5432 \
   -e POSTGRES_USER=vpay -e POSTGRES_PASSWORD=vpay -e POSTGRES_DB=vpay postgres:16-alpine
 ```
 
-`secrets/` and `.e2e/` are git-ignored.
+`secrets/` and `.e2e/` are git-ignored. `127.0.0.1:` keeps Postgres, whose
+password is `vpay`, on loopback. Without it Docker publishes the port on
+every interface. _(This said `-p 5434:5432` until 2026-10-22; B3b's run
+bound loopback instead
+([verification](../status/verification/2026-10-22-notchpay-b3b.md)).)_ A
+merchant keypair from an earlier run can be reused instead of generated, if
+its public half is the env file's `_KID` and `_N`: B3b's run did that.
 
 ### B1. Terminal 1: the server
 
@@ -434,6 +442,13 @@ process. It did not time how much sooner they came. So give these numbers
 up to 15 minutes before calling one stuck. A2's table, taken from Notch
 Pay's testing page, has no Orange failure number, so B3b cannot test
 Orange's failure path.
+
+On 2026-10-22 B3b ran from the maintainer's machine, and every expectation
+above held. `…000003` failed `payer_timeout`, `…000004` failed
+`payer_declined`, and `+237690000000` succeeded with a 260 XAF ledger
+capture. Each was terminal on the worker's second read, 11 to 12 s after
+create, not minutes. vpay sent 3 submits and 6 reads
+([verification](../status/verification/2026-10-22-notchpay-b3b.md)).
 
 ### What to paste back from Part B
 

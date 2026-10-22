@@ -22,6 +22,10 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
 > read `complete` for less than its amount and was refused, never a success,
 > and the `trx.…` addressing worked on all three
 > ([verification](../status/verification/2026-10-21-notchpay-step5.md)).
+> On 2026-10-22 runbook B3b took the other three outcome numbers through it:
+> the MTN timeout number failed `payer_timeout`, the MTN canceled number
+> `payer_declined`, and the Orange success number succeeded
+> ([verification](../status/verification/2026-10-22-notchpay-b3b.md)).
 > Production has never been called, no webhook has been received, and
 > `refund` is a token. Read § "To confirm with Notch Pay" before trusting
 > any row.
@@ -241,7 +245,10 @@ numbers read `complete` (MTN and Orange success), `failed` (other failure),
 `canceled` therefore became `payer_declined`, as RFC-0012 § 4 said it would
 on that evidence. `PRODUCED_FAILURE_CODES` is `payer_timeout`,
 `payer_declined`, `provider_error`, `provider_account_blocked`.
-`insufficient_funds` is not produced.
+`insufficient_funds` is not produced. Through vpay on 2026-10-22 (runbook
+B3b), `expired` and `canceled` became `payer_timeout` and `payer_declined`,
+each on the worker's second read, about 12 s after create
+([verification](../status/verification/2026-10-22-notchpay-b3b.md)).
 
 **The "insufficient funds" number read `complete`, for less than was
 asked:** `amount` 107, `amounts.total` 105. On every other answer `total`
@@ -319,7 +326,12 @@ each is marked below. The ones that decide whether the adapter is right:
    less than asked, `failed`, `expired`, `canceled`; no reason field. Through
    the adapter (step 5, same day): `…000002` was `failed` and became
    `provider_error`, and `…000001` was refused as `Malformed` on every read
-   after the first. `…000003` and `…000004` were not run through vpay.
+   after the first. Through vpay on 2026-10-22 (runbook B3b): `…000003` was
+   `expired` and became `payer_timeout`, and `…000004` was `canceled` and
+   became `payer_declined`, each on the worker's second read
+   ([verification](../status/verification/2026-10-22-notchpay-b3b.md)).
+   _(This said "`…000003` and `…000004` were not run through vpay" until
+   2026-10-22.)_
 6. **(W, S)** Is `POST /refunds` real, and how is it made safe to replay?
    **Not answered 2026-10-22:** the sandbox answered `403` to every
    `POST /refunds`, so nothing was refunded and no replay was measured.
@@ -395,6 +407,26 @@ ran.)_
     (`trx.test_…`) after submit, and every read by it was answered. vpay sent
     3 submits and 16 reads. The ADR-0031 `WARN` was logged at boot by the
     server and the worker. No key appeared in either log.
+- **Runbook B3b done 2026-10-22**, on the maintainer's MacBook, the same
+  way as step 5 and on its approval rule. The binary was built from `master`
+  at `e7406dd`, whose code is `master` at `760fbb9`'s but for the version
+  string. It ran the three outcome numbers step 5 had not
+  ([verification](../status/verification/2026-10-22-notchpay-b3b.md)):
+  - `+237670000003` (MTN timeout), 240 XAF: read `expired`, charge `failed`,
+    `failure_code` `payer_timeout`, intent `requires_payment_method`, event
+    `payment_intent.payment_failed`.
+  - `+237670000004` (MTN canceled by user), 250 XAF: read `canceled`, charge
+    `failed`, `failure_code` `payer_declined`, intent
+    `requires_payment_method`, event `payment_intent.payment_failed`.
+  - `+237690000000` (Orange success), 260 XAF: charge and intent
+    `succeeded`, `provider_txn_id` the `trx.test_…` reference, event
+    `payment_intent.succeeded`, one balanced 260 XAF ledger transaction.
+  - Each answered `pending` to the read right after submit and its terminal
+    status to the next, ten seconds later: 11 to 12 s from create. vpay sent
+    3 submits and 6 reads, and no read after a charge was terminal. Every
+    charge held `notchpay_reference` `trx.test_…` after submit. No key
+    appeared in either log. Nothing differed from the mapping, and no code
+    changed.
 - **Two observations from step 5, neither an adapter defect.** The first is
   fixed. In step 5 the `provider_requests` rows for the 11 refused reads
   recorded "no answer" (`status_code` and `responded_at` empty) although
@@ -440,19 +472,22 @@ ran.)_
   dated verification page records step 5, the Collect and Status read cells
   of status/providers.md say "stub-only", never "sandbox" or "proven"" until
   2026-10-21.)_
-- **Not done**, after step 5: no webhook was received (runbook A4), so
+- **Not done**, after step 5 and B3b: no webhook was received (runbook A4), so
   RFC-0012 § 10 items 7 and 17 stay open, and webhook signature verification
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md)) is not built; Notch
   Pay's production was never called and no live key was used, so item 8 (a
   live key's prefix) stays a written question; no refund
   (`notchpay::refund` is still a token; the sandbox answered `403` to the
-  probe's `POST /refunds` on 2026-10-22); Orange (`+23769…`), timeout
-  (`…000003`) and canceled (`…000004`) were not run through vpay, and step
-  1's probe is their only run (runbook B3b is written for them); the 24 h escalation of the
+  probe's `POST /refunds` on 2026-10-22); Orange's failure path, for which
+  Notch Pay documents no test number; how a real unanswered prompt ends, and
+  how long it takes, which a test number cannot show; the 24 h escalation of the
   short collection to `unresolved` was not observed, because the stack was
   torn down at 15 minutes; and the `amounts.total` value Notch Pay returned
   for `…000001` was not captured (vpay logs no response body, and no extra
-  read was made).
+  read was made). _(This bullet listed "Orange (`+23769…`), timeout
+  (`…000003`) and canceled (`…000004`) were not run through vpay, and step
+  1's probe is their only run (runbook B3b is written for them)" until
+  2026-10-22, when B3b ran them.)_
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft);
