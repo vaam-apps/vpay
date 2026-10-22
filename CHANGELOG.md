@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.4](https://github.com/vaam-apps/vpay/compare/v0.10.3...v0.10.4) (2026-10-22)
+
+
+### Bug Fixes
+
+* **xtask:** exempt MTN's sandbox test MSISDN from verify-citations in the two docs that name it ([#335](https://github.com/vaam-apps/vpay/issues/335)) ([5cd22c5](https://github.com/vaam-apps/vpay/commit/5cd22c5c1857e9c7581f971ee37009136f775874))
+
+
+### Documentation
+
+* **rfc:** RFC-0009 revised: one company first, Stripe Connect's shape later ([#336](https://github.com/vaam-apps/vpay/issues/336)) ([facbb67](https://github.com/vaam-apps/vpay/commit/facbb67769ac0c252e8e3f463c66993c58b80cda))
+
 ## [0.10.3](https://github.com/vaam-apps/vpay/compare/v0.10.2...v0.10.3) (2026-10-22)
 
 
