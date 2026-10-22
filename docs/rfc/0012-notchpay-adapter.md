@@ -531,7 +531,10 @@ overrides `refund` with `ProviderError::NotImplemented("notchpay::refund")`,
 declared in [docs/status.md](../status.md), exactly as
 `orange_money::refund` was declared on 2026-09-15. It becomes a call when
 Notch Pay confirms in writing a refund that is safe to replay, and the
-sandbox answers `POST /refunds`.
+sandbox answers `POST /refunds`. _(On 2026-10-22 the sandbox did not: it
+answered `403` "Forbidden" to every request, and `GET /payments/{id}/refunds`
+answered `404` for a payment `GET /payments/{id}` had just read
+([verification](../status/verification/2026-10-22-notchpay-refunds.md)).)_
 
 The core half is already there. RFC-0010's delivery step 1 landed on
 2026-10-17: `refund_at_rail` hands an `Origin` adapter the charge's recorded
@@ -632,7 +635,12 @@ In writing (W) or in the sandbox (S):
    `failed`, `expired`, `canceled`; no reason field. **The "insufficient funds"
    number read `complete`** with `amounts.total` 105 of `amount` 107: item 18.)_
 6. **(W, S)** Does `POST /refunds` exist on the live API, how is it made safe
-   to replay, and which events does it fire?
+   to replay, and which events does it fire? _(Not answered
+   [2026-10-22][refunds-probe] — in the sandbox, `GET /refunds` answers
+   `200` with an empty list, and `POST /refunds` answers `403` "Forbidden",
+   with no message, to all four requests sent against a `complete` payment:
+   the guide's body twice, and twice with an undocumented `reference`. No
+   refund was made, so replay safety is not measured.)_
 7. **(S)** Is the webhook signature over the raw body, and is the header
    always lower-case? _(Not measured 2026-10-21: no public URL to receive
    one.)_
@@ -646,7 +654,10 @@ In writing (W) or in the sandbox (S):
     entity operates Notch Pay, under which licence and regulator, with which
     partner bank?
 11. **(W)** Does an `incomplete` payment expire as a `pending` one does?
-12. **(W)** Do refunds require an allowlisted IP, as transfers do?
+12. **(W)** Do refunds require an allowlisted IP, as transfers do? _(Not
+    answered [2026-10-22][refunds-probe] — the sandbox's `403` fits an
+    allowlist, and fits refunds being disabled for the account just as well;
+    it names neither.)_
 13. **(S)** Does `POST /webhooks` return the endpoint's signing secret, as the
     API reference says and the specification's schema does not? _(Contradicted
     [2026-10-21][sandbox-run] — no secret, in the create answer or the list.)_
@@ -684,6 +695,7 @@ In writing (W) or in the sandbox (S):
 
 [sandbox-run]: ../status/verification/2026-10-21-notchpay-sandbox-run.md
 [step5]: ../status/verification/2026-10-21-notchpay-step5.md
+[refunds-probe]: ../status/verification/2026-10-22-notchpay-refunds.md
 
 ## Delivery
 

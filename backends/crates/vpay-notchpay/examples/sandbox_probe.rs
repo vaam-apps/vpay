@@ -8,12 +8,14 @@
 //! cargo run -p vpay-notchpay --example sandbox_probe -- payments --out <report.json>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- webhooks --out <report.json> --webhook-url <url>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- search   --out <report.json> --reference <ref> [--reference <ref> …]
+//! cargo run -p vpay-notchpay --example sandbox_probe -- refunds  --out <report.json>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- verify-signature --body <file> --signature <hex>
 //! ```
 //!
-//! **`--ca-bundle <path>` (cloud only, off by default).** The three calling
-//! phases take it: every PEM certificate at `<path>` is trusted *in addition
-//! to* the vendored `webpki_roots`, for this probe's own HTTP client only.
+//! **`--ca-bundle <path>` (cloud only, off by default).** Every phase that
+//! calls Notch Pay takes it: every PEM certificate at `<path>` is trusted
+//! *in addition to* the vendored `webpki_roots`, for this probe's own HTTP
+//! client only.
 //! It exists for one environment, a cloud session whose egress gateway
 //! re-terminates TLS with its own CA (`/root/.ccr/ca-bundle.crt` there), so
 //! that step 1 can run from such a session. It is test tooling: this
@@ -50,7 +52,12 @@
 //! `read` changes nothing on the account. `payments` initializes and
 //! processes six sandbox payments with Notch Pay's documented outcome
 //! numbers. `webhooks` creates up to three endpoints at the URL you give and
-//! then deletes every one it created.
+//! then deletes every one it created. `refunds` (RFC-0012 § 10 items 6 and
+//! 12) makes one sandbox payment on MTN's success number and asks
+//! `POST /refunds` four times against it, twice with an identical body, to
+//! see whether a repeated request refunds twice. The adapter does not call
+//! `/refunds`: `notchpay::refund` stays a declared `NotImplemented` until
+//! Notch Pay answers item 6 in writing.
 
 use std::error::Error;
 use std::fs;
@@ -126,9 +133,12 @@ fn main() -> Result<()> {
         let signature = flag("--signature").ok_or("verify-signature needs --signature <hex>")?;
         return verify_signature(&PathBuf::from(body), &signature);
     }
-    if !matches!(phase, "read" | "payments" | "webhooks" | "search") {
+    if !matches!(
+        phase,
+        "read" | "payments" | "webhooks" | "search" | "refunds"
+    ) {
         return Err(
-            "usage: sandbox_probe read|payments|webhooks|search --out <report.json> \
+            "usage: sandbox_probe read|payments|webhooks|search|refunds --out <report.json> \
              [--webhook-url <url>] [--reference <ref> …] [--ca-bundle <pem>] | verify-signature --body <file> --signature <hex>"
                 .into(),
         );
@@ -147,6 +157,7 @@ fn main() -> Result<()> {
             "read" => probe.read_phase().await,
             "payments" => probe.payments_phase().await,
             "search" => probe.search_phase(&all_flags(&args, "--reference")).await,
+            "refunds" => probe.refunds_phase().await,
             _ => {
                 let url = flag("--webhook-url").ok_or("webhooks needs --webhook-url <url>")?;
                 probe.webhooks_phase(&url).await
@@ -551,6 +562,168 @@ impl Probe {
         }
     }
 
+    /// RFC-0012 § 10 items 6 and 12: does `POST /refunds` exist, what does it
+    /// answer, and does a repeated request refund twice? The refunds guide
+    /// documents `payment`, `amount`, `reason` and `metadata`, and no
+    /// reference or idempotency header (RFC-0012 § 7). One fresh payment on
+    /// MTN's success number, then four requests of 50 XAF against it: an
+    /// identical pair, and a pair carrying a `reference` of ours, which the
+    /// guide does not document. Then every read the guide names. Sandbox
+    /// money only, and at most the payment's own 200 XAF.
+    async fn refunds_phase(&mut self) -> Result<()> {
+        let (phone, amount) = ("+237670000000", 200);
+        let reference = uuid::Uuid::new_v4().to_string();
+        let item = "6: the payment to refund";
+        let init = InitializePayment {
+            amount,
+            currency: "XAF",
+            phone,
+            reference: &reference,
+            description: Some("vpay sandbox probe (RFC-0012 § 10 item 6)"),
+        };
+        let (status, body) = self
+            .exchange(
+                item,
+                Method::POST,
+                "/payments",
+                Some(serde_json::to_value(&init)?),
+                Decode::Payment,
+            )
+            .await?;
+        let trx = trx_reference(&body)
+            .filter(|_| (200..300).contains(&status))
+            .ok_or("the payment to refund was not initialized; no refund was requested")?;
+        // Notch Pay's `trx.…` reference: the only one its payment path takes
+        // (item 2), and what the adapter records as `provider_txn_id`.
+        let process = serde_json::to_value(ProcessPayment {
+            channel: CHANNEL,
+            data: ProcessData { phone },
+        })?;
+        self.exchange(
+            item,
+            Method::POST,
+            &format!("/payments/{trx}"),
+            Some(process),
+            Decode::Payment,
+        )
+        .await?;
+        let status = self.poll_trx(item, &trx, Duration::from_secs(120)).await?;
+        if status.as_deref() != Some("complete") {
+            self.note(
+                item,
+                format!("the payment read {status:?}, not complete; no refund was requested"),
+            );
+            return Ok(());
+        }
+
+        let reason = "vpay sandbox probe (RFC-0012 § 10 item 6)";
+        let plain = json!({
+            "payment": trx,
+            "amount": 50,
+            "reason": reason,
+            "metadata": { "vpay_refund": uuid::Uuid::new_v4().to_string() },
+        });
+        let ours = format!("vpay-refund-{}", uuid::Uuid::new_v4());
+        let with_reference = json!({
+            "payment": trx,
+            "amount": 50,
+            "reference": ours,
+            "reason": reason,
+            "metadata": { "vpay_refund": ours },
+        });
+        let mut ids = Vec::new();
+        for (label, request) in [
+            ("6, 12: the first refund", &plain),
+            ("6: the identical request again (a replay)", &plain),
+            (
+                "6: with a `reference` of ours (undocumented)",
+                &with_reference,
+            ),
+            ("6: the same `reference` again", &with_reference),
+        ] {
+            let (_, answer) = self
+                .exchange(
+                    label,
+                    Method::POST,
+                    "/refunds",
+                    Some(request.clone()),
+                    Decode::Nothing,
+                )
+                .await?;
+            ids.extend(refund_ids(&answer));
+        }
+        ids.sort();
+        ids.dedup();
+        self.note(
+            "6",
+            format!(
+                "{} distinct refund id(s) in the four answers; reading back in 15 s",
+                ids.len()
+            ),
+        );
+        tokio::time::sleep(Duration::from_secs(15)).await;
+        self.exchange(
+            "6: the payment's refunds",
+            Method::GET,
+            &format!("/payments/{trx}/refunds"),
+            None,
+            Decode::Nothing,
+        )
+        .await?;
+        for id in &ids {
+            self.exchange(
+                "6: one refund",
+                Method::GET,
+                &format!("/refunds/{id}"),
+                None,
+                Decode::Nothing,
+            )
+            .await?;
+        }
+        self.exchange(
+            "6: the payment after its refunds",
+            Method::GET,
+            &format!("/payments/{trx}"),
+            None,
+            Decode::Payment,
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Reads by Notch Pay's `trx.…` reference every 5 s until a terminal
+    /// status or `poll_for`, recording each change. Returns the last status.
+    async fn poll_trx(
+        &mut self,
+        item: &str,
+        trx: &str,
+        poll_for: Duration,
+    ) -> Result<Option<String>> {
+        let deadline = std::time::Instant::now() + poll_for;
+        let mut last = None;
+        loop {
+            let (_, body) = self
+                .exchange(
+                    item,
+                    Method::GET,
+                    &format!("/payments/{trx}"),
+                    None,
+                    Decode::Payment,
+                )
+                .await?;
+            let status = payment_status(&body);
+            if status != last {
+                self.note(item, format!("status now {status:?}"));
+                last.clone_from(&status);
+            }
+            let done = status.as_deref().is_some_and(|s| TERMINAL.contains(&s));
+            if done || std::time::Instant::now() >= deadline {
+                return Ok(status);
+            }
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
+    }
+
     /// RFC-0012 § 10 item 19: does `GET /payments?search=` find a payment by
     /// the merchant's own reference? Read-only. Each reference is also read
     /// directly, for comparison.
@@ -801,6 +974,40 @@ fn walk(value: &Value, f: &mut impl FnMut(&str, &Value)) {
     }
 }
 
+/// Notch Pay's own `trx.…` reference in a payment answer.
+fn trx_reference(body: &Value) -> Option<String> {
+    body.pointer("/transaction/reference")
+        .or_else(|| body.pointer("/data/reference"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// A payment answer's status.
+fn payment_status(body: &Value) -> Option<String> {
+    body.pointer("/transaction/status")
+        .or_else(|| body.pointer("/data/status"))
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+/// The refund ids in a `POST /refunds` answer, under whichever envelope it
+/// uses. The guide does not show one. Only ids that are safe to put in a path
+/// segment are kept: they go into `GET /refunds/{id}`.
+fn refund_ids(body: &Value) -> Vec<String> {
+    ["/refund/id", "/data/id", "/transaction/id", "/id"]
+        .iter()
+        .filter_map(|pointer| body.pointer(pointer).and_then(Value::as_str))
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 128
+                && id
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-'))
+        })
+        .map(str::to_owned)
+        .collect()
+}
+
 fn summary(entry: &Value) -> String {
     let item = entry
         .get("item")
@@ -938,6 +1145,22 @@ mod tests {
         let error = http_client(Some(&empty)).unwrap_err().to_string();
         fs::remove_dir_all(&dir).unwrap();
         assert!(error.contains("no PEM certificate"), "{error}");
+    }
+
+    #[test]
+    fn refund_ids_are_found_under_any_envelope_and_only_if_path_safe() {
+        assert_eq!(
+            refund_ids(&json!({ "refund": { "id": "rf_123" } })),
+            ["rf_123"]
+        );
+        assert_eq!(
+            refund_ids(&json!({ "data": { "id": "rf.test_9" } })),
+            ["rf.test_9"]
+        );
+        assert_eq!(refund_ids(&json!({ "id": "rf-1" })), ["rf-1"]);
+        assert!(refund_ids(&json!({ "refund": { "id": "../payments/x" } })).is_empty());
+        assert!(refund_ids(&json!({ "refund": { "id": "" } })).is_empty());
+        assert!(refund_ids(&json!({ "message": "Not found" })).is_empty());
     }
 
     fn fixture() -> PathBuf {
