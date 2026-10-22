@@ -731,6 +731,13 @@ impl ProviderAdapter for Adapter {
             supports_refunds: true,
             supports_partial_refunds: true,
             delivers_callbacks: true,
+            // Not a callback requirement: no MTN page read says a callback
+            // host must be IP-allowlisted. MTN's "MoMo Open API - Best
+            // Practices" lists IP whitelisting for Disbursements / Transfers
+            // (what `refund` calls), Remittances, Collections / Pre-Approval
+            // and Dynamic Journey Services, not RequestToPay, and does not
+            // say whose IPs. So whether `true` is right rests on the
+            // Disbursements entry, unconfirmed (RFC-0013 § 11, item 5).
             requires_ip_allowlist: true,
             // MTN Collections exposes `GET
             // /collection/v1_0/accountholder/{idType}/{msisdn}/basicuserinfo`

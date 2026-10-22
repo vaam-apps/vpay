@@ -469,9 +469,10 @@ the committed row rather than from the adapter's return value
   step 2's transaction, so all three kill points leave a job behind. The
   alternative — enqueueing beside step 5 — would have left kill points 1 and 2,
   precisely the recovery cases, with a committed charge and nothing that would
-  ever ask the rail about it. The hourly `scan:live` backstop covers only what
-  that transaction cannot: charges written before the queue existed, and a job
-  lost to operator error.
+  ever ask the rail about it. The `scan:live` backstop, every ten minutes
+  (`SCAN_INTERVAL`), covers only what that transaction cannot: charges written
+  before the queue existed, and a job lost to operator error. _(It said
+  "hourly" here until 2026-10-22, RFC-0013 § 11, item 4.)_
 - **The table itself** is `vpay_worker::recovery::recovery_step`, a pure
   function over (flow shape, latest submit attempt, `NotFound` streak, **charge
   age**, window).

@@ -117,9 +117,11 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   (`vpay_api::v1::payment_intents`'s confirm path calls
   `vpay_db::TxRepositories::enqueue_in_tx` inside the charge insert's transaction), so
   every kill point in [crash-safety.md](crash-safety.md) leaves work behind.
-  The hourly `scan:live` job is a **backstop only** — it re-enqueues a live
-  charge nothing has touched for ten minutes, and in a healthy deployment it
-  finds nothing.
+  The `scan:live` job is a **backstop only** — every ten minutes
+  (`SCAN_INTERVAL` in `vpay_worker::handlers`) it re-enqueues a live charge
+  nothing has touched for ten minutes, and in a healthy deployment it finds
+  nothing. _(This said "hourly" until 2026-10-22; the job has rescheduled
+  itself every `SCAN_INTERVAL` since it was written. RFC-0013 § 11, item 4.)_
 - **The ladder above, wired.** `vpay_worker::poll_delay(attempt)` is indexed by
   `jobs.attempts - 1` (the claim increments the counter), and a rung is one
   `UPDATE jobs SET run_at = now() + delay`.

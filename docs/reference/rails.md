@@ -601,9 +601,16 @@ base_url")`, and pointing Orange's `notif_url` at `config.base_url` fails the
   than _this_ one.
 
 The host is left free in the mapping matchers (`.+`) because it genuinely
-varies: the stub's own origin under test, an ingress in production, and MTN
-additionally allows an IP-allowlisted callback host of its own
-(`ProviderHost::callback_url`). The **path** is pinned, because that is the
+varies: the stub's own origin under test, an ingress in production, and a
+callback host of the rail's own (`ProviderHost::callback_url`). MTN is the
+documented case for that last one: its `X-Callback-Url` "must be hosted on the
+same domain specified when creating the API user", the `providerCallbackHost`
+(<https://momodeveloper.mtn.com/api-documentation/callback>, read 2026-10-20).
+_(Until 2026-10-22 this said "MTN additionally allows an IP-allowlisted callback
+host of its own". No MTN page read says a callback host is IP-allowlisted.
+MTN's Best Practices lists IP whitelisting for Disbursements and three other
+products, not RequestToPay, and does not say whose IPs. RFC-0013 § 11, item 5.)_
+The **path** is pinned, because that is the
 half that can drift silently — the route lives in `vpay-api` and the
 derivation in `vpay-config`, and neither crate compiles against the other.
 
