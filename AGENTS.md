@@ -469,7 +469,9 @@ through every release up to `0.9.1`. Each local `flutter test` rewrote it
 into whatever unrelated change ran Flutter next. Now `release-please.yml`
 rewrites its one version line on the release branch, beside `Cargo.lock`.
 No Flutter SDK is needed, and the result is byte-identical to what
-`flutter pub get` writes (measured on a simulated `0.9.2` bump).
+`flutter pub get` writes (measured on a simulated `0.9.2` bump). The next
+three releases, `v0.10.0` to `v0.10.2` (#307, #321, #324), each carried the
+sync commit, so the step is confirmed on the real runner, not only locally.
 
 `Chart.yaml`'s own `version:` **was** on that list — the chart had its own
 lifecycle and was hand-bumped — until 2026-09-20. It is the nineteenth

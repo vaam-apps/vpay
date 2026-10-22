@@ -127,8 +127,9 @@ rather than trusting this list to be exhaustive.
   the Flutter example's `pubspec.lock` recorded the plugin at `0.1.1` while it
   was `0.9.1`; now synced, and `release-please.yml` rewrites that line on
   every release branch. The step was run from the workflow file against a
-  simulated `0.9.2` bump and matched `flutter pub get` byte for byte. No
-  real release has run it yet.
+  simulated `0.9.2` bump and matched `flutter pub get` byte for byte.
+  ~~No real release has run it yet.~~ _(2026-10-22: `v0.10.0`, `v0.10.1` and
+  `v0.10.2` each carried the sync commit; the page's dated section says so.)_
 - [verification/2026-10-21-payer-dot-segment-ids.md](verification/2026-10-21-payer-dot-segment-ids.md) —
   tests only: the payer surfaces' client-secret parsers, in `sdks/stripe-js`
   and the Flutter plugin, are shown to refuse an empty or all-dots id on

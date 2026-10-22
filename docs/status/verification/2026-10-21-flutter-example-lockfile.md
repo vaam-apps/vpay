@@ -92,8 +92,46 @@ which shares this branch.
   first release PR after this merges is the proof: it should carry a
   "chore: sync the lockfiles with the release version" commit that touches
   `example/pubspec.lock`.
+  _(Run since. Three real releases carried that commit; see the dated
+  section below.)_
 - **No gate fails on a stale lockfile.** `verify-versions` reads only the
   files `release-please-config.json` lists, and this lockfile is not one of
   them. A hand bump that skips release-please could still strand it. That is
   the same exposure `CLAUDE.md` records for `examples/tauri-checkout`'s
   `Cargo.lock`.
+
+## 2026-10-22 — three real releases ran it
+
+The bullet above asked for one real release as proof. Three have run it since
+#309 merged (`f554f871`, 2026-10-21T13:07Z). Each release PR carried a second
+commit, by `release-please[bot]`, titled `chore: sync the lockfiles with the
+release version`. In the squashed release commit on `master`, the plugin's
+`pubspec.yaml` and this lockfile moved together:
+
+| Release   | PR   | Release commit | Sync commit on the release branch | `pubspec.yaml` and `example/pubspec.lock` |
+| --------- | ---- | -------------- | --------------------------------- | ----------------------------------------- |
+| `v0.10.0` | #307 | `e3931169`     | `9f5dcbf3`                        | `0.9.1` → `0.10.0`                        |
+| `v0.10.1` | #321 | `54c67dd5`     | `bdfb3808`                        | `0.10.0` → `0.10.1`                       |
+| `v0.10.2` | #324 | `90fe1b91`     | `1c9ba702`                        | `0.10.1` → `0.10.2`                       |
+
+Each release commit's lockfile diff is three files, 20 lines in and 20 out:
+the root `Cargo.lock`, `examples/tauri-checkout/src-tauri/Cargo.lock`, and
+the one line here.
+
+Two runner facts also held. These are the two the local run could not prove.
+
+- **Ubuntu's own tools ran it.** "Sync the Flutter example's pubspec.lock"
+  concluded `success` on all ten `release-please` runs that opened or
+  updated a release PR from `f554f871` onward. The first was run
+  `39605285570`. Each of those runs' "Commit the lockfile, if the version
+  bump moved it" also concluded `success`.
+- **It stayed out of the way when there was nothing to do.** On the three
+  runs that only cut a tag (`e3931169`, `54c67dd5`, `90fe1b91`), both steps
+  were `skipped`, because `prs_created` was false.
+
+`master` at `90fe1b91` records `0.10.2` in both files. This was read from
+`gh pr view`, `gh run view` and `git show` on 2026-10-22, and the
+[infrastructure row](../infrastructure.md) is ✅ on the strength of it.
+
+What this still does not cover is unchanged: no gate fails on a stale
+lockfile, so a hand bump that bypasses release-please can still strand it.
