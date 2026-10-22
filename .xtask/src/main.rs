@@ -8573,13 +8573,27 @@ const REPOSITORY_ALIASES: [&str; 3] = ["vaam-apps/vpay", "vaam-store/vpay", "vym
 /// `(file, id)` pairs that look like citations and are deliberately not
 /// claims.
 ///
-/// Three entries, one id, one finding: the Step 9 release-claims notes, their
-/// review, and this command's own notes all record a mutation test in which a
-/// real run id was replaced by `39999999999` to show that *nothing in the
-/// repository noticed*. That finding is what this command exists to close,
-/// and a document cannot state it without printing an id that does not exist.
-/// The first two carry a dated note saying the gap is closed; the third is
-/// the record of closing it.
+/// Five entries, two ids, two findings.
+///
+/// **`39999999999`, three files — an invented run.** The Step 9
+/// release-claims notes, their review, and this command's own notes all
+/// record a mutation test in which a real run id was replaced by
+/// `39999999999` to show that *nothing in the repository noticed*. That
+/// finding is what this command exists to close, and a document cannot state
+/// it without printing an id that does not exist. The first two carry a dated
+/// note saying the gap is closed; the third is the record of closing it.
+///
+/// **`46733123454`, two files — not a run at all.** It is MTN MoMo's stock
+/// sandbox test MSISDN, the auto-settling payer the live-sandbox runbook tells
+/// an operator to type into checkout and the 2026-09-15 verification page
+/// records having typed. It is eleven digits, standalone and not zero-padded,
+/// so [`run_id_citations`] reads it as a run — the false failure that
+/// function's doc comment predicted "stated rather than fixed" on 2026-09-05,
+/// arrived in the tree on 2026-09-15, and left this command red on `master`
+/// until 2026-10-22. The eleven-digit rule stays: narrowing it to a cue word
+/// would stop checking every id after the first in a list, which is where a
+/// wrong one hides. The runbook writes the number twice; one pair covers both
+/// lines because the pair is per file.
 ///
 /// A constant here rather than a marker in the prose, on purpose. A marker
 /// (`<!-- verify-citations: ignore -->`) is invisible to a reader and can be
@@ -8587,13 +8601,15 @@ const REPOSITORY_ALIASES: [&str; 3] = ["vaam-apps/vpay", "vaam-store/vpay", "vym
 /// this array is a code change that shows up in review, and it is scoped to
 /// one file, so the same eleven digits written anywhere else are still
 /// checked.
-const CITATIONS_THAT_ARE_NOT_CLAIMS: [(&str, &str); 3] = [
+const CITATIONS_THAT_ARE_NOT_CLAIMS: [(&str, &str); 5] = [
     ("docs/plans/exp6-notes/opus.md", "39999999999"),
     ("docs/plans/step9-notes/release-claims.md", "39999999999"),
     (
         "docs/plans/step9-notes/release-claims-review.md",
         "39999999999",
     ),
+    ("docs/runbooks/live-sandbox-test.md", "46733123454"),
+    ("docs/status/verification/2026-09-15.md", "46733123454"),
 ];
 
 /// What a cited id names, and therefore which endpoint answers for it.
@@ -8667,9 +8683,11 @@ struct Citation {
 ///   widening: this repository writes runs in comma-separated lists
 ///   (``Runs `33772512791`, `33784613048`, `33789060270` ``), where a
 ///   cue-word rule would check the first and ignore the rest — which is
-///   exactly where a wrong id hides. Every eleven-digit number in the tree is
-///   a run id; `sha-33929374661` and `339293746612` are not standalone and do
-///   not count.
+///   exactly where a wrong id hides. Every eleven-digit number in tracked
+///   Markdown is a run id except the ones [`CITATIONS_THAT_ARE_NOT_CLAIMS`]
+///   names — an invented run in three mutation records and MTN's sandbox
+///   test MSISDN in two documents; `sha-33929374661` and `339293746612` are
+///   not standalone and do not count.
 /// * **A pull request:** `#n` whose nearest preceding word is `PR`, `PRs`,
 ///   `pull`, `pulls` or `pull request(s)`, plus any `#n` continuing such a
 ///   run through nothing but separators (`PRs #16–#17`, `PR #27 and #28`);
@@ -8723,13 +8741,7 @@ fn verify_citations_via(root: &Path, gh: &str) -> Result<(), String> {
     let mut cited: BTreeMap<(CitationKind, String), Vec<String>> = BTreeMap::new();
     for path in &markdown {
         let text = fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: {e}"))?;
-        for citation in citations_in(&text, &aliases) {
-            if CITATIONS_THAT_ARE_NOT_CLAIMS
-                .iter()
-                .any(|(file, id)| *file == path.as_str() && *id == citation.id)
-            {
-                continue;
-            }
+        for citation in claims_in(path, &text, &aliases) {
             cited
                 .entry((citation.kind, citation.id))
                 .or_default()
@@ -8897,6 +8909,23 @@ fn citations_in(text: &str, repository_aliases: &[String]) -> Vec<Citation> {
     citations
 }
 
+/// The citations in `path` that [`verify_citations`] resolves: every one
+/// [`citations_in`] finds, less the pairs [`CITATIONS_THAT_ARE_NOT_CLAIMS`]
+/// exempts for that file.
+///
+/// Separate from the loop so a test can prove the exemption is scoped to the
+/// file it names without asking GitHub anything.
+fn claims_in(path: &str, text: &str, repository_aliases: &[String]) -> Vec<Citation> {
+    citations_in(text, repository_aliases)
+        .into_iter()
+        .filter(|citation| {
+            !CITATIONS_THAT_ARE_NOT_CLAIMS
+                .iter()
+                .any(|(file, id)| *file == path && *id == citation.id)
+        })
+        .collect()
+}
+
 /// Citations written as a GitHub URL, but only when the URL names *this*
 /// repository. `github.com/marcjazz/authkestra/issues/185` is somebody
 /// else's tracker and resolving it here would ask GitHub the wrong question.
@@ -8964,10 +8993,14 @@ const RUN_ID_DIGITS: usize = 11;
 /// A GitHub Actions run id is a decimal integer and is never zero-padded, so
 /// refusing a leading zero can only remove a false positive and can never
 /// miss a real run. It does **not** rescue the MSISDN case: an eleven-digit
-/// phone number written in a document would still be looked up and reported
+/// phone number written in a document is still looked up and reported
 /// missing. That residue is stated rather than fixed, because narrowing to a
 /// cue word is what this widening deliberately gave up — see
-/// [`verify_citations`].
+/// [`verify_citations`]. It stopped being hypothetical on 2026-09-15, when
+/// MTN's sandbox test MSISDN `46733123454` entered two documents; those two
+/// are exempt by name in [`CITATIONS_THAT_ARE_NOT_CLAIMS`], and the rule here
+/// is unchanged, so the next phone number written in a document fails the
+/// gate the same way and has to argue for its own pair in review.
 fn run_id_citations(line: &str) -> Vec<String> {
     let chars: Vec<char> = line.chars().collect();
     let mut ids = Vec::new();
@@ -13965,12 +13998,6 @@ mod citation_tests {
         );
     }
 
-    /// The escape hatch is three named pairs of one id, not a marker anyone
-    /// can write. All three are mutation records: a document that reports
-    /// "substituting `39999999999` leaves every gate green" has to be able to
-    /// print the id in order to say so. An exemption for any other id, or for
-    /// a document that is not one of those records, fails here and has to
-    /// argue for itself in review.
     /// The decisive negative for the property this command's own doc comment
     /// puts first: **it fails rather than skips when `gh` is missing**. Until
     /// 2026-09-05 that was prose with no guard — every other test here is a
@@ -14015,17 +14042,81 @@ mod citation_tests {
         assert_eq!(run_id_citations("run 33929374661"), vec!["33929374661"]);
     }
 
+    /// The escape hatch is five named pairs of two ids, not a marker anyone
+    /// can write. Three are mutation records: a document that reports
+    /// "substituting `39999999999` leaves every gate green" has to be able to
+    /// print the id in order to say so. Two are MTN's sandbox test MSISDN in
+    /// the runbook that tells an operator to type it and the verification
+    /// page that records typing it. An exemption for any other id, or for a
+    /// document that is not one of those, fails here and has to argue for
+    /// itself in review.
     #[test]
-    fn every_exempt_id_is_the_one_invented_run_in_a_mutation_record() {
-        assert_eq!(CITATIONS_THAT_ARE_NOT_CLAIMS.len(), 3);
+    fn every_exempt_id_is_an_invented_run_or_the_sandbox_msisdn() {
+        assert_eq!(CITATIONS_THAT_ARE_NOT_CLAIMS.len(), 5);
         for (file, id) in CITATIONS_THAT_ARE_NOT_CLAIMS {
-            assert_eq!(id, "39999999999");
+            match id {
+                "39999999999" => assert!(
+                    file.starts_with("docs/plans/step9-notes/release-claims")
+                        || file == "docs/plans/exp6-notes/opus.md",
+                    "an exemption outside the mutation records needs its own reasoning: {file}"
+                ),
+                "46733123454" => assert!(
+                    file == "docs/runbooks/live-sandbox-test.md"
+                        || file == "docs/status/verification/2026-09-15.md",
+                    "the sandbox MSISDN is exempt where it is a phone number, not here: {file}"
+                ),
+                other => panic!("an exempt id with no reasoning in this test: {other} in {file}"),
+            }
+        }
+    }
+
+    /// The MSISDN exemption, driven through the same function the gate
+    /// filters with: in the two documents that name it, the number is not a
+    /// claim; written anywhere else — another runbook, another verification
+    /// page — the same eleven digits are a run again and get resolved. The
+    /// path is matched exactly, not as a prefix, which the `.bak` case pins.
+    /// And the exemption is a pair, not a file: a real run cited in the
+    /// runbook is still checked.
+    #[test]
+    fn the_sandbox_msisdn_is_exempt_only_in_the_files_that_name_it() {
+        let line = "2. Enter the MTN-sandbox test MSISDN **`46733123454`** and submit.\n";
+        for exempt in [
+            "docs/runbooks/live-sandbox-test.md",
+            "docs/status/verification/2026-09-15.md",
+        ] {
             assert!(
-                file.starts_with("docs/plans/step9-notes/release-claims")
-                    || file == "docs/plans/exp6-notes/opus.md",
-                "an exemption outside the mutation records needs its own reasoning: {file}"
+                claims_in(exempt, line, &aliases()).is_empty(),
+                "{exempt} names the MSISDN and must not send it to GitHub"
             );
         }
+        for elsewhere in [
+            "docs/runbooks/release.md",
+            "docs/status/verification/2026-10-22.md",
+            "docs/runbooks/live-sandbox-test.md.bak",
+        ] {
+            assert_eq!(
+                claims_in(elsewhere, line, &aliases()),
+                vec![Citation {
+                    kind: CitationKind::Run,
+                    id: "46733123454".to_owned(),
+                    line: 1,
+                }],
+                "{elsewhere} does not name the MSISDN, so the digits are a run to resolve"
+            );
+        }
+        assert_eq!(
+            claims_in(
+                "docs/runbooks/live-sandbox-test.md",
+                "run `33929374661` settled; payer `46733123454`.\n",
+                &aliases()
+            ),
+            vec![Citation {
+                kind: CitationKind::Run,
+                id: "33929374661".to_owned(),
+                line: 1,
+            }],
+            "the pair exempts one id in one file, not the file"
+        );
     }
 }
 
