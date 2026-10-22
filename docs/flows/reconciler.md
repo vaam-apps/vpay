@@ -66,7 +66,11 @@ polling; no official Orange source says either way
 § 11, item 1). Of the rails linked today, only Notch Pay's reference mentions
 retrying, and it asks for a `200` (RFC-0013 § 12, item 12, which is open). A callback
 MTN sends and vpay misses is not resent, which costs latency and nothing
-else: the poll ladder above settles every charge whether or not one arrives.)_
+else: the poll ladder above reads every charge whether or not one arrives.)_
+_(That sentence said "settles every charge" until 2026-10-22: a charge whose
+reads the adapter refuses as `Malformed` is read and never settled, and reaches
+`unresolved` at the horizon instead. See
+[adapter-notchpay.md](adapter-notchpay.md) § "The calls".)_
 
 Mobile-money callbacks are typically unauthenticated and unsigned, unreliable,
 and sometimes duplicated. The authenticated status query is the only thing that

@@ -248,8 +248,15 @@ only from `requires_payment_method` and refuses an intent with a live charge —
 by design, not by omission); any partial `amount_received`, because neither
 rail can collect part of an amount and `ChargeStatus::Succeeded` carries no
 amount at all; `prompt_expired_at` and the `payment_intent.processing`
-milestone ([reconciler.md](reconciler.md)); and any of this against a **real**
-rail — every settlement observed so far came from a WireMock host.
+milestone ([reconciler.md](reconciler.md)); and any of this against a
+**production** rail. _(Corrected 2026-10-22: this said "against a **real**
+rail — every settlement observed so far came from a WireMock host", wrong since
+2026-09-15. Real sandboxes have settled charges through the worker's
+authenticated read twice: MTN's on 2026-09-15, successes only
+([verification](../status/verification/2026-09-15.md)), and Notch Pay's on
+2026-10-21, one success and one failure
+([verification](../status/verification/2026-10-21-notchpay-step5.md)). Neither
+produced any of the three things above.)_
 
 Since Step 9 the settlement transaction also moves a **checkout session** when
 one drove the payment — `paid`/`complete` on success, `failed`/`expired` on a

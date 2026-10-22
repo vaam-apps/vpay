@@ -40,8 +40,12 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
 - The webhook endpoint `{public_base_url}/provider/notchpay/callback`
   registered by hand in Notch Pay's dashboard (Settings › Webhooks) for the
   five payment events, until [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)
-  registers it. Optional for correctness: the poll ladder settles every
-  charge without callbacks.
+  registers it. Optional for correctness: the poll ladder reads every
+  charge without callbacks. _(This said "settles every charge" until
+  2026-10-22. A charge whose reads the adapter refuses is never settled by
+  them: step 5's short collection was still `pending` after fifteen minutes
+  ([verification](../status/verification/2026-10-21-notchpay-step5.md)), and by
+  the code, not observed, it becomes `unresolved` at the 24-hour horizon.)_
 
 ## Admission: ADR-0031, not rule 3 as written
 
