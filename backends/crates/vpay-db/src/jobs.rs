@@ -141,6 +141,24 @@ pub(crate) async fn enqueue_in_tx(
     Ok(inserted == 1)
 }
 
+/// `pg_try_advisory_xact_lock` on [`crate::lock_keys::CALLBACK_REGISTRATION`],
+/// inside the caller's transaction: `true` if this transaction now holds it.
+///
+/// Here, beside the queue, because the only callers are the
+/// `ensure_callbacks` job and the command that runs the same pass, and the
+/// key's own documentation says why it is tried rather than waited for.
+///
+/// # Errors
+///
+/// [`DbError::Query`].
+pub(crate) async fn try_lock_callback_registration(tx: &mut PgConnection) -> Result<bool, DbError> {
+    sqlx::query_scalar::<_, bool>("SELECT pg_try_advisory_xact_lock($1)")
+        .bind(crate::lock_keys::CALLBACK_REGISTRATION)
+        .fetch_one(&mut *tx)
+        .await
+        .map_err(DbError::Query)
+}
+
 /// Brings an already-queued job's `run_at` forward to now, **inside the
 /// caller's transaction**, returning whether a row moved — unless it is
 /// already due within `floor`, in which case it is left where it is.

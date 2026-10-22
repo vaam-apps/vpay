@@ -31,11 +31,12 @@ use vpay_core::metrics::{
 use vpay_core::{Classify as _, Severity};
 use vpay_db::{DbError, JobRow, Jobs, Repositories, TxOutcome, UnitOfWork as _};
 
+use crate::callbacks::CallbackPlan;
 use crate::error::{Decision, JobError};
 use crate::handlers::{Adapters, RailConfigs, WebhookContext, handle};
 use crate::jobs::{
-    FANOUT_DEDUPE_KEY, JobKind, Outcome, SCAN_DEDUPE_KEY, SCAN_DELIVERIES_DEDUPE_KEY,
-    SWEEP_CUSTOMERS_DEDUPE_KEY, SWEEP_DEDUPE_KEY,
+    ENSURE_CALLBACKS_DEDUPE_KEY, FANOUT_DEDUPE_KEY, JobKind, Outcome, SCAN_DEDUPE_KEY,
+    SCAN_DELIVERIES_DEDUPE_KEY, SWEEP_CUSTOMERS_DEDUPE_KEY, SWEEP_DEDUPE_KEY,
 };
 use crate::recovery::RecoveryPolicy;
 use crate::webhooks::EndpointRegistry;
@@ -256,6 +257,7 @@ pub async fn run_once(
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
     webhooks: &WebhookContext<'_>,
+    callbacks: &CallbackPlan,
     worker_id: &str,
 ) -> Result<Option<Settled>, DbError> {
     let Some(job) = Jobs::claim(repositories, worker_id).await? else {
@@ -268,7 +270,16 @@ pub async fn run_once(
     // exactly the case worth being able to see on a dashboard.
     metrics::counter!(JOBS_CLAIMED_TOTAL, "kind" => job.kind.clone()).increment(1);
 
-    let result = handle(repositories, adapters, rails, policy, webhooks, &job).await;
+    let result = handle(
+        repositories,
+        adapters,
+        rails,
+        policy,
+        webhooks,
+        callbacks,
+        &job,
+    )
+    .await;
     let settled = settle(repositories, worker_id, &job, result).await?;
     // After `settle`, so the counter reflects the write that actually
     // happened rather than the one this worker intended:
@@ -458,17 +469,17 @@ fn log_disposition(settled: &Settled) {
     }
 }
 
-/// Seeds the five singleton jobs this deployment always wants running.
+/// Seeds the six singleton jobs this deployment always wants running.
 ///
 /// `sweep_expired`, `scan_live_charges`, `fan_out_events`,
-/// `scan_deliveries` and `sweep_idle_customers` are not enqueued by anything
-/// that creates work, so they
+/// `scan_deliveries`, `sweep_idle_customers` and `ensure_callbacks` are not
+/// enqueued by anything that creates work, so they
 /// are seeded at boot and reschedule themselves for as long as the deployment
 /// lives. `ON CONFLICT (dedupe_key) DO NOTHING` is what makes N workers doing
 /// this produce one row each, and what stops a restart dragging a job already
 /// scheduled an hour out back to now.
 ///
-/// One transaction for all five, because a partial seed is worse than none: a
+/// One transaction for all six, because a partial seed is worse than none: a
 /// deployment without `fan_out_events` settles payments and tells no merchant
 /// about any of them, which looks exactly like a healthy deployment until
 /// somebody reads the backlog.
@@ -480,7 +491,7 @@ fn log_disposition(settled: &Settled) {
 /// `Jobs::claim` judges it by (ADR-0026). Until 2026-09-23 it was this host's
 /// `OffsetDateTime::now_utc()`, so a worker whose clock ran ahead of
 /// Postgres' seeded five jobs its own claim could not see until the database
-/// caught up.
+/// caught up. (Five then; `ensure_callbacks` made it six on 2026-10-22.)
 ///
 /// # Errors
 ///
@@ -547,6 +558,20 @@ pub async fn seed_singletons(repositories: &dyn Repositories) -> Result<(), DbEr
                     due_now,
                 )
                 .await?;
+                // RFC-0013's callback registration pass (migration 0051).
+                // Seeded on every deployment, registered rail or not: it is
+                // the job that would notice one being configured, and a pass
+                // over a deployment with none asks nothing and reschedules.
+                // Due now, so a worker started after an endpoint was deleted
+                // in a dashboard puts it back at once rather than within the
+                // hour.
+                tx.enqueue_in_tx(
+                    JobKind::EnsureCallbacks.as_wire_str(),
+                    ENSURE_CALLBACKS_DEDUPE_KEY,
+                    &empty,
+                    due_now,
+                )
+                .await?;
                 Ok::<_, DbError>(TxOutcome::Commit(()))
             })
         })
@@ -582,6 +607,7 @@ pub async fn run_loop(
     policy: RecoveryPolicy,
     endpoints: Arc<EndpointRegistry>,
     egress: crate::ssrf::EgressPolicy,
+    callbacks: Arc<CallbackPlan>,
     concurrency: usize,
     grace: Duration,
     worker_id: String,
@@ -629,6 +655,7 @@ pub async fn run_loop(
                 // target vetted, so it is built inside the handler
                 // (`crate::ssrf`, and `WebhookContext` for the cost).
                 egress,
+                Arc::clone(&callbacks),
                 worker_id.clone(),
                 rx.clone(),
                 Arc::clone(&counters),
@@ -803,6 +830,7 @@ async fn claim_loop(
     policy: RecoveryPolicy,
     endpoints: Arc<EndpointRegistry>,
     egress: crate::ssrf::EgressPolicy,
+    callbacks: Arc<CallbackPlan>,
     worker_id: String,
     mut shutdown: watch::Receiver<bool>,
     counters: Arc<Counters>,
@@ -821,6 +849,7 @@ async fn claim_loop(
             &rails,
             &policy,
             &webhooks,
+            &callbacks,
             &worker_id,
         )
         .await

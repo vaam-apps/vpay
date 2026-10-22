@@ -156,8 +156,8 @@ use testcontainers::{ContainerAsync, GenericImage};
 use uuid::Uuid;
 use vpay_core::{Currency, FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError,
-    RefundDestination, RefundTarget,
+    CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, EndpointCheck, EndpointState,
+    ProviderAdapter, ProviderConfig, ProviderError, RefundDestination, RefundTarget,
 };
 use vpay_testkit::containers::start_wiremock;
 
@@ -1165,6 +1165,17 @@ async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: R
     let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
     let charge = rail.charge(REF_ACCEPTED);
 
+    // RFC-0013 § 8: the census below is the capability's, not a list kept
+    // beside it. A rail that changes how it learns its URL changes both, or
+    // this fails before the submit is made.
+    assert_eq!(
+        callback_url_pattern(rail_under_test, &rail.config.callback_url).is_none(),
+        rail.adapter.capabilities().callback_url_mode == CallbackUrlMode::Registered,
+        "{}: a rail is told its callback URL on a submit exactly when it declares \
+         CallbackUrlMode::PerRequest",
+        rail.adapter.code()
+    );
+
     // The path `vpay_api::provider_callback` mounts, which is also what
     // `ProviderHost::effective_callback_url` derives — `start` builds this
     // config the same way, so a change to either end shows up here as a
@@ -1202,6 +1213,54 @@ async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: R
             rail.adapter.code(),
             rail.config.callback_url
         ),
+    }
+}
+
+/// RFC-0013 § 8's second rule: `ensure_callback_endpoint` answers
+/// `Unsupported` exactly on the rails that declare `PerRequest`, and answers
+/// about the account on the ones that declare `Registered`.
+///
+/// Asked with `write: false`, so a registered rail lists and creates nothing:
+/// Notch Pay's stub answers the empty list, and the answer is `Missing`. The
+/// create path is `backends/tests/integration/tests/callback_registration.rs`'s,
+/// against the same mappings.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
+#[tokio::test]
+async fn the_endpoint_check_is_unsupported_exactly_on_a_per_request_rail(
+    #[case] rail_under_test: RailUnderTest,
+) {
+    let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
+    let marker = format!("vpay:conformance:{}:default", rail.adapter.code());
+    let answer = rail
+        .adapter
+        .ensure_callback_endpoint(
+            &EndpointCheck {
+                marker: &marker,
+                write: false,
+            },
+            &rail.config,
+        )
+        .await;
+
+    match rail.adapter.capabilities().callback_url_mode {
+        CallbackUrlMode::PerRequest => assert!(
+            matches!(answer, Err(ProviderError::Unsupported)),
+            "{} is told its URL per request and has no endpoint to check, got {answer:?}",
+            rail.adapter.code()
+        ),
+        CallbackUrlMode::Registered => {
+            let report = answer.unwrap_or_else(|error| {
+                panic!(
+                    "{} registers its URL with the account and must answer about it: {error}",
+                    rail.adapter.code()
+                )
+            });
+            assert_eq!(report.state, EndpointState::Missing);
+            assert!(report.retirable.is_empty());
+        }
     }
 }
 

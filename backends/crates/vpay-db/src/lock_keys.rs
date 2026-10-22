@@ -64,6 +64,22 @@ pub const SIGNING_KEY_ROTATION: i64 = 0x0076_7061_796b_6579;
 /// for the other's unrelated work.
 pub const CONFIG_RECONCILE: i64 = 0x0076_7061_7963_6667;
 
+/// `vpaycbk` — taken, with `pg_try_advisory_xact_lock`, as the first
+/// statement of each `ensure_callbacks` pass's transaction (RFC-0013 § 4),
+/// through [`crate::TxRepositories::try_lock_callback_registration`].
+///
+/// Why a lock at all: the pass lists a rail account's callback endpoints and
+/// creates one only if none is vpay's, and on a rail with no idempotency key
+/// (Notch Pay) two passes that both list before either creates would both
+/// create. The job is a singleton, but its row is claimed under a lease the
+/// reaper can hand to a second worker while a slow pass still runs, and
+/// `vpay-server callbacks ensure` runs outside the queue altogether.
+///
+/// **Try, never wait.** A pass that finds the key held skips: whoever holds
+/// it is doing the same work, and the next pass catches anything it missed.
+/// Waiting would park a worker task behind a network call it cannot see.
+pub const CALLBACK_REGISTRATION: i64 = 0x0076_7061_7963_626b;
+
 /// Every key above, for the test that proves they are distinct.
 ///
 /// A plain array rather than a derive: the property that matters is
@@ -72,7 +88,11 @@ pub const CONFIG_RECONCILE: i64 = 0x0076_7061_7963_6667;
 /// cannot be forgotten, because a key absent from this list is a key the
 /// distinctness test does not cover — which is why the test also asserts the
 /// length.
-pub const ALL: [i64; 2] = [SIGNING_KEY_ROTATION, CONFIG_RECONCILE];
+pub const ALL: [i64; 3] = [
+    SIGNING_KEY_ROTATION,
+    CONFIG_RECONCILE,
+    CALLBACK_REGISTRATION,
+];
 
 #[cfg(test)]
 mod tests {
@@ -105,6 +125,7 @@ mod tests {
         for (key, mnemonic) in [
             (SIGNING_KEY_ROTATION, "vpaykey"),
             (CONFIG_RECONCILE, "vpaycfg"),
+            (CALLBACK_REGISTRATION, "vpaycbk"),
         ] {
             let bytes: Vec<u8> = key
                 .to_be_bytes()

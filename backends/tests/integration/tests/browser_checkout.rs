@@ -259,6 +259,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),
@@ -1098,6 +1099,7 @@ async fn no_event_body_carries_a_client_secret() -> anyhow::Result<()> {
             endpoints: &endpoints,
             egress,
         },
+        &vpay_worker::CallbackPlan::none(),
         "browser-checkout-suite",
     )
     .await?

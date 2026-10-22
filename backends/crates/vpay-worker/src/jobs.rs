@@ -19,14 +19,15 @@ use crate::error::Decision;
 /// The kinds of job this workspace can enqueue.
 ///
 /// Closed, and closed against a database constraint rather than a convention:
-/// migration 0034's `kind_is_known` CHECK lists exactly these eight strings,
-/// so a ninth spelled here and not there is refused by Postgres at the
+/// migration 0051's `kind_is_known` CHECK lists exactly these nine strings,
+/// so a tenth spelled here and not there is refused by Postgres at the
 /// insert rather than discovered by a worker that claims a job it cannot
 /// dispatch. The two webhook kinds arrived with migration 0022 (0021
 /// deliberately withheld them, so Step 4 could not enqueue a delivery nothing
-/// would run), [`Self::ScanDeliveries`] with 0023 and
-/// [`Self::SweepIdleCustomers`] with 0034, on the same terms; the
-/// constraint and this enum move together, always.
+/// would run), [`Self::ScanDeliveries`] with 0023,
+/// [`Self::SweepIdleCustomers`] with 0034 and [`Self::EnsureCallbacks`] with
+/// 0051, on the same terms; the constraint and this enum move together,
+/// always.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobKind {
@@ -100,6 +101,22 @@ pub enum JobKind {
     /// and would put a merchant-visible event behind the same lease as an
     /// internal delete.
     SweepIdleCustomers,
+    /// Make sure every rail that is told its callback URL once, at the
+    /// provider, has one registered there (RFC-0013, migration `0051`):
+    /// list the account's endpoints, and create vpay's if it is missing.
+    ///
+    /// A singleton ([`ENSURE_CALLBACKS_DEDUPE_KEY`]) seeded at every worker
+    /// start and rescheduled hourly, on [`Self::SweepExpired`]'s terms —
+    /// with one difference: it never dead-letters. A rail that refuses the
+    /// keys, or an account that answers nothing vpay can read, is reported
+    /// and tried again an hour later, because the fix is at the provider or
+    /// in configuration and parking the job would hide the next pass that
+    /// finds it fixed (`crate::callbacks`).
+    ///
+    /// Not part of `vpay-server`'s boot. A rail that cannot be reached would
+    /// otherwise stop the API from serving the rails that can, and the API
+    /// replicas would race one another for the provider's endpoint list.
+    EnsureCallbacks,
 }
 
 impl JobKind {
@@ -122,6 +139,7 @@ impl JobKind {
             Self::DeliverWebhook => "deliver_webhook",
             Self::ScanDeliveries => "scan_deliveries",
             Self::SweepIdleCustomers => "sweep_idle_customers",
+            Self::EnsureCallbacks => "ensure_callbacks",
         }
     }
 
@@ -150,7 +168,7 @@ impl JobKind {
     /// at 1.98.0 that makes a string→enum parse exhaustive, so the honest
     /// statement is: **this is test-enforced, not compiler-enforced**, and
     /// the test is named above.
-    pub const EVERY: [Self; 8] = [
+    pub const EVERY: [Self; 9] = [
         Self::PollCharge,
         Self::ResubmitCharge,
         Self::SweepExpired,
@@ -159,6 +177,7 @@ impl JobKind {
         Self::DeliverWebhook,
         Self::ScanDeliveries,
         Self::SweepIdleCustomers,
+        Self::EnsureCallbacks,
     ];
 
     /// Parses a `jobs.kind` value, or `None` for one this build does not
@@ -412,6 +431,15 @@ pub const SCAN_DELIVERIES_DEDUPE_KEY: &str = "scan:deliveries";
 /// made to a payer.
 pub const SWEEP_CUSTOMERS_DEDUPE_KEY: &str = "sweep:customers";
 
+/// The `jobs.dedupe_key` of the one and only callback-registration pass
+/// (RFC-0013, migration `0051`). A singleton, on [`SWEEP_DEDUPE_KEY`]'s
+/// exact terms.
+///
+/// `ensure:callbacks`, in a namespace of its own: the pass writes to a
+/// provider, not to vpay's tables, and nothing else in the queue does that
+/// on a timer.
+pub const ENSURE_CALLBACKS_DEDUPE_KEY: &str = "ensure:callbacks";
+
 /// The `jobs.dedupe_key` for delivering one `webhook_deliveries` row.
 ///
 /// Keyed on the *delivery*, not on the event: a merchant with two endpoints
@@ -441,22 +469,23 @@ mod tests {
     /// owned. Aliasing the real constant is what makes
     /// `the_kinds_are_exactly_the_check_constraints` below a claim about the
     /// **parser** rather than about this file.
-    const KINDS: [JobKind; 8] = JobKind::EVERY;
+    const KINDS: [JobKind; 9] = JobKind::EVERY;
 
-    /// Transcribed from migration 0034's `kind_is_known` CHECK — the current
-    /// one. If these eight strings and that constraint ever disagree, every
+    /// Transcribed from migration 0051's `kind_is_known` CHECK — the current
+    /// one. If these nine strings and that constraint ever disagree, every
     /// enqueue of the odd one out fails at the database, so the list is
     /// written out here rather than generated from the enum.
     ///
-    /// This constant has *changed* three times, every one deliberately:
+    /// This constant has *changed* four times, every one deliberately:
     /// 0021's version asserted `deliver_webhook` was **not** enqueueable,
     /// which was true for exactly as long as no handler existed; 0022 added
     /// both webhook kinds with their handlers; 0023 added `scan_deliveries`
-    /// with its own; and 0034 adds `sweep_idle_customers` with
-    /// `crate::handlers`' `sweep_idle_customers`.
-    /// `the_check_constraint_is_migration_0034s` reads the migration file so
+    /// with its own; 0034 added `sweep_idle_customers` with
+    /// `crate::handlers`' `sweep_idle_customers`; and 0051 adds
+    /// `ensure_callbacks` with `crate::callbacks`.
+    /// `the_check_constraint_is_migration_0051s` reads the migration file so
     /// this list cannot quietly drift from it.
-    const KIND_IS_KNOWN: [&str; 8] = [
+    const KIND_IS_KNOWN: [&str; 9] = [
         "poll_charge",
         "resubmit_charge",
         "sweep_expired",
@@ -465,6 +494,7 @@ mod tests {
         "deliver_webhook",
         "scan_deliveries",
         "sweep_idle_customers",
+        "ensure_callbacks",
     ];
 
     #[test]
@@ -481,12 +511,12 @@ mod tests {
     /// found by a worker enqueueing a job Postgres refuses — at runtime, in
     /// the settlement path.
     #[test]
-    fn the_check_constraint_is_migration_0034s() {
+    fn the_check_constraint_is_migration_0051s() {
         let sql = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../migrations/0034_create-customers.sql"
+            "/../../migrations/0051_jobs-ensure-callbacks.sql"
         ))
-        .expect("migration 0034 is in the tree");
+        .expect("migration 0051 is in the tree");
         let expected = KIND_IS_KNOWN
             .iter()
             .map(|kind| format!("'{kind}'"))
@@ -494,7 +524,7 @@ mod tests {
             .join(",");
         assert!(
             sql.contains(&format!("CHECK (kind IN\n  ({expected}))")),
-            "KIND_IS_KNOWN no longer matches migration 0034's kind_is_known; expected \
+            "KIND_IS_KNOWN no longer matches migration 0051's kind_is_known; expected \
              ({expected})"
         );
     }
@@ -603,6 +633,7 @@ mod tests {
         assert_eq!(SCAN_DELIVERIES_DEDUPE_KEY, "scan:deliveries");
         assert_eq!(FANOUT_DEDUPE_KEY, "fanout:events");
         assert_eq!(SWEEP_CUSTOMERS_DEDUPE_KEY, "sweep:customers");
+        assert_eq!(ENSURE_CALLBACKS_DEDUPE_KEY, "ensure:callbacks");
         assert_eq!(
             webhook_dedupe_key(delivery),
             "webhook:00000000-0000-0000-0000-000000000001"
@@ -616,6 +647,7 @@ mod tests {
             SCAN_DELIVERIES_DEDUPE_KEY.to_owned(),
             FANOUT_DEDUPE_KEY.to_owned(),
             SWEEP_CUSTOMERS_DEDUPE_KEY.to_owned(),
+            ENSURE_CALLBACKS_DEDUPE_KEY.to_owned(),
             webhook_dedupe_key(delivery),
         ];
         let unique: std::collections::BTreeSet<&String> = keys.iter().collect();

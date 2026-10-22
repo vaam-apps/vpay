@@ -200,6 +200,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),
@@ -2278,6 +2279,7 @@ fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
                     ),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
             ProviderHost {
                 code: ORANGE_RAIL.to_owned(),
@@ -2298,6 +2300,7 @@ fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
         ],
         currencies: vec![CurrencyEntry {
@@ -2415,6 +2418,7 @@ impl ProviderAdapter for OriginRail {
             requires_ip_allowlist: false,
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
+            callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
         }
     }
 
@@ -2488,6 +2492,7 @@ fn origin_config(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),

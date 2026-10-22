@@ -4794,8 +4794,10 @@ name = "vpay-adapter-notchpay"
 version = "0.10.4"
 dependencies = [
  "async-trait",
+ "hex",
  "reqwest",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
  "tracing",
  "uuid",
@@ -5098,6 +5100,7 @@ dependencies = [
  "tracing-subscriber",
  "uuid",
  "vpay-adapter-mtn-momo",
+ "vpay-adapter-notchpay",
  "vpay-adapter-orange-money",
  "vpay-api",
  "vpay-config",

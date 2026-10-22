@@ -23,6 +23,7 @@
 
 use std::time::Duration;
 
+pub mod callbacks;
 pub mod error;
 pub mod handlers;
 pub mod jobs;
@@ -31,6 +32,9 @@ pub mod run_loop;
 pub mod signing;
 pub mod ssrf;
 pub mod webhooks;
+pub use callbacks::{
+    CallbackPlan, RailCheck, RailPass, Registration, handle_ensure_callbacks, run_pass,
+};
 pub use error::{Decision, JobError, tracing_level};
 pub use handlers::{Adapters, CLIENT_ASSERTION_JTI_RETENTION, RailConfigs, WebhookContext, handle};
 pub use jobs::{DeliverWebhookPayload, JobKind, Outcome, PollChargePayload, ResubmitPayload};

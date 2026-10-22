@@ -410,6 +410,19 @@ pub trait TxRepositories: Send {
         floor: std::time::Duration,
     ) -> Result<bool, DbError>;
 
+    /// Tries to take [`crate::lock_keys::CALLBACK_REGISTRATION`] for the rest
+    /// of this transaction, without waiting.
+    ///
+    /// `false` means another `ensure_callbacks` pass holds it, and the
+    /// caller skips (RFC-0013 § 4). Transaction-scoped, so commit, rollback
+    /// or a dropped connection releases it, and no code path can return a
+    /// still-locked connection to the pool.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`].
+    async fn try_lock_callback_registration(&mut self) -> Result<bool, DbError>;
+
     /// `payment_intents`: the merchant-scoped compare-and-swap on `status`.
     ///
     /// `Ok(None)` means the intent was not in `expected` — a lost race, not
@@ -785,6 +798,10 @@ impl TxRepositories for PendingTransaction {
         delay: std::time::Duration,
     ) -> Result<bool, DbError> {
         crate::jobs::enqueue_in_tx(self.conn(), kind, dedupe_key, payload, delay).await
+    }
+
+    async fn try_lock_callback_registration(&mut self) -> Result<bool, DbError> {
+        crate::jobs::try_lock_callback_registration(self.conn()).await
     }
 
     async fn pull_forward_in_tx(

@@ -1,0 +1,198 @@
+{
+  "mappings": [
+    {
+      "name": "list webhook endpoints: none yet (200)",
+      "priority": 10,
+      "scenarioName": "notchpay-webhooks",
+      "requiredScenarioState": "Started",
+      "request": {
+        "method": "GET",
+        "urlPath": "/webhooks",
+        "queryParameters": {
+          "page": {
+            "equalTo": "1"
+          }
+        },
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "fixedDelayMilliseconds": 1000,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 200,
+          "status": "OK",
+          "message": "Webhook endpoints retrieved",
+          "totals": 0,
+          "last_page": 1,
+          "current_page": 1,
+          "selected": 0,
+          "endpoints": []
+        }
+      },
+      "metadata": {
+        "why": [
+          "Transcribed from the sandbox's answer to GET /webhooks?page=1 on 2026-10-21",
+          "(docs/status/verification/2026-10-21-notchpay-sandbox-run.report.json). The one-second delay is what",
+          "lets two racing ensure_callbacks passes overlap: without the registration lock both would list this",
+          "empty page and both would create (callback_registration.rs, two_racing_passes_create_one_endpoint)."
+        ]
+      }
+    },
+    {
+      "name": "create a webhook endpoint (201): answers url null, as the sandbox does",
+      "priority": 10,
+      "scenarioName": "notchpay-webhooks",
+      "newScenarioState": "Registered",
+      "request": {
+        "method": "POST",
+        "urlPath": "/webhooks",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.url",
+              "matches": "^https?://.+/provider/notchpay/callback$"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.description",
+              "matches": "^vpay:[^: ]+:notchpay:default url:[0-9a-f]{16}$"
+            }
+          },
+          {
+            "equalToJson": "{\"events\":[\"payment.created\",\"payment.complete\",\"payment.failed\",\"payment.canceled\",\"payment.expired\"]}",
+            "ignoreExtraElements": true
+          }
+        ]
+      },
+      "response": {
+        "status": 201,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":201,\"status\":\"Created\",\"message\":\"Webhook endpoint created successfully\",\"endpoint\":{\"id\":\"ep_test.vpaySuite0000001\",\"description\":\"{{jsonPath request.body '$.description'}}\",\"events\":[\"payment.created\",\"payment.complete\",\"payment.failed\",\"payment.canceled\",\"payment.expired\"],\"url\":null,\"status\":null,\"sandbox\":true,\"created_at\":\"2026-10-21T03:54:34.000000Z\",\"updated_at\":\"2026-10-21T03:54:34.000000Z\"}}"
+      },
+      "metadata": {
+        "why": [
+          "Transcribed from the sandbox's create answer on 2026-10-21: 201, the endpoint under `endpoint`, the",
+          "description and events echoed, `url` null although the request sent one, `status` null until the list",
+          "says active, and no signing secret. The body patterns are RFC-0013 section 5's Notch Pay row as this",
+          "stub's contract: vpay's callback path, a description that is a marker and a URL tag, and the five",
+          "PAYMENT_EVENTS. No requiredScenarioState, because Notch Pay accepts a second create at the same URL",
+          "(2026-10-21, item 14): a pass that creates twice is answered twice, and the suite counts POSTs in the",
+          "journal to catch it."
+        ]
+      }
+    },
+    {
+      "name": "list webhook endpoints: the integration suite's endpoint (200)",
+      "priority": 10,
+      "scenarioName": "notchpay-webhooks",
+      "requiredScenarioState": "Registered",
+      "request": {
+        "method": "GET",
+        "urlPath": "/webhooks",
+        "queryParameters": {
+          "page": {
+            "equalTo": "1"
+          }
+        },
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        }
+      },
+      "response": {
+        "status": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 200,
+          "status": "OK",
+          "message": "Webhook endpoints retrieved",
+          "totals": 1,
+          "last_page": 1,
+          "current_page": 1,
+          "selected": 1,
+          "endpoints": [
+            {
+              "id": "ep_test.vpaySuite0000001",
+              "description": "vpay:callbacks-suite:notchpay:default url:e54195acc071987c",
+              "events": [
+                "payment.created",
+                "payment.complete",
+                "payment.failed",
+                "payment.canceled",
+                "payment.expired"
+              ],
+              "url": null,
+              "status": "active",
+              "sandbox": true,
+              "created_at": "2026-10-21T03:54:34.000000Z",
+              "updated_at": "2026-10-21T03:54:34.000000Z"
+            }
+          ]
+        }
+      },
+      "metadata": {
+        "why": [
+          "The list after a create, in the sandbox's shape (2026-10-21, `url` null, `status` active). WireMock",
+          "cannot remember a request body across requests, so the description is fixed: deployment",
+          "`callbacks-suite`, callback URL https://vpay.invalid/provider/notchpay/callback, whose SHA-256 begins",
+          "e54195acc071987c. Any other deployment's pass reads this as someone else's endpoint and creates its",
+          "own, as it would on a shared sandbox account."
+        ]
+      }
+    },
+    {
+      "name": "list webhook endpoints: the account's keys refused (401)",
+      "priority": 1,
+      "request": {
+        "method": "GET",
+        "urlPath": "/webhooks",
+        "headers": {
+          "Authorization": {
+            "equalTo": "bad-key"
+          }
+        }
+      },
+      "response": {
+        "status": 401,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "jsonBody": {
+          "code": 401,
+          "status": "Unauthorized",
+          "message": "Unauthenticated."
+        }
+      },
+      "metadata": {
+        "why": "The value payments-initialize.json's 401 mapping answers to. The pass must alert (provider_account_blocked) and reschedule at the normal interval, never dead-letter."
+      }
+    }
+  ]
+}

@@ -59,7 +59,8 @@ use vpay_core::metrics::{
 
 use crate::{
     AcceptedExposure, AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus,
-    PayerField, ProviderAdapter, ProviderConfig, ProviderError, RefundTarget, Refunded, Submitted,
+    EndpointCheck, EndpointReport, PayerField, ProviderAdapter, ProviderConfig, ProviderError,
+    RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -258,6 +259,24 @@ impl ProviderAdapter for Measured {
         )
         .await
     }
+
+    /// Forwarded, not defaulted — for `parse_destination`'s reason, and with
+    /// the same consequence if it were not: the port's default answers
+    /// `Unsupported`, so a wrapper that took it would report every
+    /// registered rail as having nothing to register, while each adapter's
+    /// own tests, which hold it unwrapped, stayed green.
+    /// `the_callback_endpoint_call_is_forwarded_and_measured` catches it.
+    async fn ensure_callback_endpoint(
+        &self,
+        check: &EndpointCheck<'_>,
+        config: &ProviderConfig,
+    ) -> Result<EndpointReport, ProviderError> {
+        self.measure(
+            provider_operation::ENSURE_CALLBACK_ENDPOINT,
+            self.inner.ensure_callback_endpoint(check, config),
+        )
+        .await
+    }
 }
 
 #[cfg(test)]
@@ -324,6 +343,7 @@ mod tests {
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: false,
                 refund_destination: crate::RefundDestination::Origin,
+                callback_url_mode: crate::CallbackUrlMode::PerRequest,
             }
         }
 
@@ -588,6 +608,7 @@ mod tests {
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: false,
                 refund_destination: crate::RefundDestination::Required,
+                callback_url_mode: crate::CallbackUrlMode::PerRequest,
             }
         }
 
@@ -645,6 +666,61 @@ mod tests {
                 .push(destination.map(|target| target.msisdn().to_owned()));
             Err(ProviderError::NotImplemented("recording::refund"))
         }
+
+        /// Answers `Ok` with the marker it was handed, so the wrapper's
+        /// forward is told apart from the port's `Unsupported` default.
+        async fn ensure_callback_endpoint(
+            &self,
+            check: &EndpointCheck<'_>,
+            _config: &ProviderConfig,
+        ) -> Result<EndpointReport, ProviderError> {
+            Ok(EndpointReport {
+                state: crate::EndpointState::Present {
+                    endpoint_id: check.marker.to_owned(),
+                    repaired: false,
+                },
+                retirable: Vec::new(),
+            })
+        }
+    }
+
+    /// The `ensure_callbacks` pass reaches the inner adapter through the
+    /// wrapper, and is counted on the rail series under its own operation.
+    ///
+    /// Without the forward, `Measured` — which wraps every shipping adapter
+    /// — would answer the port's `Unsupported` for Notch Pay, and the pass
+    /// would report a registered rail as having nothing to register.
+    #[test]
+    fn the_callback_endpoint_call_is_forwarded_and_measured() {
+        let adapter = Measured::wrap(Box::new(RecordingRefund {
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let check = EndpointCheck {
+            marker: "vpay:test:mtn_momo:default",
+            write: false,
+        };
+        let mut answered = None;
+        let scrape = scrape_of(|| {
+            answered = Some(block_on(
+                adapter.ensure_callback_endpoint(&check, &config()),
+            ));
+        });
+        assert!(
+            matches!(
+                answered.expect("the closure ran"),
+                Ok(EndpointReport {
+                    state: crate::EndpointState::Present { ref endpoint_id, .. },
+                    ..
+                }) if endpoint_id == "vpay:test:mtn_momo:default"
+            ),
+            "the inner adapter must be the one that answered, not the port's default"
+        );
+        assert!(
+            scrape.contains(
+                r#"vpay_provider_requests_total{provider="mtn_momo",operation="ensure_callback_endpoint",error_kind=""} 1"#
+            ),
+            "the call is counted on the rail series: {scrape}"
+        );
     }
 
     /// The destination reaches the inner adapter **unchanged**, and never

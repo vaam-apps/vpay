@@ -26,6 +26,11 @@ async-trait.workspace = true
 reqwest.workspace = true
 tracing.workspace = true
 uuid.workspace = true
+# The URL tag in a webhook endpoint's description (`src/callbacks.rs`): Notch
+# Pay answers `"url": null` for every endpoint, so the description is the only
+# place vpay can record which URL an endpoint was created for.
+sha2.workspace = true
+hex.workspace = true
 
 # NOT here, deliberately: `serde`/`serde_json`. Every body is the client's
 # (`vpay_notchpay::wire`), and the one value this crate reads out of a

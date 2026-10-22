@@ -1686,6 +1686,7 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),
@@ -2889,6 +2890,7 @@ async fn the_real_run_loop_delivers_a_backlog_event_to_the_receiver() {
             vpay_worker::RecoveryPolicy::default(),
             endpoints,
             delivery_egress(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             1,
             Duration::from_secs(5),
             "webhooks-run-loop".to_owned(),

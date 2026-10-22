@@ -53,6 +53,7 @@
 //! [RFC-0012]: ../../../../docs/rfc/0012-notchpay-adapter.md
 //! [ADR-0031]: ../../../../docs/adr/0031-a-status-read-authenticated-by-a-server-side-key.md
 
+mod callbacks;
 mod mapping;
 
 pub use crate::mapping::PRODUCED_FAILURE_CODES;
@@ -66,9 +67,9 @@ use vpay_notchpay::wire::{
 };
 use vpay_notchpay::{Answer, Client, Keys};
 use vpay_provider::{
-    AcceptedExposure, CallbackRef, Capabilities, ChargeRef, ChargeStatus, PayerField,
-    PayerFieldKind, PhonePayerType, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
-    RefundDestination, RefundTarget, Refunded, Submitted,
+    AcceptedExposure, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus,
+    EndpointCheck, EndpointReport, PayerField, PayerFieldKind, PhonePayerType, ProviderAdapter,
+    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
 use crate::mapping::{Initialized, Processed};
@@ -386,7 +387,8 @@ impl ProviderAdapter for Adapter {
             supports_refunds: true,
             supports_partial_refunds: true,
             // Notch Pay posts webhooks to an endpoint registered with the
-            // account — by hand until RFC-0013 lands.
+            // account. vpay registers it itself since RFC-0013 steps 2–4
+            // (`callback_url_mode` below); by hand before that.
             delivers_callbacks: true,
             // Notch Pay documents an IP whitelist "for API transfers", which
             // this adapter never calls. Whether refunds need it is RFC-0012
@@ -397,6 +399,11 @@ impl ProviderAdapter for Adapter {
             // customer", with no payee in the request: the second `Origin`
             // rail, and it takes the port's `parse_destination` default.
             refund_destination: RefundDestination::Origin,
+            // The initialize call carries no callback URL; Notch Pay posts to
+            // the endpoints registered with the account (`/webhooks`), so the
+            // `ensure_callbacks` pass keeps one of vpay's own there
+            // (`ensure_callback_endpoint` below, RFC-0013 § 5).
+            callback_url_mode: CallbackUrlMode::Registered,
         }
     }
 
@@ -616,6 +623,26 @@ impl ProviderAdapter for Adapter {
         _config: &ProviderConfig,
     ) -> Result<Refunded, ProviderError> {
         Err(ProviderError::NotImplemented("notchpay::refund"))
+    }
+
+    /// RFC-0013 § 5: list every page of the account's webhook endpoints, and
+    /// create one of vpay's own only if none carries this deployment's
+    /// marker for this URL. Never modifies or deletes one; `callbacks`' module
+    /// header has the table, and why the description carries a tag of the
+    /// URL (Notch Pay answers `"url": null`).
+    ///
+    /// # Errors
+    ///
+    /// `Config` for a missing key, a wrong base URL, or a URL or event list
+    /// Notch Pay refused; `Rejected` when it refuses our keys; `Transport`
+    /// and `Malformed` as for every call. None of them touches a charge.
+    async fn ensure_callback_endpoint(
+        &self,
+        check: &EndpointCheck<'_>,
+        config: &ProviderConfig,
+    ) -> Result<EndpointReport, ProviderError> {
+        let client = self.client(config)?;
+        callbacks::ensure(&client, check, &config.callback_url).await
     }
 }
 

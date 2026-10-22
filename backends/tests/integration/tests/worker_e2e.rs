@@ -255,6 +255,7 @@ impl Harness {
             policy,
             support::no_webhook_endpoints(),
             support::default_egress_policy(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             concurrency,
             grace,
             "worker-e2e-suite".to_owned(),
@@ -302,6 +303,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: CURRENCY.to_ascii_uppercase(),
@@ -671,6 +673,7 @@ async fn a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it() -
             RecoveryPolicy::default(),
             support::no_webhook_endpoints(),
             support::default_egress_policy(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             2,
             Duration::from_secs(10),
             "worker-e2e-suite".to_owned(),
@@ -898,6 +901,7 @@ async fn a_decline_after_submission_returns_the_intent_to_requires_payment_metho
             endpoints: &endpoints,
             egress,
         },
+        &vpay_worker::CallbackPlan::none(),
         "worker-e2e-suite",
     )
     .await?

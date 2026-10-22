@@ -20,7 +20,7 @@ use vpay_config::{Config, ConfigError};
 use vpay_core::ProviderFlow;
 use vpay_core::error::{Category, Classify};
 use vpay_db::{CurrencySeed, DbError, ProviderSeed, Repositories};
-use vpay_provider::{AcceptedExposure, Measured, ProviderAdapter};
+use vpay_provider::{AcceptedExposure, CallbackUrlMode, Measured, ProviderAdapter};
 
 /// A binary's linked adapters, keyed by `providers.code`.
 ///
@@ -82,7 +82,7 @@ pub fn adapters_by_code(
 ///
 /// # Errors
 ///
-/// Two, and both are [`Category::Configuration`] — exit **78**, "fix the
+/// Four, and all are [`Category::Configuration`] — exit **78**, "fix the
 /// deploy" — at every call site:
 ///
 /// * [`ConfigError::ProviderWithoutAdapter`] for a configured rail the
@@ -90,7 +90,15 @@ pub fn adapters_by_code(
 /// * [`ConfigError::IncoherentCapabilities`] for a configured rail whose
 ///   adapter declares `supports_partial_refunds` without `supports_refunds`
 ///   (issue #61, 2026-09-10) — see the check itself for why boot is where
-///   that is caught.
+///   that is caught;
+/// * [`ConfigError::IncoherentCallbackMode`] for a configured rail whose
+///   adapter declares `callback_url_mode: Registered` without
+///   `delivers_callbacks` (RFC-0013, 2026-10-22);
+/// * [`ConfigError::CallbacksOnPerRequestRail`] for a `callbacks` block on a
+///   rail whose adapter is told its callback URL on every request
+///   (RFC-0013 § 2, 2026-10-22).
+///
+/// _(The first line said "Two, and both" until 2026-10-22.)_
 ///
 /// **This paragraph said the first was "now the *only* error this returns"
 /// until the second one landed**, which is the drift a `# Errors` section
@@ -154,6 +162,24 @@ pub fn boot_seeds(
             // the whole linked list.
             if !capabilities.is_coherent() {
                 return Err(ConfigError::IncoherentCapabilities {
+                    code: provider.code.clone(),
+                });
+            }
+            // RFC-0013 § 8. A linking mistake on the line above's terms, and
+            // a separate check only because `callback_url_mode` is not
+            // persisted and so has no CHECK to mirror.
+            if !capabilities.callbacks_are_coherent() {
+                return Err(ConfigError::IncoherentCallbackMode {
+                    code: provider.code.clone(),
+                });
+            }
+            // RFC-0013 § 2: a setting that does nothing is one somebody
+            // believes in. Every configured rail, `enabled` or not, on the
+            // line above's reasoning.
+            if provider.callbacks.is_some()
+                && capabilities.callback_url_mode == CallbackUrlMode::PerRequest
+            {
+                return Err(ConfigError::CallbacksOnPerRequestRail {
                     code: provider.code.clone(),
                 });
             }
@@ -527,6 +553,7 @@ mod tests {
             // payee, so the fixture asks the port for nothing it does not
             // have.
             refund_destination: RefundDestination::Origin,
+            callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
         }
     }
 
@@ -597,6 +624,7 @@ mod tests {
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                     display_name: None,
+                    callbacks: None,
                 })
                 .collect(),
             currencies: vec![CurrencyEntry {
@@ -973,6 +1001,79 @@ mod tests {
                 message.contains("partial_refunds_imply_refunds"),
                 "the message must name the rule that was broken, spelled the way the migration \
                  and the database's own error spell it: {message}"
+            );
+        }
+    }
+
+    /// RFC-0013 § 8: a rail whose callback URL is registered with the
+    /// account must be one that calls back. Refused at boot, on the line
+    /// above's terms, with a message naming the rule.
+    #[test]
+    fn a_registered_callback_url_on_a_rail_that_never_calls_back_is_a_config_error() {
+        let adapters = adapters_by_code(vec![Box::new(TestRail {
+            code: "silent_rail",
+            capabilities: Capabilities {
+                delivers_callbacks: false,
+                callback_url_mode: CallbackUrlMode::Registered,
+                ..coherent(ProviderFlow::Push)
+            },
+            exposure: None,
+        })]);
+        let error = boot_seeds(&config_with(&["silent_rail"]), &adapters)
+            .expect_err("a registered URL on a rail that never calls back must be refused");
+        let ConfigError::IncoherentCallbackMode { code } = &error else {
+            panic!("expected IncoherentCallbackMode, got {error:?}");
+        };
+        assert_eq!(code, "silent_rail");
+        let message = error.to_string();
+        assert!(message.contains("silent_rail"), "{message}");
+        assert!(message.contains("callbacks_are_coherent"), "{message}");
+    }
+
+    /// RFC-0013 § 2 and § 10's "Boot" line: a `callbacks` block on a rail
+    /// that is told its URL on every request refuses to boot — whatever it
+    /// says, `off` included, because the block itself is the mistake. The
+    /// same block on a `Registered` rail boots.
+    #[test]
+    fn a_callbacks_block_on_a_per_request_rail_is_a_config_error() {
+        for register in [
+            vpay_config::CallbackRegistration::Ensure,
+            vpay_config::CallbackRegistration::Check,
+            vpay_config::CallbackRegistration::Off,
+        ] {
+            let mut config = config_with(&["mtn_momo"]);
+            config
+                .providers
+                .get_mut(0)
+                .expect("the fixture configures one rail")
+                .callbacks = Some(vpay_config::ProviderCallbacks { register });
+            let adapters = adapters_by_code(vec![Box::new(TestRail {
+                code: "mtn_momo",
+                capabilities: coherent(ProviderFlow::Push),
+                exposure: None,
+            })]);
+            let error = boot_seeds(&config, &adapters)
+                .expect_err("a callbacks block on a per-request rail must be refused");
+            let ConfigError::CallbacksOnPerRequestRail { code } = &error else {
+                panic!("expected CallbacksOnPerRequestRail, got {error:?} ({register:?})");
+            };
+            assert_eq!(code, "mtn_momo");
+            assert!(
+                error.to_string().contains("remove the callbacks block"),
+                "the message must say what the fix is: {error}"
+            );
+
+            let registered = adapters_by_code(vec![Box::new(TestRail {
+                code: "mtn_momo",
+                capabilities: Capabilities {
+                    callback_url_mode: CallbackUrlMode::Registered,
+                    ..coherent(ProviderFlow::Push)
+                },
+                exposure: None,
+            })]);
+            assert!(
+                boot_seeds(&config, &registered).is_ok(),
+                "the same block on a registered rail is the setting working ({register:?})"
             );
         }
     }

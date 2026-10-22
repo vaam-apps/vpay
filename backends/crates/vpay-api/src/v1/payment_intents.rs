@@ -2856,6 +2856,7 @@ mod tests {
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                     display_name: None,
+                    callbacks: None,
                 },
                 ProviderHost {
                     code: "orange_money".to_owned(),
@@ -2869,6 +2870,7 @@ mod tests {
                     currency: "XAF".to_owned(),
                     credentials: BTreeMap::new(),
                     display_name: None,
+                    callbacks: None,
                 },
             ],
             currencies: vec![CurrencyEntry {

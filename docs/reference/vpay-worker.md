@@ -32,6 +32,7 @@ crate holds _handlers_, and a handler no loop calls is not a running worker.
   - [What is not checked here](#what-is-not-checked-here)
   - [Two retry ladders, and why they do not share](#two-retry-ladders-and-why-they-do-not-share)
 - [Signing](#signing)
+- [Registering callback endpoints](#registering-callback-endpoints)
 - [How this crate is tested](#how-this-crate-is-tested)
 
 ---
@@ -705,7 +706,7 @@ deployment runs at 60 s, with no sleeps.
 ## The customer retention sweep
 
 `sweep_idle_customers` (S4a, migration `0034`) — a singleton on the dedupe key
-`sweep:customers`, seeded at boot with the other four and rescheduling itself
+`sweep:customers`, seeded at boot with the other four (five since 2026-10-22) and rescheduling itself
 hourly. What it deletes and why is
 [`../flows/customers.md`](../flows/customers.md); this is why it is a job of
 its own and how it is shaped.
@@ -1012,6 +1013,71 @@ for HMAC (it accepts a key of any length), but its signature is fallible for the
 empty signature cannot match any 32-byte HMAC and is dropped by both verifiers
 as an empty `v1=` rather than treated as a candidate. Unreachable in practice;
 the arm exists so the impossible case cannot become a panic in a payment path.
+
+## Registering callback endpoints
+
+`ensure_callbacks` (RFC-0013, migration `0051`) — the sixth singleton, on
+dedupe key `ensure:callbacks`, seeded at every worker start with the other
+five and due at once. `crate::callbacks` holds the plan, the pass and the
+handler; the decision about one rail's endpoint list is the adapter's
+(`ProviderAdapter::ensure_callback_endpoint`), and the schedule, the lock and
+the marker are this crate's. [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)
+§ "As built" has the design and where it moved.
+
+**The plan is projected, never read.** `CallbackPlan { deployment, rails }`
+is built by `vpay-server` from `deployment.name` and each **enabled**
+provider's `callbacks.register`, defaulting to `ensure`, as `RailConfigs` and
+the endpoint registry are: no handler reads a configuration document
+(ADR-0003). A rail absent from the plan is not asked — absence means "not
+configured here", never "use the default", because the default was applied
+where the YAML was read. `CallbackPlan::none()` is what the integration
+suites pass, whose stub rails all declare `PerRequest`.
+
+**Which rails a pass asks** is the adapter's capability, never a list here:
+`Capabilities::callback_url_mode == Registered`, in the plan, and with a rail
+configuration. Today that is `notchpay` alone. The marker is
+`vpay:{deployment}:{rail}:default`; `default` is the one provider account
+each rail has until RFC-0009 phase B.
+
+**One transaction per rail, holding the lock.** `run_pass` opens a
+transaction, tries `pg_try_advisory_xact_lock(vpaycbk)`
+(`TxRepositories::try_lock_callback_registration`), and on `false` reports
+`locked` and asks nothing. On `true` it calls the adapter inside the
+transaction, so the lock is held across the rail's list and create and
+released by the commit, a rollback, or a dropped connection. Per rail rather
+than per pass, so a rail that spends its whole request budget holds one
+pooled connection for itself only. The cost: two passes at once may split
+the rails between them, each `locked` on the other's. The next pass catches
+up, and no rail is ever checked by two at once, which is what Notch Pay's
+non-idempotent create needs. `two_racing_passes_create_one_endpoint` makes
+two creates with the lock removed.
+
+**The handler never answers `Err`.** A dead-lettered singleton is parked at
+`run_at = 'infinity'` with its dedupe key held, and `seed_singletons`' `ON
+CONFLICT DO NOTHING` would never revive it. So every outcome is a
+reschedule: `RETRY_SOON` (five minutes) when a rail answered `Transport` or
+the database failed, `ENSURE_INTERVAL` (an hour) otherwise, a refusal
+included — a revoked key is a person's to fix, and asking every five minutes
+repeats the alert. What a failure changes is the log line:
+
+| The pass found                               | Logged                                             |
+| -------------------------------------------- | -------------------------------------------------- |
+| `present`, `created`, `locked`, `off`        | `info`                                             |
+| `drifted`, `foreign`, `missing`, `retirable` | `warn`, naming the endpoint ids                    |
+| keys refused (`ProviderAccountBlocked`)      | `error`, `alert = true`                            |
+| `Config` (a wrong base URL, a refused URL)   | `error`, `alert = true`                            |
+| `Transport`                                  | `warn`; the pass comes back in five minutes        |
+| `Malformed`, another `Rejected`              | `error`                                            |
+| `Unsupported`, `NotImplemented`              | `warn`: the endpoint is the operator's to register |
+
+Each rail checked is also one increment of
+`vpay_callback_endpoint_checks_total{provider,state}` (`off` is not counted).
+
+**The command shares the pass.** `vpay-server callbacks ensure [--check]`
+calls the same `run_pass` under the same lock, with `check_only` forcing
+`check` on every rail. Its exit status is `RailPass::has_endpoint`: non-zero
+for `missing`, `locked` or `failed`, because a command that exits `0` on "did
+not look" is one an operator stops reading.
 
 ## How this crate is tested
 

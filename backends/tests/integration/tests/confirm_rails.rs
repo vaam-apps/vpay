@@ -336,6 +336,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
@@ -356,6 +357,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
         ],
         currencies: vec![

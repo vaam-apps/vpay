@@ -166,6 +166,22 @@ pub struct ProviderHost {
     #[garde(skip)]
     #[serde(default)]
     pub callback_url: Option<String>,
+    /// Whether vpay registers this rail's callback endpoint with the rail
+    /// account (RFC-0013): `callbacks: { register: ensure | check | off }`.
+    ///
+    /// Absent — the normal case — means [`CallbackRegistration::Ensure`] on
+    /// a rail whose adapter declares `CallbackUrlMode::Registered`, and
+    /// nothing at all on one that declares `PerRequest`, whose URL travels
+    /// on every submit. **Present on a `PerRequest` rail refuses to boot**
+    /// (`ConfigError::CallbacksOnPerRequestRail`), because a setting that
+    /// does nothing is one somebody believes in.
+    ///
+    /// Not a capability: whether a rail *can* be registered with is the
+    /// adapter's (ADR-0002), whether this deployment's key may do it is the
+    /// deployment's.
+    #[garde(skip)]
+    #[serde(default)]
+    pub callbacks: Option<ProviderCallbacks>,
     /// The ISO-4217 code this rail transacts in, e.g. `XAF`.
     ///
     /// A property of the rail's *profile*, not of a charge: MTN's sandbox
@@ -234,6 +250,33 @@ pub struct RailDisplayName {
     pub fr: Option<String>,
 }
 
+/// [`ProviderHost::callbacks`]: how vpay treats this rail's callback
+/// endpoint at the provider.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct ProviderCallbacks {
+    /// See [`CallbackRegistration`]. Defaults to `ensure`, so `callbacks: {}`
+    /// means what an absent block means.
+    #[serde(default)]
+    pub register: CallbackRegistration,
+}
+
+/// `providers[].callbacks.register` (RFC-0013 § 2).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CallbackRegistration {
+    /// List the account's endpoints, and create vpay's if it is missing.
+    /// The default: the maintainer asked on 2026-10-22 that registration
+    /// "be done automatically" (RFC-0013 open question 1).
+    #[default]
+    Ensure,
+    /// List and report; never write. For a key allowed to read endpoints
+    /// and not to create them.
+    Check,
+    /// Never ask the rail about endpoints. The operator registers it.
+    Off,
+}
+
 /// `#[serde(default)]` for a `bool` yields `false`; [`ProviderHost::enabled`]
 /// needs the other one. A named function rather than a literal because serde
 /// only accepts a path here.
@@ -270,6 +313,7 @@ impl fmt::Debug for ProviderHost {
             .field("enabled", &self.enabled)
             .field("host", &self.host)
             .field("callback_url", &self.callback_url)
+            .field("callbacks", &self.callbacks)
             .field("currency", &self.currency)
             .field("settings", &self.settings)
             .field("credentials", &redacted_credentials)
@@ -3935,6 +3979,7 @@ mod tests {
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
+            callbacks: None,
         };
         assert_eq!(validate_required_rail_keys(&host, false), Ok(()));
     }
@@ -3958,6 +4003,7 @@ mod tests {
                 ("private_key".to_owned(), private_key.to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }
     }
 
@@ -4331,6 +4377,7 @@ mod tests {
                     ("api_key".to_owned(), "${A}".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             }],
             currencies: Vec::new(),
             webhooks: WebhookPolicy::default(),
@@ -4420,6 +4467,7 @@ mod tests {
             currency: "xaf".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
+            callbacks: None,
         };
 
         assert_eq!(
@@ -4466,6 +4514,7 @@ mod tests {
             currency: "GBP".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
+            callbacks: None,
         };
 
         assert_eq!(
@@ -4554,6 +4603,7 @@ mod tests {
                 "super-secret-live-mtn-key".to_owned(),
             )]),
             display_name: None,
+            callbacks: None,
         };
 
         let formatted = format!("{host:?}");
@@ -4588,6 +4638,7 @@ mod tests {
                 "super-secret-live-mtn-key".to_owned(),
             )]),
             display_name: None,
+            callbacks: None,
         };
 
         let formatted = format!("{host:?}");
@@ -6219,5 +6270,32 @@ providers:
             error,
             ConfigError::LiteralSecret("staff_auth.sso.client_secret".to_owned())
         );
+    }
+
+    /// RFC-0013 § 2: `callbacks: {}` means what an absent block means —
+    /// `ensure` — and a misspelt key is refused rather than silently read as
+    /// that default. Every spelling of `register` round-trips.
+    #[test]
+    fn a_callbacks_block_defaults_to_ensure_and_refuses_an_unknown_key() {
+        let empty: ProviderCallbacks =
+            serde_yaml_ng::from_str("{}").expect("an empty block deserialises");
+        assert_eq!(empty.register, CallbackRegistration::Ensure);
+
+        for (yaml, expected) in [
+            ("register: ensure", CallbackRegistration::Ensure),
+            ("register: check", CallbackRegistration::Check),
+            ("register: off", CallbackRegistration::Off),
+        ] {
+            let block: ProviderCallbacks = serde_yaml_ng::from_str(yaml).expect(yaml);
+            assert_eq!(block.register, expected, "{yaml}");
+        }
+
+        let misspelt = serde_yaml_ng::from_str::<ProviderCallbacks>("registr: off");
+        assert!(
+            misspelt.is_err(),
+            "a misspelt key must not silently mean ensure"
+        );
+        let unknown = serde_yaml_ng::from_str::<ProviderCallbacks>("register: sometimes");
+        assert!(unknown.is_err(), "an unknown mode must not parse");
     }
 }

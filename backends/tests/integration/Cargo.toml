@@ -40,6 +40,10 @@ vpay-provider.workspace = true
 vpay-worker.workspace = true
 vpay-adapter-mtn-momo.workspace = true
 vpay-adapter-orange-money.workspace = true
+# RFC-0013's callback registration pass (`callback_registration.rs`): the
+# first rail that registers its callback URL with the account, against its
+# WireMock stub.
+vpay-adapter-notchpay.workspace = true
 vpay-testkit.workspace = true
 # `tests/boot_coherence.rs` implements `vpay_provider::ProviderAdapter`, which
 # is an `#[async_trait]` trait, so the impl needs the same attribute. **Not a

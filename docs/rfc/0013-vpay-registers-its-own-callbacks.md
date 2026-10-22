@@ -1,10 +1,16 @@
 # RFC-0013: vpay registers its own callback endpoints
 
-- **Status:** Draft. **Nothing in this document is built.** What exists is two
-  calls in the Notch Pay client, `Client::list_webhooks` and
-  `Client::create_webhook` (`backends/crates/vpay-notchpay/src/lib.rs`, written 2026-10-20), and nothing calls them: no crate
-  depends on it, and the workspace `Cargo.toml` is the only manifest outside
-  it that names it.
+- **Status:** Draft. **Delivery steps 2 and 3 were built on 2026-10-22, with
+  Notch Pay as the first registered rail, and step 4 for Notch Pay without
+  the `PUT` and `DELETE` it names.** § "As built" below says what was built
+  and where it differs from this design. Stripe and PayPal have no adapter,
+  so nothing here runs for them. **No endpoint has been registered with a
+  real Notch Pay account by this code** (step 5): the integration suite runs
+  it against a WireMock stub. _(This said "Nothing in this document is
+  built. What exists is two calls in the Notch Pay client,
+  `Client::list_webhooks` and `Client::create_webhook`, … and nothing calls
+  them" until 2026-10-22. The second half had been false since 2026-10-20,
+  when the Notch Pay adapter came to depend on the client.)_
 - **Author:** vpay maintainers
 - **Date:** 2026-10-20
 - **Related:** [RFC-0012](0012-notchpay-adapter.md) § 6 and open question 4
@@ -379,7 +385,9 @@ Why each piece is there:
   that carries this deployment's marker.
 - None of this moves RFC-0012's gate. The Notch Pay adapter is not buildable
   until its delivery step 0 is met, which since 2026-10-20 means Notch Pay's
-  written answer on rule 3 (RFC-0012, "The gate").
+  written answer on rule 3 (RFC-0012, "The gate"). _(False since later on
+  2026-10-20: [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)
+  amended rule 3, and the adapter was built the same day. Noted 2026-10-22.)_
 
 ### 6. Secrets acquired at runtime
 
@@ -528,6 +536,8 @@ pub enum EndpointState {
   `every_shipping_rails_refund_destination_agrees_with_its_parser` turned a
   census into one. A second rule: the method answers `Unsupported` exactly on
   `PerRequest` rails.
+- _(2026-10-22: the first consumer was Notch Pay, not Stripe. The bullet
+  below is kept as written.)_
 - **It lands with its first consumer, not before.** ADR-0029 D2: "each lands
   with its first consumer, never ahead of one". That is not this RFC's
   acceptance and not the Notch Pay client. It is the first adapter to declare
@@ -709,6 +719,14 @@ In the sandbox (S) or in writing (W).
 
 #### Notch Pay
 
+_(Items 10 and 11 were answered in Notch Pay's sandbox on 2026-10-21,
+[page](../status/verification/2026-10-21-notchpay-sandbox-run.md), as
+RFC-0012 § 10 items 13 and 14: **no** secret, in the create answers or the
+list; and **no** refusal, the same URL twice made two endpoints, both `201`.
+The same run found what this RFC did not ask: Notch Pay answers
+`"url": null` for every endpoint, and `DELETE /webhooks/{id}` answered `404`.
+Noted 2026-10-22.)_
+
 10. **(S)** Does `POST /webhooks` return the endpoint's signing secret, as the
     reference says and the schema does not? (RFC-0012 § 10, item 13.)
 11. **(S)** Does `POST /webhooks` refuse a URL the account already has?
@@ -733,6 +751,76 @@ In the sandbox (S) or in writing (W).
 17. **(W)** Is `notif_url` per request only, with no registration or
     allowlist? Does Orange retry? Does the notification carry `order_id`
     (§ 11, item 3)?
+
+## As built (2026-10-22)
+
+The maintainer decided: "the webhook registration should be done
+automatically then, e.g via cli or at startup fo the providers that supports
+it", then "Yes, start it". That is open question 1 answered `ensure`, and it
+names § 2's two entry points. "At startup" is read as § 2 reads it: the job
+is seeded at every **worker** start and is due at once. `vpay-server`'s serve
+boot asks no rail anything.
+
+What was built, against § 8's port shape and § 2–§ 4's pass:
+
+- **The port.** `CallbackUrlMode`, `Capabilities::callback_url_mode`,
+  `EndpointCheck`, `EndpointState` and `ProviderAdapter::ensure_callback_endpoint`
+  defaulting to `Unsupported` (`backends/crates/vpay-provider/src/lib.rs`).
+  `Measured` forwards and counts the method under the operation label
+  `ensure_callback_endpoint`. `mtn_momo` and `orange_money` declare
+  `PerRequest`; `notchpay` declares `Registered`.
+- **The job.** `JobKind::EnsureCallbacks`, migration
+  `0051_jobs-ensure-callbacks.sql` widening `kind_is_known`, the sixth seed
+  in `seed_singletons`, and `vpay_worker::callbacks`: the plan, the pass and
+  the handler. It reschedules hourly (open question 3, as proposed), five
+  minutes after a rail that did not answer or a database that did not, and
+  never answers `Err`.
+- **The lock.** `vpay_db::lock_keys::CALLBACK_REGISTRATION` (`vpaycbk`),
+  taken with `pg_try_advisory_xact_lock` by
+  `TxRepositories::try_lock_callback_registration`.
+- **The setting.** `providers[].callbacks.register`: `ensure` (the default),
+  `check`, or `off`. A `callbacks` block on a `PerRequest` rail refuses to
+  boot (`ConfigError::CallbacksOnPerRequestRail`).
+- **The command.** `vpay-server callbacks ensure [--check]`. One line per
+  rail on stdout, `{rail} {register} {state} {detail}`; non-zero exit when a
+  rail is `missing`, `locked` or `failed`.
+- **Notch Pay's implementation**
+  (`backends/crates/vpay-adapter-notchpay/src/callbacks.rs`), with WireMock
+  mappings beside its charge mappings (`webhooks.json`).
+- **The two conformance rules.** `the_submit_tells_the_rail_where_to_call_back`
+  now asserts its census against the capability, and
+  `the_endpoint_check_is_unsupported_exactly_on_a_per_request_rail` is new.
+
+Where it differs from this design, and why:
+
+| This RFC                                                             | As built                                                                                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| § 3: vpay's endpoint is the marker **at the effective callback URL** | On Notch Pay, the marker **and a tag of the URL in the description**: `vpay:{deployment}:notchpay:default url:{16 hex digits of SHA-256(url)}`. Notch Pay answers `"url": null`, so the URL cannot be read back. An echoed URL is still preferred when there is one                      |
+| § 3: "someone else's, at our URL" is reported as `foreign`           | **Cannot be seen on Notch Pay**, for the same reason. A merchant's hand-registered endpoint at vpay's URL is invisible, and vpay creates its own beside it: callbacks arrive twice, which the pull-forward absorbs (§ 3)                                                                 |
+| § 4 step 3: a drifted endpoint of vpay's own is put right            | **Reported, not repaired**, as a new `EndpointState::Drifted`. The Notch Pay client has no `PUT`, and § 5's "both would be added" was not done                                                                                                                                           |
+| § 4 step 5: superseded endpoints are retired (open question 4)       | **Never retired on Notch Pay.** `DELETE /webhooks/{id}` answered `404` for endpoints its own list had just returned (2026-10-21). Superseded and duplicate endpoints come back in a new `EndpointReport::retirable` list and are logged at `warn`. Open question 4 stays open for Stripe |
+| § 8: `ensure_callback_endpoint` answers `EndpointState`              | It answers `EndpointReport { state, retirable }`                                                                                                                                                                                                                                         |
+| § 8: the coherence rule is "a line in `Capabilities::is_coherent`"   | A separate `Capabilities::callbacks_are_coherent`, refused at boot as `ConfigError::IncoherentCallbackMode`. `is_coherent` holds only the rules a database CHECK mirrors, and `callback_url_mode` is not persisted                                                                       |
+| § 4 step 6: "one gauge per rail and state"                           | A **counter**, `vpay_callback_endpoint_checks_total{provider,state}`, states `present`, `created`, `drifted`, `foreign`, `missing`, `locked`, `failed`. The singleton runs on whichever worker claims it, so a per-process gauge would keep each process's last answer, however old      |
+| § 4: one transaction per account's pass                              | One transaction per **rail**. With one account per rail (RFC-0009 phase A) these are the same. Two concurrent passes may split the rails between them, each reporting the others `locked`                                                                                                |
+| § 2: every configured rail                                           | Every **enabled** configured rail. A rail with `enabled: false` is not asked: an operator who turned it off has not asked vpay to write to its account                                                                                                                                   |
+
+§ 10's integration cases, against a real Postgres and the Notch Pay stub
+(`backends/tests/integration/tests/callback_registration.rs`): one create,
+then found by its description; **two racing passes make one create, and with
+the lock removed they make two**, measured by hand; `check` and `--check`
+never write, `off` asks nothing, `mtn_momo` is never asked; the seeded job
+registers the endpoint and reschedules hourly; a refused key reschedules at
+the hour and an unreachable rail at five minutes. Not built from § 10: a
+foreign endpoint (undetectable, above), a create whose answer is dropped
+(WireMock cannot record a request and then drop its answer), and "every
+registration call answering `503` leaves the worker loop running and
+`worker_e2e`'s charge settling" — the handler's reschedule is tested, the
+full loop with a failing rail is not.
+
+Not done: step 5, the first registration against Notch Pay's sandbox. It
+needs the maintainer's approval to call Notch Pay; no public URL is needed
+to register one, as the 2026-10-21 run showed.
 
 ## Delivery
 
@@ -790,6 +878,9 @@ which move from the merchant to vpay, and RFC-0012 § 9's "until then".
 - **Catch-up from event lists.** Refused for charges in § 9.
 
 ## Open questions
+
+_(Questions 1, 3 and 4 were settled for Notch Pay on 2026-10-22; see § "As
+built". 2, 5 and 6 are open.)_
 
 1. **`ensure` or `check` by default?** `ensure` gives the Stripe key a fourth,
    sensitive permission; `check` keeps the manual step for creation and keeps

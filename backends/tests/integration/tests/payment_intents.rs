@@ -292,6 +292,7 @@ fn config_with(
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
@@ -312,6 +313,7 @@ fn config_with(
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
         ],
         currencies: vec![CurrencyEntry {

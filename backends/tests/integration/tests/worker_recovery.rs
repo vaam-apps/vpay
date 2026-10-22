@@ -167,6 +167,7 @@ impl Harness {
                 endpoints: &endpoints,
                 egress,
             },
+            &vpay_worker::CallbackPlan::none(),
             "worker-recovery-suite",
         )
         .await
@@ -217,6 +218,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
@@ -237,6 +239,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
         ],
         currencies: vec![CurrencyEntry {
@@ -1113,6 +1116,7 @@ async fn a_confirms_compare_and_swap_wins_against_the_worker_that_claimed_its_po
             policy,
             support::no_webhook_endpoints(),
             support::default_egress_policy(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -2798,7 +2802,7 @@ async fn a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker() -
     Ok(())
 }
 
-/// Parks the five singleton jobs so nothing but the loop's own reaper can
+/// Parks the six singleton jobs so nothing but the loop's own reaper can
 /// free a lease.
 ///
 /// `seed_singletons` is `ON CONFLICT (dedupe_key) DO NOTHING`, so seeding them
@@ -2822,7 +2826,8 @@ async fn a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker() -
 /// this helper's three call sites, by luck rather than by design. The second
 /// `ensure` below closes it: it counts the rows that are *still claimable*
 /// rather than the rows this statement moved, so an unparked singleton fails
-/// here, in the helper whose doc promises it.
+/// here, in the helper whose doc promises it. (It did, on 2026-10-22, when
+/// RFC-0013 added the sixth, `ensure:callbacks`.)
 async fn park_the_housekeeping_jobs(
     repositories: &dyn Repositories,
     pool: &PgPool,
@@ -2833,15 +2838,15 @@ async fn park_the_housekeeping_jobs(
     let parked = sqlx::query(
         "UPDATE jobs SET run_at = 'infinity'::TIMESTAMPTZ \
          WHERE dedupe_key IN ('sweep:expired', 'scan:live', 'fanout:events', 'scan:deliveries', \
-                              'sweep:customers')",
+                              'sweep:customers', 'ensure:callbacks')",
     )
     .execute(pool)
     .await
     .context("parking the singletons")?
     .rows_affected();
     anyhow::ensure!(
-        parked == 5,
-        "expected five singletons to park, parked {parked}"
+        parked == 6,
+        "expected six singletons to park, parked {parked}"
     );
 
     // Counted from the table rather than from the statement above, which is
@@ -3041,6 +3046,7 @@ async fn a_lease_stranded_by_a_crash_is_freed_at_boot_before_any_sweep_runs() ->
             policy,
             support::no_webhook_endpoints(),
             support::default_egress_policy(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -3119,6 +3125,7 @@ async fn a_lease_that_expires_while_the_worker_runs_is_reaped_on_its_own_timer()
             policy,
             support::no_webhook_endpoints(),
             support::default_egress_policy(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             1,
             Duration::from_secs(10),
             "worker-recovery-suite".to_owned(),
@@ -3231,6 +3238,7 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
                 endpoints: &support::no_webhook_endpoints(),
                 egress: support::default_egress_policy(),
             },
+            &vpay_worker::CallbackPlan::none(),
             "worker-recovery-suite"
         )
         .await?
@@ -3240,10 +3248,12 @@ async fn a_poisoned_job_is_parked_with_its_lease_cleared_and_its_reason_recorded
     Ok(())
 }
 
-/// The five singletons — the housekeeping sweep, the charge backstop, the
-/// outbox drain, the delivery backstop and the twelve-month customer
-/// retention sweep — seeded once whatever the concurrency, and rescheduled
-/// rather than deleted.
+/// The six singletons — the housekeeping sweep, the charge backstop, the
+/// outbox drain, the delivery backstop, the twelve-month customer retention
+/// sweep and the callback registration pass — seeded once whatever the
+/// concurrency, and rescheduled rather than deleted.
+///
+/// Five until 2026-10-22, when RFC-0013 added `ensure:callbacks`.
 ///
 /// Four until 2026-09-06, when S4a added `sweep:customers`. That one is worth
 /// naming separately in both assertions below rather than being folded into a
@@ -3272,13 +3282,14 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
             .map(|job| job.dedupe_key.as_str())
             .collect::<Vec<_>>(),
         vec![
+            "ensure:callbacks",
             "fanout:events",
             "scan:deliveries",
             "scan:live",
             "sweep:customers",
             "sweep:expired"
         ],
-        "three boots must leave exactly five rows"
+        "three boots must leave exactly six rows"
     );
 
     // No `make_every_job_runnable` here, and its absence is the assertion.
@@ -3310,7 +3321,7 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
     // a deployment that swept once and never again — which is the bug
     // `vpay-server`'s boot-time sweep actually was.
     let mut seen: Vec<String> = Vec::new();
-    for _ in 0..5 {
+    for _ in 0..6 {
         let settled = h.step(&policy).await?;
         assert!(
             matches!(settled.disposition, Disposition::Rescheduled(_)),
@@ -3324,17 +3335,19 @@ async fn the_housekeeping_jobs_are_seeded_once_and_reschedule_themselves() -> an
     assert_eq!(
         seen,
         vec![
+            "ensure_callbacks",
             "fan_out_events",
             "scan_deliveries",
             "scan_live_charges",
             "sweep_expired",
             "sweep_idle_customers"
         ],
-        "all five singletons must go back on the clock; a fan-out that finished \
+        "all six singletons must go back on the clock; a fan-out that finished \
          instead is a deployment that drains its outbox once and never again, a \
          delivery backstop that finished is one whose lost delivery jobs are lost for \
-         good, and a customer sweep that finished is one that keeps a payer's personal \
-         data for ever while every log line says it ran"
+         good, a customer sweep that finished is one that keeps a payer's personal \
+         data for ever while every log line says it ran, and a callback pass that \
+         finished is one that never notices an endpoint deleted in a dashboard"
     );
     Ok(())
 }

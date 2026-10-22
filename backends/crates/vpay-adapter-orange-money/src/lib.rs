@@ -39,8 +39,8 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
+    CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
+    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -419,6 +419,10 @@ impl ProviderAdapter for Adapter {
             // guess about destinations. It was. `Capabilities::is_coherent`
             // records why the pair was never a coherence violation.
             refund_destination: RefundDestination::Required,
+            // The URL travels on every web payment as `notif_url`; nothing is
+            // registered with the merchant key, so the `ensure_callbacks`
+            // pass never asks this rail anything (RFC-0013 § 1).
+            callback_url_mode: CallbackUrlMode::PerRequest,
         }
     }
 

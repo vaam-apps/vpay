@@ -67,6 +67,7 @@ struct Booted {
     rails: BTreeMap<String, vpay_provider::ProviderConfig>,
     endpoints: EndpointRegistry,
     egress: vpay_worker::EgressPolicy,
+    callbacks: vpay_worker::CallbackPlan,
     concurrency: usize,
 }
 
@@ -118,6 +119,7 @@ pub(crate) async fn run(
         policy,
         Arc::new(booted.endpoints),
         booted.egress,
+        Arc::new(booted.callbacks),
         booted.concurrency,
         grace,
         worker_id,
@@ -296,12 +298,28 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
         "webhook egress policy loaded"
     );
 
+    // RFC-0013: what the `ensure_callbacks` job asks, projected out of YAML
+    // as the two above are. Logged so an operator can see, at boot, which
+    // rails the pass may write to — the rails it will actually ask are the
+    // ones whose adapters register their URL with the account.
+    let callbacks = crate::callbacks::callback_plan(&config);
+    tracing::info!(
+        deployment = %callbacks.deployment,
+        rails = ?callbacks
+            .rails
+            .iter()
+            .map(|(code, registration)| format!("{code}={}", registration.as_str()))
+            .collect::<Vec<_>>(),
+        "callback registration settings loaded"
+    );
+
     Ok(Booted {
         repositories,
         adapters,
         rails,
         endpoints,
         egress,
+        callbacks,
         concurrency,
     })
 }
@@ -318,7 +336,7 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
 /// with no adapter is a configuration error `boot_seeds` has already refused,
 /// so this filter drops nothing in a booting deployment and keeps the map's
 /// meaning exact ("what this process can talk to").
-fn project_rails(
+pub(crate) fn project_rails(
     resource_config: &vpay_api::ResourceConfig,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> BTreeMap<String, vpay_provider::ProviderConfig> {

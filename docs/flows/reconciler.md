@@ -80,6 +80,19 @@ an unauthenticated request.
 
 The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 
+### Where a rail sends its callbacks
+
+A rail learns the URL one of two ways, and `Capabilities::callback_url_mode`
+says which ([provider-port.md](provider-port.md#capabilities)). `mtn_momo`
+and `orange_money` are told it on every submit (`PerRequest`). `notchpay` holds
+it registered with the account (`Registered`), and since 2026-10-22 vpay keeps
+it there: the worker's `ensure_callbacks` singleton lists the account's
+endpoints at every worker start and hourly, and creates vpay's when it is
+missing ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md),
+[vpay-worker.md](../reference/vpay-worker.md#registering-callback-endpoints)).
+None of this changes what a callback can do. A rail with no endpoint
+registered sends nothing, and its charges settle by polling, as above.
+
 ## Status
 
 **Changed 2026-09-03 (Step 4): the loop exists, and it settles payments.
@@ -90,7 +103,10 @@ database's clock (ADR-0026, the bullet after the claim latency's). Corrected
 2026-10-21, with nothing in the loop changed: § "Callbacks are hints" no longer
 says a rail retries a callback that is not answered with a 2xx, because MTN
 documents that it does not. Corrected 2026-10-22, with nothing changed either:
-the `scan:live` backstop runs every ten minutes, not hourly.**
+the `scan:live` backstop runs every ten minutes, not hourly. Extended
+2026-10-22: a sixth singleton, `ensure_callbacks`, registers Notch Pay's
+callback endpoint (§ "Where a rail sends its callbacks"); nothing in the poll
+ladder changed.**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at

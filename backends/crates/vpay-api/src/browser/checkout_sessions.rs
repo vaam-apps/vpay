@@ -699,6 +699,7 @@ mod tests {
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: false,
                 refund_destination: vpay_provider::RefundDestination::Origin,
+                callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
             }
         }
 
@@ -768,6 +769,7 @@ mod tests {
                     currency: "XAF".to_owned(),
                     credentials: std::collections::BTreeMap::new(),
                     display_name: mtn_display_name,
+                    callbacks: None,
                 },
                 vpay_config::ProviderHost {
                     code: "orange_money".to_owned(),
@@ -781,6 +783,7 @@ mod tests {
                     currency: "XAF".to_owned(),
                     credentials: std::collections::BTreeMap::new(),
                     display_name: None,
+                    callbacks: None,
                 },
             ],
             currencies: vec![vpay_config::CurrencyEntry {

@@ -233,6 +233,7 @@ impl Harness {
                 endpoints: &endpoints,
                 egress: support::default_egress_policy(),
             },
+            &vpay_worker::CallbackPlan::none(),
             "provider-callback-suite",
         )
         .await
@@ -304,6 +305,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn_url: &str, orange_url: &str) -
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
@@ -324,6 +326,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn_url: &str, orange_url: &str) -
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
         ],
         currencies: vec![CurrencyEntry {

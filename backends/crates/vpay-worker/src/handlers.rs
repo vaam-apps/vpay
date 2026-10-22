@@ -37,6 +37,7 @@ use vpay_provider::{
     ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
 };
 
+use crate::callbacks::{CallbackPlan, handle_ensure_callbacks};
 use crate::error::JobError;
 use crate::jobs::{
     JobKind, Outcome, PollChargePayload, ResubmitPayload, poll_dedupe_key, resubmit_dedupe_key,
@@ -251,9 +252,19 @@ pub async fn handle(
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
     webhooks: &WebhookContext<'_>,
+    callbacks: &CallbackPlan,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
-    let result = dispatch(repositories, adapters, rails, policy, webhooks, job).await;
+    let result = dispatch(
+        repositories,
+        adapters,
+        rails,
+        policy,
+        webhooks,
+        callbacks,
+        job,
+    )
+    .await;
     if let Err(error) = &result {
         log_failure(job, error);
     }
@@ -266,6 +277,7 @@ async fn dispatch(
     rails: &RailConfigs,
     policy: &RecoveryPolicy,
     webhooks: &WebhookContext<'_>,
+    callbacks: &CallbackPlan,
     job: &vpay_db::JobRow,
 ) -> Result<Outcome, JobError> {
     let kind = JobKind::from_wire(&job.kind).ok_or_else(|| {
@@ -298,6 +310,12 @@ async fn dispatch(
         // be?", and that is the same number the reaper compares against.
         JobKind::ScanDeliveries => handle_scan_deliveries(repositories, policy.lease, job).await,
         JobKind::SweepIdleCustomers => sweep_idle_customers(repositories, job).await,
+        // RFC-0013. Lives in `crate::callbacks`, which owns the lock, the
+        // marker and the schedule; it answers `Ok` on every path, because a
+        // parked singleton could never be seeded again.
+        JobKind::EnsureCallbacks => {
+            handle_ensure_callbacks(repositories, adapters, rails, callbacks).await
+        }
     }
 }
 

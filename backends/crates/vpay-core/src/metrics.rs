@@ -5,7 +5,7 @@
 //! module owns the vocabulary and each binary owns the exporter it renders
 //! through; [`describe_all`] is the one call that connects the two, and it is
 //! a no-op until a recorder exists. Why a library must not install one, why
-//! the names are `const`s, and where each of the twelve is emitted:
+//! the names are `const`s, and where each of the fourteen is emitted:
 //! [docs/reference/vpay-core.md § metrics](../../../../docs/reference/vpay-core.md#metrics).
 //!
 //! # The list
@@ -30,14 +30,18 @@
 //! vpay_error_events_total{category,code,severity}                   counter
 //! vpay_alert_events_total{category,code}                            counter
 //! vpay_account_holder_lookups_total{outcome}                        counter
+//! vpay_callback_endpoint_checks_total{provider,state}               counter
 //! ```
 //!
-//! The last line is the only one that is **not** in that plan document: it
-//! landed with `GET /v1/account_holders` (issue #47), after it was written.
-//! It is here rather than folded into `vpay_http_requests_total` because the
-//! four outcomes a lookup has are not four status codes — `found` and
-//! `not_found` are both `200`, and telling them apart is the whole question
-//! an operator asks of this route.
+//! The last two lines are the only ones that are **not** in that plan
+//! document. The first landed with `GET /v1/account_holders` (issue #47),
+//! after it was written. It is here rather than folded into
+//! `vpay_http_requests_total` because the four outcomes a lookup has are not
+//! four status codes — `found` and `not_found` are both `200`, and telling
+//! them apart is the whole question an operator asks of this route. The
+//! second landed with RFC-0013's `ensure_callbacks` pass on 2026-10-22; see
+//! [`CALLBACK_ENDPOINT_CHECKS_TOTAL`] for why it is a counter where the RFC
+//! proposed a gauge.
 //!
 //! A described-but-unrecorded metric never appears in a scrape (the
 //! Prometheus exporter renders registered *handles*, not descriptions), so a
@@ -189,6 +193,23 @@ pub const ALERT_EVENTS_TOTAL: &str = "vpay_alert_events_total";
 /// cannot answer is exactly what an operator wants the rate of.
 pub const ACCOUNT_HOLDER_LOOKUPS_TOTAL: &str = "vpay_account_holder_lookups_total";
 
+/// Callback-endpoint checks made by the `ensure_callbacks` pass (RFC-0013),
+/// by rail and by what the pass found. See [`callback_endpoint_state`] for
+/// the seven values.
+///
+/// Emitted by `vpay_worker::callbacks::run_pass`, once per rail it was
+/// asked about, from the worker job and from `vpay-server callbacks ensure`
+/// alike — though only the worker has an exporter to render it.
+///
+/// **A counter, where RFC-0013 § 4 proposed "one gauge per rail and
+/// state".** The pass is a singleton that runs on whichever worker claims
+/// it, so a per-process gauge would keep each process's *last* answer: a
+/// worker that last ran the pass a day ago would still report what it saw
+/// then, beside the worker that ran it an hour ago, and a `max` over the two
+/// would be a guess. "How many passes in the last two hours found the
+/// endpoint `missing`" has one answer however many workers there are.
+pub const CALLBACK_ENDPOINT_CHECKS_TOTAL: &str = "vpay_callback_endpoint_checks_total";
+
 /// Every name in this module, in the order the module doc lists them.
 ///
 /// Public so a binary's own test can assert its `/metrics` output against the
@@ -226,6 +247,7 @@ pub const ALL: &[&str] = &[
     ERROR_EVENTS_TOTAL,
     ALERT_EVENTS_TOTAL,
     ACCOUNT_HOLDER_LOOKUPS_TOTAL,
+    CALLBACK_ENDPOINT_CHECKS_TOTAL,
 ];
 
 /// The `outcome` label on [`JOBS_COMPLETED_TOTAL`].
@@ -292,8 +314,10 @@ pub mod webhook_outcome {
 }
 
 /// The `operation` label on [`PROVIDER_REQUESTS_TOTAL`] and
-/// [`PROVIDER_REQUEST_DURATION_SECONDS`]: the three
-/// `vpay_provider::ProviderAdapter` methods that can reach a rail.
+/// [`PROVIDER_REQUEST_DURATION_SECONDS`]: the five
+/// `vpay_provider::ProviderAdapter` methods that can reach a rail. (This said
+/// "three" until 2026-10-22, and had been wrong since `account_holder_name`
+/// joined `refund` as the fourth.)
 ///
 /// Spelled here beside [`job_outcome`] because a closed label vocabulary
 /// belongs with the names it labels — `vpay-core` does not depend on
@@ -310,8 +334,12 @@ pub mod webhook_outcome {
 ///     provider_operation::QUERY_STATUS,
 ///     provider_operation::REFUND,
 ///     provider_operation::ACCOUNT_HOLDER_NAME,
+///     provider_operation::ENSURE_CALLBACK_ENDPOINT,
 /// ];
-/// assert_eq!(all, ["submit", "query_status", "refund", "account_holder_name"]);
+/// assert_eq!(
+///     all,
+///     ["submit", "query_status", "refund", "account_holder_name", "ensure_callback_endpoint"]
+/// );
 /// ```
 pub mod provider_operation {
     /// `ProviderAdapter::submit` — opening a charge on the rail.
@@ -327,6 +355,11 @@ pub mod provider_operation {
     /// series: a rail that has started refusing our subscription key refuses
     /// this too, and an operator should see one rate, not two.
     pub const ACCOUNT_HOLDER_NAME: &str = "account_holder_name";
+    /// `ProviderAdapter::ensure_callback_endpoint` — the `ensure_callbacks`
+    /// pass listing, and at most once creating, the rail account's callback
+    /// endpoint (RFC-0013). It moves no money; it is in this series for
+    /// `ACCOUNT_HOLDER_NAME`'s reason, the same credential on the same rail.
+    pub const ENSURE_CALLBACK_ENDPOINT: &str = "ensure_callback_endpoint";
 }
 
 /// The `outcome` label on [`ACCOUNT_HOLDER_LOOKUPS_TOTAL`].
@@ -381,6 +414,52 @@ pub mod account_holder_outcome {
     /// rail trouble. A classified 4xx/5xx either way, never a `200` with
     /// nulls.
     pub const ERROR: &str = "error";
+}
+
+/// The `state` label on [`CALLBACK_ENDPOINT_CHECKS_TOTAL`].
+///
+/// A closed vocabulary, spelled once, for [`job_outcome`]'s reason. The
+/// first five are what the rail's own endpoint list said
+/// (`vpay_provider::EndpointState`); the last two are a pass that learned
+/// nothing about the endpoint.
+///
+/// ```
+/// use vpay_core::metrics::callback_endpoint_state;
+///
+/// let all = [
+///     callback_endpoint_state::PRESENT,
+///     callback_endpoint_state::CREATED,
+///     callback_endpoint_state::DRIFTED,
+///     callback_endpoint_state::FOREIGN,
+///     callback_endpoint_state::MISSING,
+///     callback_endpoint_state::LOCKED,
+///     callback_endpoint_state::FAILED,
+/// ];
+/// assert_eq!(
+///     all,
+///     ["present", "created", "drifted", "foreign", "missing", "locked", "failed"]
+/// );
+/// ```
+pub mod callback_endpoint_state {
+    /// vpay's endpoint is registered and right. The healthy answer.
+    pub const PRESENT: &str = "present";
+    /// This pass created it. Once per deployment and rail account, then
+    /// [`PRESENT`] for ever after — a steady rate of these means something
+    /// keeps deleting it, or the pass cannot recognise its own.
+    pub const CREATED: &str = "created";
+    /// vpay's endpoint is registered and wrong — an event type missing — and
+    /// the adapter cannot put it right (Notch Pay has no update call).
+    pub const DRIFTED: &str = "drifted";
+    /// An endpoint at vpay's URL that vpay did not create, left as found.
+    pub const FOREIGN: &str = "foreign";
+    /// No endpoint, and the pass was told not to write (`check` mode).
+    pub const MISSING: &str = "missing";
+    /// Another pass held the registration lock; this one asked nothing.
+    pub const LOCKED: &str = "locked";
+    /// The rail refused, did not answer, or answered something unreadable —
+    /// or the database could not open the pass's transaction. The error is
+    /// in the log line beside it.
+    pub const FAILED: &str = "failed";
 }
 
 /// This build's commit, or [`UNKNOWN_GIT_SHA`].
@@ -525,6 +604,12 @@ pub fn describe_all() {
         "Account-holder lookups served by GET /v1/account_holders, by outcome: found, \
          not_found, unsupported or error. No label carries the number looked up or the name \
          returned."
+    );
+    describe_counter!(
+        CALLBACK_ENDPOINT_CHECKS_TOTAL,
+        Unit::Count,
+        "Callback-endpoint checks made by the ensure_callbacks pass, by provider code and by \
+         what it found: present, created, drifted, foreign, missing, locked or failed."
     );
 }
 

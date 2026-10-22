@@ -371,6 +371,7 @@ mod tests {
             currency: "EUR".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
+            callbacks: None,
         };
 
         let mounted = format!(

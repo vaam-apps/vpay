@@ -79,6 +79,27 @@ pub enum RefundDestination {
     Required,
 }
 
+/// How a rail learns where to send its callbacks (RFC-0013 § 8).
+///
+/// The capability the core branches on so that "does vpay register an
+/// endpoint with this rail?" never becomes `if provider == "notchpay"`
+/// (ADR-0002). Not persisted, on
+/// [`refund_destination`](Capabilities::refund_destination)'s terms: no
+/// column in `providers`, because nothing reads a capability out of that
+/// table.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CallbackUrlMode {
+    /// The URL travels on every submit (`X-Callback-Url`, `notif_url`). The
+    /// core never asks this rail about endpoints, and
+    /// [`ProviderAdapter::ensure_callback_endpoint`] keeps its `Unsupported`
+    /// default.
+    PerRequest,
+    /// The URL is registered with the provider account, out of band, and
+    /// vpay's `ensure_callbacks` pass keeps one endpoint of its own there.
+    Registered,
+}
+
 /// Static declaration of what a rail can do.
 ///
 /// The core reads these instead of special-casing a provider code.
@@ -143,6 +164,15 @@ pub struct Capabilities {
     /// adapter in-process and asks it — so a column would be a second copy of
     /// an answer the linked code already owns.
     pub refund_destination: RefundDestination,
+    /// Whether the rail is told its callback URL on each submit or keeps it
+    /// registered with the account (RFC-0013 § 8).
+    ///
+    /// **Read only when [`delivers_callbacks`](Capabilities::delivers_callbacks)
+    /// is true**, and [`Capabilities::callbacks_are_coherent`] refuses
+    /// [`CallbackUrlMode::Registered`] on a rail that delivers none: an
+    /// endpoint nothing would ever call is not worth a write to someone's
+    /// account.
+    pub callback_url_mode: CallbackUrlMode,
 }
 
 impl Capabilities {
@@ -198,6 +228,69 @@ impl Capabilities {
     pub const fn is_coherent(&self) -> bool {
         !self.supports_partial_refunds || self.supports_refunds
     }
+
+    /// A rail that registers its callback URL must deliver callbacks
+    /// (RFC-0013 § 8).
+    ///
+    /// A method of its own rather than a second clause in
+    /// [`Capabilities::is_coherent`], whose documentation explains why that
+    /// method holds only a rule mirrored by a CHECK constraint. This one has
+    /// no database half — `callback_url_mode` is not persisted — and it is
+    /// still worth refusing at boot, because the alternative is a worker
+    /// writing an endpoint into a merchant's provider account that nothing
+    /// will ever call. Boot refuses a configured rail that fails it with
+    /// `ConfigError::IncoherentCallbackMode`.
+    #[must_use]
+    pub const fn callbacks_are_coherent(&self) -> bool {
+        !matches!(self.callback_url_mode, CallbackUrlMode::Registered) || self.delivers_callbacks
+    }
+}
+
+/// One `ensure_callbacks` pass's question to one rail account (RFC-0013 § 8).
+///
+/// The URL is [`ProviderConfig::callback_url`], the one every callback for
+/// this rail is posted to, so it is not repeated here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EndpointCheck<'a> {
+    /// `vpay:{deployment}:{rail}:{account}` — what makes an endpoint vpay's,
+    /// and this deployment's. An endpoint without it is never modified.
+    pub marker: &'a str,
+    /// `false` in `check` mode: list and report, never write.
+    pub write: bool,
+}
+
+/// What one rail account's endpoints look like after an `ensure_callbacks`
+/// pass asked about them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EndpointState {
+    /// vpay's endpoint is present and right, or was just put right.
+    Present { endpoint_id: String, repaired: bool },
+    /// Created by this call.
+    Created { endpoint_id: String },
+    /// vpay's endpoint is present and is not what vpay asked for — an event
+    /// type missing, say — and this adapter cannot put it right. Reported,
+    /// never repaired by deleting and recreating, because a provider that
+    /// does not refuse a duplicate URL would then deliver twice.
+    Drifted { endpoint_id: String, detail: String },
+    /// An endpoint at vpay's URL that vpay did not create, left exactly as
+    /// found (RFC-0013 § 3).
+    Foreign { endpoint_id: String },
+    /// No endpoint at vpay's URL, and `write` was false.
+    Missing,
+}
+
+/// [`ProviderAdapter::ensure_callback_endpoint`]'s answer.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EndpointReport {
+    pub state: EndpointState,
+    /// Endpoint ids carrying this deployment's marker that RFC-0013 § 3
+    /// would retire — superseded (at another URL) or duplicates of the
+    /// current one — and that this adapter left in place.
+    ///
+    /// Empty on a rail that retires them itself. Notch Pay's `DELETE`
+    /// answered `404` for endpoints its own list returned (2026-10-21,
+    /// RFC-0012 § 10 item 20), so its adapter only reports them.
+    pub retirable: Vec<String>,
 }
 
 /// A phone number [`PayerField`] must be a valid number of, and the kind a
@@ -1447,14 +1540,14 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// credential to read may never raise [`ProviderError::Config`], but no
 /// adapter may raise a variant this table does not give it.
 ///
-/// | Variant | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | what it means |
-/// |---|:-:|:-:|:-:|:-:|:-:|:-:|---|
-/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
-/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status` and `account_holder_name` only the rail refusing **our** partner credentials, because neither call carries a payment to decline |
-/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
-/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
-/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+/// | Variant | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | `ensure_callback_endpoint` | what it means |
+/// |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status`, `account_holder_name` and `ensure_callback_endpoint` only the rail refusing **our** partner credentials, because none of them carries a payment to decline |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
+/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
 ///
 /// The two blank columns are as load-bearing as the ticks. `parse_callback`
 /// and `parse_destination` are the only pure functions in the table: neither
@@ -1869,6 +1962,52 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     fn accepted_exposure(&self) -> Option<AcceptedExposure> {
         None
     }
+
+    /// Makes sure this rail account has one callback endpoint vpay created,
+    /// at [`ProviderConfig::callback_url`], subscribed to the rail's charge
+    /// events (RFC-0013 §§ 1–3).
+    ///
+    /// Called only when [`Capabilities::callback_url_mode`] is
+    /// [`CallbackUrlMode::Registered`], by the worker's `ensure_callbacks`
+    /// job and by `vpay-server callbacks ensure`, under one transaction-scoped
+    /// advisory lock so two passes never both create. The adapter knows the
+    /// wire; the core knows when, under which lock, and with which marker.
+    ///
+    /// The rules every implementation keeps:
+    ///
+    /// * **List before create**, every page. A provider that does not refuse a
+    ///   duplicate URL would otherwise gain an endpoint at every worker start.
+    /// * **Never modify or delete an endpoint without
+    ///   [`EndpointCheck::marker`].** One at vpay's URL without it is
+    ///   [`EndpointState::Foreign`], and nothing is created beside it.
+    /// * **At most one create per call, and never a retry of it.** On a rail
+    ///   with no idempotency key, a create whose answer was lost is found by
+    ///   the next pass's list, by its marker.
+    /// * **Nothing when [`EndpointCheck::write`] is false.**
+    ///
+    /// # Errors
+    ///
+    /// The default is [`ProviderError::Unsupported`], on
+    /// [`refund`](ProviderAdapter::refund)'s terms: a
+    /// [`CallbackUrlMode::PerRequest`] rail has nothing to register, which is
+    /// a permanent answer and not unbuilt work. An adapter that declares
+    /// [`CallbackUrlMode::Registered`] and has not written this must override
+    /// it with its own [`ProviderError::NotImplemented`] token, which
+    /// `docs/status.md` then lists.
+    ///
+    /// An implementation raises [`ProviderError::Config`] for a credential
+    /// or URL this deployment did not supply, or that the rail refused as a
+    /// callback URL; [`ProviderError::Rejected`] only when the rail refuses
+    /// **our** credentials; [`ProviderError::Transport`] when it could not be
+    /// reached or finished with; and [`ProviderError::Malformed`] for an
+    /// answer it cannot act on. None of them is a statement about a charge.
+    async fn ensure_callback_endpoint(
+        &self,
+        _check: &EndpointCheck<'_>,
+        _config: &ProviderConfig,
+    ) -> Result<EndpointReport, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
 }
 
 #[cfg(test)]
@@ -2006,8 +2145,53 @@ mod tests {
             requires_ip_allowlist: false,
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Required,
+            callback_url_mode: CallbackUrlMode::PerRequest,
         };
         assert!(!bad.is_coherent());
+    }
+
+    /// RFC-0013 § 8: a rail that registers its callback URL must deliver
+    /// callbacks, and a per-request rail is coherent either way.
+    #[test]
+    fn a_registered_callback_url_requires_a_rail_that_delivers_callbacks() {
+        let base = Capabilities {
+            flow: ProviderFlow::Push,
+            supports_refunds: false,
+            supports_partial_refunds: false,
+            delivers_callbacks: true,
+            requires_ip_allowlist: false,
+            supports_account_holder_lookup: false,
+            refund_destination: RefundDestination::Origin,
+            callback_url_mode: CallbackUrlMode::Registered,
+        };
+        assert!(base.callbacks_are_coherent());
+        let silent = Capabilities {
+            delivers_callbacks: false,
+            ..base
+        };
+        assert!(!silent.callbacks_are_coherent());
+        for delivers_callbacks in [false, true] {
+            let per_request = Capabilities {
+                delivers_callbacks,
+                callback_url_mode: CallbackUrlMode::PerRequest,
+                ..base
+            };
+            assert!(per_request.callbacks_are_coherent());
+        }
+        // The two rules are independent: neither method answers for the other.
+        assert!(silent.is_coherent());
+    }
+
+    #[test]
+    fn a_callback_url_mode_spells_itself_in_snake_case() {
+        assert_eq!(
+            serde_json::to_value(CallbackUrlMode::PerRequest).expect("serialises"),
+            serde_json::json!("per_request")
+        );
+        assert_eq!(
+            serde_json::to_value(CallbackUrlMode::Registered).expect("serialises"),
+            serde_json::json!("registered")
+        );
     }
 
     /// Pins the decision recorded on [`Capabilities::is_coherent`]: no
@@ -2036,6 +2220,7 @@ mod tests {
             requires_ip_allowlist: false,
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
+            callback_url_mode: CallbackUrlMode::PerRequest,
         };
 
         for supports_refunds in [false, true] {
@@ -2405,6 +2590,7 @@ mod tests {
                     requires_ip_allowlist: false,
                     supports_account_holder_lookup: false,
                     refund_destination: RefundDestination::Origin,
+                    callback_url_mode: CallbackUrlMode::PerRequest,
                 }
             }
 
@@ -2496,6 +2682,7 @@ mod tests {
                     requires_ip_allowlist: false,
                     supports_account_holder_lookup: false,
                     refund_destination: RefundDestination::Origin,
+                    callback_url_mode: CallbackUrlMode::PerRequest,
                 }
             }
 
@@ -2550,6 +2737,22 @@ mod tests {
             matches!(outcome, Err(ProviderError::Unsupported)),
             "a rail with no refund API says so permanently; a NotImplemented token here would \
              claim someone owes a call nobody can write: {outcome:?}"
+        );
+
+        // The same rail declares `PerRequest`, so it has no endpoint to keep,
+        // and the port's default says so permanently too (RFC-0013 § 8).
+        let registered = NoRefundApiRail
+            .ensure_callback_endpoint(
+                &EndpointCheck {
+                    marker: "vpay:test:no_refund_api:default",
+                    write: true,
+                },
+                &config,
+            )
+            .await;
+        assert!(
+            matches!(registered, Err(ProviderError::Unsupported)),
+            "a per-request rail has nothing to register: {registered:?}"
         );
     }
 }

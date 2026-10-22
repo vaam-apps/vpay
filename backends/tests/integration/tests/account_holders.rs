@@ -189,6 +189,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
                     ("api_key".to_owned(), "stub-api-key".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
             // Pointed at nothing, deliberately: no case here reaches it over
             // the network, because the capability check refuses the request
@@ -214,6 +215,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
                     ("client_secret".to_owned(), "stub-client-secret".to_owned()),
                 ]),
                 display_name: None,
+                callbacks: None,
             },
         ],
         currencies: vec![CurrencyEntry {

@@ -26,6 +26,7 @@
 //! independently". They no longer do. See [`worker`]'s module docs for the
 //! list of copies the merge deleted and what each one's justification was.
 
+mod callbacks;
 mod worker;
 
 use std::collections::BTreeMap;
@@ -295,6 +296,11 @@ async fn run() -> anyhow::Result<()> {
         Some(vpay_config::ServerCommand::Staff { command }) => {
             return run_command(&args, command).await;
         }
+        // RFC-0013. A one-shot operator command, on `Staff`'s terms: no
+        // signing key, no reconcile, nothing bound.
+        Some(vpay_config::ServerCommand::Callbacks { command }) => {
+            return callbacks::run(&args, command).await;
+        }
         None => {}
     }
 
@@ -485,6 +491,8 @@ const fn logs_to_stderr(command: Option<&vpay_config::ServerCommand>) -> bool {
     match command {
         // The one-time password is the whole of stdout.
         Some(vpay_config::ServerCommand::Staff { .. }) => true,
+        // One line per rail is the whole of stdout, for a runbook to read.
+        Some(vpay_config::ServerCommand::Callbacks { .. }) => true,
         // Both long-running modes log to stdout, where a collector reads.
         Some(vpay_config::ServerCommand::Worker(_)) | None => false,
     }
@@ -900,8 +908,9 @@ async fn staff_add(
 
     // stdout, alone, and never through `tracing`. `print_stdout` is a
     // workspace `warn` lint precisely so that writing to stdout is a
-    // deliberate act; this is the one place in either binary where it is the
-    // right one, because the value must be pipeable.
+    // deliberate act; this was the one place in either binary where it is the
+    // right one, because the value must be pipeable. `callbacks ensure`'s
+    // per-rail report is the second, since 2026-10-22.
     //
     // "Alone" is what `install_process_defaults` arranges: on a subcommand it
     // points the tracing subscriber at **stderr**, so this line is the whole

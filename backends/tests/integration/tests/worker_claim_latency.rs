@@ -152,7 +152,7 @@ const DRAIN_SPAN_BOUND: Duration = Duration::from_secs(1);
 /// bound, with its numbers, rather than time out with none of them.
 const ROUND_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// How long the loop is given to work through the five jobs
+/// How long the loop is given to work through the six jobs
 /// `run_loop` seeds at boot before the first round is enqueued.
 const QUIET_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -284,7 +284,7 @@ async fn claim_curve(
 
 /// Waits until nothing is claimable and nothing is leased.
 ///
-/// Called once, before the first round: `run_loop` seeds five housekeeping
+/// Called once, before the first round: `run_loop` seeds six housekeeping
 /// jobs at `run_at = now()` and this case is not measuring the boot backlog.
 /// Every round after that starts wherever the housekeeping happens to be,
 /// which is the state a deployment is actually in.
@@ -375,6 +375,7 @@ async fn measure_backlog_latency(concurrency: usize) -> anyhow::Result<()> {
             RecoveryPolicy::default(),
             support::no_webhook_endpoints(),
             support::default_egress_policy(),
+            std::sync::Arc::new(vpay_worker::CallbackPlan::none()),
             concurrency,
             DRAIN_GRACE,
             WORKER.to_owned(),

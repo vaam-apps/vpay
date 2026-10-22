@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 50,
-        "all fifty migration files under backends/migrations should be recorded as applied \
+        applied, 51,
+        "all fifty-one migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -382,7 +382,10 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          and the nonce and the AEAD-sealed PKCE verifier. It is not a \
          staff_sessions row because staff_sessions.staff_id is NOT NULL and a \
          first sign-in has no staff member yet; it is consumed by DELETE so \
-         single use is the row count.)"
+         single use is the row count, and RFC-0013's 0051, which reopens \
+         jobs.kind_is_known for ensure_callbacks -- the singleton that keeps \
+         one vpay-created callback endpoint registered with each rail account \
+         that registers its URL, in the commit that adds its handler.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

@@ -23,7 +23,7 @@ page points at it rather than restating it.
 | `failure`    | the closed taxonomy                     | why the policy lives on the code                                                                                 |
 | `settlement` | `settle` and `contradiction`            | why this is a sibling of `state` and not part of it                                                              |
 | `error`      | `Classify`, `Category`, `source_chain`  | the three tiers and the five questions ([ADR-0011](../adr/0011-error-modelling.md))                              |
-| `metrics`    | the thirteen names and their labels     | why a library describes but does not install, and the caveats on four of the series                              |
+| `metrics`    | the fourteen names and their labels     | why a library describes but does not install, and the caveats on four of the series                              |
 
 ---
 
@@ -483,6 +483,24 @@ would be the durable record that
 [../flows/account-holder-lookup.md](../flows/account-holder-lookup.md)'s rule
 2 exists not to keep. `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`
 asserts it against a rendered scrape from the shipping exporter.
+
+### The callback-endpoint series is a counter, where RFC-0013 proposed a gauge
+
+`vpay_callback_endpoint_checks_total{provider,state}` landed on 2026-10-22
+with RFC-0013's `ensure_callbacks` pass, the second name the plan document
+does not have. `state` is one of seven constants in
+`vpay_core::metrics::callback_endpoint_state`: the five things a rail's
+endpoint list can say (`present`, `created`, `drifted`, `foreign`,
+`missing`) and the two passes that learned nothing (`locked`, `failed`).
+
+RFC-0013 § 4 proposed "one gauge per rail and state". It is a counter
+because the pass is a singleton that runs on whichever worker claims it: a
+per-process gauge would keep each process's last answer, so a worker that
+last ran the pass a day ago would report what it saw then, beside the one
+that ran it an hour ago. "How many passes in the last two hours found the
+endpoint missing" has one answer however many workers there are. The label
+set is the rail's code and a closed state; no endpoint id, URL or marker is a
+label.
 
 ### Why the names are `const`s and not string literals at call sites
 

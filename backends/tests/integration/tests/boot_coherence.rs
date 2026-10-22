@@ -87,6 +87,7 @@ impl ProviderAdapter for IncoherentRail {
             // `Origin` is the shape that needs no payee, so the fixture asks
             // the port for nothing it does not have.
             refund_destination: RefundDestination::Origin,
+            callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
         }
     }
 
@@ -145,6 +146,7 @@ fn config_with(code: &str) -> Config {
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),

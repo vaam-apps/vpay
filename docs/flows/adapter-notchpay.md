@@ -44,10 +44,14 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
   company may hold a Notch Pay account at all is RFC-0012 § 10 item 10.)_
 - Both of the account's keys: the **public** key and the **private** key.
   Boot refuses a `notchpay` block without either.
-- The webhook endpoint `{public_base_url}/provider/notchpay/callback`
-  registered by hand in Notch Pay's dashboard (Settings › Webhooks) for the
-  five payment events, until [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)
-  registers it. Optional for correctness: the poll ladder reads every
+- The webhook endpoint `{public_base_url}/provider/notchpay/callback`,
+  registered with the account for the five payment events. **vpay registers
+  it** ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md), built
+  2026-10-22): the worker's `ensure_callbacks` job, at every worker start and
+  hourly, or `vpay-server callbacks ensure` by hand. See § Callbacks. _(This
+  said "registered by hand in Notch Pay's dashboard (Settings › Webhooks) …
+  until RFC-0013 registers it" until 2026-10-22.)_ Optional for
+  correctness: the poll ladder reads every
   charge without callbacks. _(This said "settles every charge" until
   2026-10-22. A charge whose reads the adapter refuses is never settled by
   them: step 5's short collection was still `pending` after fifteen minutes
@@ -142,6 +146,8 @@ providers:
     credentials:
       public_key: ${NOTCHPAY_PUBLIC_KEY}
       private_key: ${NOTCHPAY_PRIVATE_KEY}
+    callbacks: # optional; absent means `register: ensure`
+      register: ensure # or `check` (list, never create) or `off` (never ask)
 ```
 
 Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
@@ -283,6 +289,41 @@ because the sandbox's payment answers carried ours there and Notch Pay's
 not read: the client does not model it. The route then pulls the charge's
 poll forward, and only the authenticated read moves money.
 
+### Registering the endpoint (RFC-0013, built 2026-10-22)
+
+`notchpay` declares `CallbackUrlMode::Registered`: Notch Pay is not told the
+callback URL on a payment, so the account must hold a webhook endpoint at it.
+The worker's `ensure_callbacks` job keeps one there, under the registration
+lock, at every worker start and hourly; `vpay-server callbacks ensure`
+runs the same pass by hand and prints one line per rail.
+
+One pass lists **every page** of `GET /webhooks`, then:
+
+- **Recognises vpay's endpoint by its description**, never by its URL. Notch
+  Pay answered `"url": null` for every endpoint in the sandbox, in the create
+  answers and the list (2026-10-21). The description is
+  `vpay:{deployment.name}:notchpay:default url:{16 hex digits of SHA-256 of
+the callback URL}`: who created it, and for which URL. An endpoint with
+  this marker and this tag is `present`; one with this marker and another
+  tag (a `public_base_url` that changed) is superseded; a second current one
+  is a duplicate.
+- **Creates at most once**, with `url`, that description and the five
+  payment events, only when no current one exists and the setting is
+  `ensure`. A create whose answer is lost is not repeated in that pass; the
+  next pass lists first.
+- **Never modifies or deletes anything.** The client has no `PUT`, and
+  `DELETE /webhooks/{id}` answered `404` in the sandbox. A current endpoint
+  missing an event is reported `drifted`; superseded and duplicate ones are
+  logged at `warn`, by id, for an operator to delete in the dashboard.
+- **Cannot see a hand-registered endpoint at vpay's URL**, because the URL is
+  not echoed. A deployment that registered one by hand before 2026-10-22
+  gets a second, vpay's own: each callback arrives twice, which costs a
+  second pull-forward and nothing else (RFC-0013 § 3). Delete the hand-made
+  one in the dashboard, or set `register: off`.
+
+A refused key (`401`/`403`) is logged at `error` with `alert = true`; the job
+reschedules either way and never dead-letters.
+
 ## Refunds
 
 `supports_refunds` and `supports_partial_refunds` are `true` and
@@ -370,6 +411,13 @@ _(This paragraph read "Its calls have never been made through the adapter",
 and ended "that fix has not met Notch Pay", until 2026-10-21, when step 5
 ran.)_
 
+- **Callback registration, built 2026-10-22 (RFC-0013):**
+  `src/callbacks.rs`, with its unit tests; WireMock mappings
+  `mappings/webhooks.json`, transcribed from the 2026-10-21 sandbox answers;
+  and `backends/tests/integration/tests/callback_registration.rs` against a
+  real Postgres and that stub (one create, then found; two racing passes, one
+  create; `check` never writes). **It has never registered an endpoint with
+  a real Notch Pay account** (RFC-0013 delivery step 5).
 - **Built and tested in process:** the adapter (`vpay-adapter-notchpay`, its
   unit tests in `src/tests.rs` and `src/mapping.rs`); the boot rules
   (`vpay-config`, the `notchpay` tests in `config.rs`); the port's
@@ -491,7 +539,9 @@ ran.)_
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft);
-  vpay registering its own webhook (RFC-0013).
+  retiring a superseded or duplicate webhook endpoint (no working `DELETE`).
+  _(The last item was "vpay registering its own webhook (RFC-0013)" until
+  2026-10-22.)_
 - **Not wired into any running stack.** `config/application.yml` carries the
   `notchpay` block **commented out**, pointed at the `wiremock-notchpay`
   compose service. Uncommented, even with `enabled: false`, it would make

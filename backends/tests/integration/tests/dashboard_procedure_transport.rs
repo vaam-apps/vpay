@@ -166,6 +166,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: CURRENCY.to_owned(),

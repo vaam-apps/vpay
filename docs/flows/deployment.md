@@ -422,10 +422,12 @@ namespace only — a policy it can only express because the two are different
 ports, where a path-based exclusion would depend on an ingress controller's
 rule ordering staying correct forever.
 
-**What is emitted.** Thirteen names (twelve until 2026-09-05, when issue
-#47's `vpay_account_holder_lookups_total` landed), owned by
+**What is emitted.** Fourteen names (twelve until 2026-09-05, when issue
+#47's `vpay_account_holder_lookups_total` landed, and thirteen until
+2026-10-22, when RFC-0013's `vpay_callback_endpoint_checks_total` did; the
+heading keeps "thirteen" so links to it keep working), owned by
 `vpay_core::metrics`, which describes them and installs no recorder — each
-binary installs exactly one, beside its rustls provider. All thirteen have a
+binary installs exactly one, beside its rustls provider. All fourteen have a
 live seam:
 `vpay_build_info`; `vpay_http_requests_total` and
 `vpay_http_request_duration_seconds` (labelled by matched route _pattern_,
@@ -445,7 +447,14 @@ webhooks landed on this branch (this rebase pass).
 every path including the refusals — its `outcome` label is the only thing
 that tells `found` from `not_found`, which are both `200`, and **no label on
 it carries the number looked up or the name returned**
-([account-holder-lookup.md](account-holder-lookup.md)). `docs/status.md`
+([account-holder-lookup.md](account-holder-lookup.md)).
+`vpay_callback_endpoint_checks_total{provider,state}` is emitted once per
+rail per `ensure_callbacks` pass, by `vpay_worker::callbacks::run_pass`.
+`present` and `created` are healthy, and so is an occasional `locked`;
+`missing` or `failed` is a rail whose callbacks may not be arriving, so its
+charges settle by polling alone; `drifted` is one with event types
+unsubscribed; `foreign` is one whose callbacks arrive through an endpoint
+vpay did not create. `docs/status.md`
 names the seam for each.
 
 **What an operator should know before trusting a dashboard.**

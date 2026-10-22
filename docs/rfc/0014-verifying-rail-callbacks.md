@@ -291,7 +291,10 @@ providers:
   with a `Debug` canary, and registered in `schemas/privacy-inventory.yaml`.
 - The operator copies the value from the provider's dashboard when they
   register the endpoint by hand. Every endpoint on a rail that registers is
-  registered by hand until RFC-0013 lands.
+  registered by hand until RFC-0013 lands. _(2026-10-22: RFC-0013 landed for
+  Notch Pay, whose endpoint vpay now registers. Nothing here changes: Notch
+  Pay's create answer carries no secret (sandbox, 2026-10-21), so its value
+  is still copied from the dashboard.)_
 - This **reverses RFC-0012 § 2's refusal on its own terms**. It refused to
   hold the hash key because "a secret that nothing reads is a secret held for
   no reason". Under this RFC something reads it. RFC-0012 § 2 gets a dated
@@ -391,7 +394,9 @@ comparison this repository has listed as unbuilt since Step 8.
   outbound authenticated call per anonymous POST.
 - **Secrets only from RFC-0013's store.** Refused for phase 1. Every
   deployment registers endpoints by hand today, and none could verify until
-  the store exists.
+  the store exists. _(2026-10-22: Notch Pay's endpoint is registered by vpay
+  since RFC-0013 landed for it, and the refusal still holds: Notch Pay
+  returns no secret to store.)_
 - **Source-IP allowlists instead of signatures.** Refused. No shipping rail
   publishes a callback address range that this repository has confirmed:
   RFC-0013 § 11 records that no MTN page read supports an IP-allowlisted

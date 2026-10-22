@@ -90,6 +90,38 @@ mod tests {
         }
     }
 
+    /// RFC-0013 § 8's coherence rule, over every linked adapter: a rail whose
+    /// callback URL is registered with the account must be one that calls
+    /// back. Boot refuses it per configured rail; this covers the rails no
+    /// test configuration names.
+    #[test]
+    fn every_registered_callback_url_belongs_to_a_rail_that_calls_back() {
+        for a in adapters(http()) {
+            assert!(
+                a.capabilities().callbacks_are_coherent(),
+                "{} declares a registered callback URL and no callbacks",
+                a.code()
+            );
+        }
+    }
+
+    /// Exactly the rail RFC-0013 was built for registers its URL with the
+    /// account; MTN and Orange are told theirs on every submit. A rail that
+    /// moves fails here until this list names it, because moving changes
+    /// what the `ensure_callbacks` pass writes to.
+    #[test]
+    fn only_notchpay_registers_its_callback_url() {
+        let registered: Vec<&str> = adapters(http())
+            .iter()
+            .filter(|adapter| {
+                adapter.capabilities().callback_url_mode
+                    == vpay_provider::CallbackUrlMode::Registered
+            })
+            .map(|adapter| adapter.code())
+            .collect();
+        assert_eq!(registered, ["notchpay"]);
+    }
+
     /// The rails have different flow shapes; that is the whole point of the
     /// port. If this ever collapses to one shape, the port stopped being tested.
     #[test]

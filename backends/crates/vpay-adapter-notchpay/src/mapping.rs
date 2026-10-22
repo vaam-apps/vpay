@@ -322,7 +322,7 @@ fn not_found_elsewhere(doing: &str) -> ProviderError {
 
 /// Our own keys, refused. It pages (`docs/flows/failures.md`), because every
 /// charge on the rail is failing and no payer can fix it.
-fn keys_refused(refusal: &Refusal, doing: &str) -> ProviderError {
+pub(crate) fn keys_refused(refusal: &Refusal, doing: &str) -> ProviderError {
     ProviderError::Rejected {
         code: FailureCode::ProviderAccountBlocked,
         message: format!(
@@ -366,7 +366,7 @@ fn declined(refusal: &Refusal, doing: &str) -> ProviderError {
 }
 
 /// Bounds a rail-supplied string before it reaches a message.
-fn truncated(text: &str) -> String {
+pub(crate) fn truncated(text: &str) -> String {
     let trimmed = text.trim();
     if trimmed.chars().count() <= PROSE_LIMIT {
         return trimmed.to_owned();

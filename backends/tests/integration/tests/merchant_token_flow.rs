@@ -1356,6 +1356,7 @@ async fn run_the_housekeeping_sweep(repositories: &dyn Repositories) -> anyhow::
                 endpoints: &endpoints,
                 egress,
             },
+            &vpay_worker::CallbackPlan::none(),
             "merchant-token-flow",
         )
         .await

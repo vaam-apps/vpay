@@ -357,6 +357,7 @@ async fn stack() -> anyhow::Result<Stack> {
                 ("api_key".to_owned(), "stub".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),

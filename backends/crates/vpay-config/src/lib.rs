@@ -23,10 +23,12 @@ pub mod cli;
 pub mod config;
 pub mod oauth;
 pub mod signal;
-pub use cli::{CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs};
+pub use cli::{
+    CallbacksCommand, CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs,
+};
 pub use config::{
-    CheckoutConfig, Config, CurrencyEntry, ProviderHost, RailDisplayName, RateLimitPolicy,
-    RateLimits, StaffAuth, StaffSso, WebhookPolicy,
+    CallbackRegistration, CheckoutConfig, Config, CurrencyEntry, ProviderCallbacks, ProviderHost,
+    RailDisplayName, RateLimitPolicy, RateLimits, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use oauth::{
     DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
@@ -1214,6 +1216,41 @@ pub enum ConfigError {
     IncoherentCapabilities {
         /// The `providers[].code` from the YAML — the entry to remove or the
         /// adapter to go and fix, which is the whole of what boot can say.
+        code: String,
+    },
+
+    /// A configured provider's adapter declares
+    /// `callback_url_mode: Registered` without `delivers_callbacks` — the
+    /// rule `vpay_provider::Capabilities::callbacks_are_coherent` encodes
+    /// (RFC-0013 § 8).
+    ///
+    /// A linking mistake, on [`Self::IncoherentCapabilities`]' exact terms,
+    /// and a separate variant only because that one's message names the
+    /// refund rule and its database CHECK: this rule has no column, because
+    /// `callback_url_mode` is not persisted. What it prevents is a
+    /// registration pass that would create an endpoint at a rail that never
+    /// calls it.
+    #[error(
+        "provider {code} declares callback_url_mode: registered without delivers_callbacks; a          rail whose callback URL is registered with the account must be one that calls back          (the rule vpay_provider::Capabilities::callbacks_are_coherent encodes)"
+    )]
+    IncoherentCallbackMode {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// `providers[].callbacks` is present on a rail whose adapter declares
+    /// `CallbackUrlMode::PerRequest` (RFC-0013 § 2).
+    ///
+    /// Such a rail is told its callback URL on every submit
+    /// (`X-Callback-Url`, `notif_url`) and the registration pass never asks
+    /// it anything, so the block would do nothing — and a setting that does
+    /// nothing is one somebody believes in. A **YAML** mistake, unlike
+    /// [`Self::IncoherentCallbackMode`]: removing the block is the fix.
+    #[error(
+        "providers[{code}].callbacks is set, but {code} is told its callback URL on every          request and has no endpoint to register; remove the callbacks block"
+    )]
+    CallbacksOnPerRequestRail {
+        /// The `providers[].code` from the YAML.
         code: String,
     },
 

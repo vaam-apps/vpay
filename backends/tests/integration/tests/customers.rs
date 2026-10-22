@@ -194,6 +194,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),
@@ -340,7 +341,7 @@ async fn run_the_sweep(repositories: &Arc<dyn Repositories>, pool: &PgPool) -> a
     let egress = support::default_egress_policy();
     let mut seen: Vec<String> = Vec::new();
 
-    // Drain, rather than one step: `seed_singletons` seeds five jobs and
+    // Drain, rather than one step: `seed_singletons` seeds six jobs and
     // `claim` takes the oldest claimable one, so a single `run_once` would
     // run whichever singleton sorted first and might never reach this one.
     // Bounded so a job that reschedules itself at `Duration::ZERO` cannot
@@ -356,6 +357,7 @@ async fn run_the_sweep(repositories: &Arc<dyn Repositories>, pool: &PgPool) -> a
                 endpoints: &endpoints,
                 egress,
             },
+            &vpay_worker::CallbackPlan::none(),
             "customers-suite",
         )
         .await

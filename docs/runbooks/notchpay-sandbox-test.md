@@ -355,6 +355,12 @@ set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
 The worker's authenticated read is what moves the charge. Notch Pay cannot
 reach `localhost`, and no webhook is needed.
 
+**Since 2026-10-22 the worker also lists the account's webhook endpoints**,
+at start and hourly: RFC-0013's `ensure_callbacks` job. The profile sets
+`callbacks.register: check`, so that is one `GET /webhooks` and never a
+create; the worker logs `no callback endpoint is registered at vpay's
+callback URL` at `warn`, which is expected here. Creating one is B4.
+
 ### B3. Terminal 3: one success, one failure, one short collection
 
 ```bash
@@ -450,6 +456,47 @@ capture. Each was terminal on the worker's second read, 11 to 12 s after
 create, not minutes. vpay sent 3 submits and 6 reads
 ([verification](../status/verification/2026-10-22-notchpay-b3b.md)).
 
+### B4. Registering vpay's webhook endpoint (RFC-0013 step 5)
+
+Not run yet. It is RFC-0013's delivery step 5: the first time vpay creates a
+webhook endpoint on a real Notch Pay account. It makes one `GET /webhooks`
+and **one `POST /webhooks`**, which the account keeps until someone deletes
+it in the dashboard: Notch Pay's `DELETE` answered `404` on 2026-10-21.
+
+1. Point the callback URL at an `https://` address. The profile's default is
+   `http://localhost:8080/...`, which Notch Pay has never been shown; the
+   2026-10-21 run created endpoints at an `https://….invalid` URL, which it
+   accepted. A4's tunnel URL works too, and then A4's receiver sees the
+   events. In the profile, under the `notchpay` rail:
+
+   ```yaml
+   callback_url: https://vpay-sandbox-b4.invalid/provider/notchpay/callback
+   callbacks:
+     register: ensure
+   ```
+
+2. Check, then register, then check again:
+
+   ```bash
+   set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
+   V="./target/debug/vpay-server --profile notchpay-sandbox --config config/application.yml \
+      --database-url postgres://vpay:vpay@localhost:5434/vpay --log-format text"
+   $V callbacks ensure --check   # expect: notchpay ensure missing -   (and exit 1)
+   $V callbacks ensure           # expect: notchpay ensure created ep_test.…
+   $V callbacks ensure           # expect: notchpay ensure present ep_test.…   (no second create)
+   ```
+
+3. In the dashboard (Settings > Webhooks), one endpoint should carry the
+   description `vpay:vpay-notchpay-sandbox:notchpay:default url:` followed
+   by 16 hex digits, and the five `payment.*` events. Note whether the
+   dashboard shows its URL: the API answers `"url": null`.
+
+What to paste back from B4: the three output lines, the dashboard's
+description and URL for that endpoint, and
+`grep -E "callback endpoint|ensure_callbacks" ~/notchpay-worker.log` if the
+worker was running. Put the profile back (`register: check`, no
+`callback_url`) afterwards, and delete the endpoint in the dashboard.
+
 ### What to paste back from Part B
 
 - both `psql` outputs;
@@ -467,7 +514,7 @@ done
 ## Teardown
 
 Ctrl-C both terminals, then `docker rm -f vpay-pg-notchpay`. Delete any
-webhook endpoint left in the dashboard. Delete `~/notchpay-webhooks/` once
+webhook endpoint left in the dashboard, B4's included. Delete `~/notchpay-webhooks/` once
 the results are recorded.
 
 ## What a run proves, and what it does not

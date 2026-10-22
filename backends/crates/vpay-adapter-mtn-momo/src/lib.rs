@@ -38,9 +38,9 @@ use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::RwLock;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus, PayerField, PayerFieldKind,
-    PhonePayerType, ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundDestination,
-    RefundTarget, Refunded, Submitted,
+    AccountHolder, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, PayerField,
+    PayerFieldKind, PhonePayerType, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
+    RefundDestination, RefundTarget, Refunded, Submitted,
 };
 
 use crate::token::{Credentials, Product, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -771,6 +771,12 @@ impl ProviderAdapter for Adapter {
             // that MTN's Disbursements product has never been called with a
             // real credential; the module header is where that is stated.
             refund_destination: RefundDestination::Required,
+            // The URL travels on every request to pay, as `X-Callback-Url`,
+            // and must sit on the API user's registered
+            // `providerCallbackHost`. There is no endpoint object to keep, so
+            // the `ensure_callbacks` pass never asks this rail anything
+            // (RFC-0013 § 1).
+            callback_url_mode: CallbackUrlMode::PerRequest,
         }
     }
 

@@ -225,6 +225,7 @@ fn config_with(
                 ("api_key".to_owned(), "stub-api-key".to_owned()),
             ]),
             display_name: None,
+            callbacks: None,
         }],
         currencies: vec![CurrencyEntry {
             code: "XAF".to_owned(),
@@ -719,6 +720,7 @@ async fn drain_worker(h: &Harness) -> anyhow::Result<usize> {
                 endpoints: &endpoints,
                 egress,
             },
+            &vpay_worker::CallbackPlan::none(),
             "checkout-sessions-suite",
         )
         .await?;
@@ -2420,6 +2422,7 @@ async fn run_until(
             &h.rails,
             &RecoveryPolicy::default(),
             &vpay_worker::WebhookContext { endpoints, egress },
+            &vpay_worker::CallbackPlan::none(),
             "checkout-sessions-expiry",
         )
         .await?;

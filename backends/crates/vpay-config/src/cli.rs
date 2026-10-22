@@ -437,8 +437,9 @@ fn refuse_serve_only_flags_before_worker(
 
 /// The subcommands `vpay-server` offers, other than serving traffic.
 ///
-/// Two: one long-running mode ([`Self::Worker`]) and one operator command
-/// ([`Self::Staff`]). `None` — no subcommand at all — serves the API, which
+/// Three: one long-running mode ([`Self::Worker`]) and two operator commands
+/// ([`Self::Staff`], and [`Self::Callbacks`] since 2026-10-22). `None` — no
+/// subcommand at all — serves the API, which
 /// is what keeps every `ENTRYPOINT`, every compose `command:` and every Helm
 /// `args:` that predates issue #77 working with no edit.
 ///
@@ -468,6 +469,38 @@ pub enum ServerCommand {
         /// What to do.
         #[command(subcommand)]
         command: StaffCommand,
+    },
+
+    /// Check, and register, this deployment's callback endpoints with the
+    /// rails that keep one per account (RFC-0013).
+    ///
+    /// Nested on [`Self::Staff`]'s terms, so a second operation (retiring a
+    /// superseded endpoint) is a sibling rather than another top-level verb.
+    Callbacks {
+        /// What to do.
+        #[command(subcommand)]
+        command: CallbacksCommand,
+    },
+}
+
+/// `vpay-server callbacks …`.
+#[derive(Debug, Clone, clap::Subcommand)]
+pub enum CallbacksCommand {
+    /// Run one registration pass in the foreground, and print one line per
+    /// rail.
+    ///
+    /// The same pass the worker's `ensure_callbacks` job runs every hour,
+    /// under the same lock, so the two never both create. Exits non-zero
+    /// when a rail that registers its URL is left with no endpoint at vpay's
+    /// callback URL — or when the pass could not find out.
+    ///
+    /// A rail whose `providers[].callbacks.register` is `off` is reported and
+    /// not asked; one set to `check` is listed and never written to.
+    Ensure {
+        /// List and report on every rail; create nothing, whatever each
+        /// rail's `register` setting says.
+        #[arg(long, default_value_t = false)]
+        check: bool,
     },
 }
 

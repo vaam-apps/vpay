@@ -493,7 +493,10 @@ Three things about this rail's callbacks, none of which changes the design:
   the Webhook schema carries **no signing secret**, although the API
   reference says one is returned "when creating a webhook via the API"
   ("To confirm" item 13). Until RFC-0013 lands, the merchant registers the
-  URL in the dashboard (Settings > Webhooks). This is also RFC-0010 § 6's
+  URL in the dashboard (Settings > Webhooks). _(2026-10-22: RFC-0013 landed
+  for Notch Pay. vpay registers the endpoint itself, from the worker's
+  `ensure_callbacks` job or `vpay-server callbacks ensure`
+  ([adapter-notchpay.md](../flows/adapter-notchpay.md) § Callbacks).)_ This is also RFC-0010 § 6's
   situation, and RFC-0010 § 8's change to the conformance suite's
   `callback_url_pattern` covers it; whichever adapter lands first carries
   that change.
@@ -616,7 +619,9 @@ require it."). Setting it admits the rail; it does not silence the warning.
   expect some `rejected` charges and read them as `provider_error`.
 - **The webhook endpoint**, registered by vpay once RFC-0013 lands, with the
   account's private key; by the merchant in their dashboard until then
-  (§ 6).
+  (§ 6). _(2026-10-22: RFC-0013 landed. vpay registers it, with both keys as
+  on every call. A merchant who registered one by hand gets a second; see
+  [adapter-notchpay.md](../flows/adapter-notchpay.md) § Callbacks.)_
 - **The public key stays server-side.** A merchant who also embeds it in a
   front end has exposed every public-key operation listed under "The gate".
 

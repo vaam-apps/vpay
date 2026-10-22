@@ -1720,6 +1720,7 @@ mod tests {
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: self.lookup.is_some(),
                 refund_destination: RefundDestination::Required,
+                callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
             }
         }
 
@@ -1786,6 +1787,7 @@ mod tests {
                 requires_ip_allowlist: false,
                 supports_account_holder_lookup: false,
                 refund_destination: RefundDestination::Origin,
+                callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
             }
         }
 
