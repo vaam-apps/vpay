@@ -116,19 +116,20 @@ Postgres 16 and WireMock 3.9.2 ran in Docker. `cargo nextest` and `just` are
 not installed here, so each recipe's commands ran directly, and `cargo test`
 replaced nextest (see the integration note below).
 
-| Check                                                                  | Result                                                                                         |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| `cargo fmt --all --check`                                              | clean                                                                                          |
-| `cargo clippy --workspace --all-targets -- -D warnings`                | clean                                                                                          |
-| `cargo test --workspace --lib --bins` (integration, conformance out)   | **1579 passed, 0 failed, 0 ignored**                                                           |
-| `cargo test --workspace --tests` (the same crates, their `tests/` too) | **1890 passed, 0 failed, 0 ignored**                                                           |
-| `cargo test --doc --workspace`                                         | **131 passed, 0 failed, 1 ignored** (`sdks/rust/src/lib.rs` `ReadmeDoctests`, untouched)       |
-| `cargo test -p vpay-tests-conformance`                                 | **97 passed, 0 failed, 0 ignored**                                                             |
-| `cargo test -p vpay-tests-integration`                                 | **390 passed, 5 failed, 0 ignored**: every failure passes in its own process (below)           |
-| `cratestack check --schema schemas/vpay.cstack` (0.15.0)               | `schema OK` (the schema is untouched)                                                          |
-| the 14 `cargo xtask` gates `verify` names                              | all ok: `verify-migrations` 51 files, `verify-doc-counts` 13 counts, `verify-links` 2672 links |
-| `cargo xtask verify-citations`                                         | ok                                                                                             |
-| `verify-ui`                                                            | not run: it greps `frontends/` and `examples/`, which this change does not touch               |
+| Check                                                                  | Result                                                                                                                                                                                             |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all --check`                                              | clean                                                                                                                                                                                              |
+| `cargo clippy --workspace --all-targets -- -D warnings`                | clean                                                                                                                                                                                              |
+| `cargo test --workspace --lib --bins` (integration, conformance out)   | **1579 passed, 0 failed, 0 ignored**                                                                                                                                                               |
+| `cargo test --workspace --tests` (the same crates, their `tests/` too) | **1890 passed, 0 failed, 0 ignored**                                                                                                                                                               |
+| `cargo test --doc --workspace`                                         | **131 passed, 0 failed, 1 ignored** (`sdks/rust/src/lib.rs` `ReadmeDoctests`, untouched)                                                                                                           |
+| `cargo test -p vpay-tests-conformance`                                 | **97 passed, 0 failed, 0 ignored**                                                                                                                                                                 |
+| `cargo test -p vpay-tests-integration`                                 | **390 passed, 5 failed, 0 ignored**: every failure passes in its own process (below)                                                                                                               |
+| `cratestack check --schema schemas/vpay.cstack` (0.15.0)               | `schema OK` (the schema is untouched)                                                                                                                                                              |
+| the 14 `cargo xtask` gates `verify` names                              | all ok: `verify-migrations` 51 files, `verify-doc-counts` 13 counts, `verify-links` 2672 links                                                                                                     |
+| `cargo xtask verify-citations`                                         | ok                                                                                                                                                                                                 |
+| `verify-ui`                                                            | not run: it greps `frontends/` and `examples/`, which this change does not touch                                                                                                                   |
+| `verify-ignored` (a CI step, not one `verify` names)                   | **failed in CI on `f25930e5`**: 54 test binaries listed, 53 expected. `callback_registration.rs` is the 54th; `expected_suites` moved to 54 in the next commit, with CI's 2382 total and 0 ignored |
 
 `cargo xtask verify-docs` is a report and never fails. Its report grows by
 three entries against `master`: two long functions this change adds,

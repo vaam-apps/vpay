@@ -3071,7 +3071,16 @@ expected_ignored := "0"
 # binary until it does. Its five tests pin the cloud-only `--ca-bundle` flag:
 # off by default, a bad path refused before any request, redirects still not
 # followed. No other target changed.
-expected_suites := "53"
+#
+# **53 -> 54 on 2026-10-22 (RFC-0013 steps 2-4)**: one new binary,
+# `backends/tests/integration/tests/callback_registration.rs` (the
+# `ensure_callbacks` pass against a real Postgres and a WireMock Notch Pay; its
+# own file because each case boots both containers). Everything else the change
+# tests went into binaries that already existed. Measured by CI's `rust` job on
+# `f25930e5`, which failed here with the new name in its listing: **54**
+# binaries, **2382** total, **0** ignored. Not run locally first: `just` is not
+# installed where this was written, and this recipe is not one `verify` names.
+expected_suites := "54"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
