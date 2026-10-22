@@ -14,7 +14,11 @@ _(2026-10-16: true today only of a deployment that serves one merchant.
 Provider credentials are configured once per deployment and a merchant
 registration names no account, so two `merchant_id`s on one deployment are paid
 into one account on each rail. [RFC-0009](0009-provider-accounts-per-merchant.md)
-measures the gap and proposes the fix.)_
+measures the gap and proposes the fix.)_ _(2026-10-22: RFC-0009's revision
+says the gap is aggregation only when the `merchant_id`s are different
+companies. Several projects of one company paid into that company's own
+account is the company being a merchant; its phase A makes the configuration
+say so.)_
 
 Merchants will eventually ask for aggregation — one vpay account collecting, with
 periodic settlement to them. That is money transmission.

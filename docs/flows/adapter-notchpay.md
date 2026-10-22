@@ -34,7 +34,10 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
 
 - A Notch Pay account per merchant (model A, the merchant's own keys). Until
   [RFC-0009](../rfc/0009-provider-accounts-per-merchant.md) lands, a
-  deployment serves one merchant.
+  deployment serves one merchant. _(2026-10-22: one legal entity, not one
+  `merchant_id`. Several projects of one company may share the company's
+  account, as RFC-0009's revision (phase A, unbuilt) describes. Whether a
+  company may hold a Notch Pay account at all is RFC-0012 § 10 item 10.)_
 - Both of the account's keys: the **public** key and the **private** key.
   Boot refuses a `notchpay` block without either.
 - The webhook endpoint `{public_base_url}/provider/notchpay/callback`
