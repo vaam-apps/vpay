@@ -362,8 +362,11 @@ because those are what make the page worth trusting.
   [vpay-oss.vaam.store](https://vpay-oss.vaam.store), built from
   [vaam-apps/vpay-docs](https://github.com/vaam-apps/vpay-docs). It is pinned
   to a vpay **release tag** rather than to `master`, and checks itself: its
-  `release-parity` workflow opens one issue per release listing the pages that
-  release made stale, and never blocks the release. So a change here does not
+  `release-parity` workflow opens one draft PR per release (this said "one
+  issue" until 2026-10-22, which was true only of the workflow's first version,
+  replaced by draft PRs the same day, 2026-09-23) that points its lock at the
+  new tag unsigned and lists the pages that release made stale, and never
+  blocks the release. So a change here does not
   need a vpay-docs PR alongside it the way it may need a vpay-skills one. The
   gap surfaces there at the next tag.
 

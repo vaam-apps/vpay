@@ -642,9 +642,19 @@ What it deliberately is not:
   does can hold up images, the chart or the SDKs.
 - **Not a gate on vpay.** A release that makes the docs stale still ships. The
   signal is the draft PR in vpay-docs.
-- **Not proven yet.** It has not run on a real tag. Written 2026-09-23; the
-  first release after it merges is its first run. `workflow_dispatch` with a
-  `tag` input re-sends an announcement by hand.
+- ~~**Not proven yet.** It has not run on a real tag. Written 2026-09-23; the
+  first release after it merges is its first run.~~ **Proven on every tag
+  since, corrected 2026-10-22.** It has run on each `v*` tag from v0.5.0, the
+  first release after it merged, to v0.10.2, and every run succeeded: v0.5.0
+  ([35844839387](https://github.com/vaam-apps/vpay/actions/runs/35844839387)),
+  v0.6.0, v0.7.0, v0.8.0, v0.9.0, v0.9.1, v0.10.0, v0.10.1 and v0.10.2
+  ([39715612085](https://github.com/vaam-apps/vpay/actions/runs/39715612085)).
+  Each was followed in vaam-apps/vpay-docs by a `release-parity` run whose
+  event is `repository_dispatch`, within two and a half minutes every time and
+  within twenty seconds for seven of the nine, for example
+  [vpay-docs/39715623547](https://github.com/vaam-apps/vpay-docs/actions/runs/39715623547)
+  for v0.10.2, which opened that release's parity PR. `workflow_dispatch`
+  with a `tag` input re-sends an announcement by hand.
 
 To re-announce a release, for example after vpay-docs was down:
 

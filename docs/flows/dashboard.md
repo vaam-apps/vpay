@@ -150,7 +150,8 @@ page issues. Evidence, and the two defects the browser-side read produced, on
 
 **Redesigned and made reload-free, 2026-10-21** — Material 3 Expressive on
 `@vaam-apps/ui` 0.5.0, an Overview home screen of exact procedure counts,
-status chips on every list, and navigation that no longer reloads the
+status chips on every list but customers _(this said "on every list" until
+2026-10-22; `CUSTOMERS_SCREEN` declares no filter)_, and navigation that no longer reloads the
 document (6 → 1 document loads over one fixed click-through, one session read
 per navigation instead of two). No read moved to the browser and no write
 was added. Evidence on

@@ -127,7 +127,12 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
   `a_status_notch_pay_never_documented_is_not_guessed_at`,
   `the_declared_codes_are_exactly_what_the_mapping_can_produce`), and the
   conformance suite's `notchpay` row drives five of them against WireMock.
-  **None has been read from Notch Pay itself.**
+  ~~**None has been read from Notch Pay itself.**~~ _(Struck 2026-10-22: wrong
+  since 2026-10-21, when step 5 read Notch Pay's real sandbox through the
+  adapter ([verification](../status/verification/2026-10-21-notchpay-step5.md)).
+  Its reads mapped to `Pending`, `Succeeded` and, from `failed`,
+  `Failed { provider_error }`, and a `complete` short of the charge's amount
+  was refused as `Malformed`. No other failure row was read.)_
 - **Over the wire**, both are proven by the shared conformance case
   `a_declined_charge_maps_to_the_documented_failure_code`, which drives a
   real `wiremock/wiremock` container per rail and asserts the taxonomy code
@@ -171,7 +176,11 @@ carrying the raw reason rather than being guessed at
 ([runbooks/provider-error-rate.md](../runbooks/provider-error-rate.md)).
 **What none of this proves** is that the tables are faithful to the _rails_:
 every decline above came from WireMock, and no real rail has ever declined a
-vpay charge. Valantine Suh (@Valsuh45), who performed the 2026-09-15 MTN sandbox tests, confirmed on 2026-10-20 that **over seven payments succeeded**. The initial
+vpay charge. _(Narrowed 2026-10-22: on 2026-10-21 Notch Pay's real sandbox
+reported one vpay charge `failed`, mapped to `provider_error`. That is a
+rail-reported failure, but `provider_error` is the catch-all, so it tests no
+mapped reason: no real rail has yet declined a vpay charge with a reason these
+tables map.)_ Valantine Suh (@Valsuh45), who performed the 2026-09-15 MTN sandbox tests, confirmed on 2026-10-20 that **over seven payments succeeded**. The initial
 documented session had three attempts: the first two stopped at the token mint
 on adapter bugs and the third settled its charge. Those three attempts are
 not the day's total, and no rail-reported decline was observed

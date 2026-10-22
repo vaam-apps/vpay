@@ -56,8 +56,9 @@ export const PASSWORD_PATH = "/login/password";
  * The first page a signed-in staff member sees: the Overview.
  *
  * It was `/payments` until 2026-10-21. The Overview is the one screen that
- * answers "is anything wrong right now" without a click per resource — six
- * exact counts and the latest payments — and every count on it is a link
+ * answers "is anything wrong right now" without a click per resource — twelve
+ * exact counts (all payments, one per payment status, and six that need a
+ * look) and the latest payments — and every count on it is a link
  * into the list it counts, so landing there costs an operator nothing on
  * the way to `/payments`.
  */

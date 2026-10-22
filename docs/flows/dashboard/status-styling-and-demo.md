@@ -58,6 +58,11 @@ what makes `has_more` mean one thing to an operator and to a merchant, and
 moving the frontend onto the procedure is still a maintainer's decision, not
 a consequence of this. Evidence:
 [../../status/cratestack/2026-09-13-dashboard-procedure-transport.md](../../status/cratestack/2026-09-13-dashboard-procedure-transport.md).
+_(Narrowed 2026-10-22: since 2026-10-21
+([#318](https://github.com/vaam-apps/vpay/pull/318)) the Overview calls
+`searchPaymentIntents` for its payment counts and its six newest payments
+(`src/dash/overview.ts`), so the frontend now reaches that procedure too. The
+`/payments` list itself still reads `GET /dash/v1/payment_intents`.)_
 [../status.md](../../status.md) § "The first `procedure`" has the original
 measurements.
 
