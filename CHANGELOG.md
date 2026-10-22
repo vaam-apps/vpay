@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.10.3](https://github.com/vaam-apps/vpay/compare/v0.10.2...v0.10.3) (2026-10-22)
+
+
+### Documentation
+
+* correct fourteen places vpay contradicted itself at v0.10.2 ([#333](https://github.com/vaam-apps/vpay/issues/333)) ([e7406dd](https://github.com/vaam-apps/vpay/commit/e7406ddadf822d6f6b0512d2bd97cc331c69ad21))
+* **flows:** link the callback human tests ([#330](https://github.com/vaam-apps/vpay/issues/330), [#331](https://github.com/vaam-apps/vpay/issues/331)) from the "To confirm" items ([#332](https://github.com/vaam-apps/vpay/issues/332)) ([45a244f](https://github.com/vaam-apps/vpay/commit/45a244fc1441a9fdb52cc39ced7ead0716d6b430))
+* scan:live is every ten minutes, and MTN documents no IP-allowlisted callback host (RFC-0013 step 0, items 4-5) ([#326](https://github.com/vaam-apps/vpay/issues/326)) ([1b2543b](https://github.com/vaam-apps/vpay/commit/1b2543bbdbc7f74b13f39bb89f2ecc25765ba086))
+* **status:** the Flutter example lockfile sync is confirmed by three releases ([#329](https://github.com/vaam-apps/vpay/issues/329)) ([4f3344e](https://github.com/vaam-apps/vpay/commit/4f3344e1d2681486b2d2a0b43a8e1c8a5529ef60))
+
+
+### Tests
+
+* **notchpay:** probe POST /refunds in the sandbox; it answers 403 (RFC-0012 § 10 items 6, 12) ([#334](https://github.com/vaam-apps/vpay/issues/334)) ([9086ba4](https://github.com/vaam-apps/vpay/commit/9086ba450747eff5ab2b88b23cc41850926ef0cf))
+
 ## [0.10.2](https://github.com/vaam-apps/vpay/compare/v0.10.1...v0.10.2) (2026-10-21)
 
 

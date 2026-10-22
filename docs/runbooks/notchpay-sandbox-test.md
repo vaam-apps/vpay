@@ -120,8 +120,8 @@ REPORT=~/notchpay-sandbox-report.json      # outside the repository
 A Claude Code cloud session's egress gateway re-terminates TLS with its own
 CA, so the probe's vendored roots refuse `api.notchpay.co` there (ground
 rule 3). In such a session, and only there, add
-`--ca-bundle /root/.ccr/ca-bundle.crt` to each of `read`, `payments` and
-`webhooks`. The probe then trusts that file's PEM certificates **in
+`--ca-bundle /root/.ccr/ca-bundle.crt` to every phase that calls Notch Pay:
+`read`, `payments`, `webhooks`, `search` and `refunds`. The probe then trusts that file's PEM certificates **in
 addition to** the vendored roots, for its own client only. Redirects stay
 refused and proxy variables stay ignored, exactly as in
 `vpay_provider::http`. A missing, unreadable or certificate-less file stops
@@ -249,6 +249,34 @@ the same value directly. Take the references from `payments`' report. On
 2026-10-21 `search` found Notch Pay's `trx.…` and not ours
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md)).
 
+### A6. Refunds (items 6 and 12)
+
+```bash
+$PROBE refunds --out "$REPORT"
+```
+
+This one **moves sandbox money**. It initializes and processes one 200 XAF
+payment on `+237670000000` and reads it until `complete` (at most 120 s).
+Then it sends `POST /refunds` for 50 XAF four times:
+
+- the guide's body (`payment`, `amount`, `reason`, `metadata.vpay_refund`);
+- the identical body again, which is the replay item 6 asks about;
+- the same body with a `reference` of ours, which the guide does not
+  document;
+- that `reference` again.
+
+After 15 s it reads `GET /payments/{trx}/refunds`, each refund id that came
+back at `GET /refunds/{id}`, and the payment. Its last notes say how many
+distinct refund ids the four answers held. If the payment ends with more
+than 50 XAF refunded, or with more than one refund for an identical body,
+**a replay pays twice**. Write that down before anything else.
+
+On 2026-10-22 every `POST /refunds` answered `403` "Forbidden", with no
+message, and nothing was refunded
+([verification](../status/verification/2026-10-22-notchpay-refunds.md)).
+Rerun it once the dashboard or Notch Pay says refunds are allowed for the
+account.
+
 ### What to paste back from Part A
 
 The whole of `$REPORT`, after reading it. It holds request and response
@@ -371,6 +399,41 @@ you have.
 
 _(B3 said `…000001` "reaches `requires_payment_method` with a `failure_code`"
 until 2026-10-21, and ran only two payments, `…000000` and `…000001`.)_
+
+### B3b. Timeout, canceled, and Orange
+
+Step 5 ran only `…000000`, `…000001` and `…000002` through vpay. The other
+three outcome numbers have been answered by the probe (step 1, 2026-10-21)
+and never through vpay. Same stack, same terminal:
+
+```bash
+for pair in 237670000003:240 237670000004:250 237690000000:260; do
+  n=${pair%%:*}; amt=${pair##*:}
+  VPAY_BASE_URL=http://localhost:8080 VPAY_CLIENT_ID=notchpay-sandbox-merchant \
+  VPAY_PRIVATE_KEY_FILE=.e2e/notchpay-sandbox-merchant/oauth-signing-key.pem \
+  VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=$n VPAY_AMOUNT=$amt VPAY_ORDER="np-$n-$(date +%s)" \
+    node examples/merchant-node/index.mjs
+done
+```
+
+Then the same two `psql` queries as B3. Expected, from step 1's reads and
+the adapter's mapping:
+
+- `…000003` (MTN timeout): Notch Pay reads `expired`, so the charge is
+  `failed`, with `failure_code` `payer_timeout` and the intent
+  `requires_payment_method`.
+- `…000004` (MTN canceled by user): Notch Pay reads `canceled`, so the
+  charge is `failed`, with `failure_code` `payer_declined` and the intent
+  `requires_payment_method`.
+- `+237690000000` (Orange success): Notch Pay reads `complete` with
+  `amounts.total` equal to `amount`, so the intent is `succeeded`, with one
+  balanced ledger transaction.
+
+Step 1 saw `expired` and `canceled` by its final read, about 180 s after
+process. It did not time how much sooner they came. So give these numbers
+up to 15 minutes before calling one stuck. A2's table, taken from Notch
+Pay's testing page, has no Orange failure number, so B3b cannot test
+Orange's failure path.
 
 ### What to paste back from Part B
 

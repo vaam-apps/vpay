@@ -52,10 +52,15 @@ and reasonably conclude the flow is unfinished.
 `vpay-server staff add` sets `password_change_required`, and ADR-0017 decision
 1 refuses **every** authenticated route to a session carrying it,
 `/oauth/authorize` included. So no `/dash/v1` token can exist until it is done,
-and this page is the only one such a session can reach. There is no
+and this page is the only one such a session can reach. ~~There is no
 "current password" field: the session has already presented both factors, and
 re-checking a password this endpoint then overwrites would be a second copy of
-that check in the wrong layer.
+that check in the wrong layer.~~ _(Struck 2026-10-22: wrong since 2026-09-10
+(`e9e9a845`, "a password change that means something"). The page asks for the
+current password, and vpay itself refuses a change without it, answering an
+absent one with the same `401` as a wrong one; `changePassword` in
+`src/server/actions.ts` refuses an empty one before sending, only to say which
+field is empty.)_
 
 ## Single sign-on (OIDC) — the browser-facing half
 
@@ -159,7 +164,16 @@ decision, not this code's** — it is RD5 in
 §8, and it reverses a stated property of the app's security model. ~~Deleting the
 two files under `app/api/` and `src/server/bff.ts` breaks nothing else.~~
 _(Struck 2026-09-23: since 2026-09-12 it would break the payments screens'
-paging and refetches, per the correction above.)_
+paging and refetches, per the correction above.)_ _(Narrowed 2026-10-22: that
+held from 2026-09-12 until 2026-10-21. Since
+[#318](https://github.com/vaam-apps/vpay/pull/318), `DashProviders`
+(`src/dash/providers.tsx`, where the data provider is configured now, rendered
+by the layout) keeps a server-seeded query with `staleTime: Infinity` and
+`gcTime: 0`, so the browser does not re-read it, and the next page of payments
+is one server read where it was two, the server's and `/api/dash`'s. A
+twelve-step click-through made no BFF request
+([2026-10-21-dashboard-md3e.md](../../../docs/status/verification/2026-10-21-dashboard-md3e.md)).
+In that run neither payments screen read through it.)_
 
 What they do about it, each written as a mutation in `src/server/bff.test.ts`:
 
@@ -536,7 +550,10 @@ other case stays green.
   payment detail.)_ _(Narrowed later the same day: "the screens read through
   the BFF" overstated it. Only the payments list and the payment detail do,
   and only for reads after their first render. See "The BFF, which is a new
-  browser-reachable surface" above.)_ ~~They are exercised by `src/server/bff.test.ts` and by no browser
+  browser-reachable surface" above.)_ _(Narrowed again 2026-10-22: not
+  since 2026-10-21, when [#318](https://github.com/vaam-apps/vpay/pull/318)
+  stopped the browser re-reading a server-seeded query; see the same
+  section.)_ ~~They are exercised by `src/server/bff.test.ts` and by no browser
   and no Cypress spec … that a real browser's `Sec-Fetch-Site` and cookie
   arrive as this code expects them to is not proven here.~~ **They are
   exercised by a browser since 2026-09-11 (exp56):** five cases in

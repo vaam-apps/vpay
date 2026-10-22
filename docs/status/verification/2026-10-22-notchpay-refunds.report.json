@@ -1,0 +1,408 @@
+{
+  "runs": [
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792645850,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "read-only first call; 15",
+          "method": "GET",
+          "path": "/payments/vpay-probe-a397882c-6452-4b43-a3bd-82ea6ec183a7",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792645850,
+          "item": "read-only first call",
+          "outcome": {
+            "answer": "refused",
+            "http_status": 404,
+            "message": "Payment Not Found"
+          },
+          "reference": "vpay-probe-a397882c-6452-4b43-a3bd-82ea6ec183a7",
+          "via": "vpay_notchpay::Client::retrieve_payment"
+        },
+        {
+          "at": 1792645850,
+          "body": {
+            "code": 200,
+            "current_page": 1,
+            "endpoints": [],
+            "last_page": 1,
+            "message": "Webhook endpoints retrieved",
+            "selected": 0,
+            "status": "OK",
+            "totals": 0
+          },
+          "decoded_by_vpay": true,
+          "item": "16; 15",
+          "method": "GET",
+          "path": "/webhooks?page=1",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": [
+            "code",
+            "current_page",
+            "endpoints",
+            "last_page",
+            "message",
+            "selected",
+            "status",
+            "totals"
+          ]
+        },
+        {
+          "at": 1792645850,
+          "item": "mode",
+          "note": "no field naming test, sandbox or live mode in these answers; check the dashboard says Test mode before `payments`"
+        }
+      ],
+      "phase": "read",
+      "started_unix": 1792645850
+    },
+    {
+      "base_url": "https://api.notchpay.co",
+      "channel": "cm.mobile",
+      "error": null,
+      "exchanges": [
+        {
+          "at": 1792645855,
+          "body": {
+            "authorization_url": "<omitted: a test-mode hosted-page URL>",
+            "code": 201,
+            "message": "Payment initialized",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 200,
+              "amounts": {
+                "converted": 200,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 200
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-22T05:10:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+              "fees": [],
+              "merchant_reference": "e14841b8-0e30-44a8-9ebc-2931925720f9",
+              "reference": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+              "sandbox": true,
+              "status": "pending",
+              "trxref": "e14841b8-0e30-44a8-9ebc-2931925720f9"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "6: the payment to refund",
+          "method": "POST",
+          "path": "/payments",
+          "request_body": {
+            "amount": 200,
+            "currency": "XAF",
+            "description": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+            "phone": "+237670000000",
+            "reference": "e14841b8-0e30-44a8-9ebc-2931925720f9"
+          },
+          "status": 201,
+          "top_level_fields": [
+            "authorization_url",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792645856,
+          "body": {
+            "action": "confirm",
+            "code": 202,
+            "message": "Payment is being processed",
+            "status": "Accepted",
+            "transaction": {
+              "amount": 200,
+              "amounts": {
+                "converted": 200,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 200
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-22T05:10:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+              "fees": [],
+              "merchant_reference": "e14841b8-0e30-44a8-9ebc-2931925720f9",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "e14841b8-0e30-44a8-9ebc-2931925720f9"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "6: the payment to refund",
+          "method": "POST",
+          "path": "/payments/trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+          "request_body": {
+            "channel": "cm.mobile",
+            "data": {
+              "phone": "+237670000000"
+            }
+          },
+          "status": 202,
+          "top_level_fields": [
+            "action",
+            "code",
+            "message",
+            "status",
+            "transaction"
+          ]
+        },
+        {
+          "at": 1792645856,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 200,
+              "amounts": {
+                "converted": 200,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 200
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-22T05:10:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+              "fees": [],
+              "merchant_reference": "e14841b8-0e30-44a8-9ebc-2931925720f9",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+              "sandbox": 1,
+              "status": "processing",
+              "trxref": "e14841b8-0e30-44a8-9ebc-2931925720f9"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "6: the payment to refund",
+          "method": "GET",
+          "path": "/payments/trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792645856,
+          "item": "6: the payment to refund",
+          "note": "status now Some(\"processing\")"
+        },
+        {
+          "at": 1792645861,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 200,
+              "amounts": {
+                "converted": 200,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 200
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-22T05:10:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+              "fees": [],
+              "merchant_reference": "e14841b8-0e30-44a8-9ebc-2931925720f9",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+              "sandbox": 1,
+              "status": "complete",
+              "trxref": "e14841b8-0e30-44a8-9ebc-2931925720f9"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "6: the payment to refund",
+          "method": "GET",
+          "path": "/payments/trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        },
+        {
+          "at": 1792645861,
+          "item": "6: the payment to refund",
+          "note": "status now Some(\"complete\")"
+        },
+        {
+          "at": 1792645861,
+          "body": {
+            "code": "403",
+            "status": "Forbidden"
+          },
+          "decoded_by_vpay": null,
+          "item": "6, 12: the first refund",
+          "method": "POST",
+          "path": "/refunds",
+          "request_body": {
+            "amount": 50,
+            "metadata": {
+              "vpay_refund": "6282e83f-bcc7-4127-ac98-c1718752263a"
+            },
+            "payment": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+            "reason": "vpay sandbox probe (RFC-0012 § 10 item 6)"
+          },
+          "status": 403,
+          "top_level_fields": ["code", "status"]
+        },
+        {
+          "at": 1792645861,
+          "body": {
+            "code": "403",
+            "status": "Forbidden"
+          },
+          "decoded_by_vpay": null,
+          "item": "6: the identical request again (a replay)",
+          "method": "POST",
+          "path": "/refunds",
+          "request_body": {
+            "amount": 50,
+            "metadata": {
+              "vpay_refund": "6282e83f-bcc7-4127-ac98-c1718752263a"
+            },
+            "payment": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+            "reason": "vpay sandbox probe (RFC-0012 § 10 item 6)"
+          },
+          "status": 403,
+          "top_level_fields": ["code", "status"]
+        },
+        {
+          "at": 1792645861,
+          "body": {
+            "code": "403",
+            "status": "Forbidden"
+          },
+          "decoded_by_vpay": null,
+          "item": "6: with a `reference` of ours (undocumented)",
+          "method": "POST",
+          "path": "/refunds",
+          "request_body": {
+            "amount": 50,
+            "metadata": {
+              "vpay_refund": "vpay-refund-b450bd4f-d95c-41d1-8cdc-da7c213d5e3e"
+            },
+            "payment": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+            "reason": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+            "reference": "vpay-refund-b450bd4f-d95c-41d1-8cdc-da7c213d5e3e"
+          },
+          "status": 403,
+          "top_level_fields": ["code", "status"]
+        },
+        {
+          "at": 1792645861,
+          "body": {
+            "code": "403",
+            "status": "Forbidden"
+          },
+          "decoded_by_vpay": null,
+          "item": "6: the same `reference` again",
+          "method": "POST",
+          "path": "/refunds",
+          "request_body": {
+            "amount": 50,
+            "metadata": {
+              "vpay_refund": "vpay-refund-b450bd4f-d95c-41d1-8cdc-da7c213d5e3e"
+            },
+            "payment": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+            "reason": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+            "reference": "vpay-refund-b450bd4f-d95c-41d1-8cdc-da7c213d5e3e"
+          },
+          "status": 403,
+          "top_level_fields": ["code", "status"]
+        },
+        {
+          "at": 1792645861,
+          "item": "6",
+          "note": "0 distinct refund id(s) in the four answers; reading back in 15 s"
+        },
+        {
+          "at": 1792645876,
+          "body": {
+            "code": "404",
+            "message": "Payment Not Found",
+            "status": "Not Found"
+          },
+          "decoded_by_vpay": null,
+          "item": "6: the payment's refunds",
+          "method": "GET",
+          "path": "/payments/trx.test_Z32gAVoIsFnQKrDl0xDcFA1J/refunds",
+          "request_body": null,
+          "status": 404,
+          "top_level_fields": ["code", "message", "status"]
+        },
+        {
+          "at": 1792645876,
+          "body": {
+            "code": 200,
+            "message": "Transaction retrieved",
+            "status": "OK",
+            "transaction": {
+              "amount": 200,
+              "amounts": {
+                "converted": 200,
+                "currency": "XAF",
+                "rate": 1,
+                "total": 200
+              },
+              "callback": null,
+              "charge": "business",
+              "created_at": "2026-10-22T05:10:55.000000Z",
+              "currency": "XAF",
+              "customer": "cus.test_Ph6xD6j0XGHRRTbp",
+              "description": "vpay sandbox probe (RFC-0012 § 10 item 6)",
+              "fees": [],
+              "merchant_reference": "e14841b8-0e30-44a8-9ebc-2931925720f9",
+              "payment_method": "pm.test_DkA37f7vq7SouqFH",
+              "reference": "trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+              "sandbox": 1,
+              "status": "complete",
+              "trxref": "e14841b8-0e30-44a8-9ebc-2931925720f9"
+            }
+          },
+          "decoded_by_vpay": true,
+          "item": "6: the payment after its refunds",
+          "method": "GET",
+          "path": "/payments/trx.test_Z32gAVoIsFnQKrDl0xDcFA1J",
+          "request_body": null,
+          "status": 200,
+          "top_level_fields": ["code", "message", "status", "transaction"]
+        }
+      ],
+      "phase": "refunds",
+      "started_unix": 1792645855
+    }
+  ],
+  "tool": "vpay-notchpay sandbox_probe"
+}

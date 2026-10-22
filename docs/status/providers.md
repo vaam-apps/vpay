@@ -110,8 +110,10 @@ Notes on cells that a word cannot carry:
   read cells therefore say "proven; sandbox 2026-10-21", for MTN's outcome
   numbers on `cm.mobile`. That does not cover Orange through vpay
   (step 1's probe ran it; step 5 did not), a webhook (none was received), a
-  refund (`notchpay::refund` is still a token), a live key or Notch Pay's
-  production. The short collection's escalation to `unresolved` at the 24 h
+  refund (`notchpay::refund` is still a token, and on 2026-10-22 the sandbox
+  answered `403` to every `POST /refunds` the probe sent:
+  [verification/2026-10-22-notchpay-refunds.md](verification/2026-10-22-notchpay-refunds.md)),
+  a live key or Notch Pay's production. The short collection's escalation to `unresolved` at the 24 h
   horizon is read from the code and was not observed.
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the evidence for the build. _(This note read "client … no binary links

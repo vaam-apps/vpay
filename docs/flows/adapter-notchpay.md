@@ -40,8 +40,12 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
 - The webhook endpoint `{public_base_url}/provider/notchpay/callback`
   registered by hand in Notch Pay's dashboard (Settings › Webhooks) for the
   five payment events, until [RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)
-  registers it. Optional for correctness: the poll ladder settles every
-  charge without callbacks.
+  registers it. Optional for correctness: the poll ladder reads every
+  charge without callbacks. _(This said "settles every charge" until
+  2026-10-22. A charge whose reads the adapter refuses is never settled by
+  them: step 5's short collection was still `pending` after fifteen minutes
+  ([verification](../status/verification/2026-10-21-notchpay-step5.md)), and by
+  the code, not observed, it becomes `unresolved` at the 24-hour horizon.)_
 
 ## Admission: ADR-0031, not rule 3 as written
 
@@ -279,6 +283,13 @@ specification and carries no reference that would make a replay safe, so a
 lost answer re-sent would pay twice. It becomes a call when Notch Pay
 confirms a replay-safe refund in writing (§ 10 item 6).
 
+On 2026-10-22 the probe asked the sandbox. `GET /refunds` answered `200` with
+an empty list. `POST /refunds` answered `403` "Forbidden", with no message,
+to all four requests against a `complete` payment, and refunded nothing
+([verification](../status/verification/2026-10-22-notchpay-refunds.md)).
+Whether that is an IP allowlist (§ 10 item 12) or refunds not being enabled
+for the account is not known, and replay safety is still unmeasured.
+
 ## To confirm with Notch Pay
 
 RFC-0012 § 10 is the full list, twenty-one since 2026-10-21. The sandbox
@@ -307,6 +318,8 @@ each is marked below. The ones that decide whether the adapter is right:
    `provider_error`, and `…000001` was refused as `Malformed` on every read
    after the first. `…000003` and `…000004` were not run through vpay.
 6. **(W, S)** Is `POST /refunds` real, and how is it made safe to replay?
+   **Not answered 2026-10-22:** the sandbox answered `403` to every
+   `POST /refunds`, so nothing was refunded and no replay was measured.
 7. **(S)** Is the webhook signature over the raw body? **Not measured:** no
    public URL to receive one.
 8. **(W)** What prefix does a live key carry?
@@ -379,15 +392,22 @@ ran.)_
     (`trx.test_…`) after submit, and every read by it was answered. vpay sent
     3 submits and 16 reads. The ADR-0031 `WARN` was logged at boot by the
     server and the worker. No key appeared in either log.
-- **Two observations from step 5, neither an adapter defect, and no change
-  made:** the `provider_requests` rows for the 11 refused reads record "no
-  answer" (`status_code` and `responded_at` empty) although Notch Pay
-  answered each one, because the worker records every `ProviderError`
-  that way; and the adapter's "needs an operator" message wakes nobody for
-  24 h, because the worker retries a `Malformed` on the ladder with a `WARN`
-  until the horizon (read from the code, not observed past 15 minutes). Both
-  belong to the worker and the database, and the second is a design question
-  for the maintainer.
+- **Two observations from step 5, neither an adapter defect.** The first is
+  fixed. In step 5 the `provider_requests` rows for the 11 refused reads
+  recorded "no answer" (`status_code` and `responded_at` empty) although
+  Notch Pay answered each one, because the worker recorded every
+  `ProviderError` that way. Since
+  [#314](https://github.com/vaam-apps/vpay/pull/314) (`6d9dfbf`, 2026-10-21) a
+  refused status read is recorded as answered, `status_code` 0 with its
+  `error_kind`; a refused submit still stays unresolved
+  ([verification](../status/verification/2026-10-21-provider-requests-refused-answers.md)).
+  The second is unchanged: the adapter's "needs an operator" message wakes
+  nobody for 24 h, because the worker retries a `Malformed` on the ladder with
+  a `WARN` until the horizon (read from the code, not observed past 15
+  minutes). It belongs to the worker, and it is a design question for the
+  maintainer. _(This bullet was headed "neither an adapter defect, and no
+  change made", and described the first observation in the present tense,
+  until 2026-10-22; #314 had already changed it.)_
 - **Step 1 done 2026-10-21** from a cloud session, with the probe's
   cloud-only `--ca-bundle`, on the maintainer's approval in that session:
   items 3, 4, 5 and 15 answered; 2, 13 and 16 contradicted; 7 and 11 not
@@ -422,8 +442,10 @@ ran.)_
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md)) is not built; Notch
   Pay's production was never called and no live key was used, so item 8 (a
   live key's prefix) stays a written question; no refund
-  (`notchpay::refund` is still a token); Orange (`+23769…`) was not run
-  through vpay, and step 1's probe is its only run; the 24 h escalation of the
+  (`notchpay::refund` is still a token; the sandbox answered `403` to the
+  probe's `POST /refunds` on 2026-10-22); Orange (`+23769…`), timeout
+  (`…000003`) and canceled (`…000004`) were not run through vpay, and step
+  1's probe is their only run (runbook B3b is written for them); the 24 h escalation of the
   short collection to `unresolved` was not observed, because the stack was
   torn down at 15 minutes; and the `amounts.total` value Notch Pay returned
   for `…000001` was not captured (vpay logs no response body, and no extra
