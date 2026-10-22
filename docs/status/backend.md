@@ -745,6 +745,18 @@ rail put the money.
 provider account per merchant, recorded on every charge. Until it is built,
 run one deployment per merchant.
 
+_2026-10-22: the maintainer decided that the merchants served for now are
+projects of one company. RFC-0009's revision treats that case as the company
+being a merchant: one account per rail, holding the company's own money, is
+not aggregation. Its phase A (`deployment.legal_entity`, a `legal_entity` on
+each merchant, a boot refusal for a second company, and
+`charges.provider_account_id`) is **not built**. Until it is, nothing in code
+checks that every `merchant_id` on a deployment is the same company, and
+counsel has not been asked. So the rule is now one deployment per legal
+entity, not per merchant: several projects of one company may share one, and
+a merchant that is another company, a subsidiary included, still needs its
+own deployment._
+
 ## A refund names the payment it unwinds, and the `Origin` arm has an integration guard (2026-10-17, RFC-0010 § 7, step 1)
 
 **No rail changed, no shipping rail declares `Origin`, and no rail has
