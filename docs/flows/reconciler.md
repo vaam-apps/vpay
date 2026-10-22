@@ -85,7 +85,8 @@ because the bound was met. Amended 2026-09-23: every job is scheduled on the
 database's clock (ADR-0026, the bullet after the claim latency's). Corrected
 2026-10-21, with nothing in the loop changed: § "Callbacks are hints" no longer
 says a rail retries a callback that is not answered with a 2xx, because MTN
-documents that it does not.**
+documents that it does not. Corrected 2026-10-22, with nothing changed either:
+the `scan:live` backstop runs every ten minutes, not hourly.**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at
@@ -117,9 +118,12 @@ unbuilt is named at the end. The callback endpoint left that list on 2026-09-04
   (`vpay_api::v1::payment_intents`'s confirm path calls
   `vpay_db::TxRepositories::enqueue_in_tx` inside the charge insert's transaction), so
   every kill point in [crash-safety.md](crash-safety.md) leaves work behind.
-  The hourly `scan:live` job is a **backstop only** — it re-enqueues a live
+  The `scan:live` job, every ten minutes (`SCAN_INTERVAL` in
+  `vpay_worker::handlers`), is a **backstop only** — it re-enqueues a live
   charge nothing has touched for ten minutes, and in a healthy deployment it
-  finds nothing.
+  finds nothing. _(This said "the hourly `scan:live` job" until 2026-10-22.
+  The interval has been ten minutes since the job was written, in Step 4
+  (2026-09-03); RFC-0013 § 11, item 4.)_
 - **The ladder above, wired.** `vpay_worker::poll_delay(attempt)` is indexed by
   `jobs.attempts - 1` (the claim increments the counter), and a rung is one
   `UPDATE jobs SET run_at = now() + delay`.

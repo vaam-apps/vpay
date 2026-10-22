@@ -731,6 +731,13 @@ impl ProviderAdapter for Adapter {
             supports_refunds: true,
             supports_partial_refunds: true,
             delivers_callbacks: true,
+            // MTN's best practices
+            // (https://momoapi.mtn.com/content/html_widgets/j2w89.html, read
+            // 2026-10-22) list Disbursements / Transfers, which is what
+            // `refund` calls, among the services that require IP
+            // whitelisting. Collections' RequestToPay is not on that list, and
+            // no MTN page read names an allowlisted callback host
+            // (RFC-0013 § 11, item 5).
             requires_ip_allowlist: true,
             // MTN Collections exposes `GET
             // /collection/v1_0/accountholder/{idType}/{msisdn}/basicuserinfo`

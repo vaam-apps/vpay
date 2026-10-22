@@ -820,11 +820,13 @@ The number itself is proposed, like every number in this chart. The body cap is
 `16k`, matching the handler's own `CALLBACK_BODY_LIMIT_BYTES` rather than
 `/v1`'s 64k.
 
-**Turning it off is defensible and has to be said out loud.** MTN additionally
-allows an IP-allowlisted callback host of its own
-(`docs/reference/rails.md`), reached through `providers[].callback_url`, so an
-operator may legitimately terminate callbacks somewhere this chart does not
-render. The `provider-callback-routable` guard therefore makes it **opt-out,
+**Turning it off is defensible and has to be said out loud.** A rail can be
+pointed at a callback host of the deployment's choosing through
+`providers[].callback_url` (MTN's must be on the domain registered as the API
+user's `providerCallbackHost`), so an operator may legitimately terminate
+callbacks somewhere this chart does not render. _(This said "MTN additionally
+allows an IP-allowlisted callback host of its own" until 2026-10-22; no MTN
+page read says so — RFC-0013 § 11, item 5.)_ The `provider-callback-routable` guard therefore makes it **opt-out,
 not opt-in**: `enabled: false` needs one line in `servedElsewhere` naming what
 serves the prefix instead — the same mechanism, and the same reasoning, as
 `route.rateLimitedBy`.

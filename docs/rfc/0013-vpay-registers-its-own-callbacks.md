@@ -614,6 +614,16 @@ on `/provider/mtn_momo/callback` **is** measured, as a bare `405`, by
 `a_get_on_the_callback_path_is_a_405_and_not_the_404_envelope` in
 `vpay-api`; a `PUT` is not.)_
 
+_(Updated 2026-10-22: **Delivery step 0 is complete.** Item 4 is corrected in
+[reconciler.md](../flows/reconciler.md) and in the two other pages that said
+"hourly", [crash-safety.md](../flows/crash-safety.md) and the worker-queue
+runbook. Item 5 is corrected in `vpay-config` and in every other place that
+said MTN has, or allows, an IP-allowlisted callback host (the chart, its
+README, `docs/reference/rails.md`, an MTN WireMock mapping); and the MTN
+adapter's `requires_ip_allowlist: true` now says why it may be right, the
+best practices' Disbursements entry. See
+[the verification page](../status/verification/2026-10-22-rfc-0013-step-0-rest.md).)_
+
 1. **"Both rails retry a non-2xx" is contradicted by MTN.** vpay says it in
    three places: `backends/crates/vpay-api/src/provider_callback.rs:81-85` ("A
    rail that gets anything other than a 2xx retries — MTN and Orange both do,

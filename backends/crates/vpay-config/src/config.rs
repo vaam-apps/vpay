@@ -144,11 +144,22 @@ pub struct ProviderHost {
     /// looking perfectly healthy at boot.
     ///
     /// It is overridable because the derived form assumes the rail can reach
-    /// this deployment at its own public base URL, and one real deployment
-    /// shape breaks that: a rail whose callbacks must arrive on a separate
-    /// ingress (an IP-allowlisted host — MTN requires one,
-    /// `Capabilities::requires_ip_allowlist`) has a callback host that is
-    /// genuinely not `public_base_url`.
+    /// this deployment at its own public base URL, and a deployment whose
+    /// callbacks arrive on a separate ingress has a callback host that is
+    /// genuinely not `public_base_url`. MTN's host is also fixed per API
+    /// user: its callback page says the `X-Callback-Url` must be on the domain
+    /// registered when the API user was created, the `providerCallbackHost`
+    /// (`docs/flows/adapter-mtn-momo.md`).
+    ///
+    /// _(This said the separate ingress was "an IP-allowlisted host — MTN
+    /// requires one, `Capabilities::requires_ip_allowlist`" until 2026-10-22.
+    /// No MTN page read says so. The callback page
+    /// (<https://momodeveloper.mtn.com/api-documentation/callback>) names no
+    /// allowlist, and MTN's best practices
+    /// (<https://momoapi.mtn.com/content/html_widgets/j2w89.html>, read
+    /// 2026-10-22) list IP whitelisting for Disbursements, Remittances,
+    /// Collections Pre-Approval and Dynamic Journey Services, not for
+    /// RequestToPay and not for a callback host. RFC-0013 § 11, item 5.)_
     ///
     /// Under `livemode` an override must be `https://` and must not look
     /// like a stub, exactly as a rail host must — see `Config::validate_all`.

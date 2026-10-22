@@ -812,10 +812,11 @@ ingress:
     limitRps: 10
     limitBurstMultiplier: 5
     # `nginx.ingress.kubernetes.io/whitelist-source-range`, rendered only when
-    # set. MTN additionally allows an IP-allowlisted callback host of its own
-    # (`docs/reference/rails.md`), so an operator who has been given the rail's
-    # egress ranges can put them here — and having a separate Ingress object is
-    # what makes that expressible without also allowlisting `/v1`.
+    # set. An operator who has been given a rail's egress ranges can put them
+    # here, and having a separate Ingress object is what makes that
+    # expressible without also allowlisting `/v1`. Until 2026-10-22 this said
+    # "MTN additionally allows an IP-allowlisted callback host of its own";
+    # no MTN page read says so (RFC-0013 § 11, item 5).
     #
     # Empty means no allowlist, which is the honest default: nobody has been
     # given a set of ranges to write down, and inventing one would lock out the
@@ -824,7 +825,7 @@ ingress:
     # Set ONLY when `enabled: false`: one line naming what serves
     # `/provider/{code}/callback` instead — the same mechanism, and the same
     # reasoning, as `route.rateLimitedBy`. Turning the callback off is
-    # defensible (every rail pointed at an IP-allowlisted host of its own via
+    # defensible (every rail pointed at a callback host of its own via
     # `providers[].callback_url`); turning it off in silence is not, because
     # the failure is a rail's 404 and a charge that never settles.
     #

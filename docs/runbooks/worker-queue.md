@@ -114,8 +114,10 @@ worker has since picked up.
   and the second `last_error` overwrites the first.
 - Do not `DELETE` a parked `poll_charge` row to "clean up". The row is the only
   record that a live charge stopped being driven; deleting it makes the charge
-  invisible until the hourly backstop scan (`scan:live`) notices it, and only
-  if the charge is more than ten minutes stale.
+  invisible until the backstop scan (`scan:live`, every ten minutes) notices
+  it, and only if the charge is more than ten minutes stale. _(This said "the
+  hourly backstop scan" until 2026-10-22; it has run every ten minutes since
+  Step 4.)_
 
 ## Stranded leases
 

@@ -37,10 +37,10 @@ metadata:
     nginx.ingress.kubernetes.io/proxy-body-size: 16k
     nginx.ingress.kubernetes.io/ssl-redirect: {{ .Values.ingress.tls.enabled | quote }}
     {{- with .Values.ingress.provider.sourceRange }}
-    # Rendered only when set. MTN additionally allows an IP-allowlisted
-    # callback host of its own (`docs/reference/rails.md`); an operator who
-    # has the rail's egress ranges can pin them here without also
-    # allowlisting `/v1`, which is what the separate object buys.
+    # Rendered only when set. An operator who has a rail's egress ranges can
+    # pin them here without also allowlisting `/v1`, which is what the
+    # separate object buys. (Until 2026-10-22 this cited an MTN
+    # IP-allowlisted callback host; no MTN page read says MTN has one.)
     nginx.ingress.kubernetes.io/whitelist-source-range: {{ . | quote }}
     {{- end }}
     {{- if and .Values.ingress.tls.enabled .Values.ingress.tls.clusterIssuer }}
