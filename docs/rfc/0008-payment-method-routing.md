@@ -164,11 +164,12 @@ they are accepted.
   estimated fee the next component of the score, so fees are a component, not
   the sort key. Nothing about fees is built: no schedule is configured or
   parsed (R2).
-- **D11's clarification is settled for health only.** R8.3's answer is that
-  health never moves traffic automatically. Whether a _measured_ component
-  that R8.1 does choose, the completion rate, may move traffic for later
-  checkouts is **not** settled: see R8.1's note below. D11's own text, one
-  charge per intent and no automatic cascading, is unchanged.
+- **D11's clarification is settled.** R8.3's answer is that health never
+  moves traffic automatically, and the answer to R8.1's note extends that to
+  the completion rate: it is reported, and an operator turns it into a
+  configured weight by hand (option (a), 2026-10-23). No measured quantity
+  moves traffic on its own. D11's own text, one charge per intent and no
+  automatic cascading, is unchanged.
 
 - **D8.** Fees stay the merchant's contract and stay configuration. They
   become **one component** of the score, not the sort key. "Sorts last" for a
@@ -206,13 +207,17 @@ is built follow the question it answers. The questions are kept as asked.
      rate over a window (R4's smoothing applies).
    - **Built:** neither. The score has the configured weight only, and the
      formula is still named `provisional-1`.
-   - **Not settled:** the completion rate is a measured component, so
-     putting it in the score moves later checkouts away from a rail whose
-     payers stop finishing, without anyone deciding it. That is the
-     automatic movement R8.3 rules out for health. Whether the same rule
-     covers the completion rate (for instance a coefficient of zero by
-     default, so it only reports) is to be put to the maintainer before it
-     is built.
+   - **Settled 2026-10-23: the completion rate is not an automatic score
+     component.** Put in the score, it would move later checkouts away from
+     a rail whose payers stop finishing, without anyone deciding it, which
+     is the automatic movement R8.3 rules out for health. Asked to choose
+     between "(a) completion rate counts as a configured weight that an
+     operator adjusts by hand from the dashboard numbers" and "(b) an
+     automatic score component, an exception to R8.3", the maintainer
+     answered "Go with (a)". So the completion rate is **reported**, per
+     rail and method type, and an operator reads it to set `routing.weights`
+     by hand. The estimated fee stays a score component: it is
+     configuration, not a measurement.
 2. **Who sets the weights and coefficients?** The operator for the
    deployment, the merchant for their own payments (needs RFC-0009), or
    both, with the merchant's overriding?
@@ -268,13 +273,13 @@ when both rails of a type are configured. It was put to the maintainer as
 
 ### R9. Delivery of this revision
 
-| Step | Contents                                                                                                                                                                                                                                                       | Depends on                                               |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
-| R-a  | Method types, `Capabilities::method_types`, the hard filter, the scored ranking with `provisional-1` (configured weight), `routing_decisions` with breakdowns, `charges.method_type`, the confirm pin, Notch Pay's channel from the type. **Built 2026-10-23** | nothing                                                  |
-| R-b  | The checkout renders method types (D13 `collapse`)                                                                                                                                                                                                             | R-a                                                      |
-| R-c  | The components the maintainer chose (R8.1, answered 2026-10-23): the estimated fee, then the completion rate, each with its source, coefficient and breakdown entry, and the formula renamed past `provisional-1`. Not built                                   | fee schedules; for the completion rate, R8.1's open note |
-| R-d  | Per-merchant weights                                                                                                                                                                                                                                           | RFC-0009 phase B                                         |
-| R-e  | The confirm follows the rail the page rendered while it is still eligible (R8.4, answered 2026-10-23). Not built                                                                                                                                               | R-b                                                      |
+| Step | Contents                                                                                                                                                                                                                                                                                                                                            | Depends on       |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| R-a  | Method types, `Capabilities::method_types`, the hard filter, the scored ranking with `provisional-1` (configured weight), `routing_decisions` with breakdowns, `charges.method_type`, the confirm pin, Notch Pay's channel from the type. **Built 2026-10-23**                                                                                      | nothing          |
+| R-b  | The checkout renders method types (D13 `collapse`)                                                                                                                                                                                                                                                                                                  | R-a              |
+| R-c  | R8.1, answered 2026-10-23: the estimated fee as a score component, with its source, coefficient and breakdown entry, and the formula renamed past `provisional-1`; then the completion rate as a **reported** measure per rail and method type that an operator reads to set `routing.weights` by hand (option (a)), never a score input. Not built | fee schedules    |
+| R-d  | Per-merchant weights                                                                                                                                                                                                                                                                                                                                | RFC-0009 phase B |
+| R-e  | The confirm follows the rail the page rendered while it is still eligible (R8.4, answered 2026-10-23). Not built                                                                                                                                                                                                                                    | R-b              |
 
 ## Problem
 

@@ -42,7 +42,9 @@ stubs and a real Postgres. Nothing was sent to any payment provider.**
 answered R8 with "go with your defaults" and, on the score, "first go with
 your defaults. Just document everything". The answers:
 
-- **R8.1:** the estimated fee next, then the completion rate.
+- **R8.1:** the estimated fee next, then the completion rate. The completion
+  rate is reported and set by hand as a configured weight, never an automatic
+  score component ("Go with (a)", asked after the first answers).
 - **R8.2:** the operator sets weights until RFC-0009.
 - **R8.3:** health reports and never moves traffic.
 - **R8.4:** the confirm follows the rail the page showed while it is

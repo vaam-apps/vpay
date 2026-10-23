@@ -135,8 +135,10 @@ Each is a component with its own source, its own coefficient and its own line
 in the breakdown. The formula name moves past `provisional-1` when the first
 one lands.
 
-**Chosen 2026-10-23 (RFC-0008 § R8.1):** the estimated fee next, then the
-completion rate. Health is not a component (R8.3: it reports only), and
+**Chosen 2026-10-23 (RFC-0008 § R8.1):** the estimated fee next, as a score
+component; then the completion rate, as a reported measure the operator reads
+to set a configured weight by hand, not a score input ("Go with (a)"). Health
+is not a component (R8.3: it reports only), and
 latency and amount fit were not chosen. The merchant-level preference waits on
 RFC-0009 (R8.2: the operator sets weights until then). None of this is
 built.

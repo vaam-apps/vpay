@@ -387,9 +387,11 @@ routing:
 The most specific entry wins: a rail **and** a type, then the rail alone,
 then `100`. The weight is the only component of the score today, so **it is
 provisional**. The maintainer chose the next components on 2026-10-23
-(RFC-0008 § R8.1): the estimated fee, then the completion rate, neither
-built. When they land, this block keeps its meaning (one component among
-several) and the formula's name moves past `provisional-1`. The block stays
+(RFC-0008 § R8.1): the estimated fee as a score component, then the
+completion rate, which is reported for the operator to turn into a weight
+here by hand, never scored automatically. Neither is built. When the fee
+lands, this block keeps its meaning (one component among several) and the
+formula's name moves past `provisional-1`. The block stays
 the operator's: per-merchant weights wait on RFC-0009 (§ R8.2). A weight is not a
 switch: `0` ranks a rail last, never off; `enabled: false` is how a rail is
 taken out.

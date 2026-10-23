@@ -1180,7 +1180,8 @@ maintainer the questions that decide it.
 - **Not done:** the checkout page rendering types (slice 2), the SDKs'
   confirm by type (a dated parity gap), any score component but the weight
   (slice 3: the maintainer answered R8 on 2026-10-23, the fee next and then
-  the completion rate; not built), the confirm following the page's rail
+  the completion rate, reported for the operator to weigh by hand rather
+  than scored; not built), the confirm following the page's rail
   (R8.4, answered, not built), `cm.mtn`/`cm.orange` against
   Notch Pay's real sandbox, and a merchant-readable decision on `/v1`.
 

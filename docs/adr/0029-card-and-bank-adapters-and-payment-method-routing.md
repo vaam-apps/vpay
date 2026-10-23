@@ -64,8 +64,10 @@
     - **D9:** "score descending, then rail code" is the order, as built.
     - **D8:** fees become one component of the score, not the sort key. No
       fee schedule exists yet.
-    - **D11:** health moves no traffic. Whether the completion rate may is
-      not settled ([RFC-0008](../rfc/0008-payment-method-routing.md) § R8.1).
+    - **D11:** health moves no traffic, and neither does the completion
+      rate: it is reported, and the operator sets a configured weight from
+      it by hand ("Go with (a)", 2026-10-23;
+      [RFC-0008](../rfc/0008-payment-method-routing.md) § R8.1).
     - D14–D16 are still unconfirmed. The body below is unchanged; RFC-0008
       § R7 and § R8 carry the detail.
 - **Implementation:** none. This ADR records decisions, not capability.
