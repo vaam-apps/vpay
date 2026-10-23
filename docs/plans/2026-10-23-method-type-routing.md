@@ -74,7 +74,7 @@ silently ignored.
      one candidate.
    - The payer's fields go under the type,
      `payment_method_data[mtn_wallet][msisdn]`.
-5. **Persistence, migration `0052`.**
+5. **Persistence, migration `0053`.**
    - `charges.method_type`, set on every routed charge, and on a rail-code
      charge whose rail serves exactly one type.
    - `routing_decisions`, one row per routed charge, written in the

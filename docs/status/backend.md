@@ -1167,7 +1167,7 @@ maintainer the questions that decide it.
 - **The API:** `payment_method_types` takes types beside rail codes (a rail
   code keeps meaning that rail, pinned); a confirm by type is routed, and
   `payment_method_options[<type>][rail]` pins. The decision is committed with
-  the charge in `routing_decisions` (migration `0052`) and is on no `/v1`
+  the charge in `routing_decisions` (migration `0053`) and is on no `/v1`
   object. The checkout session's browser answer renders a type as one entry
   flowing as the first-ranked rail.
 - **Proven:** unit tests on the router (exhaustive over small inputs, in

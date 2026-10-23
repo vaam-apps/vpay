@@ -99,7 +99,14 @@ Measured, 2026-09-16.)_
 
 ## Migrations
 
-**52 as of 2026-10-23.** `0052_method-types-and-routing-decisions.sql`
+**53 as of 2026-10-23.** Two arrived that day.
+`0052_provider-requests-prepare.sql`
+([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md))
+reopens `provider_requests.operation_is_known` for `prepare`, a two-step
+rail's first call, recorded under its own operation so that the absence of a
+`submit` row stays proof that no payer was prompted
+([its verification page](verification/2026-10-23-two-step-submit.md)).
+`0053_method-types-and-routing-decisions.sql`
 (ADR-0029 D6 and D10, RFC-0008 as revised on 2026-10-23) adds
 `charges.method_type` (nullable `TEXT`, CHECK `method_type_is_known`, no
 backfill: a `NULL` is the truth about a charge whose network vpay never
@@ -109,7 +116,7 @@ rail (a foreign key to `providers`), any pinned rail, every rail considered as
 a `jsonb` array with its score breakdown or exclusion reason, the formula's
 name and a 16-hex-digit configuration version, each held by a CHECK. Its drift
 cost was measured: [status/cratestack.md](cratestack.md) § 2026-10-23.
-`postgres_smoke.rs` records 52 applied. `0051_jobs-ensure-callbacks.sql`
+`postgres_smoke.rs` records 53 applied. `0051_jobs-ensure-callbacks.sql`
 (RFC-0013) is recorded on
 [its verification page](verification/2026-10-22-rfc-0013-callback-registration.md),
 not here; this line is the first to count it. See

@@ -139,10 +139,10 @@ pub struct ChargeRow {
     pub failure_code: Option<String>,
     /// The rail's own words for that failure, kept so nothing is dropped.
     pub failure_raw: Option<String>,
-    /// The payment-method type the payer chose (migration `0052`,
+    /// The payment-method type the payer chose (migration `0053`,
     /// ADR-0029 D6): `mtn_wallet`, `orange_wallet`, or `None` for a
     /// rail-code charge on a rail serving several types and for every charge
-    /// before `0052`. Parsed by `vpay_core::routing::MethodType::from_wire`.
+    /// before `0053`. Parsed by `vpay_core::routing::MethodType::from_wire`.
     pub method_type: Option<String>,
     /// When the charge row was written — which is before the rail was
     /// called, by construction.

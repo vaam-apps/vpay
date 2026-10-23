@@ -30,7 +30,7 @@ ALTER TABLE charges ADD CONSTRAINT method_type_is_known
     CHECK (method_type IS NULL OR method_type IN ('mtn_wallet', 'orange_wallet'));
 
 COMMENT ON COLUMN charges.method_type IS
-    'The payment-method type the payer chose (vpay_core::routing::MethodType: mtn_wallet, orange_wallet). Set on a routed charge and on a rail-code charge whose rail serves one type; NULL on a rail-code charge on a rail serving several, and on charges before migration 0052. Carried to the adapter as ChargeRef::method_type (notchpay sends cm.mtn or cm.orange from it).';
+    'The payment-method type the payer chose (vpay_core::routing::MethodType: mtn_wallet, orange_wallet). Set on a routed charge and on a rail-code charge whose rail serves one type; NULL on a rail-code charge on a rail serving several, and on charges before migration 0053. Carried to the adapter as ChargeRef::method_type (notchpay sends cm.mtn or cm.orange from it).';
 
 CREATE TABLE routing_decisions (
     -- One decision per charge. Cascades with its charge: the row explains

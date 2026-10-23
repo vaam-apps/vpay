@@ -64,7 +64,7 @@ rather than trusting this list to be exhaustive.
   ADR-0029 D6/D10 and RFC-0008's 2026-10-23 revision, slice 1: `mtn_wallet`
   and `orange_wallet` beside rail codes, a router that scores and explains
   every rail (formula `provisional-1`, a configured weight), the confirm pin,
-  `routing_decisions` (migration `0052`) and Notch Pay's channel per charge.
+  `routing_decisions` (migration `0053`) and Notch Pay's channel per charge.
   Proven against WireMock and a real Postgres, each guard mutation-checked;
   nothing sent to a provider.
 - [verification/2026-10-23-two-step-submit.md](verification/2026-10-23-two-step-submit.md) —

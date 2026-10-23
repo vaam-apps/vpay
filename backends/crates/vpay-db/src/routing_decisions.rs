@@ -1,4 +1,4 @@
-//! The `routing_decisions` repository (`backends/migrations/0052_method-types-and-routing-decisions.sql`).
+//! The `routing_decisions` repository (`backends/migrations/0053_method-types-and-routing-decisions.sql`).
 //!
 //! ADR-0029 D10: the router's decision for one routed charge, written by
 //! [`crate::TxRepositories::insert_routing_decision`] **inside the transaction

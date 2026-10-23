@@ -2263,7 +2263,7 @@ fn charge_ref(job: &vpay_db::JobRow, charge: &ChargeRow) -> Result<ChargeRef, Jo
         // The payer's network, as the confirm recorded it, so a resubmit
         // prompts on the same channel as the first submit (notchpay's
         // `cm.mtn`/`cm.orange`). A spelling this binary does not know is
-        // `None`, never a guess: migration 0052's CHECK is what keeps one out.
+        // `None`, never a guess: migration 0053's CHECK is what keeps one out.
         method_type: charge
             .method_type
             .as_deref()

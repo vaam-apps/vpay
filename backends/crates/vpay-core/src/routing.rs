@@ -35,7 +35,7 @@ use sha2::{Digest, Sha256};
 /// maintainer confirmed one type per network on 2026-10-23 ("he himself
 /// should choose orange or mtn"), and these two spellings the same day.
 ///
-/// Changing one means this table, migration `0052`'s CHECKs on
+/// Changing one means this table, migration `0053`'s CHECKs on
 /// `charges.method_type` and `routing_decisions.method_type`, and the
 /// documented values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

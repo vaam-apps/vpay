@@ -554,7 +554,7 @@ each CHECK. `EXPECTED_UNMAPPABLE_COLUMNS` is unmoved (19): every column is a
 mapped type. `model Credential` gained no field; `Credentials::find_federated`
 is a read over columns it already had. Tool: the pinned `cratestack` 0.15.0.
 
-## 2026-10-23 — migration `0052` (method types, routing decisions), and drift goes 206 → 209
+## 2026-10-23 — migration `0053` (method types, routing decisions), and drift goes 206 → 209
 
 ADR-0029 D10's decision row and the charge's payment-method type, **with no
 model**. Measured on the pinned `cratestack` 0.15.0 against a freshly migrated

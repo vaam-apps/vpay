@@ -64,7 +64,7 @@ pub enum PaymentMethodType {
     NotchPay,
     /// The payer's MTN Mobile Money wallet, through whichever rail the server
     /// ranks first for it: `mtn_momo` or `notchpay` today. Added 2026-10-23.
-    /// **Needs a server with method types** (migration `0052`); an older
+    /// **Needs a server with method types** (migration `0053`); an older
     /// server refuses it as an unknown rail. Meaningful in a create's
     /// `payment_method_types` only: a refund's `destination` and an
     /// account-holder lookup name a rail, and the server refuses a type there.

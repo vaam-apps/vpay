@@ -61,7 +61,7 @@ ignore it.
 **`ChargeRef::method_type` since 2026-10-23**: the payment-method type the
 payer chose (`vpay_core::routing::MethodType`), or `None` on a charge confirmed
 by the code of a rail serving several types, and on every charge written before
-migration `0052`. An adapter serving one type may ignore it. `notchpay` reads
+migration `0053`. An adapter serving one type may ignore it. `notchpay` reads
 it: `cm.mtn` for `mtn_wallet`, `cm.orange` for `orange_wallet`, and its
 configured `channel` (`cm.mobile`) when it is `None`
 ([adapter-notchpay.md](adapter-notchpay.md), RFC-0012 step 8).

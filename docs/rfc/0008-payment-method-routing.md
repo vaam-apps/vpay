@@ -124,7 +124,7 @@ The alternatives considered:
 
 ### R5. What is recorded
 
-`routing_decisions` (migration `0052`, built 2026-10-23) keeps, per routed
+`routing_decisions` (migration `0053`, built 2026-10-23) keeps, per routed
 charge, in the transaction that opens the charge:
 
 - the method type, the chosen rail and any pinned rail;

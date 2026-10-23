@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 52,
-        "all fifty-two migration files under backends/migrations should be recorded as applied \
+        applied, 53,
+        "all fifty-three migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -389,8 +389,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          ADR-0032's 0052, which reopens provider_requests.operation_is_known \
          for prepare -- a two-step rail's first call, recorded under its own \
          operation so that the absence of a submit row stays proof that no \
-         payer was prompted, and \
-         0052, which adds charges.method_type (the payment-method type the payer \
+         payer was prompted, and ADR-0029's \
+         0053, which adds charges.method_type (the payment-method type the payer \
          chose, ADR-0029 D6) and creates routing_decisions, the router's scored \
          decision for each routed charge, written in the transaction that \
          opens it (D10).)"
@@ -4964,7 +4964,7 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// columns cost nothing: no `jsonb`, `bytea` or `int4`, no DEFAULT, and
 /// `is_retry` is a plain `Boolean`.
 ///
-/// **206 -> 209 on 2026-10-23 (migration 0052, ADR-0029 D10), measured** on
+/// **206 -> 209 on 2026-10-23 (migration 0053, ADR-0029 D10), measured** on
 /// cratestack 0.15.0 against a freshly migrated Postgres: `drift detected in
 /// 28 table(s)/view(s) (209 change(s) total)`. Exactly three new lines, and
 /// none is a surprise:
@@ -5073,7 +5073,7 @@ const EXPECTED_DRIFT_CHANGES: u32 = 209;
 /// in, and no other relation moved — so `EXPECTED_DRIFT_CHANGES`' +5 landed
 /// entirely on the one that arrived.
 ///
-/// **27 -> 28 on 2026-10-23 (migration 0052, measured):** `routing_decisions`
+/// **27 -> 28 on 2026-10-23 (migration 0053, measured):** `routing_decisions`
 /// joins the list *undeclared*, in the shape `jobs` is in, and `charges` stays
 /// one entry while it gains two lines.
 const EXPECTED_DRIFTED_RELATIONS: u32 = 28;
@@ -5168,7 +5168,7 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 28;
 /// `manual_payments` has no `jsonb`, `bytea` or `int2`/`int4`, and
 /// `invoices.paid_out_of_band` is `BOOLEAN`, so all eleven new columns are
 /// compared rather than excluded.
-/// **19 -> 20 on 2026-10-23 (migration 0052, measured on 0.15.0):**
+/// **19 -> 20 on 2026-10-23 (migration 0053, measured on 0.15.0):**
 /// `routing_decisions.considered` is `jsonb`, the router's whole answer as a
 /// document. `charges.method_type` is `TEXT` and compared.
 const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 20;
@@ -5481,7 +5481,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // `latest_submit_attempt` ordering `sent_at DESC, id DESC` has no
             // delegate, and `attempt` and `status_code` are both `int4`.
             "provider_requests",
-            // ADR-0029 D10's decision row (migration `0052`). An
+            // ADR-0029 D10's decision row (migration `0053`). An
             // explanation nothing decides from, written once in the
             // transaction that opens its charge and read by an operator:
             // `considered` is `jsonb` and no delegate would read it.
