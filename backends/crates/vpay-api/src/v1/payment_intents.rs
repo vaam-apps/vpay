@@ -36,7 +36,9 @@ use vpay_db::{
     IntentFilter, NewCharge, NewPaymentIntent, PaymentIntents, Repositories, ResponseSubject,
     StoredResponse, TxOutcome, UnitOfWork as _,
 };
-use vpay_provider::{ChargeRef, ProviderAdapter, ProviderError, Submitted};
+use vpay_provider::{
+    ChargeRef, PriorSubmits, ProviderAdapter, ProviderError, RefExtra, SubmitSteps, Submitted,
+};
 
 use crate::error::ApiError;
 use crate::form::{VpayForm, VpayQuery};
@@ -928,6 +930,10 @@ struct ConfirmTarget<'a> {
     rail: &'a RailConfig,
     adapter: &'a dyn ProviderAdapter,
     flow: ProviderFlow,
+    /// Whether [`prepare_on_rail`] runs before the submit (ADR-0032). Read
+    /// with `flow`, from the same `capabilities()`, and branched on by value
+    /// in [`confirm_once`] — never by code (ADR-0002).
+    submit_steps: SubmitSteps,
     /// The payer's number on a push rail, `None` on a redirect rail.
     payer_ref: Option<String>,
     /// The merchant's `return_url` on a redirect rail, `None` on a push rail.
@@ -953,9 +959,10 @@ struct SubmitAttempt {
 /// verbatim by `POST /v1/payment_intents/{id}/confirm` and
 /// `POST /v1/browser/payment_intents/{id}/confirm`.
 ///
-/// The body is the six steps and nothing else, in five named functions below
-/// — [`open_attempt`] is steps 3 and 4 together, one durable write — and
-/// their order is the safety property. See
+/// The body is the six steps and nothing else, in named functions below —
+/// [`open_charge`] is step 3 and [`open_attempt`] step 4, each one durable
+/// write, with [`prepare_on_rail`] between them on a two-step rail
+/// (ADR-0032) — and their order is the safety property. See
 /// [docs/reference/vpay-api.md § the confirm path](../../../../../docs/reference/vpay-api.md#the-confirm-path)
 /// for what each step guarantees, why the arguments are loose rather than a
 /// struct, and why the browser surface calls this rather than [`confirm`].
@@ -1017,8 +1024,31 @@ pub(crate) async fn confirm_once(
         &params,
         session_return_page.as_deref(),
     )?;
-    let attempt = open_attempt(repositories, &intent, &target).await?;
-    let submitted = submit_to_rail(&target, &attempt).await;
+    let charge = open_charge(repositories, &intent, &target).await?;
+    // Step 4a, on a two-step rail only: the rail's own reference, committed
+    // on the charge before anything can prompt the payer (ADR-0032). A
+    // refusal here answers the confirm exactly as a refused submit does.
+    let ref_extra = match target.submit_steps {
+        SubmitSteps::One => RefExtra::new(),
+        SubmitSteps::PrepareThenSubmit => {
+            match prepare_on_rail(repositories, &target, &charge).await? {
+                Prepared::Committed(ref_extra) => ref_extra,
+                Prepared::Refused { request_id, error } => {
+                    return refuse_confirm(
+                        repositories,
+                        scope,
+                        &intent,
+                        &charge,
+                        request_id,
+                        error,
+                    )
+                    .await;
+                }
+            }
+        }
+    };
+    let attempt = open_attempt(repositories, charge, &target).await?;
+    let submitted = submit_to_rail(&target, &attempt, ref_extra).await;
     finish_confirm(
         repositories,
         scope,
@@ -1142,7 +1172,8 @@ fn resolve_rail<'a>(
     // see [`refuse_a_currency_the_rail_does_not_settle`].
     currencies_agree(rail, &intent.currency_code)?;
 
-    let flow = adapter.capabilities().flow;
+    let capabilities = adapter.capabilities();
+    let flow = capabilities.flow;
     let (payer_ref, return_url) = payer_instrument(
         flow,
         code,
@@ -1159,6 +1190,7 @@ fn resolve_rail<'a>(
         rail,
         adapter: adapter.as_ref(),
         flow,
+        submit_steps: capabilities.submit_steps,
         payer_ref,
         return_url,
         amount,
@@ -1269,24 +1301,24 @@ fn payer_instrument(
     }
 }
 
-/// Steps 3 and 4: the reference and the charge row, durable before anything is
-/// submitted, then the attempt recorded before the call.
+/// Step 3: the reference and the charge row, durable before anything is
+/// asked of the rail.
 ///
-/// Both writes are committed here rather than after the rail answers, because
+/// Committed here rather than after the rail answers, because
 /// `docs/flows/crash-safety.md` forbids letting a payer act on a transaction we
 /// cannot name.
 ///
 /// # Errors
 ///
 /// `409` if the `one_charge_per_intent` index refuses a concurrent second
-/// charge (see [`insert_charge`]); [`ApiError::Db`] if either write fails.
-async fn open_attempt(
+/// charge (see [`insert_charge`]); [`ApiError::Db`] if the write fails.
+async fn open_charge(
     repositories: &dyn Repositories,
     intent: &vpay_db::PaymentIntentRow,
     target: &ConfirmTarget<'_>,
-) -> Result<SubmitAttempt, ApiError> {
+) -> Result<ChargeRow, ApiError> {
     let reference = Uuid::new_v4();
-    let charge = insert_charge(
+    insert_charge(
         repositories,
         &NewCharge {
             id: ids::charge_id(),
@@ -1308,8 +1340,107 @@ async fn open_attempt(
             payer_ref_masked: None,
         },
     )
-    .await?;
+    .await
+}
 
+/// What [`prepare_on_rail`] left behind: the rail's key material, committed,
+/// or the rail's refusal with the attempt row it belongs to.
+enum Prepared {
+    /// Committed on the charge by [`vpay_db::Charges::record_prepared`];
+    /// what [`submit_to_rail`] hands the adapter.
+    Committed(RefExtra),
+    /// For [`refuse_confirm`], which answers it as it answers a refused
+    /// submit.
+    Refused {
+        /// The `prepare` row's `provider_requests.id`.
+        request_id: i64,
+        error: ProviderError,
+    },
+}
+
+/// Step 4a, on a [`SubmitSteps::PrepareThenSubmit`] rail only: the payment
+/// created on the rail with nobody prompted, and the reference the rail
+/// issued for it committed on the charge — **before** step 4 records a
+/// `submit` and step 5 calls one (ADR-0032).
+///
+/// The `prepare` row is written before the call and answered after it, as a
+/// submit's is. [`PriorSubmits::None`] is a fact here rather than a reading of
+/// evidence: the charge was opened by this request, one statement ago, and
+/// step 4 has not run.
+///
+/// The key material is committed **before** the row is answered. The other
+/// order has a window — row answered, reference lost — that a resubmit would
+/// meet as a `409` it could no longer tell apart from a payment someone was
+/// prompted for; this order's window — reference committed, row unanswered —
+/// is an audit row nothing reads, because recovery reads `submit` rows.
+///
+/// # Errors
+///
+/// [`ApiError::Db`] for the attempt row or the commit. A rail's refusal is not
+/// an error here: it is [`Prepared::Refused`], for the caller to answer.
+async fn prepare_on_rail(
+    repositories: &dyn Repositories,
+    target: &ConfirmTarget<'_>,
+    charge: &ChargeRow,
+) -> Result<Prepared, ApiError> {
+    let request_id = repositories
+        .insert_pending(
+            &charge.id,
+            target.code,
+            "prepare",
+            charge.provider_reference_id,
+            1,
+        )
+        .await?;
+    let charge_ref = ChargeRef {
+        reference_id: charge.provider_reference_id,
+        amount: target.amount,
+        payer_ref: target.payer_ref.clone(),
+        ref_extra: RefExtra::new(),
+        return_url: charge.return_url.clone(),
+    };
+    match target
+        .adapter
+        .prepare(
+            &charge_ref,
+            &target.rail.provider_config(),
+            PriorSubmits::None,
+        )
+        .await
+    {
+        Ok(ref_extra) => {
+            repositories
+                .record_prepared(&charge.id, &ref_extra_json(&ref_extra))
+                .await?;
+            repositories
+                .record_response(
+                    request_id,
+                    Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                    None,
+                )
+                .await?;
+            Ok(Prepared::Committed(ref_extra))
+        }
+        Err(error) => Ok(Prepared::Refused { request_id, error }),
+    }
+}
+
+/// Step 4: the `submit` attempt recorded before the call, on the charge step
+/// 3 committed.
+///
+/// On a two-step rail this runs only after [`prepare_on_rail`] committed the
+/// rail's reference, and that order is the proof ADR-0032 rests on: a charge
+/// with no `submit` row was never put in front of its payer.
+///
+/// # Errors
+///
+/// [`ApiError::Db`] if the write fails.
+async fn open_attempt(
+    repositories: &dyn Repositories,
+    charge: ChargeRow,
+    target: &ConfirmTarget<'_>,
+) -> Result<SubmitAttempt, ApiError> {
+    let reference = charge.provider_reference_id;
     let request_id = repositories
         .insert_pending(&charge.id, target.code, "submit", reference, 1)
         .await?;
@@ -1319,6 +1450,17 @@ async fn open_attempt(
         request_id,
         reference,
     })
+}
+
+/// `RefExtra` as the JSONB `charges.provider_ref_extra` holds: string values
+/// only, as the port's map is.
+fn ref_extra_json(ref_extra: &RefExtra) -> Value {
+    Value::Object(
+        ref_extra
+            .iter()
+            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
+            .collect(),
+    )
 }
 
 /// Step 5: the rail.
@@ -1344,13 +1486,17 @@ async fn open_attempt(
 async fn submit_to_rail(
     target: &ConfirmTarget<'_>,
     attempt: &SubmitAttempt,
+    ref_extra: RefExtra,
 ) -> Result<Submitted, ProviderError> {
     let return_url = attempt.charge.return_url.clone();
     let charge_ref = ChargeRef {
         reference_id: attempt.reference,
         amount: target.amount,
         payer_ref: target.payer_ref.clone(),
-        ref_extra: BTreeMap::new(),
+        // Empty on a one-step rail; on a two-step rail, what
+        // [`prepare_on_rail`] committed — the only address such a rail
+        // answers for (ADR-0032).
+        ref_extra,
         return_url,
     };
     target
@@ -1430,97 +1576,135 @@ async fn finish_confirm(
             submitted_response(&intent, &charge, rendering)
         }
         Err(error) => {
-            match &error {
-                // A rail *decision*, not a rail failure (`docs/flows/errors.md`).
-                // The charge is terminal, and the intent goes back to the
-                // status it never left, now carrying why.
-                //
-                // **Settle first, record second** — the opposite of the accepted
-                // arm above, on purpose: an answered row beside a `submitting`
-                // charge is what `recovery_step` reads as `Advance`, which is
-                // wrong for a decline. See this function's doc.
-                ProviderError::Rejected { code, message } => {
-                    persist_decline(
-                        repositories,
-                        scope,
-                        &intent.id,
-                        &attempt.charge.id,
-                        *code,
-                        message,
-                        &vpay_core::Classify::public_message(&error),
-                    )
-                    .await?;
-                    // Audit only from here: the charge is terminal and nothing
-                    // reads a `submit` row for it. A failure to complete the
-                    // row must not turn a settled decline into a `5xx`, so it
-                    // is logged and the row stays pending.
-                    if let Err(write_error) = repositories
-                        .record_response(
-                            attempt.request_id,
-                            Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
-                            Some(error_kind(&error)),
-                        )
-                        .await
-                    {
-                        tracing::error!(
-                            payment_intent_id = %intent.id,
-                            charge_id = %attempt.charge.id,
-                            provider_request_id = attempt.request_id,
-                            error = %write_error,
-                            "a declined charge was settled but its attempt row could not be \
-                             completed; the row stays pending"
-                        );
-                    }
-                }
-                // Everything else means we do not know what the rail did with
-                // the request, so nothing moves: the charge stays `submitting`,
-                // which is the recovery state, and the attempt keeps
-                // `status_code IS NULL`, which is how a recovery pass tells "no
-                // answer" from "answered" (`docs/flows/crash-safety.md`).
-                ProviderError::Transport { .. }
-                | ProviderError::Malformed { .. }
-                | ProviderError::Config(_)
-                | ProviderError::Unsupported
-                | ProviderError::NotImplemented(_) => {
-                    repositories
-                        .record_response(attempt.request_id, None, Some(error_kind(&error)))
-                        .await?;
-                }
-                // The rail's answer only a person can act on (vaam-apps/vpay#313):
-                // Notch Pay's `409` for a reference it holds and vpay cannot
-                // address. Written as its own arm so the decision is visible,
-                // and it is the arm above's decision: the charge stays
-                // `submitting` and the row unanswered, the merchant gets the
-                // same `502` as for a `Malformed` — the outcome is not known,
-                // do not retry — under its own code.
-                //
-                // **This request does not escalate the charge.** Its poll job
-                // is already enqueued, with the charge (`insert_charge`); the
-                // recovery table reads the unanswered row as "asked, no
-                // answer" and polls, and the poll meets the same answer and
-                // makes the charge `unresolved` at once, alerting, in the
-                // worker — the one place that owns the escalation, its alert
-                // and its hourly pacing. A confirm writing `unresolved` here
-                // would be a second writer of that state with no alert behind
-                // it. The cost is the recovery window (`RecoveryPolicy::
-                // not_found_window`, sixty seconds) before the poll acts.
-                ProviderError::NeedsReconciliation { .. } => {
-                    repositories
-                        .record_response(attempt.request_id, None, Some(error_kind(&error)))
-                        .await?;
-                    tracing::warn!(
-                        payment_intent_id = %intent.id,
-                        charge_id = %attempt.charge.id,
-                        provider_request_id = attempt.request_id,
-                        %error,
-                        "the rail's answer to this confirm needs an operator; the charge stays \
-                         submitting and its poll job will escalate it to unresolved"
-                    );
-                }
-            }
-            Err(ApiError::from(error))
+            refuse_confirm(
+                repositories,
+                scope,
+                intent,
+                &attempt.charge,
+                attempt.request_id,
+                error,
+            )
+            .await
         }
     }
+}
+
+/// A rail's refusal of a confirm's call — `submit`'s, or on a two-step rail
+/// `prepare`'s (ADR-0032) — answered: the bookkeeping that refusal implies,
+/// then the error.
+///
+/// One function for both calls, because what a refusal means to the charge
+/// does not depend on which call it came from: a decline fails the charge,
+/// and anything else leaves it `submitting` beside an unanswered row for
+/// recovery. `request_id` is the refused call's own attempt row. For
+/// `prepare` that is a `prepare` row, which recovery never reads, so a
+/// `submitting` charge it leaves behind has no `submit` row at all and is
+/// resubmitted — whose `prepare` then knows no payer was prompted.
+///
+/// # Errors
+///
+/// Always: `409` `charge_declined` for a [`ProviderError::Rejected`], the
+/// rail error's own classification for anything else, or [`ApiError::Db`] if
+/// the bookkeeping write fails.
+async fn refuse_confirm(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    intent: &vpay_db::PaymentIntentRow,
+    charge: &ChargeRow,
+    request_id: i64,
+    error: ProviderError,
+) -> Result<Response, ApiError> {
+    match &error {
+        // A rail *decision*, not a rail failure (`docs/flows/errors.md`).
+        // The charge is terminal, and the intent goes back to the
+        // status it never left, now carrying why.
+        //
+        // **Settle first, record second** — the opposite of the accepted
+        // arm of [`finish_confirm`], on purpose: an answered row beside a
+        // `submitting` charge is what `recovery_step` reads as `Advance`,
+        // which is wrong for a decline. See that function's doc.
+        ProviderError::Rejected { code, message } => {
+            persist_decline(
+                repositories,
+                scope,
+                &intent.id,
+                &charge.id,
+                *code,
+                message,
+                &vpay_core::Classify::public_message(&error),
+            )
+            .await?;
+            // Audit only from here: the charge is terminal and nothing
+            // reads a `submit` row for it. A failure to complete the
+            // row must not turn a settled decline into a `5xx`, so it
+            // is logged and the row stays pending.
+            if let Err(write_error) = repositories
+                .record_response(
+                    request_id,
+                    Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT),
+                    Some(error_kind(&error)),
+                )
+                .await
+            {
+                tracing::error!(
+                    payment_intent_id = %intent.id,
+                    charge_id = %charge.id,
+                    provider_request_id = request_id,
+                    error = %write_error,
+                    "a declined charge was settled but its attempt row could not be \
+                     completed; the row stays pending"
+                );
+            }
+        }
+        // Everything else means we do not know what the rail did with
+        // the request, so nothing moves: the charge stays `submitting`,
+        // which is the recovery state, and the attempt keeps
+        // `status_code IS NULL`, which is how a recovery pass tells "no
+        // answer" from "answered" (`docs/flows/crash-safety.md`).
+        ProviderError::Transport { .. }
+        | ProviderError::Malformed { .. }
+        | ProviderError::Config(_)
+        | ProviderError::Unsupported
+        | ProviderError::NotImplemented(_) => {
+            repositories
+                .record_response(request_id, None, Some(error_kind(&error)))
+                .await?;
+        }
+        // The rail's answer only a person can act on (vaam-apps/vpay#313).
+        // No first confirm meets it today: Notch Pay's unresolvable `409` is
+        // `prepare`'s with `PriorSubmits::Some`, and a confirm always passes
+        // `None`, which turns that `409` into the decline above (ADR-0032).
+        // Written as its own arm so the decision is visible for the rail
+        // that next raises it, and it is the arm above's decision: the
+        // charge stays `submitting` and the row unanswered, the merchant
+        // gets the same `502` as for a `Malformed` — the outcome is not
+        // known, do not retry — under its own code.
+        //
+        // **This request does not escalate the charge.** Its poll job
+        // is already enqueued, with the charge (`insert_charge`); the
+        // recovery table reads the unanswered row as "asked, no
+        // answer" and polls, and the poll meets the same answer and
+        // makes the charge `unresolved` at once, alerting, in the
+        // worker — the one place that owns the escalation, its alert
+        // and its hourly pacing. A confirm writing `unresolved` here
+        // would be a second writer of that state with no alert behind
+        // it. The cost is the recovery window (`RecoveryPolicy::
+        // not_found_window`, sixty seconds) before the poll acts.
+        ProviderError::NeedsReconciliation { .. } => {
+            repositories
+                .record_response(request_id, None, Some(error_kind(&error)))
+                .await?;
+            tracing::warn!(
+                payment_intent_id = %intent.id,
+                charge_id = %charge.id,
+                provider_request_id = request_id,
+                %error,
+                "the rail's answer to this confirm needs an operator; the charge stays \
+                 submitting and its poll job will escalate it to unresolved"
+            );
+        }
+    }
+    Err(ApiError::from(error))
 }
 
 /// Commits everything a rail's acceptance implies, in **one** transaction,
@@ -1574,13 +1758,7 @@ async fn persist_submitted(
     // Written even when it is empty — a push rail returns no key material,
     // and `{}` says "the rail answered and there was none" where NULL would
     // be indistinguishable from a charge that was never submitted.
-    let ref_extra = Value::Object(
-        submitted
-            .ref_extra
-            .iter()
-            .map(|(key, value)| (key.clone(), Value::String(value.clone())))
-            .collect(),
-    );
+    let ref_extra = ref_extra_json(&submitted.ref_extra);
 
     // `Abandon` rather than an error out of the closure: the intent write
     // matching nothing is an invariant violation this layer reports as a

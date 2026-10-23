@@ -88,6 +88,7 @@ impl ProviderAdapter for IncoherentRail {
             // the port for nothing it does not have.
             refund_destination: RefundDestination::Origin,
             callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+            submit_steps: vpay_provider::SubmitSteps::One,
         }
     }
 

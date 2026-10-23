@@ -13,8 +13,11 @@ use std::time::Duration;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 use tokio::net::TcpListener;
 use uuid::Uuid;
-use vpay_core::{Currency, Money, ProviderFlow};
-use vpay_provider::{ChargeRef, ProviderAdapter, ProviderConfig, ProviderError, RefundDestination};
+use vpay_core::{Currency, FailureCode, Money, ProviderFlow};
+use vpay_provider::{
+    ChargeRef, PriorSubmits, ProviderAdapter, ProviderConfig, ProviderError, RefundDestination,
+    SubmitSteps,
+};
 
 use super::*;
 
@@ -150,6 +153,9 @@ fn capabilities_are_coherent_and_name_the_rails_truth() {
     assert!(capabilities.supports_refunds && capabilities.supports_partial_refunds);
     assert_eq!(capabilities.refund_destination, RefundDestination::Origin);
     assert!(!capabilities.supports_account_holder_lookup);
+    // Notch Pay issues its own reference at initialize and answers for no
+    // other, so the core commits it before the prompt (ADR-0032).
+    assert_eq!(capabilities.submit_steps, SubmitSteps::PrepareThenSubmit);
 }
 
 #[test]
@@ -198,7 +204,13 @@ async fn keys_never_reach_a_debug_or_an_error() {
     let rendered = [
         format!("{adapter:?}"),
         format!("{config:?}"),
-        format!("{:?}", adapter.submit(&charge(), &config).await),
+        format!(
+            "{:?}",
+            adapter
+                .prepare(&charge(), &config, PriorSubmits::None)
+                .await
+        ),
+        format!("{:?}", adapter.submit(&submitted_charge(), &config).await),
         format!(
             "{:?}",
             adapter.query_status(&submitted_charge(), &config).await
@@ -219,7 +231,14 @@ async fn a_missing_key_is_refused_by_name_before_any_request() {
         let mut config = closed();
         config.credentials.remove(missing);
         for outcome in [
-            adapter().submit(&charge(), &config).await.map(|_| ()),
+            adapter()
+                .prepare(&charge(), &config, PriorSubmits::None)
+                .await
+                .map(|_| ()),
+            adapter()
+                .submit(&submitted_charge(), &config)
+                .await
+                .map(|_| ()),
             adapter()
                 .query_status(&submitted_charge(), &config)
                 .await
@@ -243,34 +262,63 @@ async fn a_channel_the_adapter_does_not_know_is_refused_before_any_request() {
                 .insert("channel".to_owned(), value.to_owned()),
             None => config.settings.remove("channel"),
         };
-        let outcome = adapter().submit(&charge(), &config).await;
-        assert!(
-            matches!(outcome, Err(ProviderError::Config(_))),
-            "{channel:?}: {outcome:?}"
-        );
+        for outcome in [
+            adapter()
+                .prepare(&charge(), &config, PriorSubmits::None)
+                .await
+                .map(|_| ()),
+            adapter()
+                .submit(&submitted_charge(), &config)
+                .await
+                .map(|_| ()),
+        ] {
+            assert!(
+                matches!(outcome, Err(ProviderError::Config(_))),
+                "{channel:?}: {outcome:?}"
+            );
+        }
     }
 }
 
 #[tokio::test]
 async fn a_charge_in_another_currency_is_refused_before_any_request() {
-    let mut charge = charge();
-    charge.amount = Money::new(5_000, Currency::Eur).expect("non-negative");
-    let outcome = adapter().submit(&charge, &closed()).await;
-    assert!(
-        matches!(outcome, Err(ProviderError::Config(_))),
-        "{outcome:?}"
-    );
+    let euros = Money::new(5_000, Currency::Eur).expect("non-negative");
+    let mut fresh = charge();
+    fresh.amount = euros;
+    let mut prepared = submitted_charge();
+    prepared.amount = euros;
+    for outcome in [
+        adapter()
+            .prepare(&fresh, &closed(), PriorSubmits::None)
+            .await
+            .map(|_| ()),
+        adapter().submit(&prepared, &closed()).await.map(|_| ()),
+    ] {
+        assert!(
+            matches!(outcome, Err(ProviderError::Config(_))),
+            "{outcome:?}"
+        );
+    }
 }
 
 #[tokio::test]
 async fn a_push_charge_without_a_payer_never_reaches_the_rail() {
     let mut charge = charge();
     charge.payer_ref = None;
-    let outcome = adapter().submit(&charge, &closed()).await;
-    assert!(
-        matches!(outcome, Err(ProviderError::Config(_))),
-        "{outcome:?}"
-    );
+    let mut prepared = submitted_charge();
+    prepared.payer_ref = None;
+    for outcome in [
+        adapter()
+            .prepare(&charge, &closed(), PriorSubmits::None)
+            .await
+            .map(|_| ()),
+        adapter().submit(&prepared, &closed()).await.map(|_| ()),
+    ] {
+        assert!(
+            matches!(outcome, Err(ProviderError::Config(_))),
+            "{outcome:?}"
+        );
+    }
 }
 
 /// A closed port is a transport failure: the charge's fate is unknown, never
@@ -278,7 +326,14 @@ async fn a_push_charge_without_a_payer_never_reaches_the_rail() {
 #[tokio::test]
 async fn an_unreachable_rail_is_transport_never_a_decline() {
     for outcome in [
-        adapter().submit(&charge(), &closed()).await.map(|_| ()),
+        adapter()
+            .prepare(&charge(), &closed(), PriorSubmits::None)
+            .await
+            .map(|_| ()),
+        adapter()
+            .submit(&submitted_charge(), &closed())
+            .await
+            .map(|_| ()),
         adapter()
             .query_status(&submitted_charge(), &closed())
             .await
@@ -297,10 +352,12 @@ async fn an_unreachable_rail_is_transport_never_a_decline() {
 /// of the payer's goes — no email, no name, no return URL, no callback.
 #[tokio::test]
 async fn the_initialize_body_carries_the_phone_and_nothing_else_of_the_payers() {
-    // A 503, so the adapter stops after call 1 and the one request captured
-    // is the initialize.
+    // A 503, and `prepare` is call 1 alone, so the one request captured is
+    // the initialize.
     let (origin, request) = capture_one("HTTP/1.1 503 Service Unavailable").await;
-    let outcome = adapter().submit(&charge(), &config(&origin)).await;
+    let outcome = adapter()
+        .prepare(&charge(), &config(&origin), PriorSubmits::None)
+        .await;
     assert!(
         matches!(outcome, Err(ProviderError::Transport { .. })),
         "{outcome:?}"
@@ -400,30 +457,50 @@ fn payment_body(code: u16, trxref: &str, status: &str) -> String {
     )
 }
 
-/// The process call goes to Notch Pay's reference from the initialize
-/// answer, and `Submitted` carries it.
+/// `prepare` is initialize and nothing else (ADR-0032): one request, and
+/// what comes back is the reference Notch Pay issued, for the core to commit
+/// before anyone is prompted.
 #[tokio::test]
-async fn the_process_call_is_addressed_by_the_reference_initialize_returned() {
+async fn prepare_returns_notch_pays_reference_and_prompts_nobody() {
     let ours = Uuid::from_u128(0x0202).to_string();
-    let (origin, server) = serve(vec![
-        ("HTTP/1.1 201 Created", payment_body(201, &ours, "pending")),
-        (
-            "HTTP/1.1 202 Accepted",
-            payment_body(202, &ours, "processing"),
-        ),
-    ])
+    let (origin, server) = serve(vec![(
+        "HTTP/1.1 201 Created",
+        payment_body(201, &ours, "pending"),
+    )])
+    .await;
+    let prepared = adapter()
+        .prepare(&charge(), &config(&origin), PriorSubmits::None)
+        .await
+        .expect("an accepted initialize");
+    assert_eq!(
+        server.await.expect("the server finishes"),
+        vec!["POST /payments HTTP/1.1".to_owned()],
+        "initialize only: the prompt is submit's, after the commit"
+    );
+    assert_eq!(
+        prepared,
+        BTreeMap::from([(NOTCHPAY_REFERENCE.to_owned(), TRX.to_owned())])
+    );
+}
+
+/// `submit` is process alone, addressed by the reference `prepare` returned
+/// and the core committed, and `Submitted` carries it back.
+#[tokio::test]
+async fn the_process_call_is_addressed_by_the_held_reference() {
+    let ours = Uuid::from_u128(0x0202).to_string();
+    let (origin, server) = serve(vec![(
+        "HTTP/1.1 202 Accepted",
+        payment_body(202, &ours, "processing"),
+    )])
     .await;
     let submitted = adapter()
-        .submit(&charge(), &config(&origin))
+        .submit(&submitted_charge(), &config(&origin))
         .await
         .expect("an accepted submit");
-    let lines = server.await.expect("the server finishes");
     assert_eq!(
-        lines,
-        vec![
-            "POST /payments HTTP/1.1".to_owned(),
-            format!("POST /payments/{TRX} HTTP/1.1"),
-        ]
+        server.await.expect("the server finishes"),
+        vec![format!("POST /payments/{TRX} HTTP/1.1")],
+        "process only: the payment exists already"
     );
     assert_eq!(
         submitted
@@ -434,8 +511,40 @@ async fn the_process_call_is_addressed_by_the_reference_initialize_returned() {
     );
 }
 
-/// An initialize answer about another merchant reference is refused before
-/// the prompt: nothing is sent to the payer.
+/// The window ADR-0032 closed, guarded at the adapter: `submit` never
+/// initializes. A charge that reaches it without Notch Pay's reference has
+/// lost the only address Notch Pay answers for, so the answer is a person,
+/// before any request — not an initialize, whose `409` could no longer say
+/// whether anyone was prompted. `closed()` would have made a request
+/// `Transport`.
+#[tokio::test]
+async fn submit_without_a_held_reference_never_initializes() {
+    let outcome = adapter().submit(&charge(), &closed()).await;
+    assert!(
+        matches!(&outcome, Err(ProviderError::NeedsReconciliation { context }) if context.contains(NOTCHPAY_REFERENCE)),
+        "{outcome:?}"
+    );
+}
+
+/// A charge that already holds Notch Pay's reference is prepared: `prepare`
+/// answers it from `ref_extra` and sends nothing. `closed()` would have made
+/// a request `Transport`.
+#[tokio::test]
+async fn prepare_of_a_charge_that_holds_the_reference_sends_nothing() {
+    for prior in [PriorSubmits::None, PriorSubmits::Some] {
+        let prepared = adapter()
+            .prepare(&submitted_charge(), &closed(), prior)
+            .await
+            .expect("answered from the charge");
+        assert_eq!(
+            prepared.get(NOTCHPAY_REFERENCE).map(String::as_str),
+            Some(TRX)
+        );
+    }
+}
+
+/// An initialize answer about another merchant reference is refused, and
+/// nothing is returned for the core to commit or to process.
 #[tokio::test]
 async fn an_initialize_answer_for_another_reference_never_prompts() {
     let (origin, server) = serve(vec![(
@@ -443,7 +552,9 @@ async fn an_initialize_answer_for_another_reference_never_prompts() {
         payment_body(201, "00000000-0000-0000-0000-00000000beef", "pending"),
     )])
     .await;
-    let outcome = adapter().submit(&charge(), &config(&origin)).await;
+    let outcome = adapter()
+        .prepare(&charge(), &config(&origin), PriorSubmits::None)
+        .await;
     assert!(
         matches!(outcome, Err(ProviderError::Malformed { .. })),
         "{outcome:?}"
@@ -455,19 +566,53 @@ async fn an_initialize_answer_for_another_reference_never_prompts() {
     );
 }
 
-/// A `409` for a charge that holds no Notch Pay reference cannot be
-/// resolved: Notch Pay finds payments by its own reference only. It is
-/// `NeedsReconciliation` (fate unknown, and no second submit can learn it),
-/// never `Submitted` and never a decline, and nothing more is sent. It was
-/// `Malformed` until 2026-10-23 (vaam-apps/vpay#313).
-#[tokio::test]
-async fn a_duplicate_with_no_held_reference_needs_reconciliation_and_sends_nothing_more() {
-    let (origin, server) = serve(vec![(
+/// Notch Pay's `409` "Reference already existing", as the sandbox answered it
+/// on 2026-10-21.
+fn duplicate_reference() -> (&'static str, String) {
+    (
         "HTTP/1.1 409 Conflict",
         r#"{"code":"409","status":"Conflict","message":"Reference already existing","errors":{"reference":["Reference already existing"]}}"#.to_owned(),
-    )])
-    .await;
-    let outcome = adapter().submit(&charge(), &config(&origin)).await;
+    )
+}
+
+/// The crash ADR-0032 makes safe: an initialize whose answer was lost, and
+/// no submit ever recorded for the charge. Nobody asked Notch Pay to prompt
+/// the payer, so the `409` is a clean failure the payer can retry on a new
+/// charge — `Rejected`, `provider_unavailable` — and nothing more is sent.
+#[tokio::test]
+async fn a_duplicate_no_submit_ever_prompted_for_fails_the_charge_cleanly() {
+    let (origin, server) = serve(vec![duplicate_reference()]).await;
+    let outcome = adapter()
+        .prepare(&charge(), &config(&origin), PriorSubmits::None)
+        .await;
+    assert!(
+        matches!(
+            &outcome,
+            Err(ProviderError::Rejected {
+                code: FailureCode::ProviderUnavailable,
+                ..
+            })
+        ),
+        "{outcome:?}"
+    );
+    assert_eq!(
+        server.await.expect("finishes").len(),
+        1,
+        "only initialize was sent"
+    );
+}
+
+/// The same `409` after a recorded submit — a charge the one-call build
+/// before ADR-0032 submitted, whose process may have prompted — cannot be
+/// resolved: Notch Pay finds payments by its own reference only. It is
+/// `NeedsReconciliation`, never `Submitted` and never a decline, and nothing
+/// more is sent (vaam-apps/vpay#313).
+#[tokio::test]
+async fn a_duplicate_a_submit_may_have_prompted_for_needs_reconciliation() {
+    let (origin, server) = serve(vec![duplicate_reference()]).await;
+    let outcome = adapter()
+        .prepare(&charge(), &config(&origin), PriorSubmits::Some)
+        .await;
     assert!(
         matches!(&outcome, Err(ProviderError::NeedsReconciliation { .. })),
         "{outcome:?}"
@@ -479,16 +624,16 @@ async fn a_duplicate_with_no_held_reference_needs_reconciliation_and_sends_nothi
     );
 }
 
-/// A `409` for a charge that holds Notch Pay's reference reads it by that
-/// reference, and a payment past `pending` is `Submitted` with no second
-/// prompt.
+/// A second process of a payment already processed — a resubmit after a
+/// lost answer — reads the payment, and one past `pending` is `Submitted`
+/// with no second prompt.
 #[tokio::test]
-async fn a_duplicate_with_a_held_reference_reads_it_and_does_not_prompt_again() {
+async fn a_repeated_process_reads_the_payment_and_does_not_prompt_again() {
     let ours = Uuid::from_u128(0x0202).to_string();
     let (origin, server) = serve(vec![
         (
-            "HTTP/1.1 409 Conflict",
-            r#"{"code":"409","status":"Conflict","message":"Reference already existing"}"#
+            "HTTP/1.1 422 Unprocessable Entity",
+            r#"{"code":422,"status":"Unprocessable Entity","message":"This payment has already been processed"}"#
                 .to_owned(),
         ),
         ("HTTP/1.1 200 OK", payment_body(200, &ours, "processing")),
@@ -497,12 +642,11 @@ async fn a_duplicate_with_a_held_reference_reads_it_and_does_not_prompt_again() 
     let submitted = adapter()
         .submit(&submitted_charge(), &config(&origin))
         .await
-        .expect("a resolvable duplicate is Submitted");
-    let lines = server.await.expect("finishes");
+        .expect("a processed payment is Submitted");
     assert_eq!(
-        lines,
+        server.await.expect("finishes"),
         vec![
-            "POST /payments HTTP/1.1".to_owned(),
+            format!("POST /payments/{TRX} HTTP/1.1"),
             format!("GET /payments/{TRX} HTTP/1.1"),
         ]
     );

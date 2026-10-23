@@ -100,6 +100,55 @@ pub enum CallbackUrlMode {
     Registered,
 }
 
+/// How many calls it takes this rail to put a payment in front of a payer,
+/// and so whether the core must commit something the rail issued *between*
+/// them (ADR-0032).
+///
+/// The capability the core branches on so that "call `prepare` first" never
+/// becomes `if provider == "notchpay"` (ADR-0002). Not persisted, on
+/// [`CallbackUrlMode`]'s terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitSteps {
+    /// One call. [`ProviderAdapter::submit`] creates the payment and, on a
+    /// push rail, prompts the payer, and the rail is addressed by vpay's own
+    /// reference or by key material `submit` returns before anyone can act
+    /// on it. [`ProviderAdapter::prepare`] keeps its `Unsupported` default
+    /// and the core never calls it. `mtn_momo` and `orange_money`.
+    One,
+    /// Two calls. The rail issues its own reference when the payment is
+    /// created and answers for no other, so the core calls
+    /// [`ProviderAdapter::prepare`] (create, no prompt), commits the key
+    /// material it returns on the charge, and only then calls
+    /// [`ProviderAdapter::submit`] (the prompt). A crash between the two
+    /// leaves a charge whose payer was provably never asked, where one call
+    /// left one that may have been. `notchpay`.
+    PrepareThenSubmit,
+}
+
+/// What the core knows about a charge's earlier submits, handed to
+/// [`ProviderAdapter::prepare`] because only the core keeps the evidence
+/// (`provider_requests`).
+///
+/// The adapter needs it for one decision: a rail that answers "a payment
+/// with this reference already exists" to a `prepare` that holds none of the
+/// rail's key material. With [`PriorSubmits::None`] that payment was created
+/// by an earlier `prepare` whose answer was lost, and nothing has asked the
+/// rail to prompt for it. With [`PriorSubmits::Some`] an earlier build's
+/// one-call submit may have prompted the payer (ADR-0032 § "The build in
+/// flight across the deploy").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorSubmits {
+    /// No `submit` attempt has ever been recorded for this charge. The core
+    /// records one before every call to [`ProviderAdapter::submit`], and
+    /// under [`SubmitSteps::PrepareThenSubmit`] only once `prepare`'s key
+    /// material is committed, so the rail has never been asked to prompt.
+    None,
+    /// At least one `submit` attempt was recorded, so the rail may have
+    /// prompted the payer.
+    Some,
+}
+
 /// Static declaration of what a rail can do.
 ///
 /// The core reads these instead of special-casing a provider code.
@@ -173,6 +222,9 @@ pub struct Capabilities {
     /// endpoint nothing would ever call is not worth a write to someone's
     /// account.
     pub callback_url_mode: CallbackUrlMode,
+    /// Whether the core calls [`ProviderAdapter::prepare`] and commits what it
+    /// returns before calling [`ProviderAdapter::submit`] (ADR-0032).
+    pub submit_steps: SubmitSteps,
 }
 
 impl Capabilities {
@@ -1628,15 +1680,15 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// credential to read may never raise [`ProviderError::Config`], but no
 /// adapter may raise a variant this table does not give it.
 ///
-/// | Variant | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | `ensure_callback_endpoint` | what it means |
-/// |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|---|
-/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
-/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status`, `account_holder_name` and `ensure_callback_endpoint` only the rail refusing **our** partner credentials, because none of them carries a payment to decline |
-/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline, and one a later read **may** change, which is why it rides the ladder quietly |
-/// | [`NeedsReconciliation`](ProviderError::NeedsReconciliation) | ✓ | ✓ | | | | | | a charge only a person can settle, because asking again **cannot** change the answer: the rail reported a `complete` for a sum that is not the charge's; or it refused a submit as a duplicate of a payment vpay cannot find again; or the charge has lost the rail's key material, so the rail cannot be asked at all (that one is raised before any request). Never a decline and never a success. The worker escalates the charge to `unresolved` on the first one (vaam-apps/vpay#313); only `notchpay` raises it today |
-/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
-/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+/// | Variant | `prepare` | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | `ensure_callback_endpoint` | what it means |
+/// |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `prepare` it is a payment the rail would not create, or one it holds that vpay can prove was never put in front of the payer ([`PriorSubmits::None`]), which fails the charge so the payer can try again; on `query_status`, `account_holder_name` and `ensure_callback_endpoint` only the rail refusing **our** partner credentials, because none of them carries a payment to decline |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline, and one a later read **may** change, which is why it rides the ladder quietly |
+/// | [`NeedsReconciliation`](ProviderError::NeedsReconciliation) | ✓ | ✓ | ✓ | | | | | | a charge only a person can settle, because asking again **cannot** change the answer: the rail reported a `complete` for a sum that is not the charge's; or it refused a `prepare` as a duplicate of a payment vpay cannot find again and an earlier submit may have prompted for ([`PriorSubmits::Some`]); or the charge has lost the rail's key material, so the rail cannot be asked at all (that one is raised before any request). Never a decline and never a success. The worker escalates the charge to `unresolved` on the first one (vaam-apps/vpay#313); only `notchpay` raises it today |
+/// | [`Unsupported`](ProviderError::Unsupported) | ✓ | | | | ✓ | ✓ | ✓ | ✓ | this rail has no such API, permanently — on `prepare`, a [`SubmitSteps::One`] rail. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
 ///
 /// The two blank columns are as load-bearing as the ticks. `parse_callback`
 /// and `parse_destination` are the only pure functions in the table: neither
@@ -1670,11 +1722,60 @@ pub trait ProviderAdapter: Debug + Send + Sync {
 
     fn capabilities(&self) -> Capabilities;
 
+    /// Creates the payment on the rail **without** putting it in front of
+    /// the payer, and returns the key material the rail issued for it — the
+    /// first of a [`SubmitSteps::PrepareThenSubmit`] rail's two calls
+    /// (ADR-0032).
+    ///
+    /// Called only on a rail that declares
+    /// [`SubmitSteps::PrepareThenSubmit`], and only for a `submitting` charge
+    /// that holds none of the rail's key material yet. The core records a
+    /// `prepare` attempt before the call, commits the returned [`RefExtra`]
+    /// on the charge after it, and calls [`submit`](ProviderAdapter::submit)
+    /// only once that commit is durable — so `submit`'s `charge.ref_extra`
+    /// always carries what this returned.
+    ///
+    /// Idempotent on `charge.reference_id` in the sense `submit` is: a
+    /// second `prepare` of a reference the rail already holds must not
+    /// create a second payment. What it returns instead depends on `prior`
+    /// (see [`PriorSubmits`]).
+    ///
+    /// # Errors
+    ///
+    /// The default is [`ProviderError::Unsupported`]: a [`SubmitSteps::One`]
+    /// rail creates and prompts in one call, which is a permanent answer and
+    /// not unbuilt work, and the core never calls it there.
+    ///
+    /// An implementation raises [`ProviderError::Config`] for a credential,
+    /// setting or payer this deployment did not supply, **before** any
+    /// request; [`ProviderError::Rejected`] when the rail refused to create
+    /// the payment or refused our credentials — or when it holds a payment
+    /// under this reference that vpay can prove no `submit` ever prompted
+    /// ([`PriorSubmits::None`]), which fails the charge so the payer can try
+    /// again on a new one; [`ProviderError::NeedsReconciliation`] for the
+    /// same answer with [`PriorSubmits::Some`], where an earlier build's
+    /// one-call submit may have prompted; [`ProviderError::Transport`] and
+    /// [`ProviderError::Malformed`] as for `submit`. Nothing is ever sent to
+    /// the payer by this call, so none of them means money moved.
+    async fn prepare(
+        &self,
+        _charge: &ChargeRef,
+        _config: &ProviderConfig,
+        _prior: PriorSubmits,
+    ) -> Result<RefExtra, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
     /// Asks the rail to take a payment.
     ///
     /// Idempotent on `charge.reference_id`. A duplicate submission MUST be
     /// reported as [`Submitted`], never as an error — that is what makes
     /// same-reference retry safe after a crash.
+    ///
+    /// On a [`SubmitSteps::PrepareThenSubmit`] rail this is the second call,
+    /// the one that prompts the payer, and `charge.ref_extra` carries what
+    /// [`prepare`](ProviderAdapter::prepare) returned: the core commits that
+    /// before it calls this (ADR-0032).
     ///
     /// # Errors
     ///
@@ -2235,6 +2336,7 @@ mod tests {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Required,
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
         };
         assert!(!bad.is_coherent());
     }
@@ -2252,6 +2354,7 @@ mod tests {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::Registered,
+            submit_steps: SubmitSteps::One,
         };
         assert!(base.callbacks_are_coherent());
         let silent = Capabilities {
@@ -2263,6 +2366,7 @@ mod tests {
             let per_request = Capabilities {
                 delivers_callbacks,
                 callback_url_mode: CallbackUrlMode::PerRequest,
+                submit_steps: SubmitSteps::One,
                 ..base
             };
             assert!(per_request.callbacks_are_coherent());
@@ -2280,6 +2384,19 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CallbackUrlMode::Registered).expect("serialises"),
             serde_json::json!("registered")
+        );
+    }
+
+    /// ADR-0032's capability, spelled as `verify-serde` requires.
+    #[test]
+    fn a_submit_steps_spells_itself_in_snake_case() {
+        assert_eq!(
+            serde_json::to_value(SubmitSteps::One).expect("serialises"),
+            serde_json::json!("one")
+        );
+        assert_eq!(
+            serde_json::to_value(SubmitSteps::PrepareThenSubmit).expect("serialises"),
+            serde_json::json!("prepare_then_submit")
         );
     }
 
@@ -2310,6 +2427,7 @@ mod tests {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
         };
 
         for supports_refunds in [false, true] {
@@ -2680,6 +2798,7 @@ mod tests {
                     supports_account_holder_lookup: false,
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
+                    submit_steps: SubmitSteps::One,
                 }
             }
 
@@ -2772,6 +2891,7 @@ mod tests {
                     supports_account_holder_lookup: false,
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
+                    submit_steps: SubmitSteps::One,
                 }
             }
 
@@ -2843,6 +2963,17 @@ mod tests {
             matches!(registered, Err(ProviderError::Unsupported)),
             "a per-request rail has nothing to register: {registered:?}"
         );
+
+        // And it declares `SubmitSteps::One`, so it creates and prompts in
+        // one call and has nothing to prepare (ADR-0032). Both values of
+        // `prior`: the default answers neither differently.
+        for prior in [PriorSubmits::None, PriorSubmits::Some] {
+            let prepared = NoRefundApiRail.prepare(&charge, &config, prior).await;
+            assert!(
+                matches!(prepared, Err(ProviderError::Unsupported)),
+                "a one-step rail has nothing to prepare: {prepared:?}"
+            );
+        }
     }
 }
 

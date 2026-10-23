@@ -40,7 +40,7 @@ use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     AccountHolder, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, PayerField,
     PayerFieldKind, PhonePayerType, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
-    RefundDestination, RefundTarget, Refunded, Submitted,
+    RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
 };
 
 use crate::token::{Credentials, Product, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -777,6 +777,7 @@ impl ProviderAdapter for Adapter {
             // the `ensure_callbacks` pass never asks this rail anything
             // (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
         }
     }
 

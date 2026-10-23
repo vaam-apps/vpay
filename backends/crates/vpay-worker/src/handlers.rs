@@ -34,7 +34,8 @@ use vpay_db::{
     UnitOfWork as _,
 };
 use vpay_provider::{
-    ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
+    ChargeRef, ChargeStatus, PriorSubmits, ProviderAdapter, ProviderConfig, ProviderError,
+    RefExtra, SubmitSteps,
 };
 
 use crate::callbacks::{CallbackPlan, handle_ensure_callbacks};
@@ -871,7 +872,33 @@ async fn resubmit_charge(
     }
 
     let (adapter, config) = rail(rails, adapters, job, &charge.provider_code)?;
-    let attempt = next_submit_attempt(repositories, &charge).await?;
+    let (attempt, prior) = next_submit_attempt(repositories, &charge).await?;
+    // A two-step rail's reference, committed before the prompt (ADR-0032):
+    // `prepare` runs only for a charge that holds no key material yet, so a
+    // charge whose reference a previous run committed goes straight to the
+    // prompt.
+    let charge = if needs_prepare(adapter, &charge) {
+        match prepare_again(repositories, adapter, config, job, &charge, attempt, prior).await {
+            Ok(prepared) => prepared,
+            // `PriorSubmits::Some`: a submit from before ADR-0032 may have
+            // prompted, and the rail cannot find the payment by ours — the
+            // same escalation the resubmit's own `NeedsReconciliation` takes.
+            Err(JobError::Provider(error @ ProviderError::NeedsReconciliation { .. })) => {
+                return needs_an_operator(
+                    repositories,
+                    job,
+                    &charge,
+                    state,
+                    &error,
+                    "resubmit_charge",
+                )
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    } else {
+        charge
+    };
     let submitted = match submit_again(repositories, adapter, config, job, &charge, attempt).await {
         Ok(submitted) => submitted,
         // A resubmit the rail cannot resolve — Notch Pay's `409` for a
@@ -898,12 +925,19 @@ async fn resubmit_charge(
     Ok(Outcome::Done)
 }
 
-/// The `provider_requests.attempt` number this resubmission will carry.
+/// The `provider_requests.attempt` number this resubmission will carry, and
+/// whether any submit was ever recorded for the charge.
 ///
 /// Supplied rather than derived by the database
 /// (`vpay_db::provider_requests`' own reasoning): the ladder knows how many
 /// times it has tried, and a `SELECT max(attempt) + 1` would race two retries
-/// into the same number.
+/// into the same number. A two-step rail's `prepare` carries the same number
+/// as the `submit` it precedes: one resubmission, two calls.
+///
+/// The second half is [`PriorSubmits`], read from the same row: no `submit`
+/// row at all is proof that nothing asked the rail to prompt this charge's
+/// payer, because every build records one before every submit call
+/// (ADR-0032).
 ///
 /// # Errors
 ///
@@ -911,11 +945,110 @@ async fn resubmit_charge(
 async fn next_submit_attempt(
     repositories: &dyn Repositories,
     charge: &ChargeRow,
-) -> Result<i32, JobError> {
-    Ok(repositories
-        .latest_submit_attempt(&charge.id)
-        .await?
-        .map_or(1, |row| row.attempt.saturating_add(1)))
+) -> Result<(i32, PriorSubmits), JobError> {
+    Ok(
+        match repositories.latest_submit_attempt(&charge.id).await? {
+            Some(row) => (row.attempt.saturating_add(1), PriorSubmits::Some),
+            None => (1, PriorSubmits::None),
+        },
+    )
+}
+
+/// Whether this resubmission must call `prepare` first: a two-step rail,
+/// and a charge that holds none of its key material (ADR-0032).
+///
+/// `provider_ref_extra` is `NULL` on a `submitting` charge until a `prepare`
+/// commits it (`vpay_db::Charges::record_prepared`) — nothing else writes it
+/// before the charge leaves `submitting` — so a non-`NULL` value means a
+/// previous run prepared it and crashed before the prompt.
+fn needs_prepare(adapter: &dyn ProviderAdapter, charge: &ChargeRow) -> bool {
+    adapter.capabilities().submit_steps == SubmitSteps::PrepareThenSubmit
+        && charge.provider_ref_extra.is_none()
+}
+
+/// A two-step rail's `prepare`, wrapped in its own attempt row, with what it
+/// returns committed on the charge (ADR-0032).
+///
+/// The shape of [`submit_again`], and the same order for the same reasons:
+/// the row before the call, and on a decline the charge failed **before** the
+/// row is answered. The decline here is the rail holding a payment under
+/// this reference that no submit ever prompted for ([`PriorSubmits::None`]):
+/// an earlier `prepare` lost its answer, nobody was asked to pay, and the
+/// charge fails so the payer can try again on a new one. The orphaned payment
+/// expires on the rail.
+///
+/// On success the key material is committed before the row is answered, as
+/// `vpay-api`'s `prepare_on_rail` does, and the charge comes back as it now
+/// stands, so the submit that follows reads the reference from the row.
+///
+/// # Errors
+///
+/// [`JobError::Db`] for the attempt row, the commit or the settlement, and
+/// [`JobError::Provider`] for a rail that refused or would not answer.
+async fn prepare_again(
+    repositories: &dyn Repositories,
+    adapter: &dyn ProviderAdapter,
+    config: &ProviderConfig,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    attempt: i32,
+    prior: PriorSubmits,
+) -> Result<ChargeRow, JobError> {
+    let attempt_id = repositories
+        .insert_pending(
+            &charge.id,
+            &charge.provider_code,
+            "prepare",
+            charge.provider_reference_id,
+            attempt,
+        )
+        .await?;
+
+    let charge_ref = charge_ref(job, charge)?;
+    match adapter.prepare(&charge_ref, config, prior).await {
+        Ok(ref_extra) => {
+            let prepared = repositories
+                .record_prepared(&charge.id, &ref_extra_value(&ref_extra))
+                .await?;
+            record_answer(repositories, attempt_id, None).await?;
+            Ok(prepared)
+        }
+        Err(error) => {
+            match &error {
+                ProviderError::Rejected { code, message } => {
+                    settle_failed_with(
+                        repositories,
+                        job,
+                        charge,
+                        *code,
+                        message,
+                        "a two-step rail's prepare failed a charge no submit ever prompted for",
+                    )
+                    .await?;
+                    record_declined_submit(repositories, attempt_id, &error).await?;
+                }
+                ProviderError::Malformed { .. }
+                | ProviderError::NeedsReconciliation { .. }
+                | ProviderError::Transport { .. }
+                | ProviderError::Config(_)
+                | ProviderError::Unsupported
+                | ProviderError::NotImplemented(_) => {
+                    record_unresolved_submit(repositories, attempt_id, &error).await?;
+                }
+            }
+            Err(JobError::Provider(error))
+        }
+    }
+}
+
+/// `RefExtra` as the JSONB `charges.provider_ref_extra` holds.
+fn ref_extra_value(ref_extra: &RefExtra) -> serde_json::Value {
+    serde_json::Value::Object(
+        ref_extra
+            .iter()
+            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
+            .collect(),
+    )
 }
 
 /// The submit itself, wrapped in the attempt row that makes it auditable.
@@ -1039,13 +1172,7 @@ async fn commit_resubmission(
     charge: &ChargeRow,
     submitted: vpay_provider::Submitted,
 ) -> Result<(), JobError> {
-    let ref_extra = serde_json::Value::Object(
-        submitted
-            .ref_extra
-            .iter()
-            .map(|(key, value)| (key.clone(), serde_json::Value::String(value.clone())))
-            .collect(),
-    );
+    let ref_extra = ref_extra_value(&submitted.ref_extra);
     let payload = poll_payload(job, &charge.id)?;
     let dedupe_key = poll_dedupe_key(&charge.id);
 

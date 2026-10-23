@@ -659,6 +659,33 @@ pub trait Charges: Send + Sync {
         provider_code: &str,
         provider_reference_id: Uuid,
     ) -> Result<Option<ChargeRow>, DbError>;
+
+    /// Commits the key material a two-step rail's `prepare` returned on a
+    /// charge still in `submitting`, and hands back the row as it now stands
+    /// (ADR-0032).
+    ///
+    /// The write that makes the rail's own reference durable **before** the
+    /// payer is prompted: the caller records a `submit` attempt and calls
+    /// `submit` only after this returns. Merged into whatever the column
+    /// holds, as [`crate::TxRepositories::mark_submitted`] merges, rather
+    /// than replacing it; on a `submitting` charge the column is `NULL` until
+    /// this runs, which is how the worker tells a prepared charge from one
+    /// still to prepare.
+    ///
+    /// A compare-and-swap on `state = 'submitting'`, and not part of a
+    /// transaction: it is one row, and the state does not move. It does not
+    /// count a transition for that reason.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::WriteMatchedNoRow`] if the charge is no longer
+    /// `submitting` — something else resolved it — or does not exist; and
+    /// [`DbError::Query`] for a Postgres failure.
+    async fn record_prepared(
+        &self,
+        id: &str,
+        provider_ref_extra: &serde_json::Value,
+    ) -> Result<ChargeRow, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -724,6 +751,31 @@ impl Charges for crate::repository::PgRepositories {
             .fetch_optional(&self.pool)
             .await
             .map_err(DbError::Query)
+    }
+
+    async fn record_prepared(
+        &self,
+        id: &str,
+        provider_ref_extra: &serde_json::Value,
+    ) -> Result<ChargeRow, DbError> {
+        let sql = format!(
+            "UPDATE charges \
+             SET provider_ref_extra = COALESCE(provider_ref_extra, '{{}}'::JSONB) || $2::JSONB, \
+                 updated_at = now() \
+             WHERE id = $1 AND state = 'submitting' \
+             RETURNING {COLUMNS}"
+        );
+
+        sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
+            .bind(id)
+            .bind(provider_ref_extra)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(classify_write)?
+            .ok_or_else(|| DbError::WriteMatchedNoRow {
+                table: "charges",
+                key: id.to_owned(),
+            })
     }
 }
 

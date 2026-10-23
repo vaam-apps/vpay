@@ -501,7 +501,7 @@ mod tests {
     use vpay_core::Money;
     use vpay_provider::{
         CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderConfig, ProviderError,
-        RefundDestination, RefundTarget, Refunded, Submitted,
+        RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
     };
 
     use super::*;
@@ -554,6 +554,7 @@ mod tests {
             // have.
             refund_destination: RefundDestination::Origin,
             callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+            submit_steps: vpay_provider::SubmitSteps::One,
         }
     }
 
@@ -1015,6 +1016,7 @@ mod tests {
             capabilities: Capabilities {
                 delivers_callbacks: false,
                 callback_url_mode: CallbackUrlMode::Registered,
+                submit_steps: SubmitSteps::One,
                 ..coherent(ProviderFlow::Push)
             },
             exposure: None,
@@ -1075,6 +1077,7 @@ mod tests {
                 code: "mtn_momo",
                 capabilities: Capabilities {
                     callback_url_mode: CallbackUrlMode::Registered,
+                    submit_steps: SubmitSteps::One,
                     ..coherent(ProviderFlow::Push)
                 },
                 exposure: None,

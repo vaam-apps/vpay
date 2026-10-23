@@ -40,7 +40,8 @@ use uuid::Uuid;
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
+    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded,
+    SubmitSteps, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -423,6 +424,7 @@ impl ProviderAdapter for Adapter {
             // registered with the merchant key, so the `ensure_callbacks`
             // pass never asks this rail anything (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
         }
     }
 

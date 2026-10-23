@@ -36,17 +36,30 @@
 //! nothing about Notch Pay. The `mapping` module's header names what was
 //! confirmed and what is open.
 //!
-//! **A crash window the rail does not let us close.** Notch Pay's reference
-//! exists only in the initialize answer, and becomes durable only when
-//! `submit` returns. Notch Pay finds a payment by its own reference alone
-//! (`GET /payments?search=` does not match ours). So a crash after the
-//! process call and before `submit` returns leaves a prompted payment vpay
-//! cannot read. A retry then gets `409` and answers `NeedsReconciliation`:
-//! the charge's fate is unknown, never `Submitted` and never a decline, and
-//! an operator reconciles it in Notch Pay's dashboard (the maintainer's
-//! decision, 2026-10-21). Since 2026-10-23 the worker makes such a charge
-//! `unresolved`, alerting, on the first answer that says so, rather than
-//! after 24 hours on the ladder as a `Malformed` (vaam-apps/vpay#313).
+//! **Two calls, with a commit between them ([ADR-0032]).** Notch Pay's
+//! reference exists only in the initialize answer, and Notch Pay finds a
+//! payment by its own reference alone (`GET /payments?search=` does not
+//! match ours). So this rail declares [`SubmitSteps::PrepareThenSubmit`]:
+//! [`Adapter::prepare`] is initialize, which creates the payment and prompts
+//! nobody, and returns the `trx.…`; the core commits it on the charge; only
+//! then is [`Adapter::submit`] called, and `submit` is process, the prompt.
+//! A crash between the two leaves a charge whose payer was provably never
+//! asked, and the retry's `409` fails it cleanly
+//! ([`PriorSubmits::None`]) so the payer can try again. The window this
+//! closed was a crash after the prompt and before vpay held the `trx.…`,
+//! which left a prompted payment vpay could never read.
+//!
+//! A charge submitted by the one-call build before ADR-0032, still in flight
+//! across the deploy, may have been prompted, and the core says so with
+//! [`PriorSubmits::Some`]: its `409` stays `NeedsReconciliation`, and the
+//! worker makes it `unresolved`, alerting, on the first answer that says so
+//! (vaam-apps/vpay#313). An operator reconciles it in Notch Pay's dashboard
+//! (the maintainer's decision, 2026-10-21).
+//!
+//! The orphan a crash leaves behind — a payment initialized on Notch Pay and
+//! never processed — expires there. Anyone holding the merchant's public key
+//! could still process it to a number of their choosing; that is the
+//! exposure ADR-0031 accepted, and not one this step adds.
 //!
 //! Refunds are a declared [`ProviderError::NotImplemented`] token
 //! (`notchpay::refund`): Notch Pay documents `POST /refunds` in a guide only,
@@ -54,6 +67,7 @@
 //!
 //! [RFC-0012]: ../../../../docs/rfc/0012-notchpay-adapter.md
 //! [ADR-0031]: ../../../../docs/adr/0031-a-status-read-authenticated-by-a-server-side-key.md
+//! [ADR-0032]: ../../../../docs/adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md
 
 mod callbacks;
 mod mapping;
@@ -62,7 +76,7 @@ pub use crate::mapping::PRODUCED_FAILURE_CODES;
 
 use async_trait::async_trait;
 use uuid::Uuid;
-use vpay_core::{Money, ProviderFlow};
+use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_notchpay::status::PaymentStatus;
 use vpay_notchpay::wire::{
     InitializePayment, PAYMENT_EVENTS, Payment, ProcessData, ProcessPayment,
@@ -70,8 +84,9 @@ use vpay_notchpay::wire::{
 use vpay_notchpay::{Answer, Client, Keys};
 use vpay_provider::{
     AcceptedExposure, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus,
-    EndpointCheck, EndpointReport, PayerField, PayerFieldKind, PhonePayerType, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
+    EndpointCheck, EndpointReport, PayerField, PayerFieldKind, PhonePayerType, PriorSubmits,
+    ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget,
+    Refunded, SubmitSteps, Submitted,
 };
 
 use crate::mapping::{Initialized, Processed};
@@ -243,9 +258,25 @@ impl Adapter {
 /// key material, because it is the only address Notch Pay answers for.
 fn submitted(notchpay_reference: &str) -> Submitted {
     Submitted {
-        ref_extra: RefExtra::from([(NOTCHPAY_REFERENCE.to_owned(), notchpay_reference.to_owned())]),
+        ref_extra: notchpay_ref_extra(notchpay_reference),
         redirect_url: None,
     }
+}
+
+/// The key material this rail is addressed by: Notch Pay's reference alone.
+/// What [`Adapter::prepare`] returns and every [`Submitted`] carries.
+fn notchpay_ref_extra(notchpay_reference: &str) -> RefExtra {
+    RefExtra::from([(NOTCHPAY_REFERENCE.to_owned(), notchpay_reference.to_owned())])
+}
+
+/// The charge's Notch Pay reference from `ref_extra`, if it holds a
+/// non-empty one.
+fn held_reference(charge: &ChargeRef) -> Option<&str> {
+    charge
+        .ref_extra
+        .get(NOTCHPAY_REFERENCE)
+        .map(String::as_str)
+        .filter(|reference| !reference.is_empty())
 }
 
 /// Notch Pay's reference out of the initialize answer.
@@ -300,17 +331,12 @@ fn require_our_payment(payment: &Payment, charge: &ChargeRef) -> Result<(), Prov
 /// `docs/runbooks/unresolved-charges.md` never finds it. Now the worker
 /// makes it `unresolved` and keeps the hourly poll (vaam-apps/vpay#313).
 fn held_notchpay_reference(charge: &ChargeRef) -> Result<&str, ProviderError> {
-    charge
-        .ref_extra
-        .get(NOTCHPAY_REFERENCE)
-        .map(String::as_str)
-        .filter(|reference| !reference.is_empty())
-        .ok_or_else(|| {
-            ProviderError::needs_reconciliation(format!(
-                "notchpay: the charge holds no `{NOTCHPAY_REFERENCE}`, so Notch Pay cannot be \
-                 asked about it; reconcile it in Notch Pay's dashboard"
-            ))
-        })
+    held_reference(charge).ok_or_else(|| {
+        ProviderError::needs_reconciliation(format!(
+            "notchpay: the charge holds no `{NOTCHPAY_REFERENCE}`, so Notch Pay cannot be asked \
+             about it; reconcile it in Notch Pay's dashboard"
+        ))
+    })
 }
 
 /// A payment status this adapter knows, from a successful answer.
@@ -412,6 +438,7 @@ impl ProviderAdapter for Adapter {
             // `ensure_callbacks` pass keeps one of vpay's own there
             // (`ensure_callback_endpoint` below, RFC-0013 § 5).
             callback_url_mode: CallbackUrlMode::Registered,
+            submit_steps: SubmitSteps::PrepareThenSubmit,
         }
     }
 
@@ -423,47 +450,60 @@ impl ProviderAdapter for Adapter {
         Some(EXPOSURE)
     }
 
-    /// Call 1, `POST /payments`, then call 2, `POST /payments/{notchpay_reference}`
-    /// (RFC-0012 § 3), where `notchpay_reference` is the `trx.…` call 1
-    /// returned.
+    /// Call 1, `POST /payments` (RFC-0012 § 3): the payment is created on
+    /// Notch Pay and **nobody is prompted**. Returns Notch Pay's `trx.…`
+    /// reference, which the core commits on the charge before it calls
+    /// [`submit`](Adapter::submit) (ADR-0032).
     ///
     /// | Call 1 answered | Then |
     /// | --- | --- |
-    /// | `201`, `pending` | call 2 by Notch Pay's reference; `Submitted` carries it |
-    /// | `201`, any other documented status | `Submitted` carrying it; the poll resolves it |
-    /// | `201` without Notch Pay's reference, or about another `trxref` | `Malformed`; nothing is sent to the payer |
-    /// | `409`, and the charge already holds Notch Pay's reference | read it: `pending` → call 2; any other status → `Submitted`; none → `Malformed` |
-    /// | `409`, and the charge holds none | `NeedsReconciliation`: the payment cannot be found again (below) |
+    /// | `201` with Notch Pay's reference | that reference, under [`NOTCHPAY_REFERENCE`] |
+    /// | `201` without it, or about another `trxref` | `Malformed`: nothing exists that vpay could address |
+    /// | `409`, and `prior` is [`PriorSubmits::None`] | `Rejected`, `provider_unavailable`: the charge fails, and the payer can try again |
+    /// | `409`, and `prior` is [`PriorSubmits::Some`] | `NeedsReconciliation`: an operator reconciles it |
     /// | anything else | `mapping::initialize_refusal` |
     ///
-    /// The `409` is the crash-retry case: a submit that reached Notch Pay and
-    /// lost its answer. With Notch Pay's reference held, the read decides
-    /// whether the prompt was sent, so a retry never prompts twice. Without
-    /// it, Notch Pay offers no way to find the payment by our reference
-    /// (2026-10-21: `search` matches its own reference only), so the answer
-    /// is `NeedsReconciliation`: fate unknown, not `Submitted`, not a decline,
-    /// and not something a second submit can learn either, since it would
-    /// meet the same `409`. It was `Malformed` until 2026-10-23, which kept
-    /// the charge on the resubmit ladder for 24 hours (vaam-apps/vpay#313).
+    /// The `409` is the crash-retry case: an initialize that reached Notch
+    /// Pay and lost its answer. Notch Pay cannot find the payment by our
+    /// reference (2026-10-21: `search` matches its own reference only), so
+    /// what the `409` means turns on what was done with it since, which is
+    /// the core's evidence and arrives as `prior`. With no `submit` ever
+    /// recorded, nothing asked Notch Pay to prompt the payer — the core
+    /// records a `submit` before every process call, and calls process only
+    /// with the `trx.…` committed — so the payment is an orphan nobody was
+    /// asked to pay, and it expires on Notch Pay's side. With one recorded,
+    /// the charge was submitted by the one-call build before ADR-0032, whose
+    /// process may have prompted: the fate is unknown, never a decline.
+    ///
+    /// A charge that already holds Notch Pay's reference is answered from it
+    /// with no request. The core never calls this for one; a second
+    /// initialize would only be a `409`.
     ///
     /// # Errors
     ///
     /// `Config` for a missing key, setting or payer, or a charge in another
-    /// currency; `Rejected` for a refusal; `Transport` and `Malformed` leave
-    /// the charge's fate unknown, never a decline; `NeedsReconciliation` for
-    /// the `409` no submit can resolve.
-    async fn submit(
+    /// currency, before any request; `Rejected` for a refusal, our refused
+    /// keys, or the `409` above with no submit behind it;
+    /// `NeedsReconciliation` for the `409` with one; `Transport` and
+    /// `Malformed` leave the charge's fate unknown, and in either case no
+    /// payer was prompted.
+    async fn prepare(
         &self,
         charge: &ChargeRef,
         config: &ProviderConfig,
-    ) -> Result<Submitted, ProviderError> {
+        prior: PriorSubmits,
+    ) -> Result<RefExtra, ProviderError> {
+        if let Some(held) = held_reference(charge) {
+            return Ok(notchpay_ref_extra(held));
+        }
         if charge.amount.currency().code() != CURRENCY {
             return Err(ProviderError::Config(format!(
                 "notchpay: this adapter charges in {CURRENCY} only"
             )));
         }
         // Read before any request, so a missing setting is a refusal that
-        // sent nothing rather than a payment initialized and never prompted.
+        // created nothing rather than a payment initialized and never
+        // prompted. `submit` reads it again, for the process body.
         channel(config)?;
         let client = self.client(config)?;
         let phone = payer_phone(charge)?;
@@ -486,42 +526,82 @@ impl ProviderAdapter for Adapter {
         match answer {
             Answer::Success(envelope) => {
                 let notchpay_reference = notchpay_reference_of(&envelope.transaction, charge)?;
-                match known_status(&envelope.transaction)? {
-                    PaymentStatus::Pending => {
-                        self.process(&client, charge, config, &phone, &notchpay_reference)
-                            .await
-                    }
-                    _ => Ok(submitted(&notchpay_reference)),
-                }
+                // A status Notch Pay does not document is refused here, as it
+                // was when this was half of `submit`: an answer vpay cannot
+                // read is not one to prompt a payer on.
+                known_status(&envelope.transaction)?;
+                Ok(notchpay_ref_extra(&notchpay_reference))
             }
             Answer::Refused(refusal) => match mapping::initialize_refusal(&refusal) {
-                Initialized::AlreadyExists => {
-                    let Some(notchpay_reference) = charge
-                        .ref_extra
-                        .get(NOTCHPAY_REFERENCE)
-                        .filter(|reference| !reference.is_empty())
-                    else {
-                        return Err(ProviderError::needs_reconciliation(
-                            "notchpay: initialize answered 409 for this reference and the charge \
-                             holds no Notch Pay reference; Notch Pay cannot find the payment by \
-                             ours, so its fate is unknown and an operator must reconcile it",
-                        ));
-                    };
-                    match self.read(&client, charge, notchpay_reference).await? {
-                        Some(PaymentStatus::Pending) => {
-                            self.process(&client, charge, config, &phone, notchpay_reference)
-                                .await
-                        }
-                        Some(_) => Ok(submitted(notchpay_reference)),
-                        None => Err(ProviderError::malformed(
-                            "notchpay: initialize answered 409 for this reference and the read \
-                             by the held Notch Pay reference finds no such payment",
-                        )),
-                    }
-                }
+                Initialized::AlreadyExists => match prior {
+                    PriorSubmits::None => Err(ProviderError::Rejected {
+                        code: FailureCode::ProviderUnavailable,
+                        message: "notchpay: initialize answered 409 for this reference, and no \
+                                  submit was ever made for the charge: an earlier initialize \
+                                  created the payment and lost its answer, and nobody asked \
+                                  Notch Pay to prompt the payer for it (ADR-0032)"
+                            .to_owned(),
+                    }),
+                    PriorSubmits::Some => Err(ProviderError::needs_reconciliation(
+                        "notchpay: initialize answered 409 for this reference and the charge \
+                         holds no Notch Pay reference; a submit made before ADR-0032 may have \
+                         prompted the payer, and Notch Pay cannot find the payment by ours, so \
+                         its fate is unknown and an operator must reconcile it",
+                    )),
+                },
                 Initialized::Refused(error) => Err(error),
             },
         }
+    }
+
+    /// Call 2, `POST /payments/{notchpay_reference}` (RFC-0012 § 3): the
+    /// USSD prompt, by the `trx.…` [`prepare`](Adapter::prepare) returned and
+    /// the core committed first (ADR-0032).
+    ///
+    /// | The charge | Then |
+    /// | --- | --- |
+    /// | holds Notch Pay's reference | process by it; `Submitted` carries it |
+    /// | holds none | `NeedsReconciliation`, before any request |
+    ///
+    /// Process is safe to repeat: a second one is refused as "already
+    /// processed", and the read decides whether the first prompt went out
+    /// (`process` below), so a resubmit after a lost answer never prompts
+    /// twice.
+    ///
+    /// A charge with no Notch Pay reference never reaches here from the
+    /// core, which calls `prepare` and commits its answer first; one that
+    /// does has lost the only address Notch Pay answers for, and is a case
+    /// for a person rather than for an initialize, which is what used to
+    /// open the window ADR-0032 closed.
+    ///
+    /// # Errors
+    ///
+    /// `Config` for a missing key, setting or payer, or a charge in another
+    /// currency; `NeedsReconciliation` for a charge with no Notch Pay
+    /// reference; `Rejected` for a refusal; `Transport` and `Malformed`
+    /// leave the charge's fate unknown, never a decline.
+    async fn submit(
+        &self,
+        charge: &ChargeRef,
+        config: &ProviderConfig,
+    ) -> Result<Submitted, ProviderError> {
+        if charge.amount.currency().code() != CURRENCY {
+            return Err(ProviderError::Config(format!(
+                "notchpay: this adapter charges in {CURRENCY} only"
+            )));
+        }
+        channel(config)?;
+        let client = self.client(config)?;
+        let phone = payer_phone(charge)?;
+        let notchpay_reference = held_reference(charge).ok_or_else(|| {
+            ProviderError::needs_reconciliation(format!(
+                "notchpay: asked to prompt for a charge that holds no `{NOTCHPAY_REFERENCE}`; the \
+                 core commits prepare's answer before it submits (ADR-0032), so this charge has \
+                 lost the only reference Notch Pay answers for, and an operator must reconcile it"
+            ))
+        })?;
+        self.process(&client, charge, config, &phone, notchpay_reference)
+            .await
     }
 
     /// Call 3, `GET /payments/{notchpay_reference}`: the authoritative read,

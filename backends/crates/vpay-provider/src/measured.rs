@@ -59,8 +59,8 @@ use vpay_core::metrics::{
 
 use crate::{
     AcceptedExposure, AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus,
-    EndpointCheck, EndpointReport, PayerField, ProviderAdapter, ProviderConfig, ProviderError,
-    RefundTarget, Refunded, Submitted,
+    EndpointCheck, EndpointReport, PayerField, PriorSubmits, ProviderAdapter, ProviderConfig,
+    ProviderError, RefExtra, RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -164,6 +164,24 @@ impl ProviderAdapter for Measured {
     /// `the_accepted_exposure_is_forwarded_not_defaulted` is what catches it.
     fn accepted_exposure(&self) -> Option<AcceptedExposure> {
         self.inner.accepted_exposure()
+    }
+
+    /// Forwarded for `parse_destination`'s reason: the default body is a
+    /// refusal, so a wrapper that forgot this would compile and answer
+    /// `Unsupported` for Notch Pay, whose every confirm would then fail
+    /// before reaching the rail. `the_prepare_call_is_forwarded_and_measured`
+    /// catches it.
+    async fn prepare(
+        &self,
+        charge: &ChargeRef,
+        config: &ProviderConfig,
+        prior: PriorSubmits,
+    ) -> Result<RefExtra, ProviderError> {
+        self.measure(
+            provider_operation::PREPARE,
+            self.inner.prepare(charge, config, prior),
+        )
+        .await
     }
 
     async fn submit(
@@ -344,6 +362,7 @@ mod tests {
                 supports_account_holder_lookup: false,
                 refund_destination: crate::RefundDestination::Origin,
                 callback_url_mode: crate::CallbackUrlMode::PerRequest,
+                submit_steps: crate::SubmitSteps::One,
             }
         }
 
@@ -609,6 +628,7 @@ mod tests {
                 supports_account_holder_lookup: false,
                 refund_destination: crate::RefundDestination::Required,
                 callback_url_mode: crate::CallbackUrlMode::PerRequest,
+                submit_steps: crate::SubmitSteps::One,
             }
         }
 
@@ -667,6 +687,21 @@ mod tests {
             Err(ProviderError::NotImplemented("recording::refund"))
         }
 
+        /// Answers `Ok` with what it was handed, so the wrapper's forward is
+        /// told apart from the port's `Unsupported` default — and records
+        /// `prior`, so a forward that dropped or replaced it fails too.
+        async fn prepare(
+            &self,
+            charge: &ChargeRef,
+            _config: &ProviderConfig,
+            prior: crate::PriorSubmits,
+        ) -> Result<RefExtra, ProviderError> {
+            Ok(RefExtra::from([
+                ("reference".to_owned(), charge.reference_id.to_string()),
+                ("prior".to_owned(), format!("{prior:?}")),
+            ]))
+        }
+
         /// Answers `Ok` with the marker it was handed, so the wrapper's
         /// forward is told apart from the port's `Unsupported` default.
         async fn ensure_callback_endpoint(
@@ -718,6 +753,45 @@ mod tests {
         assert!(
             scrape.contains(
                 r#"vpay_provider_requests_total{provider="mtn_momo",operation="ensure_callback_endpoint",error_kind=""} 1"#
+            ),
+            "the call is counted on the rail series: {scrape}"
+        );
+    }
+
+    /// A two-step rail's `prepare` reaches the inner adapter through the
+    /// wrapper, with its `prior` unchanged, and is counted on the rail series
+    /// under its own operation (ADR-0032).
+    ///
+    /// Without the forward, `Measured` — which wraps every shipping adapter
+    /// — would answer the port's `Unsupported` for Notch Pay, and every
+    /// confirm on it would fail before reaching the rail.
+    #[test]
+    fn the_prepare_call_is_forwarded_and_measured() {
+        let adapter = Measured::wrap(Box::new(RecordingRefund {
+            seen: Arc::new(Mutex::new(Vec::new())),
+        }));
+        let charge = charge();
+        let mut answered = None;
+        let scrape = scrape_of(|| {
+            answered = Some(block_on(adapter.prepare(
+                &charge,
+                &config(),
+                crate::PriorSubmits::Some,
+            )));
+        });
+        assert_eq!(
+            answered
+                .expect("the closure ran")
+                .expect("the inner adapter answered"),
+            RefExtra::from([
+                ("reference".to_owned(), charge.reference_id.to_string()),
+                ("prior".to_owned(), "Some".to_owned()),
+            ]),
+            "the inner adapter must be the one that answered, with the core's `prior`"
+        );
+        assert!(
+            scrape.contains(
+                r#"vpay_provider_requests_total{provider="mtn_momo",operation="prepare",error_kind=""} 1"#
             ),
             "the call is counted on the rail series: {scrape}"
         );

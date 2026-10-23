@@ -397,7 +397,12 @@ mod tests {
     /// three literals and this number. It would also have given three
     /// spellings of a privacy rule that must agree. `PAYERS_INTENTS` binds
     /// only `$1`, and the customer id and the marker stay bind parameters.
-    const EXPECTED_ASSERT_SITES: usize = 74;
+    /// **74 → 75 on 2026-10-23** (ADR-0032, a two-step rail's reference
+    /// committed before the prompt): one addition, `Charges::record_prepared`,
+    /// the `submitting`-only compare-and-swap that merges a `prepare`'s key
+    /// material into `provider_ref_extra`. It interpolates `COLUMNS` and
+    /// nothing else; the charge id and the key material are bound.
+    const EXPECTED_ASSERT_SITES: usize = 75;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.

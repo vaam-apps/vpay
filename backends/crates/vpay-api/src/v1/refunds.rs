@@ -1727,6 +1727,7 @@ mod tests {
                 supports_account_holder_lookup: self.lookup.is_some(),
                 refund_destination: RefundDestination::Required,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+                submit_steps: vpay_provider::SubmitSteps::One,
             }
         }
 
@@ -1794,6 +1795,7 @@ mod tests {
                 supports_account_holder_lookup: false,
                 refund_destination: RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+                submit_steps: vpay_provider::SubmitSteps::One,
             }
         }
 

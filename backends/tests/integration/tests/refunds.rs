@@ -2419,6 +2419,7 @@ impl ProviderAdapter for OriginRail {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
             callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+            submit_steps: vpay_provider::SubmitSteps::One,
         }
     }
 
