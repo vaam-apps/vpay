@@ -17,6 +17,16 @@ on three Next.js advisories. CI's `web` job runs that audit before
 CI would never reach the change. The evidence for the bump is #341's own page,
 `docs/status/verification/2026-10-23-npm-advisories.md`, which lands with #341.
 
+**Later the same day #341 merged, as `c672fffc`, and `master` (then at
+`82a68f4e`) was merged into this branch.** The ported files are now identical
+to `master`'s, so the port is a no-op. On the merged tree:
+
+- `pnpm install --frozen-lockfile`, `just verify`, `just fmt-check-web`,
+  `just lint-web` and `just audit-web` exit 0;
+- in the `web` job's order, `pnpm -r test` gives 1662 passed / 2 skipped
+  (`master` added one `sdks/nodejs` case), then `just build-storybook` exits
+  0 with both apps' `a11y-gate.test.ts` at 6 / 6.
+
 **No Rust, no migration, no route, no `NotImplemented` token and no gate in
 `just verify` moved.** [vaam-apps/vpay#341](https://github.com/vaam-apps/vpay/pull/341)
 reported the defect in its "Not done" list and its
