@@ -1136,6 +1136,32 @@ pub enum ProviderError {
         #[source]
         source: Option<RailFailure>,
     },
+    /// A charge only a person can settle with the rail: the adapter
+    /// understood where it stands, and asking the same question again
+    /// cannot change it.
+    ///
+    /// Not [`ProviderError::Malformed`], whose meaning is the opposite one —
+    /// an answer this adapter could not read, which a later read may well
+    /// fix, so the poll ladder keeps asking quietly. This one is terminal on
+    /// the rail's side and unknowable on ours: a payment the rail reports
+    /// as collected for a sum that is not the charge's, or a payment the
+    /// rail holds under our reference that vpay can no longer address. It
+    /// is never a decline, because money may have moved, and never a
+    /// success, because vpay cannot say whose money or how much. Usually the
+    /// rail answered; once it is raised before any request, for a charge
+    /// whose rail key material is gone and which the rail therefore cannot
+    /// be asked about.
+    ///
+    /// The worker escalates the charge to `unresolved` on the first answer
+    /// that raises this — polled hourly, alerting, never parked and never
+    /// terminal — rather than at the 24-hour horizon
+    /// (`vpay_worker::handlers`, `docs/flows/reconciler.md`; vaam-apps/vpay#313).
+    #[error("the charge needs an operator to reconcile it with the rail: {context}")]
+    NeedsReconciliation {
+        /// What the rail said and why it cannot be acted on, by which rail.
+        /// The adapter's own sentence: never a secret, never rail prose.
+        context: String,
+    },
     #[error("adapter configuration is invalid: {0}")]
     Config(String),
     /// Returned by an operation this rail does not support.
@@ -1169,8 +1195,8 @@ pub enum ProviderError {
 /// chain's `Debug` prints the rail's words anywhere a `{err:?}` lands in a
 /// tracing event or a log. `Rejected`'s `code` stays visible for the
 /// `PaymentIntentRow` impl's reason: it is vpay's own closed `FailureCode`
-/// vocabulary, never rail text. The `Transport`/`Malformed` `context` and
-/// `Config` string are the adapter's own sentences — operator diagnostics,
+/// vocabulary, never rail text. The `Transport`/`Malformed`/`NeedsReconciliation`
+/// `context` and `Config` string are the adapter's own sentences — operator diagnostics,
 /// never a payer's identifier or a live credential — and stay visible, as
 /// their `Display` already renders them.
 impl fmt::Debug for ProviderError {
@@ -1190,6 +1216,10 @@ impl fmt::Debug for ProviderError {
                 .debug_struct("ProviderError::Malformed")
                 .field("context", context)
                 .field("source", source)
+                .finish(),
+            Self::NeedsReconciliation { context } => f
+                .debug_struct("ProviderError::NeedsReconciliation")
+                .field("context", context)
                 .finish(),
             Self::Config(message) => f
                 .debug_tuple("ProviderError::Config")
@@ -1332,6 +1362,33 @@ impl ProviderError {
             source: Some(source.into()),
         }
     }
+
+    /// An answer the adapter understood, refused, and that asking again
+    /// cannot change: a person must reconcile the charge with the rail.
+    ///
+    /// ```
+    /// use vpay_core::Classify as _;
+    /// use vpay_provider::ProviderError;
+    ///
+    /// let error = ProviderError::needs_reconciliation(
+    ///     "notchpay: complete, and amounts.total is not this charge's amount",
+    /// );
+    /// // The rail's category, as a `Malformed` is: never a decline, so the
+    /// // merchant is told the outcome is not known yet and is not to retry.
+    /// assert_eq!(error.category(), vpay_core::Category::Rail);
+    /// // But its own code, and `Error` rather than `Warn`: this one does not
+    /// // heal itself, and the worker escalates the charge on it at once.
+    /// assert_eq!(error.code(), "charge_needs_reconciliation");
+    /// assert_eq!(error.severity(), vpay_core::Severity::Error);
+    /// // And the merchant never sees the adapter's sentence.
+    /// assert!(!error.public_message().contains("amounts.total"));
+    /// ```
+    #[must_use]
+    pub fn needs_reconciliation(context: impl Into<String>) -> Self {
+        Self::NeedsReconciliation {
+            context: context.into(),
+        }
+    }
 }
 
 impl vpay_core::Classify for ProviderError {
@@ -1343,6 +1400,11 @@ impl vpay_core::Classify for ProviderError {
             // else should, and a merchant re-submitting would risk a double
             // charge on a push rail (docs/flows/crash-safety.md).
             Self::Transport { .. } | Self::Malformed { .. } => Category::Rail,
+            // The rail's category too, and for the same reason a merchant
+            // must not re-submit: the money's fate is the rail's, and it is
+            // not known here. What differs is the code, the severity and
+            // what the worker does with it (the variant's own doc comment).
+            Self::NeedsReconciliation { .. } => Category::Rail,
             // A rail *decision*, not a rail *failure*: the charge is
             // declined, the intent goes back to requires_payment_method with
             // `last_payment_error`, and the merchant starts a new intent.
@@ -1362,6 +1424,11 @@ impl vpay_core::Classify for ProviderError {
         match self {
             Self::Transport { .. } => "provider_unavailable",
             Self::Malformed { .. } => "provider_error",
+            // Beside `charge_declined` and the worker's `charge_unresolved`:
+            // it names the charge's condition, not the rail's health, and an
+            // operator grouping `provider_requests.error_kind` must be able to
+            // tell "an answer we could not read" from "an answer we could".
+            Self::NeedsReconciliation { .. } => "charge_needs_reconciliation",
             // A constant, *not* the `FailureCode`'s own string. The two
             // vocabularies overlap: `FailureCode::ProviderUnavailable`
             // renders `provider_unavailable`, which is also
@@ -1388,8 +1455,13 @@ impl vpay_core::Classify for ProviderError {
             // Exhaustive rather than a wildcard: a new variant must state
             // its retry policy here, not inherit one silently from whatever
             // category it happened to pick.
+            // `Category::Rail`'s `AfterBackoff`, kept: the worker escalates
+            // before this policy is read, and anything that does read it
+            // (the API's `Stripe-Should-Retry`) must say what a `Malformed`
+            // says.
             Self::Transport { .. }
             | Self::Malformed { .. }
+            | Self::NeedsReconciliation { .. }
             | Self::Config(_)
             | Self::Unsupported
             | Self::NotImplemented(_) => self.category().default_retry(),
@@ -1433,6 +1505,13 @@ impl vpay_core::Classify for ProviderError {
             // `Capabilities` first, and that is ours to fix. See the
             // variant's doc comment.
             Self::Unsupported => Severity::Error,
+            // Overrides `Rail`'s `Warn`, which means "degraded but
+            // self-healing" — the one thing this is not. `Error`, the line
+            // `vpay_worker`'s `decision` reads for `alert: true`, and the
+            // severity of the 24-hour escalation it now replaces for this
+            // charge. Not `Page`: nothing is lost or corrupt, it needs a
+            // person today (vaam-apps/vpay#313).
+            Self::NeedsReconciliation { .. } => Severity::Error,
             Self::Transport { .. }
             | Self::Malformed { .. }
             | Self::Config(_)
@@ -1449,6 +1528,15 @@ impl vpay_core::Classify for ProviderError {
             // vocabularies colliding on one field.
             Self::Rejected { code, .. } => format!("The payment was declined ({code})."),
             Self::Unsupported => "This rail does not support the requested operation.".to_owned(),
+            // Not `Rail`'s generic "temporarily unavailable … will be
+            // retried": nothing will be retried into a different answer.
+            // "Another payment", not "this request": `Stripe-Should-Retry`
+            // still says `true`, as for a `Malformed`, because replaying the
+            // same request under its `Idempotency-Key` replays this answer
+            // and charges nobody. Still no rail text and no amount.
+            Self::NeedsReconciliation { .. } => "The payment's outcome could not be confirmed \
+                 with the rail and is being reconciled; do not start another payment for it."
+                .to_owned(),
             Self::Transport { .. }
             | Self::Malformed { .. }
             | Self::Config(_)
@@ -1545,7 +1633,8 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
 /// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status`, `account_holder_name` and `ensure_callback_endpoint` only the rail refusing **our** partner credentials, because none of them carries a payment to decline |
 /// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline, and one a later read **may** change, which is why it rides the ladder quietly |
+/// | [`NeedsReconciliation`](ProviderError::NeedsReconciliation) | ✓ | ✓ | | | | | | a charge only a person can settle, because asking again **cannot** change the answer: the rail reported a `complete` for a sum that is not the charge's; or it refused a submit as a duplicate of a payment vpay cannot find again; or the charge has lost the rail's key material, so the rail cannot be asked at all (that one is raised before any request). Never a decline and never a success. The worker escalates the charge to `unresolved` on the first one (vaam-apps/vpay#313); only `notchpay` raises it today |
 /// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
 /// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
 ///

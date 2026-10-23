@@ -41,10 +41,12 @@
 //! `submit` returns. Notch Pay finds a payment by its own reference alone
 //! (`GET /payments?search=` does not match ours). So a crash after the
 //! process call and before `submit` returns leaves a prompted payment vpay
-//! cannot read. A retry then gets `409` and answers `Malformed`: the
-//! charge's fate is unknown, never `Submitted` and never a decline, and an
-//! operator reconciles it in Notch Pay's dashboard (the maintainer's
-//! decision, 2026-10-21).
+//! cannot read. A retry then gets `409` and answers `NeedsReconciliation`:
+//! the charge's fate is unknown, never `Submitted` and never a decline, and
+//! an operator reconciles it in Notch Pay's dashboard (the maintainer's
+//! decision, 2026-10-21). Since 2026-10-23 the worker makes such a charge
+//! `unresolved`, alerting, on the first answer that says so, rather than
+//! after 24 hours on the ladder as a `Malformed` (vaam-apps/vpay#313).
 //!
 //! Refunds are a declared [`ProviderError::NotImplemented`] token
 //! (`notchpay::refund`): Notch Pay documents `POST /refunds` in a guide only,
@@ -286,11 +288,17 @@ fn require_our_payment(payment: &Payment, charge: &ChargeRef) -> Result<(), Prov
 ///
 /// # Errors
 ///
-/// [`ProviderError::Config`] if there is none: that is key material vpay
-/// lost for a payment Notch Pay may well have settled, not a payment Notch
-/// Pay never heard of, so it is never [`ChargeStatus::NotFound`]
-/// (`docs/flows/crash-safety.md`; Orange's missing `pay_token` is the same
-/// rule).
+/// [`ProviderError::NeedsReconciliation`] if there is none: that is key
+/// material vpay lost for a payment Notch Pay may well have settled, not a
+/// payment Notch Pay never heard of, so it is never
+/// [`ChargeStatus::NotFound`] (`docs/flows/crash-safety.md`; Orange's
+/// missing `pay_token` is the same rule). Raised before any request.
+///
+/// It was [`ProviderError::Config`] until 2026-10-23, which dead-letters the
+/// poll job: the alert fired once and the polling stopped, with the charge
+/// left `submitting` or `pending` where the `unresolved` query of
+/// `docs/runbooks/unresolved-charges.md` never finds it. Now the worker
+/// makes it `unresolved` and keeps the hourly poll (vaam-apps/vpay#313).
 fn held_notchpay_reference(charge: &ChargeRef) -> Result<&str, ProviderError> {
     charge
         .ref_extra
@@ -298,7 +306,7 @@ fn held_notchpay_reference(charge: &ChargeRef) -> Result<&str, ProviderError> {
         .map(String::as_str)
         .filter(|reference| !reference.is_empty())
         .ok_or_else(|| {
-            ProviderError::Config(format!(
+            ProviderError::needs_reconciliation(format!(
                 "notchpay: the charge holds no `{NOTCHPAY_REFERENCE}`, so Notch Pay cannot be \
                  asked about it; reconcile it in Notch Pay's dashboard"
             ))
@@ -425,7 +433,7 @@ impl ProviderAdapter for Adapter {
     /// | `201`, any other documented status | `Submitted` carrying it; the poll resolves it |
     /// | `201` without Notch Pay's reference, or about another `trxref` | `Malformed`; nothing is sent to the payer |
     /// | `409`, and the charge already holds Notch Pay's reference | read it: `pending` → call 2; any other status → `Submitted`; none → `Malformed` |
-    /// | `409`, and the charge holds none | `Malformed`: the payment cannot be found again (below) |
+    /// | `409`, and the charge holds none | `NeedsReconciliation`: the payment cannot be found again (below) |
     /// | anything else | `mapping::initialize_refusal` |
     ///
     /// The `409` is the crash-retry case: a submit that reached Notch Pay and
@@ -433,13 +441,17 @@ impl ProviderAdapter for Adapter {
     /// whether the prompt was sent, so a retry never prompts twice. Without
     /// it, Notch Pay offers no way to find the payment by our reference
     /// (2026-10-21: `search` matches its own reference only), so the answer
-    /// is `Malformed`: fate unknown, not `Submitted`, not a decline.
+    /// is `NeedsReconciliation`: fate unknown, not `Submitted`, not a decline,
+    /// and not something a second submit can learn either, since it would
+    /// meet the same `409`. It was `Malformed` until 2026-10-23, which kept
+    /// the charge on the resubmit ladder for 24 hours (vaam-apps/vpay#313).
     ///
     /// # Errors
     ///
     /// `Config` for a missing key, setting or payer, or a charge in another
     /// currency; `Rejected` for a refusal; `Transport` and `Malformed` leave
-    /// the charge's fate unknown, never a decline.
+    /// the charge's fate unknown, never a decline; `NeedsReconciliation` for
+    /// the `409` no submit can resolve.
     async fn submit(
         &self,
         charge: &ChargeRef,
@@ -489,7 +501,7 @@ impl ProviderAdapter for Adapter {
                         .get(NOTCHPAY_REFERENCE)
                         .filter(|reference| !reference.is_empty())
                     else {
-                        return Err(ProviderError::malformed(
+                        return Err(ProviderError::needs_reconciliation(
                             "notchpay: initialize answered 409 for this reference and the charge \
                              holds no Notch Pay reference; Notch Pay cannot find the payment by \
                              ours, so its fate is unknown and an operator must reconcile it",
@@ -519,10 +531,13 @@ impl ProviderAdapter for Adapter {
     ///
     /// # Errors
     ///
-    /// `Config` for a missing key, a charge with no Notch Pay reference in
-    /// `ref_extra`, or a `404` that is not Notch Pay's "Payment not found"; `Rejected` only for our own refused keys;
-    /// `Transport` and `Malformed` as for `submit`. A payment Notch Pay has no
-    /// record of is [`ChargeStatus::NotFound`], not an error.
+    /// `Config` for a missing key, or a `404` that is not Notch Pay's
+    /// "Payment not found"; `Rejected` only for our own refused keys;
+    /// `Transport` and `Malformed` as for `submit`; `NeedsReconciliation` for
+    /// a charge with no Notch Pay reference in `ref_extra`, and for a
+    /// success for a sum that is not the charge's (`mapping`). A payment
+    /// Notch Pay has no record of is [`ChargeStatus::NotFound`], not an
+    /// error.
     async fn query_status(
         &self,
         charge: &ChargeRef,

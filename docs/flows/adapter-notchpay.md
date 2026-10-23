@@ -56,7 +56,9 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
   2026-10-22. A charge whose reads the adapter refuses is never settled by
   them: step 5's short collection was still `pending` after fifteen minutes
   ([verification](../status/verification/2026-10-21-notchpay-step5.md)), and by
-  the code, not observed, it becomes `unresolved` at the 24-hour horizon.)_
+  the code, not observed, it became `unresolved` at the 24-hour horizon.
+  Since 2026-10-23 it becomes `unresolved` on its first such read, which is
+  proven against WireMock only.)_
 
 ## Admission: ADR-0031, not rule 3 as written
 
@@ -76,7 +78,7 @@ The six conditions ADR-0031 puts on that admission, and where each is met:
 | 2. Boot refuses a configuration without the secret | `vpay_config::config::REQUIRED_RAIL_KEYS`, `notchpay` row: `public_key` and `private_key`                                                                                                                                 |
 | 3. The exposure is written where an operator reads | § "Production risks" below; RFC-0012 § 9; comments beside the keys in `config/application.yml`, `.env.example` and `deploy/helm/vpay/values.yaml`                                                                         |
 | 4. The process says it too                         | `ProviderAdapter::accepted_exposure`, logged by `vpay_api::boot::warn_about_accepted_exposures` at every boot of `serve` and `worker`; in livemode, boot also refuses without `settings.accept_public_key_exposure: true` |
-| 5. Integrity is checked on the answer              | a success is `Succeeded` only for the charge's own amount and currency; otherwise `Malformed`                                                                                                                             |
+| 5. Integrity is checked on the answer              | a success is `Succeeded` only for the charge's own amount and currency; otherwise `NeedsReconciliation` (`Malformed` until 2026-10-23)                                                                                    |
 | 6. The written question stays open                 | RFC-0012 § 10 item 1, unanswered                                                                                                                                                                                          |
 
 ## Production risks
@@ -198,7 +200,7 @@ client follows no redirect: a `3xx` is `Malformed`.
 | `201`, another documented status                                  | `Submitted` with `notchpay_reference`; the poll resolves it                                                         |
 | `201` with no Notch Pay reference, or a `trxref` that is not ours | `Malformed`; nothing is sent to the payer                                                                           |
 | `409`, the charge holds `notchpay_reference`                      | the crash-retry case: read it. `pending` → call 2; another status → `Submitted`; none → `Malformed`                 |
-| `409`, the charge holds none                                      | `Malformed`: the fate is unknown, never `Submitted`, never a decline (below)                                        |
+| `409`, the charge holds none                                      | `NeedsReconciliation`: the fate is unknown, never `Submitted`, never a decline (below)                              |
 | `400`, `422`                                                      | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused                       |
 | `401`, `403`                                                      | `Rejected { provider_account_blocked }`, which pages                                                                |
 | `404`                                                             | `Config`                                                                                                            |
@@ -210,9 +212,11 @@ adapter reads the payment and answers `Submitted`, unless the read still says
 
 **The read** is `GET /payments/{notchpay_reference}`, and the answer must
 name the charge's own reference as its `trxref`, or it is `Malformed`. A
-charge with no `notchpay_reference` is `Config`, before any request: that is
-key material vpay lost, not a payment Notch Pay never heard of, so it is
-never `NotFound` (the same rule as Orange's missing `pay_token`).
+charge with no `notchpay_reference` is `NeedsReconciliation`, before any
+request: that is key material vpay lost, not a payment Notch Pay never heard
+of, so it is never `NotFound` (the same rule as Orange's missing
+`pay_token`). It was `Config` until 2026-10-23, which dead-lettered the poll
+job.
 
 Until 2026-10-21 every call addressed the payment by **our** reference, as
 the specification's example does. Notch Pay's sandbox answered `404`
@@ -230,20 +234,24 @@ carry no `trxref`
 So a crash between call 1 and `submit` returning leaves a payment vpay
 cannot read. Before call 2, the payer was never prompted and the payment
 expires. After it, the payer may pay, and only Notch Pay's dashboard shows
-it. The retry's `409` answers `Malformed`, which leaves the charge's fate
-unknown for an operator (the maintainer's decision, 2026-10-21).
+it. The retry's `409` answers `NeedsReconciliation`, which leaves the
+charge's fate unknown for an operator (the maintainer's decision,
+2026-10-21). Since 2026-10-23 the worker escalates that charge to
+`unresolved`, alerting, on that first `409`, and never sends it again; it was
+`Malformed` until then, and met the same `409` on every rung of the resubmit
+ladder for 24 hours (vaam-apps/vpay#313).
 
-| The read answered                           | `ChargeStatus`                                                                                                                                                        |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`, `processing`, `incomplete`       | `Pending`. `incomplete` (paid less than asked) is never a success                                                                                                     |
-| `complete`, `refunded`, `partialy-refunded` | `Succeeded { provider_txn_id: transaction.id, or transaction.reference }`, **only if** `amount`, `amounts.total` and currency are the charge's; otherwise `Malformed` |
-| `canceled`                                  | `Failed { payer_declined }`, the status word as `raw`                                                                                                                 |
-| `failed`, `rejected`                        | `Failed { provider_error }`, the status word as `raw`                                                                                                                 |
-| `expired`, `abandoned`                      | `Failed { payer_timeout }`                                                                                                                                            |
-| any other status, or none                   | `Malformed`, naming it                                                                                                                                                |
-| `404` "Payment not found"                   | `NotFound`: never on its own a failure ([crash-safety.md](crash-safety.md))                                                                                           |
-| any other `404`                             | `Config`: a wrong base path or an unknown Sync account                                                                                                                |
-| `401`, `403`                                | `Rejected { provider_account_blocked }`                                                                                                                               |
+| The read answered                           | `ChargeStatus`                                                                                                                                                                  |
+| ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`, `processing`, `incomplete`       | `Pending`. `incomplete` (paid less than asked) is never a success                                                                                                               |
+| `complete`, `refunded`, `partialy-refunded` | `Succeeded { provider_txn_id: transaction.id, or transaction.reference }`, **only if** `amount`, `amounts.total` and currency are the charge's; otherwise `NeedsReconciliation` |
+| `canceled`                                  | `Failed { payer_declined }`, the status word as `raw`                                                                                                                           |
+| `failed`, `rejected`                        | `Failed { provider_error }`, the status word as `raw`                                                                                                                           |
+| `expired`, `abandoned`                      | `Failed { payer_timeout }`                                                                                                                                                      |
+| any other status, or none                   | `Malformed`, naming it                                                                                                                                                          |
+| `404` "Payment not found"                   | `NotFound`: never on its own a failure ([crash-safety.md](crash-safety.md))                                                                                                     |
+| any other `404`                             | `Config`: a wrong base path or an unknown Sync account                                                                                                                          |
+| `401`, `403`                                | `Rejected { provider_account_blocked }`                                                                                                                                         |
 
 **The read names no failure reason.** On 2026-10-21 the sandbox's outcome
 numbers read `complete` (MTN and Orange success), `failed` (other failure),
@@ -261,9 +269,15 @@ asked:** `amount` 107, `amounts.total` 105. On every other answer `total`
 equalled `amount`. The adapter compared `amount` only, so once the
 addressing is fixed that read would have been `Succeeded`. A success now
 needs `amounts.total` to be the charge's too, and a missing `amounts` is
-`Malformed`. A short `total` has its own error: money moved, not this
+refused as well. A short `total` has its own message: money moved, not this
 charge's amount, so the charge needs an operator. The question is with
-Notch Pay in writing. **Step 5 confirmed it through the adapter on
+Notch Pay in writing. **All three refusals are `NeedsReconciliation` since
+2026-10-23** (vaam-apps/vpay#313; `Malformed` until then): the worker
+escalates the charge to `unresolved`, hourly and alerting, on the first read
+that says so, instead of riding the ladder at `WARN` until the 24-hour
+horizon. Including the wrong `amount` or currency and the missing total, not
+only the short total, was the implementer's call, recorded in the pull
+request for the maintainer to reverse. **Step 5 confirmed it through the adapter on
 2026-10-21:** `+237670000001` (230 XAF) read `complete` with a short
 `amounts.total` and was refused as `Malformed` on each read after the first,
 never `Succeeded`. After 15 minutes the charge was `pending` and the intent
@@ -395,6 +409,20 @@ without the `+`. The adapter sends the `+` form the documentation shows.
 
 ## Status
 
+**Changed 2026-10-23: an answer only a person can act on escalates at once**
+([#313](https://github.com/vaam-apps/vpay/issues/313)). Three answers are
+`ProviderError::NeedsReconciliation` (they were `Malformed` or `Config`):
+
+- the short collection, and any `complete` for a sum that is not the
+  charge's;
+- the `409` for a charge that lost its `trx.…`;
+- a charge with no `trx.…` to read by.
+
+The worker makes the charge `unresolved` on the first one, polled hourly and
+alerting. Proven against WireMock and a real Postgres in `worker_recovery.rs`;
+not run against Notch Pay
+([verification](../status/verification/2026-10-23-needs-reconciliation.md)).
+
 **Built 2026-10-20. Its calls were first made through the adapter on
 2026-10-21, against Notch Pay's real sandbox (RFC-0012 step 5): one
 payment succeeded, one failed, and one that read `complete` for less than its
@@ -448,9 +476,10 @@ ran.)_
     `amounts.total` short of the charge's amount. Its first read (about
     0.5 s after submit) answered `pending`; each of the next eleven was
     refused as `Malformed`, with the worker's WARN each time. At 15 minutes the charge was still `pending` and the
-    intent `processing`, with no event and no ledger entry. By the code it
-    reaches `unresolved` only at the 24 h horizon (`escalate_to_unresolved`);
-    that was not observed.
+    intent `processing`, with no event and no ledger entry. By the code at
+    the time it reached `unresolved` only at the 24 h horizon
+    (`escalate_to_unresolved`); that was not observed. Since 2026-10-23 the
+    same read escalates it on its first occurrence (#313).
   - Every charge held `provider_ref_extra.notchpay_reference`
     (`trx.test_…`) after submit, and every read by it was answered. vpay sent
     3 submits and 16 reads. The ADR-0031 `WARN` was logged at boot by the
@@ -484,13 +513,19 @@ ran.)_
   refused status read is recorded as answered, `status_code` 0 with its
   `error_kind`; a refused submit still stays unresolved
   ([verification](../status/verification/2026-10-21-provider-requests-refused-answers.md)).
-  The second is unchanged: the adapter's "needs an operator" message wakes
-  nobody for 24 h, because the worker retries a `Malformed` on the ladder with
-  a `WARN` until the horizon (read from the code, not observed past 15
-  minutes). It belongs to the worker, and it is a design question for the
-  maintainer. _(This bullet was headed "neither an adapter defect, and no
+  The second is fixed too, since 2026-10-23
+  ([#313](https://github.com/vaam-apps/vpay/issues/313), the maintainer's
+  "Go with option 1 on #313, build it"): the short collection is
+  `NeedsReconciliation`, and the worker escalates the charge to `unresolved`,
+  hourly and alerting, on the first read that says so, against a WireMock
+  Notch Pay and a real Postgres
+  ([verification](../status/verification/2026-10-23-needs-reconciliation.md)).
+  Before it, the adapter's "needs an operator" message woke nobody for 24 h,
+  because the worker retried a `Malformed` on the ladder with a `WARN` until
+  the horizon. _(This bullet was headed "neither an adapter defect, and no
   change made", and described the first observation in the present tense,
-  until 2026-10-22; #314 had already changed it.)_
+  until 2026-10-22; #314 had already changed it. It called the second
+  "unchanged … a design question for the maintainer" until 2026-10-23.)_
 - **Step 1 done 2026-10-21** from a cloud session, with the probe's
   cloud-only `--ca-bundle`, on the maintainer's approval in that session:
   items 3, 4, 5 and 15 answered; 2, 13 and 16 contradicted; 7 and 11 not
@@ -528,9 +563,11 @@ ran.)_
   (`notchpay::refund` is still a token; the sandbox answered `403` to the
   probe's `POST /refunds` on 2026-10-22); Orange's failure path, for which
   Notch Pay documents no test number; how a real unanswered prompt ends, and
-  how long it takes, which a test number cannot show; the 24 h escalation of the
-  short collection to `unresolved` was not observed, because the stack was
-  torn down at 15 minutes; and the `amounts.total` value Notch Pay returned
+  how long it takes, which a test number cannot show; a real short collection
+  reaching `unresolved`, which since 2026-10-23 happens on its first read and
+  has been proven against WireMock only (the 24 h escalation step 5 would have
+  waited for was never observed either: the stack was torn down at 15
+  minutes); and the `amounts.total` value Notch Pay returned
   for `…000001` was not captured (vpay logs no response body, and no extra
   read was made). _(This bullet listed "Orange (`+23769…`), timeout
   (`…000003`) and canceled (`…000004`) were not run through vpay, and step

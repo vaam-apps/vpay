@@ -75,10 +75,13 @@ slow to index a new charge would look identical to one that never got it.
 
 **Added 2026-10-21. The table reads `submit` rows only, and `NULL` there means
 the outcome is unknown, not that the rail said nothing.** A resubmit the adapter
-refuses — `Malformed`, which Notch Pay's unresolvable `409` and MTN's unfollowed
-`307` both are, so that the charge's fate stays unknown — is written `NULL`
-with its `error_kind`, so the next poll reads the middle row and polls rather
-than the bottom row and advances. A `Rejected` resubmit is different, and
+refuses — `Malformed`, which MTN's unfollowed `307` is, or
+`NeedsReconciliation`, which Notch Pay's unresolvable `409` has been since
+2026-10-23 (vaam-apps/vpay#313), so that the charge's fate stays unknown — is
+written `NULL` with its `error_kind`, so the next poll reads the middle row and
+polls rather than the bottom row and advances. A `NeedsReconciliation`
+resubmit also escalates the charge to `unresolved` at once, so it is never
+resubmitted again. A `Rejected` resubmit is different, and
 since 2026-10-21 it ends the table for that charge: the worker fails it (charge
 `failed`, intent back to the payer with the reason, one
 `payment_intent.payment_failed` event) and only then marks the attempt row

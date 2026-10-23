@@ -1486,6 +1486,37 @@ async fn finish_confirm(
                         .record_response(attempt.request_id, None, Some(error_kind(&error)))
                         .await?;
                 }
+                // The rail's answer only a person can act on (vaam-apps/vpay#313):
+                // Notch Pay's `409` for a reference it holds and vpay cannot
+                // address. Written as its own arm so the decision is visible,
+                // and it is the arm above's decision: the charge stays
+                // `submitting` and the row unanswered, the merchant gets the
+                // same `502` as for a `Malformed` — the outcome is not known,
+                // do not retry — under its own code.
+                //
+                // **This request does not escalate the charge.** Its poll job
+                // is already enqueued, with the charge (`insert_charge`); the
+                // recovery table reads the unanswered row as "asked, no
+                // answer" and polls, and the poll meets the same answer and
+                // makes the charge `unresolved` at once, alerting, in the
+                // worker — the one place that owns the escalation, its alert
+                // and its hourly pacing. A confirm writing `unresolved` here
+                // would be a second writer of that state with no alert behind
+                // it. The cost is the recovery window (`RecoveryPolicy::
+                // not_found_window`, sixty seconds) before the poll acts.
+                ProviderError::NeedsReconciliation { .. } => {
+                    repositories
+                        .record_response(attempt.request_id, None, Some(error_kind(&error)))
+                        .await?;
+                    tracing::warn!(
+                        payment_intent_id = %intent.id,
+                        charge_id = %attempt.charge.id,
+                        provider_request_id = attempt.request_id,
+                        %error,
+                        "the rail's answer to this confirm needs an operator; the charge stays \
+                         submitting and its poll job will escalate it to unresolved"
+                    );
+                }
             }
             Err(ApiError::from(error))
         }

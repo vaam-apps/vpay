@@ -358,13 +358,15 @@ async fn the_read_is_addressed_by_notch_pays_reference_and_carries_both_keys() {
 }
 
 /// A charge with no Notch Pay reference is key material vpay lost, not a
-/// payment Notch Pay never heard of: `Config`, before any request, and never
-/// `NotFound`.
+/// payment Notch Pay never heard of: `NeedsReconciliation`, before any
+/// request, and never `NotFound`. It was `Config` until 2026-10-23, which
+/// dead-lettered the poll job (vaam-apps/vpay#313). `closed()` is a base URL
+/// nothing listens on, so a request would have been `Transport`.
 #[tokio::test]
-async fn a_read_without_notch_pays_reference_is_config_before_any_request() {
+async fn a_read_without_notch_pays_reference_needs_reconciliation_before_any_request() {
     let outcome = adapter().query_status(&charge(), &closed()).await;
     assert!(
-        matches!(&outcome, Err(ProviderError::Config(message)) if message.contains(NOTCHPAY_REFERENCE)),
+        matches!(&outcome, Err(ProviderError::NeedsReconciliation { context }) if context.contains(NOTCHPAY_REFERENCE)),
         "{outcome:?}"
     );
 }
@@ -455,10 +457,11 @@ async fn an_initialize_answer_for_another_reference_never_prompts() {
 
 /// A `409` for a charge that holds no Notch Pay reference cannot be
 /// resolved: Notch Pay finds payments by its own reference only. It is
-/// `Malformed` (fate unknown), never `Submitted` and never a decline, and
-/// nothing more is sent.
+/// `NeedsReconciliation` (fate unknown, and no second submit can learn it),
+/// never `Submitted` and never a decline, and nothing more is sent. It was
+/// `Malformed` until 2026-10-23 (vaam-apps/vpay#313).
 #[tokio::test]
-async fn a_duplicate_with_no_held_reference_is_malformed_and_sends_nothing_more() {
+async fn a_duplicate_with_no_held_reference_needs_reconciliation_and_sends_nothing_more() {
     let (origin, server) = serve(vec![(
         "HTTP/1.1 409 Conflict",
         r#"{"code":"409","status":"Conflict","message":"Reference already existing","errors":{"reference":["Reference already existing"]}}"#.to_owned(),
@@ -466,7 +469,7 @@ async fn a_duplicate_with_no_held_reference_is_malformed_and_sends_nothing_more(
     .await;
     let outcome = adapter().submit(&charge(), &config(&origin)).await;
     assert!(
-        matches!(&outcome, Err(ProviderError::Malformed { .. })),
+        matches!(&outcome, Err(ProviderError::NeedsReconciliation { .. })),
         "{outcome:?}"
     );
     assert_eq!(

@@ -109,7 +109,8 @@
 //! Handing a rail addressed by its own token a charge with none is not a
 //! "reference the rail has never heard of": it is key material we lost for a
 //! charge the rail may well have settled, which is why the adapters answer
-//! `ProviderError::Config` and never `ChargeStatus::NotFound`
+//! `ProviderError::NeedsReconciliation` (`Config` until 2026-10-23,
+//! vaam-apps/vpay#313) and never `ChargeStatus::NotFound`
 //! (`docs/flows/crash-safety.md`). Seeding it here keeps
 //! [`not_found_is_never_on_its_own_a_failure`] a test of the rail's 404 and
 //! not an accidental test of our own missing-token branch — that branch has
@@ -1449,7 +1450,8 @@ async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
 }
 
 /// Notch Pay only: a `409` for a charge that holds no Notch Pay reference is
-/// [`ProviderError::Malformed`], never `Submitted` and never a decline.
+/// [`ProviderError::NeedsReconciliation`], never `Submitted` and never a
+/// decline (`Malformed` until 2026-10-23, vaam-apps/vpay#313).
 ///
 /// Rail-specific on purpose. Notch Pay finds a payment by its own reference
 /// only (`GET /payments?search=` did not match ours in the sandbox on
@@ -1471,13 +1473,15 @@ async fn notchpay_a_duplicate_it_cannot_resolve_fails_closed() {
     let outcome = rail.adapter.submit(&charge, &rail.config).await;
 
     assert!(
-        matches!(outcome, Err(ProviderError::Malformed { .. })),
-        "an unresolvable 409 must be Malformed, never Submitted or a decline: {outcome:?}"
+        matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+        "an unresolvable 409 must be NeedsReconciliation, never Submitted or a decline, and \
+         not Malformed, which a later submit could resolve: {outcome:?}"
     );
 }
 
 /// Notch Pay only: a `complete` read that collected less than the charge is
-/// [`ProviderError::Malformed`], never [`ChargeStatus::Succeeded`].
+/// [`ProviderError::NeedsReconciliation`], never [`ChargeStatus::Succeeded`]
+/// (`Malformed` until 2026-10-23, vaam-apps/vpay#313).
 ///
 /// Rail-specific on purpose. Notch Pay's sandbox read its "insufficient
 /// funds" test number as `complete` on 2026-10-21, with `amount` 107 and
@@ -1498,8 +1502,9 @@ async fn notchpay_a_complete_that_collected_less_than_the_charge_is_never_a_succ
     let outcome = rail.adapter.query_status(&charge, &rail.config).await;
 
     assert!(
-        matches!(outcome, Err(ProviderError::Malformed { .. })),
-        "a complete for 4980 of 5000 XAF must be Malformed, never a success: {outcome:?}"
+        matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+        "a complete for 4980 of 5000 XAF must be NeedsReconciliation, never a success: \
+         {outcome:?}"
     );
 }
 

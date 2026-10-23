@@ -1079,7 +1079,12 @@ async fn finish_refund(
         // error here and somebody has to decide which side of this line it
         // falls on. See this function's docs for why nothing is released,
         // and why the merchant is answered with the pending refund.
-        ProviderError::Transport { .. } | ProviderError::Malformed { .. } => {
+        // `NeedsReconciliation` is on this side by its own definition — the
+        // money's fate is the rail's and only a person can learn it — though
+        // no adapter raises it from `refund` today (the port's error table).
+        ProviderError::Transport { .. }
+        | ProviderError::Malformed { .. }
+        | ProviderError::NeedsReconciliation { .. } => {
             repositories
                 .record_response(attempt, None, Some(error_kind(&error)))
                 .await?;
@@ -1665,6 +1670,7 @@ fn error_kind(error: &ProviderError) -> &'static str {
     match error {
         ProviderError::Transport { .. } => "transport",
         ProviderError::Malformed { .. } => "malformed",
+        ProviderError::NeedsReconciliation { .. } => "needs_reconciliation",
         ProviderError::Rejected { .. } => "rejected",
         ProviderError::Config(_) => "config",
         ProviderError::Unsupported => "unsupported",

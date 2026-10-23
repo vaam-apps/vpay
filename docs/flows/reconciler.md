@@ -29,6 +29,26 @@ once an hour, and now raising an alert for a human to reconcile against the
 rail's settlement statement. The intent remains `processing`. **The payment is
 not lost, it is escalated.**
 
+**Sooner, when the rail's answer can only be settled by a person.** Since
+2026-10-23 (vaam-apps/vpay#313) an adapter that has understood the rail, and
+knows asking again cannot change the answer, says so with
+`ProviderError::NeedsReconciliation`. The worker then takes the same
+escalation on the **first** poll or resubmit that gets it, at any age:
+
+- `unresolved`;
+- polled hourly;
+- alerting;
+- never parked and never terminal, so a later terminal answer still settles
+  it.
+
+`notchpay` is the only rail that raises it. It does so for a `complete` for a
+sum that is not the charge's, which is Notch Pay's sandbox "insufficient
+funds" read. It also does so for an initialize `409` on a charge that lost the
+`trx.…`, and for a charge with no `trx.…` to read by. Until then these were
+`Malformed`, which rode the ladder at `Warn` for the whole 24 hours, or `Config`,
+which parked the poll job. An answer the adapter merely could not read stays
+`Malformed` and stays on the ladder.
+
 **A late success** — minute 40, or hour 30 from `unresolved` — is the normal
 transition. The intent was `processing` throughout, so it moves to `succeeded`
 and emits a plain `payment_intent.succeeded`. No special event type, no special
@@ -106,7 +126,10 @@ documents that it does not. Corrected 2026-10-22, with nothing changed either:
 the `scan:live` backstop runs every ten minutes, not hourly. Extended
 2026-10-22: a sixth singleton, `ensure_callbacks`, registers Notch Pay's
 callback endpoint (§ "Where a rail sends its callbacks"); nothing in the poll
-ladder changed.**
+ladder changed. Extended 2026-10-23 (vaam-apps/vpay#313): a rail answer only a
+person can act on escalates the charge to `unresolved` at once, not at the
+horizon (§ "Timers assert nothing", and the bullet after the 24-hour
+escalation's).**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at
@@ -254,6 +277,23 @@ NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
   guaranteed is the alert and the hourly poll. Once a human is reconciling a
   charge against the rail's settlement statement, whether to push another
   submission at it is their call, not a queue's.
+- **An answer only a person can act on does not wait for the horizon
+  (2026-10-23, vaam-apps/vpay#313).** `ProviderError::NeedsReconciliation`
+  from `query_status` escalates through the same `escalate_to_unresolved`, at
+  any age. So does the same variant from a resubmit, which escalates from
+  `submitting`: one alert on arrival, then the hourly poll; the resubmit job's
+  hourly re-run finds the charge outside `submitting` and finishes, so the
+  rail is never sent the charge again. Three cases in `worker_recovery.rs`
+  prove it against WireMock's Notch Pay and a real Postgres, at the production
+  24-hour horizon:
+  - `a_short_collection_is_unresolved_on_the_first_poll_and_an_unreadable_answer_is_not`,
+    in which a `Malformed` beside it stays on the ladder;
+  - `a_short_collection_the_worker_escalated_still_settles_on_a_later_answer`;
+  - `a_duplicate_no_submit_can_resolve_is_unresolved_by_its_resubmit_and_never_resent`.
+
+  Not proven: a real Notch Pay short collection reaching `unresolved`, which
+  needs another sandbox run on the maintainer's approval.
+
 - **A late success settles normally.** `succeeded` from any live state is one
   transaction: charge `succeeded` (plus `provider_txn_id`), intent `succeeded`
   with `amount_received = amount`, and one `payment_intent.succeeded` event —

@@ -130,7 +130,11 @@ Notes on cells that a word cannot carry:
   answered `403` to every `POST /refunds` the probe sent:
   [verification/2026-10-22-notchpay-refunds.md](verification/2026-10-22-notchpay-refunds.md)),
   a live key or Notch Pay's production. The short collection's escalation to `unresolved` at the 24 h
-  horizon is read from the code and was not observed.
+  horizon is read from the code and was not observed. **Since 2026-10-23 that
+  escalation happens on the first read that says so**
+  ([#313](https://github.com/vaam-apps/vpay/issues/313):
+  `NeedsReconciliation`; [verification](verification/2026-10-23-needs-reconciliation.md)),
+  proven against WireMock and a real Postgres, not against Notch Pay.
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the evidence for the build. _(This note read "client … no binary links
   it … waits on the rule-3 decision" until the same day. It was headed

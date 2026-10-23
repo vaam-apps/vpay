@@ -398,11 +398,15 @@ Expected if the mapping is right:
   reason).
 - `…000001`, the "insufficient funds" number, reaches neither. Notch Pay's
   sandbox reads it `complete` with `amounts.total` short of `amount` (step 1
-  and step 5, 2026-10-21). The adapter refuses that as `Malformed`, which the
-  worker retries on the ladder with a WARN ("…the charge needs an operator to
-  reconcile it with Notch Pay"). The charge stays `pending` and the intent
-  `processing`, and the charge becomes `unresolved` only at the 24 h horizon.
-  **Any `succeeded` here is a defect.**
+  and step 5, 2026-10-21). Since 2026-10-23 the adapter refuses that as
+  `NeedsReconciliation` (vaam-apps/vpay#313), and the worker escalates the
+  charge to `unresolved` on the first read that says so: one WARN naming the
+  cause ("…needs an operator; escalating it to unresolved now"), then an ERROR
+  with `alert = true`, then the hourly poll. The intent stays `processing`.
+  **Any `succeeded` here is a defect, and so is a charge still `pending`
+  after its second read.** _(Until 2026-10-23 this said the adapter refused it
+  as `Malformed`, the worker retried it on the ladder with a WARN, and the
+  charge became `unresolved` only at the 24 h horizon.)_
 
 Whatever you see is the answer. Do not adjust anything to match the
 expectation.

@@ -348,6 +348,46 @@ Without the escalation at all, `ProviderError::Unavailable` is only
 ladder quietly past the horizon forever: no `unresolved`, no alert, nobody
 reconciling a charge a payer may have paid.
 
+**The same exception, at any age, for an answer only a person can act on**
+(vaam-apps/vpay#313, ADR-0011's 2026-10-23 amendment). An adapter raises
+`ProviderError::NeedsReconciliation` when it has understood the rail and asking
+again cannot change the answer. Today that is `notchpay`, for three cases:
+
+- a `complete` for a sum that is not the charge's;
+- an initialize `409` for a charge that lost Notch Pay's `trx.…`;
+- a charge with no `trx.…` to read by. `orange_money`'s missing `pay_token`
+  is the same case.
+
+`rail_did_not_answer` escalates on it before the horizon arm is consulted.
+`resubmit_charge` escalates on it from `submitting` too, through the shared
+`needs_an_operator`: the adapter's sentence is logged at `WARN` by charge,
+then `escalate_to_unresolved` runs. The arm matches the leaf's **variant** and
+nothing else. A worker reading the leaf's text, or its code, would be a second
+oracle beside `Classify`, which is what ADR-0011 exists to prevent.
+
+Three consequences are easy to miss:
+
+- **The resubmit job escalates once and then finishes.** Its `Exhausted` brings
+  it back in an hour. On that run it finds the charge outside `submitting` and
+  returns `Done` without calling the rail, so exactly one initialize was ever
+  sent. The poll job carries the hourly alert from there.
+- **A submit's attempt row stays unanswered.** `submit_again` records
+  `NeedsReconciliation` with `record_unresolved_submit`, `status_code` `NULL`,
+  because an answered `submit` row beside a live charge is what
+  `recovery_step` reads as `Advance`.
+- **A read's attempt row says "answered".** `read_failure_status` writes the
+  sentinel `0`, because the short `complete` _was_ answered (#314). This
+  over-claims in one place: a charge with no rail key material is refused
+  before any request.
+
+`backends/tests/integration/tests/worker_recovery.rs` proves the path:
+
+- `a_short_collection_is_unresolved_on_the_first_poll_and_an_unreadable_answer_is_not`
+  runs at the production 24-hour horizon, and keeps a `Malformed` beside the
+  escalated charge to show it stays on the ladder;
+- `a_short_collection_the_worker_escalated_still_settles_on_a_later_answer`;
+- `a_duplicate_no_submit_can_resolve_is_unresolved_by_its_resubmit_and_never_resent`.
+
 `escalate_to_unresolved` never returns `Ok`. Its `Result<Outcome, _>` return
 type exists so a caller can `return escalate_to_unresolved(…).await;` from a
 function that otherwise produces outcomes, and so the state write can propagate
@@ -444,13 +484,14 @@ stateDiagram-v2
     end note
 ```
 
-| `ProviderError`                 | `submit` row | `query_status` row      | Why                                                                                                                                                                                                                        |
-| ------------------------------- | ------------ | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Malformed`                     | `NULL`       | `0` + `provider_error`  | A read: "the rail answered something this adapter cannot act on". A submit: fail-closed, the charge's fate is unknown — Notch Pay's unresolvable `409` and MTN's unfollowed `307` are `Malformed` for exactly that reason. |
-| `Rejected`                      | `NULL`       | `0` + `charge_declined` | A read: the rail decided. A submit: a decline — the worker fails the charge first, then records the row answered; recorded before that, recovery would read it as acceptance.                                              |
-| `Transport`                     | `NULL`       | `NULL`                  | A union the port cannot split: "never reached the rail" and "the rail answered `5xx`/`408`/`429`".                                                                                                                         |
-| `Config`                        | `NULL`       | `NULL`                  | Also a union: refused before any request, or a `4xx` the adapter reads as our own misconfiguration (Orange's `404`, MTN's `500` with a configuration code).                                                                |
-| `Unsupported`, `NotImplemented` | `NULL`       | `NULL`                  | Raised before a socket opens — the `NULL` encoding's own example.                                                                                                                                                          |
+| `ProviderError`                 | `submit` row | `query_status` row                  | Why                                                                                                                                                                                                                                                                                                                                                                  |
+| ------------------------------- | ------------ | ----------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Malformed`                     | `NULL`       | `0` + `provider_error`              | A read: "the rail answered something this adapter cannot act on". A submit: fail-closed, the charge's fate is unknown — MTN's unfollowed `307` is `Malformed` for exactly that reason.                                                                                                                                                                               |
+| `NeedsReconciliation`           | `NULL`       | `0` + `charge_needs_reconciliation` | A read: the rail answered and the adapter refused it for good (Notch Pay's short `complete`), with one over-claim — a charge with no rail key material is refused before any request. A submit: fail-closed — Notch Pay's unresolvable `409` (`Malformed` until 2026-10-23, vaam-apps/vpay#313). Either way the worker escalates the charge to `unresolved` at once. |
+| `Rejected`                      | `NULL`       | `0` + `charge_declined`             | A read: the rail decided. A submit: a decline — the worker fails the charge first, then records the row answered; recorded before that, recovery would read it as acceptance.                                                                                                                                                                                        |
+| `Transport`                     | `NULL`       | `NULL`                              | A union the port cannot split: "never reached the rail" and "the rail answered `5xx`/`408`/`429`".                                                                                                                                                                                                                                                                   |
+| `Config`                        | `NULL`       | `NULL`                              | Also a union: refused before any request, or a `4xx` the adapter reads as our own misconfiguration (Orange's `404`, MTN's `500` with a configuration code).                                                                                                                                                                                                          |
+| `Unsupported`, `NotImplemented` | `NULL`       | `NULL`                              | Raised before a socket opens — the `NULL` encoding's own example.                                                                                                                                                                                                                                                                                                    |
 
 **Why a read may say "answered" where a submit may not.** A read moves no
 money, so `NULL` on one is not evidence of anything in flight; the only thing it
@@ -539,6 +580,9 @@ is a decision about the charge.
 Seen on 2026-10-21 against Notch Pay's real sandbox (RFC-0012 step 5): eleven
 reads of one charge, each a `complete` whose `amounts.total` the adapter
 refused, written as `NULL` — "no answer" for reads Notch Pay had answered.
+Since 2026-10-23 that answer is `NeedsReconciliation` and the charge is
+escalated on the first such read, so there is one such row and then one an
+hour (vaam-apps/vpay#313).
 [verification/2026-10-21-provider-requests-refused-answers.md](../status/verification/2026-10-21-provider-requests-refused-answers.md)
 is the measurement.
 

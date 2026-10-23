@@ -206,6 +206,26 @@ whether this is a port or just a folder.
 
 ## Status
 
+**Updated 2026-10-23: a seventh `ProviderError` variant,
+`NeedsReconciliation { context }`** (vaam-apps/vpay#313, ADR-0011's
+amendment). It means: the adapter understood where the charge stands, and
+asking the rail again cannot change it, so only a person can settle it. It is
+`Category::Rail`, so the API answers it as a `Malformed` (`502`); its code is
+`charge_needs_reconciliation` and its severity `Error`. The port's error table
+(`vpay_provider::ProviderAdapter`'s doc) gives it to `submit` and
+`query_status` only. `notchpay` raises it for three cases, which were
+`Malformed` or `Config` until then:
+
+- a `complete` for a sum that is not the charge's;
+- an initialize `409` on a charge that lost its `trx.…`;
+- a charge with no `trx.…`.
+
+`orange_money` raises it for a charge with no `pay_token`. The worker
+escalates the charge to `unresolved` on the first one ([reconciler.md](reconciler.md)).
+`Malformed` keeps its other meaning, an answer the adapter could not read,
+and stays on the poll ladder.
+[verification](../status/verification/2026-10-23-needs-reconciliation.md).
+
 **Updated 2026-10-22: the port learns where a rail's callback URL lives
 (RFC-0013).** `Capabilities::callback_url_mode` (`PerRequest` on `mtn_momo`
 and `orange_money`, `Registered` on `notchpay`), the coherence rule

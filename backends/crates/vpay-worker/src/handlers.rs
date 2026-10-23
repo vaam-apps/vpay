@@ -586,7 +586,8 @@ async fn act_on_recovery(
     }
 }
 
-/// A rail that would not answer, read against the horizon.
+/// A rail that would not answer, read against the horizon — or an answer
+/// only a person can act on, which does not wait for it.
 ///
 /// A rail that will not answer must not be able to keep a charge off the
 /// escalation: `ProviderError::Unavailable` is only [`Severity::Warn`], so a
@@ -596,16 +597,28 @@ async fn act_on_recovery(
 /// error is logged rather than returned and [`JobError::Exhausted`] says so
 /// hourly and with an alert.
 ///
+/// [`ProviderError::NeedsReconciliation`] takes the same escalation **at
+/// once**, whatever the charge's age (vaam-apps/vpay#313). The adapter has
+/// said that asking again cannot change the answer, so 24 hours of rungs
+/// would buy nothing but a day in which the merchant sees `processing` and
+/// nobody is told. It is still [`escalate_to_unresolved`]: never a dead
+/// letter, never terminal, the hourly poll kept, so a later terminal answer
+/// settles the charge the ordinary way.
+///
 /// **Only [`JobError::Provider`].** This is the one place in the worker where
-/// a composite replaces a leaf's classification with its own;
-/// `docs/reference/vpay-worker.md` §"One poll" records why ADR-0011 permits it
-/// here and what a wildcard arm swallowed before.
+/// a composite replaces a leaf's classification with its own — with
+/// [`resubmit_charge`]'s `NeedsReconciliation` arm, its twin since
+/// 2026-10-23; `docs/reference/vpay-worker.md` §"One poll" records why
+/// ADR-0011 permits it here, what a wildcard arm swallowed before, and why the
+/// `NeedsReconciliation` arm (ADR-0011's 2026-10-23 amendment) branches on
+/// the leaf's *variant* and never on its text.
 ///
 /// # Errors
 ///
 /// The error it was given, untouched, for anything that is not a rail failure
-/// short of the horizon; [`JobError::Exhausted`] for the escalation, or
-/// [`JobError::Db`] if the escalation's state write fails.
+/// short of the horizon nor a `NeedsReconciliation`; [`JobError::Exhausted`]
+/// for the escalation, or [`JobError::Db`] if the escalation's state write
+/// fails.
 async fn rail_did_not_answer(
     repositories: &dyn Repositories,
     job: &vpay_db::JobRow,
@@ -615,6 +628,9 @@ async fn rail_did_not_answer(
     error: JobError,
 ) -> Result<Outcome, JobError> {
     match error {
+        JobError::Provider(error @ ProviderError::NeedsReconciliation { .. }) => {
+            needs_an_operator(repositories, job, charge, state, &error, "poll_charge").await
+        }
         JobError::Provider(error) if past_horizon => {
             tracing::warn!(
                 job_id = %job.id,
@@ -626,6 +642,40 @@ async fn rail_did_not_answer(
         }
         error => Err(error),
     }
+}
+
+/// Escalates a charge whose rail answer only a person can act on, now rather
+/// than at the horizon (vaam-apps/vpay#313).
+///
+/// The adapter's sentence is logged here, by charge, because
+/// [`JobError::Exhausted`] — what the loop logs with `alert = true` and
+/// writes to `jobs.last_error` — names the escalation and not its cause. The
+/// cause also stays on the attempt row, as `error_kind`
+/// `charge_needs_reconciliation`. `WARN` rather than `ERROR`: the alert is
+/// the loop's line, once, and this one is its context.
+///
+/// # Errors
+///
+/// Always, as [`escalate_to_unresolved`]: [`JobError::Exhausted`], or
+/// [`JobError::Db`] if the state write fails.
+async fn needs_an_operator(
+    repositories: &dyn Repositories,
+    job: &vpay_db::JobRow,
+    charge: &ChargeRow,
+    state: ChargeState,
+    error: &ProviderError,
+    during: &'static str,
+) -> Result<Outcome, JobError> {
+    tracing::warn!(
+        job_id = %job.id,
+        charge_id = %charge.id,
+        state = %state.as_wire_str(),
+        during,
+        error = %error,
+        "the rail's answer about this charge needs an operator; escalating it to unresolved \
+         now rather than at the horizon"
+    );
+    escalate_to_unresolved(repositories, job, charge, state).await
 }
 
 /// `vpay_core::settle` had no answer, which today means the charge is already
@@ -822,7 +872,20 @@ async fn resubmit_charge(
 
     let (adapter, config) = rail(rails, adapters, job, &charge.provider_code)?;
     let attempt = next_submit_attempt(repositories, &charge).await?;
-    let submitted = submit_again(repositories, adapter, config, job, &charge, attempt).await?;
+    let submitted = match submit_again(repositories, adapter, config, job, &charge, attempt).await {
+        Ok(submitted) => submitted,
+        // A resubmit the rail cannot resolve — Notch Pay's `409` for a
+        // charge that lost its `trx.…` — is not one the next resubmit
+        // resolves either. Escalated from `submitting` at once, as the
+        // poll escalates (`rail_did_not_answer`): the charge stays live,
+        // so this job's hourly re-run finds it outside `submitting` and
+        // finishes, while the poll job keeps asking (vaam-apps/vpay#313).
+        Err(JobError::Provider(error @ ProviderError::NeedsReconciliation { .. })) => {
+            return needs_an_operator(repositories, job, &charge, state, &error, "resubmit_charge")
+                .await;
+        }
+        Err(error) => return Err(error),
+    };
     commit_resubmission(repositories, job, &charge, submitted).await?;
 
     tracing::info!(
@@ -937,7 +1000,11 @@ async fn submit_again(
                     .await?;
                     record_declined_submit(repositories, attempt_id, &error).await?;
                 }
+                // `NeedsReconciliation` with them: whatever the rail did with
+                // the request is exactly what is not known, and an answered
+                // row would read as `Advance` (`record_unresolved_submit`).
                 ProviderError::Malformed { .. }
+                | ProviderError::NeedsReconciliation { .. }
                 | ProviderError::Transport { .. }
                 | ProviderError::Config(_)
                 | ProviderError::Unsupported
@@ -1922,13 +1989,15 @@ async fn record_answer(
 /// [`RecoveryAction::Advance`] — "the rail accepted the submit and only our
 /// bookkeeping is behind". That is false of every error that can arrive here:
 ///
-/// * [`ProviderError::Malformed`] on a submit is **fail-closed on purpose**.
-///   `vpay-adapter-notchpay` returns it for an initialize that answered `409`
-///   when the charge holds no Notch Pay reference, precisely so the charge's
-///   fate stays *unknown* and an operator reconciles it. A row that said
+/// * [`ProviderError::NeedsReconciliation`] on a submit is **fail-closed on
+///   purpose**. `vpay-adapter-notchpay` returns it for an initialize that
+///   answered `409` when the charge holds no Notch Pay reference, precisely so
+///   the charge's fate stays *unknown* and an operator reconciles it (it was
+///   `Malformed` until 2026-10-23, vaam-apps/vpay#313). A row that said
 ///   "answered" would have recovery advance that charge to `submitted` as if
 ///   the rail had accepted it. `vpay-api`'s `finish_confirm` makes the same
-///   choice for the first submit.
+///   choice for the first submit. [`ProviderError::Malformed`] — a `307` the
+///   adapter would not follow — stays unknown for the same reason.
 /// * [`ProviderError::Transport`] and the rest are "may have been asked,
 ///   never answered" — the `NULL` encoding's own definition.
 ///
@@ -1991,6 +2060,16 @@ async fn record_read_failure(
 /// were written as `NULL`, so a Notch Pay `complete` whose `amounts.total`
 /// the adapter refused showed up as 11 reads "with no answer".
 ///
+/// `NeedsReconciliation` is *answered* too, and it is the variant that short
+/// `complete` has been since 2026-10-23 (vaam-apps/vpay#313); writing it as
+/// `NULL` would bring that defect back. It over-claims in one place, and the
+/// place is named rather than hidden: an adapter raises it **before any
+/// request** for a charge whose rail key material is gone (`notchpay`'s
+/// missing `trx.…`, `orange_money`'s missing `pay_token`), and that row then
+/// says "answered" for a read that never left. It is one audit row on a
+/// charge the same poll has just made `unresolved` with an alert, whose
+/// `error_kind` says what happened.
+///
 /// A read can say "answered" where a submit may not ([`record_unresolved_submit`])
 /// because a read moves no money and nothing decides anything from a
 /// `query_status` row: `latest_submit_attempt` filters `operation = 'submit'`
@@ -2012,11 +2091,13 @@ async fn record_read_failure(
 /// Fixing either direction means the port carrying what was sent (ADR-0002),
 /// which is its own decision.
 ///
-/// The `match` is exhaustive on purpose: a seventh [`ProviderError`] variant
+/// The `match` is exhaustive on purpose: an eighth [`ProviderError`] variant
 /// is a compile error here, and somebody has to decide which side it is on.
 fn read_failure_status(error: &ProviderError) -> Option<i32> {
     match error {
-        ProviderError::Malformed { .. } | ProviderError::Rejected { .. } => {
+        ProviderError::Malformed { .. }
+        | ProviderError::NeedsReconciliation { .. }
+        | ProviderError::Rejected { .. } => {
             Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT)
         }
         ProviderError::Transport { .. }
@@ -2569,8 +2650,8 @@ mod tests {
     }
 
     /// A refused status read is **answered** when the rail spoke and
-    /// **unknown** otherwise — all six variants, so a change to one arm is a
-    /// failing row here and a seventh variant is a compile error in the
+    /// **unknown** otherwise — all seven variants, so a change to one arm is a
+    /// failing row here and an eighth variant is a compile error in the
     /// function under test.
     ///
     /// The `Malformed` row is the one Notch Pay's sandbox produced eleven
@@ -2583,9 +2664,17 @@ mod tests {
     #[test]
     fn a_refused_read_is_recorded_as_answered_only_when_the_rail_spoke() {
         let answered = Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT);
-        let cases: [(ProviderError, Option<i32>); 6] = [
+        let cases: [(ProviderError, Option<i32>); 7] = [
             (
                 ProviderError::malformed(
+                    "notchpay: a payment answer carries no status Notch Pay documents",
+                ),
+                answered,
+            ),
+            // The short `complete` itself, since 2026-10-23 (#313). `NULL`
+            // here is the 2026-10-21 defect back.
+            (
+                ProviderError::needs_reconciliation(
                     "notchpay: the read reports complete for this charge's amount, but \
                      amounts.total is not that amount",
                 ),
@@ -2603,7 +2692,7 @@ mod tests {
                 None,
             ),
             (
-                ProviderError::Config("notchpay: the charge holds no `trx` reference".to_owned()),
+                ProviderError::Config("notchpay: credentials.private_key is missing".to_owned()),
                 None,
             ),
             (ProviderError::Unsupported, None),

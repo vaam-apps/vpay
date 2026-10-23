@@ -1056,3 +1056,46 @@ it", then "Yes, start it". [RFC-0013](../rfc/0013-vpay-registers-its-own-callbac
 
 No route moved and no `NotImplemented` token moved. Gates and counts:
 [verification/2026-10-22-rfc-0013-callback-registration.md](verification/2026-10-22-rfc-0013-callback-registration.md).
+
+## An answer only a person can act on escalates at once (2026-10-23, #313)
+
+Asked in [vaam-apps/vpay#313](https://github.com/vaam-apps/vpay/issues/313)
+how a rail's "an operator must reconcile this" should reach a person, the
+maintainer answered "Go with option 1 on #313, build it".
+
+- **The port** gains a seventh `ProviderError` variant,
+  `NeedsReconciliation { context }`: `Rail`, code
+  `charge_needs_reconciliation`, severity `Error`, and a public message with
+  no rail text. ADR-0011 gains an amendment for it.
+- **`notchpay`** raises it for:
+  - a `complete` whose amount, currency or `amounts.total` is not the
+    charge's (the short collection RFC-0012 step 5 met);
+  - an initialize `409` on a charge holding no `trx.…`;
+  - a read of a charge with no `trx.…`.
+
+  Until today these were `Malformed`, `Malformed` and `Config`.
+  **`orange_money`** raises it for a charge with no `pay_token` (was `Config`).
+
+- **The worker** escalates the charge to `unresolved` on the first one, from
+  `poll_charge` and from `resubmit_charge`: hourly, alerting, never parked,
+  never terminal. A resubmit's attempt row stays unanswered; a read's says
+  answered.
+- **The API's confirm** has an explicit arm. It does what `Malformed` does —
+  the charge stays `submitting`, the row unanswered, `502` — and leaves the
+  escalation to the poll job.
+- **Proven** against WireMock's Notch Pay and a real Postgres. Three new cases
+  in `worker_recovery.rs`, at the production 24-hour horizon:
+  - a short collection escalates on its first read, while a `Malformed`
+    beside it stays on the ladder;
+  - it still settles on a later answer;
+  - the `409` escalates from `submitting` and is never resent.
+
+  Each guard fails its case when removed.
+
+- **Not done:** a real Notch Pay short collection reaching `unresolved`;
+  another sandbox run needs the maintainer's approval. No test drives the
+  confirm arm end to end, because a confirm mints its own reference and the
+  stub answers `409` to one fixed reference.
+
+No route moved and no `NotImplemented` token moved. Gates and counts:
+[verification/2026-10-23-needs-reconciliation.md](verification/2026-10-23-needs-reconciliation.md).

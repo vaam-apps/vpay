@@ -451,7 +451,12 @@ fn log_provider_failure(rail: &str, registration: &str, error: &ProviderError) {
             "this rail registers its callback URL with the account, and its adapter cannot do \
              that yet; the endpoint is the operator's to register by hand"
         ),
-        ProviderError::Rejected { .. } | ProviderError::Malformed { .. } => tracing::error!(
+        // `NeedsReconciliation` is not in this method's column of the port's
+        // error table; written here so the match stays exhaustive, and with
+        // the answer any other unexpected refusal gets.
+        ProviderError::Rejected { .. }
+        | ProviderError::Malformed { .. }
+        | ProviderError::NeedsReconciliation { .. } => tracing::error!(
             rail,
             registration,
             error = %error,
