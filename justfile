@@ -142,7 +142,11 @@ build-web:
 # time, and a skipped test is not a passing test. It still skips (it is the
 # regression net for anyone who HAS built locally), and the assertion that
 # actually runs in CI is here, against the artefact this recipe just
-# produced. It matters most for the dashboard, whose `.storybook/main.ts`
+# produced. _(Since 2026-10-23 this recipe also RUNS that case, after the
+# count, with `VPAY_STORYBOOK_BUILT=1` so it cannot skip: the case had been
+# asserting a hex `--color-base-100` the 0.5.0 theme no longer writes, and
+# failed locally for two days while CI skipped it. It now resolves one
+# `var()` to a colour.)_ It matters most for the dashboard, whose `.storybook/main.ts`
 # deliberately carries no `@vaam-apps/ui/styles/theme.css` resolve alias —
 # measured unnecessary on today's dependency tree, and this is what would
 # catch a dependency bump making it necessary again.
@@ -175,6 +179,14 @@ build-storybook:
         exit 1
       fi
     done
+    # The jsdom case itself, run here against the artefact just built (added
+    # 2026-10-23). The count above proves a definition exists; this proves it
+    # resolves to a colour, one `var()` deep. Until this line the case only
+    # ever ran on a developer's machine, where it had been failing since the
+    # `@vaam-apps/ui` 0.5.0 theme (#318) while CI skipped it.
+    # `VPAY_STORYBOOK_BUILT=1` makes a missing build a failure, not a skip.
+    VPAY_STORYBOOK_BUILT=1 pnpm --filter @vpay/checkout exec vitest run src/a11y-gate.test.ts
+    VPAY_STORYBOOK_BUILT=1 pnpm --filter @vpay/dashboard exec vitest run src/a11y-gate.test.ts
 
 # Every checkout AND dashboard story, rendered in a real Chromium, with axe
 # over each one.
