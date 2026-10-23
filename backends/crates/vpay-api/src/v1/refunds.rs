@@ -900,7 +900,11 @@ async fn refund_at_rail(
     let charge_ref = ChargeRef {
         // The REFUND's reference. See this function's docs.
         reference_id: reference,
-        method_type: None,
+        method_type: target
+            .charge
+            .method_type
+            .as_deref()
+            .and_then(vpay_core::routing::MethodType::from_wire),
         amount,
         payer_ref: target.charge.payer_ref.clone(),
         ref_extra: refund_ref_extra(target.charge.provider_txn_id.as_deref()),

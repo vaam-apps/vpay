@@ -1191,6 +1191,7 @@ fn fixture_charge(id: &str, payment_intent_id: &str) -> vpay_db::NewCharge {
         currency_code: "XAF".to_owned(),
         payer_ref: Some("+237600000000".to_owned()),
         payer_ref_masked: Some("+2376••••000".to_owned()),
+        method_type: None,
     }
 }
 

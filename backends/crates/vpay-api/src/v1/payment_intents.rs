@@ -29,12 +29,13 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use uuid::Uuid;
+use vpay_core::routing::{Decision, MethodType, RESERVED_METHOD_TYPES};
 use vpay_core::state::{IntentStatus, Transition, next_status};
 use vpay_core::{Currency, Money, ProviderFlow, ids};
 use vpay_db::{
     ChargeRow, Idempotency, IdempotencyClaim, IdempotencyRecord, IdempotencyStoreOutcome,
-    IntentFilter, NewCharge, NewPaymentIntent, PaymentIntents, Repositories, ResponseSubject,
-    StoredResponse, TxOutcome, UnitOfWork as _,
+    IntentFilter, NewCharge, NewPaymentIntent, NewRoutingDecision, PaymentIntents, Repositories,
+    ResponseSubject, StoredResponse, TxOutcome, UnitOfWork as _,
 };
 use vpay_provider::{
     ChargeRef, PriorSubmits, ProviderAdapter, ProviderError, RefExtra, SubmitSteps, Submitted,
@@ -307,6 +308,7 @@ impl UnsupportedStripeParams {
 pub(crate) async fn create(
     State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
+    State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
     scope: MerchantScope,
     request: Request,
 ) -> Result<Response, ApiError> {
@@ -320,7 +322,7 @@ pub(crate) async fn create(
     // From here the key is claimed, so every path out of this function has
     // to end it: `finish` stores or releases, and the `?`-free `match`
     // below releases before returning the caller's mistake.
-    let validated = match validate_create(&post, &config).await {
+    let validated = match validate_create(&post, &config, &adapters).await {
         Ok(validated) => validated,
         Err(error) => {
             post.release(repositories.as_ref(), &scope, claim_id).await;
@@ -432,6 +434,7 @@ struct ValidCreate {
 async fn validate_create(
     post: &PostRequest,
     config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> Result<ValidCreate, ApiError> {
     let params: CreateParams = post.form().await?;
 
@@ -442,10 +445,17 @@ async fn validate_create(
     // same key executes rather than replaying the refusal.
     params.unsupported.reject_unsupported()?;
 
+    let amount = parse_amount(params.amount.as_deref())?;
+    let currency = parse_currency(params.currency.as_deref(), config)?;
     Ok(ValidCreate {
-        amount: parse_amount(params.amount.as_deref())?,
-        currency: parse_currency(params.currency.as_deref(), config)?,
-        payment_method_types: validated_rails(&params.payment_method_types, config)?,
+        amount,
+        currency,
+        payment_method_types: validated_rails(
+            &params.payment_method_types,
+            config,
+            adapters,
+            currency,
+        )?,
         metadata: validated_metadata(&params.metadata)?,
         description: validated_description(params.description)?,
         customer: params.customer,
@@ -817,6 +827,12 @@ async fn cancel_with_event(
 pub(crate) struct ConfirmParams {
     payment_method_data: Option<Map<String, Value>>,
     return_url: Option<String>,
+    /// `payment_method_options[<method type>][rail]=<code>`: the merchant
+    /// pins the rail for a confirm routed by method type (RFC-0008, ADR-0029
+    /// D6). Options for another type are ignored, as Stripe ignores them;
+    /// any key but `rail` under the confirmed type is refused. Never from a
+    /// payer: [`ConfirmParams::from_payer`] leaves it `None`.
+    payment_method_options: Option<Map<String, Value>>,
     /// The same refusal set `POST /v1/payment_intents` carries. stripe-node's
     /// `paymentIntents.confirm` takes `capture_method` and `application_fee_amount`
     /// too, and a merchant who was refused on create would otherwise get them
@@ -844,6 +860,7 @@ impl ConfirmParams {
         Self {
             payment_method_data,
             return_url,
+            payment_method_options: None,
             unsupported: UnsupportedStripeParams::default(),
         }
     }
@@ -939,6 +956,13 @@ struct ConfirmTarget<'a> {
     /// The merchant's `return_url` on a redirect rail, `None` on a push rail.
     return_url: Option<String>,
     amount: Money,
+    /// The payment-method type the charge records and the adapter is told
+    /// (`ChargeRef::method_type`): the one confirmed, or for a rail-code
+    /// confirm the one type its rail serves, if it serves exactly one.
+    method_type: Option<MethodType>,
+    /// The router's decision, on a confirm routed by method type; `None` on a
+    /// rail-code confirm, which the router never sees.
+    decision: Option<Decision>,
 }
 
 /// What steps 3 and 4 leave behind before the rail is called: the durable
@@ -1137,10 +1161,28 @@ fn resolve_rail<'a>(
         .payment_method_data
         .as_ref()
         .ok_or_else(missing_payment_method_data)?;
-    let code = data
+    // What the caller named: a rail code (that rail, pinned: ADR-0029 D6) or
+    // a payment-method type, which the router turns into a rail. It is also
+    // the key the payer's own fields sit under,
+    // `payment_method_data[<requested>][msisdn]`, either way.
+    let requested = data
         .get("type")
         .and_then(Value::as_str)
         .ok_or_else(missing_payment_method_data)?;
+    let routed = match MethodType::from_wire(requested) {
+        Some(method_type) => Some(route_the_confirm(
+            config,
+            adapters,
+            intent,
+            params,
+            method_type,
+        )?),
+        None => None,
+    };
+    let code = match &routed {
+        Some((code, _, _)) => *code,
+        None => requested,
+    };
 
     // The deployment first: a rail this deployment does not offer is a
     // caller's mistake (400), while a rail it offers with no adapter linked
@@ -1160,8 +1202,10 @@ fn resolve_rail<'a>(
     })?;
     // The rails an intent was created for are the rails it may be confirmed
     // against. Without this, an intent created for one rail could be charged
-    // on another the merchant never offered its payer.
-    if !intent_allows(&intent.payment_method_types, code) {
+    // on another the merchant never offered its payer. A routed confirm was
+    // checked against its *method type* in `route_the_confirm`: the rail is
+    // the router's, not the merchant's list.
+    if routed.is_none() && !intent_allows(&intent.payment_method_types, code) {
         return Err(ApiError::invalid_param(
             PMD_TYPE_PARAM,
             "That payment method type is not one this payment intent was created with.",
@@ -1176,7 +1220,7 @@ fn resolve_rail<'a>(
     let flow = capabilities.flow;
     let (payer_ref, return_url) = payer_instrument(
         flow,
-        code,
+        requested,
         adapter.as_ref(),
         data,
         params,
@@ -1184,6 +1228,10 @@ fn resolve_rail<'a>(
     )?;
     let currency = Currency::from_code(&intent.currency_code)?;
     let amount = Money::new(intent.amount, currency)?;
+    let (method_type, decision) = match routed {
+        Some((_, method_type, decision)) => (Some(method_type), Some(decision)),
+        None => (adapter.capabilities().method_types.only(), None),
+    };
 
     Ok(ConfirmTarget {
         code,
@@ -1194,7 +1242,93 @@ fn resolve_rail<'a>(
         payer_ref,
         return_url,
         amount,
+        method_type,
+        decision,
     })
+}
+
+/// `payment_method_options[<type>][rail]`'s two spellings for its own `param`.
+fn pin_param(method_type: MethodType) -> String {
+    format!("payment_method_options[{method_type}][rail]")
+}
+
+/// A confirm named a payment-method type: the router picks the rail
+/// (ADR-0029 D7, D10; RFC-0008 as revised on 2026-10-23).
+///
+/// Returns the chosen rail's code, borrowed from this deployment's own
+/// configuration, the type, and the decision the charge's transaction
+/// records.
+///
+/// # Errors
+///
+/// [`ApiError::InvalidParam`] for a type this intent was not created with, a
+/// pin with any key but `rail` or naming no configured rail, and a type no
+/// rail can take for this payment (naming the pin when one narrowed it).
+fn route_the_confirm<'a>(
+    config: &'a ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    intent: &vpay_db::PaymentIntentRow,
+    params: &ConfirmParams,
+    method_type: MethodType,
+) -> Result<(&'a str, MethodType, Decision), ApiError> {
+    if !intent_allows(&intent.payment_method_types, method_type.as_wire_str()) {
+        return Err(ApiError::invalid_param(
+            PMD_TYPE_PARAM,
+            "That payment method type is not one this payment intent was created with.",
+        ));
+    }
+    let pin = pinned_rail(params, method_type)?;
+    let decision = config.route(adapters, method_type, &intent.currency_code, pin);
+    let chosen = decision
+        .chosen
+        .as_deref()
+        .and_then(|chosen| config.rail(chosen))
+        .map(RailConfig::code)
+        .ok_or_else(|| match pin {
+            Some(_) => ApiError::invalid_param(
+                pin_param(method_type),
+                "That rail cannot take this payment method for this payment.",
+            ),
+            None => ApiError::invalid_param(
+                PMD_TYPE_PARAM,
+                "No payment rail on this deployment can take this payment method for this \
+                 payment.",
+            ),
+        })?;
+    Ok((chosen, method_type, decision))
+}
+
+/// The merchant's `payment_method_options[<type>][rail]`, if any, checked.
+///
+/// # Errors
+///
+/// [`ApiError::InvalidParam`] for options under this type that are not an
+/// object, carry a key other than `rail`, or name no configured rail.
+fn pinned_rail(params: &ConfirmParams, method_type: MethodType) -> Result<Option<&str>, ApiError> {
+    let Some(options) = params
+        .payment_method_options
+        .as_ref()
+        .and_then(|options| options.get(method_type.as_wire_str()))
+    else {
+        return Ok(None);
+    };
+    let refuse = |message: &'static str| {
+        ApiError::invalid_param(format!("payment_method_options[{method_type}]"), message)
+    };
+    let options = options
+        .as_object()
+        .ok_or_else(|| refuse("Only `rail` is accepted here, as a rail code."))?;
+    if options.keys().any(|key| key != "rail") {
+        return Err(refuse("Only `rail` is accepted here, as a rail code."));
+    }
+    match options.get("rail") {
+        None => Ok(None),
+        Some(Value::String(rail)) if !rail.is_empty() => Ok(Some(rail.as_str())),
+        Some(_) => Err(ApiError::invalid_param(
+            pin_param(method_type),
+            "A rail code is required here.",
+        )),
+    }
 }
 
 /// What the payer supplied, read according to the rail's [`ProviderFlow`] and
@@ -1338,7 +1472,11 @@ async fn open_charge(
             currency_code: intent.currency_code.clone(),
             payer_ref: target.payer_ref.clone(),
             payer_ref_masked: None,
+            method_type: target
+                .method_type
+                .map(|method_type| method_type.as_wire_str().to_owned()),
         },
+        target.decision.as_ref(),
     )
     .await
 }
@@ -1394,7 +1532,7 @@ async fn prepare_on_rail(
         .await?;
     let charge_ref = ChargeRef {
         reference_id: charge.provider_reference_id,
-        method_type: None,
+        method_type: target.method_type,
         amount: target.amount,
         payer_ref: target.payer_ref.clone(),
         ref_extra: RefExtra::new(),
@@ -1492,7 +1630,7 @@ async fn submit_to_rail(
     let return_url = attempt.charge.return_url.clone();
     let charge_ref = ChargeRef {
         reference_id: attempt.reference,
-        method_type: None,
+        method_type: target.method_type,
         amount: target.amount,
         payer_ref: target.payer_ref.clone(),
         // Empty on a one-step rail; on a two-step rail, what
@@ -2177,7 +2315,10 @@ const POLL_AFTER_CONFIRM_GRACE: std::time::Duration = vpay_provider::DEFAULT_REQ
 async fn insert_charge(
     repositories: &dyn Repositories,
     new: &NewCharge,
+    decision: Option<&Decision>,
 ) -> Result<ChargeRow, ApiError> {
+    let routing = decision.map(|decision| routing_decision_row(&new.id, decision));
+    let routing = routing.as_ref();
     let outcome = repositories
         .transaction(|tx| {
             Box::pin(async move {
@@ -2200,6 +2341,11 @@ async fn insert_charge(
                     }
                     Err(error) => return Err(error),
                 };
+                // ADR-0029 D10: a routed charge commits with the decision
+                // that chose its rail, or not at all.
+                if let Some(routing) = routing {
+                    tx.insert_routing_decision(routing).await?;
+                }
 
                 // The payload is the minimal one
                 // `vpay_worker::jobs::PollChargePayload` defaults the ladder
@@ -2493,10 +2639,23 @@ fn reject_confirm_on_create(confirm: Option<&str>) -> Result<(), ApiError> {
     }
 }
 
-/// Every named rail must be one this deployment offers *now*: a
+/// Every entry must be one this deployment can confirm *now*: a
 /// `payment_method_types` naming a disabled or unknown rail would produce an
 /// intent that can never be confirmed.
-fn validated_rails(requested: &[String], config: &ResourceConfig) -> Result<Vec<String>, ApiError> {
+///
+/// An entry is a rail code, which keeps exactly its meaning before method
+/// types existed (ADR-0029 D6), or a payment-method type
+/// (`mtn_wallet`, `orange_wallet`), which at least one enabled rail must be
+/// able to take in this intent's currency: the router is asked now
+/// ([`ResourceConfig::route`]) and asked again at confirm, where it decides.
+/// A spelling ADR-0029 D12 reserves (`card`, `bank_transfer`) is refused with
+/// a sentence saying so.
+fn validated_rails(
+    requested: &[String],
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    currency: Currency,
+) -> Result<Vec<String>, ApiError> {
     if requested.is_empty() {
         return Err(ApiError::invalid_param(
             "payment_method_types",
@@ -2504,13 +2663,34 @@ fn validated_rails(requested: &[String], config: &ResourceConfig) -> Result<Vec<
              could never be confirmed.",
         ));
     }
-    for code in requested {
-        if config.enabled_rail(code).is_none() {
+    for entry in requested {
+        if config.enabled_rail(entry).is_some() {
+            continue;
+        }
+        if let Some(method_type) = MethodType::from_wire(entry) {
+            if config
+                .route(adapters, method_type, currency.code(), None)
+                .chosen
+                .is_some()
+            {
+                continue;
+            }
             return Err(ApiError::invalid_param(
                 "payment_method_types",
-                "One of the payment method types is not available on this deployment.",
+                "No payment rail on this deployment can take one of the payment method types in \
+                 this currency.",
             ));
         }
+        if RESERVED_METHOD_TYPES.contains(&entry.as_str()) {
+            return Err(ApiError::invalid_param(
+                "payment_method_types",
+                "One of the payment method types is reserved and not offered yet.",
+            ));
+        }
+        return Err(ApiError::invalid_param(
+            "payment_method_types",
+            "One of the payment method types is not available on this deployment.",
+        ));
     }
     Ok(requested.to_vec())
 }
@@ -3040,6 +3220,52 @@ fn replay(record: &IdempotencyRecord) -> Result<Response, ApiError> {
     Ok(response)
 }
 
+/// The router's [`Decision`] as the row ADR-0029 D10 records: every rail
+/// considered, a candidate with its score and breakdown, an excluded one with
+/// its reason, in the router's order.
+fn routing_decision_row(charge_id: &str, decision: &Decision) -> NewRoutingDecision {
+    let considered = decision
+        .considered
+        .iter()
+        .map(|considered| {
+            let mut entry = Map::new();
+            entry.insert("rail".to_owned(), Value::from(considered.rail.as_str()));
+            if let Some(reason) = considered.excluded {
+                entry.insert("excluded".to_owned(), Value::from(reason.as_wire_str()));
+            }
+            if let Some(score) = &considered.score {
+                let parts = score
+                    .parts
+                    .iter()
+                    .map(|part| {
+                        serde_json::json!({
+                            "component": part.component.as_wire_str(),
+                            "points": part.points,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                entry.insert(
+                    "score".to_owned(),
+                    serde_json::json!({ "total": score.total, "parts": parts }),
+                );
+            }
+            Value::Object(entry)
+        })
+        .collect();
+    NewRoutingDecision {
+        charge_id: charge_id.to_owned(),
+        method_type: decision.method_type.as_wire_str().to_owned(),
+        // `route_the_confirm` refused a decision with no choice, so this is
+        // the chosen rail; the empty string would be refused by the foreign
+        // key rather than stored.
+        chosen_rail: decision.chosen.clone().unwrap_or_default(),
+        pinned_rail: decision.pinned.clone(),
+        considered: Value::Array(considered),
+        formula: decision.formula.to_owned(),
+        config_version: decision.config_version.clone(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
@@ -3153,22 +3379,110 @@ mod tests {
         assert_eq!(param_of(&error), Some("currency"));
     }
 
+    /// `resource_config`'s two rails, declaring the wallets they really
+    /// serve: `mtn_momo` (enabled) serves `mtn_wallet`, `orange_money`
+    /// (disabled) serves `orange_wallet`.
+    fn serving_adapters() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
+        let serving = |method_type| -> Box<dyn ProviderAdapter> {
+            Box::new(FieldsOnlyAdapter {
+                fields: &[],
+                serves: Some(vpay_core::routing::MethodTypes::of(&[method_type])),
+            })
+        };
+        BTreeMap::from([
+            ("mtn_momo".to_owned(), serving(MethodType::MtnWallet)),
+            ("orange_money".to_owned(), serving(MethodType::OrangeWallet)),
+        ])
+    }
+
     /// A disabled rail is configured and not offerable: an intent created
     /// naming it could never be confirmed.
     #[test]
     fn a_disabled_rail_cannot_be_named_on_a_new_intent() {
         let config = resource_config();
+        let adapters = serving_adapters();
+        let check =
+            |requested: &[String]| validated_rails(requested, &config, &adapters, Currency::Xaf);
         assert_eq!(
-            validated_rails(&["mtn_momo".to_owned()], &config).expect("mtn is enabled"),
+            check(&["mtn_momo".to_owned()]).expect("mtn is enabled"),
             vec!["mtn_momo".to_owned()],
         );
         for requested in [vec!["orange_money".to_owned()], vec!["nope".to_owned()]] {
-            let error = validated_rails(&requested, &config)
-                .expect_err("a disabled or unknown rail is refused");
+            let error = check(&requested).expect_err("a disabled or unknown rail is refused");
             assert_eq!(param_of(&error), Some("payment_method_types"));
         }
-        let error = validated_rails(&[], &config).expect_err("an empty list is refused");
+        let error = check(&[]).expect_err("an empty list is refused");
         assert_eq!(param_of(&error), Some("payment_method_types"));
+    }
+
+    /// ADR-0029 D6: a method type is accepted beside rail codes when some
+    /// enabled rail can take it in the intent's currency; a type only a
+    /// disabled rail serves, a currency no rail settles, and a reserved
+    /// spelling are each refused before anything is written.
+    /// Mutation-checked: accepting every known type fails the second row.
+    #[test]
+    fn a_method_type_is_accepted_only_when_an_enabled_rail_can_take_it() {
+        let config = resource_config();
+        let adapters = serving_adapters();
+        let check = |requested: &[&str], currency| {
+            let requested: Vec<String> = requested.iter().map(|code| (*code).to_owned()).collect();
+            validated_rails(&requested, &config, &adapters, currency)
+        };
+        assert_eq!(
+            check(&["mtn_wallet", "mtn_momo"], Currency::Xaf).expect("mtn_momo serves it"),
+            vec!["mtn_wallet".to_owned(), "mtn_momo".to_owned()],
+            "stored as sent: a method type stays a method type on the intent"
+        );
+        for (requested, currency, says) in [
+            (&["orange_wallet"][..], Currency::Xaf, "can take"),
+            (&["mtn_wallet"][..], Currency::Eur, "can take"),
+            (&["card"][..], Currency::Xaf, "reserved"),
+        ] {
+            let error = check(requested, currency).expect_err("refused");
+            assert_eq!(param_of(&error), Some("payment_method_types"));
+            assert!(error.to_string().contains(says), "{requested:?}: {error}");
+        }
+    }
+
+    /// The pin: only `rail`, a non-empty code, under the confirmed type;
+    /// options for another type are none of this confirm's business.
+    #[test]
+    fn a_pin_is_read_strictly_and_only_for_the_confirmed_type() {
+        let params = |options: Value| ConfirmParams {
+            payment_method_data: None,
+            return_url: None,
+            payment_method_options: options.as_object().cloned(),
+            unsupported: UnsupportedStripeParams::default(),
+        };
+        let mtn = MethodType::MtnWallet;
+        assert_eq!(
+            pinned_rail(
+                &params(serde_json::json!({"mtn_wallet": {"rail": "notchpay"}})),
+                mtn
+            )
+            .expect("a pin"),
+            Some("notchpay")
+        );
+        assert_eq!(
+            pinned_rail(
+                &params(serde_json::json!({"orange_wallet": {"rail": "x"}})),
+                mtn
+            )
+            .expect("another type's options are ignored"),
+            None
+        );
+        for refused in [
+            serde_json::json!({"mtn_wallet": {"rail": "notchpay", "priority": "1"}}),
+            serde_json::json!({"mtn_wallet": "notchpay"}),
+            serde_json::json!({"mtn_wallet": {"rail": ""}}),
+        ] {
+            let error = pinned_rail(&params(refused.clone()), mtn).expect_err("refused");
+            assert!(
+                param_of(&error)
+                    .is_some_and(|param| param.starts_with("payment_method_options[mtn_wallet]")),
+                "{refused}: {error:?}"
+            );
+        }
     }
 
     #[test]
@@ -3466,6 +3780,10 @@ mod tests {
     #[derive(Debug)]
     struct FieldsOnlyAdapter {
         fields: &'static [vpay_provider::PayerField],
+        /// What `capabilities()` declares it serves, for the routing tests;
+        /// `None` keeps `capabilities()` a panic, which is the check the
+        /// payer-field tests rely on.
+        serves: Option<vpay_core::routing::MethodTypes>,
     }
 
     #[async_trait::async_trait]
@@ -3475,7 +3793,21 @@ mod tests {
         }
 
         fn capabilities(&self) -> vpay_provider::Capabilities {
-            panic!("payer_instrument takes the flow as its own parameter")
+            let Some(method_types) = self.serves else {
+                panic!("payer_instrument takes the flow as its own parameter")
+            };
+            vpay_provider::Capabilities {
+                flow: ProviderFlow::Push,
+                supports_refunds: false,
+                supports_partial_refunds: false,
+                delivers_callbacks: true,
+                requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
+                refund_destination: vpay_provider::RefundDestination::Origin,
+                callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+                submit_steps: vpay_provider::SubmitSteps::One,
+                method_types,
+            }
         }
 
         fn payer_fields(&self) -> &'static [vpay_provider::PayerField] {
@@ -3524,7 +3856,10 @@ mod tests {
     /// [`FieldsOnlyAdapter`] declaring no payer fields — `orange_money`'s
     /// real shape (a redirect rail collects nothing).
     fn no_fields_adapter() -> FieldsOnlyAdapter {
-        FieldsOnlyAdapter { fields: &[] }
+        FieldsOnlyAdapter {
+            fields: &[],
+            serves: None,
+        }
     }
 
     /// [`FieldsOnlyAdapter`] declaring `mtn_momo`'s real shape: one
@@ -3539,7 +3874,10 @@ mod tests {
             required: true,
             label_key: "msisdn.label",
         }];
-        FieldsOnlyAdapter { fields: FIELDS }
+        FieldsOnlyAdapter {
+            fields: FIELDS,
+            serves: None,
+        }
     }
 
     /// A redirect confirm on an intent an **open checkout session** drives
@@ -3569,6 +3907,7 @@ mod tests {
         let params = |return_url: Option<&str>| ConfirmParams {
             payment_method_data: None,
             return_url: return_url.map(ToOwned::to_owned),
+            payment_method_options: None,
             unsupported: UnsupportedStripeParams::default(),
         };
 
@@ -3934,6 +4273,7 @@ mod tests {
             currency_code: "XAF".to_owned(),
             payer_ref: None,
             payer_ref_masked: None,
+            method_type: None,
             failure_code: None,
             failure_raw: None,
             created_at: OffsetDateTime::UNIX_EPOCH,

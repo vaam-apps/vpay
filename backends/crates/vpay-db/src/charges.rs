@@ -90,7 +90,7 @@ pub(crate) fn record_transition(provider_code: &str, from: &str, to: &str) {
 pub(crate) const COLUMNS: &str = "id, payment_intent_id, provider_code, provider_reference_id, \
                        provider_ref_extra, provider_txn_id, redirect_url, return_url, \
                        state, amount, currency_code, payer_ref, payer_ref_masked, \
-                       failure_code, failure_raw, created_at, updated_at";
+                       failure_code, failure_raw, method_type, created_at, updated_at";
 
 /// One `charges` row, exactly as stored.
 #[derive(Clone, PartialEq, sqlx::FromRow)]
@@ -139,6 +139,11 @@ pub struct ChargeRow {
     pub failure_code: Option<String>,
     /// The rail's own words for that failure, kept so nothing is dropped.
     pub failure_raw: Option<String>,
+    /// The payment-method type the payer chose (migration `0052`,
+    /// ADR-0029 D6): `mtn_wallet`, `orange_wallet`, or `None` for a
+    /// rail-code charge on a rail serving several types and for every charge
+    /// before `0052`. Parsed by `vpay_core::routing::MethodType::from_wire`.
+    pub method_type: Option<String>,
     /// When the charge row was written — which is before the rail was
     /// called, by construction.
     pub created_at: OffsetDateTime,
@@ -197,6 +202,7 @@ impl fmt::Debug for ChargeRow {
             )
             .field("failure_code", &self.failure_code)
             .field("failure_raw", &self.failure_raw.as_deref().map(Secret::new))
+            .field("method_type", &self.method_type)
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
             .finish()
@@ -294,6 +300,9 @@ pub struct NewCharge {
     pub payer_ref: Option<String>,
     /// The masked form for display.
     pub payer_ref_masked: Option<String>,
+    /// The payment-method type, when the charge has one (see
+    /// [`ChargeRow::method_type`]).
+    pub method_type: Option<String>,
 }
 
 /// Redacts [`NewCharge`]'s protected fields for the same reasons as
@@ -325,6 +334,7 @@ impl fmt::Debug for NewCharge {
                 "payer_ref_masked",
                 &self.payer_ref_masked.as_deref().map(Secret::new),
             )
+            .field("method_type", &self.method_type)
             .finish()
     }
 }
@@ -349,8 +359,8 @@ pub(crate) async fn insert_for_intent(
     let sql = format!(
         "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
          provider_ref_extra, redirect_url, return_url, state, amount, currency_code, payer_ref, \
-         payer_ref_masked) \
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) \
+         payer_ref_masked, method_type) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) \
          RETURNING {COLUMNS}"
     );
 
@@ -367,6 +377,7 @@ pub(crate) async fn insert_for_intent(
         .bind(&new.currency_code)
         .bind(new.payer_ref.as_deref())
         .bind(new.payer_ref_masked.as_deref())
+        .bind(new.method_type.as_deref())
         .fetch_one(&mut *tx)
         .await
         .map_err(classify_write)?;
@@ -593,6 +604,18 @@ pub trait Charges: Send + Sync {
     /// Returns [`DbError::Query`] if the read fails.
     async fn get_by_id(&self, id: &str) -> Result<Option<ChargeRow>, DbError>;
 
+    /// The router's decision for a charge, if one was made (ADR-0029 D10;
+    /// [`crate::routing_decisions`]). An explanation for an operator and a
+    /// test, never an input to anything a payment does.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`DbError::Query`] if the read fails.
+    async fn routing_decision_for(
+        &self,
+        charge_id: &str,
+    ) -> Result<Option<crate::RoutingDecisionRow>, DbError>;
+
     /// The same read as [`Charges::get_by_id`], plus the database's own clock
     /// at the instant of the read.
     ///
@@ -710,6 +733,13 @@ impl Charges for crate::repository::PgRepositories {
             .fetch_optional(&self.pool)
             .await
             .map_err(DbError::Query)
+    }
+
+    async fn routing_decision_for(
+        &self,
+        charge_id: &str,
+    ) -> Result<Option<crate::RoutingDecisionRow>, DbError> {
+        crate::routing_decisions::for_charge(&self.pool, charge_id).await
     }
 
     async fn get_by_id(&self, id: &str) -> Result<Option<ChargeRow>, DbError> {
@@ -834,6 +864,7 @@ mod tests {
             currency_code: "XAF".to_owned(),
             payer_ref: Some(PAYER_REF.to_owned()),
             payer_ref_masked: Some(PAYER_REF_MASKED.to_owned()),
+            method_type: None,
             failure_code: None,
             failure_raw: Some(FAILURE_RAW.to_owned()),
             created_at: OffsetDateTime::UNIX_EPOCH,
@@ -855,6 +886,7 @@ mod tests {
             currency_code: "XAF".to_owned(),
             payer_ref: Some(PAYER_REF.to_owned()),
             payer_ref_masked: Some(PAYER_REF_MASKED.to_owned()),
+            method_type: None,
         }
     }
 

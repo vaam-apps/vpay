@@ -389,7 +389,11 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          ADR-0032's 0052, which reopens provider_requests.operation_is_known \
          for prepare -- a two-step rail's first call, recorded under its own \
          operation so that the absence of a submit row stays proof that no \
-         payer was prompted.)"
+         payer was prompted, and \
+         0052, which adds charges.method_type (the payment-method type the payer \
+         chose, ADR-0029 D6) and creates routing_decisions, the router's scored \
+         decision for each routed charge, written in the transaction that \
+         opens it (D10).)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys

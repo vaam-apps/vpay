@@ -2260,7 +2260,14 @@ fn charge_ref(job: &vpay_db::JobRow, charge: &ChargeRow) -> Result<ChargeRef, Jo
     })?;
     Ok(ChargeRef {
         reference_id: charge.provider_reference_id,
-        method_type: None,
+        // The payer's network, as the confirm recorded it, so a resubmit
+        // prompts on the same channel as the first submit (notchpay's
+        // `cm.mtn`/`cm.orange`). A spelling this binary does not know is
+        // `None`, never a guess: migration 0052's CHECK is what keeps one out.
+        method_type: charge
+            .method_type
+            .as_deref()
+            .and_then(vpay_core::routing::MethodType::from_wire),
         amount: Money::new(charge.amount, currency)?,
         payer_ref: charge.payer_ref.clone(),
         ref_extra: ref_extra_of(charge),
@@ -2676,6 +2683,7 @@ mod tests {
             currency_code: "XAF".to_owned(),
             payer_ref: None,
             payer_ref_masked: None,
+            method_type: None,
             failure_code: None,
             failure_raw: None,
             created_at,

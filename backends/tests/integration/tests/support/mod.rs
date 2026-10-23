@@ -778,6 +778,7 @@ pub(crate) async fn crashed_charge(
                     currency_code: currency.to_owned(),
                     payer_ref: payer_ref.map(str::to_owned),
                     payer_ref_masked: None,
+                    method_type: None,
                 })
                 .await
                 .context("inserting the charge")?;
