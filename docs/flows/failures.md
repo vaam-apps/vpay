@@ -80,8 +80,13 @@ item 4). A `503` or a timeout is `ProviderError::Transport`, never a decline.
 `provider_unavailable` comes from one place only: `prepare`'s `409` for a
 reference no submit was ever made for, an initialize whose answer was lost and
 that prompted nobody, so the charge fails and the payer can try again
-(ADR-0032). The column heads say "stub only" because each row's proof is a
-WireMock case: the adapter's 2026-10-21 sandbox run
+(ADR-0032). A number from the other network on `cm.mtn` or `cm.orange` is
+refused at process with `422` and `errors.phone` ("Invalid CM Mobile Money",
+measured through the probe on 2026-10-23), which is `provider_error` like any
+`422`: `mapping.rs` does not call a phone complaint `invalid_payer`, because
+the errors page named such fields only by example. The column heads say
+"stub only" because each row's proof is a WireMock case: the adapter's
+2026-10-21 sandbox run
 ([step 5](../status/verification/2026-10-21-notchpay-step5.md)) witnessed
 `failed` becoming `provider_error`, and no other row.
 

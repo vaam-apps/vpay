@@ -211,7 +211,21 @@ sandbox always answers `404`, so it waits out the whole poll window and then
 reads once by Notch Pay's reference; and its webhook cleanup uses the
 documented `DELETE /webhooks/{id}`, which the sandbox answered `404`.
 Its `search` phase (added the same day) calls `GET /payments?search=` for
-each `--reference`, read-only, for item 19.
+each `--reference`, read-only, for item 19. Four phases were added on
+2026-10-23, all addressing by Notch Pay's `trx.…`:
+
+- `two-step` (ADR-0032, item 22);
+- `channels` (`cm.mtn` and `cm.orange` with every outcome number, RFC-0012
+  step 8, item 23);
+- `webhook-receive` (one endpoint at a URL you can read, then the documented
+  `DELETE`);
+- `webhook-update` (the documented `GET` and `PUT /webhooks/{id}` for one
+  endpoint it created).
+
+They ran the same day
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
+The webhook pair found that the sandbox stores `"url": null` and answers
+`404` to every route that takes an endpoint's id.
 
 `--ca-bundle <path>` is a cloud-only aid, off unless given: it adds that
 file's PEM certificates to the vendored roots for the probe's own client,

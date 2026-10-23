@@ -123,7 +123,8 @@ A Claude Code cloud session's egress gateway re-terminates TLS with its own
 CA, so the probe's vendored roots refuse `api.notchpay.co` there (ground
 rule 3). In such a session, and only there, add
 `--ca-bundle /root/.ccr/ca-bundle.crt` to every phase that calls Notch Pay:
-`read`, `payments`, `webhooks`, `search` and `refunds`. The probe then trusts that file's PEM certificates **in
+`read`, `payments`, `webhooks`, `search`, `refunds`, `two-step`, `channels`,
+`webhook-receive` and `webhook-update`. The probe then trusts that file's PEM certificates **in
 addition to** the vendored roots, for its own client only. Redirects stay
 refused and proxy variables stay ignored, exactly as in
 `vpay_provider::http`. A missing, unreadable or certificate-less file stops
@@ -280,6 +281,57 @@ message, and nothing was refunded
 ([verification](../status/verification/2026-10-22-notchpay-refunds.md)).
 Rerun it once the dashboard or Notch Pay says refunds are allowed for the
 account.
+
+### A7. The two-step submit, the per-network channels, and a received webhook (2026-10-23)
+
+ADR-0032 (initialize and process as two port calls, with a commit between
+them) and RFC-0012 step 8 (`cm.mtn` and `cm.orange` from the payer's method
+type) were built on 2026-10-23 against a stub. These phases measure Notch
+Pay's side of both. vpay itself still cannot run from a cloud session (see
+"Cloud sessions only"), so they are probe phases, not Part B.
+
+```bash
+# Initialize two payments and process neither. Re-send one initialize (the
+# 409), read the never-processed one at 0, 60, 300, 900, 1800 and 3600 s,
+# process the other at 300 s, and process the first at the end. About an hour.
+NOTCHPAY_PROBE_EXPIRY_CHECKS=0,60,300,900,1800,3600 \
+NOTCHPAY_PROBE_LATE_PROCESS_SECONDS=300 \
+$PROBE two-step --out "$REPORT.two-step"
+
+# Every documented MTN and Orange outcome number on cm.mtn and cm.orange,
+# then each network's success number on the other network's channel.
+$PROBE channels --out "$REPORT.channels"
+
+# One endpoint at a URL you can read, one success, one failure, a wait, then
+# DELETE. Then, if the endpoint stored no URL, the documented PUT by id.
+NOTCHPAY_PROBE_DELIVERY_WAIT=900 $PROBE webhook-receive --out "$REPORT.webhook" --webhook-url "$INBOX_URL"
+$PROBE webhook-update --out "$REPORT.webhook-update" --reference ep_test.… --webhook-url "$INBOX_URL"
+```
+
+Give each phase its own `--out` when two run at once: the report is read,
+extended and written back when a phase ends, so two concurrent phases on one
+file keep only the last.
+
+The 2026-10-23 run used a webhook.site inbox as `$INBOX_URL`, on the
+maintainer's go-ahead in that session's chat ("A third-party capture
+service"). Create it answering `500`, so retries would show: `POST
+https://webhook.site/token` with `{"default_status":500}`. Read it with `GET
+https://webhook.site/token/<uuid>/requests`, and delete it with `DELETE
+https://webhook.site/token/<uuid>` when you are done. The token reads the
+inbox, so keep it out of the repository and out of the report. If a request
+arrives, save its raw body to a file outside the repository and run
+`$PROBE verify-signature --body <file> --signature <x-notch-signature value>`.
+
+**Two things that run did not expect, and what to do about them:**
+
+- **`POST /webhooks` stored `"url": null`** and nothing reached the inbox in
+  21 minutes. `GET`, `PUT` and `DELETE /webhooks/{id}` all answered `404`,
+  so the endpoint could not be read, repaired or deleted through the API.
+  **Delete it in the dashboard**, by the id the probe printed.
+- **Every payment processed after that endpoint existed stayed
+  `processing`**, while every one before it reached a final status within
+  seconds. Delete the endpoint before you run `payments`, `channels` or
+  `refunds`, and run `read` first to confirm the list is empty.
 
 ### What to paste back from Part A
 
@@ -451,9 +503,14 @@ the adapter's mapping:
 
 Step 1 saw `expired` and `canceled` by its final read, about 180 s after
 process. It did not time how much sooner they came. So give these numbers
-up to 15 minutes before calling one stuck. A2's table, taken from Notch
+up to 15 minutes before calling one stuck. ~~A2's table, taken from Notch
 Pay's testing page, has no Orange failure number, so B3b cannot test
-Orange's failure path.
+Orange's failure path.~~ **Corrected 2026-10-23:** the testing page gives the
+five suffixes `…000000` to `…000004` "for each operator", Orange's
+`+23769…` included. A2's table took Orange's success number only. The
+probe's `channels` phase (A7) ran Orange's other four on `cm.orange` on
+2026-10-23, and they read as MTN's do. vpay itself has not run them, so a
+B3c with `+237690000002`, `…000003` and `…000004` would be the first.
 
 On 2026-10-22 B3b ran from the maintainer's machine, and every expectation
 above held. `…000003` failed `payer_timeout`, `…000004` failed

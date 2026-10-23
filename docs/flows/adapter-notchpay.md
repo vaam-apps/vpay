@@ -384,6 +384,19 @@ the callback URL}`: who created it, and for which URL. An endpoint with
 A refused key (`401`/`403`) is logged at `error` with `alert = true`; the job
 reschedules either way and never dead-letters.
 
+**On the sandbox's evidence, an endpoint created this way delivers nothing
+(2026-10-23).** The probe created one through the same `POST /webhooks`
+with a public, reachable URL. Notch Pay stored `"url": null`, and nothing
+reached the URL in 21 minutes. `GET`, `PUT` and `DELETE /webhooks/{id}` all
+answered `404`, so it could not be read, repaired or removed through the
+API. It is the same call `ensure_callbacks` makes, so until Notch Pay
+explains it (RFC-0012 § 10 item 24), an endpoint vpay registers is a
+description with no URL behind it. Callbacks are hints, and the poll ladder
+settles every charge without one, so no money depends on it. An operator
+who wants callbacks should register vpay's URL in the dashboard and set
+`register: off`; that hand-made endpoint has not been measured either
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
+
 ## Refunds
 
 `supports_refunds` and `supports_partial_refunds` are `true` and
@@ -403,7 +416,8 @@ for the account is not known, and replay safety is still unmeasured.
 
 ## To confirm with Notch Pay
 
-RFC-0012 § 10 is the full list, twenty-one since 2026-10-21. The sandbox
+RFC-0012 § 10 is the full list, twenty-five since 2026-10-23 (twenty-one
+from 2026-10-21). The sandbox
 answered several on that date
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md));
 each is marked below. The ones that decide whether the adapter is right:
@@ -436,10 +450,17 @@ each is marked below. The ones that decide whether the adapter is right:
 6. **(W, S)** Is `POST /refunds` real, and how is it made safe to replay?
    **Not answered 2026-10-22:** the sandbox answered `403` to every
    `POST /refunds`, so nothing was refunded and no replay was measured.
+   **Not re-measured 2026-10-23**: the probe's payment to refund stayed
+   `processing` (§ 10 item 25), so no `POST /refunds` was sent
+   ([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
 7. **(S)** Is the webhook signature over the raw body? **Not measured:** no
-   public URL to receive one.
+   public URL to receive one on 2026-10-21. **Still not measured
+   2026-10-23**, with one: the endpoint stored `"url": null` and nothing was
+   delivered (§ 10 item 24).
 8. **(W)** What prefix does a live key carry?
 9. **(W)** Does an `incomplete` payment expire as a `pending` one does?
+   _(Its neighbour was measured 2026-10-23: a `pending` payment, initialized
+   and never processed, does not expire within an hour; § 10 item 22.)_
 10. **(S)** Are answers under `transaction`, as the specification says, or
     under `data`, as some API reference pages show? **Answered 2026-10-21:
     `transaction`.**
@@ -465,8 +486,22 @@ resubmit. A crash before the prompt fails the charge cleanly, and the
 `409` stays `NeedsReconciliation` only for a charge a one-call build may
 have prompted. Proven against WireMock and a real Postgres in
 `worker_recovery.rs` (six cases) and `confirm_rails.rs` (two), each guard
-mutation-checked; not run against Notch Pay
+mutation-checked
 ([verification](../status/verification/2026-10-23-two-step-submit.md)).
+**Notch Pay's side was measured the same day, through the probe, not
+vpay**
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)):
+
+- a payment initialized and never processed still read `pending` after an
+  hour;
+- a process 300 s after its initialize was accepted and read `complete` 5 s
+  later;
+- the reference sent again answered `409` "Reference already existing", as
+  `mapping.rs` expects.
+
+A process 3600 s late was accepted (`202`), but did not complete: the
+payment stalled in `processing` (RFC-0012 § 10 item 25). vpay itself has not
+run the split against the sandbox.
 
 **Built 2026-10-23: the channel follows the payer's network (RFC-0012 step
 8).** Notch Pay is the first rail serving two payment-method types
@@ -477,11 +512,21 @@ router can choose it for either, and the adapter sends `cm.mtn` or
 `the_channel_follows_the_payers_method_type_and_else_the_setting` (unit) and
 by `confirm_rails.rs`'s
 `the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_network`,
-which reads the channel off the stub's request journal. **Never sent to Notch
-Pay's sandbox**: every sandbox payment this page records went through
-`cm.mobile`, so whether the sandbox's outcome numbers behave the same under
-`cm.mtn` and `cm.orange` is unmeasured.
-[verification](../status/verification/2026-10-23-method-type-routing.md).
+which reads the channel off the stub's request journal
+([verification](../status/verification/2026-10-23-method-type-routing.md)).
+**Notch Pay's side was measured the same day, through the probe**
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)):
+
+- all five outcome numbers on `cm.mtn`, and all five Orange numbers on
+  `cm.orange`, read what they read on `cm.mobile`, each within about 5 s;
+- a number from the other network is refused at `process` with `422`
+  ("Invalid CM Mobile Money" / "Invalid CM Orange Money", `errors.phone`).
+  The adapter maps that to `provider_error`, and the initialized payment
+  stays `pending` at Notch Pay.
+
+vpay itself has not sent `cm.mtn` or `cm.orange`. _(This said "Never sent to
+Notch Pay's sandbox … unmeasured" until the measurement above, the same
+day.)_
 
 **Changed 2026-10-23: an answer only a person can act on escalates at once**
 ([#313](https://github.com/vaam-apps/vpay/issues/313)). Three answers are
@@ -637,8 +682,10 @@ ran.)_
   Pay's production was never called and no live key was used, so item 8 (a
   live key's prefix) stays a written question; no refund
   (`notchpay::refund` is still a token; the sandbox answered `403` to the
-  probe's `POST /refunds` on 2026-10-22); Orange's failure path, for which
-  Notch Pay documents no test number; how a real unanswered prompt ends, and
+  probe's `POST /refunds` on 2026-10-22); Orange's failure path through
+  vpay (~~for which Notch Pay documents no test number~~: the testing page
+  gives the five suffixes for each operator, and the probe ran Orange's four
+  failure-side numbers on `cm.orange` on 2026-10-23); how a real unanswered prompt ends, and
   how long it takes, which a test number cannot show; a real short collection
   reaching `unresolved`, which since 2026-10-23 happens on its first read and
   has been proven against WireMock only (the 24 h escalation step 5 would have
