@@ -183,7 +183,10 @@ they are accepted.
   intent, and a decline lowers a rail's _measured_ components for **later**
   checkouts only, through the window (R4), never for the intent it happened
   on. That clarification is the one place this revision lets traffic move
-  automatically, and whether it may is open question R8.3.
+  automatically, and whether it may is open question R8.3. _(Answered
+  2026-10-23: it may not. R8.3 for health, and R8.1's "Go with (a)" for the
+  completion rate, which an operator weighs by hand. See "D11's clarification
+  is settled" above.)_
 
 ### R8. Open questions for the maintainer — answered 2026-10-23
 
