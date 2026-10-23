@@ -4,7 +4,8 @@
 payment is addressed on Notch Pay by **Notch Pay's own reference** (`trx.…`,
 held in `ref_extra` as `notchpay_reference`), and the authenticated read is
 what moves money. Notch Pay is an aggregator, so one
-merchant account collects MTN MoMo and Orange Money in Cameroon through the
+merchant account collects MTN MoMo and Orange Money in Cameroon: through
+`cm.mtn` or `cm.orange` when the payer chose a network (2026-10-23), else the
 `cm.mobile` channel. Design: [RFC-0012](../rfc/0012-notchpay-adapter.md).
 Code: `backends/crates/vpay-adapter-notchpay` on the client
 `backends/crates/vpay-notchpay` ([reference](../reference/vpay-notchpay.md)).
@@ -156,10 +157,12 @@ Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
 
 - `credentials.public_key` and `credentials.private_key` present and
   non-blank;
-- `settings.channel` exactly `cm.mobile`. `cm.mtn` and `cm.orange` wait for
-  the payer's chosen method type to reach the adapter (ADR-0029 D6, RFC-0012
-  step 8). Configured for a whole deployment, either would fail every payer on
-  the other network;
+- `settings.channel` exactly `cm.mobile`. Since 2026-10-23 it is the channel
+  of a charge confirmed by the rail code `notchpay` only: a routed charge
+  carries the payer's network (`ChargeRef::method_type`) and is sent `cm.mtn`
+  or `cm.orange` per charge (ADR-0029 D6, RFC-0012 step 8). Configured for a
+  whole deployment, either would fail every payer on the other network, so it
+  stays refused here;
 - `currency` exactly `XAF`;
 - **the livemode rule is on the keys**: in livemode a key containing `test.`
   or `test_` refuses to boot, and outside livemode a key with neither does.
@@ -194,9 +197,13 @@ The adapter declares `SubmitSteps::PrepareThenSubmit`:
    return URL. It creates the payment and **prompts nobody**, and returns
    the `trx.…` from `transaction.reference` as `notchpay_reference`. The core
    commits it on the charge, then writes the `submit` row.
-2. **`submit`** is `POST /payments/{notchpay_reference}` with `{ "channel":
-"cm.mobile", "data": { "phone": … } }`, by the reference the charge now
-   holds. This is the call that prompts the payer.
+2. **`submit`** is `POST /payments/{notchpay_reference}` with
+   `{ "channel": …, "data": { "phone": … } }`, by the reference the charge
+   now holds. This is the call that prompts the payer. The channel is
+   `cm.mtn` for a charge whose method type is `mtn_wallet`, `cm.orange` for
+   `orange_wallet`, and `settings.channel` (`cm.mobile`) for a charge
+   confirmed by the rail code, which carries none (`method_type_channel`,
+   `channel_for`).
 
 | `prepare` answered                                                | Then                                                                                                                                          |
 | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -461,6 +468,21 @@ have prompted. Proven against WireMock and a real Postgres in
 mutation-checked; not run against Notch Pay
 ([verification](../status/verification/2026-10-23-two-step-submit.md)).
 
+**Built 2026-10-23: the channel follows the payer's network (RFC-0012 step
+8).** Notch Pay is the first rail serving two payment-method types
+(`Capabilities::method_types`: `mtn_wallet` and `orange_wallet`), so the
+router can choose it for either, and the adapter sends `cm.mtn` or
+`cm.orange` from `ChargeRef::method_type`. A charge confirmed by the rail code
+`notchpay` carries no type and keeps `cm.mobile`. Proven by
+`the_channel_follows_the_payers_method_type_and_else_the_setting` (unit) and
+by `confirm_rails.rs`'s
+`the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_network`,
+which reads the channel off the stub's request journal. **Never sent to Notch
+Pay's sandbox**: every sandbox payment this page records went through
+`cm.mobile`, so whether the sandbox's outcome numbers behave the same under
+`cm.mtn` and `cm.orange` is unmeasured.
+[verification](../status/verification/2026-10-23-method-type-routing.md).
+
 **Changed 2026-10-23: an answer only a person can act on escalates at once**
 ([#313](https://github.com/vaam-apps/vpay/issues/313)). Three answers are
 `ProviderError::NeedsReconciliation` (they were `Malformed` or `Config`):
@@ -628,7 +650,8 @@ ran.)_
   1's probe is their only run (runbook B3b is written for them)" until
   2026-10-22, when B3b ran them.)_
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
-  offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
+  offered); `cm.mtn` / `cm.orange` against the real sandbox (built against
+  the stub on 2026-10-23, step 8); webhook signature verification
   ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft).
   _(This list ended "retiring a superseded or duplicate webhook endpoint (no
   working `DELETE`)" until 2026-10-23, when the maintainer decided it is "an

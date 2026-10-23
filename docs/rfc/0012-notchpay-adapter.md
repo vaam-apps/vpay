@@ -211,7 +211,11 @@ carries a number-plan table of its own. Whether `cm.mobile` resolves the
 network from the number, and whether the sandbox's outcome numbers behave
 under it, is "To confirm" item 3. When ADR-0029 D6 lands and the core can say
 which network the payer chose, the adapter sends `cm.mtn` or `cm.orange`
-instead.
+instead. _(Built 2026-10-23, delivery step 8: a charge whose method type is
+`mtn_wallet` is sent `cm.mtn`, `orange_wallet` `cm.orange`, and one confirmed
+by the rail code `notchpay` keeps `settings.channel`. Proven against the stub,
+whose `process` mapping now admits the three channels and nothing else; never
+sent to Notch Pay's sandbox.)_
 
 **The first rail that serves a method a direct rail also serves.** With
 `mtn_momo` and `notchpay` both enabled, an MTN payer has two rails. That is
@@ -761,7 +765,7 @@ In writing (W) or in the sandbox (S):
 | 5    | The first test-mode call through the adapter, on a dated verification page. **Not done 2026-10-20**: no test-mode key was available when the adapter landed, and the session that had one could not reach Notch Pay. Runs from [the runbook](../runbooks/notchpay-sandbox-test.md), Part B (`--profile notchpay-sandbox`); written, not yet run. **Done 2026-10-21** on the maintainer's machine: a success, a failure, and a short collection refused as `Malformed` and left `pending`; every charge held Notch Pay's `trx.…` reference ([page](../status/verification/2026-10-21-notchpay-step5.md))             | 4; test-mode keys                     |
 | 6    | Refunds as a call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | item 6 answered                       |
 | 7    | Model B: `X-Sync`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | RFC-0009; item 9 answered             |
-| 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ADR-0029 D6 landed                    |
+| 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type. **Built 2026-10-23** with ADR-0029 D6 (`ChargeRef::method_type`); stub-proven only, never sent to the sandbox ([verification](../status/verification/2026-10-23-method-type-routing.md))                                                                                                                                                                                                                                                                                                                                                              | ADR-0029 D6 landed                    |
 
 Steps 2–5 are one pull request against `master` and one against
 `vpay-skills`.

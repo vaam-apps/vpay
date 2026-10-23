@@ -51,10 +51,11 @@ silently ignored.
      a configured weight, because that is the only input that exists today.
      Adding a component is a variant and a line.
 2. **The port.**
-   - `ProviderAdapter::method_types()`, defaulting to none. The adapters
-     declare: `mtn_momo` serves `mtn_wallet`, `orange_money` serves
-     `orange_wallet`, and `notchpay` serves both.
-   - `MeasuredAdapter` forwards it.
+   - `Capabilities::method_types`, a field beside `flow` rather than a new
+     trait method, so `MeasuredAdapter` and every caller already carry it.
+     The adapters declare: `mtn_momo` serves `mtn_wallet`, `orange_money`
+     serves `orange_wallet`, and `notchpay` serves both. Boot refuses an
+     enabled rail declaring none.
    - `ChargeRef::method_type` carries the payer's choice to the adapter.
    - D2 named RFC-0010 as `method_types`' first consumer; Notch Pay is,
      because it is the first rail to serve two types.
@@ -83,22 +84,36 @@ silently ignored.
    - Neither is on the `/v1` object (D10).
 6. **Notch Pay** sends `cm.mtn` for `mtn_wallet` and `cm.orange` for
    `orange_wallet`. A rail-code charge keeps `settings.channel`
-   (`cm.mobile`). This is RFC-0012 delivery step 8.
+   (`cm.mobile`). This is RFC-0012 delivery step 8, proven against the stub
+   only.
+7. **The SDKs** spell `mtn_wallet` and `orange_wallet` in
+   `payment_method_types` on a create. Neither can send a confirm by type or
+   a pin: a dated gap in `docs/sdks/parity.md`, slice 2's.
+
+The evidence is
+[the verification page](../status/verification/2026-10-23-method-type-routing.md).
 
 ## Slice 2: the checkout (not built)
 
 What the payer sees, per D13's `collapse`: one entry per method type, never
 a rail and never a score. It needs:
 
-- a browser-surface answer, per method type on this intent, naming the rail
-  the router ranks first now, with that rail's flow and payer fields. The
-  page has to render a number field for a push rail and a redirect button for
-  a redirect one, and `orange_wallet` can route to either (`orange_money` is
+- **the server half is in slice 1.** The checkout session's browser answer
+  already carries one entry per method type, flowing as the rail the router
+  ranks first and carrying that rail's payer fields, without naming it
+  (`a_method_type_is_one_entry_flowing_as_the_routers_first_rail`). The page
+  has to render a number field for a push rail and a redirect button for a
+  redirect one, and `orange_wallet` can route to either (`orange_money` is
   `Redirect`, `notchpay` is `Push`);
 - `frontends/apps/checkout` rendering method types when the intent lists
   them, and confirming with `payment_method_data[type]=<method type>`;
 - `@vaam-apps/vpay-stripe-js` (embedded and popup), the Tauri plugin, and
   `examples/shop` creating intents with method types;
+- the SDKs' confirm by type and the pin (`docs/sdks/parity.md`'s dated
+  gap). A merchant's own server confirming `orange_wallet` has to pin today
+  to know whether to send `return_url` or `msisdn`, because the payer fields
+  depend on the rail; RFC-0008's open question R8.4 is the same problem seen
+  from the checkout;
 - D10's "at checkout render and again at confirm": the render-time ranking is
   advisory, and the confirm decides and records.
 

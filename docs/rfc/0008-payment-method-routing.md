@@ -189,12 +189,12 @@ again"), not the implementer's.
 
 ### R9. Delivery of this revision
 
-| Step | Contents                                                                                                                                                                                                                                                          | Depends on       |
-| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| R-a  | Method types, `ProviderAdapter::method_types`, the hard filter, the scored ranking with `provisional-1` (configured weight), `routing_decisions` with breakdowns, `charges.method_type`, the confirm pin, Notch Pay's channel from the type. **Built 2026-10-23** | nothing          |
-| R-b  | The checkout renders method types (D13 `collapse`)                                                                                                                                                                                                                | R-a              |
-| R-c  | The components the maintainer chooses (R8.1), each with its source, coefficient and breakdown entry, and the formula renamed past `provisional-1`                                                                                                                 | R8 answered      |
-| R-d  | Per-merchant weights                                                                                                                                                                                                                                              | RFC-0009 phase B |
+| Step | Contents                                                                                                                                                                                                                                                       | Depends on       |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
+| R-a  | Method types, `Capabilities::method_types`, the hard filter, the scored ranking with `provisional-1` (configured weight), `routing_decisions` with breakdowns, `charges.method_type`, the confirm pin, Notch Pay's channel from the type. **Built 2026-10-23** | nothing          |
+| R-b  | The checkout renders method types (D13 `collapse`)                                                                                                                                                                                                             | R-a              |
+| R-c  | The components the maintainer chooses (R8.1), each with its source, coefficient and breakdown entry, and the formula renamed past `provisional-1`                                                                                                              | R8 answered      |
+| R-d  | Per-merchant weights                                                                                                                                                                                                                                           | RFC-0009 phase B |
 
 ## Problem
 

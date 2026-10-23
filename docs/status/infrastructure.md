@@ -99,6 +99,22 @@ Measured, 2026-09-16.)_
 
 ## Migrations
 
+**52 as of 2026-10-23.** `0052_method-types-and-routing-decisions.sql`
+(ADR-0029 D6 and D10, RFC-0008 as revised on 2026-10-23) adds
+`charges.method_type` (nullable `TEXT`, CHECK `method_type_is_known`, no
+backfill: a `NULL` is the truth about a charge whose network vpay never
+recorded) and creates `routing_decisions`, one row per routed charge, written
+in the transaction that opens it and cascading with it: the type, the chosen
+rail (a foreign key to `providers`), any pinned rail, every rail considered as
+a `jsonb` array with its score breakdown or exclusion reason, the formula's
+name and a 16-hex-digit configuration version, each held by a CHECK. Its drift
+cost was measured: [status/cratestack.md](cratestack.md) § 2026-10-23.
+`postgres_smoke.rs` records 52 applied. `0051_jobs-ensure-callbacks.sql`
+(RFC-0013) is recorded on
+[its verification page](verification/2026-10-22-rfc-0013-callback-registration.md),
+not here; this line is the first to count it. See
+[verification/2026-10-23-method-type-routing.md](verification/2026-10-23-method-type-routing.md).
+
 **50 as of 2026-10-20.** `0050_create-staff-sso-attempts.sql` (ADR-0030) creates `staff_sso_attempts`, one row per SSO sign-in in flight: the SHA-256 of the pending token, the `state` and the `nonce`, the sealed PKCE verifier, `is_retry`, and a ten-minute `expires_at`, with four length CHECKs, `expires_at > created_at`, and the index a sweep needs. Not a `staff_sessions` row, because `staff_sessions.staff_id` is `NOT NULL` and a first sign-in has no staff member yet. Its drift cost was measured, not predicted: [status/cratestack.md](cratestack.md) § 2026-10-20. `cargo xtask verify-migrations`: ok — 50 files match `MANIFEST.sha256`. The Helm chart gained `networkPolicy.idpEgress` for an identity provider on a private address or non-443 port; `just helm-check` passed (see the verification page).
 
 **49 as of 2026-09-23.** `0049_manual-payments.sql` (RFC-0004 § 6) adds

@@ -114,6 +114,16 @@ noticeably from Stripe's ergonomics, and it is deliberate.
 
 ## Status
 
+**Updated 2026-10-23: a confirm may name a payment-method type.** The
+lifecycle did not change: one charge per intent, forever (ADR-0029 D11), and
+the same states. What changed is step 2 of a confirm: when
+`payment_method_data[type]` is `mtn_wallet` or `orange_wallet`, vpay's router
+picks the rail before the charge is opened, and the charge's transaction also
+commits a `routing_decisions` row explaining the choice (D10). A decline does
+not move the intent to another rail. See
+[RFC-0008](../rfc/0008-payment-method-routing.md)'s 2026-10-23 revision and
+[verification](../status/verification/2026-10-23-method-type-routing.md).
+
 **Updated 2026-09-03 (Step 2).** Types and the flow-selection logic are
 implemented and tested in `vpay_core::state`: `Transition`, `next_status`,
 and a transition table proven exhaustive over every (status, verb) pair

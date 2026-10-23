@@ -1145,3 +1145,42 @@ accepts it.
 
 No route moved and no `NotImplemented` token moved. Gates and counts:
 [verification/2026-10-23-two-step-submit.md](verification/2026-10-23-two-step-submit.md).
+
+## Payment-method types and a scored, explained router (2026-10-23, ADR-0029 D6/D10, RFC-0008 revised)
+
+The maintainer asked for the payer to choose a network and for vpay to "show
+him the correct rail", then for routing to be "a score of each payment solution
+for each checkout". Slice 1 of
+[the plan](../plans/2026-10-23-method-type-routing.md) is built; **the score's
+formula is not decided**, and RFC-0008's 2026-10-23 revision asks the
+maintainer the questions that decide it.
+
+- **Built:** `vpay_core::routing` — `MethodType` (`mtn_wallet`,
+  `orange_wallet`; `card` and `bank_transfer` reserved and refused), and
+  `route`, one pure function that filters eligibility hard and returns every
+  rail with a score and breakdown or an exclusion reason. The formula is
+  `provisional-1`: one component, a configured weight (`routing.weights`,
+  default 100), ties to the lower rail code.
+- **The port:** `Capabilities::method_types` (MTN one, Orange one, Notch Pay
+  both) and `ChargeRef::method_type`; Notch Pay sends `cm.mtn`/`cm.orange`
+  from it (RFC-0012 step 8).
+- **The API:** `payment_method_types` takes types beside rail codes (a rail
+  code keeps meaning that rail, pinned); a confirm by type is routed, and
+  `payment_method_options[<type>][rail]` pins. The decision is committed with
+  the charge in `routing_decisions` (migration `0052`) and is on no `/v1`
+  object. The checkout session's browser answer renders a type as one entry
+  flowing as the first-ranked rail.
+- **Proven:** unit tests on the router (exhaustive over small inputs, in
+  place of property tests), the config and the boot refusals; three new
+  real-Postgres cases in `confirm_rails.rs` (routing and the recorded row, the
+  score/pin/tie-break with Notch Pay's channel read off the stub's journal,
+  and the `400`s); conformance pins each rail's types; `vpay-server`'s
+  `the_router_names_no_rail` reads the router's source. Every guard was
+  mutation-checked.
+- **Not done:** the checkout page rendering types (slice 2), the SDKs'
+  confirm by type (a dated parity gap), any score component but the weight
+  (slice 3, after the maintainer answers R8), `cm.mtn`/`cm.orange` against
+  Notch Pay's real sandbox, and a merchant-readable decision on `/v1`.
+
+No route was mounted or unmounted and no `NotImplemented` token moved.
+[verification/2026-10-23-method-type-routing.md](verification/2026-10-23-method-type-routing.md).
