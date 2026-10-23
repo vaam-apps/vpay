@@ -152,10 +152,27 @@ against downloading another. So both apps' `vitest.storybook.config.ts` were
 pointed at `/opt/pw-browsers/chromium` for the run and reverted after it. CI
 runs the pinned browser.
 
+## In CI
+
+The first CI measurement of the case is run
+[40011902343](https://github.com/vaam-apps/vpay/actions/runs/40011902343),
+`web` job, on this branch's head `49f7d0a1`. The job passed:
+
+- `pnpm -r test`: `src/a11y-gate.test.ts (6 tests | 1 skipped)` in each app,
+  the skip this page expects; checkout 556 passed / 1 skipped, dashboard 456 /
+  1;
+- `just build-storybook`: `checkout --color-base-100 defined 3x, referenced
+24x`, then `a11y-gate.test.ts (6 tests)`, 6 passed; `dashboard … defined
+3x, referenced 25x`, then 6 passed. No skip;
+- `just test-storybook`: 26 passed and 36 passed, on the pinned browser.
+
+`rust` and `e2e (compose)` passed on the same run. Its `supply chain` job
+failed on RUSTSEC-2026-0386 against `tokio 1.53.1` in `Cargo.lock`. This
+branch does not change `Cargo.lock`, which is identical to `master`'s, and
+`master`'s last green run predates the advisory.
+
 ## Not done
 
-- **CI has not run it yet.** This page records local runs. The `web` job's
-  first measurement of the case is this branch's first CI run.
 - The skip on `pnpm -r test` remains, by design. `just ci` builds no
   Storybook, so a local `just ci` still reports the case skipped. It is
   measured where a build exists: in `just build-storybook`, and in CI's `web`
