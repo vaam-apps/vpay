@@ -25,9 +25,10 @@ _(This said "It is not evidence. Nothing has called Notch Pay until someone
 runs it and the outputs are recorded" until 2026-10-21;
 [the first attempt](../status/verification/2026-10-20-notchpay-sandbox.md) had
 made no request.)_ It is not a production test: every key here is a test key,
-and `deployment.livemode` stays `false`. It is not webhook signature
-verification, which is designed in
-[RFC-0014](../rfc/0014-verifying-rail-callbacks.md) and not built.
+and `deployment.livemode` stays `false`. It is not a test of vpay's webhook
+signature check, which [RFC-0014](../rfc/0014-verifying-rail-callbacks.md)
+built on 2026-10-23 and the `notchpay-sandbox` profile does not configure.
+_(This said the check was "designed … and not built" until 2026-10-23.)_
 
 Written 2026-10-20. Before either part had been run against Notch Pay, what
 was run, in a container that cannot reach Notch Pay, was this:
@@ -93,7 +94,7 @@ $EDITOR ~/.config/vpay/notchpay-sandbox.env
 ```text
 NOTCHPAY_TEST_PUBLIC_KEY=...      # dashboard: Settings > API keys, test mode
 NOTCHPAY_TEST_PRIVATE_KEY=...     # sent as X-Grant on every call
-NOTCHPAY_TEST_HASH_KEY=...        # Part A item 7 only; vpay never reads it
+NOTCHPAY_TEST_HASH_KEY=...        # Part A item 7 only; this profile gives vpay no signing secret
 NOTCHPAY_SANDBOX_MERCHANT_JWK_KID=...   # Part B, from gen-signing-key below
 NOTCHPAY_SANDBOX_MERCHANT_JWK_N=...     # Part B, from gen-signing-key below
 ```
@@ -533,7 +534,8 @@ cells say "proven; sandbox" with the date.
 
 **Does not prove**: anything about Notch Pay's production; a live key's
 prefix (§ 10 item 8, a written question); refunds (`notchpay::refund` stays
-a token); webhook signature verification in vpay (RFC-0014, not built).
+a token); vpay's webhook signature check (RFC-0014, built 2026-10-23, and
+not configured by this profile, so it answers `NoSecret` here).
 
 ## Related
 

@@ -109,10 +109,19 @@ above to anyone who loads that page.**
 
 What else an operator takes on, from RFC-0012 § 9:
 
-- **Webhooks are unverified.** Notch Pay signs them (`x-notch-signature`), and
-  the port gives `parse_callback` no headers, so vpay cannot check the
-  signature. A forged webhook costs one authenticated read and moves no money.
-  [RFC-0014](../rfc/0014-verifying-rail-callbacks.md) (a draft) designs the check; it is not built.
+- **Webhooks are verified only where the Hash Key is configured**
+  (2026-10-23). Notch Pay signs them (`x-notch-signature`), and since
+  [RFC-0014](../rfc/0014-verifying-rail-callbacks.md) vpay checks the
+  signature against `credentials.callback_signing_secret`: a webhook that
+  fails moves nothing, and costs no read. A deployment without the secret
+  verifies nothing, and a forged webhook there costs one authenticated read
+  and moves no money; a livemode boot refuses that unless the rail's block
+  says `callbacks: { verify: off }`. Two limits hold either way: Notch Pay
+  signs no timestamp, so a captured genuine webhook verifies again (it can
+  pull one poll forward); and the check is proven against the stub and Notch
+  Pay's guide, not against a webhook Notch Pay sent (§ "To confirm" item 7).
+  _(This said "**Webhooks are unverified.** … the port gives `parse_callback`
+  no headers, so vpay cannot check the signature" until 2026-10-23.)_
 - **Licensing is unpublished.** No Notch Pay page names a legal entity, a
   licence, a regulator or a partner bank. That is the operator's due
   diligence (ADR-0029 D1), and § 10 item 10 asks.
@@ -149,8 +158,11 @@ providers:
     credentials:
       public_key: ${NOTCHPAY_PUBLIC_KEY}
       private_key: ${NOTCHPAY_PRIVATE_KEY}
-    callbacks: # optional; absent means `register: ensure`
+      callback_signing_secret: ${NOTCHPAY_HASH_KEY} # the endpoint's Hash Key; see Callbacks
+      # callback_signing_secret_previous: ${NOTCHPAY_HASH_KEY_PREVIOUS} # during a rotation only
+    callbacks: # optional; absent means `register: ensure` and `verify: on`
       register: ensure # or `check` (list, never create) or `off` (never ask)
+      # verify: off # livemode without a Hash Key only: accept unverified webhooks
 ```
 
 Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
@@ -179,6 +191,18 @@ Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
   and `credentials.public_key` and never a value. Outside livemode it may be
   absent. In either mode a value other than `true` or `false` is refused
   rather than guessed at.
+
+And since 2026-10-23, in `vpay_api::boot::boot_seeds` rather than that table,
+because they read the adapter's `callback_check` (RFC-0014 § 6):
+
+- **in livemode, a `callback_signing_secret` or `callbacks.verify: off`**
+  (`CallbackSigningSecretMissing`). Outside livemode, no secret boots with a
+  `WARN` from `vpay-server serve`; `verify: off` without a secret boots with
+  one in either mode, at every boot;
+- **never both** (`CallbackVerifyOffWithSecret`): a configured secret is
+  checked whatever `verify` says, so `off` beside one acknowledges something
+  that does not happen;
+- a blank secret is no secret, in boot and in the check alike.
 
 ## The calls
 
@@ -344,8 +368,45 @@ a `data` naming no vpay UUID in either field, and `{}`. `trxref` comes first
 because the sandbox's payment answers carried ours there and Notch Pay's
 `trx.…` in `reference`; no webhook was received to confirm the event's
 `data` has the same shape. The event's own status is
-not read: the client does not model it. The route then pulls the charge's
-poll forward, and only the authenticated read moves money.
+not read: the client does not model it. The route then asks the adapter to
+check the signature (below), pulls the charge's poll forward if the check
+admits it, and only the authenticated read moves money.
+
+### The signature check (RFC-0014, built 2026-10-23)
+
+**Stub-proven; the real scheme measured on: not yet.** `verify_callback`
+reads `x-notch-signature` and accepts it when it is the hex HMAC-SHA256 of the
+**raw body** under `credentials.callback_signing_secret` or, during a
+rotation, `credentials.callback_signing_secret_previous`, compared in constant
+time (`vpay_provider::callback::hmac_sha256_hex_matches`, the one MAC
+comparison in the workspace). The secret is the endpoint's Hash Key, copied
+from Notch Pay's dashboard: Notch Pay's create answer returned none in the
+sandbox on 2026-10-21, so registering the endpoint (below) does not supply
+it.
+
+| The webhook                                                 | Verdict      | The poll                       |
+| ----------------------------------------------------------- | ------------ | ------------------------------ |
+| signed under a configured secret                            | `Verified`   | pulled forward                 |
+| no header, a non-ASCII one, or one matching no secret       | `Invalid`    | **left where it was**; `warn`  |
+| any, with no secret configured                              | `NoSecret`   | pulled forward (today's route) |
+
+Every answer is the same `202`, byte for byte, as for a reference no charge
+holds: a different one would tell a caller the charge exists, and would make
+Notch Pay retry a webhook a stale secret will never accept. Each verdict is
+counted on `vpay_provider_callbacks_total{provider="notchpay",verdict}`. A
+steady `invalid` with no `verified` beside it is this deployment's own
+secret, usually rotated in the dashboard and not in the Secret. No header
+value, body byte or secret is logged.
+
+What is not settled, and why it is "stub-proven": Notch Pay's guide signs
+the raw body in its PHP and Python examples and `JSON.stringify(req.body)`
+in its Node one, which is the same bytes only for a body Notch Pay itself
+serialised compactly. No webhook from Notch Pay has been received and checked
+(§ "To confirm" item 7). If the real scheme differs, every genuine webhook
+reads `Invalid`, and the cost is each charge's callback latency: the poll
+ladder still settles it. The signature also carries no timestamp, so a
+captured genuine webhook verifies again (RFC-0014 open question 4); all it
+can do is pull that charge's poll forward.
 
 ### Registering the endpoint (RFC-0013, built 2026-10-22)
 
@@ -437,7 +498,9 @@ each is marked below. The ones that decide whether the adapter is right:
    **Not answered 2026-10-22:** the sandbox answered `403` to every
    `POST /refunds`, so nothing was refunded and no replay was measured.
 7. **(S)** Is the webhook signature over the raw body? **Not measured:** no
-   public URL to receive one.
+   public URL to receive one. Since 2026-10-23 vpay's check assumes it is
+   (§ "The signature check"), so this decides whether genuine webhooks
+   verify.
 8. **(W)** What prefix does a live key carry?
 9. **(W)** Does an `incomplete` payment expire as a `pending` one does?
 10. **(S)** Are answers under `transaction`, as the specification says, or
@@ -456,6 +519,19 @@ Also open, and not in the adapter's hands: whether Notch Pay accepts a number
 without the `+`. The adapter sends the `+` form the documentation shows.
 
 ## Status
+
+**Built 2026-10-23: webhook signatures are checked (RFC-0014).**
+Stub-proven; the real scheme measured on: not yet. `notchpay` declares
+`CallbackCheck::Signature`, and `verify_callback` checks `x-notch-signature`
+against the configured Hash Key; a webhook that fails moves nothing and
+causes no read, and boot refuses a livemode rail with no secret unless
+`callbacks.verify: off`. Proven by the adapter's unit tests, the conformance
+suite's `a_forged_callback_is_refused_by_a_rail_that_checks`, and
+`provider_callback.rs`'s
+`a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles`
+against WireMock and a real Postgres, each guard mutation-checked; never
+against a webhook Notch Pay sent
+([verification](../status/verification/2026-10-23-webhook-signatures.md)).
 
 **Changed 2026-10-23: the `trx.…` is committed before the prompt**
 ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
@@ -632,8 +708,9 @@ ran.)_
   of status/providers.md say "stub-only", never "sandbox" or "proven"" until
   2026-10-21.)_
 - **Not done**, after step 5 and B3b: no webhook was received (runbook A4), so
-  RFC-0012 § 10 items 7 and 17 stay open, and webhook signature verification
-  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md)) is not built; Notch
+  RFC-0012 § 10 items 7 and 17 stay open, and the signature check
+  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), built 2026-10-23) has
+  never checked a webhook Notch Pay sent; Notch
   Pay's production was never called and no live key was used, so item 8 (a
   live key's prefix) stays a written question; no refund
   (`notchpay::refund` is still a token; the sandbox answered `403` to the
@@ -651,9 +728,10 @@ ran.)_
   2026-10-22, when B3b ran them.)_
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` against the real sandbox (built against
-  the stub on 2026-10-23, step 8); webhook signature verification
-  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft).
-  _(This list ended "retiring a superseded or duplicate webhook endpoint (no
+  the stub on 2026-10-23, step 8); the signature check against a webhook
+  Notch Pay really sent (RFC-0012 § 10 item 7).
+  _(Until 2026-10-23 it named "webhook signature verification (RFC-0014, a
+  draft)", built that day. This list ended "retiring a superseded or duplicate webhook endpoint (no
   working `DELETE`)" until 2026-10-23, when the maintainer decided it is "an
   operator's task only, not code": vpay logs each such endpoint by id at
   `warn`, and an operator deletes it in Notch Pay's dashboard (§ "Registering

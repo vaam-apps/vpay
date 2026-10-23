@@ -16,6 +16,7 @@ wire.
 | `async submit`                   | Idempotent on `reference_id`. A duplicate submission MUST report `Submitted`, never an error. Redirect rails also return `redirect_url` and `ref_extra` — **in the same value**, so a caller physically cannot hold a URL without the key material it will need to query the charge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | `async query_status`             | The authoritative read. Takes the whole charge, because some rails need the amount and their own token. Must work indefinitely                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `parse_callback`                 | Identifiers **only** — never a status. **Stays synchronous on purpose:** it parses bytes that already arrived and must not be able to make a network call, so an adapter cannot smuggle a status out of an unauthenticated request                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| `async verify_callback`          | Optional; `NotChecked` by default. Whether a callback the route has parsed, and matched to a charge, is the rail's: handed the headers and the **raw** body (`CallbackRequest`), the charge and the rail's config, after `parse_callback` and before the poll is pulled forward ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), 2026-10-23). Answers a `CallbackVerdict`, never an error: `Verified`, `Invalid(reason)`, `NotChecked`, `NoSecret` or `Unavailable(reason)`, the reasons fixed sentences that quote nothing. It decides **only** whether the poll is pulled forward; even `Verified` moves no money. `async` for a check that must fetch something (PayPal's certificate); Notch Pay's is an HMAC over the signing secret in `credentials` |
 | `parse_destination`              | Optional; the adapter's own `destination[<rail_code>][…]` sub-map → `RefundTarget`. Symmetric with `parse_callback`, and synchronous for the same reason — it reads a merchant's parameters and must not be able to call a rail. The core strips the rail code (its own envelope) and interprets nothing inside. The trait's **default** is `ProviderError::Unsupported`, which is the honest permanent answer for a rail declaring `RefundDestination::Origin`: it has no destination to parse. A `Required` rail overrides it, and `a_required_rail_parses_its_own_destination` in the conformance suite fails if one does not. A missing key, a non-string value or a blank one is `Malformed`, and the message names the parameter and never the number in it (RFC-0003 open question 4, decided 2026-09-15) |
 | `async refund`                   | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail _does_ refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it                                                                                                                                                                                                                                     |
 | `async account_holder_name`      | Optional; gated by `supports_account_holder_lookup`. The registered holder's name for an MSISDN — a stateless read that touches no charge and writes nothing (policy: [account-holder-lookup.md](account-holder-lookup.md)). `Ok(None)` means **the rail has no record** and nothing else; every "could not ask" is an `Err`. The trait's **default** is `ProviderError::Unsupported`, on `refund`'s terms. Since 2026-09-06                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -29,15 +30,17 @@ _The table has ten methods since 2026-10-20, when `accepted_exposure` landed
 with its first consumer (ADR-0031), eleven since 2026-10-22, when
 `ensure_callback_endpoint` landed with its first, `notchpay` (RFC-0013), and
 twelve since 2026-10-23, when `prepare` landed with its first, `notchpay`
-(ADR-0032). On a two-step rail `submit` is the prompt alone, sent by the key
-material `prepare` returned and the charge now holds._
+(ADR-0032), and thirteen the same day, when `verify_callback` landed with its
+first, `notchpay` (RFC-0014). On a two-step rail `submit` is the prompt alone,
+sent by the key material `prepare` returned and the charge now holds._
 
 _Corrected 2026-09-23: this table listed six of the trait's nine methods.
 `account_holder_name` (2026-09-06), `payer_fields` (2026-09-16) and `code`
 were missing, and the sentence below said "three network methods" where
 `account_holder_name` makes four._
 
-The six network methods are `async` (five until `prepare`, 2026-10-23), via `#[async_trait]` rather than a
+The six network methods are `async` (five until `prepare`, 2026-10-23), and so
+is `verify_callback`, which reaches no rail today, via `#[async_trait]` rather than a
 native `async fn`: a trait with a native `async fn` is not dyn-safe, and this
 port is only ever held as `Box<dyn ProviderAdapter>` — which is what keeps
 `if provider == "mtn_momo"` structurally impossible outside an adapter crate
@@ -70,7 +73,8 @@ configured `channel` (`cm.mobile`) when it is `None`
 
 `flow`, `supports_refunds`, `supports_partial_refunds`, `delivers_callbacks`,
 `requires_ip_allowlist`, `supports_account_holder_lookup`,
-`refund_destination`, `callback_url_mode`, `submit_steps`, `method_types`.
+`refund_destination`, `callback_url_mode`, `submit_steps`, `method_types`,
+`callback_check`.
 
 | Capability                       | `mtn_momo`   | `orange_money`  | `notchpay`          | What the core does with it                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | -------------------------------- | ------------ | --------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -84,6 +88,7 @@ configured `channel` (`cm.mobile`) when it is `None`
 | `callback_url_mode`              | `PerRequest` | `PerRequest`    | `Registered`        | whether the rail is told its callback URL on every submit (`X-Callback-Url`, `notif_url`) or holds it registered with the account, which the worker's `ensure_callbacks` pass then keeps there. `Registered` requires `delivers_callbacks` (`Capabilities::callbacks_are_coherent`, refused at boot), and a `providers[].callbacks` block on a `PerRequest` rail refuses to boot. Not persisted. **New 2026-10-22** (RFC-0013)                   |
 | `submit_steps`                   | `One`        | `One`           | `PrepareThenSubmit` | whether a charge is one call that prompts, or `prepare` then `submit` with the rail-issued key material committed between them, by the confirm path and the resubmit alike ([crash-safety.md](crash-safety.md) § "Two-step push rails"). No coherence rule and not persisted. **New 2026-10-23** ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md))                                                             |
 | `method_types`                   | `mtn_wallet` | `orange_wallet` | both                | which payment-method types the rail serves: the router's eligibility filter reads this and nothing else, so a rail is a candidate for a type it declares and never for one it does not. At least one on an enabled rail (`Capabilities::method_types_are_coherent`, refused at boot); the conformance suite pins every rail's set. Not persisted. **New 2026-10-23** ([RFC-0008](../rfc/0008-payment-method-routing.md)'s revision, ADR-0029 D6) |
+| `callback_check`                 | `None`       | `None`          | `Signature`         | what vpay's adapter checks on a callback, not what the rail sends (RFC-0014): boot reads it to decide whether a missing `callback_signing_secret` refuses a livemode deployment, and that a signing setting on a rail that checks none is refused. Coherent only with `delivers_callbacks` (`callback_check_is_coherent`). Not persisted |
 
 **`orange_money` declared `supports_refunds: false` until 2026-09-15**, and
 that flag — not a rail-specific branch — was what made the core refuse a refund
@@ -228,6 +233,20 @@ means making this pass — not writing a new suite.** That is the real test of
 whether this is a port or just a folder.
 
 ## Status
+
+**Updated 2026-10-23: `verify_callback` and `callback_check`**
+([RFC-0014](../rfc/0014-verifying-rail-callbacks.md)). The route's new step
+asks the adapter whether a callback is the rail's, through
+`vpay_provider::callback`: `CallbackRequest`, `CallbackVerdict`, the
+port-fixed credential names `callback_signing_secret` and
+`callback_signing_secret_previous`, and the one constant-time HMAC
+comparison. `Measured` forwards it and counts nothing; the route counts the
+verdict on `vpay_provider_callbacks_total`. `notchpay` is the only adapter
+that checks (`Signature`). Proven by the conformance suite's
+`a_forged_callback_is_refused_by_a_rail_that_checks`, branched on the
+capability, and against WireMock and a real Postgres; stub-proven, the real
+scheme measured on: not yet
+([verification](../status/verification/2026-10-23-webhook-signatures.md)).
 
 **Updated 2026-10-23: `prepare` and `submit_steps`**
 ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).

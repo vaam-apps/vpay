@@ -137,3 +137,39 @@ status query is addressed by, so the honest state is "not built", and
 what holds it there.
 
 ---
+
+### The rail's own check (RFC-0014, 2026-10-23)
+
+_Added 2026-10-23; the sections above are unchanged._
+
+Between finding the charge and moving its poll, the route now asks the rail's
+adapter whether the callback is the rail's:
+`ProviderAdapter::verify_callback(&CallbackRequest { headers, body, received_at }, &charge, &config)`.
+The configuration is the rail's by `code` (`ResourceConfig::rail`, enabled
+or not), never anything the request names; the `ChargeRef` is built from the
+row the way the poll builds it. The verdict decides one thing:
+
+| Verdict       | Pulled forward? | Log                                  |
+| ------------- | --------------- | ------------------------------------ |
+| `Verified`    | yes             | the `info` line, `verdict=verified`  |
+| `NotChecked`  | yes             | the `info` line (MTN, Orange)        |
+| `NoSecret`    | yes             | the `info` line (a signing rail with no secret; boot already warned) |
+| `Invalid`     | **no**          | `warn`, with the adapter's fixed sentence |
+| `Unavailable` | **no**          | `warn`; also what the route answers itself when the rail has no loaded configuration or the row does not parse |
+
+**Every case answers `202`, byte for byte**, as an unknown reference does:
+a different answer for "known charge, bad signature" would be an oracle for
+"this charge exists", and would make a rail with this deployment's stale
+secret retry a callback vpay will never accept. Each verdict is counted on
+`vpay_provider_callbacks_total{provider,verdict}`; a body that does not parse
+and a reference no charge holds never reach the check and are not counted.
+No header value, body byte or secret is logged: `CallbackRequest`'s `Debug`
+prints header names and the body's length.
+
+What it adds to § "What an anonymous caller can and cannot get out of it": on
+a rail whose check runs, a POST the rail did not sign moves nothing at all.
+Notch Pay's signature carries no timestamp, so a replayed genuine one is
+still worth one pull-forward. Proven by
+`a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles` in
+`backends/tests/integration/tests/provider_callback.rs`
+([verification](../../status/verification/2026-10-23-webhook-signatures.md)).

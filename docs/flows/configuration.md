@@ -226,6 +226,9 @@ gateway that boots half-configured is worse than one that does not boot.
 | `partial-refunds` ⇒ `refunds`                                                                                                                                            | **Not a rule about the YAML** — boot step 4 refuses a _linked adapter_ whose capability set is incoherent, exit `78` naming the rail and the rule; the database CHECK is the last line — see below                                                                                                                                                                                                                             |
 | `callback_url_mode: Registered` ⇒ `delivers_callbacks`                                                                                                                   | **Not a rule about the YAML either**, on the row above's terms: boot step 4 refuses a linked adapter that registers a callback URL with the account and never calls back (`ConfigError::IncoherentCallbackMode`, exit `78`). No CHECK mirrors it, because `callback_url_mode` is not persisted (RFC-0013, 2026-10-22)                                                                                                          |
 | No `providers[].callbacks` block on a rail told its callback URL per request                                                                                             | `mtn_momo` and `orange_money` carry the URL on every submit, so the registration pass never asks them anything and the block would do nothing: `ConfigError::CallbacksOnPerRequestRail`, exit `78`, whatever `register` says. A setting that does nothing is one somebody believes in (RFC-0013 § 2, 2026-10-22)                                                                                                               |
+| `callback_check` ⇒ `delivers_callbacks` | **Not a rule about the YAML**: an adapter declaring a callback check on a rail that never calls back would make the next rule ask for a secret nothing reads. `ConfigError::IncoherentCallbackCheck`, exit `78`, at boot step 4 (RFC-0014 § 2, 2026-10-23) |
+| `livemode` and a rail whose adapter checks signatures ⇒ `credentials.callback_signing_secret`, or `callbacks: { verify: off }` | Otherwise every callback on a rail that signs them would be accepted unchecked, in production. `ConfigError::CallbackSigningSecretMissing`, exit `78`, at boot step 4, naming the rail and the setting and never a value; outside livemode `vpay-server serve` warns instead, and with `verify: off` it warns at every boot in either mode (RFC-0014 § 6, 2026-10-23). A blank secret is no secret |
+| No signing setting on a rail whose adapter checks no signature, and never `verify: off` beside a secret | A setting that does nothing is one somebody believes in: `credentials.callback_signing_secret` (or `_previous`) or `callbacks.verify: off` on `mtn_momo` or `orange_money` is `ConfigError::CallbackSigningSettingUnread`; `off` beside a configured secret, which is checked whatever `verify` says, is `ConfigError::CallbackVerifyOffWithSecret`. Both exit `78`, in either mode (RFC-0014 § 6, 2026-10-23) |
 | `checkout.public_base_url` is a well-formed origin, `https://` under `livemode`                                                                                          | Every payer link vpay mints is built on it; a malformed one is a `url` that resolves to nothing, with no log naming a port                                                                                                                                                                                                                                                                                                     |
 | Every `checkout_origins` entry is an `https://` origin (`http://` only when `livemode: false`), with no path, no duplicate across merchants, and spelled **canonically** | It becomes `Content-Security-Policy: frame-ancestors`; anything a browser spells differently is dropped silently and the merchant cannot embed with nothing to read                                                                                                                                                                                                                                                            |
 | `checkout_origins` without a `checkout.public_base_url`                                                                                                                  | There is no page for those origins to frame                                                                                                                                                                                                                                                                                                                                                                                    |
@@ -476,6 +479,14 @@ means recovery asks the wrong server and gets `NotFound` forever.
 
 ## Status
 
+**Updated 2026-10-23: callback signing (RFC-0014).**
+`providers[].callbacks.verify`, `credentials.callback_signing_secret` (and
+`_previous`), and four refusals at boot step 4 (§ "Rules that refuse to
+boot"): `IncoherentCallbackCheck`, `CallbackSigningSecretMissing`,
+`CallbackSigningSettingUnread` and `CallbackVerifyOffWithSecret`. Each is
+tested in `vpay-api`'s `boot.rs` in both modes and was mutation-checked;
+[verification](../status/verification/2026-10-23-webhook-signatures.md).
+
 **Updated 2026-10-23: `routing.weights`** and six refusals, four in
 `validate_all` and two at boot step 4 (§ "`routing:`" above). Every refusal
 is tested and was mutation-checked;
@@ -657,6 +668,19 @@ than a feature it added:**
   `CallbackUrlMode::Registered` — today `notchpay`. A misspelt key inside the
   block is refused rather than read as `ensure` (`deny_unknown_fields`;
   `a_callbacks_block_defaults_to_ensure_and_refuses_an_unknown_key`).
+- **`providers[].callbacks.verify`** (2026-10-23, RFC-0014) is optional: `on`
+  (the default) or `off`. **An acknowledgement, not a switch**: a rail whose
+  adapter checks signatures checks every callback against its configured
+  secret whatever this says. `off` is what lets a livemode deployment boot
+  such a rail with no secret, and the server warns at every boot that says it.
+- **`providers[].credentials.callback_signing_secret`** (2026-10-23,
+  RFC-0014), with an optional `callback_signing_secret_previous` while a
+  rotation is in flight: the secret a rail that signs its callbacks is
+  checked against — Notch Pay's endpoint Hash Key, written
+  `${NOTCHPAY_HASH_KEY}`. Two names the **port** fixes
+  (`vpay_provider::CALLBACK_SIGNING_SECRET`), so boot can tell a signing rail
+  holds none without knowing the rail. A rail credential like any other:
+  livemode demands a `${VAR}`, `Debug` redacts it, and no message prints it.
 - **`REQUIRED_RAIL_KEYS`** refuses to boot a rail missing a key its adapter
   cannot work without — MTN: `settings.target_environment`,
   `settings.api_user`, `credentials.subscription_key`, `credentials.api_key`;

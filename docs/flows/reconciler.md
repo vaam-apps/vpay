@@ -68,6 +68,8 @@ POST /provider/{code}/callback
   → adapter.parse_callback() extracts identifiers ONLY
       not a notification this rail could send → 400
   → the reference names no charge here        → 202, nothing enqueued
+  → adapter.verify_callback() (RFC-0014)
+      Invalid or Unavailable                  → 202, nothing enqueued, warn
   → one transaction: INSERT job (poll_charge, dedupe_key='poll:<ref>')
       ON CONFLICT DO NOTHING, then pull that poll forward unless it is
       already due within PULL_FORWARD_FLOOR
@@ -103,6 +105,17 @@ port makes it _impossible_ for an adapter to hand the core a status it read off
 an unauthenticated request.
 
 The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
+
+**A rail that signs its callbacks has them checked** (RFC-0014, 2026-10-23).
+Between finding the charge and moving its poll, the route asks the rail's
+adapter (`verify_callback`), with the headers and the raw body. Today only
+`notchpay` checks (`x-notch-signature`, where its Hash Key is configured);
+MTN and Orange answer `NotChecked`. A refused callback is answered the same
+`202` and moves nothing; the ladder still asks the rail at its next rung. A
+verified one is still a hint, and moves no money: what the check buys is that
+an anonymous POST stops pulling a signing rail's polls forward. Stub-proven;
+the real scheme measured on: not yet
+([verification](../status/verification/2026-10-23-webhook-signatures.md)).
 
 ### Where a rail sends its callbacks
 

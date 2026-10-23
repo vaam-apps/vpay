@@ -73,8 +73,12 @@ adapter's mapping table will.
 - **Transfers, beneficiaries, customers, balance, channels.** vpay calls none
   of them.
 - **Webhook signature verification.** Notch Pay signs with HMAC-SHA256 in
-  `x-notch-signature`, but the port's `parse_callback` receives no headers
-  (RFC-0010 open question 4), so a verifier would be code nothing can call.
+  `x-notch-signature`. The check is not this client's: since 2026-10-23 it is
+  the adapter's `verify_callback` (RFC-0014), over the HMAC helper in
+  `vpay_provider::callback`, because the route hands the adapter the headers
+  and the raw body and this client never sees a webhook. _(This said the
+  port's `parse_callback` "receives no headers … so a verifier would be code
+  nothing can call" until 2026-10-23.)_
 - **A signing secret on `Webhook`.** The specification's schema has no field
   for one, although the API reference says the secret is shown "when creating
   a webhook via the API" (RFC-0012 § 10 item 13).

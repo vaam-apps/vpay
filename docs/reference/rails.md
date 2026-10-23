@@ -571,6 +571,18 @@ over — first on the `400`, and, with that assertion removed, on the poll job's
 `run_at` having been dragged back to now. Measured 2026-09-04, restored
 afterwards.
 
+**Since 2026-10-23 the port has the place for that comparison, and it is
+still not built.** RFC-0014 gave the route a step that asks the adapter
+whether a callback is the rail's (`verify_callback`, with the headers, the raw
+body and the charge, whose `ref_extra` holds the stored `notif_token`). Notch
+Pay's signature check is its first consumer. Orange's adapter keeps the
+port's default, `NotChecked`, and declares `CallbackCheck::None`, because
+nobody has observed whether the notification's `notif_token` is the one
+`webpayment` returned (RFC-0014 § 4 and open question 2): enforcing an
+unconfirmed equality would refuse every genuine Orange callback. So this
+paragraph's "the adapter refusing the body is the only thing standing
+between an unauthenticated POST and a queued poll" still holds on Orange.
+
 ---
 
 ## The callback URL is a contract the mappings hold
