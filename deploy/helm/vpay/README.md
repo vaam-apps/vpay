@@ -655,22 +655,23 @@ no HPA either — nothing has measured what would drive one.
 
 ### Observability
 
-| Key                                            | Default    | Meaning                                           |
-| ---------------------------------------------- | ---------- | ------------------------------------------------- |
-| `observability.port`                           | `9090`     | `--observability-bind`; bound by both Deployments |
-| `observability.livenessPath`                   | `/livez`   | Static `ok`, no database                          |
-| `observability.metricsPath`                    | `/metrics` | Prometheus text format; never scraped by anything |
-| `observability.readinessPath`                  | `/healthz` | Exists today; a real `SELECT 1`                   |
-| `metrics.serviceMonitor.enabled`               | `false`    | Needs the prometheus-operator CRDs                |
-| `metrics.serviceMonitor.interval`              | `30s`      |                                                   |
-| `metrics.serviceMonitor.scrapeTimeout`         | `10s`      |                                                   |
-| `metrics.serviceMonitor.labels`                | `{}`       | e.g. `release: kube-prometheus-stack`             |
-| `metrics.prometheusRule.enabled`               | `false`    |                                                   |
-| `metrics.prometheusRule.labels`                | `{}`       |                                                   |
-| `metrics.prometheusRule.providerErrorRatio`    | `0.05`     | **Proposed, not measured**                        |
-| `metrics.prometheusRule.providerErrorWindow`   | `15m`      | **Proposed**                                      |
-| `metrics.prometheusRule.jobQueueBehindSeconds` | `300`      | **Proposed**                                      |
-| `metrics.prometheusRule.alertEventWindow`      | `5m`       | **Proposed**                                      |
+| Key                                             | Default    | Meaning                                                              |
+| ----------------------------------------------- | ---------- | -------------------------------------------------------------------- |
+| `observability.port`                            | `9090`     | `--observability-bind`; bound by both Deployments                    |
+| `observability.livenessPath`                    | `/livez`   | Static `ok`, no database                                             |
+| `observability.metricsPath`                     | `/metrics` | Prometheus text format; never scraped by anything                    |
+| `observability.readinessPath`                   | `/healthz` | Exists today; a real `SELECT 1`                                      |
+| `metrics.serviceMonitor.enabled`                | `false`    | Needs the prometheus-operator CRDs                                   |
+| `metrics.serviceMonitor.interval`               | `30s`      |                                                                      |
+| `metrics.serviceMonitor.scrapeTimeout`          | `10s`      |                                                                      |
+| `metrics.serviceMonitor.labels`                 | `{}`       | e.g. `release: kube-prometheus-stack`                                |
+| `metrics.prometheusRule.enabled`                | `false`    |                                                                      |
+| `metrics.prometheusRule.labels`                 | `{}`       |                                                                      |
+| `metrics.prometheusRule.providerErrorRatio`     | `0.05`     | **Proposed, not measured**                                           |
+| `metrics.prometheusRule.providerErrorWindow`    | `15m`      | **Proposed**                                                         |
+| `metrics.prometheusRule.jobQueueBehindSeconds`  | `300`      | **Proposed**                                                         |
+| `metrics.prometheusRule.alertEventWindow`       | `5m`       | **Proposed**                                                         |
+| `metrics.prometheusRule.callbackEndpointWindow` | `3h`       | **Proposed**; `VpayCallbackEndpointUnconfirmed`, three hourly passes |
 
 ### Network
 
