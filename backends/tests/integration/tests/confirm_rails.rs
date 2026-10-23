@@ -388,6 +388,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
         },
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 

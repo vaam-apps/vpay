@@ -438,6 +438,7 @@ mod tests {
     fn charge(payer: Option<&str>) -> ChargeRef {
         ChargeRef {
             reference_id: Uuid::from_u128(0x0202),
+            method_type: None,
             amount: Money::new(5_000, Currency::Eur).expect("non-negative"),
             payer_ref: payer.map(ToOwned::to_owned),
             ref_extra: BTreeMap::new(),

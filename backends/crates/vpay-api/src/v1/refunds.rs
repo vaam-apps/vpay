@@ -900,6 +900,7 @@ async fn refund_at_rail(
     let charge_ref = ChargeRef {
         // The REFUND's reference. See this function's docs.
         reference_id: reference,
+        method_type: None,
         amount,
         payer_ref: target.charge.payer_ref.clone(),
         ref_extra: refund_ref_extra(target.charge.provider_txn_id.as_deref()),
@@ -1728,6 +1729,9 @@ mod tests {
                 refund_destination: RefundDestination::Required,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
                 submit_steps: vpay_provider::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 
@@ -1796,6 +1800,9 @@ mod tests {
                 refund_destination: RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
                 submit_steps: vpay_provider::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 

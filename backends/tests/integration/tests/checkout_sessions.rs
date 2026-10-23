@@ -269,6 +269,7 @@ fn config_with(
         },
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 

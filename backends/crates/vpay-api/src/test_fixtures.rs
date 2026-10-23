@@ -198,6 +198,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 

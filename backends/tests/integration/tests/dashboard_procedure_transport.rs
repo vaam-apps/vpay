@@ -189,6 +189,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         // `dashboard_read_surface.rs` — see that file's identical field for
         // why a staff login mounted beside it would be scenery here.
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 

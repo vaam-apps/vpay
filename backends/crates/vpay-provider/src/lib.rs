@@ -225,6 +225,26 @@ pub struct Capabilities {
     /// Whether the core calls [`ProviderAdapter::prepare`] and commits what it
     /// returns before calling [`ProviderAdapter::submit`] (ADR-0032).
     pub submit_steps: SubmitSteps,
+    /// The payment-method types this rail serves: what a payer chooses
+    /// (`mtn_wallet`, `orange_wallet`), as opposed to the rail that processes
+    /// it (ADR-0029 D6, D12).
+    ///
+    /// The router reads it to find a method type's candidates
+    /// (`vpay_core::routing::route`), so a rail serving nothing is reachable
+    /// only by its own code in `payment_method_types`, which is what every
+    /// intent before 2026-10-23 carries (D6's backward compatibility).
+    /// [`Capabilities::method_types_are_coherent`] refuses that on a rail a
+    /// deployment enables, because a rail no method type can reach is one the
+    /// payer's choice can never land on.
+    ///
+    /// ADR-0029 D2 named RFC-0010 as this capability's first consumer. It is
+    /// `notchpay`, the first rail to serve two types: an aggregator is where a
+    /// method type and a rail stop being the same thing.
+    ///
+    /// Deliberately **not persisted**, on
+    /// [`supports_account_holder_lookup`](Capabilities::supports_account_holder_lookup)'s
+    /// terms.
+    pub method_types: vpay_core::routing::MethodTypes,
 }
 
 impl Capabilities {
@@ -295,6 +315,18 @@ impl Capabilities {
     #[must_use]
     pub const fn callbacks_are_coherent(&self) -> bool {
         !matches!(self.callback_url_mode, CallbackUrlMode::Registered) || self.delivers_callbacks
+    }
+
+    /// A rail serves at least one payment-method type (ADR-0029 D6).
+    ///
+    /// A method of its own for [`Capabilities::callbacks_are_coherent`]'s
+    /// reason: it has no database half. Boot refuses an **enabled** rail that
+    /// fails it with `ConfigError::RailServesNoMethodType`, because a payer
+    /// who chooses a network could never be routed to it, and a rail-code
+    /// intent is the only way it would ever be charged.
+    #[must_use]
+    pub const fn method_types_are_coherent(&self) -> bool {
+        !self.method_types.is_empty()
     }
 }
 
@@ -477,6 +509,16 @@ pub struct ChargeRef {
     /// `backends/tests/conformance`, which asserts MTN's body carries no
     /// return URL at all.
     pub return_url: Option<String>,
+    /// The payment-method type the payer chose (ADR-0029 D6), when the
+    /// charge was routed by one, or when its rail serves exactly one.
+    ///
+    /// **The core fills this, never an adapter**, from `charges.method_type`.
+    /// An adapter serving several types reads it to tell the rail which
+    /// network to prompt: `notchpay` sends `cm.mtn` or `cm.orange` for it
+    /// (RFC-0012 delivery step 8). `None` is a charge confirmed by the rail's
+    /// own code on a rail serving several types, for which the adapter keeps
+    /// its configured behaviour (`notchpay`: `settings.channel`, `cm.mobile`).
+    pub method_type: Option<vpay_core::routing::MethodType>,
 }
 
 /// Redacts [`ChargeRef::payer_ref`], [`ChargeRef::return_url`] and
@@ -2337,6 +2379,7 @@ mod tests {
             refund_destination: RefundDestination::Required,
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
         assert!(!bad.is_coherent());
     }
@@ -2355,6 +2398,7 @@ mod tests {
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::Registered,
             submit_steps: SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
         assert!(base.callbacks_are_coherent());
         let silent = Capabilities {
@@ -2367,6 +2411,9 @@ mod tests {
                 delivers_callbacks,
                 callback_url_mode: CallbackUrlMode::PerRequest,
                 submit_steps: SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
                 ..base
             };
             assert!(per_request.callbacks_are_coherent());
@@ -2428,6 +2475,7 @@ mod tests {
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
 
         for supports_refunds in [false, true] {
@@ -2799,6 +2847,9 @@ mod tests {
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
                     submit_steps: SubmitSteps::One,
+                    method_types: vpay_core::routing::MethodTypes::of(
+                        &vpay_core::routing::MethodType::ALL,
+                    ),
                 }
             }
 
@@ -2892,6 +2943,9 @@ mod tests {
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
                     submit_steps: SubmitSteps::One,
+                    method_types: vpay_core::routing::MethodTypes::of(
+                        &vpay_core::routing::MethodType::ALL,
+                    ),
                 }
             }
 
@@ -2922,6 +2976,7 @@ mod tests {
 
         let charge = ChargeRef {
             reference_id: Uuid::from_u128(0x5eed),
+            method_type: None,
             amount: Money::new(5_000, vpay_core::Currency::Xaf).expect("non-negative"),
             payer_ref: None,
             ref_extra: BTreeMap::new(),
@@ -3032,6 +3087,7 @@ mod debug_tests {
     fn charge_ref() -> ChargeRef {
         ChargeRef {
             reference_id: Uuid::new_v4(),
+            method_type: None,
             amount: Money::new(5000, vpay_core::Currency::Xaf).expect("a valid money"),
             payer_ref: Some(PAYER_REF.to_owned()),
             ref_extra: [("pay_token".to_owned(), PAY_TOKEN.to_owned())]

@@ -507,6 +507,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, staff_auth: StaffAu
             client_secret: None,
         }),
         staff_auth,
+        routing: Default::default(),
     }
 }
 

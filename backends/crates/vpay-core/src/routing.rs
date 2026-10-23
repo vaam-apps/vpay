@@ -172,6 +172,31 @@ impl MethodTypes {
     }
 }
 
+/// A set is written as the list of its types' wire spellings, in wire order,
+/// because [`MethodTypes`] sits on `vpay_provider::Capabilities`, which is
+/// vpay's own serialised shape.
+impl serde::Serialize for MethodTypes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_seq(self.iter().map(MethodType::as_wire_str))
+    }
+}
+
+/// The inverse of the `Serialize` impl: a list of wire spellings. An
+/// unknown spelling is an error, never a silently smaller set.
+impl<'de> serde::Deserialize<'de> for MethodTypes {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let spellings = Vec::<String>::deserialize(deserializer)?;
+        let mut types = Vec::with_capacity(spellings.len());
+        for spelling in &spellings {
+            let method_type = MethodType::from_wire(spelling).ok_or_else(|| {
+                serde::de::Error::custom(format!("`{spelling}` is not a method type"))
+            })?;
+            types.push(method_type);
+        }
+        Ok(Self::of(&types))
+    }
+}
+
 impl fmt::Debug for MethodTypes {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_set().entries(self.iter()).finish()
@@ -551,6 +576,15 @@ mod tests {
     }
 
     #[test]
+    fn a_set_serialises_as_its_wire_spellings_and_refuses_an_unknown_one() {
+        let json = serde_json::to_string(&BOTH).expect("serialises");
+        assert_eq!(json, r#"["mtn_wallet","orange_wallet"]"#);
+        let back: MethodTypes = serde_json::from_str(&json).expect("parses");
+        assert_eq!(back, BOTH);
+        assert!(serde_json::from_str::<MethodTypes>(r#"["card"]"#).is_err());
+    }
+
+    #[test]
     fn the_most_specific_weight_wins_and_none_is_the_default() {
         let weights = Weights::none()
             .with("rail_a", None, 300)
@@ -809,7 +843,11 @@ mod tests {
                 .filter(|considered| considered.rail == candidate.rail)
                 .collect();
             let [only] = considered.as_slice() else {
-                panic!("{} considered once, not {}", candidate.rail, considered.len());
+                panic!(
+                    "{} considered once, not {}",
+                    candidate.rail,
+                    considered.len()
+                );
             };
             assert_eq!(only.excluded.is_none(), eligible(candidate));
             assert_eq!(only.score.is_some(), eligible(candidate));

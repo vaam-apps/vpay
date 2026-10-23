@@ -701,6 +701,9 @@ mod tests {
                 refund_destination: vpay_provider::RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
                 submit_steps: vpay_provider::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 
@@ -799,6 +802,7 @@ mod tests {
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
             staff_auth: vpay_config::StaffAuth::default(),
+            routing: Default::default(),
         }
     }
 

@@ -506,6 +506,7 @@ impl Rail {
         let flow = self.adapter.capabilities().flow;
         ChargeRef {
             reference_id,
+            method_type: None,
             amount: Money::new(5_000, self.config.currency).expect("non-negative"),
             payer_ref: match flow {
                 // A push rail prompts a payer's own instrument, so it needs
@@ -3176,6 +3177,7 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
     // field the three mappings above document).
     let charge = ChargeRef {
         reference_id: Uuid::new_v4(),
+        method_type: None,
         amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
         payer_ref: Some(msisdn.to_owned()),
         ref_extra: BTreeMap::new(),
@@ -3306,6 +3308,7 @@ async fn a_payer_lands_on_the_rails_page(rail: &Rail) -> (ChargeRef, String, Str
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
     let mut charge = ChargeRef {
         reference_id: Uuid::new_v4(),
+        method_type: None,
         amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
         payer_ref: None,
         ref_extra: BTreeMap::new(),
@@ -3390,6 +3393,7 @@ async fn a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles() {
 
     let mut charge = ChargeRef {
         reference_id: Uuid::new_v4(),
+        method_type: None,
         amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
         payer_ref: None,
         ref_extra: BTreeMap::new(),

@@ -263,6 +263,7 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     };
 
     let merchant_op = Arc::new(MerchantOp::new(

@@ -363,6 +363,9 @@ mod tests {
                 refund_destination: crate::RefundDestination::Origin,
                 callback_url_mode: crate::CallbackUrlMode::PerRequest,
                 submit_steps: crate::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 
@@ -399,6 +402,7 @@ mod tests {
     fn charge() -> ChargeRef {
         ChargeRef {
             reference_id: Uuid::nil(),
+            method_type: None,
             amount: Money::new(5_000, Currency::Xaf).expect("5000 is non-negative"),
             payer_ref: None,
             ref_extra: BTreeMap::new(),
@@ -629,6 +633,9 @@ mod tests {
                 refund_destination: crate::RefundDestination::Required,
                 callback_url_mode: crate::CallbackUrlMode::PerRequest,
                 submit_steps: crate::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 

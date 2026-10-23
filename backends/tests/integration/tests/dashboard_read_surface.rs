@@ -372,6 +372,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, dashboard: bool) ->
         // mounted beside it would be scenery. `staff_sign_in.rs` is the suite
         // that exercises the grant end to end.
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 

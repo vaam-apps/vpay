@@ -28,7 +28,8 @@ pub use cli::{
 };
 pub use config::{
     CallbackRegistration, CheckoutConfig, Config, CurrencyEntry, ProviderCallbacks, ProviderHost,
-    RailDisplayName, RateLimitPolicy, RateLimits, StaffAuth, StaffSso, WebhookPolicy,
+    RailDisplayName, RateLimitPolicy, RateLimits, Routing, RoutingWeight, StaffAuth, StaffSso,
+    WebhookPolicy,
 };
 pub use oauth::{
     DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
@@ -1253,6 +1254,91 @@ pub enum ConfigError {
          request and has no endpoint to register; remove the callbacks block"
     )]
     CallbacksOnPerRequestRail {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// `routing.weights[]` names a rail this file does not configure
+    /// (RFC-0008, 2026-10-23 revision).
+    ///
+    /// Refused rather than ignored: a weight for a rail that is not there is
+    /// usually a misspelt code, and the rail the operator meant would then
+    /// be routed at the default weight without anyone knowing.
+    #[error(
+        "routing.weights names rail {rail}, which no providers[] entry configures; correct the \
+         code or remove the entry"
+    )]
+    UnknownRoutingRail {
+        /// The `rail` from the entry.
+        rail: String,
+    },
+
+    /// `routing.weights[]` names a method type vpay does not know, or one
+    /// ADR-0029 D12 reserves and nothing serves yet (`card`,
+    /// `bank_transfer`).
+    #[error(
+        "routing.weights for rail {rail} names method type {method_type}, which {}; the method \
+         types are mtn_wallet and orange_wallet",
+        if *reserved { "is reserved and not built yet" } else { "vpay does not know" }
+    )]
+    UnknownMethodType {
+        /// The `rail` from the entry.
+        rail: String,
+        /// The `method_type` as written.
+        method_type: String,
+        /// Whether it is one of `vpay_core::routing::RESERVED_METHOD_TYPES`.
+        reserved: bool,
+    },
+
+    /// A `routing.weights[]` weight above `vpay_core::routing::MAX_WEIGHT`.
+    #[error(
+        "routing.weights for rail {rail} is {weight}; a weight is at most 1000 (and at least 0)"
+    )]
+    RoutingWeightTooLarge {
+        /// The `rail` from the entry.
+        rail: String,
+        /// The weight as written.
+        weight: u32,
+    },
+
+    /// Two `routing.weights[]` entries for the same rail and method type.
+    /// Refused rather than last-wins: which of two weights an operator meant
+    /// is not this file's to guess.
+    #[error(
+        "routing.weights has two entries for rail {rail}{}; keep one",
+        method_type.as_deref().map(|t| format!(" and method type {t}")).unwrap_or_default()
+    )]
+    DuplicateRoutingWeight {
+        /// The `rail` from the entries.
+        rail: String,
+        /// Their `method_type`, if they name one.
+        method_type: Option<String>,
+    },
+
+    /// `routing.weights[]` names a method type the rail's **adapter** does not
+    /// serve (`Capabilities::method_types`). Refused at boot, where the YAML
+    /// meets the linked adapters (`vpay_api::boot::boot_seeds`): the weight
+    /// could never apply, and an operator who wrote it believes it does.
+    #[error(
+        "routing.weights gives rail {rail} a weight for {method_type}, which {rail} does not \
+         serve; remove the entry"
+    )]
+    RoutingWeightOnAnUnservedType {
+        /// The `rail` from the entry.
+        rail: String,
+        /// The `method_type` from the entry.
+        method_type: String,
+    },
+
+    /// An **enabled** rail whose adapter declares no payment-method type
+    /// (`Capabilities::method_types_are_coherent`, ADR-0029 D6). A linking
+    /// mistake on `IncoherentCapabilities`' terms: no payer choosing a
+    /// network could ever be routed to the rail.
+    #[error(
+        "provider {code} is enabled, and its adapter serves no payment-method type \
+         (Capabilities::method_types is empty), so no payer's choice can reach it"
+    )]
+    RailServesNoMethodType {
         /// The `providers[].code` from the YAML.
         code: String,
     },

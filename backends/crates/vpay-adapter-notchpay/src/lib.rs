@@ -76,6 +76,7 @@ pub use crate::mapping::PRODUCED_FAILURE_CODES;
 
 use async_trait::async_trait;
 use uuid::Uuid;
+use vpay_core::routing::{MethodType, MethodTypes};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_notchpay::status::PaymentStatus;
 use vpay_notchpay::wire::{
@@ -109,16 +110,29 @@ const DESCRIPTION: &str = "description";
 /// (`trx.…`), the only one its process and read paths answer for.
 pub const NOTCHPAY_REFERENCE: &str = "notchpay_reference";
 
-/// The channels this adapter sends. `cm.mobile` only: Notch Pay's channel
-/// table lists it as "MTN / Orange, Cameroon, XAF", so the network is Notch
-/// Pay's to resolve and this crate carries no number-plan table. `cm.mtn`
-/// and `cm.orange` wait for the payer's chosen method type to reach the
-/// adapter (ADR-0029 D6; RFC-0012 delivery step 8), because configuring
-/// either for a whole deployment would fail every payer on the other network.
+/// The channels `settings.channel` may name. `cm.mobile` only: Notch Pay's
+/// channel table lists it as "MTN / Orange, Cameroon, XAF", so the network is
+/// Notch Pay's to resolve and this crate carries no number-plan table.
+/// Configuring `cm.mtn` or `cm.orange` for a whole deployment would fail
+/// every payer on the other network, so neither is a setting: they are sent
+/// per charge, from the payer's chosen method type ([`channel_for`]).
 ///
 /// `vpay_config`'s boot table refuses any other value, so this check is the
 /// adapter's own belt for a `ProviderConfig` built by something else.
 pub const KNOWN_CHANNELS: [&str; 1] = ["cm.mobile"];
+
+/// The channel for a charge routed by the payer's method type (ADR-0029 D6;
+/// RFC-0012 delivery step 8, built 2026-10-23): Notch Pay's channel table
+/// names `cm.mtn` for MTN Mobile Money and `cm.orange` for Orange Money in
+/// Cameroon. **Neither has been sent to Notch Pay's sandbox**; `cm.mobile`
+/// has (2026-10-21).
+#[must_use]
+pub const fn method_type_channel(method_type: MethodType) -> &'static str {
+    match method_type {
+        MethodType::MtnWallet => "cm.mtn",
+        MethodType::OrangeWallet => "cm.orange",
+    }
+}
 
 /// The only currency this adapter charges in. Notch Pay's XOF channels are
 /// other countries, other channels and another RFC.
@@ -212,7 +226,7 @@ impl Adapter {
         notchpay_reference: &str,
     ) -> Result<Submitted, ProviderError> {
         let body = ProcessPayment {
-            channel: channel(config)?,
+            channel: channel_for(charge, config)?,
             data: ProcessData { phone },
         };
         match client.process_payment(notchpay_reference, &body).await? {
@@ -362,6 +376,22 @@ fn credential<'a>(config: &'a ProviderConfig, key: &str) -> Result<&'a str, Prov
         .ok_or_else(|| ProviderError::Config(format!("notchpay: credentials.{key} is missing")))
 }
 
+/// The channel this charge is processed on: its method type's, when the
+/// payer chose one, else the configured one.
+///
+/// The configured channel is checked either way, so a bad setting is
+/// refused for every charge rather than only for the ones that read it.
+fn channel_for<'a>(
+    charge: &ChargeRef,
+    config: &'a ProviderConfig,
+) -> Result<&'a str, ProviderError> {
+    let configured = channel(config)?;
+    Ok(match charge.method_type {
+        Some(method_type) => method_type_channel(method_type),
+        None => configured,
+    })
+}
+
 /// The configured channel, refused unless it is one this adapter knows.
 fn channel(config: &ProviderConfig) -> Result<&str, ProviderError> {
     let value = config
@@ -439,6 +469,10 @@ impl ProviderAdapter for Adapter {
             // (`ensure_callback_endpoint` below, RFC-0013 § 5).
             callback_url_mode: CallbackUrlMode::Registered,
             submit_steps: SubmitSteps::PrepareThenSubmit,
+            // An aggregator: both networks through one account, the rail
+            // that made a method type and a rail two things (ADR-0029 D6).
+            // `submit` sends the chosen network's channel (`channel_for`).
+            method_types: MethodTypes::of(&[MethodType::MtnWallet, MethodType::OrangeWallet]),
         }
     }
 

@@ -36,6 +36,7 @@ use async_trait::async_trait;
 use reqwest::StatusCode;
 use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::RwLock;
+use vpay_core::routing::{MethodType, MethodTypes};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     AccountHolder, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, PayerField,
@@ -778,6 +779,8 @@ impl ProviderAdapter for Adapter {
             // (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            // MTN's own wallet, and nothing else (ADR-0029 D6, D12).
+            method_types: MethodTypes::of(&[MethodType::MtnWallet]),
         }
     }
 
@@ -1253,6 +1256,7 @@ mod tests {
     fn charge() -> ChargeRef {
         ChargeRef {
             reference_id: Uuid::from_u128(0x0202),
+            method_type: None,
             amount: Money::new(5_000, Currency::Eur).expect("non-negative"),
             payer_ref: Some("237600000000".to_owned()),
             ref_extra: BTreeMap::new(),
@@ -1266,6 +1270,18 @@ mod tests {
     #[test]
     fn capabilities_are_coherent() {
         assert!(adapter().capabilities().is_coherent());
+        assert!(adapter().capabilities().method_types_are_coherent());
+    }
+
+    /// A direct rail serves its own network's wallet and nothing else
+    /// (ADR-0029 D6, D12): the router can reach it by that method type, and a
+    /// charge on it by rail code is that type's charge.
+    #[test]
+    fn it_serves_exactly_its_own_networks_wallet() {
+        assert_eq!(
+            adapter().capabilities().method_types.only(),
+            Some(MethodType::MtnWallet)
+        );
     }
 
     #[test]

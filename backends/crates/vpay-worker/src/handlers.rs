@@ -2260,6 +2260,7 @@ fn charge_ref(job: &vpay_db::JobRow, charge: &ChargeRow) -> Result<ChargeRef, Jo
     })?;
     Ok(ChargeRef {
         reference_id: charge.provider_reference_id,
+        method_type: None,
         amount: Money::new(charge.amount, currency)?,
         payer_ref: charge.payer_ref.clone(),
         ref_extra: ref_extra_of(charge),

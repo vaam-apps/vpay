@@ -37,6 +37,7 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use vpay_core::routing::{MethodType, MethodTypes};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
@@ -425,6 +426,8 @@ impl ProviderAdapter for Adapter {
             // pass never asks this rail anything (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            // Orange's own wallet, and nothing else (ADR-0029 D6, D12).
+            method_types: MethodTypes::of(&[MethodType::OrangeWallet]),
         }
     }
 
@@ -986,6 +989,7 @@ mod tests {
     fn charge(return_url: Option<&str>, amount: Money) -> ChargeRef {
         ChargeRef {
             reference_id: reference(),
+            method_type: None,
             amount,
             // A redirect rail authenticates the payer itself and may never
             // learn who they are.
@@ -1030,6 +1034,18 @@ mod tests {
     #[test]
     fn capabilities_are_coherent() {
         assert!(adapter().capabilities().is_coherent());
+        assert!(adapter().capabilities().method_types_are_coherent());
+    }
+
+    /// A direct rail serves its own network's wallet and nothing else
+    /// (ADR-0029 D6, D12): the router can reach it by that method type, and a
+    /// charge on it by rail code is that type's charge.
+    #[test]
+    fn it_serves_exactly_its_own_networks_wallet() {
+        assert_eq!(
+            adapter().capabilities().method_types.only(),
+            Some(MethodType::OrangeWallet)
+        );
     }
 
     /// An Orange refund is addressed or it is nowhere, and the core must

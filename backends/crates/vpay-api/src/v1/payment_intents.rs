@@ -1394,6 +1394,7 @@ async fn prepare_on_rail(
         .await?;
     let charge_ref = ChargeRef {
         reference_id: charge.provider_reference_id,
+        method_type: None,
         amount: target.amount,
         payer_ref: target.payer_ref.clone(),
         ref_extra: RefExtra::new(),
@@ -1491,6 +1492,7 @@ async fn submit_to_rail(
     let return_url = attempt.charge.return_url.clone();
     let charge_ref = ChargeRef {
         reference_id: attempt.reference,
+        method_type: None,
         amount: target.amount,
         payer_ref: target.payer_ref.clone(),
         // Empty on a one-step rail; on a two-step rail, what
@@ -3094,6 +3096,7 @@ mod tests {
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
             staff_auth: vpay_config::StaffAuth::default(),
+            routing: Default::default(),
         })
         .expect("the fixture's rails project onto the port")
     }

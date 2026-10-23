@@ -183,6 +183,14 @@ pub fn boot_seeds(
                     code: provider.code.clone(),
                 });
             }
+            // ADR-0029 D6. **Enabled** rails only, unlike the two above: a
+            // rail no method type reaches is unreachable by a payer's
+            // choice, which matters only on a rail that can take payments.
+            if provider.enabled && !capabilities.method_types_are_coherent() {
+                return Err(ConfigError::RailServesNoMethodType {
+                    code: provider.code.clone(),
+                });
+            }
             Ok(ProviderSeed {
                 code: provider.code.clone(),
                 display_name: display_name_for(&provider.code),
@@ -201,7 +209,41 @@ pub fn boot_seeds(
         })
         .collect::<Result<Vec<_>, ConfigError>>()?;
 
+    refuse_weights_on_unserved_types(config, adapters)?;
+
     Ok((currencies, providers))
+}
+
+/// `routing.weights[]` entries naming a method type the rail's adapter does
+/// not serve (RFC-0008, 2026-10-23 revision). `Config::validate_all` has
+/// already refused an unknown rail, an unknown type and a duplicate; this is
+/// the half that needs the linked code.
+///
+/// # Errors
+///
+/// [`ConfigError::RoutingWeightOnAnUnservedType`].
+fn refuse_weights_on_unserved_types(
+    config: &Config,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> Result<(), ConfigError> {
+    for entry in &config.routing.weights {
+        let Some(spelling) = entry.method_type.as_deref() else {
+            continue;
+        };
+        let served =
+            vpay_core::routing::MethodType::from_wire(spelling).is_some_and(|method_type| {
+                adapters.get(&entry.rail).is_some_and(|adapter| {
+                    adapter.capabilities().method_types.contains(method_type)
+                })
+            });
+        if !served {
+            return Err(ConfigError::RoutingWeightOnAnUnservedType {
+                rail: entry.rail.clone(),
+                method_type: spelling.to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Every **configured** rail whose adapter declares an
@@ -555,6 +597,7 @@ mod tests {
             refund_destination: RefundDestination::Origin,
             callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
             submit_steps: vpay_provider::SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         }
     }
 
@@ -637,6 +680,7 @@ mod tests {
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
             staff_auth: vpay_config::StaffAuth::default(),
+            routing: Default::default(),
         }
     }
 
@@ -757,6 +801,69 @@ mod tests {
     /// flag, and the currency code is uppercased for migration 0001's
     /// `code_is_iso4217_shape` CHECK (the YAML above spells it lowercase on
     /// purpose).
+    /// ADR-0029 D6: an enabled rail must be reachable by some payment-method
+    /// type; a disabled one may serve none, since nothing can be charged on
+    /// it. Mutation-checked: deleting the refusal fails the first assertion.
+    #[test]
+    fn an_enabled_rail_serving_no_method_type_is_refused_and_a_disabled_one_is_not() {
+        let adapters = adapters_by_code(vec![Box::new(TestRail {
+            code: "mtn_momo",
+            capabilities: Capabilities {
+                method_types: vpay_core::routing::MethodTypes::NONE,
+                ..coherent(ProviderFlow::Push)
+            },
+            exposure: None,
+        }) as Box<dyn ProviderAdapter>]);
+        let mut config = config_with(&["mtn_momo"]);
+        let error = boot_seeds(&config, &adapters).expect_err("an unreachable rail");
+        assert!(
+            matches!(&error, ConfigError::RailServesNoMethodType { code } if code == "mtn_momo"),
+            "{error:?}"
+        );
+        for provider in &mut config.providers {
+            provider.enabled = false;
+        }
+        boot_seeds(&config, &adapters).expect("a disabled rail may serve nothing");
+    }
+
+    /// RFC-0008's 2026-10-23 revision: a weight on a type the rail's adapter
+    /// does not serve could never apply. A weight for every type, and one on
+    /// a type it serves, boot. Mutation-checked: deleting the refusal fails
+    /// the first assertion.
+    #[test]
+    fn a_weight_on_a_type_the_rail_does_not_serve_is_refused_at_boot() {
+        let adapters = adapters_by_code(vec![Box::new(TestRail {
+            code: "mtn_momo",
+            capabilities: Capabilities {
+                method_types: vpay_core::routing::MethodTypes::of(&[
+                    vpay_core::routing::MethodType::MtnWallet,
+                ]),
+                ..coherent(ProviderFlow::Push)
+            },
+            exposure: None,
+        }) as Box<dyn ProviderAdapter>]);
+        let weight = |method_type: Option<&str>| vpay_config::RoutingWeight {
+            rail: "mtn_momo".to_owned(),
+            method_type: method_type.map(str::to_owned),
+            weight: 200,
+        };
+        let mut config = config_with(&["mtn_momo"]);
+        config.routing.weights = vec![weight(Some("orange_wallet"))];
+        let error = boot_seeds(&config, &adapters).expect_err("an unserved type");
+        assert!(
+            matches!(
+                &error,
+                ConfigError::RoutingWeightOnAnUnservedType { rail, method_type }
+                    if rail == "mtn_momo" && method_type == "orange_wallet"
+            ),
+            "{error:?}"
+        );
+        assert!(!error.to_string().contains("  "), "{error}");
+
+        config.routing.weights = vec![weight(None), weight(Some("mtn_wallet"))];
+        boot_seeds(&config, &adapters).expect("weights the rail can use");
+    }
+
     #[test]
     fn boot_seeds_joins_the_yaml_against_the_linked_adapters() {
         let adapters = two_rails();
@@ -925,6 +1032,7 @@ mod tests {
     fn charge() -> ChargeRef {
         ChargeRef {
             reference_id: uuid::Uuid::nil(),
+            method_type: None,
             amount: Money::new(5_000, vpay_core::Currency::Xaf).expect("5000 is non-negative"),
             payer_ref: None,
             ref_extra: std::collections::BTreeMap::new(),
@@ -1017,6 +1125,9 @@ mod tests {
                 delivers_callbacks: false,
                 callback_url_mode: CallbackUrlMode::Registered,
                 submit_steps: SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
                 ..coherent(ProviderFlow::Push)
             },
             exposure: None,
@@ -1078,6 +1189,9 @@ mod tests {
                 capabilities: Capabilities {
                     callback_url_mode: CallbackUrlMode::Registered,
                     submit_steps: SubmitSteps::One,
+                    method_types: vpay_core::routing::MethodTypes::of(
+                        &vpay_core::routing::MethodType::ALL,
+                    ),
                     ..coherent(ProviderFlow::Push)
                 },
                 exposure: None,

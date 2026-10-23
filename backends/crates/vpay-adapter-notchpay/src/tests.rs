@@ -59,6 +59,7 @@ fn closed() -> ProviderConfig {
 fn charge() -> ChargeRef {
     ChargeRef {
         reference_id: Uuid::from_u128(0x0202),
+        method_type: None,
         amount: Money::new(5_000, Currency::Xaf).expect("non-negative"),
         payer_ref: Some("237670000000".to_owned()),
         ref_extra: BTreeMap::new(),
@@ -156,6 +157,41 @@ fn capabilities_are_coherent_and_name_the_rails_truth() {
     // Notch Pay issues its own reference at initialize and answers for no
     // other, so the core commits it before the prompt (ADR-0032).
     assert_eq!(capabilities.submit_steps, SubmitSteps::PrepareThenSubmit);
+    // The aggregator: both wallet networks (ADR-0029 D6, D12).
+    assert!(capabilities.method_types_are_coherent());
+    assert_eq!(
+        capabilities.method_types.iter().collect::<Vec<_>>(),
+        vec![MethodType::MtnWallet, MethodType::OrangeWallet]
+    );
+}
+
+/// RFC-0012 delivery step 8: a charge routed by the payer's method type is
+/// processed on that network's channel, and a charge confirmed by the rail's
+/// own code keeps the configured one. The setting is checked either way.
+#[test]
+fn the_channel_follows_the_payers_method_type_and_else_the_setting() {
+    let config = closed();
+    let mut charge = charge();
+    assert_eq!(
+        channel_for(&charge, &config).expect("configured"),
+        "cm.mobile"
+    );
+    charge.method_type = Some(MethodType::MtnWallet);
+    assert_eq!(channel_for(&charge, &config).expect("configured"), "cm.mtn");
+    charge.method_type = Some(MethodType::OrangeWallet);
+    assert_eq!(
+        channel_for(&charge, &config).expect("configured"),
+        "cm.orange"
+    );
+
+    let mut unknown = closed();
+    unknown
+        .settings
+        .insert("channel".to_owned(), "ci.orange".to_owned());
+    assert!(matches!(
+        channel_for(&charge, &unknown),
+        Err(ProviderError::Config(_))
+    ));
 }
 
 #[test]
