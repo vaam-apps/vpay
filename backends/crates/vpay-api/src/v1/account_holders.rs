@@ -182,8 +182,8 @@ pub(crate) async fn retrieve(
             count(account_holder_outcome::UNSUPPORTED);
             ApiError::invalid_param(
                 PAYMENT_METHOD_TYPE_PARAM,
-                "Name the rail to ask, as `payment_method_type` — the same value \
-                 `payment_method_types` on a PaymentIntent takes.",
+                "Name the rail to ask, as `payment_method_type`: a rail code such as \
+                 `mtn_momo`, not a payment-method type such as `mtn_wallet`.",
             )
         })?;
 

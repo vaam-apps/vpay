@@ -248,3 +248,32 @@ passed. None of the three touches routing.
 - **A merchant-readable decision**: the method type and the rail are on no
   `/v1` object (D10 as written).
 - **No Stripe-compat case** sends a method type.
+
+Found by an independent read-only review of the final tree, on 2026-10-23.
+None of these moves money wrongly, and none is fixed here:
+
+- **The request body a routed confirm needs depends on which rail wins.**
+  `orange_wallet` is served by `notchpay`, a push rail that needs `msisdn`,
+  and by `orange_money`, a redirect rail that declares no payer fields and
+  needs `return_url`. A server-side confirm that sends
+  `payment_method_data[orange_wallet][msisdn]` works while `notchpay` ranks
+  first. It becomes a `400` if an operator re-weights `orange_money` above it
+  or disables `notchpay`. The workaround is the pin. Whether the routing
+  filter should take the supplied payer fields into account is R8.4's
+  question.
+- **A payer's number is not checked against the network they chose.** A
+  routed Notch Pay charge is sent `cm.mtn` or `cm.orange` as the payer chose,
+  even if they then type the other network's number. `cm.mobile` resolved the
+  network from the number; the chosen channel does not. vpay carries no
+  number-plan table, by design. What Notch Pay answers for a mismatched
+  number has not been observed.
+- **Rolling back below this change.** An older image does not know
+  `mtn_wallet` or `orange_wallet`. An intent created with one returns a `500`
+  on its checkout page (`build_rails` finds no adapter for it) and a `400`
+  on a confirm. The same holds during a multi-replica rollout, while old
+  pods still serve. [deploy-and-rollback.md](../../runbooks/deploy-and-rollback.md)
+  § 4 already says an older image against migration `0053` is unsupported;
+  this is the data-level face of that.
+- **A scalar `payment_method_options` is now refused.** Before this change a
+  confirm whose `payment_method_options` was a plain string was accepted and
+  the field ignored. It must now be a map. No Stripe SDK sends a scalar.
