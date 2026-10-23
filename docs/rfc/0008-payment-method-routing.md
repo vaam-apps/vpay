@@ -5,12 +5,17 @@
   except § 7 (health), which this RFC defers itself. The ADR answers open
   questions 1–5; its answers are proposed and need the maintainer's
   confirmation. **Revised 2026-10-23 (below): the order becomes a score per
-  checkout.** That revision is a **Draft**: it proposes amendments to
-  ADR-0029 D8, D9 and D11 that the maintainer has not accepted. The parts that
-  do not depend on its formula are built: method types, the eligibility
+  checkout.** Its open questions R8.1–R8.5 were **answered by the maintainer
+  the same day** ("go with your defaults"; § R8 records each answer, what it
+  settles and what is built). What those answers settle in R7's amendments
+  to ADR-0029 is in § R7; the rest of R7 is still a proposal. The parts that
+  do not depend on the formula are built: method types, the eligibility
   filter, a scored and explained ranking with one provisional component, and
   the decision row
   ([plans/2026-10-23-method-type-routing.md](../plans/2026-10-23-method-type-routing.md)).
+  _(This line said "That revision is a **Draft**: it proposes amendments to
+  ADR-0029 D8, D9 and D11 that the maintainer has not accepted" until the
+  answers.)_
 - **Author:** vpay maintainers
 - **Date:** 2026-09-23; revised 2026-10-23
 - **Related:** [RFC-0004](0004-billing-on-top-of-invoices.md) § 7 (one adapter
@@ -149,6 +154,22 @@ entry per method type. The payer never sees a rail, a score or a fee (§ 5).
 These are proposals for the maintainer; ADR-0029's body is not edited until
 they are accepted.
 
+**What the R8 answers (2026-10-23) settle here, and what they do not:**
+
+- **D9's amendment is settled.** The maintainer asked for "a score of each
+  payment solution for each checkout" and accepted the tie-break to the lower
+  rail code (R8, below). "Score descending, then rail code" is the order, and
+  it is what is built.
+- **D8's amendment is settled in substance.** R8.1's answer makes the
+  estimated fee the next component of the score, so fees are a component, not
+  the sort key. Nothing about fees is built: no schedule is configured or
+  parsed (R2).
+- **D11's clarification is settled for health only.** R8.3's answer is that
+  health never moves traffic automatically. Whether a _measured_ component
+  that R8.1 does choose, the completion rate, may move traffic for later
+  checkouts is **not** settled: see R8.1's note below. D11's own text, one
+  charge per intent and no automatic cascading, is unchanged.
+
 - **D8.** Fees stay the merchant's contract and stay configuration. They
   become **one component** of the score, not the sort key. "Sorts last" for a
   rail with no schedule becomes "earns zero fee points, recorded as no input".
@@ -163,38 +184,97 @@ they are accepted.
   on. That clarification is the one place this revision lets traffic move
   automatically, and whether it may is open question R8.3.
 
-### R8. Open questions for the maintainer
+### R8. Open questions for the maintainer — answered 2026-10-23
 
 These are the maintainer's decisions ("I think routing should be though
 again"), not the implementer's.
+
+**Answered 2026-10-23.** The agent put a default to each question below and
+asked whether to use them. The maintainer answered "go with your defaults",
+and on this list specifically: "🤔 so for the score… first go with your
+defaults. Just document everything". Each answer, its consequence and what
+is built follow the question it answers. The questions are kept as asked.
 
 1. **Which components are wanted in v1?** The built `provisional-1` has the
    configured weight only. The candidates are fee, health, completion rate
    and latency. Fee needs schedules to be written down; the three measured
    ones need only the rows vpay already keeps.
+   - **Answer: the estimated fee next, then the completion rate.** Health
+     and latency are not chosen.
+   - **Consequence:** R-c builds the fee component first, which needs fee
+     schedules in configuration (§ 3, D16's placement), then the completion
+     rate over a window (R4's smoothing applies).
+   - **Built:** neither. The score has the configured weight only, and the
+     formula is still named `provisional-1`.
+   - **Not settled:** the completion rate is a measured component, so
+     putting it in the score moves later checkouts away from a rail whose
+     payers stop finishing, without anyone deciding it. That is the
+     automatic movement R8.3 rules out for health. Whether the same rule
+     covers the completion rate (for instance a coefficient of zero by
+     default, so it only reports) is to be put to the maintainer before it
+     is built.
 2. **Who sets the weights and coefficients?** The operator for the
    deployment, the merchant for their own payments (needs RFC-0009), or
    both, with the merchant's overriding?
+   - **Answer: the operator only**, until per-merchant provider accounts
+     (RFC-0009) exist.
+   - **Consequence:** weights and coefficients stay deployment
+     configuration. R-d, per-merchant weights, waits on RFC-0009 and is
+     re-asked then.
+   - **Built:** yes, as `routing.weights` in the deployment YAML.
 3. **May health move traffic automatically?** With health in the score, a
    failing rail loses checkouts without anyone deciding it. The alternative
    is that health only _reports_ (an alert and a dashboard) and an operator
    changes a weight.
+   - **Answer: no. Health reports only** (alerts and dashboards); an
+     operator who sees a failing rail changes a weight or `enabled`.
+   - **Consequence:** a rule for future work: no health input enters the
+     score. Health is not a component in R8.1's answer either.
+   - **Built:** nothing to build in the router. The reporting side is the
+     metrics and alert rules vpay already has.
 4. **When render and confirm disagree,** and the two rails have different
    flows (a push rail and a redirect rail both serve `orange_wallet`), does
    the confirm follow the render's rail if it is still a candidate (stable
    for the payer) or the confirm's best (the current one)?
+   - **Answer: the confirm follows the rail the page showed**, while that
+     rail is still eligible.
+   - **Built: no.** Today the confirm re-ranks on its own, and the page's
+     rail is not carried to it.
+   - **The gap this leaves:** a ranking that changes between render and
+     confirm (an operator re-weights or disables a rail, or a deploy) can
+     send the confirm to a rail whose payer fields differ from the ones the
+     page asked for, and the confirm is then refused. The 2026-10-23 review
+     of vaam-apps/vpay#346 found the same effect for a server-side confirm,
+     which has no page: the body it needs depends on the winning rail
+     ([verification](../status/verification/2026-10-23-method-type-routing.md),
+     "Not done").
+   - **Today's workaround:** a merchant confirming from its own server pins
+     the rail (`payment_method_options[<type>][rail]`). A payer cannot pin,
+     so building this answer needs the rail the page rendered to reach the
+     confirm in a form the payer cannot alter (held with the checkout
+     session, for instance). Not designed further here.
 5. **Exploration.** Should a small share of checkouts go to a rail that is
    not first, so that its measured components stay fresh? It keeps the data
    honest, at the cost of some checkouts on a worse rail.
+   - **Answer: no exploration.**
+   - **Consequence:** every checkout goes to the first-ranked rail.
+     Measured components will be thin for rails that rarely rank first.
+   - **Built:** nothing to build. The router does no exploration.
+
+**The tie-break is confirmed.** With equal weights, ties go to the lower rail
+code, so `mtn_wallet` routes to `mtn_momo` and `orange_wallet` to `notchpay`
+when both rails of a type are configured. It was put to the maintainer as
+"the provisional tie-break" with the defaults above, and kept.
 
 ### R9. Delivery of this revision
 
-| Step | Contents                                                                                                                                                                                                                                                       | Depends on       |
-| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| R-a  | Method types, `Capabilities::method_types`, the hard filter, the scored ranking with `provisional-1` (configured weight), `routing_decisions` with breakdowns, `charges.method_type`, the confirm pin, Notch Pay's channel from the type. **Built 2026-10-23** | nothing          |
-| R-b  | The checkout renders method types (D13 `collapse`)                                                                                                                                                                                                             | R-a              |
-| R-c  | The components the maintainer chooses (R8.1), each with its source, coefficient and breakdown entry, and the formula renamed past `provisional-1`                                                                                                              | R8 answered      |
-| R-d  | Per-merchant weights                                                                                                                                                                                                                                           | RFC-0009 phase B |
+| Step | Contents                                                                                                                                                                                                                                                       | Depends on                                               |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| R-a  | Method types, `Capabilities::method_types`, the hard filter, the scored ranking with `provisional-1` (configured weight), `routing_decisions` with breakdowns, `charges.method_type`, the confirm pin, Notch Pay's channel from the type. **Built 2026-10-23** | nothing                                                  |
+| R-b  | The checkout renders method types (D13 `collapse`)                                                                                                                                                                                                             | R-a                                                      |
+| R-c  | The components the maintainer chose (R8.1, answered 2026-10-23): the estimated fee, then the completion rate, each with its source, coefficient and breakdown entry, and the formula renamed past `provisional-1`. Not built                                   | fee schedules; for the completion rate, R8.1's open note |
+| R-d  | Per-merchant weights                                                                                                                                                                                                                                           | RFC-0009 phase B                                         |
+| R-e  | The confirm follows the rail the page rendered while it is still eligible (R8.4, answered 2026-10-23). Not built                                                                                                                                               | R-b                                                      |
 
 ## Problem
 

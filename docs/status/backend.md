@@ -1108,8 +1108,8 @@ Asked how to close Notch Pay's crash window ("#13: how do we do then?"), the
 maintainer was answered with this design and replied "Fan out the work via
 sub-agents". The design and every decision in
 [ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)
-are the implementing agent's; the ADR is **Proposed** until the maintainer
-accepts it.
+were the implementing agent's. **The maintainer accepted the ADR on
+2026-10-23** ("Yes"); it was **Proposed** until then.
 
 - **The port** gains `Capabilities::submit_steps` (`One`, or
   `PrepareThenSubmit` on `notchpay`) and an optional `prepare`, which takes
@@ -1179,7 +1179,9 @@ maintainer the questions that decide it.
   mutation-checked.
 - **Not done:** the checkout page rendering types (slice 2), the SDKs'
   confirm by type (a dated parity gap), any score component but the weight
-  (slice 3, after the maintainer answers R8), `cm.mtn`/`cm.orange` against
+  (slice 3: the maintainer answered R8 on 2026-10-23, the fee next and then
+  the completion rate; not built), the confirm following the page's rail
+  (R8.4, answered, not built), `cm.mtn`/`cm.orange` against
   Notch Pay's real sandbox, and a merchant-readable decision on `/v1`.
 
 No route was mounted or unmounted and no `NotImplemented` token moved.

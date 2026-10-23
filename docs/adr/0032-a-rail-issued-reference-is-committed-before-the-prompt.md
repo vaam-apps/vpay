@@ -1,14 +1,26 @@
 # ADR-0032: A rail-issued reference is committed before the prompt
 
-- **Status:** Proposed — needs maintainer acceptance. The maintainer asked how
-  to close Notch Pay's crash window ("#13: how do we do then?", 2026-10-23),
-  the agent answered with the design below, and the maintainer replied "Fan
-  out the work via sub-agents". That is an instruction to build it, not a
-  review of this text: every decision below, D1–D6, was taken by the
-  implementing agent and has not been put to the maintainer one by one.
+- **Status:** **Accepted 2026-10-23.** Asked "ADR-0032 (two-step submit) is
+  merged and the sandbox behaved as designed. Should I mark it Accepted?",
+  the maintainer answered "Yes". That acceptance covers D1–D6 as written.
+  - _History:_ the maintainer asked how to close Notch Pay's crash window
+    ("#13: how do we do then?", 2026-10-23), the agent answered with the
+    design below, and the maintainer replied "Fan out the work via
+    sub-agents". That was an instruction to build it, not a review of this
+    text, so the ADR was **Proposed** from its merge (vaam-apps/vpay#345,
+    `3633ca0c`) until the answer above.
+  - _What the acceptance rests on:_ the WireMock and real-Postgres cases of
+    [2026-10-23-two-step-submit.md](../status/verification/2026-10-23-two-step-submit.md),
+    and Notch Pay's own sandbox answers measured through `sandbox_probe` in
+    [2026-10-23-notchpay-sandbox-two-step-and-channels.md](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)
+    (vaam-apps/vpay#350): an initialize-only payment stayed `pending` for at
+    least an hour, a process 300 s later completed, and a repeated reference
+    answered `409`. **vpay itself has still never run the split against
+    Notch Pay**: the probe made those calls, because `vpay-server` cannot
+    reach Notch Pay from a cloud session.
 - **Date:** 2026-10-23
-- **Deciders:** the implementing agent (D1–D6, 2026-10-23), pending the vpay
-  maintainer's acceptance.
+- **Deciders:** the implementing agent (D1–D6, 2026-10-23); the vpay
+  maintainer, who accepted them the same day.
 - **Extends:** [ADR-0002](0002-provider-port.md), the port, by one optional
   method and one capability value. ADR-0002's body is not edited, and its
   rule — the core branches on capability values, never on a provider code —

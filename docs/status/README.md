@@ -75,7 +75,7 @@ rather than trusting this list to be exhaustive.
   Proven against WireMock and a real Postgres, each guard mutation-checked;
   nothing sent to a provider.
 - [verification/2026-10-23-two-step-submit.md](verification/2026-10-23-two-step-submit.md) —
-  ADR-0032 (Proposed): a two-step rail's reference is committed before the
+  ADR-0032 (Accepted 2026-10-23): a two-step rail's reference is committed before the
   prompt. `ProviderAdapter::prepare` and `submit_steps`, Notch Pay split into
   initialize and process, and its `409` decided by whether a `submit` row
   exists. Proven against WireMock's Notch Pay and a real Postgres, eight

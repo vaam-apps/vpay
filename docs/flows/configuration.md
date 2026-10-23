@@ -386,9 +386,11 @@ routing:
 
 The most specific entry wins: a rail **and** a type, then the rail alone,
 then `100`. The weight is the only component of the score today, so **it is
-provisional**: when the maintainer chooses the components RFC-0008's open
-question R8.1 lists, this block keeps its meaning (one component among
-several) and the formula's name moves past `provisional-1`. A weight is not a
+provisional**. The maintainer chose the next components on 2026-10-23
+(RFC-0008 § R8.1): the estimated fee, then the completion rate, neither
+built. When they land, this block keeps its meaning (one component among
+several) and the formula's name moves past `provisional-1`. The block stays
+the operator's: per-merchant weights wait on RFC-0009 (§ R8.2). A weight is not a
 switch: `0` ranks a rail last, never off; `enabled: false` is how a rail is
 taken out.
 
