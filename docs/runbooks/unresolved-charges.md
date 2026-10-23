@@ -64,6 +64,25 @@ FROM charges WHERE state = 'unresolved' ORDER BY updated_at;
 hourly. The intent is still `processing`, which merchants are told means "not
 yet, don't ship".
 
+**It is not always 24 hours old.** Since 2026-10-23 (vaam-apps/vpay#313) a
+charge can also arrive here within a minute or two of its confirm. That
+happens when the rail's adapter has said only a person can settle it, with
+`error_kind = 'charge_needs_reconciliation'` on its latest `provider_requests`
+row. Today only `notchpay` does that, for three cases:
+
+- **a `complete` read for a sum that is not the charge's.** This is Notch
+  Pay's sandbox "insufficient funds" read: `amounts.total` short of `amount`.
+  Money may have moved, but not this charge's amount. Find the payment in
+  Notch Pay's dashboard by its `trx.…` reference (the charge's
+  `provider_ref_extra.notchpay_reference`).
+- **an initialize `409` for a charge that holds no `trx.…`.** A confirm or
+  resubmit reached Notch Pay and lost its answer, and Notch Pay cannot find a
+  payment by our reference. Search the dashboard by amount, payer number and
+  time. Exactly one initialize was sent for it.
+- **a charge with no `trx.…` to read by.** The same lost answer, met by the
+  poll rather than the resubmit. `orange_money`'s missing `pay_token` is the
+  same case.
+
 What it does _not_ mean: that the payer was not debited. That is the question
 you are here to answer.
 
@@ -111,10 +130,15 @@ you are here to answer.
    The `error_kind` vocabulary is `vpay_core::Classify::code` on the
    adapter's error, i.e. the same tokens a merchant sees in the error
    envelope: `provider_unavailable`, `provider_error`, `charge_declined`,
-   `misconfigured`, `operation_unsupported_by_rail`, `not_implemented`.
+   `misconfigured`, `operation_unsupported_by_rail`, `not_implemented`, and
+   since 2026-10-23 `charge_needs_reconciliation`.
    `misconfigured` is the one that means _stop and fix the deployment_ — the
    adapter refused before or because of a bad credential, header or
-   `base_url` — not a rail problem.
+   `base_url` — not a rail problem. `charge_needs_reconciliation` is the one
+   that means _this charge, and only a person_. On a `submit` row it stays
+   `NULL`, outcome unknown. On a `query_status` row it is `0`, the rail
+   answered, except for the "no `trx.…` to read by" case above, where no
+   request left (`docs/reference/vpay-worker.md`).
 
    **`provider_requests` stores no request or response body.** Columns are
    the charge and provider, the operation, the reference, the attempt

@@ -900,6 +900,11 @@ async fn refund_at_rail(
     let charge_ref = ChargeRef {
         // The REFUND's reference. See this function's docs.
         reference_id: reference,
+        method_type: target
+            .charge
+            .method_type
+            .as_deref()
+            .and_then(vpay_core::routing::MethodType::from_wire),
         amount,
         payer_ref: target.charge.payer_ref.clone(),
         ref_extra: refund_ref_extra(target.charge.provider_txn_id.as_deref()),
@@ -1079,7 +1084,12 @@ async fn finish_refund(
         // error here and somebody has to decide which side of this line it
         // falls on. See this function's docs for why nothing is released,
         // and why the merchant is answered with the pending refund.
-        ProviderError::Transport { .. } | ProviderError::Malformed { .. } => {
+        // `NeedsReconciliation` is on this side by its own definition — the
+        // money's fate is the rail's and only a person can learn it — though
+        // no adapter raises it from `refund` today (the port's error table).
+        ProviderError::Transport { .. }
+        | ProviderError::Malformed { .. }
+        | ProviderError::NeedsReconciliation { .. } => {
             repositories
                 .record_response(attempt, None, Some(error_kind(&error)))
                 .await?;
@@ -1665,6 +1675,7 @@ fn error_kind(error: &ProviderError) -> &'static str {
     match error {
         ProviderError::Transport { .. } => "transport",
         ProviderError::Malformed { .. } => "malformed",
+        ProviderError::NeedsReconciliation { .. } => "needs_reconciliation",
         ProviderError::Rejected { .. } => "rejected",
         ProviderError::Config(_) => "config",
         ProviderError::Unsupported => "unsupported",
@@ -1721,6 +1732,10 @@ mod tests {
                 supports_account_holder_lookup: self.lookup.is_some(),
                 refund_destination: RefundDestination::Required,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+                submit_steps: vpay_provider::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 
@@ -1788,6 +1803,10 @@ mod tests {
                 supports_account_holder_lookup: false,
                 refund_destination: RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+                submit_steps: vpay_provider::SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
             }
         }
 

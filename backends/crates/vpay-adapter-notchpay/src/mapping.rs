@@ -19,7 +19,9 @@
 //! `amounts.total` equal to the amount is `Succeeded`; `failed` is
 //! `Failed { provider_error }`; and the "insufficient funds" number answered
 //! `pending` on its first read, then a `complete` whose `amounts.total` was
-//! short, which was `Malformed` on each of the next eleven reads.
+//! short, which was `Malformed` on each of the next eleven reads. Since
+//! 2026-10-23 that answer is `NeedsReconciliation` and the worker escalates
+//! the charge on the first one (vaam-apps/vpay#313).
 //!
 //! The split with `vpay-notchpay` is the one the other two adapters draw
 //! between `wire.rs` and `mapping.rs`, at a crate boundary: the client reports
@@ -36,9 +38,13 @@ use vpay_provider::{ChargeStatus, ProviderError};
 /// Every [`FailureCode`] this adapter can produce, and nothing else.
 ///
 /// `payer_timeout` (`expired`, `abandoned`), `payer_declined` (`canceled`),
-/// `provider_error` (`failed`, `rejected`, a refused initialize or process)
-/// and `provider_account_blocked` (a `401`/`403` on our own keys). The
-/// conformance suite's `the_declines_prove_every_code_each_rail_can_produce`
+/// `provider_error` (`failed`, `rejected`, a refused initialize or process),
+/// `provider_account_blocked` (a `401`/`403` on our own keys) and
+/// `provider_unavailable` (`prepare`'s `409` for a reference no submit was
+/// ever made for: an initialize that lost its answer and prompted nobody,
+/// ADR-0032). The last is produced in `lib.rs`, not by this module's
+/// mapping, so the test below adds it by hand, as it adds
+/// `provider_account_blocked`. The conformance suite's `the_declines_prove_every_code_each_rail_can_produce`
 /// compares this list against the declines it drives, in both directions.
 ///
 /// **Short on purpose.** Notch Pay's read names no failure reason: on
@@ -49,11 +55,12 @@ use vpay_provider::{ChargeStatus, ProviderError};
 /// Its "canceled by user" number read `canceled`, which is the evidence
 /// RFC-0012 § 4 named for `payer_declined`; its "timeout" number read
 /// `expired`, which was already `payer_timeout`.
-pub const PRODUCED_FAILURE_CODES: [FailureCode; 4] = [
+pub const PRODUCED_FAILURE_CODES: [FailureCode; 5] = [
     FailureCode::PayerTimeout,
     FailureCode::PayerDeclined,
     FailureCode::ProviderError,
     FailureCode::ProviderAccountBlocked,
+    FailureCode::ProviderUnavailable,
 ];
 
 /// The message Notch Pay's errors page gives a read of a payment it has no
@@ -73,7 +80,7 @@ const PROSE_LIMIT: usize = 200;
 /// | Notch Pay `status` | `ChargeStatus` |
 /// | --- | --- |
 /// | `pending`, `processing`, `incomplete` | `Pending` — `incomplete` is never a success |
-/// | `complete`, `refunded`, `partialy-refunded` | `Succeeded`, **only if** the amount, the collected `amounts.total` and the currency are the charge's; otherwise `Malformed` |
+/// | `complete`, `refunded`, `partialy-refunded` | `Succeeded`, **only if** the amount, the collected `amounts.total` and the currency are the charge's; otherwise `NeedsReconciliation` |
 /// | `canceled` | `Failed { payer_declined }`, with the status as `raw` |
 /// | `failed`, `rejected` | `Failed { provider_error }`, with the status as `raw` |
 /// | `expired`, `abandoned` | `Failed { payer_timeout }` |
@@ -154,9 +161,18 @@ fn provider_txn_id(payment: &Payment) -> Option<String> {
 /// `complete`, with `amount` 107 (what was asked) and `amounts.total` 105.
 /// On every other answer that day `total` equalled `amount`. A `complete`
 /// that collected less than the charge is not this charge's success, so it
-/// is `Malformed`, as a wrong `amount` is. A success with no `amounts`, or
+/// is refused, as a wrong `amount` is. A success with no `amounts`, or
 /// no integer `total`, is refused on the same terms: every sandbox answer
 /// carried one (`docs/status/verification/2026-10-21-notchpay-sandbox-run.md`).
+///
+/// **All three refusals are [`ProviderError::NeedsReconciliation`]**, not
+/// `Malformed` (vaam-apps/vpay#313, 2026-10-23). Each is an answer the
+/// adapter read perfectly, terminal on Notch Pay's side: a payment's amount,
+/// currency and collected total do not change on a second read. As
+/// `Malformed` each rode the poll ladder at `Warn` for 24 hours before
+/// anyone was told; now the worker makes the charge `unresolved`, alerting,
+/// on the first read that says so. Including the two besides the short
+/// total was the implementer's call, recorded in the pull request.
 fn require_the_charges_amount(
     payment: &Payment,
     expected: Money,
@@ -165,7 +181,7 @@ fn require_the_charges_amount(
     let amount_matches = payment.amount_minor() == Some(expected.minor());
     let currency_matches = payment.currency.as_deref() == Some(expected.currency().code());
     if !(amount_matches && currency_matches) {
-        return Err(ProviderError::malformed(format!(
+        return Err(ProviderError::needs_reconciliation(format!(
             "notchpay: the read reports {} for an amount or currency that is not this charge's \
              (amount {}, currency {}); never a success",
             status.wire(),
@@ -185,13 +201,13 @@ fn require_the_charges_amount(
         .and_then(vpay_notchpay::wire::Amounts::total_minor)
     {
         Some(total) if total == expected.minor() => Ok(()),
-        Some(_) => Err(ProviderError::malformed(format!(
+        Some(_) => Err(ProviderError::needs_reconciliation(format!(
             "notchpay: the read reports {} for this charge's amount, but amounts.total is not \
              that amount: Notch Pay moved money, and not this charge's amount. Never a success; \
              the charge needs an operator to reconcile it with Notch Pay",
             status.wire(),
         ))),
-        None => Err(ProviderError::malformed(format!(
+        None => Err(ProviderError::needs_reconciliation(format!(
             "notchpay: the read reports {} with no integer amounts.total, so what was collected \
              is unknown; never a success",
             status.wire(),
@@ -482,8 +498,9 @@ mod tests {
             ] {
                 let outcome = charge_status(&payment(status, amount, currency), xaf(5_000));
                 assert!(
-                    matches!(outcome, Err(ProviderError::Malformed { .. })),
-                    "{status} with {what} must be Malformed, got {outcome:?}"
+                    matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+                    "{status} with {what} must be NeedsReconciliation: a second read cannot \
+                     change a payment's amount, got {outcome:?}"
                 );
             }
         }
@@ -509,8 +526,9 @@ mod tests {
         .expect("the sandbox's shape decodes");
         let outcome = charge_status(&short, xaf(107));
         assert!(
-            matches!(outcome, Err(ProviderError::Malformed { .. })),
-            "a complete for 105 of 107 must be Malformed, got {outcome:?}"
+            matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+            "a complete for 105 of 107 must be NeedsReconciliation, which the worker escalates \
+             at once; as Malformed it rode the ladder for 24 h (#313). Got {outcome:?}"
         );
         let message = outcome.expect_err("refused").to_string();
         assert!(
@@ -536,8 +554,8 @@ mod tests {
             .expect("decodes");
             let outcome = charge_status(&payment, xaf(5_000));
             assert!(
-                matches!(outcome, Err(ProviderError::Malformed { .. })),
-                "amounts {amounts} must be Malformed, got {outcome:?}"
+                matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+                "amounts {amounts} must be NeedsReconciliation, got {outcome:?}"
             );
         }
     }
@@ -692,7 +710,15 @@ mod tests {
 
     #[test]
     fn the_declared_codes_are_exactly_what_the_mapping_can_produce() {
-        let mut produced = vec![FailureCode::ProviderAccountBlocked];
+        // Neither comes from this module: `provider_account_blocked` is the
+        // client's `401`/`403`, and `provider_unavailable` is `prepare`'s
+        // `409` with no prior submit, which
+        // `tests::a_duplicate_no_submit_ever_prompted_for_fails_the_charge_cleanly`
+        // drives.
+        let mut produced = vec![
+            FailureCode::ProviderAccountBlocked,
+            FailureCode::ProviderUnavailable,
+        ];
         for status in PaymentStatus::ALL {
             if let Ok(ChargeStatus::Failed { code, .. }) =
                 charge_status(&payment(status.wire(), 5_000.into(), "XAF"), xaf(5_000))

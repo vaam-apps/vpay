@@ -303,3 +303,15 @@ this order" can be checked by reading the two files side by side. The job's
 display name is unchanged (`self-checks (no-mocks, status)`) because branch
 protection pins it. **No CI run of this change exists yet** — the evidence is
 `actionlint` clean on the workflow and a local `just verify`.
+
+## `mtn_wallet` and `orange_wallet` on a create; confirm by type is a dated gap (2026-10-23)
+
+Both SDKs' `PaymentMethodType` spell the two payment-method types beside the
+three rail codes (`create_sends_payment_method_types_beside_rail_codes_as_written`,
+`payment_intents.create sends a payment-method type beside a rail code`, the
+same body byte for byte). `ConfirmPaymentIntentParams` still names rail codes
+only, so neither SDK can confirm by type or send
+`payment_method_options[<type>][rail]`: a ⛔ row dated 2026-10-23 in
+[sdks/parity.md](../sdks/parity.md), owned by slice 2 of
+[the plan](../plans/2026-10-23-method-type-routing.md). The Rust enum is
+`#[non_exhaustive]`, so the two variants are not a breaking change.

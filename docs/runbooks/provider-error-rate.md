@@ -73,13 +73,14 @@ that is step 0:
 sum by (error_kind) (rate(vpay_provider_requests_total{provider="<rail>"}[15m]))
 ```
 
-| Dominant `error_kind`                               | What it is                                                                                                                              | Where to go                                                                                                                                          |
-| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `provider_unavailable`                              | Transport: the rail was unreachable, or did not answer. Not a mapping problem and not something to fix in an adapter.                   | [unresolved-charges.md](unresolved-charges.md) — charges the poll ladder cannot resolve are the consequence. Check the rail's own status page first. |
-| `charge_declined`                                   | The rail decided. Ordinary business on a push rail, and the reason this alert can fire on a perfectly healthy system — see the ⚠ above. | Nothing operational, unless the decline _mix_ changed: group `charges.failure_code`. A jump in `provider_account_blocked` is a page, not a decline.  |
-| `provider_error`                                    | The adapter saw a rail error string it does not recognise.                                                                              | The rest of this runbook.                                                                                                                            |
-| `misconfigured`                                     | Our YAML or our credentials — a missing `${VAR}`, a rejected key.                                                                       | [rotate-rail-credentials.md](rotate-rail-credentials.md). Fix the deployment, not the mapping.                                                       |
-| `operation_unsupported_by_rail` / `not_implemented` | vpay called something this rail cannot do, or something nobody has built. Both are bugs here, not rail problems.                        | `docs/status.md`, then a code fix.                                                                                                                   |
+| Dominant `error_kind`                               | What it is                                                                                                                                       | Where to go                                                                                                                                          |
+| --------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `provider_unavailable`                              | Transport: the rail was unreachable, or did not answer. Not a mapping problem and not something to fix in an adapter.                            | [unresolved-charges.md](unresolved-charges.md) — charges the poll ladder cannot resolve are the consequence. Check the rail's own status page first. |
+| `charge_declined`                                   | The rail decided. Ordinary business on a push rail, and the reason this alert can fire on a perfectly healthy system — see the ⚠ above.          | Nothing operational, unless the decline _mix_ changed: group `charges.failure_code`. A jump in `provider_account_blocked` is a page, not a decline.  |
+| `provider_error`                                    | The adapter saw a rail error string it does not recognise.                                                                                       | The rest of this runbook.                                                                                                                            |
+| `misconfigured`                                     | Our YAML or our credentials — a missing `${VAR}`, a rejected key.                                                                                | [rotate-rail-credentials.md](rotate-rail-credentials.md). Fix the deployment, not the mapping.                                                       |
+| `operation_unsupported_by_rail` / `not_implemented` | vpay called something this rail cannot do, or something nobody has built. Both are bugs here, not rail problems.                                 | `docs/status.md`, then a code fix.                                                                                                                   |
+| `charge_needs_reconciliation`                       | The rail answered and only a person can settle the charge (since 2026-10-23, vaam-apps/vpay#313). Each one escalates its charge to `unresolved`. | [unresolved-charges.md](unresolved-charges.md), not this runbook: one charge, not a rail's error rate.                                               |
 
 The rest of this runbook is the `provider_error` case.
 
@@ -119,7 +120,8 @@ from a permanent one.
    (transport), `provider_error` (unparseable answer), `charge_declined` (the
    rail decided), `misconfigured` (our YAML or credentials — fix the
    deployment, not the mapping), `operation_unsupported_by_rail`,
-   `not_implemented`. A `provider_error` on a **submit** row is `NULL`
+   `not_implemented`, `charge_needs_reconciliation` (the charge is
+   `unresolved`; see unresolved-charges.md). A `provider_error` on a **submit** row is `NULL`
    whatever the rail said; on a **`query_status`** row it is `0`, so
    `operation = 'query_status' AND error_kind = 'provider_error' AND
 status_code = 0` is "the rail answered and we could not use it" — the

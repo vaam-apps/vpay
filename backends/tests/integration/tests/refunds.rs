@@ -214,6 +214,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 
@@ -2315,6 +2316,7 @@ fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 
@@ -2419,6 +2421,8 @@ impl ProviderAdapter for OriginRail {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
             callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+            submit_steps: vpay_provider::SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         }
     }
 
@@ -2506,6 +2510,7 @@ fn origin_config(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 

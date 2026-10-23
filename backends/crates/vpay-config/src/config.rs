@@ -380,9 +380,10 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
     },
     RequiredRailKeys {
         code: "notchpay",
-        // `cm.mobile`, the one channel the adapter sends
-        // (`vpay_adapter_notchpay::KNOWN_CHANNELS`). `description` is
-        // optional and not listed.
+        // `cm.mobile`, the only value the setting takes
+        // (`vpay_adapter_notchpay::KNOWN_CHANNELS`): a charge routed by method
+        // type is sent `cm.mtn` or `cm.orange` instead, per charge.
+        // `description` is optional and not listed.
         settings: &["channel"],
         // Both keys, always. The private key is ADR-0031's condition 2: the
         // public key alone — the weaker shape Notch Pay's own documentation
@@ -688,6 +689,118 @@ pub struct Config {
     #[garde(dive)]
     #[serde(default)]
     pub staff_auth: StaffAuth,
+    /// How a payment-method type is routed to a rail (RFC-0008 as revised
+    /// on 2026-10-23). Absent means every rail at
+    /// [`vpay_core::routing::DEFAULT_WEIGHT`], so the rail code breaks every
+    /// tie. See [`Routing`].
+    #[garde(skip)]
+    #[serde(default)]
+    pub routing: Routing,
+}
+
+/// `routing:`: the deployment's inputs to the router's score.
+///
+/// **Provisional**, as the score is: one input, a static weight. The
+/// maintainer asked on 2026-10-23 for "a score of each payment solution for
+/// each checkout", and RFC-0008's 2026-10-23 revision lists the components
+/// that may follow (fee, health, latency). Each will add its own key here.
+///
+/// ```yaml
+/// routing:
+///   weights:
+///     - rail: notchpay          # every type this rail serves
+///       weight: 150
+///     - rail: mtn_momo          # this type only, and it wins over the above
+///       method_type: mtn_wallet
+///       weight: 200
+/// ```
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct Routing {
+    /// Static weights, most specific first: a rail **and** a method type,
+    /// else a rail, else [`vpay_core::routing::DEFAULT_WEIGHT`].
+    #[serde(default)]
+    pub weights: Vec<RoutingWeight>,
+}
+
+/// One `routing.weights[]` entry.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct RoutingWeight {
+    /// A `providers[].code` this deployment configures.
+    pub rail: String,
+    /// A method type the rail's adapter serves (`mtn_wallet`,
+    /// `orange_wallet`), or absent for every type it serves.
+    #[serde(default)]
+    pub method_type: Option<String>,
+    /// From 0 to [`vpay_core::routing::MAX_WEIGHT`]. A higher weight wins;
+    /// zero is still a candidate, last.
+    pub weight: u32,
+}
+
+impl Routing {
+    /// The weights as the router reads them.
+    ///
+    /// Call it on a [`Config`] that has passed [`Config::validate_all`],
+    /// which refuses every entry this would have to guess about: an unknown
+    /// or reserved method type is dropped here rather than routed.
+    #[must_use]
+    pub fn weights(&self) -> vpay_core::routing::Weights {
+        self.weights.iter().fold(
+            vpay_core::routing::Weights::none(),
+            |weights, entry| match entry.method_type.as_deref() {
+                None => weights.with(&entry.rail, None, entry.weight),
+                Some(spelling) => match vpay_core::routing::MethodType::from_wire(spelling) {
+                    Some(method_type) => weights.with(&entry.rail, Some(method_type), entry.weight),
+                    None => weights,
+                },
+            },
+        )
+    }
+}
+
+/// `routing.weights`, checked against the providers this file configures.
+///
+/// Whether a rail's **adapter** serves the named type is a question about
+/// linked code, so `vpay_api::boot::boot_seeds` asks it, where the YAML
+/// meets the adapters; everything answerable from the file is answered here.
+///
+/// # Errors
+///
+/// [`ConfigError::UnknownRoutingRail`], [`ConfigError::UnknownMethodType`],
+/// [`ConfigError::RoutingWeightTooLarge`] and
+/// [`ConfigError::DuplicateRoutingWeight`].
+fn validate_routing(routing: &Routing, providers: &[ProviderHost]) -> Result<(), ConfigError> {
+    let mut seen = BTreeSet::new();
+    for entry in &routing.weights {
+        if !providers.iter().any(|provider| provider.code == entry.rail) {
+            return Err(ConfigError::UnknownRoutingRail {
+                rail: entry.rail.clone(),
+            });
+        }
+        if let Some(spelling) = entry.method_type.as_deref()
+            && vpay_core::routing::MethodType::from_wire(spelling).is_none()
+        {
+            return Err(ConfigError::UnknownMethodType {
+                rail: entry.rail.clone(),
+                method_type: spelling.to_owned(),
+                reserved: vpay_core::routing::RESERVED_METHOD_TYPES.contains(&spelling),
+            });
+        }
+        if entry.weight > vpay_core::routing::MAX_WEIGHT {
+            return Err(ConfigError::RoutingWeightTooLarge {
+                rail: entry.rail.clone(),
+                weight: entry.weight,
+            });
+        }
+        if !seen.insert((entry.rail.as_str(), entry.method_type.as_deref())) {
+            return Err(ConfigError::DuplicateRoutingWeight {
+                rail: entry.rail.clone(),
+                method_type: entry.method_type.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The two deployment secrets staff sign-in needs
@@ -1314,6 +1427,8 @@ impl Config {
             validate_required_rail_keys(provider, livemode)?;
             validate_provider_display_name(provider)?;
         }
+        // After the providers, because every entry names one.
+        validate_routing(&self.routing, &self.providers)?;
 
         let mut seen_currencies = BTreeSet::new();
         for entry in &self.currencies {
@@ -3258,6 +3373,7 @@ mod tests {
     fn valid_config() -> Config {
         Config {
             staff_auth: StaffAuth::default(),
+            routing: Default::default(),
             deployment: Deployment {
                 name: "test".to_owned(),
                 livemode: false,
@@ -4353,6 +4469,7 @@ mod tests {
     fn a_livemode_deployment_cannot_derive_a_plaintext_callback_url() {
         let config = Config {
             staff_auth: StaffAuth::default(),
+            routing: Default::default(),
             deployment: Deployment {
                 name: "prod".to_owned(),
                 livemode: true,
@@ -6275,6 +6392,106 @@ providers:
     /// RFC-0013 § 2: `callbacks: {}` means what an absent block means —
     /// `ensure` — and a misspelt key is refused rather than silently read as
     /// that default. Every spelling of `register` round-trips.
+    /// `routing:` parses with every key optional, refuses a misspelt one,
+    /// and resolves to the router's weights most specific first.
+    #[test]
+    fn a_routing_block_parses_strictly_and_resolves_its_weights() {
+        let empty: Routing = serde_yaml_ng::from_str("{}").expect("an empty block deserialises");
+        assert!(empty.weights.is_empty());
+        assert_eq!(empty.weights(), vpay_core::routing::Weights::none());
+
+        let block: Routing = serde_yaml_ng::from_str(
+            "weights:\n  - rail: notchpay\n    weight: 150\n  - rail: notchpay\n    method_type: orange_wallet\n    weight: 20\n",
+        )
+        .expect("two weights");
+        let weights = block.weights();
+        assert_eq!(
+            weights.weight_of("notchpay", vpay_core::routing::MethodType::MtnWallet),
+            150
+        );
+        assert_eq!(
+            weights.weight_of("notchpay", vpay_core::routing::MethodType::OrangeWallet),
+            20
+        );
+
+        for misspelt in [
+            "weight: []",
+            "weights:\n  - rail: notchpay\n    wieght: 150\n",
+            "weights:\n  - rail: notchpay\n    weight: -1\n",
+        ] {
+            assert!(
+                serde_yaml_ng::from_str::<Routing>(misspelt).is_err(),
+                "{misspelt}"
+            );
+        }
+    }
+
+    /// Every `routing.weights` refusal `Config::validate_all` can answer from
+    /// the file alone, and the entries it boots. Mutation-checked: each
+    /// refusal removed fails its own row.
+    #[test]
+    fn routing_weights_are_refused_for_every_mistake_the_file_can_show() {
+        let providers = [notchpay("pk.test_x", "sk.test_x")];
+        let entry = |rail: &str, method_type: Option<&str>, weight: u32| RoutingWeight {
+            rail: rail.to_owned(),
+            method_type: method_type.map(str::to_owned),
+            weight,
+        };
+        let check =
+            |weights: Vec<RoutingWeight>| validate_routing(&Routing { weights }, &providers);
+
+        assert_eq!(
+            check(vec![
+                entry("notchpay", None, 150),
+                entry("notchpay", Some("mtn_wallet"), 0)
+            ]),
+            Ok(())
+        );
+        assert_eq!(
+            check(vec![entry("ntochpay", None, 150)]),
+            Err(ConfigError::UnknownRoutingRail {
+                rail: "ntochpay".to_owned()
+            })
+        );
+        assert_eq!(
+            check(vec![entry("notchpay", Some("mtn_momo"), 150)]),
+            Err(ConfigError::UnknownMethodType {
+                rail: "notchpay".to_owned(),
+                method_type: "mtn_momo".to_owned(),
+                reserved: false,
+            }),
+            "a rail code is not a method type"
+        );
+        let reserved = check(vec![entry("notchpay", Some("card"), 150)]).expect_err("reserved");
+        assert!(reserved.to_string().contains("reserved"), "{reserved}");
+        assert_eq!(
+            check(vec![entry(
+                "notchpay",
+                None,
+                vpay_core::routing::MAX_WEIGHT + 1
+            )]),
+            Err(ConfigError::RoutingWeightTooLarge {
+                rail: "notchpay".to_owned(),
+                weight: vpay_core::routing::MAX_WEIGHT + 1,
+            })
+        );
+        let duplicate = check(vec![
+            entry("notchpay", Some("orange_wallet"), 1),
+            entry("notchpay", Some("orange_wallet"), 2),
+        ])
+        .expect_err("a duplicate");
+        assert_eq!(
+            duplicate,
+            ConfigError::DuplicateRoutingWeight {
+                rail: "notchpay".to_owned(),
+                method_type: Some("orange_wallet".to_owned()),
+            }
+        );
+        for error in [reserved, duplicate] {
+            assert!(!error.to_string().contains("  "), "{error}");
+        }
+    }
+
     #[test]
     fn a_callbacks_block_defaults_to_ensure_and_refuses_an_unknown_key() {
         let empty: ProviderCallbacks =

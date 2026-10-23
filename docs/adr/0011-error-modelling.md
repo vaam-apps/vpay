@@ -184,3 +184,64 @@ there is no wildcard to hide in.
 **Not changed:** the three tiers, the `Classify` seam, `anyhow` at the edge,
 `ProviderError::NotImplemented`'s literal, and every wire-visible status,
 `type`, `code` and message.
+
+## Amendment, 2026-10-23 — a leaf that says "a person must reconcile this"
+
+Appended rather than superseded. Asked in vaam-apps/vpay#313 how a rail's
+"an operator must reconcile this" should reach a person, the maintainer
+answered "Go with option 1 on #313, build it" (2026-10-23).
+
+**The problem.** `ProviderError::Malformed` carried two opposite meanings. One
+is an answer the adapter could not read, such as a garbled body or an
+undocumented status. Asking again may fix that, so the poll ladder's quiet
+`Warn` is right. The other is an answer the adapter read perfectly and
+refused, which no second read can change. Notch Pay's "complete, for less
+than the charge" is the case Notch Pay's sandbox actually produced
+(RFC-0012 step 5). As one variant, both rode the ladder at `Warn` for 24 hours
+before anyone was told.
+
+**The leaf.** A new variant, `ProviderError::NeedsReconciliation { context }`,
+classified once at the leaf like every other variant:
+
+- category `Rail`, so the API answers it as it answers a `Malformed`: `502`,
+  outcome not known;
+- its own code, `charge_needs_reconciliation`;
+- `Severity::Error`, the line `vpay_worker`'s `decision` reads for
+  `alert: true`;
+- `Rail`'s `AfterBackoff`, unchanged;
+- a public message that names no rail text.
+
+Today only `notchpay` raises it:
+
+- for a `complete` whose amount, currency or collected `amounts.total` is not
+  the charge's;
+- for an initialize `409` on a charge that lost Notch Pay's reference.
+
+`notchpay`'s missing `trx.…` and `orange_money`'s missing `pay_token` moved to
+it from `Config`, which dead-lettered the poll job and so stopped the polling.
+
+**The widened exception.** §"Tier 2" says composites do not re-classify.
+`vpay_worker`'s `rail_did_not_answer` was already the one documented place
+that does: past the horizon it logs a rail error and escalates with
+`JobError::Exhausted`. It now does the same, at any age, for
+`NeedsReconciliation` from `query_status`. `resubmit_charge` does it for a
+`NeedsReconciliation` from `submit`. Both go through `escalate_to_unresolved`:
+
+- the charge goes to `unresolved`, polled hourly with an alert;
+- it is never parked and never terminal, and its reference never changes;
+- a later terminal answer settles it the ordinary way.
+
+The licence is the one the horizon arm already had: `Exhausted` says
+something truer about this charge than the leaf's own retry policy does.
+
+**The rule that keeps the exception narrow.** The worker branches on the
+leaf's _variant_, never on its text and never on its code.
+`JobError::decision` stays a pure function of `Classify`, so the state write
+lives in the handler. The ticket's alternatives were a severity override with
+no state, and a `ChargeStatus` value. They were rejected in #313 § 9: the first
+alerts on every rung and never reaches `unresolved`; the second cannot express
+the submit `409`.
+
+**Not changed:** the three tiers, the `Classify` seam, `Malformed`'s meaning
+for an answer that could not be read, every existing code and status, and
+`decision` itself.

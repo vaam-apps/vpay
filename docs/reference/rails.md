@@ -534,12 +534,17 @@ how those reach a log line — one `tracing::debug!(?body)` added later and a
 token gating a payer's redirect is in the log stream. `pub(crate)` types are
 exempt from `missing_debug_implementations`, so the lint does not push back.
 
-**A missing `pay_token` is a configuration error, not `NotFound`.** The rail
-will not answer for an `order_id` alone, so there is nothing to ask. `NotFound`
-is the answer the recovery path treats as "the rail never saw this"; a charge
-whose `pay_token` we lost is the opposite case — the rail may well have it, and
-a payer may already have paid. `ProviderError::Config` stops the poll ladder and
-puts it in front of a human, which is the only correct outcome.
+**A missing `pay_token` is a reconciliation for a person, not `NotFound`.** The
+rail will not answer for an `order_id` alone, so there is nothing to ask.
+`NotFound` is the answer the recovery path treats as "the rail never saw this";
+a charge whose `pay_token` we lost is the opposite case — the rail may well have
+it, and a payer may already have paid. `ProviderError::NeedsReconciliation`
+puts it in front of a human: the worker makes the charge `unresolved`, alerting,
+and keeps polling it hourly. It was `ProviderError::Config` until 2026-10-23,
+which also put it in front of a human but dead-lettered the poll job, so the
+charge never reached the `unresolved` query the runbook starts from
+(vaam-apps/vpay#313). `notchpay`'s missing `trx.…` reference is the same case and
+moved with it.
 
 **A missing `expires_in` means "use it for this call, do not cache it".**
 Inventing a lifetime is a guess that expresses itself as intermittent 401s under

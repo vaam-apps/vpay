@@ -75,10 +75,14 @@ slow to index a new charge would look identical to one that never got it.
 
 **Added 2026-10-21. The table reads `submit` rows only, and `NULL` there means
 the outcome is unknown, not that the rail said nothing.** A resubmit the adapter
-refuses — `Malformed`, which Notch Pay's unresolvable `409` and MTN's unfollowed
-`307` both are, so that the charge's fate stays unknown — is written `NULL`
-with its `error_kind`, so the next poll reads the middle row and polls rather
-than the bottom row and advances. A `Rejected` resubmit is different, and
+refuses — `Malformed`, which MTN's unfollowed `307` is, or
+`NeedsReconciliation`, which Notch Pay's unresolvable `409` has been since
+2026-10-23 (vaam-apps/vpay#313; since ADR-0032 the same day, only for a
+charge with a `submit` row), so that the charge's fate stays unknown — is
+written `NULL` with its `error_kind`, so the next poll reads the middle row and
+polls rather than the bottom row and advances. A `NeedsReconciliation`
+resubmit also escalates the charge to `unresolved` at once, so it is never
+resubmitted again. A `Rejected` resubmit is different, and
 since 2026-10-21 it ends the table for that charge: the worker fails it (charge
 `failed`, intent back to the payer with the reason, one
 `payment_intent.payment_failed` event) and only then marks the attempt row
@@ -152,6 +156,70 @@ disqualifies it.
 
 It does not, because of the asymmetry above. This is exactly why the
 preconditions are stated **per flow shape** rather than universally.
+
+## Two-step push rails (Notch Pay)
+
+**Added 2026-10-23
+([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).**
+A push rail can name the payment by **its own** reference rather than ours.
+Notch Pay does: process and read take only the `trx.…` its initialize
+answers with, and nothing finds a payment by our reference
+([adapter-notchpay.md](adapter-notchpay.md)). Neither of the two shapes
+above covers it. MTN's argument needs the name to be ours; Orange's needs the
+payer's route in to be a URL vpay hands out. On Notch Pay the payer's route
+in is a USSD prompt, sent by a second call.
+
+So the rail declares `SubmitSteps::PrepareThenSubmit`, and the core puts a
+commit between the two calls:
+
+```text
+BEGIN; INSERT charge (state='submitting', provider_reference_id); COMMIT
+  INSERT provider_requests (operation='prepare', status_code = NULL)
+  POST /payments                          → trx.…    (nobody is prompted)
+UPDATE charge SET provider_ref_extra = {notchpay_reference: trx.…}   -- record_prepared
+  UPDATE provider_requests SET status_code = 0         -- the prepare row answered
+  INSERT provider_requests (operation='submit', status_code = NULL)
+  POST /payments/{trx.…}                               (the payer is prompted)
+  UPDATE provider_requests SET status_code = …
+UPDATE charge SET state='submitted';
+                                     ↑
+       the prompt is sent ONLY after the trx.… is committed
+```
+
+**The `submit` row is the proof.** Every build writes one before every
+submit call, and this one writes it only after the reference is committed.
+So a `submitting` charge with no `submit` row was never prompted, on any
+build — the recovery table's "no row" case, which already reads `submit`
+rows only. A `prepare` row is never one of them. The resubmit reads the same
+fact and hands it to the adapter as `PriorSubmits`:
+
+| Evidence                                          | What happened                                       | Action                                                                                                     |
+| ------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| No `submit` row, no `trx.…`                       | Crashed before or during `prepare`; nobody prompted | **Resubmit**: `prepare` (`PriorSubmits::None`), commit, `submit`. A `409` here fails the charge, cleanly   |
+| No `submit` row, `trx.…` held                     | Crashed after the commit; nobody prompted           | **Resubmit**: `submit` by the held reference, no second `prepare`                                          |
+| `submit` row, `status_code IS NULL`, `trx.…` held | Prompt sent, answer lost                            | **Poll**, by the held reference, as for every rail                                                         |
+| `submit` row, `status_code IS NULL`, no `trx.…`   | A one-call build's submit, from before ADR-0032     | **Escalate**: the read cannot be made, and a queued resubmit's `prepare` (`PriorSubmits::Some`) is refused |
+
+The `409` in the first row means an earlier `prepare` created the payment and
+lost its answer. Since nobody was prompted, the charge fails
+`provider_unavailable` through the same path a declined resubmit takes, and
+the payer can try again on a new charge. The payment left on Notch Pay
+expires there; until then the merchant's public key could process it, which
+is [ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)'s
+accepted exposure.
+
+**A lost prompt answer is not re-prompted.** In the third row the read
+decides. If process never reached Notch Pay the read says `pending`, and the
+charge waits for Notch Pay's expiry and fails `payer_timeout`: one payer's
+wait, no money. Re-sending process from a poll is refused, as RFC-0012 § 3
+refused it, because a prompt minutes later reaches a payer who has left.
+
+Proven against WireMock and a real Postgres, never against Notch Pay:
+`worker_recovery.rs`'s six two-step cases — one per row above, the
+never-sent charge, and the fourth row reached by its poll and by its
+resubmit — and `confirm_rails.rs`'s two, which assert the row order and that
+a failed prompt leaves the charge holding its `trx.…`
+([verification](../status/verification/2026-10-23-two-step-submit.md)).
 
 ## Tests
 

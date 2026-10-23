@@ -127,7 +127,7 @@
           "REF_DUPLICATE. The sandbox answered a repeated reference 409 'Reference already existing' on",
           "2026-10-21 (item 4). The adapter reads the payment by the Notch Pay reference the charge already holds",
           "(the retrieve catch-all answers complete) and reports Submitted with that key material. A charge",
-          "holding none cannot be resolved and is Malformed (notchpay_a_duplicate_it_cannot_resolve_fails_closed)."
+          "holding none cannot be resolved and is NeedsReconciliation (notchpay_a_duplicate_it_cannot_resolve_fails_closed; Malformed until 2026-10-23, #313)."
         ]
       }
     },

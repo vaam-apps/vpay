@@ -1050,9 +1050,137 @@ it", then "Yes, start it". [RFC-0013](../rfc/0013-vpay-registers-its-own-callbac
 - **Not done:** no endpoint has been registered with a real Notch Pay account
   (step 5, which needs the maintainer's approval to call Notch Pay); no
   endpoint is ever retired or repaired, because Notch Pay's `DELETE`
-  answered `404` and the client has no `PUT`; a hand-registered endpoint at
+  answered `404` and the client has no `PUT` (retiring one has been an
+  operator's task since 2026-10-23, by the maintainer's decision, so it is
+  no longer a gap); a hand-registered endpoint at
   vpay's URL is invisible to the pass, so a deployment that registered one
   gets a second; Stripe and PayPal have no adapter.
 
 No route moved and no `NotImplemented` token moved. Gates and counts:
 [verification/2026-10-22-rfc-0013-callback-registration.md](verification/2026-10-22-rfc-0013-callback-registration.md).
+
+## An answer only a person can act on escalates at once (2026-10-23, #313)
+
+Asked in [vaam-apps/vpay#313](https://github.com/vaam-apps/vpay/issues/313)
+how a rail's "an operator must reconcile this" should reach a person, the
+maintainer answered "Go with option 1 on #313, build it".
+
+- **The port** gains a seventh `ProviderError` variant,
+  `NeedsReconciliation { context }`: `Rail`, code
+  `charge_needs_reconciliation`, severity `Error`, and a public message with
+  no rail text. ADR-0011 gains an amendment for it.
+- **`notchpay`** raises it for:
+  - a `complete` whose amount, currency or `amounts.total` is not the
+    charge's (the short collection RFC-0012 step 5 met);
+  - an initialize `409` on a charge holding no `trx.…`;
+  - a read of a charge with no `trx.…`.
+
+  Until today these were `Malformed`, `Malformed` and `Config`.
+  **`orange_money`** raises it for a charge with no `pay_token` (was `Config`).
+
+- **The worker** escalates the charge to `unresolved` on the first one, from
+  `poll_charge` and from `resubmit_charge`: hourly, alerting, never parked,
+  never terminal. A resubmit's attempt row stays unanswered; a read's says
+  answered.
+- **The API's confirm** has an explicit arm. It does what `Malformed` does —
+  the charge stays `submitting`, the row unanswered, `502` — and leaves the
+  escalation to the poll job.
+- **Proven** against WireMock's Notch Pay and a real Postgres. Three new cases
+  in `worker_recovery.rs`, at the production 24-hour horizon:
+  - a short collection escalates on its first read, while a `Malformed`
+    beside it stays on the ladder;
+  - it still settles on a later answer;
+  - the `409` escalates from `submitting` and is never resent.
+
+  Each guard fails its case when removed.
+
+- **Not done:** a real Notch Pay short collection reaching `unresolved`;
+  another sandbox run needs the maintainer's approval. No test drives the
+  confirm arm end to end, because a confirm mints its own reference and the
+  stub answers `409` to one fixed reference.
+
+No route moved and no `NotImplemented` token moved. Gates and counts:
+[verification/2026-10-23-needs-reconciliation.md](verification/2026-10-23-needs-reconciliation.md).
+
+## A rail-issued reference is committed before the prompt (2026-10-23, ADR-0032)
+
+Asked how to close Notch Pay's crash window ("#13: how do we do then?"), the
+maintainer was answered with this design and replied "Fan out the work via
+sub-agents". The design and every decision in
+[ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)
+are the implementing agent's; the ADR is **Proposed** until the maintainer
+accepts it.
+
+- **The port** gains `Capabilities::submit_steps` (`One`, or
+  `PrepareThenSubmit` on `notchpay`) and an optional `prepare`, which takes
+  the charge, the rail's config and `PriorSubmits`, defaulting to
+  `Unsupported`, forwarded and counted by
+  `Measured` under the operation `prepare`. Its error table gains a `prepare`
+  column.
+- **The core**, on a two-step rail only: the confirm path and the resubmit
+  each write a `prepare` row, call `prepare`, commit its answer on the charge
+  (`Charges::record_prepared`, new), and only then write the `submit` row and
+  call `submit`. `PriorSubmits` is read from whether any `submit` row exists.
+  Migration `0052_provider-requests-prepare.sql` admits `prepare` in
+  `provider_requests.operation`.
+- **`notchpay`**: `prepare` is initialize and prompts nobody; `submit` is
+  process by the held `trx.…`. An initialize `409` with no `submit` row behind
+  it is `Rejected { provider_unavailable }` — the charge fails through the
+  declined path and the payer retries — and with one it stays
+  `NeedsReconciliation`.
+- **Charges in flight across the deploy** that the one-call build left with an
+  unanswered `submit` row and no `trx.…` stay `NeedsReconciliation`, by their
+  poll and by a queued resubmit.
+- **Proven** against WireMock's Notch Pay and a real Postgres: six cases in
+  `worker_recovery.rs` (one replacing #313's `409` case) and two in
+  `confirm_rails.rs`, the stub's request journal asserted in each; in the
+  conformance suite, a new census (`prepare` is `Unsupported` exactly on a
+  one-step rail), Notch Pay's duplicate case split in two, and every submit
+  case driven through `prepare` on a two-step rail; eight guards
+  mutation-checked, each failing its case.
+- **Not done:** the split has not met Notch Pay's sandbox, so neither a
+  never-processed payment's expiry nor the `409` on a lost initialize has
+  been observed there; a lost process answer is resolved by the read and not
+  by re-processing, so such a payer waits for Notch Pay's expiry.
+
+No route moved and no `NotImplemented` token moved. Gates and counts:
+[verification/2026-10-23-two-step-submit.md](verification/2026-10-23-two-step-submit.md).
+
+## Payment-method types and a scored, explained router (2026-10-23, ADR-0029 D6/D10, RFC-0008 revised)
+
+The maintainer asked for the payer to choose a network and for vpay to "show
+him the correct rail", then for routing to be "a score of each payment solution
+for each checkout". Slice 1 of
+[the plan](../plans/2026-10-23-method-type-routing.md) is built; **the score's
+formula is not decided**, and RFC-0008's 2026-10-23 revision asks the
+maintainer the questions that decide it.
+
+- **Built:** `vpay_core::routing` — `MethodType` (`mtn_wallet`,
+  `orange_wallet`; `card` and `bank_transfer` reserved and refused), and
+  `route`, one pure function that filters eligibility hard and returns every
+  rail with a score and breakdown or an exclusion reason. The formula is
+  `provisional-1`: one component, a configured weight (`routing.weights`,
+  default 100), ties to the lower rail code.
+- **The port:** `Capabilities::method_types` (MTN one, Orange one, Notch Pay
+  both) and `ChargeRef::method_type`; Notch Pay sends `cm.mtn`/`cm.orange`
+  from it (RFC-0012 step 8).
+- **The API:** `payment_method_types` takes types beside rail codes (a rail
+  code keeps meaning that rail, pinned); a confirm by type is routed, and
+  `payment_method_options[<type>][rail]` pins. The decision is committed with
+  the charge in `routing_decisions` (migration `0053`) and is on no `/v1`
+  object. The checkout session's browser answer renders a type as one entry
+  flowing as the first-ranked rail.
+- **Proven:** unit tests on the router (exhaustive over small inputs, in
+  place of property tests), the config and the boot refusals; three new
+  real-Postgres cases in `confirm_rails.rs` (routing and the recorded row, the
+  score/pin/tie-break with Notch Pay's channel read off the stub's journal,
+  and the `400`s); conformance pins each rail's types; `vpay-server`'s
+  `the_router_names_no_rail` reads the router's source. Every guard was
+  mutation-checked.
+- **Not done:** the checkout page rendering types (slice 2), the SDKs'
+  confirm by type (a dated parity gap), any score component but the weight
+  (slice 3, after the maintainer answers R8), `cm.mtn`/`cm.orange` against
+  Notch Pay's real sandbox, and a merchant-readable decision on `/v1`.
+
+No route was mounted or unmounted and no `NotImplemented` token moved.
+[verification/2026-10-23-method-type-routing.md](verification/2026-10-23-method-type-routing.md).

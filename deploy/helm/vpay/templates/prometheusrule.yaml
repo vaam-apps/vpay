@@ -148,4 +148,55 @@ spec:
               A job of kind {{ `{{ $labels.kind }}` }} ran out of retries. Whatever it was driving is not
               being driven any more.
             runbook_url: {{ $repo }}/worker-queue.md
+
+        - alert: VpayCallbackEndpointUnconfirmed
+          # RFC-0013's `ensure_callbacks` pass counts one sample per rail per
+          # pass, hourly and five minutes after a rail or database that did not
+          # answer. This fires when passes ran for a rail across the whole
+          # window and none of them confirmed an endpoint at vpay's callback
+          # URL: every pass said `missing`, `drifted`, `failed` or `locked`.
+          #
+          # `unless`, not `== 0`: a rail that has NEVER been confirmed — a
+          # `check` deployment whose endpoint was never registered, or a key
+          # refused from the first pass — has no `present`/`created` series at
+          # all. `sum(...) == 0` over a series that does not exist returns
+          # nothing, so the comparison form could not fire in exactly the two
+          # cases this rule is for. `deploy/helm/vpay/ci/prometheusrule.test.yaml`
+          # pins both.
+          #
+          # `drifted` counts against the rail: the endpoint is vpay's and is
+          # missing an event type, and nothing on the rail can repair it
+          # (Notch Pay has no update call), so a person has to. `foreign`
+          # counts for it: callbacks reach vpay's URL through an endpoint
+          # somebody else made, which RFC-0013 § 3 accepts. `off` is never
+          # counted (`vpay_worker::callbacks::report`), so a rail turned off
+          # cannot fire this.
+          #
+          # `warning`, never `critical`, and the same for `register: check`:
+          # callbacks are hints and every charge still settles by polling, so
+          # a missing endpoint costs latency, not money. The metric carries no
+          # `registration` label, and in `check` mode `missing` is exactly the
+          # thing the operator asked to be told instead of having vpay write.
+          #
+          # A pass that never runs at all — the job parked, every worker down —
+          # emits nothing and cannot fire this; `VpayJobsDeadLettered` and
+          # `VpayJobQueueBehind` are the rules for that.
+          expr: >-
+            sum by (provider) (increase(vpay_callback_endpoint_checks_total[{{ $r.callbackEndpointWindow }}])) > 0
+            unless on (provider)
+            sum by (provider) (increase(vpay_callback_endpoint_checks_total{state=~"present|created|foreign"}[{{ $r.callbackEndpointWindow }}])) > 0
+          for: 10m
+          labels:
+            severity: warning
+            provisional: "true"
+          annotations:
+            summary: "No pass in {{ $r.callbackEndpointWindow }} confirmed vpay's callback endpoint on {{ `{{ $labels.provider }}` }}"
+            description: >-
+              `ensure_callbacks` ran for {{ `{{ $labels.provider }}` }} during the last
+              {{ $r.callbackEndpointWindow }} and no pass found vpay's endpoint at its callback URL: each said
+              `missing` (not registered, and `register: check` forbids creating it), `drifted` (vpay's
+              endpoint lacks an event type), `failed` (the rail or the database did not answer) or
+              `locked`. Callbacks from this rail may not be arriving; its charges still settle by
+              polling, later. Read the pass's log line for the rail before acting.
+            runbook_url: {{ $repo }}/callback-endpoints.md
 {{- end }}

@@ -374,6 +374,7 @@ async fn stack() -> anyhow::Result<Stack> {
             client_secret: None,
         }),
         staff_auth,
+        routing: Default::default(),
     })
     .await?;
 

@@ -553,3 +553,23 @@ the live database, and `the_sso_attempt_table_refuses_malformed_rows` fires
 each CHECK. `EXPECTED_UNMAPPABLE_COLUMNS` is unmoved (19): every column is a
 mapped type. `model Credential` gained no field; `Credentials::find_federated`
 is a read over columns it already had. Tool: the pinned `cratestack` 0.15.0.
+
+## 2026-10-23 — migration `0053` (method types, routing decisions), and drift goes 206 → 209
+
+ADR-0029 D10's decision row and the charge's payment-method type, **with no
+model**. Measured on the pinned `cratestack` 0.15.0 against a freshly migrated
+Postgres: `drift detected in 28 table(s)/view(s) (209 change(s) total)` —
+`EXPECTED_DRIFT_CHANGES` 206 → 209, `EXPECTED_DRIFTED_RELATIONS` 27 → 28 and
+`EXPECTED_UNMAPPABLE_COLUMNS` 19 → 20 in `postgres_smoke.rs`, which passes. The
+three new lines:
+
+- `charges`: `[lossy] column method_type ... not declared` and
+  `[safe] CHECK method_type_is_known ... not declared`. `model Charge`
+  gained no field: nothing reads the column through the generated delegate,
+  and a field would be a second spelling of `vpay_core::routing::MethodType`'s
+  list to keep in step with the CHECK.
+- `routing_decisions`: `[lossy] table routing_decisions ... not declared`, one
+  line for the whole table. It joins the smoke test's list of tables the
+  schema does not declare, beside `provider_requests` and for the same kind of
+  reason: `considered` is `jsonb` (the 20th unmappable column) and the row is
+  an explanation an operator reads, written once and never decided from.

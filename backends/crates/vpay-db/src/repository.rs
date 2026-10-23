@@ -222,6 +222,21 @@ pub trait TxRepositories: Send {
         new: &crate::NewCharge,
     ) -> Result<crate::ChargeRow, DbError>;
 
+    /// `routing_decisions`: the router's decision for the charge this
+    /// transaction just opened (ADR-0029 D10). In the **same** transaction
+    /// as [`TxRepositories::insert_for_intent`], so a routed charge never
+    /// commits without it. See [`crate::routing_decisions`].
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::UniqueViolation`] for a second decision for one charge;
+    /// [`DbError::ForeignKeyViolation`] for an unknown charge or rail;
+    /// [`DbError::Query`] otherwise.
+    async fn insert_routing_decision(
+        &mut self,
+        new: &crate::NewRoutingDecision,
+    ) -> Result<(), DbError>;
+
     /// `charges`: records what the rail accepted — a compare-and-swap out of
     /// `submitting`.
     ///
@@ -731,6 +746,13 @@ impl TxRepositories for PendingTransaction {
         new: &crate::NewCharge,
     ) -> Result<crate::ChargeRow, DbError> {
         crate::charges::insert_for_intent(self.conn(), new).await
+    }
+
+    async fn insert_routing_decision(
+        &mut self,
+        new: &crate::NewRoutingDecision,
+    ) -> Result<(), DbError> {
+        crate::routing_decisions::insert(self.conn(), new).await
     }
 
     async fn mark_submitted(

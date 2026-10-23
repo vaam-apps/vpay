@@ -1,5 +1,26 @@
 # Changelog
 
+## [0.11.0](https://github.com/vaam-apps/vpay/compare/v0.10.4...v0.11.0) (2026-10-23)
+
+
+### Features
+
+* **callbacks:** vpay registers Notch Pay's callback endpoint itself (RFC-0013 steps 2–4) ([#340](https://github.com/vaam-apps/vpay/issues/340)) ([8504536](https://github.com/vaam-apps/vpay/commit/8504536f117d8d2582b095d7726ab7a420961c30))
+* **helm:** alert when no pass confirms a rail's callback endpoint; promtool tests for all six rules ([#343](https://github.com/vaam-apps/vpay/issues/343)) ([a008c05](https://github.com/vaam-apps/vpay/commit/a008c05a05c8fdae799a2c849c7b0552236de1c8))
+* **provider:** a rail answer only a person can act on escalates at once ([#313](https://github.com/vaam-apps/vpay/issues/313), option 1) ([#341](https://github.com/vaam-apps/vpay/issues/341)) ([c672fff](https://github.com/vaam-apps/vpay/commit/c672fffc4f264ca4bac9d5aee7ae8bbaca058032))
+* **provider:** a two-step rail's reference is committed before the prompt (ADR-0032) ([#345](https://github.com/vaam-apps/vpay/issues/345)) ([3633ca0](https://github.com/vaam-apps/vpay/commit/3633ca0c75bba652866f4ac39d834e1adf2963cb))
+
+
+### Bug Fixes
+
+* **deps:** ctutils 0.4.5 clears RUSTSEC-2026-0385 ([#344](https://github.com/vaam-apps/vpay/issues/344)) ([df9ef5c](https://github.com/vaam-apps/vpay/commit/df9ef5c0833e199c718de9f5afe44653dc685815))
+
+
+### Documentation
+
+* **notchpay:** run the timeout, canceled and Orange numbers through vpay (runbook B3b) ([#338](https://github.com/vaam-apps/vpay/issues/338)) ([e8e70ef](https://github.com/vaam-apps/vpay/commit/e8e70efe040eb11233f30979be2a34a752e10afd))
+* **providers:** a desk study of Fapshi, and its row in the matrix ([#342](https://github.com/vaam-apps/vpay/issues/342)) ([be31abc](https://github.com/vaam-apps/vpay/commit/be31abcd0c1ca36e92f7b1044c916ad321b16094))
+
 ## [0.10.4](https://github.com/vaam-apps/vpay/compare/v0.10.3...v0.10.4) (2026-10-22)
 
 

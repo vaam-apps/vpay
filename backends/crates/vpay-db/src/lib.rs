@@ -69,6 +69,7 @@ pub mod provider_requests;
 // instead of a `payment_intents` function whose name would not say it reads
 // another table.
 pub mod refunds;
+pub mod routing_decisions;
 // The settlement transaction is its own module rather than a function on
 // `charges` or on `payment_intents`, because it is the one write that
 // belongs to *neither* table on its own: it moves both and emits the event
@@ -157,6 +158,7 @@ pub use migrations::Migrations;
 pub use payment_intents::{
     IntentFilter, ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents,
 };
+pub use routing_decisions::{NewRoutingDecision, RoutingDecisionRow};
 // The leaf `DbError::Persistence` carries. `pub` because a caller matching
 // on `DbError` can reach it; the module it lives in stays private, and
 // `classify_cratestack`/`system_context` stay `pub(crate)` — nothing outside

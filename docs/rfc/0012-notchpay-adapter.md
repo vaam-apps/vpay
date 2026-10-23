@@ -211,7 +211,11 @@ carries a number-plan table of its own. Whether `cm.mobile` resolves the
 network from the number, and whether the sandbox's outcome numbers behave
 under it, is "To confirm" item 3. When ADR-0029 D6 lands and the core can say
 which network the payer chose, the adapter sends `cm.mtn` or `cm.orange`
-instead.
+instead. _(Built 2026-10-23, delivery step 8: a charge whose method type is
+`mtn_wallet` is sent `cm.mtn`, `orange_wallet` `cm.orange`, and one confirmed
+by the rail code `notchpay` keeps `settings.channel`. Proven against the stub,
+whose `process` mapping now admits the three channels and nothing else; never
+sent to Notch Pay's sandbox.)_
 
 **The first rail that serves a method a direct rail also serves.** With
 `mtn_momo` and `notchpay` both enabled, an MTN payer has two rails. That is
@@ -340,6 +344,10 @@ receives, and step 4 registers Notch Pay as its recipient in
 { "channel": "cm.mobile", "data": { "phone": "<the payer's number, E.164>" } }
 ```
 
+_(Since 2026-10-23 the channel is `cm.mtn` or `cm.orange` for a charge routed
+by method type, and `settings.channel` only for one confirmed by the rail code;
+§ 1, "The channel".)_
+
 `202` with `status = processing` is `Submitted { ref_extra, redirect_url:
 None }`. A `422` "Payment has already been processed" is not a decline: the
 adapter reads the payment (call 3) and returns `Submitted` unless the read
@@ -386,26 +394,52 @@ call 2 from inside the read when it finds `pending`, as RFC-0011 sends
 PayPal's capture, is refused: a read that sends a USSD prompt minutes later
 prompts a payer who has left.
 
+**Amended 2026-10-23 by
+[ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md):
+calls 1 and 2 are two port calls, with a commit between them.** Once the
+sandbox moved addressing to Notch Pay's `trx.…` (§ 10 item 2), the window
+that mattered was not the one above but the one after call 2: a crash after
+the prompt and before the `trx.…` was committed left a prompted payment
+vpay could never read, and the retry's `409` could only be
+`NeedsReconciliation` (item 19). Now call 1 is `ProviderAdapter::prepare`,
+which prompts nobody and returns the `trx.…`; the core commits it on the
+charge and writes the `submit` row; only then is call 2, `submit`, sent by
+it. So a crash leaves one of three states, and none of them is a prompted
+payment vpay cannot name:
+
+| After the crash                              | The retry                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| a `prepare` row, no `trx.…`, no `submit` row | `prepare` meets `409`; nobody was prompted, so the charge **fails** `provider_unavailable`, cleanly |
+| the `trx.…` held, no `submit` row            | no second initialize; call 2 by the held reference                                                  |
+| the `trx.…` held, an unanswered `submit` row | call 3 decides, as on every rail; a payment process never reached waits for Notch Pay's expiry      |
+
+A charge the one-call build left with an unanswered `submit` row and no
+`trx.…` may have been prompted, and stays `NeedsReconciliation`
+(vaam-apps/vpay#313). The orphan a lost initialize leaves expires on Notch
+Pay unprocessed; until then the public key could process it, which is
+[ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)'s
+accepted exposure and nothing new. Notch Pay's sandbox has not run the split.
+
 ### 4. Status mapping
 
 The Payments API documents six statuses. The Collect page documents eleven,
 including the six. The table covers all eleven, because a status the adapter
 does not know is a `Malformed`, never a guess.
 
-| Notch Pay `status`  | Notch Pay's description                             | `ChargeStatus`                                                                                                                                                                                                                           |
-| ------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `pending`           | "initialized but not yet processed"                 | `Pending` — on this rail, call 2 has not landed (§ 3)                                                                                                                                                                                    |
-| `processing`        | "being processed by the payment provider"           | `Pending`                                                                                                                                                                                                                                |
-| `incomplete`        | "Customer pay less than payment amount"             | `Pending`. **Never** `Succeeded`. Whether it expires as `pending` does is "To confirm" item 11                                                                                                                                           |
-| `complete`          | "successfully completed"                            | `Succeeded { provider_txn_id: transaction.id, else transaction.reference }`, **only if** `amount`, `amounts.total` and `currency` equal the charge's; otherwise `Malformed` (`amounts.total` and the fallback added 2026-10-21, item 18) |
-| `refunded`          | "successfully refunded to customer"                 | `Succeeded`, with the same check. The payment succeeded; its refunds are read separately                                                                                                                                                 |
-| `partialy-refunded` | Notch Pay's own spelling                            | `Succeeded`, with the same check                                                                                                                                                                                                         |
-| `failed`            | "Transaction has failed"                            | `Failed { provider_error }` with the raw status — see below                                                                                                                                                                              |
-| `canceled`          | "canceled by the merchant or customer"              | `Failed { payer_declined }` since 2026-10-21 — see below                                                                                                                                                                                 |
-| `expired`           | "expired after 3 hours"                             | `Failed { payer_timeout }`                                                                                                                                                                                                               |
-| `abandoned`         | "Customer abandoned the payment on our hosted page" | `Failed { payer_timeout }`. A push charge should never read it                                                                                                                                                                           |
-| `rejected`          | "rejected by our system or by operator"             | `Failed { provider_error }`. Notch Pay's fraud system rejects, among other things, payments concentrated on one number ([testing](https://developer.notchpay.co/get-started/testing))                                                    |
-| anything else       | —                                                   | `Malformed`, naming the status                                                                                                                                                                                                           |
+| Notch Pay `status`  | Notch Pay's description                             | `ChargeStatus`                                                                                                                                                                                                                                                                                       |
+| ------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pending`           | "initialized but not yet processed"                 | `Pending` — on this rail, call 2 has not landed (§ 3)                                                                                                                                                                                                                                                |
+| `processing`        | "being processed by the payment provider"           | `Pending`                                                                                                                                                                                                                                                                                            |
+| `incomplete`        | "Customer pay less than payment amount"             | `Pending`. **Never** `Succeeded`. Whether it expires as `pending` does is "To confirm" item 11                                                                                                                                                                                                       |
+| `complete`          | "successfully completed"                            | `Succeeded { provider_txn_id: transaction.id, else transaction.reference }`, **only if** `amount`, `amounts.total` and `currency` equal the charge's; otherwise `NeedsReconciliation` (`amounts.total` and the fallback added 2026-10-21, item 18; `Malformed` until 2026-10-23, vaam-apps/vpay#313) |
+| `refunded`          | "successfully refunded to customer"                 | `Succeeded`, with the same check. The payment succeeded; its refunds are read separately                                                                                                                                                                                                             |
+| `partialy-refunded` | Notch Pay's own spelling                            | `Succeeded`, with the same check                                                                                                                                                                                                                                                                     |
+| `failed`            | "Transaction has failed"                            | `Failed { provider_error }` with the raw status — see below                                                                                                                                                                                                                                          |
+| `canceled`          | "canceled by the merchant or customer"              | `Failed { payer_declined }` since 2026-10-21 — see below                                                                                                                                                                                                                                             |
+| `expired`           | "expired after 3 hours"                             | `Failed { payer_timeout }`                                                                                                                                                                                                                                                                           |
+| `abandoned`         | "Customer abandoned the payment on our hosted page" | `Failed { payer_timeout }`. A push charge should never read it                                                                                                                                                                                                                                       |
+| `rejected`          | "rejected by our system or by operator"             | `Failed { provider_error }`. Notch Pay's fraud system rejects, among other things, payments concentrated on one number ([testing](https://developer.notchpay.co/get-started/testing))                                                                                                                |
+| anything else       | —                                                   | `Malformed`, naming the status                                                                                                                                                                                                                                                                       |
 
 **The read names no failure reason.** The payment object in the
 specification has `id`, `reference`, `amount`, `currency`, `status`,
@@ -698,14 +732,20 @@ In writing (W) or in the sandbox (S):
 18. **(W)** Why does the sandbox's "insufficient funds" number read `complete`
     with `amounts.total` short of `amount`? On the live API, can a payment read
     `complete` having collected less, and is `amounts.total` the collected
-    amount? _(Added 2026-10-21. The adapter refuses such a success as
-    `Malformed` meanwhile.)_
+    amount? _(Added 2026-10-21. The adapter refuses such a success meanwhile:
+    as `Malformed` until 2026-10-23, and since then as `NeedsReconciliation`,
+    which the worker escalates to `unresolved` on the first read
+    (vaam-apps/vpay#313).)_
 19. **(S, W)** Does `GET /payments?search=` find a payment by the merchant's own
     reference? It decides whether carrying Notch Pay's reference in `ref_extra`
     (item 2's fix) can survive a crash between initialize and `ref_extra`
     becoming durable. _(Added and answered 2026-10-21 — no: `search` matches
     Notch Pay's `trx.…` only, not ours and not the description, and list
-    items carry no `trxref`. The crash window is a residual risk.)_
+    items carry no `trxref`. The crash window is a residual risk. **Closed
+    2026-10-23 by
+    [ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)**
+    without an answer from Notch Pay: the `trx.…` is committed before the
+    prompt, so no search is needed (§ 3, "Amended 2026-10-23").)_
 20. **(W)** Why does `DELETE /webhooks/{id}` answer `404` "Resource Not Found"
     for an endpoint the list returns? _(Added 2026-10-21.)_
 21. **(W)** Where is a webhook endpoint's signing secret, since `POST /webhooks`
@@ -729,7 +769,7 @@ In writing (W) or in the sandbox (S):
 | 5    | The first test-mode call through the adapter, on a dated verification page. **Not done 2026-10-20**: no test-mode key was available when the adapter landed, and the session that had one could not reach Notch Pay. Runs from [the runbook](../runbooks/notchpay-sandbox-test.md), Part B (`--profile notchpay-sandbox`); written, not yet run. **Done 2026-10-21** on the maintainer's machine: a success, a failure, and a short collection refused as `Malformed` and left `pending`; every charge held Notch Pay's `trx.…` reference ([page](../status/verification/2026-10-21-notchpay-step5.md))             | 4; test-mode keys                     |
 | 6    | Refunds as a call                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | item 6 answered                       |
 | 7    | Model B: `X-Sync`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | RFC-0009; item 9 answered             |
-| 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        | ADR-0029 D6 landed                    |
+| 8    | `cm.mtn` and `cm.orange` from the payer's chosen method type. **Built 2026-10-23** with ADR-0029 D6 (`ChargeRef::method_type`); stub-proven only, never sent to the sandbox ([verification](../status/verification/2026-10-23-method-type-routing.md))                                                                                                                                                                                                                                                                                                                                                              | ADR-0029 D6 landed                    |
 
 Steps 2–5 are one pull request against `master` and one against
 `vpay-skills`.
@@ -785,8 +825,13 @@ Steps 2–5 are one pull request against `master` and one against
 - **Branch on capability values, never on a provider code** holds.
 - **Callbacks are hints** holds, and on this rail it is the only defence
   against an unverified webhook (§ 6).
-- **Crash safety** holds. A crash between calls 1 and 2 costs one payer a
-  three-hour wait and no money (§ 3).
+- **Crash safety** holds, since 2026-10-23 by
+  [ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md):
+  the `trx.…` is committed before the prompt, and a crash before the prompt
+  fails the charge cleanly (§ 3). _(This said "A crash between calls 1 and 2
+  costs one payer a three-hour wait and no money" until 2026-10-23; that was
+  true, and the window after call 2, which ADR-0032 closed, was not named
+  here.)_
 - **One charge per intent** holds.
 - **No mocks in shipping processes** holds: the stub is a WireMock host in
   configuration.

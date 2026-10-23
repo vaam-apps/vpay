@@ -21,7 +21,7 @@
 //! and community SDKs, not from a vendor specification**, and the error-body
 //! shapes in particular are inferred. `docs/reference/rails.md` says what is
 //! proven and by what, why nothing in the `wire` module derives `Debug`, and
-//! why a missing `pay_token` is a configuration error rather than
+//! why a missing `pay_token` is an operator's reconciliation rather than
 //! [`ChargeStatus::NotFound`].
 
 mod mapping;
@@ -37,10 +37,12 @@ use reqwest::StatusCode;
 use reqwest::header::CONTENT_TYPE;
 use tokio::sync::RwLock;
 use uuid::Uuid;
+use vpay_core::routing::{MethodType, MethodTypes};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
+    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded,
+    SubmitSteps, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -423,6 +425,9 @@ impl ProviderAdapter for Adapter {
             // registered with the merchant key, so the `ensure_callbacks`
             // pass never asks this rail anything (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
+            // Orange's own wallet, and nothing else (ADR-0029 D6, D12).
+            method_types: MethodTypes::of(&[MethodType::OrangeWallet]),
         }
     }
 
@@ -499,13 +504,17 @@ impl ProviderAdapter for Adapter {
 
     /// `POST {base_url}/v1/transactionstatus`.
     ///
-    /// A missing `pay_token` is a [`ProviderError::Config`] and deliberately
-    /// not [`ChargeStatus::NotFound`] — `docs/reference/rails.md` says why
-    /// the difference decides whether a payer's money is looked for.
+    /// A missing `pay_token` is a [`ProviderError::NeedsReconciliation`] and
+    /// deliberately not [`ChargeStatus::NotFound`] — `docs/reference/rails.md`
+    /// says why the difference decides whether a payer's money is looked
+    /// for. It was [`ProviderError::Config`] until 2026-10-23, which
+    /// dead-lettered the poll job; `notchpay`'s missing `trx.…` reference is
+    /// the same case and moved with it (vaam-apps/vpay#313).
     ///
     /// # Errors
     ///
-    /// [`ProviderError::Config`] if `ref_extra` carries no `pay_token` or a
+    /// [`ProviderError::NeedsReconciliation`] if `ref_extra` carries no
+    /// `pay_token`, before any request; [`ProviderError::Config`] if a
     /// credential is missing; [`ProviderError::Rejected`] with
     /// [`FailureCode::ProviderAccountBlocked`] when the rail refuses our
     /// credentials; [`ProviderError::Transport`] for a 5xx, a timeout or a
@@ -522,9 +531,9 @@ impl ProviderAdapter for Adapter {
             .map(String::as_str)
             .filter(|token| !token.trim().is_empty())
             .ok_or_else(|| {
-                ProviderError::Config(format!(
+                ProviderError::needs_reconciliation(format!(
                     "orange_money: charge {} has no pay_token in ref_extra; the rail cannot be \
-                     asked about an order_id alone",
+                     asked about an order_id alone, so reconcile it in Orange's merchant portal",
                     charge.reference_id
                 ))
             })?;
@@ -980,6 +989,7 @@ mod tests {
     fn charge(return_url: Option<&str>, amount: Money) -> ChargeRef {
         ChargeRef {
             reference_id: reference(),
+            method_type: None,
             amount,
             // A redirect rail authenticates the payer itself and may never
             // learn who they are.
@@ -1024,6 +1034,18 @@ mod tests {
     #[test]
     fn capabilities_are_coherent() {
         assert!(adapter().capabilities().is_coherent());
+        assert!(adapter().capabilities().method_types_are_coherent());
+    }
+
+    /// A direct rail serves its own network's wallet and nothing else
+    /// (ADR-0029 D6, D12): the router can reach it by that method type, and a
+    /// charge on it by rail code is that type's charge.
+    #[test]
+    fn it_serves_exactly_its_own_networks_wallet() {
+        assert_eq!(
+            adapter().capabilities().method_types.only(),
+            Some(MethodType::OrangeWallet)
+        );
     }
 
     /// An Orange refund is addressed or it is nowhere, and the core must
@@ -1090,6 +1112,39 @@ mod tests {
              refund; were this flag ever to go back to false, `refund` would have to go back \
              to the port's Unsupported in the same commit"
         );
+    }
+
+    /// A charge that lost its `pay_token` cannot be asked about, and the rail
+    /// may well hold a payment for it: `NeedsReconciliation`, before any
+    /// request, never `NotFound` and never `Config`. It was `Config` until
+    /// 2026-10-23, which dead-lettered the poll job (vaam-apps/vpay#313).
+    ///
+    /// The base URL is a closed loopback port, so the guard's absence would
+    /// show up as `Transport` rather than as a request to Orange.
+    #[tokio::test]
+    async fn a_read_without_a_pay_token_needs_reconciliation_before_any_request() {
+        let mut config = config();
+        config.base_url = "http://127.0.0.1:9/orange-money-webpay/dev".to_owned();
+        for missing in [None, Some(""), Some("   ")] {
+            let mut charge = charge(
+                None,
+                Money::new(5_000, Currency::Xaf).expect("non-negative"),
+            );
+            if let Some(blank) = missing {
+                charge
+                    .ref_extra
+                    .insert("pay_token".to_owned(), blank.to_owned());
+            }
+            let outcome = adapter().query_status(&charge, &config).await;
+            assert!(
+                matches!(
+                    &outcome,
+                    Err(ProviderError::NeedsReconciliation { context })
+                        if context.contains("pay_token")
+                ),
+                "{missing:?}: {outcome:?}"
+            );
+        }
     }
 
     #[test]

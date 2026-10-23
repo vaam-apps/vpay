@@ -707,6 +707,9 @@ pub struct ResourceConfig {
     /// exactly that reason, and the day the rule is relaxed the collision
     /// would have to be decided here rather than discovered.
     merchant_id_by_publishable_key: BTreeMap<String, String>,
+    /// `routing.weights`, resolved for the router (RFC-0008 as revised on
+    /// 2026-10-23). See [`ResourceConfig::route`].
+    routing_weights: vpay_core::routing::Weights,
     /// The same registrations read the other way: which keys a **tenant**
     /// has, in configuration order.
     ///
@@ -983,7 +986,44 @@ impl ResourceConfig {
                     scope: dashboard.scope.clone(),
                 }),
             invoice_urls_by_merchant_id,
+            routing_weights: config.routing.weights(),
         })
+    }
+
+    /// Ranks this deployment's rails for one payment of `method_type` in
+    /// `currency_code`, and picks one (ADR-0029 D7, D10; RFC-0008 as revised
+    /// on 2026-10-23).
+    ///
+    /// Every **configured** rail is a candidate the router considers, so the
+    /// decision row says why each one was or was not used: an unlinked rail
+    /// serves nothing (boot refuses one anyway), a disabled one is
+    /// `not_enabled`. What a rail serves is its adapter's declaration
+    /// (`Capabilities::method_types`), never a code comparison here.
+    ///
+    /// The one call both payer paths make, render (the checkout's rail list)
+    /// and confirm, so the two cannot rank differently on the same inputs.
+    #[must_use]
+    pub fn route(
+        &self,
+        adapters: &BTreeMap<String, Box<dyn vpay_provider::ProviderAdapter>>,
+        method_type: vpay_core::routing::MethodType,
+        currency_code: &str,
+        pin: Option<&str>,
+    ) -> vpay_core::routing::Decision {
+        let candidates: Vec<vpay_core::routing::Candidate<'_>> = self
+            .rails
+            .values()
+            .map(|rail| vpay_core::routing::Candidate {
+                rail: rail.code(),
+                serves: adapters
+                    .get(rail.code())
+                    .map(|adapter| adapter.capabilities().method_types)
+                    .unwrap_or_default(),
+                enabled: rail.enabled,
+                settles_currency: rail.currency().code() == currency_code,
+            })
+            .collect();
+        vpay_core::routing::route(method_type, &candidates, &self.routing_weights, pin)
     }
 
     /// `deployment.livemode`, stamped on every object this deployment
@@ -1284,6 +1324,7 @@ mod tests {
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
             staff_auth: vpay_config::StaffAuth::default(),
+            routing: Default::default(),
         }
     }
 

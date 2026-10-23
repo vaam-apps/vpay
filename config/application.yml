@@ -131,7 +131,8 @@ providers:
   #     fr: Mobile money (Notch Pay)
   #   currency: XAF                          # the only currency allowed
   #   settings:
-  #     channel: cm.mobile                   # the only channel allowed today
+  #     channel: cm.mobile                   # the only value this setting takes; a charge
+  #                                          # routed by method type is sent cm.mtn or cm.orange
   #     description: Payment                 # optional; sent to Notch Pay
   #     # Livemode refuses to boot without it; optional in a sandbox.
   #     accept_public_key_exposure: true

@@ -316,7 +316,7 @@
           "REF_SHORT_COLLECTION. Notch Pay's sandbox, 2026-10-21: its insufficient-funds test number (+237670000001)",
           "read complete with amount 107 and amounts.total 105; on every other answer that day total equalled",
           "amount. This is that read's shape (identifiers replaced, amounts scaled to the conformance charge's",
-          "5000 XAF). The adapter must answer Malformed, never Succeeded."
+          "5000 XAF). The adapter must answer NeedsReconciliation (Malformed until 2026-10-23, #313), never Succeeded."
         ]
       }
     }

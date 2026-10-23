@@ -1,7 +1,7 @@
 {
   "mappings": [
     {
-      "name": "process accepted (202, processing) -- by Notch Pay's trx. reference, cm.mobile and a +-prefixed number under data.phone",
+      "name": "process accepted (202, processing) -- by Notch Pay's trx. reference, cm.mobile, cm.mtn or cm.orange, and a +-prefixed number under data.phone",
       "priority": 10,
       "request": {
         "method": "POST",
@@ -18,7 +18,7 @@
           {
             "matchesJsonPath": {
               "expression": "$.channel",
-              "equalTo": "cm.mobile"
+              "matches": "^cm\\.(mobile|mtn|orange)$"
             }
           },
           {
@@ -43,7 +43,9 @@
           "(RFC-0012 section 10 item 2; docs/status/verification/2026-10-21-notchpay-sandbox-run.md). An adapter",
           "that addressed it by ours matches nothing and gets WireMock's 404, which is Malformed on a process",
           "call. The answer names our reference as trxref and carries no id, as the sandbox's did.",
-          "data.phone and cm.mobile were accepted by the sandbox."
+          "data.phone and cm.mobile were accepted by the sandbox. cm.mtn and cm.orange are the channels a",
+          "charge routed by method type sends since 2026-10-23 (RFC-0012 delivery step 8); Notch Pay's channel",
+          "table documents both, and the sandbox has not been asked them."
         ]
       }
     }

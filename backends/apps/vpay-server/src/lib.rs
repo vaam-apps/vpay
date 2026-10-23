@@ -83,6 +83,47 @@ mod tests {
         assert_eq!(linked, adapter_codes().to_vec());
     }
 
+    /// ADR-0029 D9: the router is one pure function that names no rail, so a
+    /// rail is chosen for what it declares and never for what it is called.
+    /// `vpay_core::routing`'s module doc points here. A
+    /// `match code { "notchpay" => … }` in it would compile and pass every
+    /// router test, so this reads the source: no line of code in it (doc and
+    /// comment lines aside, which may name a rail to explain one) contains a
+    /// code this binary links.
+    #[test]
+    fn the_router_names_no_rail() {
+        let source = include_str!("../../../crates/vpay-core/src/routing.rs");
+        let code_lines: Vec<&str> = source
+            .lines()
+            .filter(|line| !line.trim_start().starts_with("//"))
+            .collect();
+        assert!(
+            code_lines.len() > 100,
+            "the include should be the router's source, not an empty file"
+        );
+        for code in adapter_codes() {
+            let naming: Vec<&&str> = code_lines
+                .iter()
+                .filter(|line| line.contains(code))
+                .collect();
+            assert!(naming.is_empty(), "the router names `{code}`: {naming:?}");
+        }
+    }
+
+    /// RFC-0008 as revised on 2026-10-23: every linked rail declares the
+    /// payment-method types it serves, and an enabled rail serving none
+    /// would be refused at boot (`ConfigError::RailServesNoMethodType`).
+    #[test]
+    fn every_linked_adapter_serves_a_method_type() {
+        for a in adapters(http()) {
+            assert!(
+                a.capabilities().method_types_are_coherent(),
+                "{} declares no payment-method type",
+                a.code()
+            );
+        }
+    }
+
     #[test]
     fn no_adapter_advertises_partial_without_full_refunds() {
         for a in adapters(http()) {

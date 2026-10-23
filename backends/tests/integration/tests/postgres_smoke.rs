@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 51,
-        "all fifty-one migration files under backends/migrations should be recorded as applied \
+        applied, 53,
+        "all fifty-three migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -385,7 +385,15 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          single use is the row count, and RFC-0013's 0051, which reopens \
          jobs.kind_is_known for ensure_callbacks -- the singleton that keeps \
          one vpay-created callback endpoint registered with each rail account \
-         that registers its URL, in the commit that adds its handler.)"
+         that registers its URL, in the commit that adds its handler, and \
+         ADR-0032's 0052, which reopens provider_requests.operation_is_known \
+         for prepare -- a two-step rail's first call, recorded under its own \
+         operation so that the absence of a submit row stays proof that no \
+         payer was prompted, and ADR-0029's \
+         0053, which adds charges.method_type (the payment-method type the payer \
+         chose, ADR-0029 D6) and creates routing_decisions, the router's scored \
+         decision for each routed charge, written in the transaction that \
+         opens it (D10).)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -4955,7 +4963,24 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// `vpay-db/tests/repositories.rs` asserts it against a real Postgres. The
 /// columns cost nothing: no `jsonb`, `bytea` or `int4`, no DEFAULT, and
 /// `is_retry` is a plain `Boolean`.
-const EXPECTED_DRIFT_CHANGES: u32 = 206;
+///
+/// **206 -> 209 on 2026-10-23 (migration 0053, ADR-0029 D10), measured** on
+/// cratestack 0.15.0 against a freshly migrated Postgres: `drift detected in
+/// 28 table(s)/view(s) (209 change(s) total)`. Exactly three new lines, and
+/// none is a surprise:
+///
+///   * `charges`: `[lossy] column method_type exists in the live database
+///     but is not declared in the schema`, and `[safe] CHECK
+///     method_type_is_known exists ... not declared`. `model Charge` was not
+///     extended: a `.cstack` field nothing reads through the generated
+///     delegate would be a second spelling of the column to keep in step.
+///   * `routing_decisions`: `[lossy] table routing_decisions exists in the
+///     live database but is not declared in the schema`. One line for the
+///     whole table, as for every undeclared one (`jobs`, `provider_requests`):
+///     its five CHECKs and its primary key are not reported separately.
+///     Undeclared on purpose, like `provider_requests`: `considered` is
+///     `jsonb`, and nothing would read the row through a delegate.
+const EXPECTED_DRIFT_CHANGES: u32 = 209;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -5047,7 +5072,11 @@ const EXPECTED_DRIFT_CHANGES: u32 = 206;
 /// joins the list declared-and-differing, in the shape `credentials` joined it
 /// in, and no other relation moved — so `EXPECTED_DRIFT_CHANGES`' +5 landed
 /// entirely on the one that arrived.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 27;
+///
+/// **27 -> 28 on 2026-10-23 (migration 0053, measured):** `routing_decisions`
+/// joins the list *undeclared*, in the shape `jobs` is in, and `charges` stays
+/// one entry while it gains two lines.
+const EXPECTED_DRIFTED_RELATIONS: u32 = 28;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -5139,7 +5168,10 @@ const EXPECTED_DRIFTED_RELATIONS: u32 = 27;
 /// `manual_payments` has no `jsonb`, `bytea` or `int2`/`int4`, and
 /// `invoices.paid_out_of_band` is `BOOLEAN`, so all eleven new columns are
 /// compared rather than excluded.
-const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 19;
+/// **19 -> 20 on 2026-10-23 (migration 0053, measured on 0.15.0):**
+/// `routing_decisions.considered` is `jsonb`, the router's whole answer as a
+/// document. `charges.method_type` is `TEXT` and compared.
+const EXPECTED_UNMAPPABLE_COLUMNS: u32 = 20;
 
 /// The `--out-dir` handed to `migrate baseline`, removed when it goes out of
 /// scope.
@@ -5449,6 +5481,11 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // `latest_submit_attempt` ordering `sent_at DESC, id DESC` has no
             // delegate, and `attempt` and `status_code` are both `int4`.
             "provider_requests",
+            // ADR-0029 D10's decision row (migration `0053`). An
+            // explanation nothing decides from, written once in the
+            // transaction that opens its charge and read by an operator:
+            // `considered` is `jsonb` and no delegate would read it.
+            "routing_decisions",
         ],
         "the set of tables the migrations build and the schema does not declare"
     );

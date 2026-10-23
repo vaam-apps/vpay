@@ -175,6 +175,8 @@ The integration suite had to be run three times: the first two died with
   failing rail is not.
 - **Stripe and PayPal** have no adapter, so nothing here runs for them.
 - **No alert rule** on `vpay_callback_endpoint_checks_total`; the refused-key
-  case logs with `alert = true`.
+  case logs with `alert = true`. _(Since 2026-10-23 there is one,
+  `VpayCallbackEndpointUnconfirmed`, tested against synthetic series only:
+  [2026-10-23-callback-endpoint-alert.md](2026-10-23-callback-endpoint-alert.md).)_
 - **No `docs/status.md` change**: no route, gate or `NotImplemented` token
   moved.

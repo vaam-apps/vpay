@@ -109,7 +109,8 @@
 //! Handing a rail addressed by its own token a charge with none is not a
 //! "reference the rail has never heard of": it is key material we lost for a
 //! charge the rail may well have settled, which is why the adapters answer
-//! `ProviderError::Config` and never `ChargeStatus::NotFound`
+//! `ProviderError::NeedsReconciliation` (`Config` until 2026-10-23,
+//! vaam-apps/vpay#313) and never `ChargeStatus::NotFound`
 //! (`docs/flows/crash-safety.md`). Seeding it here keeps
 //! [`not_found_is_never_on_its_own_a_failure`] a test of the rail's 404 and
 //! not an accidental test of our own missing-token branch — that branch has
@@ -157,7 +158,8 @@ use uuid::Uuid;
 use vpay_core::{Currency, FailureCode, Money, ProviderFlow};
 use vpay_provider::{
     CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, EndpointCheck, EndpointState,
-    ProviderAdapter, ProviderConfig, ProviderError, RefundDestination, RefundTarget,
+    PriorSubmits, ProviderAdapter, ProviderConfig, ProviderError, RefundDestination, RefundTarget,
+    SubmitSteps, Submitted,
 };
 use vpay_testkit::containers::start_wiremock;
 
@@ -222,6 +224,42 @@ fn every_adapter_declares_coherent_capabilities() {
             a.code()
         );
     }
+}
+
+/// Every rail declares the payment-method types it serves (ADR-0029 D6,
+/// RFC-0008 as revised on 2026-10-23), and the declarations are exactly the
+/// vocabulary table in `docs/plans/2026-10-23-method-type-routing.md`.
+///
+/// Coherent means at least one: boot refuses an enabled rail serving none
+/// (`ConfigError::RailServesNoMethodType`). Exact, because the router reads
+/// nothing else to decide which rail may take an `mtn_wallet` payment: a rail
+/// that stopped declaring a type would silently drop out of every routed
+/// confirm for it, and one that started would join them unreviewed.
+#[test]
+fn every_adapter_declares_the_method_types_it_serves() {
+    let served: BTreeMap<&str, Vec<&str>> = adapters()
+        .iter()
+        .map(|a| {
+            let c = a.capabilities();
+            assert!(
+                c.method_types_are_coherent(),
+                "{}: declares no payment-method type",
+                a.code()
+            );
+            (
+                a.code(),
+                c.method_types.iter().map(|t| t.as_wire_str()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        served,
+        BTreeMap::from([
+            ("mtn_momo", vec!["mtn_wallet"]),
+            ("notchpay", vec!["mtn_wallet", "orange_wallet"]),
+            ("orange_money", vec!["orange_wallet"]),
+        ])
+    );
 }
 
 /// **Every shipping rail's `refund_destination` agrees with what its
@@ -469,6 +507,34 @@ struct Rail {
 }
 
 impl Rail {
+    /// A submit as the core makes it (ADR-0032): on a
+    /// [`SubmitSteps::PrepareThenSubmit`] rail, `prepare` first, from the
+    /// charge with none of the rail's key material — as `vpay-api`'s confirm
+    /// opens it — then `submit` with what `prepare` returned; on a
+    /// [`SubmitSteps::One`] rail, `submit` alone. Branched on the capability,
+    /// never on the rail.
+    ///
+    /// `prepare`'s refusal is returned as the submit's would be: it is the
+    /// answer the confirm gives the merchant either way.
+    async fn submit_as_the_core(&self, charge: &ChargeRef) -> Result<Submitted, ProviderError> {
+        let charge = match self.adapter.capabilities().submit_steps {
+            SubmitSteps::One => charge.clone(),
+            SubmitSteps::PrepareThenSubmit => {
+                let mut opened = charge.clone();
+                opened.ref_extra.clear();
+                let ref_extra = self
+                    .adapter
+                    .prepare(&opened, &self.config, PriorSubmits::None)
+                    .await?;
+                ChargeRef {
+                    ref_extra,
+                    ..opened
+                }
+            }
+        };
+        self.adapter.submit(&charge, &self.config).await
+    }
+
     /// A charge on this rail as it looks *after* `submit` — see "What a
     /// conformance charge stands for" in the module doc for why that is the
     /// right stand-in, and why the redirect branch below is not optional.
@@ -476,6 +542,7 @@ impl Rail {
         let flow = self.adapter.capabilities().flow;
         ChargeRef {
             reference_id,
+            method_type: None,
             amount: Money::new(5_000, self.config.currency).expect("non-negative"),
             payer_ref: match flow {
                 // A push rail prompts a payer's own instrument, so it needs
@@ -1103,8 +1170,7 @@ async fn the_submit_tells_the_rail_where_to_send_the_payer_back(
         "the case is vacuous unless the core actually filled the field"
     );
 
-    rail.adapter
-        .submit(&charge, &rail.config)
+    rail.submit_as_the_core(&charge)
         .await
         .expect("an accepted submit must be Ok");
 
@@ -1188,8 +1254,7 @@ async fn the_submit_tells_the_rail_where_to_call_back(#[case] rail_under_test: R
         rail.config.callback_url
     );
 
-    rail.adapter
-        .submit(&charge, &rail.config)
+    rail.submit_as_the_core(&charge)
         .await
         .expect("an accepted submit must be Ok");
 
@@ -1282,8 +1347,7 @@ async fn submit_returns_a_reference_and_a_flow_shaped_result(#[case] rail: RailU
     let charge = rail.charge(REF_ACCEPTED);
 
     let submitted = rail
-        .adapter
-        .submit(&charge, &rail.config)
+        .submit_as_the_core(&charge)
         .await
         .expect("an accepted submit must be Ok");
 
@@ -1448,8 +1512,12 @@ async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
     );
 }
 
-/// Notch Pay only: a `409` for a charge that holds no Notch Pay reference is
-/// [`ProviderError::Malformed`], never `Submitted` and never a decline.
+/// Notch Pay only: an initialize `409` for a charge that holds no Notch Pay
+/// reference, when a submit may have prompted for it
+/// ([`PriorSubmits::Some`]: a charge the one-call build before ADR-0032
+/// submitted), is [`ProviderError::NeedsReconciliation`] — never a reference
+/// to commit, never a decline (`Malformed` until 2026-10-23,
+/// vaam-apps/vpay#313).
 ///
 /// Rail-specific on purpose. Notch Pay finds a payment by its own reference
 /// only (`GET /payments?search=` did not match ours in the sandbox on
@@ -1458,7 +1526,7 @@ async fn not_found_is_never_on_its_own_a_failure(#[case] rail: RailUnderTest) {
 /// operator: the maintainer's decision, 2026-10-21. MTN and Orange resolve
 /// the same `409` by our reference or by the token, so they have no such case.
 #[tokio::test]
-async fn notchpay_a_duplicate_it_cannot_resolve_fails_closed() {
+async fn notchpay_a_duplicate_a_submit_may_have_prompted_for_fails_closed() {
     let rail = start(
         RailUnderTest::NotchPay,
         Credentials::Valid,
@@ -1468,16 +1536,112 @@ async fn notchpay_a_duplicate_it_cannot_resolve_fails_closed() {
     let mut charge = rail.charge(REF_DUPLICATE);
     charge.ref_extra.clear();
 
-    let outcome = rail.adapter.submit(&charge, &rail.config).await;
+    let outcome = rail
+        .adapter
+        .prepare(&charge, &rail.config, PriorSubmits::Some)
+        .await;
 
     assert!(
-        matches!(outcome, Err(ProviderError::Malformed { .. })),
-        "an unresolvable 409 must be Malformed, never Submitted or a decline: {outcome:?}"
+        matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+        "an unresolvable 409 a submit may have prompted for must be NeedsReconciliation, \
+         never a reference or a decline, and not Malformed, which a later submit could \
+         resolve: {outcome:?}"
     );
 }
 
+/// Notch Pay only: the same `409` with **no** submit ever recorded
+/// ([`PriorSubmits::None`]) is the crash ADR-0032 made safe — an initialize
+/// whose answer was lost, and nobody asked Notch Pay to prompt for it. It is
+/// a clean decline, `provider_unavailable`, so the payer can try again on a
+/// new charge, and the stub is asked nothing after the initialize.
+#[tokio::test]
+async fn notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline() {
+    let rail = start(
+        RailUnderTest::NotchPay,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let mut charge = rail.charge(REF_DUPLICATE);
+    charge.ref_extra.clear();
+
+    let outcome = rail
+        .adapter
+        .prepare(&charge, &rail.config, PriorSubmits::None)
+        .await;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(ProviderError::Rejected {
+                code: FailureCode::ProviderUnavailable,
+                ..
+            })
+        ),
+        "a 409 no submit ever prompted for is a decline the payer can retry: {outcome:?}"
+    );
+    assert_eq!(
+        requests_matching(&rail, r#"{"method":"ANY","urlPattern":".*"}"#).await,
+        1,
+        "the initialize, and nothing after it: no process call for a payment nobody \
+         was asked to pay"
+    );
+}
+
+/// ADR-0032's census: `prepare` answers `Unsupported` exactly on the rails
+/// that declare [`SubmitSteps::One`], and on a
+/// [`SubmitSteps::PrepareThenSubmit`] rail returns the key material that
+/// rail is addressed by — what `submit` then needs, and what the charge holds
+/// afterwards ([`submitted_key_material`]).
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
+#[tokio::test]
+async fn prepare_is_unsupported_exactly_on_a_one_step_rail(#[case] rail_under_test: RailUnderTest) {
+    let rail = start(rail_under_test, Credentials::Valid, Duration::from_secs(10)).await;
+    let mut charge = rail.charge(REF_ACCEPTED);
+    charge.ref_extra.clear();
+
+    let answer = rail
+        .adapter
+        .prepare(&charge, &rail.config, PriorSubmits::None)
+        .await;
+
+    match rail.adapter.capabilities().submit_steps {
+        SubmitSteps::One => {
+            assert!(
+                matches!(answer, Err(ProviderError::Unsupported)),
+                "{} creates and prompts in one call and has nothing to prepare, got {answer:?}",
+                rail.adapter.code()
+            );
+            assert_eq!(
+                requests_matching(&rail, r#"{"method":"ANY","urlPattern":".*"}"#).await,
+                0,
+                "{}: the port's default asks the rail nothing",
+                rail.adapter.code()
+            );
+        }
+        SubmitSteps::PrepareThenSubmit => {
+            let ref_extra = answer.unwrap_or_else(|error| {
+                panic!(
+                    "{} prepares a payment before the prompt and must answer: {error}",
+                    rail.adapter.code()
+                )
+            });
+            assert_eq!(
+                ref_extra,
+                submitted_key_material(rail_under_test, REF_ACCEPTED),
+                "{}: prepare returns exactly the key material the rail is addressed by",
+                rail.adapter.code()
+            );
+        }
+    }
+}
+
 /// Notch Pay only: a `complete` read that collected less than the charge is
-/// [`ProviderError::Malformed`], never [`ChargeStatus::Succeeded`].
+/// [`ProviderError::NeedsReconciliation`], never [`ChargeStatus::Succeeded`]
+/// (`Malformed` until 2026-10-23, vaam-apps/vpay#313).
 ///
 /// Rail-specific on purpose. Notch Pay's sandbox read its "insufficient
 /// funds" test number as `complete` on 2026-10-21, with `amount` 107 and
@@ -1498,8 +1662,9 @@ async fn notchpay_a_complete_that_collected_less_than_the_charge_is_never_a_succ
     let outcome = rail.adapter.query_status(&charge, &rail.config).await;
 
     assert!(
-        matches!(outcome, Err(ProviderError::Malformed { .. })),
-        "a complete for 4980 of 5000 XAF must be Malformed, never a success: {outcome:?}"
+        matches!(outcome, Err(ProviderError::NeedsReconciliation { .. })),
+        "a complete for 4980 of 5000 XAF must be NeedsReconciliation, never a success: \
+         {outcome:?}"
     );
 }
 
@@ -1577,6 +1742,15 @@ fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTe
     // drives it, on both rails.
     proven.push(FailureCode::ProviderAccountBlocked);
 
+    // Notch Pay's `provider_unavailable` is `prepare`'s `409` for a reference
+    // no submit was ever made for (ADR-0032): a refused initialize, not a
+    // read, so it has no row in the decline table either.
+    // `notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline` is
+    // the case that drives it.
+    if rail == RailUnderTest::NotchPay {
+        proven.push(FailureCode::ProviderUnavailable);
+    }
+
     proven.sort_unstable_by_key(|code| code.as_str());
     proven.dedup();
 
@@ -1643,8 +1817,7 @@ async fn bad_credentials_are_not_reported_as_a_payer_problem(#[case] rail: RailU
     let charge = rail.charge(REF_ACCEPTED);
 
     let error = rail
-        .adapter
-        .submit(&charge, &rail.config)
+        .submit_as_the_core(&charge)
         .await
         .expect_err("credentials the rail rejects cannot produce a submitted charge");
 
@@ -2073,8 +2246,7 @@ async fn a_refund_on_a_rail_that_refunds_reaches_the_rail_and_is_accepted(
     // token to a money-out endpoint, and that is the mutation this line
     // makes reachable.
     let charge = rail.charge(REF_ACCEPTED);
-    rail.adapter
-        .submit(&charge, &rail.config)
+    rail.submit_as_the_core(&charge)
         .await
         .expect("the charge path still works");
 
@@ -2505,8 +2677,7 @@ async fn redirects_are_refused_and_never_followed(#[case] rail: RailUnderTest) {
     let charge = rail.charge(REF_REDIRECT);
 
     let error = rail
-        .adapter
-        .submit(&charge, &rail.config)
+        .submit_as_the_core(&charge)
         .await
         .expect_err("a redirect is not an accepted charge; the rail pointed elsewhere");
 
@@ -3042,6 +3213,7 @@ async fn a_digits_only_msisdn_reaches_the_same_walk_as_its_hex_twin(
     // field the three mappings above document).
     let charge = ChargeRef {
         reference_id: Uuid::new_v4(),
+        method_type: None,
         amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
         payer_ref: Some(msisdn.to_owned()),
         ref_extra: BTreeMap::new(),
@@ -3172,6 +3344,7 @@ async fn a_payer_lands_on_the_rails_page(rail: &Rail) -> (ChargeRef, String, Str
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
     let mut charge = ChargeRef {
         reference_id: Uuid::new_v4(),
+        method_type: None,
         amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
         payer_ref: None,
         ref_extra: BTreeMap::new(),
@@ -3256,6 +3429,7 @@ async fn a_charge_no_payer_has_looked_at_is_pending_once_and_then_settles() {
 
     let mut charge = ChargeRef {
         reference_id: Uuid::new_v4(),
+        method_type: None,
         amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
         payer_ref: None,
         ref_extra: BTreeMap::new(),

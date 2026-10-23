@@ -28,6 +28,16 @@ whole safety property:
    ([ADR-0002](../../adr/0002-provider-port.md));
 3. mint the `provider_reference_id` and commit the charge row in `submitting`,
    so the reference is durable before anything is sent;
+   **3b**, on a rail declaring `SubmitSteps::PrepareThenSubmit` only
+   (`notchpay`): record a `prepare` attempt, call the adapter's `prepare`
+   (`PriorSubmits::None` — a first confirm has no `submit` row), commit what
+   it returned on the charge (`Charges::record_prepared`), then answer the
+   row (`prepare_on_rail`). A refusal answers the confirm exactly as a
+   refused submit does, through `refuse_confirm`, and no `submit` row is ever
+   written for it. Nothing in 3b prompts the payer, and step 4 is not reached
+   until its commit has landed
+   ([ADR-0032](../../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md),
+   2026-10-23);
 4. record the attempt in `provider_requests` with no status;
 5. call the adapter with the `return_url` step 3 committed on the charge row
    — `submit` is `async`, so the `.await` is what actually sends the request.
@@ -38,7 +48,9 @@ whole safety property:
 
 Each step is a named function in the source (`load_confirmable_intent`,
 `return_trip::admit_confirm`, `resolve_rail` with `payer_instrument`,
-`open_attempt` covering steps 3 and 4, `submit_to_rail`, `finish_confirm`);
+`open_charge` for step 3, `prepare_on_rail` for 3b, `open_attempt` for
+step 4, `submit_to_rail`, `finish_confirm`). _(`open_attempt` covered steps 3
+and 4 until 2026-10-23, when 3b had to fall between them.)_
 `confirm_once` is the sequence and nothing else, so "what order do these
 happen in" is answerable by reading a dozen lines.
 

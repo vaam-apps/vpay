@@ -33,11 +33,17 @@ pub enum IntentStatus {
     Canceled,
 }
 
-/// The rail codes `payment_method_types` may name.
+/// The rail codes and payment-method types `payment_method_types` may name.
+///
+/// A **rail code** (`mtn_momo`, `orange_money`, `notchpay`) means that rail,
+/// pinned. A **payment-method type** (`mtn_wallet`, `orange_wallet`, from
+/// 2026-10-23) means the payer's wallet network, and the server's router picks
+/// the rail when the intent is confirmed (ADR-0029 D6, RFC-0008 as revised on
+/// 2026-10-23). Both kinds may be mixed in one intent's list.
 ///
 /// Closed, and `#[non_exhaustive]` so adding a rail is not a breaking change
 /// for a caller who matched on it. `sdks/nodejs/src/types.ts` closes the same
-/// list (`PaymentMethodType = "mtn_momo" | "orange_money" | "notchpay"`), and it is closed
+/// list (`PaymentMethodType`, the same five strings), and it is closed
 /// on the *request* side only: a rail this SDK version predates must still be
 /// readable in a response, so [`PaymentIntent::payment_method_types`] stays
 /// `Vec<String>` exactly as Node's `PaymentIntent.payment_method_types` stays
@@ -56,6 +62,18 @@ pub enum PaymentMethodType {
     /// Notch Pay.
     #[serde(rename = "notchpay")]
     NotchPay,
+    /// The payer's MTN Mobile Money wallet, through whichever rail the server
+    /// ranks first for it: `mtn_momo` or `notchpay` today. Added 2026-10-23.
+    /// **Needs a server with method types** (migration `0053`); an older
+    /// server refuses it as an unknown rail. Meaningful in a create's
+    /// `payment_method_types` only: a refund's `destination` and an
+    /// account-holder lookup name a rail, and the server refuses a type there.
+    MtnWallet,
+    /// The payer's Orange Money wallet, through whichever rail the server
+    /// ranks first for it: `orange_money` (redirect) or `notchpay` (push)
+    /// today, so the confirm's fields depend on the rail. Added 2026-10-23,
+    /// with [`PaymentMethodType::MtnWallet`]'s server requirement.
+    OrangeWallet,
 }
 
 impl PaymentMethodType {
@@ -71,6 +89,8 @@ impl PaymentMethodType {
             PaymentMethodType::MtnMomo => "mtn_momo",
             PaymentMethodType::OrangeMoney => "orange_money",
             PaymentMethodType::NotchPay => "notchpay",
+            PaymentMethodType::MtnWallet => "mtn_wallet",
+            PaymentMethodType::OrangeWallet => "orange_wallet",
         }
     }
 }
@@ -1474,7 +1494,7 @@ mod tests {
 
     #[test]
     fn payment_method_type_has_one_wire_spelling_by_both_routes() {
-        // The rail codes are written twice — once for `serde`, once for the
+        // The rail codes and method types are written twice — once for `serde`, once for the
         // form encoder, which does not go through `serde` (see `crate::form`).
         // If those two ever disagree, a request and a response would name the
         // same rail differently. These are the exact strings
@@ -1483,6 +1503,8 @@ mod tests {
             (PaymentMethodType::MtnMomo, "mtn_momo"),
             (PaymentMethodType::OrangeMoney, "orange_money"),
             (PaymentMethodType::NotchPay, "notchpay"),
+            (PaymentMethodType::MtnWallet, "mtn_wallet"),
+            (PaymentMethodType::OrangeWallet, "orange_wallet"),
         ] {
             assert_eq!(value.as_wire_str(), wire);
             assert_eq!(value.to_string(), wire);

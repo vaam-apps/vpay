@@ -314,14 +314,15 @@ pub mod webhook_outcome {
 }
 
 /// The `operation` label on [`PROVIDER_REQUESTS_TOTAL`] and
-/// [`PROVIDER_REQUEST_DURATION_SECONDS`]: the five
+/// [`PROVIDER_REQUEST_DURATION_SECONDS`]: the six
 /// `vpay_provider::ProviderAdapter` methods that can reach a rail. (This said
 /// "three" until 2026-10-22, and had been wrong since `account_holder_name`
-/// joined `refund` as the fourth.)
+/// joined `refund` as the fourth; it said "five" until `prepare` joined them
+/// on 2026-10-23, ADR-0032.)
 ///
 /// Spelled here beside [`job_outcome`] because a closed label vocabulary
 /// belongs with the names it labels — `vpay-core` does not depend on
-/// `vpay-provider`, so these are strings that happen to match three method
+/// `vpay-provider`, so these are strings that happen to match six method
 /// names, and `vpay_provider::measured`'s own test is what keeps them
 /// matching. `parse_callback` is deliberately absent: it parses bytes and
 /// touches no rail.
@@ -330,6 +331,7 @@ pub mod webhook_outcome {
 /// use vpay_core::metrics::provider_operation;
 ///
 /// let all = [
+///     provider_operation::PREPARE,
 ///     provider_operation::SUBMIT,
 ///     provider_operation::QUERY_STATUS,
 ///     provider_operation::REFUND,
@@ -338,10 +340,22 @@ pub mod webhook_outcome {
 /// ];
 /// assert_eq!(
 ///     all,
-///     ["submit", "query_status", "refund", "account_holder_name", "ensure_callback_endpoint"]
+///     [
+///         "prepare",
+///         "submit",
+///         "query_status",
+///         "refund",
+///         "account_holder_name",
+///         "ensure_callback_endpoint",
+///     ]
 /// );
 /// ```
 pub mod provider_operation {
+    /// `ProviderAdapter::prepare` — creating the payment on a two-step rail
+    /// without prompting the payer (ADR-0032). Its own operation rather than
+    /// a `submit`: a rail whose creates fail and whose prompts do not are two
+    /// different incidents.
+    pub const PREPARE: &str = "prepare";
     /// `ProviderAdapter::submit` — opening a charge on the rail.
     pub const SUBMIT: &str = "submit";
     /// `ProviderAdapter::query_status` — the authenticated status query, the

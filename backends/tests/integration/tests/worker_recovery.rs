@@ -120,6 +120,23 @@ const REDIRECTED_SUBMIT_REF: Uuid = Uuid::from_u128(0x0302);
 /// a **submit** — a rail decision, `ProviderError::Rejected`.
 const DECLINED_SUBMIT_REF: Uuid = Uuid::from_u128(0x0400);
 
+/// The rail of the vaam-apps/vpay#313 cases: the only one whose adapter
+/// raises `ProviderError::NeedsReconciliation`, and the only two-step rail
+/// (ADR-0032).
+const NOTCHPAY: &str = "notchpay";
+
+/// The reference `wiremock/notchpay`'s `payments-retrieve.json` answers, by
+/// `trx.test_…0f10`, with Notch Pay's sandbox "insufficient funds" read:
+/// `complete` for 5000 XAF with `amounts.total` 4980 — a short collection,
+/// `NeedsReconciliation` since 2026-10-23.
+const SHORT_COLLECTION_REF: Uuid = Uuid::from_u128(0x0f10);
+
+/// The reference `payments-initialize.json` answers `409` "Reference already
+/// existing" to. What a `prepare` makes of it turns on whether a submit was
+/// ever recorded for the charge (ADR-0032): none, and the charge fails
+/// cleanly; one, and it is `NeedsReconciliation`.
+const NOTCHPAY_DUPLICATE_REF: Uuid = Uuid::from_u128(0x00dd);
+
 /// The payer `requesttopay.json` declines on **any** reference
 /// (`400 PAYER_NOT_FOUND`, selected by `$.payer.partyId`). Paired with
 /// [`NOT_FOUND_REF`] it is a rail that declines every submit and has no record
@@ -137,8 +154,12 @@ const DECLINED_PAYER_MSISDN: &str = "237670000400";
 /// rather than from two that could be configured differently.
 struct Harness {
     _postgres: ContainerAsync<PostgresImage>,
-    _mtn: ContainerAsync<GenericImage>,
-    _orange: ContainerAsync<GenericImage>,
+    /// Every rail stub this harness started: MTN and Orange for [`harness`],
+    /// Notch Pay alone for [`notchpay_harness`]. Held only to keep them up.
+    _rails: Vec<ContainerAsync<GenericImage>>,
+    /// The Notch Pay stub's origin, for the one case that adds a mapping
+    /// through WireMock's admin API. `None` on the MTN and Orange harness.
+    notchpay_origin: Option<String>,
     repositories: Arc<dyn Repositories>,
     /// The plain `sqlx` pool, for the fixtures that read or force schema
     /// state no repository method owns.
@@ -251,6 +272,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 
@@ -285,12 +307,80 @@ async fn harness() -> anyhow::Result<Harness> {
 
     Ok(Harness {
         _postgres: postgres,
-        _mtn: mtn,
-        _orange: orange,
+        _rails: vec![mtn, orange],
+        notchpay_origin: None,
         repositories,
         pool,
         adapters: Arc::new(support::adapters_by_code()),
         rails: Arc::new(rail_configs(&config)),
+    })
+}
+
+/// Postgres and the Notch Pay stub alone, with the real `notchpay` adapter,
+/// measured, as `vpay-server` links it.
+///
+/// A harness of its own rather than a third container in [`harness`]: only
+/// the vaam-apps/vpay#313 cases need Notch Pay, and every other case in this
+/// file would pay for a container it never calls. The stub is the
+/// conformance suite's `wiremock/notchpay` tree, and the keys are its
+/// `test_`-named stand-ins (`adapter_conformance.rs`'s Notch Pay row).
+async fn notchpay_harness() -> anyhow::Result<Harness> {
+    let (postgres, repositories, pool) = migrated_postgres().await?;
+    let notchpay = vpay_testkit::containers::start_wiremock(&mappings_dir(NOTCHPAY))
+        .await
+        .context("the Notch Pay stub container starts")?;
+    let origin = format!(
+        "http://127.0.0.1:{}",
+        notchpay
+            .get_host_port_ipv4(8080)
+            .await
+            .context("the Notch Pay stub's mapped port")?
+    );
+
+    let mut config = config_with("http://127.0.0.1:1", "http://127.0.0.1:1");
+    config.providers = vec![ProviderHost {
+        code: NOTCHPAY.to_owned(),
+        enabled: true,
+        host: HostEntry {
+            url: origin.clone(),
+            label: "notchpay-wiremock".to_owned(),
+        },
+        settings: BTreeMap::from([("channel".to_owned(), "cm.mobile".to_owned())]),
+        callback_url: None,
+        currency: CURRENCY.to_owned(),
+        credentials: BTreeMap::from([
+            (
+                "public_key".to_owned(),
+                "stub-public-key-test_0001".to_owned(),
+            ),
+            (
+                "private_key".to_owned(),
+                "stub-private-key-test_0002".to_owned(),
+            ),
+        ]),
+        display_name: None,
+        callbacks: None,
+    }];
+
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .context("the vendored-roots client builds")?;
+    let adapters = vpay_api::v1::boot::adapters_by_code(vec![Box::new(
+        vpay_adapter_notchpay::Adapter::new(http),
+    )
+        as Box<dyn vpay_provider::ProviderAdapter>]);
+    support::reconcile_from_config_with(repositories.as_ref(), &config, &adapters).await?;
+
+    Ok(Harness {
+        _postgres: postgres,
+        _rails: vec![notchpay],
+        notchpay_origin: Some(origin),
+        repositories,
+        pool,
+        rails: Arc::new(rail_configs(&config)),
+        adapters: Arc::new(adapters),
     })
 }
 
@@ -490,15 +580,36 @@ async fn record_submit_attempt(
     reference: Uuid,
     status_code: Option<i32>,
 ) -> anyhow::Result<()> {
+    record_attempt(
+        repositories,
+        charge_id,
+        rail,
+        "submit",
+        reference,
+        status_code,
+    )
+    .await
+}
+
+/// [`record_submit_attempt`] for any operation: a two-step rail's case
+/// stages its `prepare` row with it (ADR-0032).
+async fn record_attempt(
+    repositories: &dyn Repositories,
+    charge_id: &str,
+    rail: &str,
+    operation: &str,
+    reference: Uuid,
+    status_code: Option<i32>,
+) -> anyhow::Result<()> {
     let attempt_id = repositories
-        .insert_pending(charge_id, rail, "submit", reference, 1)
+        .insert_pending(charge_id, rail, operation, reference, 1)
         .await
-        .context("writing the submit attempt row")?;
+        .with_context(|| format!("writing the {operation} attempt row"))?;
     if let Some(code) = status_code {
         repositories
             .record_response(attempt_id, Some(code), None)
             .await
-            .context("recording the submit answer")?;
+            .with_context(|| format!("recording the {operation} answer"))?;
     }
     Ok(())
 }
@@ -2799,6 +2910,837 @@ async fn a_declined_submit_whose_settlement_was_lost_is_failed_by_the_worker() -
     let leftover = h.step(&policy).await?;
     assert_eq!(leftover.disposition, Disposition::Finished);
     assert!(jobs(&h.pool).await?.is_empty());
+    Ok(())
+}
+
+// ------------------------------------- an answer only a person can act on
+
+/// A Notch Pay charge the rail has accepted: `pending`, holding
+/// `trx.test_{reference}` as its `notchpay_reference`, with its poll job due.
+///
+/// Staged from [`crashed_charge`] and moved by hand, because the stub selects
+/// its answer by reference and a confirm cannot choose one. `pending` and the
+/// key material are exactly what `persist_submitted` and the first rung leave
+/// for a push rail; nothing else on the row differs from a confirmed charge.
+async fn accepted_notchpay_charge(h: &Harness, reference: Uuid) -> anyhow::Result<String> {
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        NOTCHPAY,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        NOTCHPAY,
+        reference,
+        AMOUNT,
+        CURRENCY,
+        Some(MSISDN),
+    )
+    .await?;
+    let moved = sqlx::query(
+        "UPDATE charges SET state = 'pending', \
+         provider_ref_extra = jsonb_build_object('notchpay_reference', $2::TEXT) \
+         WHERE id = $1 AND state = 'submitting'",
+    )
+    .bind(&charge_id)
+    .bind(format!("trx.test_{reference}"))
+    .execute(&h.pool)
+    .await
+    .context("moving the charge to pending with its Notch Pay reference")?
+    .rows_affected();
+    anyhow::ensure!(moved == 1, "the staged charge was not there to move");
+    Ok(charge_id)
+}
+
+/// The `jobs.id` of a charge's poll job, so a step can be matched to the
+/// charge it ran for when two are due together.
+async fn poll_job_id(pool: &PgPool, charge_id: &str) -> anyhow::Result<Uuid> {
+    sqlx::query_scalar::<_, Uuid>("SELECT id FROM jobs WHERE dedupe_key = $1")
+        .bind(format!("poll:{charge_id}"))
+        .fetch_one(pool)
+        .await
+        .context("reading the poll job's id")
+}
+
+/// Runs one poll for each of `charges` and returns each charge's [`Settled`],
+/// in the order given.
+async fn poll_each(
+    h: &Harness,
+    policy: &RecoveryPolicy,
+    charges: &[&str],
+) -> anyhow::Result<Vec<Settled>> {
+    let mut by_job = BTreeMap::new();
+    for charge_id in charges {
+        by_job.insert(poll_job_id(&h.pool, charge_id).await?, *charge_id);
+    }
+    let mut settled = BTreeMap::new();
+    for _ in charges {
+        let step = h.step(policy).await?;
+        assert_eq!(step.kind, "poll_charge");
+        let charge_id = by_job
+            .get(&step.job_id)
+            .with_context(|| format!("a job no charge here owns ran: {}", step.job_id))?;
+        settled.insert(*charge_id, step);
+    }
+    charges
+        .iter()
+        .map(|charge_id| {
+            settled
+                .remove(charge_id)
+                .with_context(|| format!("{charge_id}'s poll never ran"))
+        })
+        .collect()
+}
+
+/// A short collection is `unresolved` on the **first** poll that reads it,
+/// with the hourly poll and the alert — and an answer the adapter merely
+/// could not read is not (vaam-apps/vpay#313).
+///
+/// The short charge is Notch Pay's sandbox "insufficient funds" read, as
+/// RFC-0012 step 5 met it on 2026-10-21: `complete` for the charge's amount
+/// with `amounts.total` short of it. That run kept the charge `pending` on the
+/// ladder for 15 minutes at `WARN`, and by the code it would have stayed there
+/// until the 24-hour horizon. Here the policy **is** the production one —
+/// `RecoveryPolicy::default()`, 24 hours — so nothing but the leaf's own
+/// variant can explain the escalation.
+///
+/// The second charge keeps the case honest: a body past
+/// `MAX_RAIL_BODY_BYTES` is `Malformed`, an answer a later read may well fix,
+/// and it must still ride the ladder quietly. A worker that escalated every
+/// refused read would pass the first half and fail this one.
+///
+/// Then a second hourly poll, as
+/// `a_second_hourly_poll_of_an_unresolved_charge_re_alerts_without_writing_it_again`
+/// pins for the horizon: the alert repeats, the row is not rewritten, and the
+/// rail is asked again — which is the road a late answer arrives by.
+#[tokio::test]
+async fn a_short_collection_is_unresolved_on_the_first_poll_and_an_unreadable_answer_is_not()
+-> anyhow::Result<()> {
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let short = accepted_notchpay_charge(&h, SHORT_COLLECTION_REF).await?;
+    let unreadable = accepted_notchpay_charge(&h, HUGE_ANSWER_REF).await?;
+
+    let [short_poll, unreadable_poll] = <[Settled; 2]>::try_from(
+        poll_each(&h, &policy, &[short.as_str(), unreadable.as_str()]).await?,
+    )
+    .map_err(|_| anyhow::anyhow!("two polls ran"))?;
+
+    assert_eq!(
+        short_poll.disposition,
+        Disposition::Rescheduled(Duration::from_secs(3_600)),
+        "a short collection is escalated on its first read and polled hourly from there — \
+         not left on the ladder for 24 hours, and not parked. error: {:?}",
+        short_poll.error
+    );
+    assert!(
+        short_poll.alert,
+        "the escalation must reach a person now: that is the whole of #313"
+    );
+    assert!(
+        short_poll
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("exhausted")),
+        "the job records the escalation, as at the horizon: {:?}",
+        short_poll.error
+    );
+    assert_eq!(
+        charge(&h.pool, &short).await?.state,
+        "unresolved",
+        "`unresolved` is the state the runbook's query and VpayUnresolvedChargesRising find"
+    );
+    assert_eq!(
+        charge(&h.pool, &short).await?.failure_code,
+        None,
+        "an escalation is not a decline: money may have moved"
+    );
+    assert_eq!(
+        attempts_of(&h.pool, &short, "query_status").await?,
+        vec![StoredAttempt {
+            status_code: Some(ANSWERED_SENTINEL),
+            answered: true,
+            error_kind: Some("charge_needs_reconciliation".to_owned()),
+        }],
+        "Notch Pay answered this read, and the row must say so and say why — `NULL` is the \
+         2026-10-21 defect #314 fixed"
+    );
+
+    assert!(
+        matches!(unreadable_poll.disposition, Disposition::Rescheduled(delay) if delay < Duration::from_secs(60)),
+        "an unreadable answer stays on the ladder's first rungs; got {:?}, error: {:?}",
+        unreadable_poll.disposition,
+        unreadable_poll.error
+    );
+    assert!(
+        !unreadable_poll.alert,
+        "a `Malformed` read is `Warn` and alerts nobody"
+    );
+    assert_eq!(charge(&h.pool, &unreadable).await?.state, "pending");
+    assert_eq!(
+        attempts_of(&h.pool, &unreadable, "query_status").await?,
+        vec![StoredAttempt {
+            status_code: Some(ANSWERED_SENTINEL),
+            answered: true,
+            error_kind: Some("provider_error".to_owned()),
+        }],
+    );
+
+    // The second hourly poll of the escalated charge.
+    let escalated_at = charge_updated_at(&h.pool, &short).await?;
+    make_every_job_runnable(&h.pool).await?;
+    let [again, _] = <[Settled; 2]>::try_from(
+        poll_each(&h, &policy, &[short.as_str(), unreadable.as_str()]).await?,
+    )
+    .map_err(|_| anyhow::anyhow!("two polls ran"))?;
+    assert_eq!(
+        again.disposition,
+        Disposition::Rescheduled(Duration::from_secs(3_600)),
+        "still hourly. error: {:?}",
+        again.error
+    );
+    assert!(again.alert, "the alert repeats until a person acts");
+    assert_eq!(
+        charge_updated_at(&h.pool, &short).await?,
+        escalated_at,
+        "the second poll must not rewrite an already-escalated charge"
+    );
+    assert_eq!(charge(&h.pool, &short).await?.state, "unresolved");
+    assert_eq!(
+        status_queries(&h.pool, &short).await?,
+        2,
+        "every hourly poll asks Notch Pay again: a late answer arrives that way"
+    );
+
+    let queued = jobs(&h.pool).await?;
+    let poll = queued
+        .iter()
+        .find(|job| job.dedupe_key == format!("poll:{short}"))
+        .context("the escalated charge's poll job was deleted")?;
+    assert!(
+        poll.seconds_until_runnable.is_some(),
+        "an escalated charge is never parked: it can still settle"
+    );
+    assert_one_reference(&h.pool, &short, SHORT_COLLECTION_REF).await;
+    Ok(())
+}
+
+/// An escalated short collection still settles when the rail's answer
+/// changes: the escalation is not a verdict.
+///
+/// The stub's short read cannot change on its own, so a higher-priority
+/// mapping is added through WireMock's admin API after the escalation: the
+/// same payment, now `complete` with `amounts.total` equal to the charge's
+/// amount. The next hourly poll must settle the charge `succeeded` through
+/// the ordinary settlement — the path
+/// `a_late_success_past_the_horizon_still_settles` pins for the horizon.
+#[tokio::test]
+async fn a_short_collection_the_worker_escalated_still_settles_on_a_later_answer()
+-> anyhow::Result<()> {
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let short = accepted_notchpay_charge(&h, SHORT_COLLECTION_REF).await?;
+    let intent = intent_of(&h.pool, &short).await?;
+
+    let escalated = h.step(&policy).await?;
+    assert_eq!(
+        escalated.disposition,
+        Disposition::Rescheduled(Duration::from_secs(3_600)),
+        "error: {:?}",
+        escalated.error
+    );
+    assert_eq!(charge(&h.pool, &short).await?.state, "unresolved");
+
+    support::ensure_crypto_provider_installed();
+    let origin = h
+        .notchpay_origin
+        .as_deref()
+        .context("the Notch Pay harness records its origin")?;
+    let reference = format!("trx.test_{SHORT_COLLECTION_REF}");
+    let added = reqwest::Client::new()
+        .post(format!("{origin}/__admin/mappings"))
+        .json(&json!({
+            "priority": 0,
+            "request": { "method": "GET", "urlPath": format!("/payments/{reference}") },
+            "response": {
+                "status": 200,
+                "jsonBody": {
+                    "code": 200,
+                    "transaction": {
+                        "amount": AMOUNT,
+                        "amounts": { "total": AMOUNT },
+                        "currency": CURRENCY,
+                        "reference": reference,
+                        "status": "complete",
+                        "trxref": SHORT_COLLECTION_REF.to_string(),
+                    }
+                }
+            }
+        }))
+        .send()
+        .await
+        .context("adding the later answer to the stub")?;
+    anyhow::ensure!(
+        added.status().is_success(),
+        "WireMock refused the mapping: {}",
+        added.status()
+    );
+
+    make_every_job_runnable(&h.pool).await?;
+    let settled = h.step(&policy).await?;
+    assert_eq!(
+        settled.disposition,
+        Disposition::Finished,
+        "a terminal answer settles an escalated charge and ends its job. error: {:?}",
+        settled.error
+    );
+    assert!(!settled.alert, "a payment that landed pages nobody");
+    let stored = charge(&h.pool, &short).await?;
+    assert_eq!(stored.state, "succeeded");
+    assert_eq!(
+        stored.provider_txn_id.as_deref(),
+        Some(reference.as_str()),
+        "Notch Pay's answers carry no `id`, so its reference is the transaction id"
+    );
+    assert_eq!(intent_status(&h.pool, &intent).await?.0, "succeeded");
+    assert_eq!(amount_received(&h.pool, &intent).await?, AMOUNT);
+    assert_one_reference(&h.pool, &short, SHORT_COLLECTION_REF).await;
+    Ok(())
+}
+
+// ---------------------------------------- a two-step rail's crash windows (ADR-0032)
+//
+// Notch Pay is two calls: initialize, which creates the payment and issues the
+// `trx.…` reference Notch Pay alone can find it by, and process, which prompts
+// the payer. The port splits them into `prepare` and `submit`, and the core
+// commits what `prepare` returned before it writes the `submit` row. Every
+// crash between the two therefore leaves one of three states, and each case
+// below stages one and asserts the recovery reads it correctly:
+//
+// | state after the crash | what recovery knows | case |
+// |---|---|---|
+// | `prepare` row, no `trx.…`, no `submit` row | nobody was prompted | the lost prepare |
+// | `trx.…` held, no `submit` row | nobody was prompted, and the payment can be found | the held reference, prompt never sent |
+// | `trx.…` held, unanswered `submit` row | the payer may have been prompted, and the payment can be read | the held reference, prompt answer lost |
+//
+// and one state no build after ADR-0032 can make, which is the one before it:
+// an unanswered `submit` row and no `trx.…` — a one-call build's initialize
+// whose answer was lost. Those stay `NeedsReconciliation`, by both of the
+// paths that can reach them.
+//
+// The stub journal is part of every assertion. "No process call" is what
+// "never prompted" means on the wire, and it is the claim ADR-0032 makes.
+
+/// A reference no `wiremock/notchpay` mapping singles out, so initialize
+/// answers `201`, process `202`, and a read of `trx.test_{it}` `complete` for
+/// [`AMOUNT`].
+const TWO_STEP_REF: Uuid = Uuid::from_u128(0x2a01);
+
+/// A Notch Pay charge a crashed confirm left in `submitting` with no attempt
+/// row and no key material, aged past the recovery window, with its poll job
+/// due. Returns the intent and the charge.
+async fn crashed_notchpay_charge(h: &Harness, reference: Uuid) -> anyhow::Result<(String, String)> {
+    let intent = confirmed_intent(
+        h.repositories.as_ref(),
+        MERCHANT,
+        NOTCHPAY,
+        AMOUNT,
+        CURRENCY,
+    )
+    .await?;
+    let charge_id = crashed_charge(
+        h.repositories.as_ref(),
+        &intent,
+        NOTCHPAY,
+        reference,
+        AMOUNT,
+        CURRENCY,
+        Some(MSISDN),
+    )
+    .await?;
+    age_the_crash(&h.pool, &charge_id, RECOVERABLE_CRASH_AGE).await?;
+    Ok((intent, charge_id))
+}
+
+/// Commits `trx.test_{reference}` on a `submitting` charge through
+/// `Charges::record_prepared`, the statement a `prepare` that came back runs.
+async fn hold_the_notchpay_reference(
+    h: &Harness,
+    charge_id: &str,
+    reference: Uuid,
+) -> anyhow::Result<()> {
+    h.repositories
+        .record_prepared(
+            charge_id,
+            &json!({ "notchpay_reference": format!("trx.test_{reference}") }),
+        )
+        .await
+        .context("committing the prepared reference")?;
+    Ok(())
+}
+
+/// How many requests the Notch Pay stub recorded matching a WireMock request
+/// pattern.
+async fn notchpay_requests(h: &Harness, pattern: serde_json::Value) -> anyhow::Result<u64> {
+    support::ensure_crypto_provider_installed();
+    let origin = h
+        .notchpay_origin
+        .as_deref()
+        .context("the Notch Pay harness records its origin")?;
+    let counted: serde_json::Value = reqwest::Client::new()
+        .post(format!("{origin}/__admin/requests/count"))
+        .json(&pattern)
+        .send()
+        .await
+        .context("the stub's admin API answers")?
+        .json()
+        .await
+        .context("the count is JSON")?;
+    counted
+        .get("count")
+        .and_then(serde_json::Value::as_u64)
+        .context("the admin answer carries a count")
+}
+
+/// Initializes, process calls and reads the stub received, in that order.
+async fn notchpay_calls(h: &Harness) -> anyhow::Result<(u64, u64, u64)> {
+    Ok((
+        notchpay_requests(h, json!({ "method": "POST", "url": "/payments" })).await?,
+        notchpay_requests(
+            h,
+            json!({ "method": "POST", "urlPathPattern": "/payments/trx\\..+" }),
+        )
+        .await?,
+        notchpay_requests(
+            h,
+            json!({ "method": "GET", "urlPathPattern": "/payments/trx\\..+" }),
+        )
+        .await?,
+    ))
+}
+
+/// A crash between `prepare` and the commit of its answer — the initialize
+/// reached Notch Pay, created the payment, and the `trx.…` it answered with
+/// was lost — **fails the charge** on the retry, and nothing ever prompts
+/// the payer.
+///
+/// Staged as that crash leaves it: an unanswered `prepare` row and no
+/// `submit` row. The resubmit's `prepare` meets Notch Pay's `409` for the
+/// same reference. Before ADR-0032 that was `NeedsReconciliation` and an
+/// operator, because a one-call submit's initialize also prompted, so the
+/// payer might have paid a payment nobody could read. Now the absence of a
+/// `submit` row proves nothing ever asked Notch Pay to prompt, so the payment
+/// it holds was never shown to anyone: the charge fails with
+/// `provider_unavailable`, the intent goes back to the payer to try again on
+/// a new charge, and the orphaned payment expires on Notch Pay unprocessed.
+///
+/// The journal is the proof the payer was never asked: one initialize (the
+/// retry's — the lost one is staged, not sent) and **no** process call.
+#[tokio::test]
+async fn a_prepare_whose_answer_was_lost_fails_the_charge_and_never_prompts() -> anyhow::Result<()>
+{
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let (intent, charge_id) = crashed_notchpay_charge(&h, NOTCHPAY_DUPLICATE_REF).await?;
+    record_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        NOTCHPAY,
+        "prepare",
+        NOTCHPAY_DUPLICATE_REF,
+        None,
+    )
+    .await?;
+
+    let resubmit = run_the_resubmit(&h, &policy, &charge_id).await?;
+    assert_eq!(
+        resubmit.disposition,
+        Disposition::Finished,
+        "a `Rejected` is `Retry::NewAttempt`: the job is done. error: {:?}",
+        resubmit.error
+    );
+    assert!(
+        !resubmit.alert,
+        "a charge nobody was asked to pay pages nobody"
+    );
+
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(stored.state, "failed");
+    assert_eq!(
+        stored.failure_code.as_deref(),
+        Some(vpay_core::FailureCode::ProviderUnavailable.as_str())
+    );
+    assert_eq!(
+        intent_status(&h.pool, &intent).await?,
+        (
+            "requires_payment_method".to_owned(),
+            Some(
+                vpay_core::FailureCode::ProviderUnavailable
+                    .as_str()
+                    .to_owned()
+            )
+        ),
+        "the intent goes back to the payer, who can try again on a new charge"
+    );
+    assert_eq!(
+        event_types(&h.pool, &intent).await?,
+        vec!["payment_intent.payment_failed".to_owned()]
+    );
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "prepare").await?,
+        vec![
+            StoredAttempt {
+                status_code: None,
+                answered: false,
+                error_kind: None,
+            },
+            StoredAttempt {
+                status_code: Some(ANSWERED_SENTINEL),
+                answered: true,
+                error_kind: Some("charge_declined".to_owned()),
+            },
+        ],
+        "the lost prepare, and the retry Notch Pay answered 409 to"
+    );
+    assert!(
+        attempts_of(&h.pool, &charge_id, "submit").await?.is_empty(),
+        "no submit row: nothing was asked to prompt"
+    );
+
+    // The poll job the first step rescheduled finds a terminal charge.
+    make_every_job_runnable(&h.pool).await?;
+    let leftover = h.step(&policy).await?;
+    assert_eq!(leftover.kind, "poll_charge");
+    assert_eq!(leftover.disposition, Disposition::Finished);
+    assert!(jobs(&h.pool).await?.is_empty());
+    assert_eq!(status_queries(&h.pool, &charge_id).await?, 0);
+
+    assert_eq!(
+        notchpay_calls(&h).await?,
+        (1, 0, 0),
+        "one initialize, and no process call: the payer was never prompted"
+    );
+    assert_one_reference(&h.pool, &charge_id, NOTCHPAY_DUPLICATE_REF).await;
+    Ok(())
+}
+
+/// A crash after the reference was committed and before the `submit` row:
+/// the charge **holds** `trx.…` and nothing was asked to prompt. The
+/// resubmit skips `prepare` — the payment exists, and a second initialize
+/// would only meet the `409` — and prompts by the held reference.
+#[tokio::test]
+async fn a_prepared_charge_whose_prompt_never_left_is_prompted_without_initializing_again()
+-> anyhow::Result<()> {
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let (_intent, charge_id) = crashed_notchpay_charge(&h, TWO_STEP_REF).await?;
+    record_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        NOTCHPAY,
+        "prepare",
+        TWO_STEP_REF,
+        Some(ANSWERED_SENTINEL),
+    )
+    .await?;
+    hold_the_notchpay_reference(&h, &charge_id, TWO_STEP_REF).await?;
+
+    let resubmit = run_the_resubmit(&h, &policy, &charge_id).await?;
+    assert_eq!(
+        resubmit.disposition,
+        Disposition::Finished,
+        "error: {:?}",
+        resubmit.error
+    );
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "submitted");
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "prepare").await?.len(),
+        1,
+        "the staged prepare only: the held reference is not prepared again"
+    );
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "submit").await?,
+        vec![StoredAttempt {
+            status_code: Some(ANSWERED_SENTINEL),
+            answered: true,
+            error_kind: None,
+        }]
+    );
+    assert_eq!(
+        notchpay_calls(&h).await?,
+        (0, 1, 0),
+        "no initialize, one process by the held reference"
+    );
+    assert_eq!(
+        notchpay_requests(
+            &h,
+            json!({ "method": "POST", "url": format!("/payments/trx.test_{TWO_STEP_REF}") })
+        )
+        .await?,
+        1
+    );
+    assert_one_reference(&h.pool, &charge_id, TWO_STEP_REF).await;
+    Ok(())
+}
+
+/// A crash after the prompt was sent: the charge holds `trx.…` beside an
+/// unanswered `submit` row. The payer may have been prompted, so this is the
+/// state the read decides, as it does for every rail — and on Notch Pay it
+/// now can, because the reference the read needs was committed first.
+#[tokio::test]
+async fn a_prepared_charge_whose_prompt_lost_its_answer_is_read_by_the_reference_it_holds()
+-> anyhow::Result<()> {
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let (intent, charge_id) = crashed_notchpay_charge(&h, TWO_STEP_REF).await?;
+    record_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        NOTCHPAY,
+        "prepare",
+        TWO_STEP_REF,
+        Some(ANSWERED_SENTINEL),
+    )
+    .await?;
+    hold_the_notchpay_reference(&h, &charge_id, TWO_STEP_REF).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        NOTCHPAY,
+        TWO_STEP_REF,
+        None,
+    )
+    .await?;
+
+    let settled = h.step(&policy).await?;
+    assert_eq!(settled.kind, "poll_charge");
+    assert_eq!(
+        settled.disposition,
+        Disposition::Finished,
+        "error: {:?}",
+        settled.error
+    );
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "succeeded");
+    assert_eq!(intent_status(&h.pool, &intent).await?.0, "succeeded");
+    assert_eq!(
+        notchpay_calls(&h).await?,
+        (0, 0, 1),
+        "one read, by the held reference; nothing sent again"
+    );
+    assert_one_reference(&h.pool, &charge_id, TWO_STEP_REF).await;
+    Ok(())
+}
+
+/// A Notch Pay charge with nothing sent at all goes through both calls, in
+/// order: `prepare`, the reference committed, then the prompt.
+///
+/// This is also every charge a one-call build left at kill point 1, before
+/// ADR-0032 shipped: no attempt row means nothing was sent, under either
+/// build, so it needs nothing special.
+#[tokio::test]
+async fn a_never_sent_two_step_charge_is_prepared_committed_and_then_prompted() -> anyhow::Result<()>
+{
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let (_intent, charge_id) = crashed_notchpay_charge(&h, TWO_STEP_REF).await?;
+
+    let resubmit = run_the_resubmit(&h, &policy, &charge_id).await?;
+    assert_eq!(
+        resubmit.disposition,
+        Disposition::Finished,
+        "error: {:?}",
+        resubmit.error
+    );
+    let stored = charge(&h.pool, &charge_id).await?;
+    assert_eq!(stored.state, "submitted");
+    let held: Option<serde_json::Value> =
+        sqlx::query_scalar("SELECT provider_ref_extra FROM charges WHERE id = $1")
+            .bind(&charge_id)
+            .fetch_one(&h.pool)
+            .await?;
+    assert_eq!(
+        held,
+        Some(json!({ "notchpay_reference": format!("trx.test_{TWO_STEP_REF}") }))
+    );
+    let operations: Vec<String> = sqlx::query_scalar(
+        "SELECT operation FROM provider_requests WHERE charge_id = $1 ORDER BY id",
+    )
+    .bind(&charge_id)
+    .fetch_all(&h.pool)
+    .await?;
+    assert_eq!(
+        operations,
+        vec!["prepare".to_owned(), "submit".to_owned()],
+        "the prepare row, then the submit row, written only once the reference was committed"
+    );
+    assert_eq!(notchpay_calls(&h).await?, (1, 1, 0));
+    assert_one_reference(&h.pool, &charge_id, TWO_STEP_REF).await;
+    Ok(())
+}
+
+/// A charge a **one-call** build left behind — an initialize sent under a
+/// `submit` row whose answer was lost, so the charge holds no `trx.…` — stays
+/// an operator's, reached through its resubmit.
+///
+/// The resubmit job is the one a one-call build's ladder enqueued, re-run
+/// after the deploy. Its `prepare` is told a submit was recorded for this
+/// charge ([`vpay_provider::PriorSubmits::Some`]): under a one-call build
+/// that initialize also prompted, so the payer may have paid the payment
+/// Notch Pay holds, and nobody can read it. The `409` is
+/// `NeedsReconciliation`, and the charge is escalated at once and alerted,
+/// as vaam-apps/vpay#313 left it. It is never failed, never processed, and
+/// never initialized again on the re-run.
+///
+/// The poll job is pushed out of the way so the resubmit is what runs; the
+/// next case covers the poll.
+#[tokio::test]
+async fn a_one_call_charge_whose_resubmit_lost_its_answer_is_escalated_and_never_prompted()
+-> anyhow::Result<()> {
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let (intent, charge_id) = crashed_notchpay_charge(&h, NOTCHPAY_DUPLICATE_REF).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        NOTCHPAY,
+        NOTCHPAY_DUPLICATE_REF,
+        None,
+    )
+    .await?;
+    let pushed =
+        sqlx::query("UPDATE jobs SET run_at = now() + INTERVAL '1 hour' WHERE dedupe_key = $1")
+            .bind(vpay_worker::jobs::poll_dedupe_key(&charge_id))
+            .execute(&h.pool)
+            .await?
+            .rows_affected();
+    anyhow::ensure!(pushed == 1, "the poll job was not there to push back");
+    let charge_for_job = charge_id.clone();
+    h.repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let enqueued = tx
+                    .enqueue_in_tx(
+                        "resubmit_charge",
+                        &vpay_worker::jobs::resubmit_dedupe_key(&charge_for_job),
+                        &json!({ "charge_id": charge_for_job }),
+                        Duration::ZERO,
+                    )
+                    .await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Commit(enqueued))
+            })
+        })
+        .await?;
+
+    let resubmit = h.step(&policy).await?;
+    assert_eq!(resubmit.kind, "resubmit_charge");
+    assert_eq!(
+        resubmit.disposition,
+        Disposition::Rescheduled(Duration::from_secs(3_600)),
+        "escalated, not failed and not on the ladder. error: {:?}",
+        resubmit.error
+    );
+    assert!(resubmit.alert, "and a person is told now");
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "unresolved");
+    assert_eq!(
+        intent_status(&h.pool, &intent).await?,
+        ("requires_payment_method".to_owned(), None),
+        "an escalation stamps no error on the intent"
+    );
+    assert_eq!(
+        attempts_of(&h.pool, &charge_id, "prepare").await?,
+        vec![StoredAttempt {
+            status_code: None,
+            answered: false,
+            error_kind: Some("charge_needs_reconciliation".to_owned()),
+        }],
+        "unanswered: what the rail holds is unknown"
+    );
+
+    // The resubmit's hourly re-run and the poll: neither sends anything.
+    make_every_job_runnable(&h.pool).await?;
+    let mut kinds = BTreeMap::new();
+    for _ in 0..2 {
+        let step = h.step(&policy).await?;
+        kinds.insert(step.kind.clone(), step);
+    }
+    assert_eq!(
+        kinds
+            .get("resubmit_charge")
+            .context("the resubmit's re-run did not run")?
+            .disposition,
+        Disposition::Finished,
+        "the re-run finds the charge outside `submitting`"
+    );
+    assert_eq!(
+        kinds
+            .get("poll_charge")
+            .context("the poll did not run")?
+            .disposition,
+        Disposition::Rescheduled(Duration::from_secs(3_600))
+    );
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "unresolved");
+    assert_eq!(attempts_of(&h.pool, &charge_id, "prepare").await?.len(), 1);
+    assert_eq!(
+        notchpay_calls(&h).await?,
+        (1, 0, 0),
+        "one initialize, answered 409; nothing processed, and nothing to read by"
+    );
+    assert_one_reference(&h.pool, &charge_id, NOTCHPAY_DUPLICATE_REF).await;
+    Ok(())
+}
+
+/// The same one-call charge reached by its **poll**, which is how most of
+/// them will be: the unanswered `submit` row reads `SubmitAttempt::Unanswered`,
+/// recovery asks the rail, and the adapter cannot read a charge with no
+/// `trx.…` — `NeedsReconciliation`, escalated at once (vaam-apps/vpay#313).
+/// ADR-0032 changes nothing here; the case pins that it did not.
+#[tokio::test]
+async fn a_one_call_charge_whose_submit_lost_its_answer_is_escalated_by_its_poll()
+-> anyhow::Result<()> {
+    let h = notchpay_harness().await?;
+    let policy = RecoveryPolicy::default();
+    let (_intent, charge_id) = crashed_notchpay_charge(&h, TWO_STEP_REF).await?;
+    record_submit_attempt(
+        h.repositories.as_ref(),
+        &charge_id,
+        NOTCHPAY,
+        TWO_STEP_REF,
+        None,
+    )
+    .await?;
+
+    let poll = h.step(&policy).await?;
+    assert_eq!(poll.kind, "poll_charge");
+    assert_eq!(
+        poll.disposition,
+        Disposition::Rescheduled(Duration::from_secs(3_600)),
+        "error: {:?}",
+        poll.error
+    );
+    assert!(poll.alert);
+    assert_eq!(charge(&h.pool, &charge_id).await?.state, "unresolved");
+    assert!(
+        attempts_of(&h.pool, &charge_id, "prepare")
+            .await?
+            .is_empty(),
+        "nothing is prepared for a charge a submit may have prompted"
+    );
+    assert!(
+        !jobs(&h.pool)
+            .await?
+            .iter()
+            .any(|job| job.kind == "resubmit_charge"),
+        "and nothing is resubmitted"
+    );
+    assert_eq!(
+        notchpay_calls(&h).await?,
+        (0, 0, 0),
+        "the adapter refuses the read before any request: there is no `trx.…` to read by"
+    );
     Ok(())
 }
 

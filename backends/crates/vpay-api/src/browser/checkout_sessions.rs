@@ -78,6 +78,7 @@ use axum::response::Response;
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use vpay_core::ids;
+use vpay_core::routing::MethodType;
 use vpay_db::{
     CheckoutSessionRow, CheckoutSessions, PaymentIntentRow, PaymentIntents, Repositories,
 };
@@ -384,35 +385,93 @@ fn for_payer(
 /// (`vpay_config::ConfigError::ProviderWithoutAdapter`,
 /// `crate::v1::boot::boot_seeds`) — so a miss here means that invariant
 /// failed, on `crate::v1::account_holders::retrieve`'s terms.
+///
+/// # A payment-method type (ADR-0029 D6, D13)
+///
+/// An entry that is a method type (`mtn_wallet`) renders as **one entry for
+/// the type**, never one per rail: D13's `collapse`, which the maintainer's
+/// "he himself should choose orange or mtn" asks for. Its `code` is the type,
+/// so the page confirms with `payment_method_data[type]=mtn_wallet` and the
+/// confirm routes it; its flow and fields are those of the rail the router
+/// ranks first **now** ([`ResourceConfig::route`]), because a push rail needs
+/// a number field and a redirect rail none. The ranking here is advisory
+/// (D10): the confirm ranks again and decides. A type no rail can take now is
+/// left out rather than rendered as something the payer cannot use.
 fn build_rails(
     payment_method_types: &[String],
+    currency_code: &str,
     config: &ResourceConfig,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> Result<Vec<RailSpec>, ApiError> {
     payment_method_types
         .iter()
-        .map(|code| {
-            let adapter = adapters.get(code.as_str()).ok_or_else(|| {
-                ApiError::Internal(format!(
-                    "payment_intents.payment_method_types names `{code}`, which has no linked \
-                     adapter; boot is supposed to have refused to start"
-                ))
-            })?;
-            Ok(RailSpec {
-                code: code.clone(),
-                // The one `Capabilities` flag a payer's sheet acts on — see
-                // `RailSpec`'s own doc for why the rest (refund flags,
-                // `requires_ip_allowlist`) stay operator-facing.
-                flow: adapter.capabilities().flow,
-                label_key: format!("rail.{code}"),
-                display_name: config
-                    .rail(code)
-                    .and_then(RailConfig::display_name)
-                    .map(RailDisplayName::from),
-                fields: adapter.payer_fields().to_vec(),
-            })
+        .filter_map(|code| match MethodType::from_wire(code) {
+            Some(method_type) => {
+                method_type_spec(method_type, currency_code, config, adapters).map(Ok)
+            }
+            None => Some(rail_spec(code, config, adapters)),
         })
         .collect()
+}
+
+/// A method type's single entry, flowing as the rail the router ranks first.
+fn method_type_spec(
+    method_type: MethodType,
+    currency_code: &str,
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> Option<RailSpec> {
+    let decision = config.route(adapters, method_type, currency_code, None);
+    let adapter = adapters.get(decision.chosen.as_deref()?)?;
+    Some(RailSpec {
+        code: method_type.as_wire_str().to_owned(),
+        flow: adapter.capabilities().flow,
+        label_key: format!("rail.{method_type}"),
+        // The network's own name, since no deployment configures one for a
+        // type: the payer chooses "MTN Mobile Money", never the rail behind it.
+        display_name: Some(method_type_name(method_type)),
+        fields: adapter.payer_fields().to_vec(),
+    })
+}
+
+/// What a payer reads for a method type, in both languages the checkout
+/// renders. The networks' own product names, the same in both.
+fn method_type_name(method_type: MethodType) -> RailDisplayName {
+    let name = match method_type {
+        MethodType::MtnWallet => "MTN Mobile Money",
+        MethodType::OrangeWallet => "Orange Money",
+    };
+    RailDisplayName {
+        en: Some(name.to_owned()),
+        fr: Some(name.to_owned()),
+    }
+}
+
+/// A rail code's entry, exactly as before method types existed (D6).
+fn rail_spec(
+    code: &str,
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+) -> Result<RailSpec, ApiError> {
+    let adapter = adapters.get(code).ok_or_else(|| {
+        ApiError::Internal(format!(
+            "payment_intents.payment_method_types names `{code}`, which has no linked \
+             adapter; boot is supposed to have refused to start"
+        ))
+    })?;
+    Ok(RailSpec {
+        code: code.to_owned(),
+        // The one `Capabilities` flag a payer's sheet acts on — see
+        // `RailSpec`'s own doc for why the rest (refund flags,
+        // `requires_ip_allowlist`) stay operator-facing.
+        flow: adapter.capabilities().flow,
+        label_key: format!("rail.{code}"),
+        display_name: config
+            .rail(code)
+            .and_then(RailConfig::display_name)
+            .map(RailDisplayName::from),
+        fields: adapter.payer_fields().to_vec(),
+    })
 }
 
 /// `GET /v1/browser/checkout/sessions/{id}?key=…&client_secret=…`.
@@ -457,7 +516,12 @@ pub(super) async fn retrieve(
     // read the secret on its first call, and everything it does afterwards
     // is polling with the copy it already holds.
     let intent_object = PaymentIntentObject::try_from(&intent)?;
-    let rails = build_rails(&intent_object.payment_method_types, &config, &adapters)?;
+    let rails = build_rails(
+        &intent_object.payment_method_types,
+        &intent.currency_code,
+        &config,
+        &adapters,
+    )?;
     let expanded = if session.status == crate::v1::checkout_sessions::OPEN {
         ExpandableIntent::ExpandedWithSecret(Box::new(PaymentIntentWithSecret::new(
             intent_object,
@@ -609,6 +673,7 @@ fn parts<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use vpay_core::routing::MethodTypes;
 
     /// The credential gate refuses a missing or blank half with the same 404
     /// everything else on this surface answers — never a `400` naming a
@@ -700,6 +765,14 @@ mod tests {
                 supports_account_holder_lookup: false,
                 refund_destination: vpay_provider::RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
+                submit_steps: vpay_provider::SubmitSteps::One,
+                // Each stub serves its real rail's network, so the routing
+                // test below sees an MTN push rail and an Orange redirect one.
+                method_types: match self.code {
+                    "mtn_momo" => MethodTypes::of(&[MethodType::MtnWallet]),
+                    "orange_money" => MethodTypes::of(&[MethodType::OrangeWallet]),
+                    _ => MethodTypes::NONE,
+                },
             }
         }
 
@@ -798,6 +871,7 @@ mod tests {
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard_client: None,
             staff_auth: vpay_config::StaffAuth::default(),
+            routing: Default::default(),
         }
     }
 
@@ -839,6 +913,7 @@ mod tests {
 
         let rails = build_rails(
             &["mtn_momo".to_owned(), "orange_money".to_owned()],
+            "XAF",
             &resource_config,
             &rail_test_adapters(),
         )
@@ -900,10 +975,58 @@ mod tests {
 
         let error = build_rails(
             &["a_rail_nothing_links".to_owned()],
+            "XAF",
             &resource_config,
             &rail_test_adapters(),
         )
         .expect_err("no adapter is linked for this code");
         assert!(matches!(error, ApiError::Internal(_)));
+    }
+
+    /// ADR-0029 D13's `collapse`: a method type is one entry carrying the
+    /// type as its code, the network's name, and the flow and fields of the
+    /// rail the router ranks first. `orange_wallet` flows as Orange's
+    /// redirect, `mtn_wallet` as MTN's push. A currency no rail settles
+    /// leaves the type out rather than rendering what the payer cannot use.
+    /// Mutation-checked: taking the flow from any serving rail other than the
+    /// router's first fails the `orange_wallet` row.
+    #[test]
+    fn a_method_type_is_one_entry_flowing_as_the_routers_first_rail() {
+        let config = rail_spec_test_config(None);
+        let resource_config =
+            ResourceConfig::from_config(&config).expect("the fixture config is valid");
+        let adapters = rail_test_adapters();
+        let rails = build_rails(
+            &["mtn_wallet".to_owned(), "orange_wallet".to_owned()],
+            "XAF",
+            &resource_config,
+            &adapters,
+        )
+        .expect("both types are served");
+        let [mtn, orange] = rails.as_slice() else {
+            panic!("one entry per type, got {rails:?}");
+        };
+        assert_eq!(mtn.code, "mtn_wallet");
+        assert_eq!(mtn.flow, vpay_core::ProviderFlow::Push);
+        assert_eq!(mtn.label_key, "rail.mtn_wallet");
+        assert_eq!(mtn.fields.len(), MTN_FIELDS.len());
+        assert_eq!(
+            mtn.display_name
+                .as_ref()
+                .and_then(|name| name.en.as_deref()),
+            Some("MTN Mobile Money")
+        );
+        assert_eq!(orange.code, "orange_wallet");
+        assert_eq!(orange.flow, vpay_core::ProviderFlow::Redirect);
+        assert!(orange.fields.is_empty());
+
+        let none = build_rails(
+            &["mtn_wallet".to_owned()],
+            "EUR",
+            &resource_config,
+            &adapters,
+        )
+        .expect("an unservable type is left out, not an error");
+        assert!(none.is_empty());
     }
 }

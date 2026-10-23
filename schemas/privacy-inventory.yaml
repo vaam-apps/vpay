@@ -274,6 +274,9 @@ elements:
         table: refunds
         column: updated_at
       - kind: column
+        table: routing_decisions
+        column: created_at
+      - kind: column
         table: staff_members
         column: created_at
       - kind: column
@@ -694,6 +697,9 @@ elements:
         table: refunds
         column: payment_intent_id
       - kind: column
+        table: routing_decisions
+        column: charge_id
+      - kind: column
         table: staff_members
         column: id
       - kind: column
@@ -753,6 +759,9 @@ elements:
     copies:
       - kind: column
         table: charges
+        column: method_type
+      - kind: column
+        table: charges
         column: provider_code
       - kind: column
         table: currencies
@@ -808,6 +817,24 @@ elements:
       - kind: column
         table: providers
         column: supports_refunds
+      - kind: column
+        table: routing_decisions
+        column: chosen_rail
+      - kind: column
+        table: routing_decisions
+        column: config_version
+      - kind: column
+        table: routing_decisions
+        column: considered
+      - kind: column
+        table: routing_decisions
+        column: formula
+      - kind: column
+        table: routing_decisions
+        column: method_type
+      - kind: column
+        table: routing_decisions
+        column: pinned_rail
   sys_provider_ref:
     subject: none
     purpose: rail-correlation

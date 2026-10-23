@@ -372,6 +372,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, dashboard: bool) ->
         // mounted beside it would be scenery. `staff_sign_in.rs` is the suite
         // that exercises the grant end to end.
         staff_auth: vpay_config::StaffAuth::default(),
+        routing: Default::default(),
     }
 }
 
@@ -895,6 +896,7 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
                     // Written out rather than left implicit so the day it
                     // *is* written, this fixture is where a reader looks.
                     payer_ref_masked: None,
+                    method_type: None,
                 })
                 .await
                 .context("seeding a charge")?;
@@ -1118,6 +1120,7 @@ async fn the_detail_read_renders_the_timeline_and_the_refunds_it_has() -> anyhow
                     currency_code: CURRENCY.to_owned(),
                     payer_ref: None,
                     payer_ref_masked: None,
+                    method_type: None,
                 })
                 .await
                 .context("seeding a charge")?;

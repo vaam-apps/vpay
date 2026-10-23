@@ -712,6 +712,11 @@ metrics:
     providerErrorWindow: 15m
     jobQueueBehindSeconds: 300
     alertEventWindow: 5m
+    # `VpayCallbackEndpointUnconfirmed`: how long every `ensure_callbacks` pass
+    # for a rail may fail to confirm vpay's endpoint before it fires. The pass
+    # runs hourly, so 3h is three passes and the five-minute retries between
+    # them; shorter than 1h can fire between two healthy passes.
+    callbackEndpointWindow: 3h
 
 # --------------------------------------------------------------- network ---
 

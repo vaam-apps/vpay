@@ -369,6 +369,55 @@ moved with it, measured then by
 and re-measured on the boot path by `boot_coherence.rs`. Since issue #61 that
 route is no longer how a **deployment** finds out: boot answers first._
 
+## `routing:` — static weights for the provisional score (2026-10-23)
+
+An optional block. With none, every rail weighs `100` for every
+payment-method type it serves, and the router's tie-break (the lower rail code)
+decides ([RFC-0008](../rfc/0008-payment-method-routing.md)'s 2026-10-23
+revision, formula `provisional-1`):
+
+```yaml
+routing:
+  weights:
+    - rail: notchpay
+      method_type: mtn_wallet # optional; without it the weight is the rail's for every type
+      weight: 300 # 0 ..= 1000
+```
+
+The most specific entry wins: a rail **and** a type, then the rail alone,
+then `100`. The weight is the only component of the score today, so **it is
+provisional**: when the maintainer chooses the components RFC-0008's open
+question R8.1 lists, this block keeps its meaning (one component among
+several) and the formula's name moves past `provisional-1`. A weight is not a
+switch: `0` ranks a rail last, never off; `enabled: false` is how a rail is
+taken out.
+
+Six refusals, each a named `ConfigError` and exit `78`:
+
+| Refused                                                                                              | `ConfigError`                   | Where                     |
+| ---------------------------------------------------------------------------------------------------- | ------------------------------- | ------------------------- |
+| An entry naming a rail no `providers[]` entry configures                                             | `UnknownRoutingRail`            | `validate_all`            |
+| A `method_type` vpay does not know, or a reserved one (`card`, `bank_transfer`)                      | `UnknownMethodType`             | `validate_all`            |
+| A weight over `1000`                                                                                 | `RoutingWeightTooLarge`         | `validate_all`            |
+| Two entries for the same rail and type (or the same rail with no type)                               | `DuplicateRoutingWeight`        | `validate_all`            |
+| A weight for a type the rail's **adapter** does not serve (`orange_money` + `mtn_wallet`)            | `RoutingWeightOnAnUnservedType` | boot step 4, `boot_seeds` |
+| An **enabled** rail whose adapter serves no payment-method type (`Capabilities::method_types` empty) | `RailServesNoMethodType`        | boot step 4, `boot_seeds` |
+
+The first four are about the file and are proven by
+`routing_weights_are_refused_for_every_mistake_the_file_can_show` in
+`vpay-config`, with `a_routing_block_parses_strictly_and_resolves_its_weights`
+for the accepted shape (`deny_unknown_fields`, so a typo'd key is a load error
+too). The last two need the adapter, so they are asked where
+`IncoherentCapabilities` is: `a_weight_on_a_type_the_rail_does_not_serve_is_refused_at_boot`
+and `an_enabled_rail_serving_no_method_type_is_refused_and_a_disabled_one_is_not`
+in `backends/crates/vpay-api/src/v1/boot.rs`. Like the `partial-refunds` row
+above, the last one is a **linking** mistake no YAML can cause: every shipping
+adapter declares at least one type, which the conformance suite's
+`every_adapter_declares_the_method_types_it_serves` and `vpay-server`'s
+`every_linked_adapter_serves_a_method_type` hold. Each refusal was
+mutation-checked on 2026-10-23
+([the verification page](../status/verification/2026-10-23-method-type-routing.md)).
+
 ## The checkout page reads its own two files, and they are not these
 
 Everything above is `vpay-server` and `vpay-worker`: one document
@@ -426,6 +475,11 @@ charge submitted to host A must be _polled_ at host A; silently repointing it
 means recovery asks the wrong server and gets `NotFound` forever.
 
 ## Status
+
+**Updated 2026-10-23: `routing.weights`** and six refusals, four in
+`validate_all` and two at boot step 4 (§ "`routing:`" above). Every refusal
+is tested and was mutation-checked;
+[verification](../status/verification/2026-10-23-method-type-routing.md).
 
 The CLI/env layer (`vpay-config::cli`) is implemented and tested — flag
 parsing, env-var resolution, flag-beats-env precedence, and shared options
@@ -608,7 +662,8 @@ than a feature it added:**
   `settings.api_user`, `credentials.subscription_key`, `credentials.api_key`;
   Orange: `credentials.merchant_key`, `credentials.client_id`,
   `credentials.client_secret`; Notch Pay (2026-10-20):
-  `settings.channel` (exactly `cm.mobile`), `credentials.public_key`,
+  `settings.channel` (exactly `cm.mobile`; since 2026-10-23 a charge routed by
+  method type is sent `cm.mtn` or `cm.orange` instead), `credentials.public_key`,
   `credentials.private_key`, currency `XAF`, a test-key marker (`test.` or `test_`, corrected
   2026-10-20) on both keys that agrees with `deployment.livemode`, and **in livemode only**
   `settings.accept_public_key_exposure: true`, ADR-0031 condition 4's

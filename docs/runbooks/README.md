@@ -8,6 +8,7 @@ do, and how do I know it is fixed.
 | [unresolved-charges.md](unresolved-charges.md)               | A charge passed 24h with no terminal answer                                                                                                                                                                                                            | `VpayUnresolvedChargesRising`                |
 | [provider-error-rate.md](provider-error-rate.md)             | Failed rail calls rising as a share of all calls (any `error_kind`)                                                                                                                                                                                    | `VpayProviderErrorRateHigh`                  |
 | [worker-queue.md](worker-queue.md)                           | A dead-lettered job, a stranded lease, or a rail contradicting a settled charge                                                                                                                                                                        | `VpayJobQueueBehind`, `VpayJobsDeadLettered` |
+| [callback-endpoints.md](callback-endpoints.md)               | No `ensure_callbacks` pass confirmed vpay's callback endpoint on a rail for a whole window (3h): `missing`, `drifted`, `failed` or `locked`                                                                                                            | `VpayCallbackEndpointUnconfirmed`            |
 | [webhook-delivery-failures.md](webhook-delivery-failures.md) | A delivery in `exhausted`, an endpoint with no signing secret, or a secret rotation                                                                                                                                                                    | —                                            |
 | [migrations.md](migrations.md)                               | A binary exiting 78 with `migration <n> was previously applied but has been modified`                                                                                                                                                                  | —                                            |
 | [release.md](release.md)                                     | Cutting a `v*` tag, verifying an image signature, pinning a digest in Helm values                                                                                                                                                                      | —                                            |
@@ -36,6 +37,14 @@ trusted on its own:
   default, and `metrics.prometheusRule.enabled` is `false`. So these rules
   have never been _evaluated_ against real series — the metric existing and
   the alert working are two claims, and only the first has evidence.
+  _(Since 2026-10-23 the six rules are evaluated against **synthetic**
+  series: `just test-alert-rules` renders the chart's rules and runs
+  `promtool test rules` over `deploy/helm/vpay/ci/prometheusrule.test.yaml`
+  in CI's `deploy (helm chart)` job, with a firing and a silent case per
+  rule. That proves each expression fires on the series it is written for;
+  it proves nothing about vpay's real series, which nothing has scraped. The
+  sixth rule's metric, `vpay_callback_endpoint_checks_total`, has been
+  emitted since 2026-10-22.)_
 - **Every threshold is proposed, not derived** (step-6 decision (5)). The two
   runbooks that predate the chart contained no numbers to transcribe
   ("crosses its threshold", "more than one hour"), so the figures were

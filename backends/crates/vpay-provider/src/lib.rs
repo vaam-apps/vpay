@@ -100,6 +100,55 @@ pub enum CallbackUrlMode {
     Registered,
 }
 
+/// How many calls it takes this rail to put a payment in front of a payer,
+/// and so whether the core must commit something the rail issued *between*
+/// them (ADR-0032).
+///
+/// The capability the core branches on so that "call `prepare` first" never
+/// becomes `if provider == "notchpay"` (ADR-0002). Not persisted, on
+/// [`CallbackUrlMode`]'s terms.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SubmitSteps {
+    /// One call. [`ProviderAdapter::submit`] creates the payment and, on a
+    /// push rail, prompts the payer, and the rail is addressed by vpay's own
+    /// reference or by key material `submit` returns before anyone can act
+    /// on it. [`ProviderAdapter::prepare`] keeps its `Unsupported` default
+    /// and the core never calls it. `mtn_momo` and `orange_money`.
+    One,
+    /// Two calls. The rail issues its own reference when the payment is
+    /// created and answers for no other, so the core calls
+    /// [`ProviderAdapter::prepare`] (create, no prompt), commits the key
+    /// material it returns on the charge, and only then calls
+    /// [`ProviderAdapter::submit`] (the prompt). A crash between the two
+    /// leaves a charge whose payer was provably never asked, where one call
+    /// left one that may have been. `notchpay`.
+    PrepareThenSubmit,
+}
+
+/// What the core knows about a charge's earlier submits, handed to
+/// [`ProviderAdapter::prepare`] because only the core keeps the evidence
+/// (`provider_requests`).
+///
+/// The adapter needs it for one decision: a rail that answers "a payment
+/// with this reference already exists" to a `prepare` that holds none of the
+/// rail's key material. With [`PriorSubmits::None`] that payment was created
+/// by an earlier `prepare` whose answer was lost, and nothing has asked the
+/// rail to prompt for it. With [`PriorSubmits::Some`] an earlier build's
+/// one-call submit may have prompted the payer (ADR-0032 § "The build in
+/// flight across the deploy").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PriorSubmits {
+    /// No `submit` attempt has ever been recorded for this charge. The core
+    /// records one before every call to [`ProviderAdapter::submit`], and
+    /// under [`SubmitSteps::PrepareThenSubmit`] only once `prepare`'s key
+    /// material is committed, so the rail has never been asked to prompt.
+    None,
+    /// At least one `submit` attempt was recorded, so the rail may have
+    /// prompted the payer.
+    Some,
+}
+
 /// Static declaration of what a rail can do.
 ///
 /// The core reads these instead of special-casing a provider code.
@@ -173,6 +222,29 @@ pub struct Capabilities {
     /// endpoint nothing would ever call is not worth a write to someone's
     /// account.
     pub callback_url_mode: CallbackUrlMode,
+    /// Whether the core calls [`ProviderAdapter::prepare`] and commits what it
+    /// returns before calling [`ProviderAdapter::submit`] (ADR-0032).
+    pub submit_steps: SubmitSteps,
+    /// The payment-method types this rail serves: what a payer chooses
+    /// (`mtn_wallet`, `orange_wallet`), as opposed to the rail that processes
+    /// it (ADR-0029 D6, D12).
+    ///
+    /// The router reads it to find a method type's candidates
+    /// (`vpay_core::routing::route`), so a rail serving nothing is reachable
+    /// only by its own code in `payment_method_types`, which is what every
+    /// intent before 2026-10-23 carries (D6's backward compatibility).
+    /// [`Capabilities::method_types_are_coherent`] refuses that on a rail a
+    /// deployment enables, because a rail no method type can reach is one the
+    /// payer's choice can never land on.
+    ///
+    /// ADR-0029 D2 named RFC-0010 as this capability's first consumer. It is
+    /// `notchpay`, the first rail to serve two types: an aggregator is where a
+    /// method type and a rail stop being the same thing.
+    ///
+    /// Deliberately **not persisted**, on
+    /// [`supports_account_holder_lookup`](Capabilities::supports_account_holder_lookup)'s
+    /// terms.
+    pub method_types: vpay_core::routing::MethodTypes,
 }
 
 impl Capabilities {
@@ -243,6 +315,18 @@ impl Capabilities {
     #[must_use]
     pub const fn callbacks_are_coherent(&self) -> bool {
         !matches!(self.callback_url_mode, CallbackUrlMode::Registered) || self.delivers_callbacks
+    }
+
+    /// A rail serves at least one payment-method type (ADR-0029 D6).
+    ///
+    /// A method of its own for [`Capabilities::callbacks_are_coherent`]'s
+    /// reason: it has no database half. Boot refuses an **enabled** rail that
+    /// fails it with `ConfigError::RailServesNoMethodType`, because a payer
+    /// who chooses a network could never be routed to it, and a rail-code
+    /// intent is the only way it would ever be charged.
+    #[must_use]
+    pub const fn method_types_are_coherent(&self) -> bool {
+        !self.method_types.is_empty()
     }
 }
 
@@ -425,6 +509,16 @@ pub struct ChargeRef {
     /// `backends/tests/conformance`, which asserts MTN's body carries no
     /// return URL at all.
     pub return_url: Option<String>,
+    /// The payment-method type the payer chose (ADR-0029 D6), when the
+    /// charge was routed by one, or when its rail serves exactly one.
+    ///
+    /// **The core fills this, never an adapter**, from `charges.method_type`.
+    /// An adapter serving several types reads it to tell the rail which
+    /// network to prompt: `notchpay` sends `cm.mtn` or `cm.orange` for it
+    /// (RFC-0012 delivery step 8). `None` is a charge confirmed by the rail's
+    /// own code on a rail serving several types, for which the adapter keeps
+    /// its configured behaviour (`notchpay`: `settings.channel`, `cm.mobile`).
+    pub method_type: Option<vpay_core::routing::MethodType>,
 }
 
 /// Redacts [`ChargeRef::payer_ref`], [`ChargeRef::return_url`] and
@@ -1136,6 +1230,32 @@ pub enum ProviderError {
         #[source]
         source: Option<RailFailure>,
     },
+    /// A charge only a person can settle with the rail: the adapter
+    /// understood where it stands, and asking the same question again
+    /// cannot change it.
+    ///
+    /// Not [`ProviderError::Malformed`], whose meaning is the opposite one —
+    /// an answer this adapter could not read, which a later read may well
+    /// fix, so the poll ladder keeps asking quietly. This one is terminal on
+    /// the rail's side and unknowable on ours: a payment the rail reports
+    /// as collected for a sum that is not the charge's, or a payment the
+    /// rail holds under our reference that vpay can no longer address. It
+    /// is never a decline, because money may have moved, and never a
+    /// success, because vpay cannot say whose money or how much. Usually the
+    /// rail answered; once it is raised before any request, for a charge
+    /// whose rail key material is gone and which the rail therefore cannot
+    /// be asked about.
+    ///
+    /// The worker escalates the charge to `unresolved` on the first answer
+    /// that raises this — polled hourly, alerting, never parked and never
+    /// terminal — rather than at the 24-hour horizon
+    /// (`vpay_worker::handlers`, `docs/flows/reconciler.md`; vaam-apps/vpay#313).
+    #[error("the charge needs an operator to reconcile it with the rail: {context}")]
+    NeedsReconciliation {
+        /// What the rail said and why it cannot be acted on, by which rail.
+        /// The adapter's own sentence: never a secret, never rail prose.
+        context: String,
+    },
     #[error("adapter configuration is invalid: {0}")]
     Config(String),
     /// Returned by an operation this rail does not support.
@@ -1169,8 +1289,8 @@ pub enum ProviderError {
 /// chain's `Debug` prints the rail's words anywhere a `{err:?}` lands in a
 /// tracing event or a log. `Rejected`'s `code` stays visible for the
 /// `PaymentIntentRow` impl's reason: it is vpay's own closed `FailureCode`
-/// vocabulary, never rail text. The `Transport`/`Malformed` `context` and
-/// `Config` string are the adapter's own sentences — operator diagnostics,
+/// vocabulary, never rail text. The `Transport`/`Malformed`/`NeedsReconciliation`
+/// `context` and `Config` string are the adapter's own sentences — operator diagnostics,
 /// never a payer's identifier or a live credential — and stay visible, as
 /// their `Display` already renders them.
 impl fmt::Debug for ProviderError {
@@ -1190,6 +1310,10 @@ impl fmt::Debug for ProviderError {
                 .debug_struct("ProviderError::Malformed")
                 .field("context", context)
                 .field("source", source)
+                .finish(),
+            Self::NeedsReconciliation { context } => f
+                .debug_struct("ProviderError::NeedsReconciliation")
+                .field("context", context)
                 .finish(),
             Self::Config(message) => f
                 .debug_tuple("ProviderError::Config")
@@ -1332,6 +1456,33 @@ impl ProviderError {
             source: Some(source.into()),
         }
     }
+
+    /// An answer the adapter understood, refused, and that asking again
+    /// cannot change: a person must reconcile the charge with the rail.
+    ///
+    /// ```
+    /// use vpay_core::Classify as _;
+    /// use vpay_provider::ProviderError;
+    ///
+    /// let error = ProviderError::needs_reconciliation(
+    ///     "notchpay: complete, and amounts.total is not this charge's amount",
+    /// );
+    /// // The rail's category, as a `Malformed` is: never a decline, so the
+    /// // merchant is told the outcome is not known yet and is not to retry.
+    /// assert_eq!(error.category(), vpay_core::Category::Rail);
+    /// // But its own code, and `Error` rather than `Warn`: this one does not
+    /// // heal itself, and the worker escalates the charge on it at once.
+    /// assert_eq!(error.code(), "charge_needs_reconciliation");
+    /// assert_eq!(error.severity(), vpay_core::Severity::Error);
+    /// // And the merchant never sees the adapter's sentence.
+    /// assert!(!error.public_message().contains("amounts.total"));
+    /// ```
+    #[must_use]
+    pub fn needs_reconciliation(context: impl Into<String>) -> Self {
+        Self::NeedsReconciliation {
+            context: context.into(),
+        }
+    }
 }
 
 impl vpay_core::Classify for ProviderError {
@@ -1343,6 +1494,11 @@ impl vpay_core::Classify for ProviderError {
             // else should, and a merchant re-submitting would risk a double
             // charge on a push rail (docs/flows/crash-safety.md).
             Self::Transport { .. } | Self::Malformed { .. } => Category::Rail,
+            // The rail's category too, and for the same reason a merchant
+            // must not re-submit: the money's fate is the rail's, and it is
+            // not known here. What differs is the code, the severity and
+            // what the worker does with it (the variant's own doc comment).
+            Self::NeedsReconciliation { .. } => Category::Rail,
             // A rail *decision*, not a rail *failure*: the charge is
             // declined, the intent goes back to requires_payment_method with
             // `last_payment_error`, and the merchant starts a new intent.
@@ -1362,6 +1518,11 @@ impl vpay_core::Classify for ProviderError {
         match self {
             Self::Transport { .. } => "provider_unavailable",
             Self::Malformed { .. } => "provider_error",
+            // Beside `charge_declined` and the worker's `charge_unresolved`:
+            // it names the charge's condition, not the rail's health, and an
+            // operator grouping `provider_requests.error_kind` must be able to
+            // tell "an answer we could not read" from "an answer we could".
+            Self::NeedsReconciliation { .. } => "charge_needs_reconciliation",
             // A constant, *not* the `FailureCode`'s own string. The two
             // vocabularies overlap: `FailureCode::ProviderUnavailable`
             // renders `provider_unavailable`, which is also
@@ -1388,8 +1549,13 @@ impl vpay_core::Classify for ProviderError {
             // Exhaustive rather than a wildcard: a new variant must state
             // its retry policy here, not inherit one silently from whatever
             // category it happened to pick.
+            // `Category::Rail`'s `AfterBackoff`, kept: the worker escalates
+            // before this policy is read, and anything that does read it
+            // (the API's `Stripe-Should-Retry`) must say what a `Malformed`
+            // says.
             Self::Transport { .. }
             | Self::Malformed { .. }
+            | Self::NeedsReconciliation { .. }
             | Self::Config(_)
             | Self::Unsupported
             | Self::NotImplemented(_) => self.category().default_retry(),
@@ -1433,6 +1599,13 @@ impl vpay_core::Classify for ProviderError {
             // `Capabilities` first, and that is ours to fix. See the
             // variant's doc comment.
             Self::Unsupported => Severity::Error,
+            // Overrides `Rail`'s `Warn`, which means "degraded but
+            // self-healing" — the one thing this is not. `Error`, the line
+            // `vpay_worker`'s `decision` reads for `alert: true`, and the
+            // severity of the 24-hour escalation it now replaces for this
+            // charge. Not `Page`: nothing is lost or corrupt, it needs a
+            // person today (vaam-apps/vpay#313).
+            Self::NeedsReconciliation { .. } => Severity::Error,
             Self::Transport { .. }
             | Self::Malformed { .. }
             | Self::Config(_)
@@ -1449,6 +1622,15 @@ impl vpay_core::Classify for ProviderError {
             // vocabularies colliding on one field.
             Self::Rejected { code, .. } => format!("The payment was declined ({code})."),
             Self::Unsupported => "This rail does not support the requested operation.".to_owned(),
+            // Not `Rail`'s generic "temporarily unavailable … will be
+            // retried": nothing will be retried into a different answer.
+            // "Another payment", not "this request": `Stripe-Should-Retry`
+            // still says `true`, as for a `Malformed`, because replaying the
+            // same request under its `Idempotency-Key` replays this answer
+            // and charges nobody. Still no rail text and no amount.
+            Self::NeedsReconciliation { .. } => "The payment's outcome could not be confirmed \
+                 with the rail and is being reconciled; do not start another payment for it."
+                .to_owned(),
             Self::Transport { .. }
             | Self::Malformed { .. }
             | Self::Config(_)
@@ -1540,14 +1722,15 @@ pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
 /// credential to read may never raise [`ProviderError::Config`], but no
 /// adapter may raise a variant this table does not give it.
 ///
-/// | Variant | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | `ensure_callback_endpoint` | what it means |
-/// |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|---|
-/// | [`Config`](ProviderError::Config) | ✓ | ✓ | | | ✓ | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
-/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `query_status`, `account_holder_name` and `ensure_callback_endpoint` only the rail refusing **our** partner credentials, because none of them carries a payment to decline |
-/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
-/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline |
-/// | [`Unsupported`](ProviderError::Unsupported) | | | | ✓ | ✓ | ✓ | ✓ | this rail has no such API, permanently. The core is supposed to have branched on [`Capabilities`] first |
-/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
+/// | Variant | `prepare` | `submit` | `query_status` | `parse_callback` | `parse_destination` | `refund` | `account_holder_name` | `ensure_callback_endpoint` | what it means |
+/// |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|---|
+/// | [`Config`](ProviderError::Config) | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | a credential, setting or URL this deployment did not supply, or supplied unusably. Stops the poll ladder: no retry against the rail can fix it |
+/// | [`Rejected`](ProviderError::Rejected) | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail *decided*. On `submit`/`refund` that includes a payer decline; on `prepare` it is a payment the rail would not create, or one it holds that vpay can prove was never put in front of the payer ([`PriorSubmits::None`]), which fails the charge so the payer can try again; on `query_status`, `account_holder_name` and `ensure_callback_endpoint` only the rail refusing **our** partner credentials, because none of them carries a payment to decline |
+/// | [`Transport`](ProviderError::Transport) | ✓ | ✓ | ✓ | | | ✓ | ✓ | ✓ | the rail could not be reached or could not be finished with — DNS, TLS, a deadline, a 5xx, a body that failed mid-stream. The charge's fate is **unknown**, which is why the worker resolves it by asking again and a merchant must not re-submit |
+/// | [`Malformed`](ProviderError::Malformed) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | the rail answered something this adapter cannot act on: an undocumented status string, a 3xx (never followed), a body past [`http::MAX_RAIL_BODY_BYTES`], or on `parse_callback` a body that names no charge of ours. Twice it is not the rail at all: on `parse_destination` it is the *merchant's* parameters, and on any call that puts a caller's value in a URL path it is that value being empty or only dots, which [`http::path_segment`] refuses before anything is sent. Same answer for the same reason — nothing was asked of anyone and nothing can be acted on. Also an unknown fate, never a decline, and one a later read **may** change, which is why it rides the ladder quietly |
+/// | [`NeedsReconciliation`](ProviderError::NeedsReconciliation) | ✓ | ✓ | ✓ | | | | | | a charge only a person can settle, because asking again **cannot** change the answer: the rail reported a `complete` for a sum that is not the charge's; or it refused a `prepare` as a duplicate of a payment vpay cannot find again and an earlier submit may have prompted for ([`PriorSubmits::Some`]); or the charge has lost the rail's key material, so the rail cannot be asked at all (that one is raised before any request). Never a decline and never a success. The worker escalates the charge to `unresolved` on the first one (vaam-apps/vpay#313); only `notchpay` raises it today |
+/// | [`Unsupported`](ProviderError::Unsupported) | ✓ | | | | ✓ | ✓ | ✓ | ✓ | this rail has no such API, permanently — on `prepare`, a [`SubmitSteps::One`] rail. The core is supposed to have branched on [`Capabilities`] first |
+/// | [`NotImplemented`](ProviderError::NotImplemented) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | unbuilt work, and it says so rather than fabricating a success. Every token appears in `docs/status.md`, which `cargo xtask verify-status` enforces |
 ///
 /// The two blank columns are as load-bearing as the ticks. `parse_callback`
 /// and `parse_destination` are the only pure functions in the table: neither
@@ -1581,11 +1764,60 @@ pub trait ProviderAdapter: Debug + Send + Sync {
 
     fn capabilities(&self) -> Capabilities;
 
+    /// Creates the payment on the rail **without** putting it in front of
+    /// the payer, and returns the key material the rail issued for it — the
+    /// first of a [`SubmitSteps::PrepareThenSubmit`] rail's two calls
+    /// (ADR-0032).
+    ///
+    /// Called only on a rail that declares
+    /// [`SubmitSteps::PrepareThenSubmit`], and only for a `submitting` charge
+    /// that holds none of the rail's key material yet. The core records a
+    /// `prepare` attempt before the call, commits the returned [`RefExtra`]
+    /// on the charge after it, and calls [`submit`](ProviderAdapter::submit)
+    /// only once that commit is durable — so `submit`'s `charge.ref_extra`
+    /// always carries what this returned.
+    ///
+    /// Idempotent on `charge.reference_id` in the sense `submit` is: a
+    /// second `prepare` of a reference the rail already holds must not
+    /// create a second payment. What it returns instead depends on `prior`
+    /// (see [`PriorSubmits`]).
+    ///
+    /// # Errors
+    ///
+    /// The default is [`ProviderError::Unsupported`]: a [`SubmitSteps::One`]
+    /// rail creates and prompts in one call, which is a permanent answer and
+    /// not unbuilt work, and the core never calls it there.
+    ///
+    /// An implementation raises [`ProviderError::Config`] for a credential,
+    /// setting or payer this deployment did not supply, **before** any
+    /// request; [`ProviderError::Rejected`] when the rail refused to create
+    /// the payment or refused our credentials — or when it holds a payment
+    /// under this reference that vpay can prove no `submit` ever prompted
+    /// ([`PriorSubmits::None`]), which fails the charge so the payer can try
+    /// again on a new one; [`ProviderError::NeedsReconciliation`] for the
+    /// same answer with [`PriorSubmits::Some`], where an earlier build's
+    /// one-call submit may have prompted; [`ProviderError::Transport`] and
+    /// [`ProviderError::Malformed`] as for `submit`. Nothing is ever sent to
+    /// the payer by this call, so none of them means money moved.
+    async fn prepare(
+        &self,
+        _charge: &ChargeRef,
+        _config: &ProviderConfig,
+        _prior: PriorSubmits,
+    ) -> Result<RefExtra, ProviderError> {
+        Err(ProviderError::Unsupported)
+    }
+
     /// Asks the rail to take a payment.
     ///
     /// Idempotent on `charge.reference_id`. A duplicate submission MUST be
     /// reported as [`Submitted`], never as an error — that is what makes
     /// same-reference retry safe after a crash.
+    ///
+    /// On a [`SubmitSteps::PrepareThenSubmit`] rail this is the second call,
+    /// the one that prompts the payer, and `charge.ref_extra` carries what
+    /// [`prepare`](ProviderAdapter::prepare) returned: the core commits that
+    /// before it calls this (ADR-0032).
     ///
     /// # Errors
     ///
@@ -2146,6 +2378,8 @@ mod tests {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Required,
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
         assert!(!bad.is_coherent());
     }
@@ -2163,6 +2397,8 @@ mod tests {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::Registered,
+            submit_steps: SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
         assert!(base.callbacks_are_coherent());
         let silent = Capabilities {
@@ -2174,6 +2410,10 @@ mod tests {
             let per_request = Capabilities {
                 delivers_callbacks,
                 callback_url_mode: CallbackUrlMode::PerRequest,
+                submit_steps: SubmitSteps::One,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
                 ..base
             };
             assert!(per_request.callbacks_are_coherent());
@@ -2191,6 +2431,19 @@ mod tests {
         assert_eq!(
             serde_json::to_value(CallbackUrlMode::Registered).expect("serialises"),
             serde_json::json!("registered")
+        );
+    }
+
+    /// ADR-0032's capability, spelled as `verify-serde` requires.
+    #[test]
+    fn a_submit_steps_spells_itself_in_snake_case() {
+        assert_eq!(
+            serde_json::to_value(SubmitSteps::One).expect("serialises"),
+            serde_json::json!("one")
+        );
+        assert_eq!(
+            serde_json::to_value(SubmitSteps::PrepareThenSubmit).expect("serialises"),
+            serde_json::json!("prepare_then_submit")
         );
     }
 
@@ -2221,6 +2474,8 @@ mod tests {
             supports_account_holder_lookup: false,
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::PerRequest,
+            submit_steps: SubmitSteps::One,
+            method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
 
         for supports_refunds in [false, true] {
@@ -2591,6 +2846,10 @@ mod tests {
                     supports_account_holder_lookup: false,
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
+                    submit_steps: SubmitSteps::One,
+                    method_types: vpay_core::routing::MethodTypes::of(
+                        &vpay_core::routing::MethodType::ALL,
+                    ),
                 }
             }
 
@@ -2683,6 +2942,10 @@ mod tests {
                     supports_account_holder_lookup: false,
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
+                    submit_steps: SubmitSteps::One,
+                    method_types: vpay_core::routing::MethodTypes::of(
+                        &vpay_core::routing::MethodType::ALL,
+                    ),
                 }
             }
 
@@ -2713,6 +2976,7 @@ mod tests {
 
         let charge = ChargeRef {
             reference_id: Uuid::from_u128(0x5eed),
+            method_type: None,
             amount: Money::new(5_000, vpay_core::Currency::Xaf).expect("non-negative"),
             payer_ref: None,
             ref_extra: BTreeMap::new(),
@@ -2754,6 +3018,17 @@ mod tests {
             matches!(registered, Err(ProviderError::Unsupported)),
             "a per-request rail has nothing to register: {registered:?}"
         );
+
+        // And it declares `SubmitSteps::One`, so it creates and prompts in
+        // one call and has nothing to prepare (ADR-0032). Both values of
+        // `prior`: the default answers neither differently.
+        for prior in [PriorSubmits::None, PriorSubmits::Some] {
+            let prepared = NoRefundApiRail.prepare(&charge, &config, prior).await;
+            assert!(
+                matches!(prepared, Err(ProviderError::Unsupported)),
+                "a one-step rail has nothing to prepare: {prepared:?}"
+            );
+        }
     }
 }
 
@@ -2812,6 +3087,7 @@ mod debug_tests {
     fn charge_ref() -> ChargeRef {
         ChargeRef {
             reference_id: Uuid::new_v4(),
+            method_type: None,
             amount: Money::new(5000, vpay_core::Currency::Xaf).expect("a valid money"),
             payer_ref: Some(PAYER_REF.to_owned()),
             ref_extra: [("pay_token".to_owned(), PAY_TOKEN.to_owned())]

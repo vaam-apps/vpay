@@ -412,6 +412,10 @@
             "alertEventWindow": {
               "type": "string",
               "pattern": "^[0-9]+[smhd]$"
+            },
+            "callbackEndpointWindow": {
+              "type": "string",
+              "pattern": "^[0-9]+[smhd]$"
             }
           }
         }

@@ -1350,6 +1350,19 @@ mod tests {
                 "invalid_request_error",
                 "operation_unsupported_by_rail",
             ),
+            // ... and an answer only a person can act on: the rail's `502`,
+            // as a `Malformed` gets — the outcome is not known — under its
+            // own code (vaam-apps/vpay#313).
+            (
+                || {
+                    ApiError::Provider(ProviderError::needs_reconciliation(
+                        "notchpay: initialize answered 409 and the charge holds no reference",
+                    ))
+                },
+                502,
+                "api_error",
+                "charge_needs_reconciliation",
+            ),
             // vpay-core money: the caller's fault ...
             (
                 || ApiError::Money(MoneyError::Negative(-1)),
@@ -2524,6 +2537,18 @@ mod tests {
                 || ApiError::idempotency_key_reused("idem_0123456789"),
                 400,
                 "false",
+            ),
+            // The same advice a `Malformed` confirm gets: replaying this
+            // request under its key replays this answer and charges nobody.
+            // The public message is what says not to start another payment.
+            (
+                || {
+                    ApiError::Provider(ProviderError::needs_reconciliation(
+                        "notchpay: complete, and amounts.total is not the charge's amount",
+                    ))
+                },
+                502,
+                "true",
             ),
             // A closed checkout session never reopens, so the honest advice
             // is "not this request again". `Category::Conflict`'s default,

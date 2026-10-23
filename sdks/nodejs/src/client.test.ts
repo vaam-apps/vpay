@@ -454,6 +454,28 @@ describe("resource methods", () => {
     expect(result.status).toBe("requires_payment_method");
   });
 
+  it("payment_intents.create sends a payment-method type beside a rail code", async () => {
+    // ADR-0029 D6: the same list carries both, each as its own wire string.
+    // The same body as the Rust SDK's
+    // `create_sends_payment_method_types_beside_rail_codes_as_written`.
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server);
+
+    await client.paymentIntents.create({
+      amount: 5000,
+      currency: "XAF",
+      payment_method_types: ["mtn_wallet", "orange_wallet", "notchpay"],
+    });
+
+    const req = server.requests.find((r) => r.url === "/v1/payment_intents")!;
+    expect(req.body).toBe(
+      "amount=5000&currency=xaf&payment_method_types[0]=mtn_wallet" +
+        "&payment_method_types[1]=orange_wallet&payment_method_types[2]=notchpay",
+    );
+  });
+
   it("payment_intents.create surfaces client_secret typed, when the server sends it", async () => {
     const server = await withServer({
       resource: () => ({

@@ -16,8 +16,17 @@ export type PaymentIntentStatus =
   | "succeeded"
   | "canceled";
 
-/** Rail codes this SDK's `payment_method_types` values may hold. */
-export type PaymentMethodType = "mtn_momo" | "orange_money" | "notchpay";
+/**
+ * What this SDK's `payment_method_types` values may hold: a **rail code**
+ * (`mtn_momo`, `orange_money`, `notchpay`), meaning that rail pinned, or a
+ * **payment-method type** (`mtn_wallet`, `orange_wallet`, from 2026-10-23),
+ * meaning the payer's wallet network, with the server's router picking the
+ * rail at confirm (ADR-0029 D6, RFC-0008 as revised on 2026-10-23). A type
+ * needs a server with migration `0053`; an older one refuses it as an unknown
+ * rail. `ConfirmPaymentIntentParams` still names rail codes only.
+ */
+export type PaymentMethodType =
+  "mtn_momo" | "orange_money" | "notchpay" | "mtn_wallet" | "orange_wallet";
 
 /** Redirect-rail next step, Stripe's own `next_action.redirect_to_url` shape. */
 export interface NextAction {
