@@ -127,6 +127,29 @@ passed run alone with `--exact`. The fourth, `staff_sso_keycloak.rs`'s only
 case, hit its 60 s container-start timeout while three other sessions'
 suites shared the Docker daemon; run alone it passed in 47.8 s.
 
+## Found in review: the declared codes omitted `provider_unavailable`
+
+Review of [#345](https://github.com/vaam-apps/vpay/pull/345) found that
+`prepare`'s `409` arm with `PriorSubmits::None` produces
+`Rejected { provider_unavailable }`, while
+`vpay_adapter_notchpay::PRODUCED_FAILURE_CODES` still declared four codes. No
+gate failed: `the_declines_prove_every_code_each_rail_can_produce` compares
+the decline table's rows against the declaration, and the `409` has no row,
+so both sides were short by the same code. The declaration is five codes now;
+the mapping's own unit test and the conformance gate each add
+`provider_unavailable` by hand, as they already add
+`provider_account_blocked`, naming the case that drives it
+(`a_duplicate_no_submit_ever_prompted_for_fails_the_charge_cleanly` and
+`notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline`).
+`docs/flows/failures.md` and `adapter-notchpay.md` list it.
+
+Measured: `cargo test -p vpay-adapter-notchpay --lib`, **54 passed, 0 failed,
+0 ignored**; the conformance gate and both `409` cases, **5 passed**. With
+`ProviderUnavailable` removed from the declaration again, both
+`the_declared_codes_are_exactly_what_the_mapping_can_produce` and
+`the_declines_prove_every_code_each_rail_can_produce::case_3_notchpay` failed;
+restored.
+
 ## Not done
 
 - **The split has not met Notch Pay.** No sandbox run has sent `prepare` and

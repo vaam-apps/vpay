@@ -294,7 +294,8 @@ numbers read `complete` (MTN and Orange success), `failed` (other failure),
 `expired` (timeout) and `canceled` (canceled by user), with no reason field.
 `canceled` therefore became `payer_declined`, as RFC-0012 § 4 said it would
 on that evidence. `PRODUCED_FAILURE_CODES` is `payer_timeout`,
-`payer_declined`, `provider_error`, `provider_account_blocked`.
+`payer_declined`, `provider_error`, `provider_account_blocked` and, since
+ADR-0032, `provider_unavailable`: `prepare`'s `409` with no `submit` row.
 `insufficient_funds` is not produced. Through vpay on 2026-10-22 (runbook
 B3b), `expired` and `canceled` became `payer_timeout` and `payer_declined`,
 each on the worker's second read, about 12 s after create

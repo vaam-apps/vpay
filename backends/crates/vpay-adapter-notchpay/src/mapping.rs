@@ -38,9 +38,13 @@ use vpay_provider::{ChargeStatus, ProviderError};
 /// Every [`FailureCode`] this adapter can produce, and nothing else.
 ///
 /// `payer_timeout` (`expired`, `abandoned`), `payer_declined` (`canceled`),
-/// `provider_error` (`failed`, `rejected`, a refused initialize or process)
-/// and `provider_account_blocked` (a `401`/`403` on our own keys). The
-/// conformance suite's `the_declines_prove_every_code_each_rail_can_produce`
+/// `provider_error` (`failed`, `rejected`, a refused initialize or process),
+/// `provider_account_blocked` (a `401`/`403` on our own keys) and
+/// `provider_unavailable` (`prepare`'s `409` for a reference no submit was
+/// ever made for: an initialize that lost its answer and prompted nobody,
+/// ADR-0032). The last is produced in `lib.rs`, not by this module's
+/// mapping, so the test below adds it by hand, as it adds
+/// `provider_account_blocked`. The conformance suite's `the_declines_prove_every_code_each_rail_can_produce`
 /// compares this list against the declines it drives, in both directions.
 ///
 /// **Short on purpose.** Notch Pay's read names no failure reason: on
@@ -51,11 +55,12 @@ use vpay_provider::{ChargeStatus, ProviderError};
 /// Its "canceled by user" number read `canceled`, which is the evidence
 /// RFC-0012 § 4 named for `payer_declined`; its "timeout" number read
 /// `expired`, which was already `payer_timeout`.
-pub const PRODUCED_FAILURE_CODES: [FailureCode; 4] = [
+pub const PRODUCED_FAILURE_CODES: [FailureCode; 5] = [
     FailureCode::PayerTimeout,
     FailureCode::PayerDeclined,
     FailureCode::ProviderError,
     FailureCode::ProviderAccountBlocked,
+    FailureCode::ProviderUnavailable,
 ];
 
 /// The message Notch Pay's errors page gives a read of a payment it has no
@@ -705,7 +710,15 @@ mod tests {
 
     #[test]
     fn the_declared_codes_are_exactly_what_the_mapping_can_produce() {
-        let mut produced = vec![FailureCode::ProviderAccountBlocked];
+        // Neither comes from this module: `provider_account_blocked` is the
+        // client's `401`/`403`, and `provider_unavailable` is `prepare`'s
+        // `409` with no prior submit, which
+        // `tests::a_duplicate_no_submit_ever_prompted_for_fails_the_charge_cleanly`
+        // drives.
+        let mut produced = vec![
+            FailureCode::ProviderAccountBlocked,
+            FailureCode::ProviderUnavailable,
+        ];
         for status in PaymentStatus::ALL {
             if let Ok(ChargeStatus::Failed { code, .. }) =
                 charge_status(&payment(status.wire(), 5_000.into(), "XAF"), xaf(5_000))

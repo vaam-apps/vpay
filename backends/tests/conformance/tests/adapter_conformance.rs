@@ -1705,6 +1705,15 @@ fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTe
     // drives it, on both rails.
     proven.push(FailureCode::ProviderAccountBlocked);
 
+    // Notch Pay's `provider_unavailable` is `prepare`'s `409` for a reference
+    // no submit was ever made for (ADR-0032): a refused initialize, not a
+    // read, so it has no row in the decline table either.
+    // `notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline` is
+    // the case that drives it.
+    if rail == RailUnderTest::NotchPay {
+        proven.push(FailureCode::ProviderUnavailable);
+    }
+
     proven.sort_unstable_by_key(|code| code.as_str());
     proven.dedup();
 
