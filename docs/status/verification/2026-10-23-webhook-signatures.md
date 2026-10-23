@@ -70,6 +70,11 @@ row, signed with the same helper the check is proven against.
 `every_adapter_declares_coherent_capabilities` also holds
 `callback_check_is_coherent`.
 
+**The real binary.** `vpay-server`'s `cli.rs`: a livemode Notch Pay
+configuration without `callback_signing_secret` exits `78` naming the setting
+and `verify: off`, and never prints the fake secret; a sandbox one logs
+`serve`'s warning that its webhooks are unverified.
+
 **Integration, real Postgres and WireMock's Notch Pay.**
 `provider_callback.rs`'s
 `a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles`
@@ -107,7 +112,25 @@ Each mutation was applied alone, the named tests run, and the file restored
 
 ## Gates
 
-GATE_COUNTS_PENDING
+Run on this branch at its head, 2026-10-23, Rust 1.98.0, Docker 29.8.2.
+
+| Gate                                                                                                       | Result                                                                                                  |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all -- --check`                                                                               | clean                                                                                                   |
+| `cargo clippy --workspace --all-targets -- -D warnings`                                                    | 0 warnings                                                                                              |
+| `cargo nextest run`, every workspace package, and `vpay-tests-integration` one binary at a time (for disk) | **2 456 run, 2 456 passed, 0 failed, 0 skipped**, over 41 runs: 17 packages and 24 integration binaries |
+| `cargo test --doc --workspace`                                                                             | **138 passed, 0 failed, 1 ignored**                                                                     |
+| `just verify`                                                                                              | the fifteen gates passed; `verify-docs` is advisory                                                     |
+| prettier 3.9.6, every changed Markdown and YAML file                                                       | clean                                                                                                   |
+
+The first full run went red once, and the change fixed it:
+`vpay-server`'s `a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns`
+booted a livemode Notch Pay fixture with no signing secret, which
+`CallbackSigningSecretMissing` now refuses. Its fixture holds a fake
+`callback_signing_secret` (`${CLI_NOTCHPAY_HASH_KEY}`), and a third run
+removes it and expects `78` naming the setting, so the refusal is also proven
+on the real binary; the sandbox case asserts `serve`'s warning. `vpay-server`
+was re-run alone after the fix: 60 passed. The figures above use that run.
 
 ## What is stub-proven only, and what is not done
 
