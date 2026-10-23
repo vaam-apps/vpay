@@ -6,7 +6,10 @@
   and where it differs from this design. Stripe and PayPal have no adapter,
   so nothing here runs for them. **No endpoint has been registered with a
   real Notch Pay account by this code** (step 5): the integration suite runs
-  it against a WireMock stub. _(This said "Nothing in this document is
+  it against a WireMock stub. **Since 2026-10-23 the pass is `off` for Notch
+  Pay unless `register` says otherwise** (§ "As built", the amendment of that
+  date): the sandbox stored the one endpoint created through this API with
+  no URL, and delivered nothing. _(This said "Nothing in this document is
   built. What exists is two calls in the Notch Pay client,
   `Client::list_webhooks` and `Client::create_webhook`, … and nothing calls
   them" until 2026-10-22. The second half had been false since 2026-10-20,
@@ -249,7 +252,9 @@ mode, and for runbooks.
 `ensure` (the default, open question 1), `check` (list and report, never
 write; on Stripe `webhook_read` is enough), or `off`. A `callbacks` block on a
 `PerRequest` rail refuses to boot, because a setting that does nothing is one
-somebody believes in.
+somebody believes in. _(As built, an unset `register` takes the rail's own
+default, which its adapter declares: `ensure` everywhere but `notchpay`,
+which is `off` since 2026-10-23. See § "As built".)_
 
 ### 3. Recognising vpay's own endpoint
 
@@ -779,9 +784,14 @@ What was built, against § 8's port shape and § 2–§ 4's pass:
 - **The lock.** `vpay_db::lock_keys::CALLBACK_REGISTRATION` (`vpaycbk`),
   taken with `pg_try_advisory_xact_lock` by
   `TxRepositories::try_lock_callback_registration`.
-- **The setting.** `providers[].callbacks.register`: `ensure` (the default),
-  `check`, or `off`. A `callbacks` block on a `PerRequest` rail refuses to
-  boot (`ConfigError::CallbacksOnPerRequestRail`).
+- **The setting.** `providers[].callbacks.register`: `ensure`, `check`, or
+  `off`. Unset (no block, or `callbacks: {}`), it is the rail's default,
+  which the adapter declares through
+  `ProviderAdapter::default_callback_registration`: `ensure`, but `off` for
+  `notchpay` since 2026-10-23 (the amendment below). A `callbacks` block on a
+  `PerRequest` rail refuses to boot
+  (`ConfigError::CallbacksOnPerRequestRail`). _(This said "`ensure` (the
+  default)" until 2026-10-23.)_
 - **The command.** `vpay-server callbacks ensure [--check]`. One line per
   rail on stdout, `{rail} {register} {state} {detail}`; non-zero exit when a
   rail is `missing`, `locked` or `failed`.
@@ -805,12 +815,15 @@ Where it differs from this design, and why:
 | § 4 step 6: "one gauge per rail and state"                           | A **counter**, `vpay_callback_endpoint_checks_total{provider,state}`, states `present`, `created`, `drifted`, `foreign`, `missing`, `locked`, `failed`. The singleton runs on whichever worker claims it, so a per-process gauge would keep each process's last answer, however old                                                                                                |
 | § 4: one transaction per account's pass                              | One transaction per **rail**. With one account per rail (RFC-0009 phase A) these are the same. Two concurrent passes may split the rails between them, each reporting the others `locked`                                                                                                                                                                                          |
 | § 2: every configured rail                                           | Every **enabled** configured rail. A rail with `enabled: false` is not asked: an operator who turned it off has not asked vpay to write to its account                                                                                                                                                                                                                             |
+| § 2: `ensure` is the default (open question 1)                       | **Each rail's adapter declares its default** (`ProviderAdapter::default_callback_registration`, `Ensure` unless overridden). `notchpay` declares `Off` since 2026-10-23, so an unset `register` asks a Notch Pay account nothing (the amendment below)                                                                                                                             |
 
 § 10's integration cases, against a real Postgres and the Notch Pay stub
 (`backends/tests/integration/tests/callback_registration.rs`): one create,
 then found by its description; **two racing passes make one create, and with
 the lock removed they make two**, measured by hand; `check` and `--check`
-never write, `off` asks nothing, `mtn_momo` is never asked; the seeded job
+never write, `off` asks nothing, `mtn_momo` is never asked; an unset
+`register` on Notch Pay asks nothing and an explicit `ensure` still creates
+(since 2026-10-23); the seeded job
 registers the endpoint and reschedules hourly; a refused key reschedules at
 the hour and an unreachable rail at five minutes. Not built from § 10: a
 foreign endpoint (undetectable, above), a create whose answer is dropped
@@ -831,6 +844,47 @@ because a missing endpoint costs latency and never money.
 [runbooks/callback-endpoints.md](../runbooks/callback-endpoints.md) says what
 each state asks of an operator. It is tested by `promtool` against synthetic
 series (`just test-alert-rules`), never against a real scrape.
+
+**Amendment, 2026-10-23: Notch Pay's default is `off`.** Asked "vpay
+registers a Notch Pay webhook endpoint by default (RFC-0013,
+`register: ensure`) … Change Notch Pay's default?", the maintainer answered
+"Default to `off` for Notch Pay". The evidence is that day's sandbox run
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md),
+RFC-0012 § 10 items 24 and 25): the endpoint the probe created through
+`POST /webhooks` was stored with `"url": null` and delivered nothing in
+21 minutes, and four payments processed after it was created stayed
+`processing`, where eleven before it settled in about 5 s. The second is a
+correlation, not a shown cause. Either way, an endpoint vpay creates on a
+merchant's Notch Pay account has not been shown to work and may not be
+harmless.
+
+So open question 1 now has a per-rail answer, and the rail declares it, not
+the binary (ADR-0002: no provider code is matched outside an adapter crate):
+
+- `ProviderAdapter::default_callback_registration` answers
+  `CallbackRegistrationDefault::{Ensure, Off}`, `Ensure` unless an adapter
+  overrides it, and `Measured` forwards it. `notchpay` overrides it with
+  `Off`. There is no `Check` default: a rail that wants reporting without
+  writing has not come up.
+- `providers[].callbacks.register` became optional, so `callbacks: {}` still
+  means what an absent block means. Where it is unset, the binary's plan
+  takes the adapter's default and logs one `info` line naming the rail when
+  that default is `off`.
+- `off` behaves as it always did: the pass skips the rail and counts no
+  sample, so `VpayCallbackEndpointUnconfirmed` cannot fire for it, and
+  `vpay-server callbacks ensure` prints `notchpay off off -` and exits `0`.
+- An explicit `register: ensure` or `check` is honoured on Notch Pay, and no
+  other rail's default changed.
+
+An operator who wants Notch Pay's callbacks registers
+`{public_base_url}/provider/notchpay/callback` in Notch Pay's dashboard for
+the five payment events. That route is as unmeasured as vpay's own create:
+no callback has been delivered to vpay by either. Proven against WireMock
+and a real Postgres in `callback_registration.rs`
+(`an_unset_register_leaves_a_notch_pay_account_alone`: no request reaches
+the stub's `/webhooks`, then an explicit `ensure` creates one), and in the
+binary's `the_plan_reads_each_rails_setting_else_its_adapters_default`
+([verification](../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md)).
 
 ## Delivery
 
@@ -894,7 +948,10 @@ built". 2, 5 and 6 are open.)_
 
 1. **`ensure` or `check` by default?** `ensure` gives the Stripe key a fourth,
    sensitive permission; `check` keeps the manual step for creation and keeps
-   drift detection. (Maintainer.)
+   drift detection. (Maintainer.) _(Answered `ensure` on 2026-10-22, and for
+   Notch Pay `off` on 2026-10-23: "Default to `off` for Notch Pay". Each
+   adapter now declares its default; see § "As built". Still open for
+   Stripe.)_
 2. **Discard Stripe's secret until the port can verify, or build the sealed
    store first?** Recommended: discard (§ 6). (Maintainer.)
 3. **The interval.** Hourly is proposed: one list per registered rail and

@@ -526,6 +526,14 @@ webhook endpoint on a real Notch Pay account. It makes one `GET /webhooks`
 and **one `POST /webhooks`**, which the account keeps until someone deletes
 it in the dashboard: Notch Pay's `DELETE` answered `404` on 2026-10-21.
 
+**Since 2026-10-23 no deployment does this unless told to**: `ensure` is no
+longer Notch Pay's default, which is `off` (RFC-0013's amendment). The
+probe's endpoint, created through the same `POST /webhooks` that day, was
+stored with `"url": null` and delivered nothing in 21 minutes, and four
+payments processed after it stayed `processing`
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
+Run B4 only to measure that again, on the maintainer's approval.
+
 1. Point the callback URL at an `https://` address. The profile's default is
    `http://localhost:8080/...`, which Notch Pay has never been shown; the
    2026-10-21 run created endpoints at an `https://….invalid` URL, which it

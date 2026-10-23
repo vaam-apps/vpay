@@ -777,13 +777,20 @@ In writing (W) or in the sandbox (S):
     `amounts.total` 2 short; `failed`; `expired`; `canceled`), each within
     about 5 s. A number from the other network is refused at `process`:
     `422` "Invalid CM Mobile Money" for Orange's number on `cm.mtn`, "Invalid
-    CM Orange Money" for MTN's on `cm.orange`; the payment stays `pending`.)_
+    CM Orange Money" for MTN's on `cm.orange`; the payment stays `pending`.
+    The adapter maps that refusal, a process `422` naming `phone` alone, to
+    `invalid_payer` since the same day: the maintainer's "Yes,
+    `invalid_payer`" [(verification)][defaults-wrong-network]. It was
+    `provider_error`.)_
 24. **(S, W)** Does `POST /webhooks` store the `url` it is sent? _(Added
     [2026-10-23][two-step-channels] — **contradicted**: an endpoint created
     with a public, reachable URL read `"url": null` in the create answer and
     the list, and nothing reached that URL in 21 minutes. vpay's
     `ensure_callbacks` creates its endpoint with the same call, so on this
-    evidence it registers an endpoint that delivers nothing.)_
+    evidence it registers an endpoint that delivers nothing. The maintainer
+    answered the same day "Default to `off` for Notch Pay": with `register`
+    unset vpay no longer calls `POST /webhooks` on this rail (RFC-0013's
+    amendment) [(verification)][defaults-wrong-network].)_
 25. **(S)** Why did every payment processed after that endpoint existed stay
     `processing`? _(Added [2026-10-23][two-step-channels] — four payments
     processed after the item-24 endpoint was created (at 19:07, 19:10, 19:13
@@ -800,6 +807,7 @@ In writing (W) or in the sandbox (S):
 [refunds-probe]: ../status/verification/2026-10-22-notchpay-refunds.md
 [b3b]: ../status/verification/2026-10-22-notchpay-b3b.md
 [two-step-channels]: ../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md
+[defaults-wrong-network]: ../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md
 
 ## Delivery
 

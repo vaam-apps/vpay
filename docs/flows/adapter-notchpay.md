@@ -46,14 +46,16 @@ Code: `backends/crates/vpay-adapter-notchpay` on the client
 - Both of the account's keys: the **public** key and the **private** key.
   Boot refuses a `notchpay` block without either.
 - The webhook endpoint `{public_base_url}/provider/notchpay/callback`,
-  registered with the account for the five payment events. **vpay registers
-  it** ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md), built
-  2026-10-22): the worker's `ensure_callbacks` job, at every worker start and
-  hourly, or `vpay-server callbacks ensure` by hand. See § Callbacks. _(This
-  said "registered by hand in Notch Pay's dashboard (Settings › Webhooks) …
-  until RFC-0013 registers it" until 2026-10-22.)_ Optional for
-  correctness: the poll ladder reads every
-  charge without callbacks. _(This said "settles every charge" until
+  registered with the account for the five payment events. **The operator
+  registers it, in Notch Pay's dashboard**, since 2026-10-23: with
+  `callbacks` unset, vpay asks a Notch Pay account nothing (§ Callbacks).
+  `register: ensure` still has the worker's `ensure_callbacks` job create
+  vpay's own ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)),
+  but the sandbox stored such an endpoint with no URL and delivered nothing.
+  _(This said "registered by hand in Notch Pay's dashboard (Settings ›
+  Webhooks) … until RFC-0013 registers it" until 2026-10-22, and "vpay
+  registers it" until 2026-10-23.)_ Optional for correctness: the poll
+  ladder reads every charge without callbacks. _(This said "settles every charge" until
   2026-10-22. A charge whose reads the adapter refuses is never settled by
   them: step 5's short collection was still `pending` after fifteen minutes
   ([verification](../status/verification/2026-10-21-notchpay-step5.md)), and by
@@ -149,8 +151,8 @@ providers:
     credentials:
       public_key: ${NOTCHPAY_PUBLIC_KEY}
       private_key: ${NOTCHPAY_PRIVATE_KEY}
-    callbacks: # optional; absent means `register: ensure`
-      register: ensure # or `check` (list, never create) or `off` (never ask)
+    callbacks: # optional; absent (or `{}`) means `register: off` on this rail since 2026-10-23
+      register: off # or `check` (list, never create) or `ensure` (create vpay's endpoint)
 ```
 
 Boot refusals, all in `vpay_config::config::REQUIRED_RAIL_KEYS`:
@@ -223,7 +225,13 @@ and one that arrives has lost the only address Notch Pay answers for.
 `submit`'s `202` is `Submitted`, with no redirect and `notchpay_reference` as
 its key material. Its `422` "Payment has already been processed" is not a
 decline: the adapter reads the payment and answers `Submitted`, unless the
-read still says `pending`, which is `Malformed`.
+read still says `pending`, which is `Malformed`. **A `422` whose `errors`
+name `phone` and nothing else is `Rejected { invalid_payer }`** since
+2026-10-23: a number the chosen network does not take, such as an Orange
+number on `cm.mtn` ("Invalid CM Mobile Money"), measured that day. The
+message is vpay's own, so the number is never quoted back. Any other
+`400`/`422` on process stays `provider_error`, as does the same refusal on
+initialize, which was not measured.
 
 _(Until 2026-10-23 `submit` was both calls, and a `201` with a status other
 than `pending` was `Submitted` without call 2. A `409` read the payment when
@@ -301,8 +309,9 @@ numbers read `complete` (MTN and Orange success), `failed` (other failure),
 `expired` (timeout) and `canceled` (canceled by user), with no reason field.
 `canceled` therefore became `payer_declined`, as RFC-0012 § 4 said it would
 on that evidence. `PRODUCED_FAILURE_CODES` is `payer_timeout`,
-`payer_declined`, `provider_error`, `provider_account_blocked` and, since
-ADR-0032, `provider_unavailable`: `prepare`'s `409` with no `submit` row.
+`payer_declined`, `provider_error`, `provider_account_blocked`, since
+ADR-0032 `provider_unavailable` (`prepare`'s `409` with no `submit` row), and
+since 2026-10-23 `invalid_payer` (a process `422` on the phone alone).
 `insufficient_funds` is not produced. Through vpay on 2026-10-22 (runbook
 B3b), `expired` and `canceled` became `payer_timeout` and `payer_declined`,
 each on the worker's second read, about 12 s after create
@@ -347,13 +356,32 @@ because the sandbox's payment answers carried ours there and Notch Pay's
 not read: the client does not model it. The route then pulls the charge's
 poll forward, and only the authenticated read moves money.
 
-### Registering the endpoint (RFC-0013, built 2026-10-22)
+### Registering the endpoint (RFC-0013, built 2026-10-22; off by default since 2026-10-23)
 
 `notchpay` declares `CallbackUrlMode::Registered`: Notch Pay is not told the
 callback URL on a payment, so the account must hold a webhook endpoint at it.
-The worker's `ensure_callbacks` job keeps one there, under the registration
-lock, at every worker start and hourly; `vpay-server callbacks ensure`
-runs the same pass by hand and prints one line per rail.
+
+**With `callbacks` unset — or `callbacks: {}` — vpay asks a Notch Pay
+account nothing**, since 2026-10-23. The adapter declares
+`ProviderAdapter::default_callback_registration` = `Off`, and the binary's
+plan takes it wherever `providers[].callbacks.register` is unset. The
+maintainer chose this ("Default to `off` for Notch Pay") after the sandbox
+evidence at the end of this section. The worker at start, and the
+command, log one `info` line saying so for the rail; the pass skips it and counts no sample, so
+`VpayCallbackEndpointUnconfirmed` cannot fire for it, and
+`vpay-server callbacks ensure` prints `notchpay off off -` and exits `0`.
+Register `{public_base_url}/provider/notchpay/callback` in Notch Pay's
+dashboard for the five payment events instead. An explicit `register:`
+always wins: `check` lists and reports, `ensure` runs the pass below.
+Proven by `an_unset_register_leaves_a_notch_pay_account_alone`
+(`callback_registration.rs`: no request reaches the stub's `/webhooks`, and
+an explicit `ensure` still creates)
+([verification](../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md)).
+
+With `register: ensure`, the worker's `ensure_callbacks` job keeps one there,
+under the registration lock, at every worker start and hourly;
+`vpay-server callbacks ensure` runs the same pass by hand and prints one line
+per rail.
 
 One pass lists **every page** of `GET /webhooks`, then:
 
@@ -393,9 +421,14 @@ API. It is the same call `ensure_callbacks` makes, so until Notch Pay
 explains it (RFC-0012 § 10 item 24), an endpoint vpay registers is a
 description with no URL behind it. Callbacks are hints, and the poll ladder
 settles every charge without one, so no money depends on it. An operator
-who wants callbacks should register vpay's URL in the dashboard and set
-`register: off`; that hand-made endpoint has not been measured either
+who wants callbacks should register vpay's URL in the dashboard, which is
+what an unset `register` now leaves them to do; that hand-made endpoint has
+not been measured either
 ([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
+Four payments processed after the probe's endpoint was created stayed
+`processing` for 3 to 55 minutes, where eleven before it settled in about
+5 s (RFC-0012 § 10 item 25). A correlation, not a shown cause, and one more
+reason not to write to a merchant's account unasked.
 
 ## Refunds
 
@@ -478,6 +511,27 @@ without the `+`. The adapter sends the `+` form the documentation shows.
 
 ## Status
 
+**Changed 2026-10-23, two maintainer decisions on the sandbox evidence of
+that day**
+([verification](../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md)):
+
+- **vpay no longer registers a Notch Pay endpoint unless told to.** With
+  `providers[].callbacks.register` unset, the rail is `off`: the adapter
+  declares it (`ProviderAdapter::default_callback_registration`), the worker
+  logs it at start, and the pass never lists or creates on the account. An
+  explicit `ensure` or `check` is honoured, and every other rail keeps
+  `ensure`. Proven against WireMock and a real Postgres in
+  `callback_registration.rs`
+  (`an_unset_register_leaves_a_notch_pay_account_alone`) and in the binary's
+  `the_plan_reads_each_rails_setting_else_its_adapters_default`.
+- **A number the chosen network does not take is `invalid_payer`.** A
+  process `422` whose `errors` name `phone` alone is
+  `Rejected { invalid_payer }`; every other `422` is still `provider_error`.
+  Proven against WireMock by the conformance case
+  `notchpay_a_number_on_the_other_network_is_an_invalid_payer`, whose stub
+  answers what the sandbox answered. vpay has not sent that number to Notch
+  Pay itself; only the probe has.
+
 **Changed 2026-10-23: the `trx.…` is committed before the prompt**
 ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
 Initialize is the port's `prepare` and process is `submit`, with a commit
@@ -521,7 +575,8 @@ which reads the channel off the stub's request journal
   `cm.orange`, read what they read on `cm.mobile`, each within about 5 s;
 - a number from the other network is refused at `process` with `422`
   ("Invalid CM Mobile Money" / "Invalid CM Orange Money", `errors.phone`).
-  The adapter maps that to `provider_error`, and the initialized payment
+  The adapter maps that to `invalid_payer` since the same day (the
+  maintainer's choice; it was `provider_error`), and the initialized payment
   stays `pending` at Notch Pay.
 
 vpay itself has not sent `cm.mtn` or `cm.orange`. _(This said "Never sent to
@@ -566,7 +621,10 @@ ran.)_
   and `backends/tests/integration/tests/callback_registration.rs` against a
   real Postgres and that stub (one create, then found; two racing passes, one
   create; `check` never writes). **It has never registered an endpoint with
-  a real Notch Pay account** (RFC-0013 delivery step 5).
+  a real Notch Pay account** (RFC-0013 delivery step 5). The probe's one
+  endpoint, created through the same API on 2026-10-23, stored no URL and
+  delivered nothing, and the pass is `off` for this rail unless `register`
+  says otherwise since the same day.
 - **Built and tested in process:** the adapter (`vpay-adapter-notchpay`, its
   unit tests in `src/tests.rs` and `src/mapping.rs`); the boot rules
   (`vpay-config`, the `notchpay` tests in `config.rs`); the port's

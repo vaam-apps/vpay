@@ -27,19 +27,19 @@ given buyer copy by `examples/shop`, and no adapter emitted it
 ([issue #59](https://github.com/vaam-apps/vpay/issues/59)). Nothing failed,
 because nothing compared a promise to a producer.
 
-| Code                       | MTN MoMo                                    | Orange Money                | Notch Pay (stub only)                                        | Proven by                                                                               |
-| -------------------------- | ------------------------------------------- | --------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------------------------- |
-| `insufficient_funds`       | `NOT_ENOUGH_FUNDS`                          | —                           | —                                                            | `…0f01`                                                                                 |
-| `payer_timeout`            | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED`  | `EXPIRED`                   | `expired`, `abandoned`                                       | MTN `…0f02`, `…0f04`; Orange `…0f01`; Notch Pay `…0f04`, `…0f05`                        |
-| `payer_declined`           | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | —                           | `canceled`                                                   | MTN `…0f05`, `…0f06`; Notch Pay `…0f02`                                                 |
-| `invalid_payer`            | `PAYER_NOT_FOUND`                           | —                           | —                                                            | `…0f07`                                                                                 |
-| `payer_limit_reached`      | `PAYER_LIMIT_REACHED`                       | —                           | —                                                            | `…0f08`                                                                                 |
-| `payer_account_blocked`    | `SENDER_ACCOUNT_NOT_ACTIVE` †               | —                           | —                                                            | `…0f09`                                                                                 |
-| `invalid_payee`            | `PAYEE_NOT_FOUND`                           | —                           | —                                                            | `…0f0a`                                                                                 |
-| `payee_account_blocked`    | `PAYEE_NOT_ALLOWED_TO_RECEIVE`              | —                           | —                                                            | `…0f0b`                                                                                 |
-| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403                 | HTTP 401/403                | HTTP 401/403                                                 | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem`, on all three rails  |
-| `provider_unavailable`     | `SERVICE_UNAVAILABLE` on a `FAILED` body    | —                           | a `409` on initialize with no submit ever made (ADR-0032)    | MTN `…0f0c`; Notch Pay `notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline` |
-| `provider_error`           | anything unmapped                           | `FAILED`, anything unmapped | `failed`, `rejected`, a `400`/`422` on initialize or process | MTN `…0f0d`; Orange `…0f02`; Notch Pay `…0f01`, `…0f03`                                 |
+| Code                       | MTN MoMo                                    | Orange Money                | Notch Pay (stub only)                                                | Proven by                                                                               |
+| -------------------------- | ------------------------------------------- | --------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `insufficient_funds`       | `NOT_ENOUGH_FUNDS`                          | —                           | —                                                                    | `…0f01`                                                                                 |
+| `payer_timeout`            | `COULD_NOT_PERFORM_TRANSACTION`, `EXPIRED`  | `EXPIRED`                   | `expired`, `abandoned`                                               | MTN `…0f02`, `…0f04`; Orange `…0f01`; Notch Pay `…0f04`, `…0f05`                        |
+| `payer_declined`           | `PAYMENT_NOT_APPROVED`, `APPROVAL_REJECTED` | —                           | `canceled`                                                           | MTN `…0f05`, `…0f06`; Notch Pay `…0f02`                                                 |
+| `invalid_payer`            | `PAYER_NOT_FOUND`                           | —                           | a `422` on process naming `phone` alone (2026-10-23)                 | MTN `…0f07`; Notch Pay `notchpay_a_number_on_the_other_network_is_an_invalid_payer`     |
+| `payer_limit_reached`      | `PAYER_LIMIT_REACHED`                       | —                           | —                                                                    | `…0f08`                                                                                 |
+| `payer_account_blocked`    | `SENDER_ACCOUNT_NOT_ACTIVE` †               | —                           | —                                                                    | `…0f09`                                                                                 |
+| `invalid_payee`            | `PAYEE_NOT_FOUND`                           | —                           | —                                                                    | `…0f0a`                                                                                 |
+| `payee_account_blocked`    | `PAYEE_NOT_ALLOWED_TO_RECEIVE`              | —                           | —                                                                    | `…0f0b`                                                                                 |
+| `provider_account_blocked` | `NOT_ALLOWED`, HTTP 401/403                 | HTTP 401/403                | HTTP 401/403                                                         | `…0f03`, and `bad_credentials_are_not_reported_as_a_payer_problem`, on all three rails  |
+| `provider_unavailable`     | `SERVICE_UNAVAILABLE` on a `FAILED` body    | —                           | a `409` on initialize with no submit ever made (ADR-0032)            | MTN `…0f0c`; Notch Pay `notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline` |
+| `provider_error`           | anything unmapped                           | `FAILED`, anything unmapped | `failed`, `rejected`, any other `400`/`422` on initialize or process | MTN `…0f0d`; Orange `…0f02`; Notch Pay `…0f01`, `…0f03`                                 |
 
 `…0fxx` is the charge reference a WireMock mapping keys on, under
 `backends/tests/conformance/wiremock/{mtn,orange,notchpay}/mappings/`.
@@ -67,7 +67,7 @@ its truth.
 is a documented reservation: the vocabulary is a wire contract, and removing a
 variant would break a merchant deserialising it.
 
-**Notch Pay produces five codes** (`PRODUCED_FAILURE_CODES` in
+**Notch Pay produces six codes** (`PRODUCED_FAILURE_CODES` in
 `vpay-adapter-notchpay`). Its read carries a status and no reason, so
 `insufficient_funds` is unreachable there: the sandbox's "insufficient funds"
 number read `complete` with a short `amounts.total`, not a decline. A payer
@@ -82,9 +82,14 @@ reference no submit was ever made for, an initialize whose answer was lost and
 that prompted nobody, so the charge fails and the payer can try again
 (ADR-0032). A number from the other network on `cm.mtn` or `cm.orange` is
 refused at process with `422` and `errors.phone` ("Invalid CM Mobile Money",
-measured through the probe on 2026-10-23), which is `provider_error` like any
-`422`: `mapping.rs` does not call a phone complaint `invalid_payer`, because
-the errors page named such fields only by example. The column heads say
+measured through the probe on 2026-10-23), and that is `invalid_payer`, the
+maintainer's answer the same day ("Yes, `invalid_payer`"): the payer gave a
+number the network they chose does not take, and fixing it is theirs. Only a
+process `422` whose `errors` name `phone` and nothing else; a `422` naming
+any other field, or `phone` among others, and the same refusal on initialize
+(never measured), stay `provider_error`, because those may be vpay's own
+request at fault. The message is vpay's, never Notch Pay's, which may quote
+the number back. The column heads say
 "stub only" because each row's proof is a WireMock case: the adapter's
 2026-10-21 sandbox run
 ([step 5](../status/verification/2026-10-21-notchpay-step5.md)) witnessed
@@ -99,7 +104,10 @@ that `provider_unavailable` is a dash on Notch Pay because a `503` is never a
 decline, until 2026-10-23: ADR-0032's `prepare` made the `409` with no prior
 submit a `provider_unavailable` decline, and `PRODUCED_FAILURE_CODES` did not
 declare it until review of
-[#345](https://github.com/vaam-apps/vpay/pull/345) found the gap.)_
+[#345](https://github.com/vaam-apps/vpay/pull/345) found the gap. It said
+"five codes", and that a phone complaint is `provider_error` because
+`mapping.rs` does not call one `invalid_payer`, until later on 2026-10-23
+([verification](../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md)).)_
 
 **† `SENDER_ACCOUNT_NOT_ACTIVE` is not in MTN's published `ErrorReason` enum**,
 nor is `COULD_NOT_PERFORM_TRANSACTION`. Both are mapped and both are declared
@@ -139,6 +147,9 @@ The taxonomy itself is implemented and tested (`vpay-core::failure`).
   `a_status_notch_pay_never_documented_is_not_guessed_at`,
   `the_declared_codes_are_exactly_what_the_mapping_can_produce`), and the
   conformance suite's `notchpay` row drives five of them against WireMock.
+  Since 2026-10-23 a process `422` on the payer's phone alone is
+  `invalid_payer` (`a_number_on_the_other_network_is_an_invalid_payer`, and
+  the conformance case `notchpay_a_number_on_the_other_network_is_an_invalid_payer`).
   ~~**None has been read from Notch Pay itself.**~~ _(Struck 2026-10-22: wrong
   since 2026-10-21, when step 5 read Notch Pay's real sandbox through the
   adapter ([verification](../status/verification/2026-10-21-notchpay-step5.md)).

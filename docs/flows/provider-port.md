@@ -20,6 +20,7 @@ wire.
 | `async refund`                   | Optional; gated by `supports_refunds`. Answers `Refunded`, **not** `Submitted`: a refund has no payer's browser, so `redirect_url` was a question no adapter could ever answer, and `Refunded` carries instead the one thing a refund has that a charge does not — `fee: Option<Money>`, what the rail charged us to move the money. The trait's **default** is `ProviderError::Unsupported` — a permanent capability answer. An adapter whose rail _does_ refund but whose refund is unbuilt overrides it with its own `NotImplemented` token so `verify-status` can see it                                                                                                                                                                                                                                     |
 | `async account_holder_name`      | Optional; gated by `supports_account_holder_lookup`. The registered holder's name for an MSISDN — a stateless read that touches no charge and writes nothing (policy: [account-holder-lookup.md](account-holder-lookup.md)). `Ok(None)` means **the rail has no record** and nothing else; every "could not ask" is an `Err`. The trait's **default** is `ProviderError::Unsupported`, on `refund`'s terms. Since 2026-09-06                                                                                                                                                                                                                                                                                                                                                                                     |
 | `async ensure_callback_endpoint` | Optional; called only on a rail declaring `callback_url_mode: Registered`, by the worker's `ensure_callbacks` pass and `vpay-server callbacks ensure`, under the registration lock ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)). Lists the account's endpoints whole, answers `EndpointReport { state, retirable }`, and creates vpay's endpoint at most once when `write` is true. **It never modifies or deletes an endpoint it did not create.** The trait's **default** is `ProviderError::Unsupported`, the honest answer on a `PerRequest` rail; `the_endpoint_check_is_unsupported_exactly_on_a_per_request_rail` holds the two together. `notchpay` overrides it (2026-10-22)                                                                                                           |
+| `default_callback_registration`  | Optional; `CallbackRegistrationDefault::Ensure` by default. What the registration pass does on this rail when the deployment's `providers[].callbacks.register` is unset: `Ensure` or `Off`. Read only for a rail declaring `callback_url_mode: Registered`, by the binary's plan. An explicit setting always wins. `Measured` forwards it (`the_default_callback_registration_is_forwarded_not_defaulted`). `notchpay` overrides it with `Off`, the maintainer's decision after its sandbox stored an API-created endpoint with no URL ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md) § "As built"). Since 2026-10-23                                                                                                                                                                             |
 | `payer_fields`                   | Optional; what a payer must fill in before this rail can be confirmed against, as a `&'static [PayerField]`. The one declaration drives both the payer-facing rail spec (`vpay_api::model::RailSpec`, served by the browser checkout session) and the confirm-time validation of `payment_method_data[<code>][…]` (`vpay_api::v1::payer_fields::resolve_payer_fields`), so the two cannot drift: a key no field names is refused, not dropped. Synchronous and never read from `ProviderConfig` — a payer field is a fact about the rail's product, not a deployment. The trait's **default** is the empty slice, which is also the right answer for a redirect rail (`orange_money` collects nothing); `mtn_momo` declares its MSISDN. Since 2026-09-16 (#186)                                                  |
 | `code`                           | The stable rail code, equal to its `payment_method_types` value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `capabilities`                   | Static declaration the core reads instead of special-casing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -29,8 +30,10 @@ _The table has ten methods since 2026-10-20, when `accepted_exposure` landed
 with its first consumer (ADR-0031), eleven since 2026-10-22, when
 `ensure_callback_endpoint` landed with its first, `notchpay` (RFC-0013), and
 twelve since 2026-10-23, when `prepare` landed with its first, `notchpay`
-(ADR-0032). On a two-step rail `submit` is the prompt alone, sent by the key
-material `prepare` returned and the charge now holds._
+(ADR-0032), and thirteen later the same day, when
+`default_callback_registration` landed with its first, `notchpay`
+(RFC-0013's amendment). On a two-step rail `submit` is the prompt alone, sent
+by the key material `prepare` returned and the charge now holds._
 
 _Corrected 2026-09-23: this table listed six of the trait's nine methods.
 `account_holder_name` (2026-09-06), `payer_fields` (2026-09-16) and `code`
@@ -228,6 +231,23 @@ means making this pass — not writing a new suite.** That is the real test of
 whether this is a port or just a folder.
 
 ## Status
+
+**Updated 2026-10-23: a rail declares its own callback-registration
+default.** `ProviderAdapter::default_callback_registration` answers
+`CallbackRegistrationDefault::{Ensure, Off}`, `Ensure` unless overridden,
+and `Measured` forwards it. `notchpay` declares `Off`, so with
+`providers[].callbacks.register` unset vpay asks a Notch Pay account nothing;
+before, every `Registered` rail was `ensure`. It is a method, not a
+`Capabilities` field, on `accepted_exposure`'s precedent: nothing persists
+it, the core never branches on it, and only the binary's plan reads it. The
+answer is what the binary would otherwise have to decide by matching on
+`"notchpay"`, which ADR-0002 forbids outside an adapter crate. Proven by
+`the_default_callback_registration_is_forwarded_not_defaulted`,
+`the_callback_registration_default_is_off` (the adapter),
+`the_plan_reads_each_rails_setting_else_its_adapters_default` (the binary)
+and `an_unset_register_leaves_a_notch_pay_account_alone` against WireMock
+and a real Postgres
+([verification](../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md)).
 
 **Updated 2026-10-23: `prepare` and `submit_steps`**
 ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
