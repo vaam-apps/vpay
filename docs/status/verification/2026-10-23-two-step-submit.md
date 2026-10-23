@@ -94,7 +94,38 @@ and the file restored with `git checkout`. All eight failed their case:
 
 ## Gates
 
-GATES_PLACEHOLDER
+Run on this branch from a Claude Code cloud session, on the code as committed
+at `0d3717a2` (the docs commits after it change no Rust). Postgres 16, WireMock
+and Keycloak ran in Docker, shared with three other sessions' suites.
+`cargo test` replaced nextest for the runs; `just verify-ignored` used nextest
+to list.
+
+| Check                                                                        | Result                                                                                                                                                       |
+| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cargo fmt --all --check`                                                    | clean                                                                                                                                                        |
+| `cargo clippy --workspace --all-targets -- -D warnings`                      | clean                                                                                                                                                        |
+| `cargo test --workspace --lib --bins --tests` (integration, conformance out) | **1897 passed, 0 failed, 0 ignored**. The needs-reconciliation page measured 1891; the six are `vpay-adapter-notchpay` +4, `vpay-provider` +1, `Measured` +1 |
+| `cargo test --doc --workspace`                                               | **132 passed, 0 failed, 1 ignored**, unchanged (the ignored one is `sdks/rust/src/lib.rs`'s `ReadmeDoctests`)                                                |
+| `cargo test -p vpay-tests-conformance`                                       | **101 passed, 0 failed, 0 ignored** (97 before: the census's three rail cases, and Notch Pay's duplicate case split in two)                                  |
+| `cargo test -p vpay-tests-integration --no-fail-fast`                        | **401 passed, 4 failed, 0 ignored** of 405 cases (398 before: five net in `worker_recovery.rs`, two in `confirm_rails.rs`). All four pass alone (below)      |
+| `just verify`                                                                | ok, all fifteen: `verify-links` 2720 links, `verify-doc-counts` 13 counts, `verify-migrations` 52 files, `verify-errors` 20 error types, `schema OK`         |
+| `just verify-ignored`                                                        | 0 ignored, **54** test binaries (expected 54: no binary added), 2403 total                                                                                   |
+| vpay-skills `node tools/verify-coverage.mjs` against this tree               | ok: 21 skills, 265 vpay paths, 48 feature pages                                                                                                              |
+| `prettier@3.9.6 --check` over the changed Markdown, both repositories        | clean                                                                                                                                                        |
+
+`verify-citations` was not run: it asks GitHub, and is not part of `just ci`.
+
+**The four integration failures, and why none is this change's.** Three
+assert exact counts on the process-wide Prometheus recorder, which `cargo
+test` shares between a binary's cases and nextest, which CI runs, does not:
+`webhooks.rs`'s `the_ladder_walks_delivery_delay_and_then_succeeds` and
+`worker_e2e.rs`'s `a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it`
+and `a_decline_after_submission_returns_the_intent_to_requires_payment_method`.
+They are three of the four the
+[2026-10-22 page](2026-10-22-rfc-0013-callback-registration.md) names for that reason. Each
+passed run alone with `--exact`. The fourth, `staff_sso_keycloak.rs`'s only
+case, hit its 60 s container-start timeout while three other sessions'
+suites shared the Docker daemon; run alone it passed in 47.8 s.
 
 ## Not done
 
