@@ -39,9 +39,9 @@ use tokio::sync::RwLock;
 use vpay_core::routing::{MethodType, MethodTypes};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    AccountHolder, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, PayerField,
-    PayerFieldKind, PhonePayerType, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
-    RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
+    AccountHolder, CallbackCheck, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef,
+    ChargeStatus, PayerField, PayerFieldKind, PhonePayerType, ProviderAdapter, ProviderConfig,
+    ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
 };
 
 use crate::token::{Credentials, Product, SUBSCRIPTION_KEY_HEADER, TARGET_ENVIRONMENT_HEADER};
@@ -779,6 +779,7 @@ impl ProviderAdapter for Adapter {
             // (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            callback_check: CallbackCheck::None,
             // MTN's own wallet, and nothing else (ADR-0029 D6, D12).
             method_types: MethodTypes::of(&[MethodType::MtnWallet]),
         }

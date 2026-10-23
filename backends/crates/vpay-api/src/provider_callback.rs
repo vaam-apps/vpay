@@ -12,10 +12,12 @@
 //!
 //! AGENTS.md: "Callbacks are hints. `parse_callback` returns identifiers
 //! only, never a status. The authenticated status query is the only thing
-//! that moves money." Both rails sign nothing and send no shared secret
+//! that moves money." MTN signs nothing and sends no shared secret
 //! (`docs/flows/adapter-mtn-momo.md` §"The callback is unsigned and
-//! unauthenticated"), so anyone who can reach this URL can post anything to
-//! it. What this handler is therefore allowed to touch is exactly one row:
+//! unauthenticated"), Orange's `notif_token` is not compared, and Notch
+//! Pay's signature is checked only where a signing secret is configured
+//! (below), so anyone who can reach this URL can post anything to it. What
+//! this handler is therefore allowed to touch is exactly one row:
 //! **the charge's `poll_charge` job**, which it enqueues if none is queued
 //! and then brings forward to now — one transaction, two statements, the
 //! enqueue `ON CONFLICT DO NOTHING` so an existing job is untouched by it —
@@ -30,6 +32,24 @@
 //! finished. The enqueue is due at Postgres' own `now()` since the same day
 //! (ADR-0026); it was this host's clock until then. The pull-forward always
 //! was the database's.)_
+//!
+//! # The rail's own check (RFC-0014, built 2026-10-23)
+//!
+//! Between finding the charge and moving its poll, the route asks the rail's
+//! adapter whether the callback is the rail's
+//! ([`ProviderAdapter::verify_callback`]), handing it the headers, the raw
+//! body and the rail's configuration. The verdict decides **one thing**:
+//! whether the poll is pulled forward. A `Verified` callback moves no more
+//! than an unchecked one did before; an `Invalid` one moves nothing, and the
+//! poll ladder still asks the rail at its next rung. Notch Pay is the only
+//! rail that checks (`x-notch-signature`, HMAC-SHA256), and only where
+//! `credentials.callback_signing_secret` is configured; every other rail's
+//! adapter answers `NotChecked`, which is the behaviour this route had
+//! before the check existed.
+//!
+//! Each verdict is counted on `vpay_provider_callbacks_total{provider,
+//! verdict}`. `Invalid` and `Unavailable` log at `warn` with the adapter's
+//! fixed sentence; no header value, body byte or secret is ever logged.
 //!
 //! # What an anonymous caller can and cannot get out of it
 //!
@@ -54,6 +74,12 @@
 //!   the stored `notif_token` compared against the received one first, and
 //!   that is not built; `docs/status.md` says so.
 //!
+//! On a rail whose check runs (Notch Pay, with its secret configured), a
+//! fourth bound holds: a POST that is not signed by the rail moves nothing at
+//! all. The paragraph below is about every other rail, and about a genuine
+//! callback replayed: Notch Pay's signature carries no timestamp, so a
+//! captured one verifies again (RFC-0014 open question 4).
+//!
 //! **What is *not* bounded, stated plainly.** Until Step 8's review this
 //! module claimed a hostile caller was "bounded by what the ladder was going
 //! to do anyway". It is not. A POST naming a live charge that is parked
@@ -69,21 +95,29 @@
 //! that the work is one status query which settles the charge the rail names
 //! or nothing at all, and that the body is bounded at 16 KiB.
 //!
-//! # The four answers, and why the two 202s are indistinguishable
+//! # The answers, and why every 202 is indistinguishable
 //!
 //! | Case | Answer |
 //! |---|---|
 //! | `code` names no adapter this process links | `404`, byte-identical to the router's own fallback |
 //! | the body is not a notification this rail could have sent | `400`, plus a `warn` carrying the adapter's own reason |
 //! | the reference names no charge here | `202` |
-//! | the reference names a charge | `202` |
+//! | the reference names a charge, and the rail's check refuses it | `202`, plus a `warn` |
+//! | the reference names a charge, and the check admits it | `202` |
 //!
-//! The last two are the same response on purpose: an unauthenticated
+//! The last three are the same response on purpose: an unauthenticated
 //! endpoint that answered differently for "this charge exists" would be an
 //! oracle for exactly that question, which is the same argument
 //! [`crate::browser`] makes about its uniform 404. That argument is enough
 //! on its own. The unknown reference is logged at `info`, which is where an
-//! operator debugging a misregistered callback host will find it.
+//! operator debugging a misregistered callback host will find it. A refused
+//! signature answers `202` for a second reason RFC-0014 § 3 gives: its
+//! ordinary cause is this deployment's own stale secret, and a rail told
+//! `401` would retry a callback vpay can never accept.
+//!
+//! _(This section was "The four answers, and why the two 202s are
+//! indistinguishable" until 2026-10-23, when the check added the fourth
+//! row.)_
 //!
 //! _(This gave two reasons until 2026-10-21. The other was that "a rail that
 //! gets anything other than a 2xx retries — MTN and Orange both do, on their
@@ -106,16 +140,20 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Path, State};
-use axum::http::{Method, StatusCode, Uri};
+use axum::http::{HeaderMap, Method, StatusCode, Uri};
 use axum::routing::post;
 use serde_json::json;
-use vpay_db::{Repositories, TxOutcome, UnitOfWork as _};
-use vpay_provider::ProviderAdapter;
+use vpay_core::metrics::PROVIDER_CALLBACKS_TOTAL;
+use vpay_core::{Currency, Money};
+use vpay_db::{ChargeRow, Repositories, TxOutcome, UnitOfWork as _};
+use vpay_provider::{CallbackRequest, CallbackVerdict, ChargeRef, ProviderAdapter, RefExtra};
 
+use crate::ResourceConfig;
 use crate::error::ApiError;
 use crate::v1::payment_intents::{POLL_CHARGE_KIND, poll_dedupe_key};
 
@@ -210,9 +248,15 @@ pub(crate) fn routes() -> Router<crate::AppState> {
 /// 2. `parse_callback` the body into identifiers, or answer `400`;
 /// 3. find the charge under **this rail** and that reference, or answer
 ///    `202` and log;
-/// 4. in one transaction, **two statements**: enqueue the poll (a no-op when
+/// 4. ask the rail's adapter whether the callback is the rail's
+///    ([`verdict_for`]), count the verdict, and answer `202` without moving
+///    anything if the verdict refuses (RFC-0014 § 3);
+/// 5. in one transaction, **two statements**: enqueue the poll (a no-op when
 ///    it already exists) and pull it forward, unless it is already due
 ///    within [`PULL_FORWARD_FLOOR`].
+///
+/// _(Four steps until 2026-10-23; step 4 is RFC-0014's, and step 5 was
+/// step 4.)_
 ///
 /// `Bytes` rather than a typed body: the shape belongs to the rail, and this
 /// crate must not learn it — `parse_callback` is where a rail's wire format
@@ -235,7 +279,7 @@ pub(crate) fn routes() -> Router<crate::AppState> {
 /// * step 3 logs at `info`, not `warn` — the ordinary cause is benign (a rail
 ///   replaying a notification for a database this deployment no longer has, or
 ///   a callback host shared with another environment);
-/// * step 4 is two statements and not one, which matters for what the route
+/// * step 5 is two statements and not one, which matters for what the route
 ///   can be made to do: `enqueue_in_tx` is `ON CONFLICT DO NOTHING` and
 ///   writes nothing in the ordinary case, where the confirm already queued
 ///   the poll and `pull_forward_in_tx` does the work — and the pull-forward
@@ -262,12 +306,19 @@ pub(crate) fn routes() -> Router<crate::AppState> {
 /// else will move it before the next rung. MTN documents that it never
 /// resends one (module docs), so on that rail the next rung is what settles
 /// the charge: later, not never.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an axum handler: each argument is an extractor, and bundling them would need a \
+              custom extractor that hides which parts of the request the route reads"
+)]
 async fn callback(
     State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
     State(repositories): State<Arc<dyn Repositories>>,
+    State(resources): State<Arc<ResourceConfig>>,
     Path(code): Path<String>,
     method: Method,
     uri: Uri,
+    headers: HeaderMap,
     body: Bytes,
 ) -> Result<StatusCode, ApiError> {
     let Some(adapter) = adapters.get(&code) else {
@@ -304,6 +355,34 @@ async fn callback(
         return Ok(StatusCode::ACCEPTED);
     };
 
+    let verdict = verdict_for(
+        adapter.as_ref(),
+        &resources,
+        &code,
+        &charge,
+        &headers,
+        &body,
+    )
+    .await;
+    metrics::counter!(
+        PROVIDER_CALLBACKS_TOTAL,
+        "provider" => code.clone(),
+        "verdict" => verdict.label(),
+    )
+    .increment(1);
+    if !verdict.admits_pull_forward() {
+        tracing::warn!(
+            rail = %code,
+            charge_id = %charge.id,
+            reference_id = %reference.reference_id,
+            verdict = verdict.label(),
+            reason = verdict.reason().unwrap_or_default(),
+            "a rail callback was refused by this rail's check; the charge's poll was not moved, \
+             and the poll ladder still asks the rail at its next rung"
+        );
+        return Ok(StatusCode::ACCEPTED);
+    }
+
     let dedupe_key = poll_dedupe_key(&charge.id);
     let pulled_forward = repositories
         .transaction(|tx| {
@@ -331,9 +410,85 @@ async fn callback(
         charge_id = %charge.id,
         reference_id = %reference.reference_id,
         pulled_forward,
+        verdict = verdict.label(),
         "a rail callback moved a charge's poll forward"
     );
     Ok(StatusCode::ACCEPTED)
+}
+
+/// Step 4: the rail's own answer to "is this callback mine?" (RFC-0014
+/// § 3).
+///
+/// The configuration is the rail's, by `code`, enabled or not: a disabled
+/// rail's charges are still being settled, and its callbacks still arrive.
+/// It is never anything the request names (RFC-0013 § 7). The [`ChargeRef`]
+/// is the one the poll would build from the same row.
+///
+/// Two things this route cannot build are answered `Unavailable` rather than
+/// passed to the adapter or skipped: a rail with no loaded configuration,
+/// and a row whose currency or amount does not parse. Either one admits no
+/// pull-forward, so a check that could not run never counts as one that
+/// passed; the poll ladder still runs, and neither can happen to a charge
+/// this deployment wrote.
+async fn verdict_for(
+    adapter: &dyn ProviderAdapter,
+    resources: &ResourceConfig,
+    code: &str,
+    charge: &ChargeRow,
+    headers: &HeaderMap,
+    body: &[u8],
+) -> CallbackVerdict {
+    let Some(rail) = resources.rail(code) else {
+        return CallbackVerdict::Unavailable("this process holds no configuration for the rail");
+    };
+    let Some(charge_ref) = charge_ref_of(charge) else {
+        return CallbackVerdict::Unavailable(
+            "the charge's row does not parse as a charge reference",
+        );
+    };
+    let request = CallbackRequest {
+        headers,
+        body,
+        received_at: SystemTime::now(),
+    };
+    adapter
+        .verify_callback(&request, &charge_ref, &rail.provider_config())
+        .await
+}
+
+/// The [`ChargeRef`] `vpay_worker`'s poll builds from the same row, built
+/// the same way: the payer's method type as the confirm recorded it, string
+/// `ref_extra` values only. `None` for a currency or amount that does not
+/// parse, which [`verdict_for`] answers `Unavailable`.
+///
+/// Written out here rather than shared because the dependency runs the other
+/// way (`vpay-worker` links `vpay-api`), on [`PULL_FORWARD_FLOOR`]'s terms.
+fn charge_ref_of(charge: &ChargeRow) -> Option<ChargeRef> {
+    let currency = Currency::from_code(&charge.currency_code).ok()?;
+    let ref_extra: RefExtra = charge
+        .provider_ref_extra
+        .as_ref()
+        .and_then(serde_json::Value::as_object)
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| {
+                    value.as_str().map(|text| (key.clone(), text.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(ChargeRef {
+        reference_id: charge.provider_reference_id,
+        method_type: charge
+            .method_type
+            .as_deref()
+            .and_then(vpay_core::routing::MethodType::from_wire),
+        amount: Money::new(charge.amount, currency).ok()?,
+        payer_ref: charge.payer_ref.clone(),
+        ref_extra,
+        return_url: charge.return_url.clone(),
+    })
 }
 
 #[cfg(test)]

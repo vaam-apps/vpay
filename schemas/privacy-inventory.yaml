@@ -1409,6 +1409,15 @@ debug_protections:
   - type: HttpBodyError
     file: backends/crates/vpay-provider/src/http.rs
     elements: [payer_msisdn, webhook_url]
+  # A rail callback as the route hands it to an adapter's check (RFC-0014,
+  # 2026-10-23): its body is whatever the rail POSTed, and MTN's names the
+  # payer (`payer.partyId`). The hand-written `Debug` prints header names and
+  # the body's length, never a value. The signing secret it is checked
+  # against is a rail credential in `ProviderConfig::credentials`, which has
+  # no element here, as the note on `Keys` below says.
+  - type: CallbackRequest
+    file: backends/crates/vpay-provider/src/callback.rs
+    elements: [payer_msisdn]
   # vpay-notchpay, the Notch Pay client (RFC-0012). Linked by no binary on
   # 2026-10-20; registered now because the types exist now. `Keys` and
   # `Client` hold rail credentials and hide them with `Secret`, and are not

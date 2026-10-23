@@ -47,6 +47,13 @@
 //! for a reason of its own — it is the one port method whose *default* body
 //! is a refusal, so a decorator that forgot to forward it would compile and
 //! would answer `Unsupported` for every rail. See the method.
+//!
+//! `verify_callback` (RFC-0014) is not counted either, on `parse_callback`'s
+//! terms — an HMAC or a comparison over bytes that have already arrived — and
+//! is forwarded for `parse_destination`'s: its default answers `NotChecked`,
+//! so a decorator that took the default would silently stop checking every
+//! rail that signs. `vpay_provider_callbacks_total`, emitted by the route, is
+//! where verdicts are counted.
 
 use std::time::Instant;
 
@@ -58,9 +65,9 @@ use vpay_core::metrics::{
 };
 
 use crate::{
-    AcceptedExposure, AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus,
-    EndpointCheck, EndpointReport, PayerField, PriorSubmits, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, RefundTarget, Refunded, Submitted,
+    AcceptedExposure, AccountHolder, CallbackRef, CallbackRequest, CallbackVerdict, Capabilities,
+    ChargeRef, ChargeStatus, EndpointCheck, EndpointReport, PayerField, PriorSubmits,
+    ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -213,6 +220,20 @@ impl ProviderAdapter for Measured {
         self.inner.parse_callback(body)
     }
 
+    /// Forwarded unmeasured, and forwarded at all: the port's default answers
+    /// [`CallbackVerdict::NotChecked`], so a wrapper that took it would turn
+    /// every forged callback on a rail that signs back into a pulled-forward
+    /// poll, while each adapter's own tests, which hold it unwrapped, stayed
+    /// green. `the_callback_check_is_forwarded_and_not_counted` catches it.
+    async fn verify_callback(
+        &self,
+        request: &CallbackRequest<'_>,
+        charge: &ChargeRef,
+        config: &ProviderConfig,
+    ) -> CallbackVerdict {
+        self.inner.verify_callback(request, charge, config).await
+    }
+
     /// Forwarded unmeasured, and — the part that matters here — forwarded at
     /// all.
     ///
@@ -363,6 +384,7 @@ mod tests {
                 refund_destination: crate::RefundDestination::Origin,
                 callback_url_mode: crate::CallbackUrlMode::PerRequest,
                 submit_steps: crate::SubmitSteps::One,
+                callback_check: crate::CallbackCheck::None,
                 method_types: vpay_core::routing::MethodTypes::of(
                     &vpay_core::routing::MethodType::ALL,
                 ),
@@ -529,6 +551,98 @@ mod tests {
         );
     }
 
+    /// An inner adapter whose callback check refuses everything, so that a
+    /// wrapper answering the port's default (`NotChecked`) instead of
+    /// forwarding is a different verdict here. `#[cfg(test)]`, and not a
+    /// double of a rail, for [`Answering`]'s reason.
+    #[derive(Debug)]
+    struct Refusing;
+
+    #[async_trait]
+    impl ProviderAdapter for Refusing {
+        fn code(&self) -> &'static str {
+            "notchpay"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                delivers_callbacks: true,
+                callback_check: crate::CallbackCheck::Signature,
+                ..Answering {
+                    code: "notchpay",
+                    error: None,
+                }
+                .capabilities()
+            }
+        }
+
+        async fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<ChargeStatus, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn verify_callback(
+            &self,
+            _request: &CallbackRequest<'_>,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> CallbackVerdict {
+            CallbackVerdict::Invalid("refusing: every callback")
+        }
+    }
+
+    /// RFC-0014: the wrapper forwards the callback check and counts nothing.
+    ///
+    /// Forwarded, because the port's default is `NotChecked`, which admits
+    /// the pull-forward: a wrapper that took it would undo every rail's
+    /// check in production while each adapter's own tests stayed green.
+    /// Uncounted, because the check reaches no rail; the route counts the
+    /// verdict on its own series (`vpay_provider_callbacks_total`).
+    #[test]
+    fn the_callback_check_is_forwarded_and_not_counted() {
+        let adapter = Measured::wrap(Box::new(Refusing));
+        let headers = reqwest::header::HeaderMap::new();
+        let request = CallbackRequest {
+            headers: &headers,
+            body: b"{}",
+            received_at: std::time::SystemTime::UNIX_EPOCH,
+        };
+
+        let mut verdict = None;
+        let scrape = scrape_of(|| {
+            verdict = Some(block_on(adapter.verify_callback(
+                &request,
+                &charge(),
+                &config(),
+            )));
+        });
+
+        assert_eq!(
+            verdict,
+            Some(CallbackVerdict::Invalid("refusing: every callback")),
+            "the inner adapter's verdict, not the port's default"
+        );
+        assert!(
+            !scrape.contains("vpay_provider_requests_total"),
+            "a callback check reaches no rail and must record nothing: {scrape}"
+        );
+    }
+
     /// `payer_fields()` is forwarded to the inner adapter, exactly as
     /// `code()` and `capabilities()` are — and not defaulted. Every adapter
     /// this crate ships reaches `vpay_api` only through `Measured::wrap`
@@ -633,6 +747,7 @@ mod tests {
                 refund_destination: crate::RefundDestination::Required,
                 callback_url_mode: crate::CallbackUrlMode::PerRequest,
                 submit_steps: crate::SubmitSteps::One,
+                callback_check: crate::CallbackCheck::None,
                 method_types: vpay_core::routing::MethodTypes::of(
                     &vpay_core::routing::MethodType::ALL,
                 ),

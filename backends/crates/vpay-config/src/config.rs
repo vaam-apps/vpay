@@ -251,14 +251,43 @@ pub struct RailDisplayName {
 }
 
 /// [`ProviderHost::callbacks`]: how vpay treats this rail's callback
-/// endpoint at the provider.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+/// endpoint at the provider, and its callbacks when they arrive.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ProviderCallbacks {
     /// See [`CallbackRegistration`]. Defaults to `ensure`, so `callbacks: {}`
     /// means what an absent block means.
     #[serde(default)]
     pub register: CallbackRegistration,
+    /// See [`CallbackVerification`]. Defaults to `on`.
+    #[serde(default)]
+    pub verify: CallbackVerification,
+}
+
+/// `providers[].callbacks.verify` (RFC-0014 § 6, built 2026-10-23).
+///
+/// **An acknowledgement, not a switch.** It does not turn a rail's check on
+/// or off: a rail whose adapter declares `CallbackCheck::Signature` checks
+/// every callback against `credentials.callback_signing_secret` whenever
+/// one is configured, whatever this says. What `off` does is let a
+/// **livemode** deployment boot on such a rail with no secret, the
+/// operator's written statement that its callbacks go unverified;
+/// `vpay_api::boot::boot_seeds` refuses that deployment otherwise
+/// (`ConfigError::CallbackSigningSecretMissing`) and warns at every boot
+/// that it says `off`.
+///
+/// Two contradictions refuse to boot in either mode, because a setting that
+/// does nothing is one somebody believes in: `off` beside a configured
+/// secret (`ConfigError::CallbackVerifyOffWithSecret`), and `off` on a rail
+/// that checks no signature (`ConfigError::CallbackSigningSettingUnread`).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CallbackVerification {
+    /// The default: a rail that signs is expected to hold its secret.
+    #[default]
+    On,
+    /// This deployment accepts that a signing rail's callbacks go unchecked.
+    Off,
 }
 
 /// `providers[].callbacks.register` (RFC-0013 § 2).
@@ -6506,6 +6535,20 @@ providers:
             let block: ProviderCallbacks = serde_yaml_ng::from_str(yaml).expect(yaml);
             assert_eq!(block.register, expected, "{yaml}");
         }
+
+        assert_eq!(empty.verify, CallbackVerification::On);
+        for (yaml, expected) in [
+            ("verify: on", CallbackVerification::On),
+            ("verify: off", CallbackVerification::Off),
+        ] {
+            let block: ProviderCallbacks = serde_yaml_ng::from_str(yaml).expect(yaml);
+            assert_eq!(block.verify, expected, "{yaml}");
+            assert_eq!(block.register, CallbackRegistration::Ensure, "{yaml}");
+        }
+        assert!(
+            serde_yaml_ng::from_str::<ProviderCallbacks>("verify: sometimes").is_err(),
+            "an unknown verification mode must not parse"
+        );
 
         let misspelt = serde_yaml_ng::from_str::<ProviderCallbacks>("registr: off");
         assert!(

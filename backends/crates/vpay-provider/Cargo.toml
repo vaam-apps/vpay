@@ -27,6 +27,11 @@ serde_json.workspace = true
 # same length-prefixed digest; already resolved at this pin in every graph
 # that links an adapter, so nothing new is shipped.
 sha2.workspace = true
+# `hmac` and `hex` for `callback::hmac_sha256_hex_matches`, the one MAC
+# comparison in the workspace (RFC-0014 § 4). Both are workspace pins already
+# (`vpay-notchpay` and `vpay-worker::signing` use them).
+hmac.workspace = true
+hex.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
 # `ProviderAdapter` is held as `Box<dyn ProviderAdapter>` everywhere (that is

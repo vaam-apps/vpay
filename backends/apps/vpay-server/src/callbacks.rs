@@ -184,7 +184,10 @@ mod tests {
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
-            callbacks: register.map(|register| ProviderCallbacks { register }),
+            callbacks: register.map(|register| ProviderCallbacks {
+                register,
+                ..ProviderCallbacks::default()
+            }),
         }
     }
 

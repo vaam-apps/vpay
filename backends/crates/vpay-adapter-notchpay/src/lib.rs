@@ -85,10 +85,10 @@ use vpay_notchpay::wire::{
 };
 use vpay_notchpay::{Answer, Client, Keys};
 use vpay_provider::{
-    AcceptedExposure, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus,
-    EndpointCheck, EndpointReport, PayerField, PayerFieldKind, PhonePayerType, PriorSubmits,
-    ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget,
-    Refunded, SubmitSteps, Submitted,
+    AcceptedExposure, CallbackCheck, CallbackRef, CallbackRequest, CallbackUrlMode,
+    CallbackVerdict, Capabilities, ChargeRef, ChargeStatus, EndpointCheck, EndpointReport,
+    PayerField, PayerFieldKind, PhonePayerType, PriorSubmits, ProviderAdapter, ProviderConfig,
+    ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
 };
 
 use crate::mapping::{Initialized, Processed};
@@ -106,6 +106,10 @@ const PRIVATE_KEY: &str = "private_key";
 const CHANNEL: &str = "channel";
 /// The optional `settings` key for the one free-text field Notch Pay receives.
 const DESCRIPTION: &str = "description";
+/// The header Notch Pay's webhooks carry their signature in: a hex
+/// HMAC-SHA256 of the body, keyed by the endpoint's Hash Key (Notch Pay's
+/// "Verify webhooks" guide; RFC-0014 § 4). `HeaderMap` lookups ignore case.
+const SIGNATURE_HEADER: &str = "x-notch-signature";
 
 /// The `ref_extra` key holding Notch Pay's own reference for the payment
 /// (`trx.…`), the only one its process and read paths answer for.
@@ -470,6 +474,9 @@ impl ProviderAdapter for Adapter {
             // (`ensure_callback_endpoint` below, RFC-0013 § 5).
             callback_url_mode: CallbackUrlMode::Registered,
             submit_steps: SubmitSteps::PrepareThenSubmit,
+            // `x-notch-signature`, a hex HMAC-SHA256 of the raw body keyed by
+            // the endpoint's Hash Key (`verify_callback` below, RFC-0014 § 4).
+            callback_check: CallbackCheck::Signature,
             // An aggregator: both networks through one account, the rail
             // that made a method type and a rail two things (ADR-0029 D6).
             // `submit` sends the chosen network's channel (`channel_for`).
@@ -680,15 +687,20 @@ impl ProviderAdapter for Adapter {
 
     /// Identifiers only, out of the event Notch Pay POSTs.
     ///
-    /// # This request is not authenticated by anything vpay checks
+    /// # Parsing is not where the signature is checked
     ///
     /// Notch Pay signs its webhooks (`x-notch-signature`, HMAC-SHA256), and
-    /// the port hands this method the body and no headers, so the signature
-    /// cannot be checked (RFC-0010 open question 4). And on this rail the
-    /// public key may be in other hands (ADR-0031). So the body is a hint:
-    /// the event's own status is not modelled by the client at all, and
-    /// `ref_extra` is always empty, so nothing from an unauthenticated
-    /// request can reach a charge.
+    /// this method is handed the body alone: the route checks the signature
+    /// afterwards, through [`verify_callback`](Adapter::verify_callback),
+    /// once the charge is known (RFC-0014 § 2). Even a verified webhook is a
+    /// hint: the event's own status is not modelled by the client at all,
+    /// and `ref_extra` is always empty, so nothing from the request can reach
+    /// a charge. On this rail the public key may also be in other hands
+    /// (ADR-0031), which is one more reason a callback moves no money.
+    ///
+    /// _(This section was headed "This request is not authenticated by
+    /// anything vpay checks" until 2026-10-23, when RFC-0014 gave the port a
+    /// place to check it.)_
     ///
     /// # Errors
     ///
@@ -730,6 +742,74 @@ impl ProviderAdapter for Adapter {
             reference_id,
             ref_extra: RefExtra::new(),
         })
+    }
+
+    /// Whether `x-notch-signature` is the hex HMAC-SHA256 of the raw body,
+    /// keyed by a configured signing secret (RFC-0014 § 4).
+    ///
+    /// The secret is the endpoint's Hash Key from Notch Pay's dashboard
+    /// (`hsk_test_…` in the sandbox), configured as
+    /// `credentials.callback_signing_secret` and, during a rotation,
+    /// `credentials.callback_signing_secret_previous`
+    /// ([`vpay_provider::callback`]). Notch Pay's create answer carries no
+    /// secret (sandbox, 2026-10-21), so registering the endpoint does not
+    /// supply one: the operator copies it.
+    ///
+    /// * No secret configured: [`CallbackVerdict::NoSecret`]. Boot refused
+    ///   that in livemode unless `callbacks.verify: off` says so, and warned
+    ///   otherwise.
+    /// * No header, a header that is not ASCII, or a signature that matches
+    ///   no configured secret: [`CallbackVerdict::Invalid`], with a fixed
+    ///   sentence that quotes nothing.
+    /// * A match against either secret: [`CallbackVerdict::Verified`].
+    ///
+    /// **The raw body**, the bytes the route received, and not a
+    /// re-serialisation. Notch Pay's own guide shows both: its PHP and Python
+    /// examples sign the raw payload, its Node example signs
+    /// `JSON.stringify(req.body)`, which is the raw body for a body Notch Pay
+    /// itself serialised compactly. RFC-0012 § 10 item 7 asks which; until a
+    /// webhook Notch Pay sent is captured and checked, this is proven against
+    /// the stub only (`docs/status/verification/2026-10-23-webhook-signatures.md`).
+    ///
+    /// **No timestamp, so no replay window.** A captured genuine webhook
+    /// verifies for ever (RFC-0012 § 6, RFC-0014 open question 4). What a
+    /// replay can do is pull one poll forward, bounded by the route's dedupe
+    /// key and its floor, and its capturer already had to break TLS to the
+    /// callback URL.
+    ///
+    /// The charge is not read: the signature covers the body, and the body
+    /// already named the charge the route found.
+    async fn verify_callback(
+        &self,
+        request: &CallbackRequest<'_>,
+        _charge: &ChargeRef,
+        config: &ProviderConfig,
+    ) -> CallbackVerdict {
+        let secrets = vpay_provider::callback::callback_signing_secrets(config);
+        if secrets.is_empty() {
+            return CallbackVerdict::NoSecret;
+        }
+        let Some(header) = request.headers.get(SIGNATURE_HEADER) else {
+            return CallbackVerdict::Invalid("notchpay: the webhook carries no x-notch-signature");
+        };
+        let Ok(signature) = header.to_str() else {
+            return CallbackVerdict::Invalid("notchpay: x-notch-signature is not ASCII");
+        };
+        let matched = secrets.iter().any(|secret| {
+            vpay_provider::callback::hmac_sha256_hex_matches(
+                secret.as_bytes(),
+                request.body,
+                signature,
+            )
+        });
+        if matched {
+            CallbackVerdict::Verified
+        } else {
+            CallbackVerdict::Invalid(
+                "notchpay: x-notch-signature is not the HMAC-SHA256 of the body under any \
+                 configured signing secret",
+            )
+        }
     }
 
     /// A declared gap, not a fact about Notch Pay.

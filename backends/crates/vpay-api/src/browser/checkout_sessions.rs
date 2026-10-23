@@ -766,6 +766,7 @@ mod tests {
                 refund_destination: vpay_provider::RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
                 submit_steps: vpay_provider::SubmitSteps::One,
+                callback_check: vpay_provider::CallbackCheck::None,
                 // Each stub serves its real rail's network, so the routing
                 // test below sees an MTN push rail and an Orange redirect one.
                 method_types: match self.code {

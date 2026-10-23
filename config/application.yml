@@ -141,6 +141,14 @@ providers:
   #     # front end.
   #     public_key: ${NOTCHPAY_PUBLIC_KEY}
   #     private_key: ${NOTCHPAY_PRIVATE_KEY} # sent as X-Grant on every call
+  #     # The webhook endpoint's Hash Key (dashboard), RFC-0014: every Notch
+  #     # Pay webhook's `x-notch-signature` is checked against it, and one
+  #     # that does not match moves no poll. Rotating it: put the old value
+  #     # in `callback_signing_secret_previous` until the new one is live.
+  #     # Without it a sandbox WARNs; livemode refuses to boot unless the
+  #     # block also says `callbacks: { verify: off }`, the operator's written
+  #     # acceptance that webhooks go unverified (never beside a secret).
+  #     callback_signing_secret: ${NOTCHPAY_HASH_KEY}
   - code: orange_money
     host:
       # Includes the `/orange-money-webpay/{env}` path prefix on purpose:
