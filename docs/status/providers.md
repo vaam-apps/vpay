@@ -9,6 +9,8 @@ extended on 2026-10-22 by runbook B3b
 ([verification](verification/2026-10-22-notchpay-b3b.md)). Its Callback URL
 cell moved on 2026-10-22 when RFC-0013 was built
 ([verification](verification/2026-10-22-rfc-0013-callback-registration.md)).
+The `fapshi` row was added on 2026-10-23 from a desk study of Fapshi's
+documentation ([evaluation](../plans/2026-10-23-fapshi-evaluation.md)).
 One row per
 payment provider, one column per thing the provider port asks of an adapter.
 The maintainer asked for it on 2026-10-20: every provider implements the same
@@ -72,6 +74,7 @@ No new error type is needed for the matrix, and none should be added: a third
 | `stripe`       | cards, on Stripe's hosted page                                                                                     | passes on its documentation; serves no CEMAC country                                                                                                                                                                                 | designed                     | designed                     | designed                                        | registrable by API (RFC-0013)                                                                                                       | designed; the core half is built                                                 | designed                 | unsupported    | [RFC-0010](../rfc/0010-stripe-adapter.md)                                                        |
 | `paypal`       | PayPal wallet                                                                                                      | passes on its documentation; XAF and XOF absent                                                                                                                                                                                      | designed                     | designed                     | designed                                        | registrable by API (RFC-0013)                                                                                                       | designed                                                                         | designed                 | unsupported    | [RFC-0011](../rfc/0011-paypal-adapter.md)                                                        |
 | `flutterwave`  | MTN MoMo, Orange Money (v3 `mobile_money_franco`, XAF 100 to 2 800 000); cards listed for XAF, 3-D Secure unstated | **unknown**: rules 3 and 4 pass on its documentation; rule 1 passes in shape, but XAF withdrawals are unknown because the Cameroon payout pause was never retracted; rule 2 passes on v3's hosted page only                          | —                            | —                            | —                                               | dashboard only: no registration API, so RFC-0013 cannot register it                                                                 | designed nowhere; v3 refunds have no idempotency key, v4 has `X-Idempotency-Key` | rail documents it        | unknown        | [2026-09-23 evaluation](../plans/2026-09-23-card-provider-evaluation.md), re-measured 2026-10-20 |
+| `fapshi`       | MTN MoMo, Orange Money (aggregator: Direct Pay, or a hosted page); XAF, from 100                                   | **passes on its documentation**: all four rules, rule 3 as ADR-0029 wrote it (`apiuser` and a secret `apikey` on the read; no ADR-0031). Never called; licensing unconfirmed                                                         | —                            | —                            | —                                               | dashboard only: no registration API; every status read echoes it                                                                    | none documented: the terms leave returns to the merchant                         | none documented          | unknown        | [2026-10-23 evaluation](../plans/2026-10-23-fapshi-evaluation.md)                                |
 
 Notes on cells that a word cannot carry:
 
@@ -171,6 +174,17 @@ Notes on cells that a word cannot carry:
   page's own documentation still says nothing of XAF or 3-D Secure. Mobile
   money is the payment this row could carry first. The evaluation page has
   the sources.
+- **`fapshi` has no RFC and no code.** Measured on 2026-10-23 from its
+  documentation alone (no account, no call); its "Methods" are Fapshi's own
+  claims. Its status read takes `apiuser` and a secret `apikey`, so it passes
+  rule 3 as ADR-0029 wrote it, the rule Notch Pay needed ADR-0031 for. Four
+  things stand before an adapter: a resent Direct Pay may prompt twice (no
+  idempotency key, `externalId` uniqueness undocumented), and only a
+  `GET /transaction/{userId}` lookup by an id of vpay's could guard it;
+  Direct Pay is off in live mode and approved only for "absolutely necessary
+  use cases"; there is no refund API; and the terms name "Fapshi Inc" and no
+  licence, regulator or partner bank. Its sandbox needs a KYC-activated
+  account. The evaluation page has the sources and the questions to send.
 - **The "Callback URL" column** is RFC-0013's subject: per request on the two
   shipping rails, registered with the account on the three designed ones.
   Since 2026-10-22 vpay registers Notch Pay's itself, against a WireMock stub
