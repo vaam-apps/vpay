@@ -3717,6 +3717,75 @@ helm-check:
 
     echo "helm-check: ok — lint, 4 renders, $guards guards, rate limit (both paths), rail callback (both paths), management route/policy coherence, wrapper chart (global), kubeconform. No cluster was involved."
 
+# Unit tests for every alert in the chart's PrometheusRule, against the rules
+# AS RENDERED: `helm template` with `metrics.prometheusRule.enabled=true` and
+# the default thresholds, the PrometheusRule's `spec.groups` copied into a
+# plain rule file, then `promtool check rules` and `promtool test rules` over
+# `ci/prometheusrule.test.yaml`. Added 2026-10-23 with
+# `VpayCallbackEndpointUnconfirmed`, the sixth rule; until then no rule here
+# had ever been evaluated by anything, real series or synthetic.
+#
+# It also refuses a rule without tests, in both directions: every alert the
+# chart renders must appear in the test file with at least one case that
+# expects it to fire and one that expects silence, and the test file may name
+# no alert the chart does not render. A new rule fails here until it is
+# tested; a deleted one fails until its tests go too.
+#
+# What it proves: each expression fires on the series it is written for and
+# stays quiet on its neighbours, with the `for:`, labels and annotation text
+# the chart renders. What it does not prove: that vpay's real series look like
+# the synthetic ones. No Prometheus has ever scraped a vpay process.
+#
+# Needs `helm` and `promtool` on PATH. CI's `deploy (helm chart)` job installs
+# promtool from the Prometheus release tarball, pinned by version and SHA-256.
+# NOT part of `just ci`, for helm-check's reason: two binaries this workspace
+# does not build.
+test-alert-rules:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    for tool in helm promtool; do
+        command -v "$tool" >/dev/null 2>&1 || { echo "test-alert-rules: needs '$tool' on PATH" >&2; exit 1; }
+    done
+
+    chart="{{ chart }}"
+    tests="$chart/ci/prometheusrule.test.yaml"
+    out="$(mktemp -d)"
+    trap 'rm -rf "$out"' EXIT
+
+    helm template vpay "$chart" --set metrics.prometheusRule.enabled=true \
+        --show-only templates/prometheusrule.yaml > "$out/prometheusrule.yaml"
+    # `spec:` is a plain Prometheus rule file one level down: everything after
+    # it, dedented by the two spaces `spec:` puts in front. No YAML tool is
+    # needed, and the grep below refuses a render this did not understand.
+    sed -n '/^spec:$/,$p' "$out/prometheusrule.yaml" | sed '1d; s/^  //' > "$out/rules.yaml"
+    grep -q '^groups:$' "$out/rules.yaml" \
+        || { echo "test-alert-rules: FAIL — no spec.groups in the rendered PrometheusRule" >&2; exit 1; }
+    promtool check rules "$out/rules.yaml"
+
+    rendered=($(sed -n 's/^ *- alert: *//p' "$out/rules.yaml" | LC_ALL=C sort))
+    tested=($(sed -n 's/^ *alertname: *//p' "$tests" | LC_ALL=C sort -u))
+    if [ "${rendered[*]}" != "${tested[*]}" ]; then
+        echo "test-alert-rules: FAIL — the chart renders different alerts than $tests tests." >&2
+        echo "  rendered: ${rendered[*]}" >&2
+        echo "  tested:   ${tested[*]}" >&2
+        exit 1
+    fi
+    # Per alert: one case expecting it to fire (`exp_labels`) and one expecting
+    # silence (`exp_alerts: []`).
+    for alert in "${rendered[@]}"; do
+        cases="$(awk -v a="$alert" '
+            /^ *alertname: / { current = $2; next }
+            current == a && /exp_alerts: \[\]/ { quiet = 1 }
+            current == a && /exp_labels:/ { fires = 1 }
+            END { print (fires ? "fires" : "") " " (quiet ? "quiet" : "") }' "$tests")"
+        [ "$cases" = "fires quiet" ] \
+            || { echo "test-alert-rules: FAIL — $alert needs a firing case and a silent case in $tests (has: $cases)" >&2; exit 1; }
+    done
+
+    cp "$tests" "$out/"
+    promtool test rules "$out/$(basename "$tests")"
+    echo "test-alert-rules: ok — ${#rendered[@]} rules, each with a firing and a silent case, against synthetic series. No real Prometheus has ever scraped vpay."
+
 # --------------------------------------------------------------- release ---
 
 # The GHCR namespace `release-dry-run` tags into. `release.yml` derives this

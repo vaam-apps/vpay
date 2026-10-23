@@ -1164,3 +1164,25 @@ jobs:
       # uses the chart as the root and none could see its schema refusing the
       # key Helm passes to every subchart (#269).
       - run: just helm-check
+      # promtool, for the alert-rule unit tests. Same pinning as kubeconform
+      # above: version AND digest, the digest being the one upstream publishes
+      # in the release's own `sha256sums.txt`. 3.13.5 is the LTS line on
+      # prometheus.io/download (2026-10-23); only `promtool` is installed out
+      # of the tarball, never the server.
+      - name: install promtool
+        env:
+          PROMETHEUS_VERSION: 3.13.5
+          PROMETHEUS_SHA256: 0388822ace519c5a3a8ef556a541ce1b536e21d872f82deded465bd27a5a0699
+        run: |
+          set -euo pipefail
+          curl -fsSL -o /tmp/prometheus.tar.gz \
+            "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz"
+          echo "${PROMETHEUS_SHA256}  /tmp/prometheus.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/prometheus.tar.gz -C /tmp "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool"
+          sudo install -m 0755 "/tmp/prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/promtool
+          promtool --version
+      # Every rule in templates/prometheusrule.yaml, as `helm template`
+      # renders it, against `ci/prometheusrule.test.yaml`: a firing and a
+      # silent case per rule, and no rule without tests. Synthetic series; no
+      # Prometheus has ever scraped vpay. The recipe's own comment says more.
+      - run: just test-alert-rules

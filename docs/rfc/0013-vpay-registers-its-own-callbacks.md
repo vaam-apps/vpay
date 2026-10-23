@@ -823,6 +823,15 @@ Not done: step 5, the first registration against Notch Pay's sandbox. It
 needs the maintainer's approval to call Notch Pay; no public URL is needed
 to register one, as the 2026-10-21 run showed.
 
+**Alerting on the counter, added 2026-10-23.** The chart's
+`VpayCallbackEndpointUnconfirmed` fires when passes ran for a rail across
+`metrics.prometheusRule.callbackEndpointWindow` (3h) and none counted
+`present`, `created` or `foreign`; it is a `warning`, in `check` mode too,
+because a missing endpoint costs latency and never money.
+[runbooks/callback-endpoints.md](../runbooks/callback-endpoints.md) says what
+each state asks of an operator. It is tested by `promtool` against synthetic
+series (`just test-alert-rules`), never against a real scrape.
+
 ## Delivery
 
 | Step | Contents                                                                                                                                                                                                                                                                                                                                                                                                                         | Depends on                                                                             |

@@ -454,7 +454,11 @@ rail per `ensure_callbacks` pass, by `vpay_worker::callbacks::run_pass`.
 `missing` or `failed` is a rail whose callbacks may not be arriving, so its
 charges settle by polling alone; `drifted` is one with event types
 unsubscribed; `foreign` is one whose callbacks arrive through an endpoint
-vpay did not create. `docs/status.md`
+vpay did not create. Since 2026-10-23 the chart alerts on it:
+`VpayCallbackEndpointUnconfirmed` fires when a rail's passes confirmed no
+endpoint (`present`, `created`, `foreign`) for `callbackEndpointWindow`
+([runbooks/callback-endpoints.md](../runbooks/callback-endpoints.md)).
+`docs/status.md`
 names the seam for each.
 
 **What an operator should know before trusting a dashboard.**

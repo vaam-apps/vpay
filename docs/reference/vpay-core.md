@@ -502,6 +502,13 @@ endpoint missing" has one answer however many workers there are. The label
 set is the rail's code and a closed state; no endpoint id, URL or marker is a
 label.
 
+The chart alerts on it since 2026-10-23: `VpayCallbackEndpointUnconfirmed`
+reads `increase()` over a window per `provider`, `unless` one of the
+confirming states (`present`, `created`, `foreign`) increased in it. It is
+`unless` rather than `== 0` because a rail never once confirmed has no
+confirming series at all, and a comparison over a series that does not exist
+returns nothing. [runbooks/callback-endpoints.md](../runbooks/callback-endpoints.md).
+
 ### Why the names are `const`s and not string literals at call sites
 
 A typo in a metric name is invisible: nothing fails, a dashboard is simply

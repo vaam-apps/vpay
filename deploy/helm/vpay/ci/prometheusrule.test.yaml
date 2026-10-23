@@ -1,0 +1,252 @@
+# Unit tests for every rule in templates/prometheusrule.yaml, run by
+# `just test-alert-rules` and by CI's `deploy (helm chart)` job.
+#
+# The recipe renders the chart with `metrics.prometheusRule.enabled=true` and
+# the default thresholds, copies the PrometheusRule's `spec.groups` into a
+# plain rule file named `rules.yaml` next to a copy of this file, and runs
+# `promtool test rules`. So these are tests of the rules AS RENDERED: the
+# expression, the `for:`, the labels and the annotation text, with the
+# values.yaml knobs substituted. A change to a threshold, a window or a
+# description fails here until this file says the same.
+#
+# What they prove: each rule fires on the series it is written for, and stays
+# quiet on its neighbours. What they cannot prove: that vpay's real series
+# look like these. No Prometheus has ever scraped a vpay process
+# (templates/prometheusrule.yaml's header); the series below are written from
+# the label sets the code emits (`vpay_core::metrics`), not recorded.
+#
+# Each firing case names the full label set and annotations, because promtool
+# compares both exactly.
+rule_files:
+  - rules.yaml
+evaluation_interval: 1m
+tests:
+  - name: "VpayProviderErrorRateHigh: a rail failing 2 calls in 12 fires; one failing 1 in 101 does not"
+    interval: 1m
+    input_series:
+      - series: 'vpay_provider_requests_total{provider="mtn_momo",operation="query_status",error_kind=""}'
+        values: "0+10x60"
+      - series: 'vpay_provider_requests_total{provider="mtn_momo",operation="query_status",error_kind="provider_unavailable"}'
+        values: "0+2x60"
+      - series: 'vpay_provider_requests_total{provider="orange_money",operation="query_status",error_kind=""}'
+        values: "0+100x60"
+      - series: 'vpay_provider_requests_total{provider="orange_money",operation="query_status",error_kind="charge_declined"}'
+        values: "0+1x60"
+    alert_rule_test:
+      # Above the ratio, but not yet for `providerErrorWindow` (15m).
+      - eval_time: 10m
+        alertname: VpayProviderErrorRateHigh
+        exp_alerts: []
+      # mtn_momo at 2/12 fires; orange_money at 1/101 stays under 0.05.
+      - eval_time: 40m
+        alertname: VpayProviderErrorRateHigh
+        exp_alerts:
+          - exp_labels:
+              provider: "mtn_momo"
+              provisional: "true"
+              severity: "warning"
+            exp_annotations:
+              description: "More than 0.05 of port calls to mtn_momo in the last 15m carried a non-empty `error_kind` — transport failures (`provider_unavailable`), unparseable answers (`provider_error`), declines (`charge_declined`), configuration refusals (`misconfigured`) and the rest. Split by `error_kind` before acting; the runbook says how. THRESHOLD IS PROVISIONAL — it was proposed, never measured against real rail traffic."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/provider-error-rate.md"
+              summary: "calls to mtn_momo are failing above the proposed threshold"
+  - name: "VpayUnresolvedChargesRising: one charge reaching unresolved fires, and stops an hour later"
+    interval: 1m
+    input_series:
+      - series: 'vpay_charge_transitions_total{provider="notchpay",from="pending",to="unresolved"}'
+        values: "0x9 1x80"
+      - series: 'vpay_charge_transitions_total{provider="mtn_momo",from="pending",to="succeeded"}'
+        values: "0+5x90"
+    alert_rule_test:
+      # The transition happened at 10m; `for: 5m` has not elapsed.
+      - eval_time: 12m
+        alertname: VpayUnresolvedChargesRising
+        exp_alerts: []
+      # Only `to="unresolved"` counts: the succeeded transitions beside it never fire.
+      - eval_time: 20m
+        alertname: VpayUnresolvedChargesRising
+        exp_alerts:
+          - exp_labels:
+              from: "pending"
+              provider: "notchpay"
+              provisional: "true"
+              severity: "warning"
+              to: "unresolved"
+            exp_annotations:
+              description: "At least one charge was escalated to `unresolved`: vpay could not determine its outcome from the rail within the escalation window. Each one is money whose disposition is unknown until someone reconciles it by hand."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/unresolved-charges.md"
+              summary: "A charge reached `unresolved` in the last hour"
+      # No new unresolved charge in the last hour.
+      - eval_time: 80m
+        alertname: VpayUnresolvedChargesRising
+        exp_alerts: []
+  - name: "VpayJobQueueBehind: 400s behind fires after 10m"
+    interval: 1m
+    input_series:
+      - series: "vpay_jobs_oldest_claimable_age_seconds"
+        values: "400x30"
+    alert_rule_test:
+      # Behind, but not yet for 10m.
+      - eval_time: 5m
+        alertname: VpayJobQueueBehind
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: VpayJobQueueBehind
+        exp_alerts:
+          - exp_labels:
+              provisional: "true"
+              severity: "warning"
+            exp_annotations:
+              description: "The oldest claimable job has been runnable for over 300s. Jobs whose time has come with nobody taking them: add a worker replica or raise `worker.concurrency`. THRESHOLD IS PROVISIONAL."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/worker-queue.md"
+              summary: "The job queue is more than 300s behind"
+  - name: "VpayJobQueueBehind: a healthy idle queue reads negative and never fires"
+    interval: 1m
+    input_series:
+      - series: "vpay_jobs_oldest_claimable_age_seconds"
+        values: "-3500x30"
+    alert_rule_test:
+      # `now - min(run_at)` over future rows: docs/reference/vpay-core.md, the queue gauge goes negative.
+      - eval_time: 20m
+        alertname: VpayJobQueueBehind
+        exp_alerts: []
+  - name: "VpayPageableErrorEvents: one Page-classified error fires at once, then clears"
+    interval: 1m
+    input_series:
+      - series: 'vpay_alert_events_total{category="Conflict",code="charge_declined"}'
+        values: "0x4 1x30"
+    alert_rule_test:
+      # `for: 0m`: the classification is the alert.
+      - eval_time: 6m
+        alertname: VpayPageableErrorEvents
+        exp_alerts:
+          - exp_labels:
+              category: "Conflict"
+              code: "charge_declined"
+              provisional: "true"
+              severity: "critical"
+            exp_annotations:
+              description: "`Conflict` / `charge_declined` was classified as page-worthy by ADR-0011's policy table. The classification is the alert; there is no separate threshold to tune."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/README.md"
+              summary: "vpay logged an error classified `Severity::Page`"
+      # Nothing new in `alertEventWindow` (5m).
+      - eval_time: 20m
+        alertname: VpayPageableErrorEvents
+        exp_alerts: []
+  - name: "VpayJobsDeadLettered: a dead letter fires; finished jobs never do"
+    interval: 1m
+    input_series:
+      - series: 'vpay_jobs_completed_total{kind="poll_charge",outcome="dead_letter"}'
+        values: "0x4 1x40"
+      - series: 'vpay_jobs_completed_total{kind="poll_charge",outcome="finished"}'
+        values: "0+3x45"
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: VpayJobsDeadLettered
+        exp_alerts:
+          - exp_labels:
+              kind: "poll_charge"
+              outcome: "dead_letter"
+              provisional: "true"
+              severity: "warning"
+            exp_annotations:
+              description: "A job of kind poll_charge ran out of retries. Whatever it was driving is not being driven any more."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/worker-queue.md"
+              summary: "A job exhausted its attempts and was dead-lettered"
+      # Past the 15m window, and `finished` is not `dead_letter`.
+      - eval_time: 30m
+        alertname: VpayJobsDeadLettered
+        exp_alerts: []
+  - name: "VpayCallbackEndpointUnconfirmed: a check-mode rail that was never registered fires; a foreign endpoint does not"
+    interval: 5m
+    input_series:
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="missing"}'
+        values: "1x11 2x12 3x12 4x12"
+      - series: 'vpay_callback_endpoint_checks_total{provider="stripe",state="foreign"}'
+        values: "1x11 2x12 3x12 4x12"
+    alert_rule_test:
+      # One pass so far: a counter's first sample shows no increase, so nothing
+      # can fire before the second pass, an hour after the worker starts.
+      - eval_time: 30m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts: []
+      # notchpay has never had a `present` series at all, which is why the rule
+      # is `unless`, not `== 0`. stripe's endpoint is somebody else's (`foreign`),
+      # and callbacks arrive through it: not fired.
+      - eval_time: 90m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts:
+          - exp_labels:
+              provider: "notchpay"
+              provisional: "true"
+              severity: "warning"
+            exp_annotations:
+              description: "`ensure_callbacks` ran for notchpay during the last 3h and no pass found vpay's endpoint at its callback URL: each said `missing` (not registered, and `register: check` forbids creating it), `drifted` (vpay's endpoint lacks an event type), `failed` (the rail or the database did not answer) or `locked`. Callbacks from this rail may not be arriving; its charges still settle by polling, later. Read the pass's log line for the rail before acting."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/callback-endpoints.md"
+              summary: "No pass in 3h confirmed vpay's callback endpoint on notchpay"
+  - name: "VpayCallbackEndpointUnconfirmed: a drifted endpoint fires, because nothing on the rail repairs it"
+    interval: 5m
+    input_series:
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="drifted"}'
+        values: "1x11 2x12 3x12 4x12"
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts:
+          - exp_labels:
+              provider: "notchpay"
+              provisional: "true"
+              severity: "warning"
+            exp_annotations:
+              description: "`ensure_callbacks` ran for notchpay during the last 3h and no pass found vpay's endpoint at its callback URL: each said `missing` (not registered, and `register: check` forbids creating it), `drifted` (vpay's endpoint lacks an event type), `failed` (the rail or the database did not answer) or `locked`. Callbacks from this rail may not be arriving; its charges still settle by polling, later. Read the pass's log line for the rail before acting."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/callback-endpoints.md"
+              summary: "No pass in 3h confirmed vpay's callback endpoint on notchpay"
+  - name: "VpayCallbackEndpointUnconfirmed: a healthy rail with a transient failure never fires"
+    interval: 5m
+    input_series:
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="present"}'
+        values: "1x11 2x12 3x12 4x12 5x12"
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="failed"}'
+        values: "_x12 1x47"
+    alert_rule_test:
+      # The failure at 60m was retried five minutes later and found `present`.
+      - eval_time: 120m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts: []
+      - eval_time: 240m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts: []
+  - name: "VpayCallbackEndpointUnconfirmed: a confirmed rail that starts failing fires once a whole window has none"
+    interval: 5m
+    input_series:
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="present"}'
+        values: "1x11 2x12 3x45"
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="failed"}'
+        values: "_x35 1+1x34"
+    alert_rule_test:
+      # The last `present` was at 120m: still inside the 3h window.
+      - eval_time: 240m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts: []
+      # No `present` since 120m, and a failed retry every five minutes since 180m.
+      - eval_time: 340m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts:
+          - exp_labels:
+              provider: "notchpay"
+              provisional: "true"
+              severity: "warning"
+            exp_annotations:
+              description: "`ensure_callbacks` ran for notchpay during the last 3h and no pass found vpay's endpoint at its callback URL: each said `missing` (not registered, and `register: check` forbids creating it), `drifted` (vpay's endpoint lacks an event type), `failed` (the rail or the database did not answer) or `locked`. Callbacks from this rail may not be arriving; its charges still settle by polling, later. Read the pass's log line for the rail before acting."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/callback-endpoints.md"
+              summary: "No pass in 3h confirmed vpay's callback endpoint on notchpay"
+  - name: "VpayCallbackEndpointUnconfirmed: a rail with no passes at all cannot fire it"
+    interval: 5m
+    input_series:
+      - series: 'vpay_callback_endpoint_checks_total{provider="notchpay",state="present"}'
+        values: "_x40"
+    alert_rule_test:
+      # The documented limit: a pass that never runs emits nothing. The job
+      # rules (`VpayJobsDeadLettered`, `VpayJobQueueBehind`) are for that.
+      - eval_time: 180m
+        alertname: VpayCallbackEndpointUnconfirmed
+        exp_alerts: []
