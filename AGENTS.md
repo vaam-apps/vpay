@@ -227,6 +227,8 @@ means a new PaymentIntent.
 
 **Callbacks are hints.** `parse_callback` returns identifiers only, never a
 status. The authenticated status query is the only thing that moves money.
+A verified signature changes nothing about that: `verify_callback`
+(RFC-0014) decides only whether the charge's poll is pulled forward.
 
 ---
 
