@@ -20,3 +20,10 @@ models and are not listed here. The rails that predate this directory,
 
 Personal data has its own inventory, which a gate checks:
 [reference/personal-data-inventory.md](../reference/personal-data-inventory.md).
+
+Security assets, trust boundaries and ISO 27001 control evidence are documented in:
+- [trust-boundaries.md](trust-boundaries.md) — Trust tiers and ingress/egress boundaries
+- [data-flows.md](data-flows.md) — Core payment, webhook, and SSO data flow maps
+- [reference/security-asset-inventory.md](../reference/security-asset-inventory.md) — Human-facing asset and control inventory
+- [../../schemas/security-inventory.yaml](../../schemas/security-inventory.yaml) — Machine-readable inventory checked by `cargo xtask verify-security-inventory`
+

@@ -2509,6 +2509,12 @@ verify-migrations:
 verify-privacy-inventory:
     cargo xtask verify-privacy-inventory
 
+# Code-grounded security assets, trust boundaries and ISO/IEC 27001 control
+# evidence map (issue #150, EPIC #155, ADR-0033).
+verify-security-inventory:
+    cargo xtask verify-security-inventory
+
+
 # Every number a document marks `<!-- count:KIND ARG... -->` still equals what
 # the tree measures. Fifteenth gate, new 2026-09-20.
 #

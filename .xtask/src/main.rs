@@ -155,6 +155,7 @@ fn main() -> ExitCode {
         "verify-migrations" => verify_migrations(&root),
         "verify-versions" => verify_versions(&root),
         "verify-privacy-inventory" => verify_privacy_inventory(&root),
+        "verify-security-inventory" => verify_security_inventory(&root),
         "verify-doc-counts" => verify_doc_counts(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
@@ -172,6 +173,7 @@ fn main() -> ExitCode {
             .and_then(|()| verify_migrations(&root))
             .and_then(|()| verify_versions(&root))
             .and_then(|()| verify_privacy_inventory(&root))
+            .and_then(|()| verify_security_inventory(&root))
             .and_then(|()| verify_doc_counts(&root)),
         // Not `Result`-shaped like the gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
@@ -187,7 +189,7 @@ fn main() -> ExitCode {
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
                  |verify-toolchain|verify-migrations|verify-versions\
-                 |verify-privacy-inventory|verify-doc-counts|verify-all>\n\
+                 |verify-privacy-inventory|verify-security-inventory|verify-doc-counts|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -7839,6 +7841,330 @@ pub struct CustomerRow {
         let err = verify_privacy_inventory(&root).unwrap_err();
         assert!(err.contains("CustomerRow"), "err: {err}");
         assert!(err.contains("does not exist"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+}
+
+/// The security asset, data-flow, and control-evidence inventory (issue #150, EPIC #155, ADR-0033).
+const SECURITY_INVENTORY: &str = "schemas/security-inventory.yaml";
+
+#[derive(Debug, serde::Deserialize)]
+struct SecurityInventory {
+    version: u32,
+    deployable_services: Vec<DeployableService>,
+    state_stores: Vec<StateStore>,
+    secrets_and_credentials: Vec<SecretClass>,
+    external_integrations: Vec<ExternalIntegration>,
+    ci_cd_and_release: CiCdAndRelease,
+    material_controls: Vec<MaterialControl>,
+    known_security_gaps: Vec<SecurityGap>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct DeployableService {
+    id: String,
+    path: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct StateStore {
+    id: String,
+    table: Option<String>,
+    tables: Option<Vec<String>>,
+    backup_runbook: Option<String>,
+    backup_adr: Option<String>,
+    implementation: Option<String>,
+    adr: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SecretClass {
+    class: String,
+    rotation_runbook: Option<String>,
+    adr: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ExternalIntegration {
+    id: String,
+    threat_model: Option<String>,
+    privacy_inventory_ref: Option<String>,
+    adr: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct CiCdAndRelease {
+    pipeline_workflows: Vec<PipelineWorkflow>,
+    container_artifacts: Vec<ContainerArtifact>,
+    published_packages: Vec<PublishedPackage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PipelineWorkflow {
+    file: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct ContainerArtifact {
+    dockerfile: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct PublishedPackage {
+    manifest: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct MaterialControl {
+    id: String,
+    theme: String,
+    name: String,
+    status: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+struct SecurityGap {
+    id: String,
+    tracking_issue: String,
+}
+
+fn verify_security_inventory(root: &Path) -> Result<(), String> {
+    let inv_path = root.join(SECURITY_INVENTORY);
+    let inv_text = fs::read_to_string(&inv_path)
+        .map_err(|e| format!("{SECURITY_INVENTORY}: {e} (the inventory is mandatory)"))?;
+    let inventory: SecurityInventory =
+        serde_yaml_ng::from_str(&inv_text).map_err(|e| format!("{SECURITY_INVENTORY}: {e}"))?;
+    if inventory.version != 1 {
+        return Err(format!(
+            "{SECURITY_INVENTORY}: unsupported version {} (this gate reads version 1)",
+            inventory.version
+        ));
+    }
+
+    let mut problems = Vec::new();
+
+    // 1. Deployable services exist on disk
+    for service in &inventory.deployable_services {
+        if !root.join(&service.path).exists() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: service `{}` declares path `{}` which does not exist",
+                service.id, service.path
+            ));
+        }
+    }
+
+    // 2. State stores and table existence
+    let db_columns = migrations_db_columns(root)?;
+    let live_tables: BTreeSet<String> = db_columns.into_iter().map(|(t, _)| t).collect();
+
+    for store in &inventory.state_stores {
+        if let Some(tables) = &store.tables {
+            for table in tables {
+                if !live_tables.contains(table) {
+                    problems.push(format!(
+                        "{SECURITY_INVENTORY}: store `{}` lists table `{table}` which no migration creates",
+                        store.id
+                    ));
+                }
+            }
+        }
+        if let Some(table) = &store.table
+            && !live_tables.contains(table)
+        {
+            problems.push(format!(
+                    "{SECURITY_INVENTORY}: store `{}` references table `{table}` which no migration creates",
+                    store.id
+                ));
+        }
+        if let Some(path) = &store.backup_runbook
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                    "{SECURITY_INVENTORY}: store `{}` lists backup runbook `{path}` which does not exist",
+                    store.id
+                ));
+        }
+        if let Some(path) = &store.backup_adr
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: store `{}` lists backup adr `{path}` which does not exist",
+                store.id
+            ));
+        }
+        if let Some(path) = &store.implementation
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                    "{SECURITY_INVENTORY}: store `{}` lists implementation `{path}` which does not exist",
+                    store.id
+                ));
+        }
+        if let Some(path) = &store.adr
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: store `{}` lists adr `{path}` which does not exist",
+                store.id
+            ));
+        }
+    }
+
+    // 3. Secrets and credentials
+    for secret in &inventory.secrets_and_credentials {
+        if secret.class.trim().is_empty() {
+            problems.push(format!("{SECURITY_INVENTORY}: secret has empty class"));
+        }
+        if let Some(path) = &secret.rotation_runbook
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                    "{SECURITY_INVENTORY}: secret class `{}` references missing rotation runbook `{path}`",
+                    secret.class
+                ));
+        }
+        if let Some(path) = &secret.adr
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: secret class `{}` references missing adr `{path}`",
+                secret.class
+            ));
+        }
+    }
+
+    // 4. External integrations
+    for integration in &inventory.external_integrations {
+        if let Some(path) = &integration.threat_model
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` references missing threat model `{path}`",
+                integration.id
+            ));
+        }
+        if let Some(path) = &integration.privacy_inventory_ref
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` references missing privacy doc `{path}`",
+                integration.id
+            ));
+        }
+        if let Some(path) = &integration.adr
+            && !root.join(path).exists()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` references missing adr `{path}`",
+                integration.id
+            ));
+        }
+    }
+
+    // 5. CI/CD & release
+    for workflow in &inventory.ci_cd_and_release.pipeline_workflows {
+        if !root.join(&workflow.file).exists() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: workflow file `{}` does not exist",
+                workflow.file
+            ));
+        }
+    }
+    for artifact in &inventory.ci_cd_and_release.container_artifacts {
+        if !root.join(&artifact.dockerfile).exists() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: container dockerfile `{}` does not exist",
+                artifact.dockerfile
+            ));
+        }
+    }
+    for pkg in &inventory.ci_cd_and_release.published_packages {
+        if !root.join(&pkg.manifest).exists() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: package manifest `{}` does not exist",
+                pkg.manifest
+            ));
+        }
+    }
+
+    // 6. Material controls
+    const CONTROL_THEMES: [&str; 4] = ["Organizational", "People", "Physical", "Technological"];
+    const CONTROL_STATUSES: [&str; 2] = ["implemented", "gap"];
+
+    for control in &inventory.material_controls {
+        if control.name.trim().is_empty() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` has empty name",
+                control.id
+            ));
+        }
+        if !CONTROL_THEMES.contains(&control.theme.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` has invalid theme `{}`",
+                control.id, control.theme
+            ));
+        }
+        if !CONTROL_STATUSES.contains(&control.status.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` has invalid status `{}`",
+                control.id, control.status
+            ));
+        }
+    }
+
+    // 7. Known security gaps
+    for gap in &inventory.known_security_gaps {
+        if !gap
+            .tracking_issue
+            .starts_with("https://github.com/vaam-apps/vpay/issues/")
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: gap `{}` tracking issue `{}` is not a valid vpay issue URL",
+                gap.id, gap.tracking_issue
+            ));
+        }
+    }
+
+    if !problems.is_empty() {
+        return Err(format!(
+            "verify-security-inventory: {} problem(s):\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+
+    let services = inventory.deployable_services.len();
+    let stores = inventory.state_stores.len();
+    let secrets = inventory.secrets_and_credentials.len();
+    let controls = inventory.material_controls.len();
+    let gaps = inventory.known_security_gaps.len();
+
+    println!(
+        "verify-security-inventory: ok — {services} service(s), {stores} state store(s), \
+         {secrets} secret class(es), {controls} material control(s) and {gaps} tracked gap(s) \
+         verified in {SECURITY_INVENTORY}"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod test_security_inventory {
+    use super::*;
+
+    #[test]
+    fn the_repository_security_inventory_passes() {
+        let root = repo_root();
+        verify_security_inventory(&root).expect("real security inventory must pass");
+    }
+
+    #[test]
+    fn a_missing_inventory_fails() {
+        let root =
+            std::env::temp_dir().join(format!("vpay-sec-inv-missing-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::create_dir_all(&root);
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("the inventory is mandatory"), "err: {err}");
         let _ = fs::remove_dir_all(&root);
     }
 }

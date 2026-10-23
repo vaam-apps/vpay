@@ -1,0 +1,430 @@
+# vpay security asset, data-flow, and control-evidence inventory (issue #150, EPIC #155, ADR-0033)
+#
+# ISO/IEC 27001:2022 statement of boundary:
+# Certification applies to the organisation (VAAM) and its scoped ISMS, not to this repository alone.
+# This file records code-grounded engineering assets, trust boundaries, secret classifications, and
+# repeatable control evidence for ingestion into the organizational Statement of Applicability (SoA)
+# and risk assessment.
+version: 1
+
+metadata:
+  standard: "ISO/IEC 27001:2022"
+  issue: 150
+  epic: 155
+  adr: "docs/adr/0033-security-asset-and-control-evidence-inventory.md"
+  reference: "docs/reference/security-asset-inventory.md"
+
+deployable_services:
+  - id: vpay_server
+    name: "vpay API Server"
+    crate: "vpay-server"
+    path: "backends/apps/vpay-server"
+    binary_name: "vpay-server"
+    kind: "service_binary"
+    runtime: "Rust (musl / alpine non-root container)"
+    trust_tier: "tier_1_core"
+    network_interfaces:
+      - name: "merchant_api"
+        protocol: "HTTP/1.1 / HTTP/2 over TLS"
+        path_prefix: "/v1"
+        auth: "OAuth2 private_key_jwt / Bearer token"
+        purpose: "Merchant payment orchestration, refunds, customers, invoices"
+      - name: "dashboard_bff"
+        protocol: "HTTP/1.1 / HTTP/2 over TLS"
+        path_prefix: "/dash/v1"
+        auth: "Encrypted staff session cookie or internal bearer token"
+        purpose: "Merchant and staff administrative operations"
+      - name: "provider_callbacks"
+        protocol: "HTTP/1.1 / HTTP/2 over TLS"
+        path_prefix: "/provider"
+        auth: "Rail webhook HMAC signature or rail-specific callback verification"
+        purpose: "Inbound transaction notifications from payment providers"
+      - name: "observability"
+        protocol: "HTTP/1.1"
+        path_prefix: "/"
+        endpoints: ["/healthz", "/metrics"]
+        auth: "Internal network / ingress policy restricted"
+        purpose: "Kubernetes liveness, readiness, and Prometheus telemetry"
+
+  - id: vpay_worker
+    name: "vpay Background Worker Daemon"
+    crate: "vpay-server"
+    path: "backends/apps/vpay-server"
+    binary_name: "vpay-server worker"
+    kind: "daemon_binary"
+    runtime: "Rust (musl / alpine non-root container)"
+    trust_tier: "tier_1_core"
+    responsibilities:
+      - "Transactional outbox job execution (jobs table)"
+      - "Asynchronous provider charge status polling"
+      - "Webhook delivery retries with exponential backoff"
+      - "Refund settlement and ledger commits"
+    network_interfaces:
+      - name: "internal_worker_observability"
+        protocol: "HTTP/1.1"
+        endpoints: ["/healthz", "/metrics"]
+        auth: "Cluster internal"
+
+  - id: merchant_dashboard
+    name: "Merchant and Staff Dashboard"
+    path: "frontends/apps/dashboard"
+    kind: "web_application"
+    runtime: "Next.js 15 (Node.js LTS, non-root container)"
+    trust_tier: "tier_2_frontend"
+    auth: "Staff credentials + TOTP MFA or Keycloak OIDC SSO"
+    upstream_apis:
+      - "vpay_server /dash/v1"
+
+  - id: hosted_checkout
+    name: "Hosted Checkout Web App"
+    path: "frontends/apps/checkout"
+    kind: "web_application"
+    runtime: "Next.js 15 (Node.js LTS, non-root container)"
+    trust_tier: "tier_3_payer_facing"
+    auth: "Ephemeral checkout session client_secret in URL fragment"
+    upstream_apis:
+      - "vpay_server /v1/checkout_sessions"
+
+state_stores:
+  - id: postgres_primary
+    name: "Primary PostgreSQL Relational Database"
+    engine: "PostgreSQL 16+"
+    migrations_dir: "backends/migrations"
+    driver: "sqlx (compile-time query verification)"
+    backup_runbook: "docs/runbooks/restore-from-backup.md"
+    backup_adr: "docs/adr/0013-database-backups-and-retention.md"
+    encryption_at_rest: "Host/storage layer volume encryption (LUKS / cloud KMS)"
+    transport_encryption: "TLS required in staging and production"
+    tables:
+      - charges
+      - checkout_sessions
+      - credentials
+      - currencies
+      - customers
+      - disabled_clients
+      - events
+      - idempotency_keys
+      - invoice_items
+      - invoice_number_sequences
+      - invoices
+      - jobs
+      - ledger_entries
+      - ledger_transactions
+      - manual_payments
+      - oauth_authorization_codes
+      - oauth_client_assertion_jtis
+      - oauth_signing_keys
+      - payment_intents
+      - provider_requests
+      - providers
+      - rate_limit_windows
+      - refunds
+      - routing_decisions
+      - staff_members
+      - staff_sessions
+      - staff_sso_attempts
+      - webhook_deliveries
+
+  - id: transactional_job_queue
+    name: "Durable Job Queue (Transactional Outbox)"
+    backing_store: "postgres_primary"
+    table: "jobs"
+    implementation: "backends/crates/vpay-db/src/jobs.rs"
+    invariants:
+      - "Job enqueue is atomic with business entity transaction"
+      - "Worker lock acquisition uses SELECT FOR UPDATE SKIP LOCKED"
+      - "Job schedule clock uses database time (ADR-0026)"
+
+  - id: idempotency_store
+    name: "Idempotency Lock and Response Store"
+    backing_store: "postgres_primary"
+    table: "idempotency_keys"
+    implementation: "backends/crates/vpay-db/src/idempotency.rs"
+    purpose: "Prevent duplicate payment intent creation and state transitions"
+
+  - id: replay_cache
+    name: "Client Assertion JTI Replay Cache"
+    backing_store: "postgres_primary"
+    table: "oauth_client_assertion_jtis"
+    implementation: "backends/crates/vpay-db/src/client_assertion.rs"
+    adr: "docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md"
+    purpose: "Ensure OAuth2 private_key_jwt client assertions cannot be replayed"
+
+secrets_and_credentials:
+  - class: mtn_momo_credentials
+    description: "MTN MoMo API user, API key, and subscription subscription keys"
+    managed_in: "vpay-config"
+    config_keys:
+      - "rails.mtn_momo.api_user"
+      - "rails.mtn_momo.api_key"
+      - "rails.mtn_momo.subscription_key"
+    storage: "Environment variables (VAAM_VPAY_*) or secret store mounted config"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+
+  - class: orange_money_credentials
+    description: "Orange Money API client ID, client secret, and merchant key"
+    managed_in: "vpay-config"
+    config_keys:
+      - "rails.orange_money.client_id"
+      - "rails.orange_money.client_secret"
+      - "rails.orange_money.merchant_key"
+    storage: "Environment variables or secret store"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+
+  - class: notchpay_credentials
+    description: "Notch Pay public key and private authorization grant key"
+    managed_in: "vpay-config"
+    config_keys:
+      - "rails.notchpay.public_key"
+      - "rails.notchpay.private_key"
+    storage: "Environment variables or secret store"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+
+  - class: webhook_signing_secret
+    description: "Symmetric HMAC secret used to sign outbound merchant webhooks"
+    managed_in: "vpay-config"
+    config_keys:
+      - "webhooks.signing_secret"
+    algorithm: "HMAC-SHA256"
+    rotation_runbook: "docs/runbooks/rotate-signing-key.md"
+
+  - class: staff_password_pepper
+    description: "High-entropy server-side pepper combined with Argon2id password hashes"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff.password_pepper"
+    storage: "Cluster secret volume / environment variable"
+
+  - class: staff_totp_encryption_key
+    description: "Symmetric key for AES-256-GCM encryption of stored staff 2FA TOTP secrets"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff.totp_encryption_key"
+    storage: "Cluster secret volume / environment variable"
+
+  - class: staff_sso_client_secret
+    description: "OIDC client secret for OpenID Connect federated authentication"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_sso.client_secret"
+    adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+
+  - class: database_connection_secret
+    description: "PostgreSQL connection URI credentials"
+    managed_in: "vpay-config"
+    config_keys:
+      - "database.url"
+    storage: "Environment variable DATABASE_URL"
+
+external_integrations:
+  - id: mtn_momo_rail
+    name: "MTN Mobile Money Gateway"
+    party: "MTN Cameroon / Ericsson M-Commerce"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS (TLS 1.2+)"
+    inbound_routes:
+      - "/provider/mtn/callback"
+    outbound_destinations:
+      - "sandbox.momodeveloper.mtn.com (sandbox)"
+      - "Live telco gateway (production)"
+    data_elements: ["payer_phone_number", "transaction_amount", "currency", "external_id"]
+    privacy_inventory_ref: "docs/reference/personal-data-inventory.md"
+
+  - id: orange_money_rail
+    name: "Orange Money Web Payment Gateway"
+    party: "Orange Cameroun"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS (TLS 1.2+)"
+    inbound_routes:
+      - "/provider/orange/callback"
+    outbound_destinations:
+      - "api.orange.cm"
+    data_elements: ["payer_phone_number", "order_id", "transaction_amount"]
+    privacy_inventory_ref: "docs/reference/personal-data-inventory.md"
+
+  - id: notchpay_rail
+    name: "Notch Pay Payment Aggregator"
+    party: "Notch Pay"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS (TLS 1.2+)"
+    inbound_routes:
+      - "/provider/notchpay/callback"
+    outbound_destinations:
+      - "api.notchpay.co"
+    threat_model: "docs/security/threat-models/notchpay.md"
+    data_elements: ["payer_phone_number", "payment_reference", "amount"]
+
+  - id: oidc_identity_provider
+    name: "Federated OpenID Connect Identity Provider"
+    party: "Enterprise IdP (e.g., Keycloak, Okta)"
+    direction: "outbound"
+    protocol: "HTTPS (TLS 1.2+)"
+    purpose: "Staff single sign-on authentication and claim verification"
+    adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+
+  - id: merchant_webhook_endpoints
+    name: "Merchant Webhook Endpoints"
+    party: "Integrated Merchants"
+    direction: "outbound"
+    protocol: "HTTPS (TLS 1.2+ enforced)"
+    security_headers:
+      - "vpay-signature: t=<timestamp>,v1=<hmac_sha256>"
+    retry_policy: "Exponential backoff up to 24 hours"
+
+ci_cd_and_release:
+  pipeline_workflows:
+    - name: "Continuous Integration"
+      file: ".github/workflows/ci.yml"
+      checks: ["cargo test", "clippy", "cargo xtask verify-all", "pnpm test"]
+    - name: "Quality & Security Gates"
+      file: ".github/workflows/quality.yml"
+      checks: ["dependency review", "cargo-deny security audit", "linting"]
+    - name: "Automated Release Please"
+      file: ".github/workflows/release-please.yml"
+      purpose: "Semantic versioning and automated changelog generation"
+
+  container_artifacts:
+    - target: "vpay-server"
+      dockerfile: "backends/Dockerfile"
+      security_attributes: ["non-root user (runAsNonRoot: true)", "musl static binary", "no shell in final image"]
+    - target: "dashboard"
+      dockerfile: "frontends/Dockerfile"
+      stage: "runner"
+      security_attributes: ["numeric USER 1000:1000", "standalone Next.js output", "readOnlyRootFilesystem compatible"]
+    - target: "checkout"
+      dockerfile: "frontends/Dockerfile"
+      stage: "checkout"
+      security_attributes: ["numeric USER 1000:1000", "standalone Next.js output", "readOnlyRootFilesystem compatible"]
+
+  published_packages:
+    - name: "@vaam-apps/vpay-sdk"
+      manifest: "sdks/nodejs/package.json"
+      scope: "official merchant Node.js SDK"
+    - name: "@vaam-apps/vpay-stripe-js"
+      manifest: "sdks/stripe-js/package.json"
+      scope: "payer browser client"
+    - name: "@vaam-apps/vpay-tauri-checkout"
+      manifest: "sdks/tauri/tauri-plugin-vpay-checkout/package.json"
+      scope: "desktop checkout plugin"
+
+material_controls:
+  - id: "A.5.15"
+    theme: "Organizational"
+    name: "Access Control"
+    implementation: "backends/crates/vpay-api/src/v1/mod.rs"
+    evidence: "OAuth2 private_key_jwt with tenant-bound merchant claims and scoped endpoints"
+    status: "implemented"
+
+  - id: "A.8.2"
+    theme: "Technological"
+    name: "Privileged Access Rights"
+    implementation: "backends/crates/vpay-api/src/staff/sso/mod.rs"
+    evidence: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md, backends/crates/vpay-api/src/staff/sso/verify.rs tests"
+    status: "implemented"
+
+  - id: "A.8.7"
+    theme: "Technological"
+    name: "Protection Against Malware and Supply Chain Risks"
+    implementation: "Cargo.lock, pnpm-lock.yaml, deny.toml"
+    evidence: "cargo deny check bans licenses sources; pnpm audit; isolated nodeLinker in pnpm-workspace.yaml"
+    status: "implemented"
+
+  - id: "A.8.9"
+    theme: "Technological"
+    name: "Configuration Management"
+    implementation: "backends/crates/vpay-config/src/config.rs"
+    evidence: "Strict validation at boot refusing unknown options, livemode credential checks, test fixtures"
+    status: "implemented"
+
+  - id: "A.8.11"
+    theme: "Technological"
+    name: "Data Masking and Privacy Protection"
+    implementation: "backends/crates/vpay-core/src/privacy.rs"
+    evidence: "cargo xtask verify-privacy-inventory gate verifying 36 redacting Debug wrappers on sensitive types"
+    status: "implemented"
+
+  - id: "A.8.12"
+    theme: "Technological"
+    name: "Data Leakage Prevention"
+    implementation: "backends/crates/vpay-provider/src/lib.rs"
+    evidence: "Reqwest client strictly refuses redirects in provider adapters; conformance tests redirects_are_refused_and_never_followed"
+    status: "implemented"
+
+  - id: "A.8.13"
+    theme: "Technological"
+    name: "Information Backup"
+    implementation: "backends/migrations"
+    evidence: "docs/runbooks/restore-from-backup.md, MANIFEST.sha256 migration checksum verification gate"
+    status: "implemented"
+
+  - id: "A.8.20"
+    theme: "Technological"
+    name: "Network Security"
+    implementation: "backends/crates/vpay-api/src/lib.rs"
+    evidence: "docs/adr/0005-rustls-only.md - strictly rustls with vendored webpki roots, no openssl"
+    status: "implemented"
+
+  - id: "A.8.24"
+    theme: "Technological"
+    name: "Use of Cryptography"
+    implementation: "backends/crates/vpay-core/src/lib.rs"
+    evidence: "Argon2id for passwords, AES-GCM for tokens, HMAC-SHA256 for webhook signatures with timing-safe comparison"
+    status: "implemented"
+
+  - id: "A.8.25"
+    theme: "Technological"
+    name: "Secure Development Life Cycle"
+    implementation: "justfile"
+    evidence: "Fifteen automated pre-commit gates in just verify including verify-no-mocks, verify-migrations, verify-privacy-inventory"
+    status: "implemented"
+
+  - id: "A.8.28"
+    theme: "Technological"
+    name: "Secure Coding"
+    implementation: "clippy.toml, Cargo.toml"
+    evidence: "clippy indexing_slicing deny, sqlx query verification preventing SQL injection, rustfmt enforcement"
+    status: "implemented"
+
+  - id: "A.8.31"
+    theme: "Technological"
+    name: "Separation of Development, Test and Production Environments"
+    implementation: "backends/crates/vpay-config/src/config.rs"
+    evidence: "Strict rejection of test keys in livemode and live credentials in testmode; unroutable secrets checks"
+    status: "implemented"
+
+known_security_gaps:
+  - id: "GAP-103"
+    title: "Web dependency audit ceiling in pnpm workspace"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/103"
+    description: "pnpm audit is constrained by transitive brace-expansion / fast-glob advisory"
+    status: "open"
+
+  - id: "GAP-56"
+    title: "Account-holder lookup audit and rate limiting controls"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/56"
+    description: "Dedicated scope and persistent per-key audit log for account-holder lookups"
+    status: "open"
+
+  - id: "GAP-151"
+    title: "Formalisation of secure SDLC policy and vulnerability remediation evidence"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/151"
+    description: "Formal documented procedure linking CVE intake to fix release SLA"
+    status: "open"
+
+  - id: "GAP-152"
+    title: "Hardened privileged access and cryptographic key lifecycle in production"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
+    description: "Automated rotation and dual-control procedures for rail production keys"
+    status: "open"
+
+  - id: "GAP-153"
+    title: "Proving repeatable backup and disaster recovery restore drills"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/153"
+    description: "Automated test drill executing database restore from pg_dump backup against recovery objectives"
+    status: "open"
+
+  - id: "GAP-154"
+    title: "Centralized security logging, SIEM ingestion, and incident evidence queryability"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/154"
+    description: "Standardized audit log format for security events (login failures, key changes, access denials)"
+    status: "open"
