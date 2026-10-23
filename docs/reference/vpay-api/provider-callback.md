@@ -149,12 +149,12 @@ The configuration is the rail's by `code` (`ResourceConfig::rail`, enabled
 or not), never anything the request names; the `ChargeRef` is built from the
 row the way the poll builds it. The verdict decides one thing:
 
-| Verdict       | Pulled forward? | Log                                  |
-| ------------- | --------------- | ------------------------------------ |
-| `Verified`    | yes             | the `info` line, `verdict=verified`  |
-| `NotChecked`  | yes             | the `info` line (MTN, Orange)        |
-| `NoSecret`    | yes             | the `info` line (a signing rail with no secret; boot already warned) |
-| `Invalid`     | **no**          | `warn`, with the adapter's fixed sentence |
+| Verdict       | Pulled forward? | Log                                                                                                            |
+| ------------- | --------------- | -------------------------------------------------------------------------------------------------------------- |
+| `Verified`    | yes             | the `info` line, `verdict=verified`                                                                            |
+| `NotChecked`  | yes             | the `info` line (MTN, Orange)                                                                                  |
+| `NoSecret`    | yes             | the `info` line (a signing rail with no secret; boot already warned)                                           |
+| `Invalid`     | **no**          | `warn`, with the adapter's fixed sentence                                                                      |
 | `Unavailable` | **no**          | `warn`; also what the route answers itself when the rail has no loaded configuration or the row does not parse |
 
 **Every case answers `202`, byte for byte**, as an unknown reference does:

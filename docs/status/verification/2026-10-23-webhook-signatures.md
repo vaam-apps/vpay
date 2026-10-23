@@ -26,18 +26,18 @@ build; Orange's `BodyToken` not built.
 
 ## What was built
 
-| Piece | Where |
-| --- | --- |
-| `CallbackRequest` (hand-written `Debug`: header names, body length), `CallbackVerdict` (`admits_pull_forward`, `label`, `reason`), `CallbackCheck`, the port-named `CALLBACK_SIGNING_SECRET` and `_PREVIOUS`, `signing_secrets_in`, and the one MAC comparison, `hmac_sha256_hex_matches` (`Mac::verify_slice`) | `vpay-provider/src/callback.rs` (new) |
-| `ProviderAdapter::verify_callback`, defaulting to `NotChecked`; `Capabilities::callback_check` and `callback_check_is_coherent` | `vpay-provider/src/lib.rs` |
-| `Measured` forwards `verify_callback` and counts nothing | `vpay-provider/src/measured.rs` |
-| `vpay_provider_callbacks_total{provider,verdict}` and `metrics::callback_verdict` | `vpay-core/src/metrics.rs` |
-| The route's step 4: `verdict_for`, `charge_ref_of`, the counter, `warn` on a refusal | `vpay-api/src/provider_callback.rs` |
-| `IncoherentCallbackCheck`, `CallbackSigningSecretMissing`, `CallbackSigningSettingUnread`, `CallbackVerifyOffWithSecret` (exit 78); `unverified_callback_rails` and `warn_about_unverified_callbacks`, called by `serve` | `vpay-config/src/lib.rs`, `vpay-api/src/v1/boot.rs`, `vpay-server/src/main.rs` |
-| `providers[].callbacks.verify: on \| off` | `vpay-config/src/config.rs` |
-| `notchpay`: `CallbackCheck::Signature`, and `verify_callback` over `x-notch-signature` | `vpay-adapter-notchpay/src/lib.rs` |
-| `callback_check: None` on `mtn_momo` and `orange_money`, and on every test fixture | the two adapters, 19 literals |
-| `NOTCHPAY_HASH_KEY` in `.env.example`, the commented `notchpay` block, and the Helm Secret's comment; `CallbackRequest` in `debug_protections` | `.env.example`, `config/application.yml`, `deploy/helm/vpay/values.yaml`, `schemas/privacy-inventory.yaml` |
+| Piece                                                                                                                                                                                                                                                                                                           | Where                                                                                                      |
+| --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| `CallbackRequest` (hand-written `Debug`: header names, body length), `CallbackVerdict` (`admits_pull_forward`, `label`, `reason`), `CallbackCheck`, the port-named `CALLBACK_SIGNING_SECRET` and `_PREVIOUS`, `signing_secrets_in`, and the one MAC comparison, `hmac_sha256_hex_matches` (`Mac::verify_slice`) | `vpay-provider/src/callback.rs` (new)                                                                      |
+| `ProviderAdapter::verify_callback`, defaulting to `NotChecked`; `Capabilities::callback_check` and `callback_check_is_coherent`                                                                                                                                                                                 | `vpay-provider/src/lib.rs`                                                                                 |
+| `Measured` forwards `verify_callback` and counts nothing                                                                                                                                                                                                                                                        | `vpay-provider/src/measured.rs`                                                                            |
+| `vpay_provider_callbacks_total{provider,verdict}` and `metrics::callback_verdict`                                                                                                                                                                                                                               | `vpay-core/src/metrics.rs`                                                                                 |
+| The route's step 4: `verdict_for`, `charge_ref_of`, the counter, `warn` on a refusal                                                                                                                                                                                                                            | `vpay-api/src/provider_callback.rs`                                                                        |
+| `IncoherentCallbackCheck`, `CallbackSigningSecretMissing`, `CallbackSigningSettingUnread`, `CallbackVerifyOffWithSecret` (exit 78); `unverified_callback_rails` and `warn_about_unverified_callbacks`, called by `serve`                                                                                        | `vpay-config/src/lib.rs`, `vpay-api/src/v1/boot.rs`, `vpay-server/src/main.rs`                             |
+| `providers[].callbacks.verify: on \| off`                                                                                                                                                                                                                                                                       | `vpay-config/src/config.rs`                                                                                |
+| `notchpay`: `CallbackCheck::Signature`, and `verify_callback` over `x-notch-signature`                                                                                                                                                                                                                          | `vpay-adapter-notchpay/src/lib.rs`                                                                         |
+| `callback_check: None` on `mtn_momo` and `orange_money`, and on every test fixture                                                                                                                                                                                                                              | the two adapters, 19 literals                                                                              |
+| `NOTCHPAY_HASH_KEY` in `.env.example`, the commented `notchpay` block, and the Helm Secret's comment; `CallbackRequest` in `debug_protections`                                                                                                                                                                  | `.env.example`, `config/application.yml`, `deploy/helm/vpay/values.yaml`, `schemas/privacy-inventory.yaml` |
 
 ## How it is proven
 
@@ -90,20 +90,20 @@ the stub has recorded exactly one more read. All five answers are the same
 Each mutation was applied alone, the named tests run, and the file restored
 (a hash-checked copy).
 
-| # | Mutation | Fails |
-| --- | --- | --- |
-| M1 | Notch Pay's `verify_callback` always answers `Verified` | 6 adapter unit tests; the conformance case's `notchpay` row; the integration case ("no signature: a webhook the rail did not sign must not move the poll") |
-| M2 | the route's `admits_pull_forward` gate removed | the integration case, at the same assertion |
-| M3 | `Measured` answers `NotChecked` instead of forwarding | `the_callback_check_is_forwarded_and_not_counted` |
-| M4 | `verify_slice` replaced by a hex `==` | `the_comparison_is_the_constant_time_one` |
-| M5 | boot's livemode refusal deleted | `a_signing_rail_without_a_secret_refuses_livemode_unless_it_says_verify_off` |
-| M6 | its `livemode` condition dropped | the same, at the sandbox row |
-| M7 | its `verify: off` acknowledgement ignored | the same |
-| M8 | the off-with-secret refusal deleted | the same |
-| M9 | the unread-setting refusal deleted | `a_signing_setting_on_a_rail_that_checks_nothing_is_refused` |
-| M10 | the coherence refusal deleted | `a_callback_check_on_a_rail_that_never_calls_back_is_refused` |
-| M11 | a blank secret counted as a secret | `the_signing_secrets_are_current_first_and_skip_blanks` |
-| M12 | the counter incremented by 0 | the integration case, at the scrape |
+| #   | Mutation                                                | Fails                                                                                                                                                      |
+| --- | ------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| M1  | Notch Pay's `verify_callback` always answers `Verified` | 6 adapter unit tests; the conformance case's `notchpay` row; the integration case ("no signature: a webhook the rail did not sign must not move the poll") |
+| M2  | the route's `admits_pull_forward` gate removed          | the integration case, at the same assertion                                                                                                                |
+| M3  | `Measured` answers `NotChecked` instead of forwarding   | `the_callback_check_is_forwarded_and_not_counted`                                                                                                          |
+| M4  | `verify_slice` replaced by a hex `==`                   | `the_comparison_is_the_constant_time_one`                                                                                                                  |
+| M5  | boot's livemode refusal deleted                         | `a_signing_rail_without_a_secret_refuses_livemode_unless_it_says_verify_off`                                                                               |
+| M6  | its `livemode` condition dropped                        | the same, at the sandbox row                                                                                                                               |
+| M7  | its `verify: off` acknowledgement ignored               | the same                                                                                                                                                   |
+| M8  | the off-with-secret refusal deleted                     | the same                                                                                                                                                   |
+| M9  | the unread-setting refusal deleted                      | `a_signing_setting_on_a_rail_that_checks_nothing_is_refused`                                                                                               |
+| M10 | the coherence refusal deleted                           | `a_callback_check_on_a_rail_that_never_calls_back_is_refused`                                                                                              |
+| M11 | a blank secret counted as a secret                      | `the_signing_secrets_are_current_first_and_skip_blanks`                                                                                                    |
+| M12 | the counter incremented by 0                            | the integration case, at the scrape                                                                                                                        |
 
 ## Gates
 

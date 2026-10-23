@@ -384,11 +384,11 @@ from Notch Pay's dashboard: Notch Pay's create answer returned none in the
 sandbox on 2026-10-21, so registering the endpoint (below) does not supply
 it.
 
-| The webhook                                                 | Verdict      | The poll                       |
-| ----------------------------------------------------------- | ------------ | ------------------------------ |
-| signed under a configured secret                            | `Verified`   | pulled forward                 |
-| no header, a non-ASCII one, or one matching no secret       | `Invalid`    | **left where it was**; `warn`  |
-| any, with no secret configured                              | `NoSecret`   | pulled forward (today's route) |
+| The webhook                                           | Verdict    | The poll                       |
+| ----------------------------------------------------- | ---------- | ------------------------------ |
+| signed under a configured secret                      | `Verified` | pulled forward                 |
+| no header, a non-ASCII one, or one matching no secret | `Invalid`  | **left where it was**; `warn`  |
+| any, with no secret configured                        | `NoSecret` | pulled forward (today's route) |
 
 Every answer is the same `202`, byte for byte, as for a reference no charge
 holds: a different one would tell a caller the charge exists, and would make
