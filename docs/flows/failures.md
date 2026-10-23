@@ -198,12 +198,21 @@ real response path** — an unmapped string arrives as `provider_error`
 carrying the raw reason rather than being guessed at
 ([runbooks/provider-error-rate.md](../runbooks/provider-error-rate.md)).
 **What none of this proves** is that the tables are faithful to the _rails_:
-every decline above came from WireMock, and no real rail has ever declined a
-vpay charge. _(Narrowed 2026-10-22: on 2026-10-21 Notch Pay's real sandbox
-reported one vpay charge `failed`, mapped to `provider_error`. That is a
-rail-reported failure, but `provider_error` is the catch-all, so it tests no
+every decline above came from WireMock, and the only mapped declines a real
+rail has produced through vpay are two of Notch Pay's sandbox test numbers.
+On 2026-10-22 runbook B3b took MTN's timeout number (`+237670000003`) and its
+canceled number (`+237670000004`) through `vpay-server`, the worker and
+Postgres against Notch Pay's real sandbox: Notch Pay read them `expired` and
+`canceled`, and vpay failed them `payer_timeout` and `payer_declined`
+([verification](../status/verification/2026-10-22-notchpay-b3b.md)). That
+proves Notch Pay's two sandbox answers map as these tables say, not how a real
+payer's decline reads. _(Narrowed 2026-10-22: on 2026-10-21 Notch Pay's real
+sandbox reported one vpay charge `failed`, mapped to `provider_error`. That is
+a rail-reported failure, but `provider_error` is the catch-all, so it tests no
 mapped reason: no real rail has yet declined a vpay charge with a reason these
-tables map.)_ Valantine Suh (@Valsuh45), who performed the 2026-09-15 MTN sandbox tests, confirmed on 2026-10-20 that **over seven payments succeeded**. The initial
+tables map. Narrowed again 2026-10-23: that last clause, and "no real rail has
+ever declined a vpay charge" before it, were written before B3b's run that day
+and stopped being true with it.)_ Valantine Suh (@Valsuh45), who performed the 2026-09-15 MTN sandbox tests, confirmed on 2026-10-20 that **over seven payments succeeded**. The initial
 documented session had three attempts: the first two stopped at the token mint
 on adapter bugs and the third settled its charge. Those three attempts are
 not the day's total, and no rail-reported decline was observed
