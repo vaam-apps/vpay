@@ -18,7 +18,7 @@ stubs and a real Postgres. Nothing was sent to any payment provider.**
 - **Still the maintainer's, asked in RFC-0008's revision R8:** which score
   components v1 has, who sets the weights, whether health may move traffic
   automatically, what happens when render and confirm disagree, and
-  exploration.
+  exploration. _(Answered later the same day; see the addendum below.)_
 - **The implementer's, each reversible and named here:**
   - the v1 formula `provisional-1`: one component, a configured weight per
     rail or per rail and type (`routing.weights`, 0–1000, default 100), ties
@@ -37,6 +37,23 @@ stubs and a real Postgres. Nothing was sent to any payment provider.**
     `schemas/vpay.cstack` (drift +3, measured below);
   - exhaustive enumeration over small inputs in place of a property-testing
     dependency.
+
+**Addendum, 2026-10-23, after this page was written.** The maintainer
+answered R8 with "go with your defaults" and, on the score, "first go with
+your defaults. Just document everything". The answers:
+
+- **R8.1:** the estimated fee next, then the completion rate. The completion
+  rate is reported and set by hand as a configured weight, never an automatic
+  score component ("Go with (a)", asked after the first answers).
+- **R8.2:** the operator sets weights until RFC-0009.
+- **R8.3:** health reports and never moves traffic.
+- **R8.4:** the confirm follows the rail the page showed while it is
+  eligible.
+- **R8.5:** no exploration.
+
+The tie-break above is kept. Nothing on this page changes: none of the
+answers is built by it, and R8.4's is a gap in it. RFC-0008 § R8 records
+each answer with its consequence.
 
 ## What was built
 

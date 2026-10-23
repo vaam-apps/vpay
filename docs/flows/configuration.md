@@ -386,9 +386,13 @@ routing:
 
 The most specific entry wins: a rail **and** a type, then the rail alone,
 then `100`. The weight is the only component of the score today, so **it is
-provisional**: when the maintainer chooses the components RFC-0008's open
-question R8.1 lists, this block keeps its meaning (one component among
-several) and the formula's name moves past `provisional-1`. A weight is not a
+provisional**. The maintainer chose the next components on 2026-10-23
+(RFC-0008 § R8.1): the estimated fee as a score component, then the
+completion rate, which is reported for the operator to turn into a weight
+here by hand, never scored automatically. Neither is built. When the fee
+lands, this block keeps its meaning (one component among several) and the
+formula's name moves past `provisional-1`. The block stays
+the operator's: per-merchant weights wait on RFC-0009 (§ R8.2). A weight is not a
 switch: `0` ranks a rail last, never off; `enabled: false` is how a rail is
 taken out.
 
@@ -650,13 +654,21 @@ than a feature it added:**
   `a_livemode_deployment_cannot_derive_a_plaintext_callback_url`,
   `a_derived_callback_url_survives_a_trailing_slash_and_an_override_wins`).
 - **`providers[].callbacks.register`** (2026-10-22, RFC-0013) is optional:
-  `ensure` (the default, and what an absent block means), `check` (list the
-  account's endpoints and report, never create) or `off` (never ask). Read by
+  `ensure` (create vpay's endpoint when it is missing), `check` (list the
+  account's endpoints and report, never create) or `off` (never ask). Unset —
+  no block, or `callbacks: {}` — it is **the rail's default, which its
+  adapter declares** (`ProviderAdapter::default_callback_registration`):
+  `ensure`, except `notchpay`, which is `off` since 2026-10-23 (the
+  maintainer's "Default to `off` for Notch Pay", RFC-0013's amendment). The
+  worker at start, and `vpay-server callbacks ensure`, log one `info` line
+  for a rail an unset `register` leaves `off`. Read by
   the worker's `ensure_callbacks` job and by `vpay-server callbacks ensure`,
   and only for an **enabled** rail whose adapter declares
   `CallbackUrlMode::Registered` — today `notchpay`. A misspelt key inside the
-  block is refused rather than read as `ensure` (`deny_unknown_fields`;
-  `a_callbacks_block_defaults_to_ensure_and_refuses_an_unknown_key`).
+  block is refused rather than silently ignored (`deny_unknown_fields`;
+  `a_callbacks_block_leaves_register_unset_and_refuses_an_unknown_key`).
+  _(This said "`ensure` (the default, and what an absent block means)" until
+  2026-10-23.)_
 - **`REQUIRED_RAIL_KEYS`** refuses to boot a rail missing a key its adapter
   cannot work without — MTN: `settings.target_environment`,
   `settings.api_user`, `credentials.subscription_key`, `credentials.api_key`;

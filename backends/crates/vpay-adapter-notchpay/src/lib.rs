@@ -85,10 +85,10 @@ use vpay_notchpay::wire::{
 };
 use vpay_notchpay::{Answer, Client, Keys};
 use vpay_provider::{
-    AcceptedExposure, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus,
-    EndpointCheck, EndpointReport, PayerField, PayerFieldKind, PhonePayerType, PriorSubmits,
-    ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget,
-    Refunded, SubmitSteps, Submitted,
+    AcceptedExposure, CallbackRef, CallbackRegistrationDefault, CallbackUrlMode, Capabilities,
+    ChargeRef, ChargeStatus, EndpointCheck, EndpointReport, PayerField, PayerFieldKind,
+    PhonePayerType, PriorSubmits, ProviderAdapter, ProviderConfig, ProviderError, RefExtra,
+    RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
 };
 
 use crate::mapping::{Initialized, Processed};
@@ -483,6 +483,23 @@ impl ProviderAdapter for Adapter {
 
     fn accepted_exposure(&self) -> Option<AcceptedExposure> {
         Some(EXPOSURE)
+    }
+
+    /// `Off`: with `providers[].callbacks` unset, vpay asks the account
+    /// nothing, and the operator registers vpay's callback URL in Notch Pay's
+    /// dashboard (or sets `register: ensure`). Since 2026-10-23, when the
+    /// maintainer chose "Default to `off` for Notch Pay".
+    ///
+    /// The sandbox measured that day
+    /// (`docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md`):
+    /// an endpoint created through `POST /webhooks` with a public URL is
+    /// stored with `"url": null`, delivered nothing in 21 minutes, and
+    /// cannot be read, updated or deleted by its id. Four payments processed
+    /// after one was created stayed `processing` for 3 to 55 minutes, where
+    /// eleven before it settled in about 5 s — a correlation, not a shown
+    /// cause, and enough not to write to a merchant's account unasked.
+    fn default_callback_registration(&self) -> CallbackRegistrationDefault {
+        CallbackRegistrationDefault::Off
     }
 
     /// Call 1, `POST /payments` (RFC-0012 § 3): the payment is created on

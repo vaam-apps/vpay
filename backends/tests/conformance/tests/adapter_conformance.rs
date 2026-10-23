@@ -1588,6 +1588,40 @@ async fn notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline() {
     );
 }
 
+/// Notch Pay only: an Orange number sent on `cm.mtn` — a payer who chose MTN
+/// and typed the other network's number — is refused at process with a
+/// `422` naming only `phone`, as the sandbox answered on 2026-10-23
+/// (`docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md`).
+/// It is `invalid_payer`, the payer's to fix by choosing again, never
+/// `provider_error`, which pages. The stub's mapping matches the channel and
+/// the number's prefix, so this case also proves the routed charge was sent
+/// `cm.mtn`.
+#[tokio::test]
+async fn notchpay_a_number_on_the_other_network_is_an_invalid_payer() {
+    let rail = start(
+        RailUnderTest::NotchPay,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let mut charge = rail.charge(REF_ACCEPTED);
+    charge.method_type = Some(vpay_core::routing::MethodType::MtnWallet);
+    charge.payer_ref = Some("237690000000".to_owned());
+
+    let outcome = rail.adapter.submit(&charge, &rail.config).await;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(ProviderError::Rejected {
+                code: FailureCode::InvalidPayer,
+                ..
+            })
+        ),
+        "an Orange number on cm.mtn is the payer's to fix: {outcome:?}"
+    );
+}
+
 /// ADR-0032's census: `prepare` answers `Unsupported` exactly on the rails
 /// that declare [`SubmitSteps::One`], and on a
 /// [`SubmitSteps::PrepareThenSubmit`] rail returns the key material that
@@ -1749,6 +1783,15 @@ fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTe
     // the case that drives it.
     if rail == RailUnderTest::NotchPay {
         proven.push(FailureCode::ProviderUnavailable);
+    }
+
+    // Notch Pay's `invalid_payer` is a process `422` naming only the payer's
+    // phone — a number the chosen network does not take (2026-10-23) — so a
+    // refused submit, not a read, and no row in the decline table.
+    // `notchpay_a_number_on_the_other_network_is_an_invalid_payer` is the case
+    // that drives it.
+    if rail == RailUnderTest::NotchPay {
+        proven.push(FailureCode::InvalidPayer);
     }
 
     proven.sort_unstable_by_key(|code| code.as_str());

@@ -1163,7 +1163,9 @@ mod tests {
                 .providers
                 .get_mut(0)
                 .expect("the fixture configures one rail")
-                .callbacks = Some(vpay_config::ProviderCallbacks { register });
+                .callbacks = Some(vpay_config::ProviderCallbacks {
+                register: Some(register),
+            });
             let adapters = adapters_by_code(vec![Box::new(TestRail {
                 code: "mtn_momo",
                 capabilities: coherent(ProviderFlow::Push),
