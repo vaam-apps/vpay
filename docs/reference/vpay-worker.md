@@ -1120,11 +1120,16 @@ the marker are this crate's. [RFC-0013](../rfc/0013-vpay-registers-its-own-callb
 
 **The plan is projected, never read.** `CallbackPlan { deployment, rails }`
 is built by `vpay-server` from `deployment.name` and each **enabled**
-provider's `callbacks.register`, defaulting to `ensure`, as `RailConfigs` and
-the endpoint registry are: no handler reads a configuration document
-(ADR-0003). A rail absent from the plan is not asked — absence means "not
-configured here", never "use the default", because the default was applied
-where the YAML was read. `CallbackPlan::none()` is what the integration
+provider's `callbacks.register`, as `RailConfigs` and the endpoint registry
+are: no handler reads a configuration document (ADR-0003). Where `register`
+is unset, the binary takes the adapter's
+`ProviderAdapter::default_callback_registration` through
+`From<CallbackRegistrationDefault> for Registration`: `ensure`, except
+`notchpay`, which is `off` since 2026-10-23
+([verification](../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md)).
+_(This said "defaulting to `ensure`" until then.)_ A rail absent from the plan
+is not asked — absence means "not configured here", never "use the default",
+because the default was applied where the YAML was read. `CallbackPlan::none()` is what the integration
 suites pass, whose stub rails all declare `PerRequest`.
 
 **Which rails a pass asks** is the adapter's capability, never a list here:

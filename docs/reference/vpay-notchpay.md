@@ -52,7 +52,10 @@ The two webhook calls are here because the maintainer decided on 2026-10-20
 that vpay registers its own endpoints
 ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)). The client
 only performs them; when, how often and how a duplicate is avoided is that
-RFC's design.
+RFC's design. Since 2026-10-23 nothing calls them unless the deployment
+writes `callbacks.register: check` or `ensure` for the rail: unset, Notch
+Pay's adapter declares `off` (RFC-0013's amendment, after the sandbox stored
+an endpoint created by `create_webhook` with `"url": null`).
 
 `status::PaymentStatus` names the eleven payment statuses Notch Pay
 documents, in Notch Pay's spelling (`partialy-refunded` included). It does

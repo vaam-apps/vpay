@@ -53,6 +53,23 @@
 
     [plans/2026-10-23-method-type-routing.md](../plans/2026-10-23-method-type-routing.md)
     has the slices.
+
+  - **RFC-0008's R8 questions answered by the maintainer on 2026-10-23**
+    ("go with your defaults"; on the score, "first go with your defaults.
+    Just document everything"). The answers: the estimated fee is the next
+    component and the completion rate the one after; the operator alone sets
+    weights until RFC-0009; health reports and never moves traffic; the
+    confirm follows the rail the page showed while it is eligible; no
+    exploration; ties go to the lower rail code. What that settles here:
+    - **D9:** "score descending, then rail code" is the order, as built.
+    - **D8:** fees become one component of the score, not the sort key. No
+      fee schedule exists yet.
+    - **D11:** health moves no traffic, and neither does the completion
+      rate: it is reported, and the operator sets a configured weight from
+      it by hand ("Go with (a)", 2026-10-23;
+      [RFC-0008](../rfc/0008-payment-method-routing.md) § R8.1).
+    - D14–D16 are still unconfirmed. The body below is unchanged; RFC-0008
+      § R7 and § R8 carry the detail.
 - **Implementation:** none. This ADR records decisions, not capability.
   Nothing it decides exists in code on the day it is written: the port has no
   `method_types`, no `amount_limits`, no `supports_off_session`, no
