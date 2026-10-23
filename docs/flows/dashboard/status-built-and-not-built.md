@@ -224,7 +224,11 @@ reproduce that failure today. `src/a11y-gate.test.ts`'s stylesheet case
 guards the OUTCOME either way — but only where a build exists, which in CI it
 never does (`pnpm -r test` runs before `just build-storybook`), so on review
 that case became an explicit skip and `just build-storybook` itself gained the
-assertion. Verified by mutation: with `app/globals.css`'s `@import` moved
+assertion. _(Since 2026-10-23 `just build-storybook` also runs that case, after
+its own count and with `VPAY_STORYBOOK_BUILT=1` so it cannot skip, and the
+case resolves `--color-base-100` one `var()` deep to a colour instead of
+demanding a hex literal the 0.5.0 theme no longer writes:
+[verification](../../status/verification/2026-10-23-a11y-gate-built-theme.md).)_ Verified by mutation: with `app/globals.css`'s `@import` moved
 below `@plugin`, the recipe exits 1 printing
 `dashboard --color-base-100 defined 0x, referenced 22x`.
 

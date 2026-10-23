@@ -64,6 +64,12 @@ build-storybook`, so the case takes its `ctx.skip()` branch. That leaves the
 guard a test that does not run in CI and fails locally after any Storybook
 build. It is reported, not fixed here.
 
+_Fixed later on 2026-10-23, at the maintainer's "Fix it": the case now
+resolves `--color-base-100` one `var()` deep to a colour, and `just
+build-storybook` runs it straight after building, so CI runs it too
+([2026-10-23-a11y-gate-built-theme.md](2026-10-23-a11y-gate-built-theme.md)).
+The paragraph above is kept as written._
+
 ## Not run
 
 - `test-storybook`, the axe suites, which need a browser; CI's `web` job
