@@ -198,16 +198,16 @@ The adapter declares `SubmitSteps::PrepareThenSubmit`:
 "cm.mobile", "data": { "phone": … } }`, by the reference the charge now
    holds. This is the call that prompts the payer.
 
-| `prepare` answered                                                | Then                                                                                                                                         |
-| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `201`, a documented status                                        | `notchpay_reference`, for the core to commit                                                                                                 |
-| `201` with no Notch Pay reference, or a `trxref` that is not ours | `Malformed`; nothing exists that vpay could address, and nobody was prompted                                                                 |
+| `prepare` answered                                                | Then                                                                                                                                          |
+| ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| `201`, a documented status                                        | `notchpay_reference`, for the core to commit                                                                                                  |
+| `201` with no Notch Pay reference, or a `trxref` that is not ours | `Malformed`; nothing exists that vpay could address, and nobody was prompted                                                                  |
 | `409`, and no `submit` row exists for the charge                  | `Rejected { provider_unavailable }`: an earlier initialize lost its answer and nobody was prompted, so the charge fails and the payer retries |
-| `409`, and a `submit` row exists                                  | `NeedsReconciliation`: a one-call build's process may have prompted, and the payment cannot be found (below)                                 |
-| `400`, `422`                                                      | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused                                                |
-| `401`, `403`                                                      | `Rejected { provider_account_blocked }`, which pages                                                                                         |
-| `404`                                                             | `Config`                                                                                                                                     |
-| `408`, `429`, `5xx`, no answer                                    | `Transport`: the fate is unknown, never a decline                                                                                            |
+| `409`, and a `submit` row exists                                  | `NeedsReconciliation`: a one-call build's process may have prompted, and the payment cannot be found (below)                                  |
+| `400`, `422`                                                      | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused                                                 |
+| `401`, `403`                                                      | `Rejected { provider_account_blocked }`, which pages                                                                                          |
+| `404`                                                             | `Config`                                                                                                                                      |
+| `408`, `429`, `5xx`, no answer                                    | `Transport`: the fate is unknown, never a decline                                                                                             |
 
 `prepare` on a charge that already holds `notchpay_reference` answers it
 back with no request; the core never asks. `submit` on a charge that holds
@@ -253,11 +253,11 @@ Since 2026-10-23 the `trx.…` is committed before anything prompts, and the
 `submit` row is written only after it, so a crash leaves one of three
 states ([crash-safety.md](crash-safety.md) § "Two-step push rails"):
 
-| After the crash                                | What recovery does                                                                                             |
-| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| a `prepare` row, no `trx.…`, no `submit` row   | the resubmit's `prepare` meets `409`; nobody was prompted, so the charge fails `provider_unavailable`          |
-| the `trx.…` held, no `submit` row              | the resubmit skips `prepare` and prompts by the held reference: one initialize, one process                    |
-| the `trx.…` held, an unanswered `submit` row   | the poll reads by the held reference, as on every rail; nothing is sent again                                  |
+| After the crash                              | What recovery does                                                                                    |
+| -------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| a `prepare` row, no `trx.…`, no `submit` row | the resubmit's `prepare` meets `409`; nobody was prompted, so the charge fails `provider_unavailable` |
+| the `trx.…` held, no `submit` row            | the resubmit skips `prepare` and prompts by the held reference: one initialize, one process           |
+| the `trx.…` held, an unanswered `submit` row | the poll reads by the held reference, as on every rail; nothing is sent again                         |
 
 **Charges in flight across that deploy** — an unanswered `submit` row and no
 `trx.…`, left by the one-call build — may have been prompted, and stay

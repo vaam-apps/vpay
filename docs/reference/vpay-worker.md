@@ -777,12 +777,12 @@ proof that nothing ever asked the rail to prompt this charge, because every
 build writes that row before every submit call. The `prepare` carries the
 attempt number of the `submit` it precedes.
 
-| `prepare` answered        | `prepare_again` does                                                                                                                           |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| the reference             | commits it, answers the row, and the resubmit goes on to `submit`                                                                              |
-| `Rejected`                | `settle_failed_with`, then the row answered `charge_declined` — the declined-resubmit order. On Notch Pay: a `409` with no `submit` row behind it |
-| `NeedsReconciliation`     | the row left unanswered with its `error_kind`; `resubmit_charge` escalates through `needs_an_operator`. On Notch Pay: a `409` with a `submit` row |
-| anything else             | the row left unanswered with its `error_kind` (`record_unresolved_submit`); the ladder retries                                                 |
+| `prepare` answered    | `prepare_again` does                                                                                                                              |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| the reference         | commits it, answers the row, and the resubmit goes on to `submit`                                                                                 |
+| `Rejected`            | `settle_failed_with`, then the row answered `charge_declined` — the declined-resubmit order. On Notch Pay: a `409` with no `submit` row behind it |
+| `NeedsReconciliation` | the row left unanswered with its `error_kind`; `resubmit_charge` escalates through `needs_an_operator`. On Notch Pay: a `409` with a `submit` row |
+| anything else         | the row left unanswered with its `error_kind` (`record_unresolved_submit`); the ladder retries                                                    |
 
 A one-call rail never reaches `prepare_again`, and its resubmit writes the
 same rows it always did. `worker_recovery.rs` proves the two-step paths

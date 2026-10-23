@@ -399,11 +399,11 @@ charge and writes the `submit` row; only then is call 2, `submit`, sent by
 it. So a crash leaves one of three states, and none of them is a prompted
 payment vpay cannot name:
 
-| After the crash                                   | The retry                                                                                              |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| a `prepare` row, no `trx.…`, no `submit` row      | `prepare` meets `409`; nobody was prompted, so the charge **fails** `provider_unavailable`, cleanly     |
-| the `trx.…` held, no `submit` row                 | no second initialize; call 2 by the held reference                                                     |
-| the `trx.…` held, an unanswered `submit` row      | call 3 decides, as on every rail; a payment process never reached waits for Notch Pay's expiry         |
+| After the crash                              | The retry                                                                                           |
+| -------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| a `prepare` row, no `trx.…`, no `submit` row | `prepare` meets `409`; nobody was prompted, so the charge **fails** `provider_unavailable`, cleanly |
+| the `trx.…` held, no `submit` row            | no second initialize; call 2 by the held reference                                                  |
+| the `trx.…` held, an unanswered `submit` row | call 3 decides, as on every rail; a payment process never reached waits for Notch Pay's expiry      |
 
 A charge the one-call build left with an unanswered `submit` row and no
 `trx.…` may have been prompted, and stays `NeedsReconciliation`

@@ -193,12 +193,12 @@ build — the recovery table's "no row" case, which already reads `submit`
 rows only. A `prepare` row is never one of them. The resubmit reads the same
 fact and hands it to the adapter as `PriorSubmits`:
 
-| Evidence                                         | What happened                                         | Action                                                                                                       |
-| ------------------------------------------------ | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| No `submit` row, no `trx.…`                      | Crashed before or during `prepare`; nobody prompted   | **Resubmit**: `prepare` (`PriorSubmits::None`), commit, `submit`. A `409` here fails the charge, cleanly      |
-| No `submit` row, `trx.…` held                    | Crashed after the commit; nobody prompted             | **Resubmit**: `submit` by the held reference, no second `prepare`                                            |
-| `submit` row, `status_code IS NULL`, `trx.…` held | Prompt sent, answer lost                              | **Poll**, by the held reference, as for every rail                                                           |
-| `submit` row, `status_code IS NULL`, no `trx.…`  | A one-call build's submit, from before ADR-0032       | **Escalate**: the read cannot be made, and a queued resubmit's `prepare` (`PriorSubmits::Some`) is refused   |
+| Evidence                                          | What happened                                       | Action                                                                                                     |
+| ------------------------------------------------- | --------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| No `submit` row, no `trx.…`                       | Crashed before or during `prepare`; nobody prompted | **Resubmit**: `prepare` (`PriorSubmits::None`), commit, `submit`. A `409` here fails the charge, cleanly   |
+| No `submit` row, `trx.…` held                     | Crashed after the commit; nobody prompted           | **Resubmit**: `submit` by the held reference, no second `prepare`                                          |
+| `submit` row, `status_code IS NULL`, `trx.…` held | Prompt sent, answer lost                            | **Poll**, by the held reference, as for every rail                                                         |
+| `submit` row, `status_code IS NULL`, no `trx.…`   | A one-call build's submit, from before ADR-0032     | **Escalate**: the read cannot be made, and a queued resubmit's `prepare` (`PriorSubmits::Some`) is refused |
 
 The `409` in the first row means an earlier `prepare` created the payment and
 lost its answer. Since nobody was prompted, the charge fails

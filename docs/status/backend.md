@@ -1112,8 +1112,9 @@ are the implementing agent's; the ADR is **Proposed** until the maintainer
 accepts it.
 
 - **The port** gains `Capabilities::submit_steps` (`One`, or
-  `PrepareThenSubmit` on `notchpay`) and an optional `prepare(charge, config,
-  PriorSubmits)`, defaulting to `Unsupported`, forwarded and counted by
+  `PrepareThenSubmit` on `notchpay`) and an optional `prepare`, which takes
+  the charge, the rail's config and `PriorSubmits`, defaulting to
+  `Unsupported`, forwarded and counted by
   `Measured` under the operation `prepare`. Its error table gains a `prepare`
   column.
 - **The core**, on a two-step rail only: the confirm path and the resubmit
