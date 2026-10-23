@@ -2620,3 +2620,320 @@ async fn a_return_url_that_is_not_a_bounded_web_url_is_refused_before_any_charge
     harness.shutdown().await;
     Ok(())
 }
+
+// ------------------------------------------------- a two-step rail (ADR-0032)
+
+/// Notch Pay's code, the one rail whose adapter declares
+/// `SubmitSteps::PrepareThenSubmit`.
+const TWO_STEP_RAIL: &str = "notchpay";
+
+/// A server with the Notch Pay stub alone, and the real `notchpay` adapter
+/// measured, as `vpay-server` links it.
+///
+/// Its own harness rather than a third container in [`harness`]: only the
+/// two cases below confirm against Notch Pay, and every other case here would
+/// pay for a container it never calls. The keys are the conformance suite's
+/// `test_`-named stand-ins, which `payments-initialize.json` accepts by
+/// presence.
+struct TwoStepHarness {
+    _postgres: ContainerAsync<PostgresImage>,
+    _notchpay: ContainerAsync<GenericImage>,
+    server: tokio::task::JoinHandle<()>,
+    pool: PgPool,
+    base_url: String,
+    /// The stub's origin, for its admin API.
+    stub_origin: String,
+    pem_a: String,
+}
+
+impl TwoStepHarness {
+    fn a(&self) -> vpay_sdk::Client {
+        vpay_sdk::Client::builder(&self.base_url)
+            .credentials(
+                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
+            )
+            .build()
+            .expect("the SDK client builds from a base URL and a credential")
+    }
+
+    /// How many requests the stub recorded matching a WireMock request
+    /// pattern.
+    async fn requests_matching(&self, pattern: Value) -> anyhow::Result<u64> {
+        let counted: Value = reqwest::Client::new()
+            .post(format!("{}/__admin/requests/count", self.stub_origin))
+            .json(&pattern)
+            .send()
+            .await
+            .context("the stub's admin API answers")?
+            .json()
+            .await
+            .context("the count is JSON")?;
+        counted
+            .get("count")
+            .and_then(Value::as_u64)
+            .context("the admin answer carries a count")
+    }
+
+    async fn shutdown(self) {
+        self.server.abort();
+    }
+}
+
+async fn two_step_harness() -> anyhow::Result<TwoStepHarness> {
+    ensure_crypto_provider_installed();
+
+    let (postgres, repositories, pool) = migrated_postgres().await?;
+    let notchpay = vpay_testkit::containers::start_wiremock(&mappings_dir(TWO_STEP_RAIL))
+        .await
+        .context("the Notch Pay stub container starts")?;
+    let stub_origin = format!(
+        "http://127.0.0.1:{}",
+        notchpay
+            .get_host_port_ipv4(8080)
+            .await
+            .context("the Notch Pay stub's mapped port")?
+    );
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let rail_url = stub_origin.clone();
+    let served = support::serve_with_adapters(
+        &repositories,
+        &server_pem,
+        |base_url| {
+            let unused = RailSetup::working(UNREACHABLE_RAIL);
+            Config {
+                providers: vec![ProviderHost {
+                    code: TWO_STEP_RAIL.to_owned(),
+                    enabled: true,
+                    host: HostEntry {
+                        url: rail_url,
+                        label: "notchpay-wiremock".to_owned(),
+                    },
+                    settings: BTreeMap::from([("channel".to_owned(), "cm.mobile".to_owned())]),
+                    callback_url: None,
+                    currency: "XAF".to_owned(),
+                    credentials: BTreeMap::from([
+                        (
+                            "public_key".to_owned(),
+                            "stub-public-key-test_0001".to_owned(),
+                        ),
+                        (
+                            "private_key".to_owned(),
+                            "stub-private-key-test_0002".to_owned(),
+                        ),
+                    ]),
+                    display_name: None,
+                    callbacks: None,
+                }],
+                ..config_with(base_url, jwks_a, &unused, &unused)
+            }
+        },
+        || {
+            let http = vpay_provider::http::client_with_timeouts(
+                vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+                vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+            )
+            .expect("the vendored-roots client builds");
+            vpay_api::v1::boot::adapters_by_code(vec![
+                Box::new(vpay_adapter_notchpay::Adapter::new(http))
+                    as Box<dyn vpay_provider::ProviderAdapter>,
+            ])
+        },
+    )
+    .await?;
+
+    Ok(TwoStepHarness {
+        _postgres: postgres,
+        _notchpay: notchpay,
+        server: served.server,
+        pool,
+        base_url: served.base_url,
+        stub_origin,
+        pem_a,
+    })
+}
+
+/// A confirmed intent's charge: its id, state, key material and the
+/// reference it was submitted under.
+async fn two_step_charge(
+    pool: &PgPool,
+    payment_intent_id: &str,
+) -> anyhow::Result<(String, String, Option<Value>, uuid::Uuid)> {
+    sqlx::query_as(
+        "SELECT id, state::TEXT, provider_ref_extra, provider_reference_id \
+         FROM charges WHERE payment_intent_id = $1",
+    )
+    .bind(payment_intent_id)
+    .fetch_one(pool)
+    .await
+    .context("reading the charge a confirm committed")
+}
+
+/// Every attempt row of a charge, oldest first: operation, status, label.
+async fn attempts_in_order(
+    pool: &PgPool,
+    charge_id: &str,
+) -> anyhow::Result<Vec<(String, Option<i32>, Option<String>)>> {
+    sqlx::query_as(
+        "SELECT operation, status_code, error_kind FROM provider_requests \
+         WHERE charge_id = $1 ORDER BY id",
+    )
+    .bind(charge_id)
+    .fetch_all(pool)
+    .await
+    .context("reading the attempt rows")
+}
+
+/// A confirm on a two-step rail is two calls with a commit between them
+/// (ADR-0032): `prepare` (Notch Pay's initialize) and its row, the `trx.…`
+/// committed on the charge, then the `submit` row and `submit` (process, the
+/// prompt) by that reference.
+///
+/// Asserted from what was committed and what the rail received: one
+/// initialize and one process in the stub's journal, and two attempt rows in
+/// that order, both answered.
+#[tokio::test]
+async fn a_two_step_confirm_prepares_commits_and_then_prompts() -> anyhow::Result<()> {
+    let harness = two_step_harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::NotchPay),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+    let confirmed = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::notchpay(MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .context("the Notch Pay stub initializes and processes any reference")?;
+    assert_eq!(confirmed.status, IntentStatus::Processing);
+
+    let (charge_id, state, ref_extra, reference) =
+        two_step_charge(&harness.pool, &intent.id).await?;
+    assert_eq!(state, "submitted");
+    assert_eq!(
+        ref_extra,
+        Some(serde_json::json!({ "notchpay_reference": format!("trx.test_{reference}") })),
+        "the reference Notch Pay issued at initialize, the only one it answers for"
+    );
+    let answered = Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT);
+    assert_eq!(
+        attempts_in_order(&harness.pool, &charge_id).await?,
+        vec![
+            ("prepare".to_owned(), answered, None),
+            ("submit".to_owned(), answered, None),
+        ],
+        "a prepare, then a submit: the submit row is written only once the reference is \
+         committed, which is what makes `no submit row` mean `never prompted`"
+    );
+    assert_eq!(
+        harness
+            .requests_matching(serde_json::json!({ "method": "POST", "url": "/payments" }))
+            .await?,
+        1,
+        "one initialize"
+    );
+    assert_eq!(
+        harness
+            .requests_matching(serde_json::json!({
+                "method": "POST",
+                "url": format!("/payments/trx.test_{reference}"),
+            }))
+            .await?,
+        1,
+        "one process, by the committed reference"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// The property ADR-0032 exists for, read off the rows a failed prompt
+/// leaves: when the process call does not come back, the charge **already
+/// holds** Notch Pay's reference.
+///
+/// The stub's process is made to answer `503` (a mapping added over its admin
+/// API, above the accepting one), so the confirm answers `502` and leaves
+/// the charge `submitting` beside an unanswered `submit` row — the recovery
+/// state. Before ADR-0032 that charge held nothing, and nothing could read
+/// it again; now the reference was committed before the prompt was sent, so
+/// the worker's poll reads the payment by it.
+#[tokio::test]
+async fn a_two_step_confirm_whose_prompt_fails_still_holds_the_rails_reference()
+-> anyhow::Result<()> {
+    let harness = two_step_harness().await?;
+    let added = reqwest::Client::new()
+        .post(format!("{}/__admin/mappings", harness.stub_origin))
+        .json(&serde_json::json!({
+            "priority": 1,
+            "request": { "method": "POST", "urlPathPattern": "/payments/trx\\.test_.+" },
+            "response": { "status": 503 }
+        }))
+        .send()
+        .await
+        .context("adding the failing process to the stub")?;
+    anyhow::ensure!(
+        added.status().is_success(),
+        "WireMock refused the mapping: {}",
+        added.status()
+    );
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::NotchPay),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+    let error = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::notchpay(MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .expect_err("a process that answers 503 is not an accepted confirm");
+    let (status, _, code, _) = api_error(error);
+    assert_eq!(
+        (status, code.as_deref()),
+        (502, Some("provider_unavailable")),
+        "the rail could not be finished with: the outcome is unknown"
+    );
+
+    let (charge_id, state, ref_extra, reference) =
+        two_step_charge(&harness.pool, &intent.id).await?;
+    assert_eq!(state, "submitting", "the recovery state");
+    assert_eq!(
+        ref_extra,
+        Some(serde_json::json!({ "notchpay_reference": format!("trx.test_{reference}") })),
+        "committed before the prompt was sent, so the charge can be read by it"
+    );
+    let answered = Some(vpay_db::provider_requests::STATUS_CODE_NOT_CARRIED_BY_THE_PORT);
+    assert_eq!(
+        attempts_in_order(&harness.pool, &charge_id).await?,
+        vec![
+            ("prepare".to_owned(), answered, None),
+            (
+                "submit".to_owned(),
+                None,
+                Some("provider_unavailable".to_owned())
+            ),
+        ],
+        "the prepare answered, the prompt not: recovery reads the submit row and polls"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
