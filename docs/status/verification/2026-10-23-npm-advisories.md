@@ -103,3 +103,33 @@ Measured after, with pnpm 11.18.0:
 
 Not run: the shop's `next build` and the `e2e (compose)` images, which CI's
 `e2e` job builds.
+
+## Later still: tokio 1.53.3 clears RUSTSEC-2026-0386
+
+A Rust advisory, recorded here with the day's npm ones. CI's `supply chain`
+job (`cargo deny check`, which runs only when a change touches Cargo files)
+failed on vaam-apps/vpay#357 at 23:47 UTC: `advisories FAILED`, on
+**RUSTSEC-2026-0386**, an _unsound_ advisory against `tokio`: "`AsyncFd::new`
+and related constructors violate I/O safety". The fixed versions are
+`>=1.51.6, <1.52.0` or `>=1.53.3`. `master` at `37fd72df` resolves tokio
+**1.53.1** in both `Cargo.lock` and `examples/tauri-checkout/src-tauri/Cargo.lock`,
+so it fails the same check whenever the job runs.
+
+The fix is `cargo update -p tokio --precise 1.53.3` in both workspaces: a
+patch release on the same minor line, published 2026-10-13. 1.54.0 is yanked
+and 1.54.1 is two days old, so neither was taken. The workspace's
+requirement stays `tokio = "1"`. In the root lockfile the same command also
+re-pointed six crates' Windows-only `windows-sys` dependency at versions
+the lockfile already held (0.52.0 and 0.59.0 instead of 0.61.2), and two in
+the Tauri example's lockfile (0.59.0). No package was
+added or removed, and nothing a Linux build compiles changed.
+
+Measured with cargo-deny 0.20.2 and cargo 1.98.0:
+
+- `cargo deny check advisories` on `master` at `37fd72df`: **FAILED**,
+  RUSTSEC-2026-0386.
+- `cargo deny check` on this change: `advisories ok, bans ok, licenses ok,
+sources ok`.
+
+Not run here: the workspace build and tests, which CI's `rust` job runs on the
+new lockfile.
