@@ -1781,7 +1781,7 @@ mod tests {
                 .get_mut(0)
                 .expect("the fixture configures one rail")
                 .callbacks = Some(vpay_config::ProviderCallbacks {
-                register,
+                register: Some(register),
                 ..Default::default()
             });
             let adapters = adapters_by_code(vec![Box::new(TestRail {

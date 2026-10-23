@@ -302,7 +302,7 @@ async fn boot(common: &CommonArgs, args: &WorkerArgs) -> anyhow::Result<Booted> 
     // as the two above are. Logged so an operator can see, at boot, which
     // rails the pass may write to — the rails it will actually ask are the
     // ones whose adapters register their URL with the account.
-    let callbacks = crate::callbacks::callback_plan(&config);
+    let callbacks = crate::callbacks::callback_plan(&config, &adapters);
     tracing::info!(
         deployment = %callbacks.deployment,
         rails = ?callbacks

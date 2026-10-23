@@ -316,6 +316,40 @@ async fn check_never_writes_and_off_asks_nothing() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// RFC-0013 § 2 as amended 2026-10-23 ("Default to `off` for Notch Pay"):
+/// with `callbacks` unset, the plan takes Notch Pay's declared default, read
+/// through the same `Measured` wrapper boot uses, and the pass then asks the
+/// account nothing — no list, no create — and counts no sample, so
+/// `VpayCallbackEndpointUnconfirmed` cannot fire for it. The same rail with
+/// an explicit `ensure` still lists and creates.
+#[tokio::test]
+async fn an_unset_register_leaves_a_notch_pay_account_alone() -> anyhow::Result<()> {
+    let h = Harness::start().await?;
+
+    let declared = h
+        .adapters
+        .get("notchpay")
+        .context("the harness links Notch Pay")?
+        .default_callback_registration();
+    let unset = Registration::from(declared);
+    assert_eq!(unset, Registration::Off, "Notch Pay declares `off`");
+
+    let left_alone = only(h.pass(&plan(unset), false).await);
+    assert!(matches!(left_alone.check, RailCheck::Off));
+    assert_eq!(left_alone.state(), None, "an off rail is not counted");
+    assert_eq!(h.requests("GET").await?, 0, "not even a list");
+    assert_eq!(h.requests("POST").await?, 0, "and never a create");
+
+    let asked = only(h.pass(&plan(Registration::Ensure), false).await);
+    assert!(
+        matches!(state(&asked), EndpointState::Created { .. }),
+        "an explicit `ensure` still registers: {:?}",
+        state(&asked)
+    );
+    assert_eq!(h.requests("POST").await?, 1);
+    Ok(())
+}
+
 /// The job, claimed off the real queue: seeded by `seed_singletons`,
 /// dispatched by `run_once`, and back on the clock an hour out.
 #[tokio::test]

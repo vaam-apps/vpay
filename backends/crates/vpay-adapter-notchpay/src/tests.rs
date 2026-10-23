@@ -199,6 +199,18 @@ fn code_matches_the_payment_method_type() {
     assert_eq!(adapter().code(), "notchpay");
 }
 
+/// RFC-0013 § 2 as amended 2026-10-23: with `callbacks` unset, vpay leaves a
+/// Notch Pay account alone. An endpoint created through the API was stored
+/// with no URL and delivered nothing in the sandbox, so the default is the
+/// operator's dashboard, not a write vpay makes unasked.
+#[test]
+fn the_callback_registration_default_is_off() {
+    assert_eq!(
+        adapter().default_callback_registration(),
+        CallbackRegistrationDefault::Off
+    );
+}
+
 /// ADR-0031 condition 4: the exposure is declared through the port, names the
 /// credential by its configuration key, lists the four operations RFC-0012
 /// records, and points at the page that explains them.

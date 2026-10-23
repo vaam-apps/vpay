@@ -683,6 +683,11 @@ require it."). Setting it admits the rail; it does not silence the warning.
 
 In writing (W) or in the sandbox (S):
 
+_(2026-10-23: asked whether vpay should draft a message putting this
+section's open items to Notch Pay, the maintainer answered "I already sent an
+email to NotchPay". What that email asked is not recorded here, and no answer
+is recorded yet; each item moves when one is.)_
+
 1. **(W)** Does `GET /payments/{reference}` accept `X-Grant`, and can an
    account make it required? Can the public key's payment operations be
    disabled? This is the gate.
@@ -712,11 +717,15 @@ In writing (W) or in the sandbox (S):
    `200` with an empty list, and `POST /refunds` answers `403` "Forbidden",
    with no message, to all four requests sent against a `complete` payment:
    the guide's body twice, and twice with an undocumented `reference`. No
-   refund was made, so replay safety is not measured.)_
+   refund was made, so replay safety is not measured. **Not re-measured
+   [2026-10-23][two-step-channels]**: the probe's payment to refund stayed
+   `processing` (item 25), so no `POST /refunds` was sent.)_
 7. **(S)** Is the webhook signature over the raw body, and is the header
    always lower-case? _(Not measured 2026-10-21: no public URL to receive
-   one.)_ _(2026-10-23: vpay's check is built on the raw-body reading, and
-   accepts either case of hex; a header name is case-insensitive in HTTP
+   one. **Not measured [2026-10-23][two-step-channels] either**, with a
+   public URL: no webhook arrived, because the endpoint stored no URL
+   (item 24).)_ _(2026-10-23: vpay's check is built on the raw-body reading,
+   and accepts either case of hex; a header name is case-insensitive in HTTP
    anyway. This item now decides whether that check accepts the webhooks
    Notch Pay really sends.)_
 8. **(W)** What prefix does a live key carry? _(Its neighbour, the test
@@ -751,7 +760,8 @@ In writing (W) or in the sandbox (S):
 17. **(S)** Is `payment.processing` a real event? The API reference lists it;
     the specification's `createWebhook` enum does not. _(Half answered
     [2026-10-21][sandbox-run] — `POST /webhooks` accepts it. Delivery not
-    measured.)_
+    measured, again on [2026-10-23][two-step-channels]: nothing was
+    delivered at all (item 24).)_
 18. **(W)** Why does the sandbox's "insufficient funds" number read `complete`
     with `amounts.total` short of `amount`? On the live API, can a payment read
     `complete` having collected less, and is `amounts.total` the collected
@@ -770,14 +780,69 @@ In writing (W) or in the sandbox (S):
     without an answer from Notch Pay: the `trx.…` is committed before the
     prompt, so no search is needed (§ 3, "Amended 2026-10-23").)_
 20. **(W)** Why does `DELETE /webhooks/{id}` answer `404` "Resource Not Found"
-    for an endpoint the list returns? _(Added 2026-10-21.)_
+    for an endpoint the list returns? _(Added 2026-10-21. On
+    [2026-10-23][two-step-channels] `GET` and `PUT /webhooks/{id}` answered
+    the same `404` too, for an endpoint created a minute earlier and listed
+    as `"status": "active"`: no route that takes an endpoint's id works.)_
 21. **(W)** Where is a webhook endpoint's signing secret, since `POST /webhooks`
-    does not return one? _(Added 2026-10-21.)_
+    does not return one? _(Added 2026-10-21.)_ _(2026-10-23: vpay reads it
+    as the endpoint's Hash Key, from `credentials.callback_signing_secret`
+    ([RFC-0014](0014-verifying-rail-callbacks.md)), and a livemode deployment
+    with a Notch Pay rail and no such secret refuses to boot unless it says
+    `callbacks.verify: off`. Asked to confirm that strict default, the
+    maintainer answered "Yes, very well". Until this item is answered, a
+    Hash Key that is not the signing secret makes every genuine webhook
+    `invalid`, which moves nothing and only costs callback latency.)_
+22. **(S)** How long does a payment initialized and never processed stay
+    `pending`, and can it still be processed late? ADR-0032 leaves one
+    behind whenever vpay stops between `prepare` and `submit`. _(Added and
+    answered [2026-10-23][two-step-channels] — a payment initialized at
+    18:59:25 UTC and never processed still read `pending` at 60, 305, 900,
+    1800 and 3600 s: it did not expire within the hour. Its reference sent
+    again answered `409` `"Reference already existing"`. A second payment,
+    processed 300 s after its initialize, was answered `202` and read
+    `complete` 5 s later. The first, processed at 3600 s, was answered `202`
+    and moved to `processing`, where it stayed (item 25), so whether an
+    hour-old payment can still complete is not shown.)_
+23. **(S)** Do `cm.mtn` and `cm.orange` honour the outcome numbers, and what
+    does a number from the other network get? RFC-0012 step 8 sends them
+    from the payer's method type. _(Added and answered
+    [2026-10-23][two-step-channels] — all five numbers on each channel read
+    what they read on `cm.mobile` (`complete`; `complete` with
+    `amounts.total` 2 short; `failed`; `expired`; `canceled`), each within
+    about 5 s. A number from the other network is refused at `process`:
+    `422` "Invalid CM Mobile Money" for Orange's number on `cm.mtn`, "Invalid
+    CM Orange Money" for MTN's on `cm.orange`; the payment stays `pending`.
+    The adapter maps that refusal, a process `422` naming `phone` alone, to
+    `invalid_payer` since the same day: the maintainer's "Yes,
+    `invalid_payer`" [(verification)][defaults-wrong-network]. It was
+    `provider_error`.)_
+24. **(S, W)** Does `POST /webhooks` store the `url` it is sent? _(Added
+    [2026-10-23][two-step-channels] — **contradicted**: an endpoint created
+    with a public, reachable URL read `"url": null` in the create answer and
+    the list, and nothing reached that URL in 21 minutes. vpay's
+    `ensure_callbacks` creates its endpoint with the same call, so on this
+    evidence it registers an endpoint that delivers nothing. The maintainer
+    answered the same day "Default to `off` for Notch Pay": with `register`
+    unset vpay no longer calls `POST /webhooks` on this rail (RFC-0013's
+    amendment) [(verification)][defaults-wrong-network].)_
+25. **(S)** Why did every payment processed after that endpoint existed stay
+    `processing`? _(Added [2026-10-23][two-step-channels] — four payments
+    processed after the item-24 endpoint was created (at 19:07, 19:10, 19:13
+    and 19:59 UTC, on MTN's success and failure numbers) were answered `202`
+    and read `processing` at the last read, 20:02, between 3 and 55 minutes
+    later. Every one of the eleven payments whose `process` was accepted
+    before it, from 18:59 to 19:06, reached a final status within about 5 s.
+    The endpoint is the
+    only change seen between the two groups. That it is the cause is not
+    shown, and it cannot be removed through the API to test it (item 20).)_
 
 [sandbox-run]: ../status/verification/2026-10-21-notchpay-sandbox-run.md
 [step5]: ../status/verification/2026-10-21-notchpay-step5.md
 [refunds-probe]: ../status/verification/2026-10-22-notchpay-refunds.md
 [b3b]: ../status/verification/2026-10-22-notchpay-b3b.md
+[two-step-channels]: ../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md
+[defaults-wrong-network]: ../status/verification/2026-10-23-notchpay-defaults-and-wrong-network.md
 
 ## Delivery
 

@@ -415,7 +415,10 @@ comparison this repository has listed as unbuilt since Step 8.
   deployment registers endpoints by hand today, and none could verify until
   the store exists. _(2026-10-22: Notch Pay's endpoint is registered by vpay
   since RFC-0013 landed for it, and the refusal still holds: Notch Pay
-  returns no secret to store.)_
+  returns no secret to store.)_ _(2026-10-23: not by default any more. Since
+  vaam-apps/vpay#353 an unset `register` is `off` on Notch Pay, so its
+  endpoint is registered by hand in the dashboard again, and the signing
+  secret is that endpoint's Hash Key, configured by hand too.)_
 - **Source-IP allowlists instead of signatures.** Refused. No shipping rail
   publishes a callback address range that this repository has confirmed:
   RFC-0013 § 11 records that no MTN page read supports an IP-allowlisted

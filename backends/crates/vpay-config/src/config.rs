@@ -169,10 +169,14 @@ pub struct ProviderHost {
     /// Whether vpay registers this rail's callback endpoint with the rail
     /// account (RFC-0013): `callbacks: { register: ensure | check | off }`.
     ///
-    /// Absent — the normal case — means [`CallbackRegistration::Ensure`] on
-    /// a rail whose adapter declares `CallbackUrlMode::Registered`, and
-    /// nothing at all on one that declares `PerRequest`, whose URL travels
-    /// on every submit. **Present on a `PerRequest` rail refuses to boot**
+    /// Absent — the normal case — means the rail's own default on a rail
+    /// whose adapter declares `CallbackUrlMode::Registered`, which its
+    /// adapter declares (`ProviderAdapter::default_callback_registration`):
+    /// `ensure` unless the adapter says otherwise, and **`off` for
+    /// `notchpay`** since 2026-10-23, when the maintainer chose "Default to
+    /// `off` for Notch Pay" after its sandbox stored an API-created endpoint
+    /// with no URL and delivered nothing. Nothing at all on a rail that
+    /// declares `PerRequest`, whose URL travels on every submit. **Present on a `PerRequest` rail refuses to boot**
     /// (`ConfigError::CallbacksOnPerRequestRail`), because a setting that
     /// does nothing is one somebody believes in.
     ///
@@ -255,10 +259,11 @@ pub struct RailDisplayName {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct ProviderCallbacks {
-    /// See [`CallbackRegistration`]. Defaults to `ensure`, so `callbacks: {}`
-    /// means what an absent block means.
+    /// See [`CallbackRegistration`]. `None` — the key absent, as in
+    /// `callbacks: {}` — means what an absent block means: the rail's own
+    /// default, which its adapter declares. `Some` always wins over it.
     #[serde(default)]
-    pub register: CallbackRegistration,
+    pub register: Option<CallbackRegistration>,
     /// See [`CallbackVerification`]. Defaults to `on`.
     #[serde(default)]
     pub verify: CallbackVerification,
@@ -291,13 +296,16 @@ pub enum CallbackVerification {
 }
 
 /// `providers[].callbacks.register` (RFC-0013 § 2).
-#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+///
+/// No `Default`: an unset `register` is the rail's own default, which only
+/// its adapter knows, so nothing here may pick one.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum CallbackRegistration {
     /// List the account's endpoints, and create vpay's if it is missing.
-    /// The default: the maintainer asked on 2026-10-22 that registration
-    /// "be done automatically" (RFC-0013 open question 1).
-    #[default]
+    /// The default on most rails: the maintainer asked on 2026-10-22 that
+    /// registration "be done automatically" (RFC-0013 open question 1). Not
+    /// on `notchpay`, whose adapter declares `off` (2026-10-23).
     Ensure,
     /// List and report; never write. For a key allowed to read endpoints
     /// and not to create them.
@@ -6418,9 +6426,6 @@ providers:
         );
     }
 
-    /// RFC-0013 § 2: `callbacks: {}` means what an absent block means —
-    /// `ensure` — and a misspelt key is refused rather than silently read as
-    /// that default. Every spelling of `register` round-trips.
     /// `routing:` parses with every key optional, refuses a misspelt one,
     /// and resolves to the router's weights most specific first.
     #[test]
@@ -6521,11 +6526,19 @@ providers:
         }
     }
 
+    /// RFC-0013 § 2: `callbacks: {}` means what an absent block means — the
+    /// rail's own default, so `register` is unset — and a misspelt key is
+    /// refused rather than silently read as that default. Every spelling of
+    /// `register` round-trips, and so does `verify` (RFC-0014), which
+    /// defaults to `on` and sets nothing about registration.
     #[test]
-    fn a_callbacks_block_defaults_to_ensure_and_refuses_an_unknown_key() {
+    fn a_callbacks_block_leaves_register_unset_and_refuses_an_unknown_key() {
         let empty: ProviderCallbacks =
             serde_yaml_ng::from_str("{}").expect("an empty block deserialises");
-        assert_eq!(empty.register, CallbackRegistration::Ensure);
+        assert_eq!(
+            empty.register, None,
+            "`callbacks: {{}}` is the rail's own default, not `ensure`"
+        );
 
         for (yaml, expected) in [
             ("register: ensure", CallbackRegistration::Ensure),
@@ -6533,7 +6546,7 @@ providers:
             ("register: off", CallbackRegistration::Off),
         ] {
             let block: ProviderCallbacks = serde_yaml_ng::from_str(yaml).expect(yaml);
-            assert_eq!(block.register, expected, "{yaml}");
+            assert_eq!(block.register, Some(expected), "{yaml}");
         }
 
         assert_eq!(empty.verify, CallbackVerification::On);
@@ -6543,7 +6556,10 @@ providers:
         ] {
             let block: ProviderCallbacks = serde_yaml_ng::from_str(yaml).expect(yaml);
             assert_eq!(block.verify, expected, "{yaml}");
-            assert_eq!(block.register, CallbackRegistration::Ensure, "{yaml}");
+            assert_eq!(
+                block.register, None,
+                "{yaml}: `verify` alone leaves `register` unset"
+            );
         }
         assert!(
             serde_yaml_ng::from_str::<ProviderCallbacks>("verify: sometimes").is_err(),

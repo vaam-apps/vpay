@@ -9,6 +9,10 @@
 //! cargo run -p vpay-notchpay --example sandbox_probe -- webhooks --out <report.json> --webhook-url <url>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- search   --out <report.json> --reference <ref> [--reference <ref> …]
 //! cargo run -p vpay-notchpay --example sandbox_probe -- refunds  --out <report.json>
+//! cargo run -p vpay-notchpay --example sandbox_probe -- two-step --out <report.json>
+//! cargo run -p vpay-notchpay --example sandbox_probe -- channels --out <report.json>
+//! cargo run -p vpay-notchpay --example sandbox_probe -- webhook-receive --out <report.json> --webhook-url <url>
+//! cargo run -p vpay-notchpay --example sandbox_probe -- webhook-update  --out <report.json> --reference <ep_…> --webhook-url <url>
 //! cargo run -p vpay-notchpay --example sandbox_probe -- verify-signature --body <file> --signature <hex>
 //! ```
 //!
@@ -58,6 +62,26 @@
 //! see whether a repeated request refunds twice. The adapter does not call
 //! `/refunds`: `notchpay::refund` stays a declared `NotImplemented` until
 //! Notch Pay answers item 6 in writing.
+//!
+//! **Added 2026-10-23**, after ADR-0032 and RFC-0012 step 8 were built against
+//! a stub. `two-step` initializes two payments and processes neither at
+//! first: it re-sends one initialize to record the `409`, reads the
+//! never-processed one on a schedule (`NOTCHPAY_PROBE_EXPIRY_CHECKS`, seconds,
+//! default `0,60,300,900,1800,3600`) to see whether and when it expires,
+//! processes the other after `NOTCHPAY_PROBE_LATE_PROCESS_SECONDS` (default
+//! `300`), and at the end processes the never-processed one too. `channels`
+//! sends every documented MTN and Orange outcome number on `cm.mtn` and
+//! `cm.orange`, then each network's success number on the other network's
+//! channel. `webhook-receive` creates **one** endpoint at the URL you give
+//! (a capture inbox you can read), makes one successful and one failed
+//! payment, waits `NOTCHPAY_PROBE_DELIVERY_WAIT` seconds (default `120`) for
+//! deliveries, then deletes the endpoint and lists the account's endpoints
+//! to show whether the delete worked. `webhook-update` reads one endpoint
+//! this probe created (`--reference ep_…`) by id and sends it the documented
+//! `PUT /webhooks/{id}` with the URL again, because `POST /webhooks` stores
+//! `"url": null`. Reading the inbox and checking
+//! `x-notch-signature` (with `verify-signature`) are done by hand; the probe
+//! never talks to the capture service.
 
 use std::error::Error;
 use std::fs;
@@ -94,7 +118,9 @@ const CHANNEL: &str = "cm.mobile";
 /// (<https://developer.notchpay.co/get-started/testing>, read 2026-10-20).
 /// The page lists them under `cm.mtn` and `cm.orange`; whether `cm.mobile`
 /// honours them is RFC-0012 § 10 item 3, which is what sending them on
-/// `cm.mobile` measures. Orange's failure suffixes are not documented.
+/// `cm.mobile` measures. The page gives the five suffixes "for each
+/// operator" (read again 2026-10-23); this list takes Orange's success number
+/// only, and `channels` runs Orange's other four on `cm.orange`.
 const OUTCOMES: [(&str, &str); 6] = [
     ("+237670000000", "MTN: success"),
     ("+237670000001", "MTN: insufficient funds"),
@@ -102,6 +128,58 @@ const OUTCOMES: [(&str, &str); 6] = [
     ("+237670000003", "MTN: timeout (no response)"),
     ("+237670000004", "MTN: canceled by user"),
     ("+237690000000", "Orange: success"),
+];
+
+/// RFC-0012 step 8 (built 2026-10-23 against a stub): the channel a charge
+/// routed by method type is processed on, with every outcome number the
+/// testing page documents for that network, then each network's success
+/// number on the other network's channel. The testing page lists the same
+/// `XXX000000`–`XXX000004` pattern for every operator.
+const CHANNEL_CASES: [(&str, &str, &str); 12] = [
+    ("cm.mtn", "+237670000000", "cm.mtn, MTN: success"),
+    ("cm.mtn", "+237670000001", "cm.mtn, MTN: insufficient funds"),
+    (
+        "cm.mtn",
+        "+237670000002",
+        "cm.mtn, MTN: failure (other reason)",
+    ),
+    (
+        "cm.mtn",
+        "+237670000003",
+        "cm.mtn, MTN: timeout (no response)",
+    ),
+    ("cm.mtn", "+237670000004", "cm.mtn, MTN: canceled by user"),
+    ("cm.orange", "+237690000000", "cm.orange, Orange: success"),
+    (
+        "cm.orange",
+        "+237690000001",
+        "cm.orange, Orange: insufficient funds",
+    ),
+    (
+        "cm.orange",
+        "+237690000002",
+        "cm.orange, Orange: failure (other reason)",
+    ),
+    (
+        "cm.orange",
+        "+237690000003",
+        "cm.orange, Orange: timeout (no response)",
+    ),
+    (
+        "cm.orange",
+        "+237690000004",
+        "cm.orange, Orange: canceled by user",
+    ),
+    (
+        "cm.orange",
+        "+237670000000",
+        "wrong network: MTN's success number on cm.orange",
+    ),
+    (
+        "cm.mtn",
+        "+237690000000",
+        "wrong network: Orange's success number on cm.mtn",
+    ),
 ];
 
 /// The statuses after which a payment does not move again (RFC-0012 § 4).
@@ -137,11 +215,20 @@ fn main() -> Result<()> {
     }
     if !matches!(
         phase,
-        "read" | "payments" | "webhooks" | "search" | "refunds"
+        "read"
+            | "payments"
+            | "webhooks"
+            | "search"
+            | "refunds"
+            | "two-step"
+            | "channels"
+            | "webhook-receive"
+            | "webhook-update"
     ) {
         return Err(
-            "usage: sandbox_probe read|payments|webhooks|search|refunds --out <report.json> \
-             [--webhook-url <url>] [--reference <ref> …] [--ca-bundle <pem>] | verify-signature --body <file> --signature <hex>"
+            "usage: sandbox_probe read|payments|webhooks|search|refunds|two-step|channels|webhook-receive|webhook-update \
+             --out <report.json> [--webhook-url <url>] [--reference <ref> …] [--ca-bundle <pem>] \
+             | verify-signature --body <file> --signature <hex>"
                 .into(),
         );
     }
@@ -160,6 +247,19 @@ fn main() -> Result<()> {
             "payments" => probe.payments_phase().await,
             "search" => probe.search_phase(&all_flags(&args, "--reference")).await,
             "refunds" => probe.refunds_phase().await,
+            "two-step" => probe.two_step_phase().await,
+            "channels" => probe.channels_phase().await,
+            "webhook-update" => {
+                let url =
+                    flag("--webhook-url").ok_or("webhook-update needs --webhook-url <url>")?;
+                let id = flag("--reference").ok_or("webhook-update needs --reference <ep_…>")?;
+                probe.webhook_update_phase(&id, &url).await
+            }
+            "webhook-receive" => {
+                let url =
+                    flag("--webhook-url").ok_or("webhook-receive needs --webhook-url <url>")?;
+                probe.webhook_receive_phase(&url).await
+            }
             _ => {
                 let url = flag("--webhook-url").ok_or("webhooks needs --webhook-url <url>")?;
                 probe.webhooks_phase(&url).await
@@ -764,6 +864,315 @@ impl Probe {
         Ok(())
     }
 
+    /// Initializes one payment and processes nothing. Returns our reference
+    /// and Notch Pay's `trx.…`.
+    async fn initialize_only(
+        &mut self,
+        item: &str,
+        phone: &str,
+        amount: i64,
+    ) -> Result<(String, String)> {
+        let reference = uuid::Uuid::new_v4().to_string();
+        let init = InitializePayment {
+            amount,
+            currency: "XAF",
+            phone,
+            reference: &reference,
+            description: Some("vpay sandbox probe (ADR-0032 / RFC-0012 step 8)"),
+        };
+        let (status, body) = self
+            .exchange(
+                item,
+                Method::POST,
+                "/payments",
+                Some(serde_json::to_value(&init)?),
+                Decode::Payment,
+            )
+            .await?;
+        let trx = trx_reference(&body)
+            .filter(|_| (200..300).contains(&status))
+            .ok_or_else(|| format!("{item}: initialize answered {status}, no `trx.…`"))?;
+        Ok((reference, trx))
+    }
+
+    /// `POST /payments/{trx}` on `channel`, recorded.
+    async fn process(&mut self, item: &str, trx: &str, channel: &str, phone: &str) -> Result<u16> {
+        let body = serde_json::to_value(ProcessPayment {
+            channel,
+            data: ProcessData { phone },
+        })?;
+        let (status, _) = self
+            .exchange(
+                item,
+                Method::POST,
+                &format!("/payments/{trx}"),
+                Some(body),
+                Decode::Payment,
+            )
+            .await?;
+        Ok(status)
+    }
+
+    /// ADR-0032 on Notch Pay's side: what an initialized, never-processed
+    /// payment does over time, whether a late `process` still prompts, and
+    /// the `409` a repeated initialize gets.
+    async fn two_step_phase(&mut self) -> Result<()> {
+        let checks: Vec<u64> = std::env::var("NOTCHPAY_PROBE_EXPIRY_CHECKS")
+            .unwrap_or_else(|_| "0,60,300,900,1800,3600".to_owned())
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        let late: u64 = std::env::var("NOTCHPAY_PROBE_LATE_PROCESS_SECONDS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(300);
+        let phone = "+237670000000";
+        let never = "ADR-0032: initialized, never processed";
+        let (reference_a, trx_a) = self.initialize_only(never, phone, 151).await?;
+        let later = "ADR-0032: processed late";
+        let (_, trx_b) = self.initialize_only(later, phone, 157).await?;
+        let again = InitializePayment {
+            amount: 151,
+            currency: "XAF",
+            phone,
+            reference: &reference_a,
+            description: Some("vpay sandbox probe (ADR-0032) - the same reference again"),
+        };
+        self.exchange(
+            "ADR-0032: the never-processed payment's reference, initialized again",
+            Method::POST,
+            "/payments",
+            Some(serde_json::to_value(&again)?),
+            Decode::Payment,
+        )
+        .await?;
+
+        let start = std::time::Instant::now();
+        let mut processed_late = false;
+        let mut last = None;
+        for at in checks {
+            if !processed_late && late <= at {
+                sleep_until(start, late).await;
+                self.note(later, format!("processing {late}s after initialize"));
+                self.process(later, &trx_b, CHANNEL, phone).await?;
+                self.poll_trx(later, &trx_b, Duration::from_secs(180))
+                    .await?;
+                self.client_read(later, &trx_b).await;
+                processed_late = true;
+            }
+            sleep_until(start, at).await;
+            let (_, body) = self
+                .exchange(
+                    never,
+                    Method::GET,
+                    &format!("/payments/{trx_a}"),
+                    None,
+                    Decode::Payment,
+                )
+                .await?;
+            let status = payment_status(&body);
+            self.note(
+                never,
+                format!(
+                    "{}s after initialize: status {status:?}",
+                    start.elapsed().as_secs()
+                ),
+            );
+            let done = status.as_deref().is_some_and(|s| TERMINAL.contains(&s));
+            last = status;
+            if done {
+                break;
+            }
+        }
+        if !processed_late {
+            self.process(later, &trx_b, CHANNEL, phone).await?;
+            self.poll_trx(later, &trx_b, Duration::from_secs(180))
+                .await?;
+        }
+        self.client_read(never, &trx_a).await;
+        // What a resubmit after a long crash meets: the held `trx.…` processed
+        // late, whatever the payment now reads.
+        self.note(
+            never,
+            format!(
+                "now processing it, {}s after initialize, last read {last:?}",
+                start.elapsed().as_secs()
+            ),
+        );
+        self.process(never, &trx_a, CHANNEL, phone).await?;
+        self.poll_trx(never, &trx_a, Duration::from_secs(180))
+            .await?;
+        Ok(())
+    }
+
+    /// RFC-0012 step 8 on Notch Pay's side: each [`CHANNEL_CASES`] row
+    /// initialized, processed by its `trx.…` on its channel, and read to a
+    /// terminal status or `NOTCHPAY_PROBE_POLL_SECONDS` (default 180).
+    async fn channels_phase(&mut self) -> Result<()> {
+        let poll_for = Duration::from_secs(
+            std::env::var("NOTCHPAY_PROBE_POLL_SECONDS")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(180),
+        );
+        for (index, (channel, phone, label)) in CHANNEL_CASES.iter().enumerate() {
+            // Varied amounts, as in `payments`: the fraud system watches for
+            // identical payments to one number.
+            let amount = 110 + 3 * i64::try_from(index)?;
+            let item = format!("step 8: {label}");
+            let (_, trx) = match self.initialize_only(&item, phone, amount).await {
+                Ok(pair) => pair,
+                Err(error) => {
+                    self.note(&item, format!("initialize failed, nothing more: {error}"));
+                    continue;
+                }
+            };
+            let status = self.process(&item, &trx, channel, phone).await?;
+            if !(200..300).contains(&status) {
+                self.note(&item, format!("process answered {status}; reading once"));
+            }
+            self.poll_trx(&item, &trx, poll_for).await?;
+            self.client_read(&item, &trx).await;
+        }
+        Ok(())
+    }
+
+    /// RFC-0012 § 10 items 7 and 17 with a URL that can actually receive:
+    /// one endpoint, two payments, a wait for deliveries, and the endpoint
+    /// deleted (or the attempt recorded, since `DELETE` answered `404` on
+    /// 2026-10-21).
+    async fn webhook_receive_phase(&mut self, url: &str) -> Result<()> {
+        let wait: u64 = std::env::var("NOTCHPAY_PROBE_DELIVERY_WAIT")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(120);
+        self.exchange(
+            "7: list before",
+            Method::GET,
+            "/webhooks?page=1",
+            None,
+            Decode::WebhookPage,
+        )
+        .await?;
+        let mut events: Vec<&str> = PAYMENT_EVENTS.to_vec();
+        events.push("payment.processing");
+        let body = CreateWebhook {
+            url,
+            description: Some("vpay sandbox probe (RFC-0012 item 7) - delete me"),
+            events: &events,
+        };
+        let (status, answer) = self
+            .exchange(
+                "7, 17: create one endpoint",
+                Method::POST,
+                "/webhooks",
+                Some(serde_json::to_value(&body)?),
+                Decode::Webhook,
+            )
+            .await?;
+        let id = answer
+            .pointer("/endpoint/id")
+            .or_else(|| answer.pointer("/webhook/id"))
+            .or_else(|| answer.pointer("/data/id"))
+            .and_then(Value::as_str)
+            .map(str::to_owned);
+        if !(200..300).contains(&status) {
+            self.note("7", "the endpoint was not created; nothing to receive");
+            return Ok(());
+        }
+        let started = now();
+        self.note("7", format!("endpoint created at unix {started}: {id:?}"));
+        for (phone, amount, label) in [
+            ("+237670000000", 133_i64, "7: a payment that succeeds"),
+            ("+237670000002", 139_i64, "7: a payment that fails"),
+        ] {
+            let (_, trx) = self.initialize_only(label, phone, amount).await?;
+            self.process(label, &trx, CHANNEL, phone).await?;
+            self.poll_trx(label, &trx, Duration::from_secs(180)).await?;
+        }
+        self.note("7", format!("waiting {wait}s for deliveries"));
+        tokio::time::sleep(Duration::from_secs(wait)).await;
+        let Some(id) = id else {
+            self.note(
+                "cleanup",
+                "created, but no id in the answer: delete it in the dashboard",
+            );
+            return Ok(());
+        };
+        let (deleted, _) = self
+            .exchange(
+                "cleanup",
+                Method::DELETE,
+                &format!("/webhooks/{id}"),
+                None,
+                Decode::Nothing,
+            )
+            .await?;
+        self.exchange(
+            "cleanup: list after",
+            Method::GET,
+            "/webhooks?page=1",
+            None,
+            Decode::WebhookPage,
+        )
+        .await?;
+        self.note(
+            "cleanup",
+            if (200..300).contains(&deleted) {
+                format!("endpoint {id} deleted ({deleted})")
+            } else {
+                format!("endpoint {id} NOT deleted ({deleted}): delete it in the dashboard")
+            },
+        );
+        Ok(())
+    }
+
+    /// `GET /webhooks/{id}` and the documented `PUT /webhooks/{id}` for one
+    /// endpoint this probe created, then the list: does an update store the
+    /// URL that the create dropped?
+    async fn webhook_update_phase(&mut self, id: &str, url: &str) -> Result<()> {
+        if !id.starts_with("ep_test.")
+            || !id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_'))
+        {
+            return Err("--reference must be a sandbox endpoint id, `ep_test.…`".into());
+        }
+        self.exchange(
+            "7: read the endpoint by id",
+            Method::GET,
+            &format!("/webhooks/{id}"),
+            None,
+            Decode::Webhook,
+        )
+        .await?;
+        let mut events: Vec<&str> = PAYMENT_EVENTS.to_vec();
+        events.push("payment.processing");
+        let body = json!({
+            "url": url,
+            "events": events,
+            "description": "vpay sandbox probe (RFC-0012 item 7) - delete me",
+            "active": true,
+        });
+        self.exchange(
+            "7: PUT the URL again",
+            Method::PUT,
+            &format!("/webhooks/{id}"),
+            Some(body),
+            Decode::Webhook,
+        )
+        .await?;
+        self.exchange(
+            "7: list after the update",
+            Method::GET,
+            "/webhooks?page=1",
+            None,
+            Decode::WebhookPage,
+        )
+        .await?;
+        Ok(())
+    }
+
     async fn webhooks_phase(&mut self, url: &str) -> Result<()> {
         let mut created = Vec::new();
         let attempts: [(&str, Vec<&str>); 3] = [
@@ -1099,6 +1508,15 @@ fn minify(raw: &[u8]) -> Vec<u8> {
 fn say(line: &str) {
     use std::io::Write as _;
     let _ = writeln!(std::io::stdout(), "{line}");
+}
+
+/// Sleeps until `at` seconds after `start`; returns at once if that is past.
+async fn sleep_until(start: std::time::Instant, at: u64) {
+    let target = start + Duration::from_secs(at);
+    let now = std::time::Instant::now();
+    if target > now {
+        tokio::time::sleep(target - now).await;
+    }
 }
 
 fn now() -> u64 {

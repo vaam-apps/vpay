@@ -204,6 +204,39 @@ filter alone:
 Not run for the review's changes: the whole workspace, the other integration
 binaries, and `just ci`.
 
+## Merged with `master` at `71a351df` (2026-10-23)
+
+`master` gained vaam-apps/vpay#353 the same day: `ProviderAdapter`'s
+`default_callback_registration` (`notchpay` answers `Off`), an optional
+`providers[].callbacks.register`, and a process `422` on the payer's phone
+alone as `invalid_payer`. Both changes are kept. `ProviderCallbacks` holds an
+`Option<CallbackRegistration>` and RFC-0014's `verify`; `Measured` forwards
+both new methods; the port has **fourteen** methods
+([provider-port.md](../../flows/provider-port.md)). With `register` unset,
+vpay asks a Notch Pay account nothing, so a signature check needs the
+endpoint registered by hand in Notch Pay's dashboard and its Hash Key in
+`credentials.callback_signing_secret`.
+
+Measured on the merged tree, `cargo test` (nextest is not installed here):
+
+| Check                                                   | Result            |
+| ------------------------------------------------------- | ----------------- |
+| `cargo fmt --check`                                     | clean             |
+| `cargo clippy --workspace --all-targets -- -D warnings` | 0 warnings        |
+| `vpay-provider` unit / doc                              | 60 / 14 passed    |
+| `vpay-adapter-notchpay` unit / doc                      | 66 / 1 passed     |
+| `vpay-config` unit / doc                                | 148 / 5 passed    |
+| `vpay-core` unit / doc                                  | 94 / 68 passed    |
+| `vpay-api --lib`                                        | 445 passed        |
+| `vpay-server` lib / main / `cli.rs`                     | 9 / 8 / 43 passed |
+| conformance, the whole suite                            | 106 passed        |
+| `provider_callback.rs`, real Postgres and WireMock      | 12 passed         |
+| `callback_registration.rs`, real Postgres and WireMock  | 6 passed          |
+| `just verify`                                           | ok, all fifteen   |
+
+Every row: 0 failed, 0 ignored. The rest of the integration binaries were
+not run here; CI runs them.
+
 ## What is stub-proven only, and what is not done
 
 - **No webhook from Notch Pay has ever been delivered** to any vpay
