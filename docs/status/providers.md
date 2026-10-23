@@ -99,7 +99,8 @@ Notes on cells that a word cannot carry:
   was fixed the same day to keep that reference as key material and address
   both by it
   ([verification/2026-10-21-notchpay-trx-reference.md](verification/2026-10-21-notchpay-trx-reference.md)),
-  with a crash window Notch Pay offers no way to close.
+  with a crash window Notch Pay offers no way to close. _(Closed on vpay's
+  side on 2026-10-23 by ADR-0032, below.)_
   **RFC-0012 step 5 ran on 2026-10-21**, on the maintainer's machine: vpay
   (server, worker and Postgres, `livemode=false`) took three test-mode
   payments through the adapter against Notch Pay's real sandbox
@@ -138,6 +139,14 @@ Notes on cells that a word cannot carry:
   ([#313](https://github.com/vaam-apps/vpay/issues/313):
   `NeedsReconciliation`; [verification](verification/2026-10-23-needs-reconciliation.md)),
   proven against WireMock and a real Postgres, not against Notch Pay.
+  **Also since 2026-10-23, the Collect path is two port calls**
+  ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)):
+  `prepare` (initialize) and `submit` (process), with the `trx.…` committed
+  between them, which closes the crash window above. The cell is unchanged
+  because the wire is: the same two requests, with the same bodies, in the
+  same order, as step 5 and B3b sent. What changed is what vpay commits
+  between them, and that has met only WireMock and a real Postgres
+  ([verification/2026-10-23-two-step-submit.md](verification/2026-10-23-two-step-submit.md)).
   [verification/2026-10-20-notchpay-adapter.md](verification/2026-10-20-notchpay-adapter.md)
   has the evidence for the build. _(This note read "client … no binary links
   it … waits on the rule-3 decision" until the same day. It was headed

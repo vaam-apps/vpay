@@ -1101,3 +1101,46 @@ maintainer answered "Go with option 1 on #313, build it".
 
 No route moved and no `NotImplemented` token moved. Gates and counts:
 [verification/2026-10-23-needs-reconciliation.md](verification/2026-10-23-needs-reconciliation.md).
+
+## A rail-issued reference is committed before the prompt (2026-10-23, ADR-0032)
+
+Asked how to close Notch Pay's crash window ("#13: how do we do then?"), the
+maintainer was answered with this design and replied "Fan out the work via
+sub-agents". The design and every decision in
+[ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)
+are the implementing agent's; the ADR is **Proposed** until the maintainer
+accepts it.
+
+- **The port** gains `Capabilities::submit_steps` (`One`, or
+  `PrepareThenSubmit` on `notchpay`) and an optional `prepare(charge, config,
+  PriorSubmits)`, defaulting to `Unsupported`, forwarded and counted by
+  `Measured` under the operation `prepare`. Its error table gains a `prepare`
+  column.
+- **The core**, on a two-step rail only: the confirm path and the resubmit
+  each write a `prepare` row, call `prepare`, commit its answer on the charge
+  (`Charges::record_prepared`, new), and only then write the `submit` row and
+  call `submit`. `PriorSubmits` is read from whether any `submit` row exists.
+  Migration `0052_provider-requests-prepare.sql` admits `prepare` in
+  `provider_requests.operation`.
+- **`notchpay`**: `prepare` is initialize and prompts nobody; `submit` is
+  process by the held `trx.…`. An initialize `409` with no `submit` row behind
+  it is `Rejected { provider_unavailable }` — the charge fails through the
+  declined path and the payer retries — and with one it stays
+  `NeedsReconciliation`.
+- **Charges in flight across the deploy** that the one-call build left with an
+  unanswered `submit` row and no `trx.…` stay `NeedsReconciliation`, by their
+  poll and by a queued resubmit.
+- **Proven** against WireMock's Notch Pay and a real Postgres: six cases in
+  `worker_recovery.rs` (one replacing #313's `409` case) and two in
+  `confirm_rails.rs`, the stub's request journal asserted in each; in the
+  conformance suite, a new census (`prepare` is `Unsupported` exactly on a
+  one-step rail), Notch Pay's duplicate case split in two, and every submit
+  case driven through `prepare` on a two-step rail; eight guards
+  mutation-checked, each failing its case.
+- **Not done:** the split has not met Notch Pay's sandbox, so neither a
+  never-processed payment's expiry nor the `409` on a lost initialize has
+  been observed there; a lost process answer is resolved by the read and not
+  by re-processing, so such a payer waits for Notch Pay's expiry.
+
+No route moved and no `NotImplemented` token moved. Gates and counts:
+[verification/2026-10-23-two-step-submit.md](verification/2026-10-23-two-step-submit.md).

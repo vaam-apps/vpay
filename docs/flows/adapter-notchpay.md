@@ -183,32 +183,45 @@ Every call carries `Authorization: <public_key>`, `X-Grant: <private_key>`
 and `Accept: application/json`, and the configured request deadline. The
 client follows no redirect: a `3xx` is `Malformed`.
 
-**Submit** is two calls (RFC-0012 § 3):
+**A charge is two port calls, with a commit between them** (RFC-0012 § 3,
+[ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
+The adapter declares `SubmitSteps::PrepareThenSubmit`:
 
-1. `POST /payments` with `amount` (XAF has no minor unit), `currency: XAF`,
-   `phone` (the payer's number, `+`-prefixed E.164), `reference` (the
-   charge's own UUID) and the optional `description`. Nothing else of the
-   payer's is sent: no email, no name, no callback, no return URL.
-2. `POST /payments/{notchpay_reference}`, where `notchpay_reference` is the
-   `trx.…` call 1 returned in `transaction.reference`, with `{ "channel":
-"cm.mobile", "data": { "phone": … } }`. This is the call that prompts the
-   payer.
+1. **`prepare`** is `POST /payments` with `amount` (XAF has no minor unit),
+   `currency: XAF`, `phone` (the payer's number, `+`-prefixed E.164),
+   `reference` (the charge's own UUID) and the optional `description`.
+   Nothing else of the payer's is sent: no email, no name, no callback, no
+   return URL. It creates the payment and **prompts nobody**, and returns
+   the `trx.…` from `transaction.reference` as `notchpay_reference`. The core
+   commits it on the charge, then writes the `submit` row.
+2. **`submit`** is `POST /payments/{notchpay_reference}` with `{ "channel":
+"cm.mobile", "data": { "phone": … } }`, by the reference the charge now
+   holds. This is the call that prompts the payer.
 
-| Call 1 answered                                                   | Then                                                                                                                |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
-| `201`, `pending`                                                  | call 2 by `notchpay_reference`. `202` is `Submitted`, with no redirect and `notchpay_reference` as its key material |
-| `201`, another documented status                                  | `Submitted` with `notchpay_reference`; the poll resolves it                                                         |
-| `201` with no Notch Pay reference, or a `trxref` that is not ours | `Malformed`; nothing is sent to the payer                                                                           |
-| `409`, the charge holds `notchpay_reference`                      | the crash-retry case: read it. `pending` → call 2; another status → `Submitted`; none → `Malformed`                 |
-| `409`, the charge holds none                                      | `NeedsReconciliation`: the fate is unknown, never `Submitted`, never a decline (below)                              |
-| `400`, `422`                                                      | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused                       |
-| `401`, `403`                                                      | `Rejected { provider_account_blocked }`, which pages                                                                |
-| `404`                                                             | `Config`                                                                                                            |
-| `408`, `429`, `5xx`, no answer                                    | `Transport`: the fate is unknown, never a decline                                                                   |
+| `prepare` answered                                                | Then                                                                                                                                         |
+| ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `201`, a documented status                                        | `notchpay_reference`, for the core to commit                                                                                                 |
+| `201` with no Notch Pay reference, or a `trxref` that is not ours | `Malformed`; nothing exists that vpay could address, and nobody was prompted                                                                 |
+| `409`, and no `submit` row exists for the charge                  | `Rejected { provider_unavailable }`: an earlier initialize lost its answer and nobody was prompted, so the charge fails and the payer retries |
+| `409`, and a `submit` row exists                                  | `NeedsReconciliation`: a one-call build's process may have prompted, and the payment cannot be found (below)                                 |
+| `400`, `422`                                                      | `Rejected { provider_error }` with Notch Pay's message and the names of the fields it refused                                                |
+| `401`, `403`                                                      | `Rejected { provider_account_blocked }`, which pages                                                                                         |
+| `404`                                                             | `Config`                                                                                                                                     |
+| `408`, `429`, `5xx`, no answer                                    | `Transport`: the fate is unknown, never a decline                                                                                            |
 
-Call 2's `422` "Payment has already been processed" is not a decline. The
-adapter reads the payment and answers `Submitted`, unless the read still says
-`pending`, which is `Malformed`.
+`prepare` on a charge that already holds `notchpay_reference` answers it
+back with no request; the core never asks. `submit` on a charge that holds
+none is `NeedsReconciliation`, before any request: the core never sends one,
+and one that arrives has lost the only address Notch Pay answers for.
+`submit`'s `202` is `Submitted`, with no redirect and `notchpay_reference` as
+its key material. Its `422` "Payment has already been processed" is not a
+decline: the adapter reads the payment and answers `Submitted`, unless the
+read still says `pending`, which is `Malformed`.
+
+_(Until 2026-10-23 `submit` was both calls, and a `201` with a status other
+than `pending` was `Submitted` without call 2. A `409` read the payment when
+the charge held `notchpay_reference` and was `NeedsReconciliation` when it
+did not, whatever had been sent.)_
 
 **The read** is `GET /payments/{notchpay_reference}`, and the answer must
 name the charge's own reference as its `trxref`, or it is `Malformed`. A
@@ -225,21 +238,44 @@ own `trx.…` (§ 10 item 2, contradicted). RFC-0012 § 3 had designed "prefer
 Notch Pay's reference when held"; the build dropped it on 2026-10-20 for a
 rule that needed no `ref_extra`, and the sandbox overturned the build.
 
-**The crash window this leaves.** Notch Pay's reference exists only in the
-initialize answer, and is durable only once `submit` returns. Notch Pay
-finds a payment by its own reference alone: `GET /payments?search=` matched
-neither our reference nor the description in the sandbox, and list items
-carry no `trxref`
+**The crash window, and how ADR-0032 closed it.** Notch Pay's reference
+exists only in the initialize answer, and Notch Pay finds a payment by its
+own reference alone: `GET /payments?search=` matched neither our reference
+nor the description in the sandbox, and list items carry no `trxref`
 ([verification](../status/verification/2026-10-21-notchpay-sandbox-run.md#the-crash-window-measured-search-does-not-close-it)).
-So a crash between call 1 and `submit` returning leaves a payment vpay
-cannot read. Before call 2, the payer was never prompted and the payment
-expires. After it, the payer may pay, and only Notch Pay's dashboard shows
-it. The retry's `409` answers `NeedsReconciliation`, which leaves the
-charge's fate unknown for an operator (the maintainer's decision,
-2026-10-21). Since 2026-10-23 the worker escalates that charge to
-`unresolved`, alerting, on that first `409`, and never sends it again; it was
-`Malformed` until then, and met the same `409` on every rung of the resubmit
-ladder for 24 hours (vaam-apps/vpay#313).
+Under the one-call `submit`, a crash after process and before `submit`
+returned left a prompted payment vpay could not read, and the retry's `409`
+could only be `NeedsReconciliation` for an operator (the maintainer's
+decision, 2026-10-21; escalated to `unresolved` at once since
+vaam-apps/vpay#313).
+
+Since 2026-10-23 the `trx.…` is committed before anything prompts, and the
+`submit` row is written only after it, so a crash leaves one of three
+states ([crash-safety.md](crash-safety.md) § "Two-step push rails"):
+
+| After the crash                                | What recovery does                                                                                             |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| a `prepare` row, no `trx.…`, no `submit` row   | the resubmit's `prepare` meets `409`; nobody was prompted, so the charge fails `provider_unavailable`          |
+| the `trx.…` held, no `submit` row              | the resubmit skips `prepare` and prompts by the held reference: one initialize, one process                    |
+| the `trx.…` held, an unanswered `submit` row   | the poll reads by the held reference, as on every rail; nothing is sent again                                  |
+
+**Charges in flight across that deploy** — an unanswered `submit` row and no
+`trx.…`, left by the one-call build — may have been prompted, and stay
+`NeedsReconciliation` whichever job reaches them first: the poll cannot read
+them, and a queued resubmit's `prepare` is told a submit was recorded. A
+one-call charge with no attempt row at all was never sent and is prepared
+like any other.
+
+**The orphan.** A lost initialize leaves a payment created on Notch Pay and
+never processed. vpay fails its charge and never touches it again, and
+Notch Pay expires it. Until then, anyone holding the merchant's public key
+could process it to a number of their choosing — the exposure
+[ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)
+accepted for every payment on the account, and nothing this step adds.
+
+**Not run against Notch Pay.** Every case above runs against the WireMock
+stub (`backends/tests/integration/tests/worker_recovery.rs`,
+`confirm_rails.rs`). No sandbox run has exercised the split.
 
 | The read answered                           | `ChargeStatus`                                                                                                                                                                  |
 | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -404,12 +440,25 @@ each is marked below. The ones that decide whether the adapter is right:
 12. **(S)** Does `GET /payments?search=` find a payment by our reference?
     It decides whether the addressing fix is crash-safe. (§ 10 item 19)
     **Answered 2026-10-21: no**, so the fix carries a residual crash
-    window.
+    window. **Closed 2026-10-23** by
+    [ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md),
+    without needing a search: the `trx.…` is committed before the prompt.
 
 Also open, and not in the adapter's hands: whether Notch Pay accepts a number
 without the `+`. The adapter sends the `+` form the documentation shows.
 
 ## Status
+
+**Changed 2026-10-23: the `trx.…` is committed before the prompt**
+([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
+Initialize is the port's `prepare` and process is `submit`, with a commit
+and the `submit` row between them, on the confirm path and on the
+resubmit. A crash before the prompt fails the charge cleanly, and the
+`409` stays `NeedsReconciliation` only for a charge a one-call build may
+have prompted. Proven against WireMock and a real Postgres in
+`worker_recovery.rs` (six cases) and `confirm_rails.rs` (two), each guard
+mutation-checked; not run against Notch Pay
+([verification](../status/verification/2026-10-23-two-step-submit.md)).
 
 **Changed 2026-10-23: an answer only a person can act on escalates at once**
 ([#313](https://github.com/vaam-apps/vpay/issues/313)). Three answers are
@@ -417,7 +466,9 @@ without the `+`. The adapter sends the `+` form the documentation shows.
 
 - the short collection, and any `complete` for a sum that is not the
   charge's;
-- the `409` for a charge that lost its `trx.…`;
+- the `409` for a charge that lost its `trx.…` (since ADR-0032, the same
+  day, only when a `submit` row exists: with none, the `409` fails the
+  charge as never prompted);
 - a charge with no `trx.…` to read by.
 
 The worker makes the charge `unresolved` on the first one, polled hourly and

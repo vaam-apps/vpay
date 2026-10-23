@@ -44,7 +44,11 @@ escalation on the **first** poll or resubmit that gets it, at any age:
 `notchpay` is the only rail that raises it. It does so for a `complete` for a
 sum that is not the charge's, which is Notch Pay's sandbox "insufficient
 funds" read. It also does so for an initialize `409` on a charge that lost the
-`trx.…`, and for a charge with no `trx.…` to read by. Until then these were
+`trx.…`, and for a charge with no `trx.…` to read by. _(Since ADR-0032, the
+same day, the `409` is `NeedsReconciliation` only when a `submit` row exists
+for the charge. With none, nobody was prompted, and the `409` fails the charge
+cleanly instead — [crash-safety.md](crash-safety.md) § "Two-step push rails".)_
+Until then these were
 `Malformed`, which rode the ladder at `Warn` for the whole 24 hours, or `Config`,
 which parked the poll job. An answer the adapter merely could not read stays
 `Malformed` and stays on the ladder.
@@ -129,7 +133,12 @@ callback endpoint (§ "Where a rail sends its callbacks"); nothing in the poll
 ladder changed. Extended 2026-10-23 (vaam-apps/vpay#313): a rail answer only a
 person can act on escalates the charge to `unresolved` at once, not at the
 horizon (§ "Timers assert nothing", and the bullet after the 24-hour
-escalation's).**
+escalation's). Extended 2026-10-23
+([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)):
+on a two-step rail the resubmit calls `prepare` before `submit`, and a
+`prepare` refused for a charge no submit ever prompted fails the charge
+through the declined path; the poll ladder and the recovery table are
+unchanged ([crash-safety.md](crash-safety.md) § "Two-step push rails").**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at
@@ -283,13 +292,20 @@ NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
   any age. So does the same variant from a resubmit, which escalates from
   `submitting`: one alert on arrival, then the hourly poll; the resubmit job's
   hourly re-run finds the charge outside `submitting` and finishes, so the
-  rail is never sent the charge again. Three cases in `worker_recovery.rs`
+  rail is never sent the charge again. Four cases in `worker_recovery.rs`
   prove it against WireMock's Notch Pay and a real Postgres, at the production
   24-hour horizon:
   - `a_short_collection_is_unresolved_on_the_first_poll_and_an_unreadable_answer_is_not`,
     in which a `Malformed` beside it stays on the ladder;
   - `a_short_collection_the_worker_escalated_still_settles_on_a_later_answer`;
-  - `a_duplicate_no_submit_can_resolve_is_unresolved_by_its_resubmit_and_never_resent`.
+  - `a_one_call_charge_whose_resubmit_lost_its_answer_is_escalated_and_never_prompted`;
+  - `a_one_call_charge_whose_submit_lost_its_answer_is_escalated_by_its_poll`.
+
+  _(The third was
+  `a_duplicate_no_submit_can_resolve_is_unresolved_by_its_resubmit_and_never_resent`
+  until 2026-10-23, when ADR-0032 narrowed the escalation it pinned to charges
+  a one-call build submitted. The `409` with no `submit` row behind it is
+  `a_prepare_whose_answer_was_lost_fails_the_charge_and_never_prompts` now.)_
 
   Not proven: a real Notch Pay short collection reaching `unresolved`, which
   needs another sandbox run on the maintainer's approval.

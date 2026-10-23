@@ -386,6 +386,32 @@ call 2 from inside the read when it finds `pending`, as RFC-0011 sends
 PayPal's capture, is refused: a read that sends a USSD prompt minutes later
 prompts a payer who has left.
 
+**Amended 2026-10-23 by
+[ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md):
+calls 1 and 2 are two port calls, with a commit between them.** Once the
+sandbox moved addressing to Notch Pay's `trx.…` (§ 10 item 2), the window
+that mattered was not the one above but the one after call 2: a crash after
+the prompt and before the `trx.…` was committed left a prompted payment
+vpay could never read, and the retry's `409` could only be
+`NeedsReconciliation` (item 19). Now call 1 is `ProviderAdapter::prepare`,
+which prompts nobody and returns the `trx.…`; the core commits it on the
+charge and writes the `submit` row; only then is call 2, `submit`, sent by
+it. So a crash leaves one of three states, and none of them is a prompted
+payment vpay cannot name:
+
+| After the crash                                   | The retry                                                                                              |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| a `prepare` row, no `trx.…`, no `submit` row      | `prepare` meets `409`; nobody was prompted, so the charge **fails** `provider_unavailable`, cleanly     |
+| the `trx.…` held, no `submit` row                 | no second initialize; call 2 by the held reference                                                     |
+| the `trx.…` held, an unanswered `submit` row      | call 3 decides, as on every rail; a payment process never reached waits for Notch Pay's expiry         |
+
+A charge the one-call build left with an unanswered `submit` row and no
+`trx.…` may have been prompted, and stays `NeedsReconciliation`
+(vaam-apps/vpay#313). The orphan a lost initialize leaves expires on Notch
+Pay unprocessed; until then the public key could process it, which is
+[ADR-0031](../adr/0031-a-status-read-authenticated-by-a-server-side-key.md)'s
+accepted exposure and nothing new. Notch Pay's sandbox has not run the split.
+
 ### 4. Status mapping
 
 The Payments API documents six statuses. The Collect page documents eleven,
@@ -707,7 +733,11 @@ In writing (W) or in the sandbox (S):
     (item 2's fix) can survive a crash between initialize and `ref_extra`
     becoming durable. _(Added and answered 2026-10-21 — no: `search` matches
     Notch Pay's `trx.…` only, not ours and not the description, and list
-    items carry no `trxref`. The crash window is a residual risk.)_
+    items carry no `trxref`. The crash window is a residual risk. **Closed
+    2026-10-23 by
+    [ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)**
+    without an answer from Notch Pay: the `trx.…` is committed before the
+    prompt, so no search is needed (§ 3, "Amended 2026-10-23").)_
 20. **(W)** Why does `DELETE /webhooks/{id}` answer `404` "Resource Not Found"
     for an endpoint the list returns? _(Added 2026-10-21.)_
 21. **(W)** Where is a webhook endpoint's signing secret, since `POST /webhooks`
@@ -787,8 +817,13 @@ Steps 2–5 are one pull request against `master` and one against
 - **Branch on capability values, never on a provider code** holds.
 - **Callbacks are hints** holds, and on this rail it is the only defence
   against an unverified webhook (§ 6).
-- **Crash safety** holds. A crash between calls 1 and 2 costs one payer a
-  three-hour wait and no money (§ 3).
+- **Crash safety** holds, since 2026-10-23 by
+  [ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md):
+  the `trx.…` is committed before the prompt, and a crash before the prompt
+  fails the charge cleanly (§ 3). _(This said "A crash between calls 1 and 2
+  costs one payer a three-hour wait and no money" until 2026-10-23; that was
+  true, and the window after call 2, which ADR-0032 closed, was not named
+  here.)_
 - **One charge per intent** holds.
 - **No mocks in shipping processes** holds: the stub is a WireMock host in
   configuration.

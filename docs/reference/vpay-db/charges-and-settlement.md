@@ -4,11 +4,13 @@ _Moved out of [docs/reference/vpay-db.md](../vpay-db.md) on 2026-09-11 by exp57,
 
 ## `charges`
 
-Three writes, and only one of them is unguarded. `insert_for_intent` opens the
+Four writes, and only one of them is unguarded. `insert_for_intent` opens the
 charge before the rail is called; `mark_submitted` and `mark_failed` record what
 the rail answered, and both are compare-and-swaps out of `submitting` rather
 than blind updates, so a recovery pass and a live confirm cannot overwrite each
-other's answer.
+other's answer. `record_prepared` (2026-10-23) writes a two-step rail's key
+material on a charge that stays `submitting`, guarded on that state too (§
+"`record_prepared` commits the reference before the prompt").
 
 The writes that take a charge to a _terminal_ state from anywhere in the live
 set — what the worker's poll ladder decides — are not here. They move the
@@ -98,8 +100,13 @@ the payer can pay at while leaving the charge live — an intent in
 `requires_action` with nothing to act on, which the API answers `500` for by
 design.
 
-Both merges are unreachable on today's paths: only a `submitting` charge
-matches, nothing writes key material before the first answer, and a redirect
+Both merges were unreachable until 2026-10-23, and the `provider_ref_extra`
+one is reached now: `record_prepared` writes a two-step rail's key material
+before the first answer, and `mark_submitted` then merges the submit's answer
+over it — on Notch Pay the same `notchpay_reference`, so the merge changes
+nothing it holds, and an assignment of a map that lacked it would have lost
+the only address Notch Pay answers for. The `redirect_url` merge is still
+unreachable: only a `submitting` charge matches, and a redirect
 charge still in `submitting` is failed rather than resubmitted
 (`RecoveryAction::FailDeadOrder`), so the only caller that could pass a second
 answer never runs on the rail that has URLs. They are written as merges anyway
@@ -115,6 +122,25 @@ a decline moves a charge to a **terminal** state and records the taxonomy
 ([failures.md](../../flows/failures.md)), while a submit moves it to a live one and
 records the rail's key material. One function would take five arguments of which
 three are always `None`, and the call site would stop saying which happened.
+
+### `record_prepared` commits the reference before the prompt
+
+On a rail declaring `SubmitSteps::PrepareThenSubmit`, the reference the rail
+issued at `prepare` is committed on the charge before the `submit` row is
+written and before anything prompts the payer
+([ADR-0032](../../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
+`record_prepared` is that commit: one statement, `provider_ref_extra` merged
+(`COALESCE(provider_ref_extra, '{}') || $2`, as `mark_submitted` merges),
+`updated_at` moved, guarded on `state = 'submitting'`, and
+`DbError::WriteMatchedNoRow` when nothing matched. The state does not change:
+the charge is still being submitted, and the prompt has not been sent.
+
+It is the only statement that writes `provider_ref_extra` while a charge is
+`submitting`, which is what lets the worker read "this charge holds key
+material" as "a previous run prepared it and crashed before the prompt" and go
+straight to `submit`. A write here outside that path would make the worker skip
+a `prepare` a charge still needed. `sql_audit`'s assert-site count moved from
+74 to 75 with it.
 
 ### The transition counter, and why its timing moved out
 
