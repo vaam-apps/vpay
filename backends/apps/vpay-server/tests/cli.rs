@@ -774,6 +774,10 @@ fn a_notchpay_rail_is_warned_about_at_boot_and_its_keys_are_never_printed() {
         "ADR-0031",
         "credentials.public_key",
         "docs/flows/adapter-notchpay.md",
+        // RFC-0014 § 6: the fixture holds no signing secret, so `serve` says
+        // its webhooks are unverified, and that livemode would refuse it.
+        "credentials.callback_signing_secret",
+        "livemode boot refuses this rail",
     ] {
         assert!(all.contains(expected), "{expected} missing from: {all}");
     }
@@ -792,10 +796,15 @@ fn a_notchpay_rail_is_warned_about_at_boot_and_its_keys_are_never_printed() {
 /// same block with it gets past the adapter join and logs the
 /// `LIVEMODE, REAL MONEY` warning anyway — the acknowledgement admits the
 /// rail, it does not silence it. Neither run prints a key.
+///
+/// RFC-0014 § 6 (2026-10-23) adds a third run: the acknowledged block without
+/// `credentials.callback_signing_secret` stops at the join (`78`), naming the
+/// setting and `verify: off` and never a value.
 #[test]
 fn a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns() {
     const PUBLIC_KEY: &str = "cli-public-key-live-0003";
     const PRIVATE_KEY: &str = "cli-private-key-live-0004";
+    const HASH_KEY: &str = "cli-signing-secret-live-0005";
     let acknowledged = concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/fixtures/notchpay-livemode-config.yml"
@@ -803,17 +812,31 @@ fn a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns() {
     let raw = std::fs::read_to_string(acknowledged).expect("read the fixture");
     let bare = raw.replace("      accept_public_key_exposure: true\n", "");
     assert_ne!(bare, raw, "the fixture carries the line this test removes");
+    let unsigned = raw.replace(
+        "      callback_signing_secret: ${CLI_NOTCHPAY_HASH_KEY}\n",
+        "",
+    );
+    assert_ne!(
+        unsigned, raw,
+        "the fixture carries the secret this test removes"
+    );
     // `CARGO_TARGET_TMPDIR`, pid-named, as `SIGNING_KEY_FILE` is and for the
     // same reasons.
     let bare_path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
         .join(format!("notchpay-livemode-bare-{}.yml", std::process::id()));
     std::fs::write(&bare_path, bare).expect("write the bare copy");
+    let unsigned_path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!(
+        "notchpay-livemode-unsigned-{}.yml",
+        std::process::id()
+    ));
+    std::fs::write(&unsigned_path, unsigned).expect("write the unsigned copy");
 
     let run = |path: &std::path::Path| {
         let output = bin()
             .env("VPAY_CONFIG", path)
             .env("CLI_NOTCHPAY_PUBLIC_KEY", PUBLIC_KEY)
             .env("CLI_NOTCHPAY_PRIVATE_KEY", PRIVATE_KEY)
+            .env("CLI_NOTCHPAY_HASH_KEY", HASH_KEY)
             .output()
             .expect("spawn vpay-server");
         let all = format!(
@@ -821,7 +844,7 @@ fn a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns() {
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        for key in [PUBLIC_KEY, PRIVATE_KEY] {
+        for key in [PUBLIC_KEY, PRIVATE_KEY, HASH_KEY] {
             assert!(
                 !all.contains(key),
                 "a Notch Pay key reached the output: {all}"
@@ -860,6 +883,23 @@ fn a_livemode_notchpay_rail_boots_only_acknowledged_and_still_warns() {
     ] {
         assert!(all.contains(expected), "{expected} missing from: {all}");
     }
+    // With its secret the signing rail is not warned about as unverified.
+    assert!(!all.contains("none of them is verified"), "{all}");
+
+    let (code, all) = run(&unsigned_path);
+    let _ = std::fs::remove_file(&unsigned_path);
+    assert_eq!(code, Some(78), "{all}");
+    for expected in [
+        "notchpay",
+        "credentials.callback_signing_secret",
+        "verify: off",
+    ] {
+        assert!(all.contains(expected), "{expected} missing from: {all}");
+    }
+    assert!(
+        !all.contains("oauth-signing-key-file"),
+        "refused at the join, before the signing key: {all}"
+    );
 }
 
 /// The other half of ADR-0011's exit-code contract: a config that is
