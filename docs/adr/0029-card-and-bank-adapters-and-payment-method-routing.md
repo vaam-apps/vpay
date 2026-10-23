@@ -24,6 +24,35 @@
     secret, and the exposure is documented and logged at boot. Rules 1, 2
     and 4, and D2–D17, are unchanged. The rule as written below is the text
     ADR-0031 replaced.
+  - **D12 and D13 confirmed by the maintainer on 2026-10-23**, in two
+    sentences on the Notch Pay rail's gaps:
+    - "we need a way to differentiate mtn x notchpay and mtn x direct; same
+      with orange and the future integrations";
+    - "A user should be proposed all methods, and he himself should choose
+      orange or mtn or whatever, then we'll show him the correct rail.
+      Simple".
+
+    That confirms D12's one method type per wallet network, and D13's
+    `collapse`: the payer picks the method and the router picks the rail.
+    The same day the maintainer confirmed the spellings `mtn_wallet` and
+    `orange_wallet`. D14–D16 are still unconfirmed.
+
+  - **D8 and D9 reopened by the maintainer on 2026-10-23:** "I think routing
+    should be though again. We should have a score of each payment solution
+    for each checkout". [RFC-0008](../rfc/0008-payment-method-routing.md)'s
+    2026-10-23 revision proposes a score per checkout. Its amendments to D8,
+    D9 and D11 are proposals until the maintainer accepts them; the body
+    below is unchanged.
+
+    **What is built meanwhile** (the change that carries this note):
+    - D6;
+    - D7's capability-free filters;
+    - D10's decision row;
+    - a router that scores with one provisional component, a configured
+      weight.
+
+    [plans/2026-10-23-method-type-routing.md](../plans/2026-10-23-method-type-routing.md)
+    has the slices.
 - **Implementation:** none. This ADR records decisions, not capability.
   Nothing it decides exists in code on the day it is written: the port has no
   `method_types`, no `amount_limits`, no `supports_off_session`, no
