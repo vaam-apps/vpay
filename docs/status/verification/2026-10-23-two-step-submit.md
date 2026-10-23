@@ -170,6 +170,8 @@ restored.
 - **Numbers that may collide on landing.** ADR `0032` and migration `0052`
   were free on `master` at `be31abcd`; the sibling branch
   `wip/method-routing` also carries a migration `0052`. Whichever lands
-  second renumbers.
+  second renumbers. _(Resolved 2026-10-23: the method-type routing change
+  renumbered its migration to `0053` and was rebased onto this one; see
+  [its page](2026-10-23-method-type-routing.md).)_
 - **No `docs/status.md` change**: no route, gate or `NotImplemented` token
   moved.

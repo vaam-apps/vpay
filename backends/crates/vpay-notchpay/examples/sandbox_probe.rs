@@ -85,7 +85,9 @@ const PUBLIC_KEY: &str = "NOTCHPAY_TEST_PUBLIC_KEY";
 const PRIVATE_KEY: &str = "NOTCHPAY_TEST_PRIVATE_KEY";
 const HASH_KEY: &str = "NOTCHPAY_TEST_HASH_KEY";
 const DEFAULT_BASE_URL: &str = "https://api.notchpay.co";
-/// The only channel the adapter sends (`vpay_adapter_notchpay::KNOWN_CHANNELS`).
+/// The channel the adapter's setting takes (`vpay_adapter_notchpay::KNOWN_CHANNELS`),
+/// and so the one a charge confirmed by the rail code is sent; a charge routed
+/// by method type is sent `cm.mtn` or `cm.orange` instead.
 const CHANNEL: &str = "cm.mobile";
 
 /// Notch Pay's documented sandbox outcome numbers

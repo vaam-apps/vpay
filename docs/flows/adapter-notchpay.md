@@ -143,7 +143,7 @@ providers:
       label: notchpay
     currency: XAF # the only one allowed
     settings:
-      channel: cm.mobile # the only one allowed today
+      channel: cm.mobile # the only value this setting takes; a charge routed by method type is sent cm.mtn or cm.orange
       description: Payment # optional; the one free-text field Notch Pay receives
       accept_public_key_exposure: true # livemode refuses to boot without it; see Production risks
     credentials:

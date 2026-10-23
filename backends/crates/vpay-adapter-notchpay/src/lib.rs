@@ -8,8 +8,9 @@
 //! [`NOTCHPAY_REFERENCE`]: Notch Pay's sandbox answered `404` to every
 //! process and read by our own reference (RFC-0012 § 10 item 2,
 //! `docs/status/verification/2026-10-21-notchpay-sandbox-run.md`). Notch Pay is an aggregator, so
-//! one account collects MTN MoMo and Orange Money in Cameroon through the
-//! `cm.mobile` channel ([RFC-0012]).
+//! one account collects MTN MoMo and Orange Money in Cameroon: a charge routed
+//! by the payer's method type is processed on `cm.mtn` or `cm.orange`, and one
+//! confirmed by the rail code on the configured `cm.mobile` ([RFC-0012]).
 //!
 //! # Admitted under ADR-0031, and what that costs a merchant
 //!

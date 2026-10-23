@@ -662,7 +662,8 @@ than a feature it added:**
   `settings.api_user`, `credentials.subscription_key`, `credentials.api_key`;
   Orange: `credentials.merchant_key`, `credentials.client_id`,
   `credentials.client_secret`; Notch Pay (2026-10-20):
-  `settings.channel` (exactly `cm.mobile`), `credentials.public_key`,
+  `settings.channel` (exactly `cm.mobile`; since 2026-10-23 a charge routed by
+  method type is sent `cm.mtn` or `cm.orange` instead), `credentials.public_key`,
   `credentials.private_key`, currency `XAF`, a test-key marker (`test.` or `test_`, corrected
   2026-10-20) on both keys that agrees with `deployment.livemode`, and **in livemode only**
   `settings.accept_public_key_exposure: true`, ADR-0031 condition 4's

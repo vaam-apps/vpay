@@ -380,9 +380,10 @@ const REQUIRED_RAIL_KEYS: [RequiredRailKeys; 3] = [
     },
     RequiredRailKeys {
         code: "notchpay",
-        // `cm.mobile`, the one channel the adapter sends
-        // (`vpay_adapter_notchpay::KNOWN_CHANNELS`). `description` is
-        // optional and not listed.
+        // `cm.mobile`, the only value the setting takes
+        // (`vpay_adapter_notchpay::KNOWN_CHANNELS`): a charge routed by method
+        // type is sent `cm.mtn` or `cm.orange` instead, per charge.
+        // `description` is optional and not listed.
         settings: &["channel"],
         // Both keys, always. The private key is ADR-0031's condition 2: the
         // public key alone — the weaker shape Notch Pay's own documentation

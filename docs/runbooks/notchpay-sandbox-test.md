@@ -152,7 +152,9 @@ $PROBE payments --out "$REPORT"
 ```
 
 It initializes and processes six payments on `cm.mobile`, the channel the
-adapter sends, with Notch Pay's documented outcome numbers. Notch Pay's
+adapter sends a charge confirmed by the rail code (since 2026-10-23 a charge
+routed by method type is sent `cm.mtn` or `cm.orange`), with Notch Pay's
+documented outcome numbers. Notch Pay's
 [testing page](https://developer.notchpay.co/get-started/testing) lists them
 under `cm.mtn` and `cm.orange`, so whether they work on `cm.mobile` is item 3.
 

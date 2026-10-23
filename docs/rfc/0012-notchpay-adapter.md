@@ -344,6 +344,10 @@ receives, and step 4 registers Notch Pay as its recipient in
 { "channel": "cm.mobile", "data": { "phone": "<the payer's number, E.164>" } }
 ```
 
+_(Since 2026-10-23 the channel is `cm.mtn` or `cm.orange` for a charge routed
+by method type, and `settings.channel` only for one confirmed by the rail code;
+§ 1, "The channel".)_
+
 `202` with `status = processing` is `Submitted { ref_extra, redirect_url:
 None }`. A `422` "Payment has already been processed" is not a decline: the
 adapter reads the payment (call 3) and returns `Submitted` unless the read
