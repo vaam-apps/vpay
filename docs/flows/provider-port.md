@@ -31,10 +31,10 @@ _The table has ten methods since 2026-10-20, when `accepted_exposure` landed
 with its first consumer (ADR-0031), eleven since 2026-10-22, when
 `ensure_callback_endpoint` landed with its first, `notchpay` (RFC-0013), and
 twelve since 2026-10-23, when `prepare` landed with its first, `notchpay`
-(ADR-0032), thirteen the same day, when `verify_callback` landed with its
-first, `notchpay` (RFC-0014), and fourteen later that day, when
+(ADR-0032), thirteen later the same day, when
 `default_callback_registration` landed with its first, `notchpay`
-(RFC-0013's amendment). On a two-step rail `submit` is the prompt alone, sent
+(RFC-0013's amendment), and fourteen when `verify_callback` landed after it
+with its first, `notchpay` (RFC-0014). On a two-step rail `submit` is the prompt alone, sent
 by the key material `prepare` returned and the charge now holds._
 
 _Corrected 2026-09-23: this table listed six of the trait's nine methods.
