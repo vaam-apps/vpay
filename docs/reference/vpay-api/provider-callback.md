@@ -149,13 +149,14 @@ The configuration is the rail's by `code` (`ResourceConfig::rail`, enabled
 or not), never anything the request names; the `ChargeRef` is built from the
 row the way the poll builds it. The verdict decides one thing:
 
-| Verdict       | Pulled forward? | Log                                                                                                            |
-| ------------- | --------------- | -------------------------------------------------------------------------------------------------------------- |
-| `Verified`    | yes             | the `info` line, `verdict=verified`                                                                            |
-| `NotChecked`  | yes             | the `info` line (MTN, Orange)                                                                                  |
-| `NoSecret`    | yes             | the `info` line (a signing rail with no secret; boot already warned)                                           |
-| `Invalid`     | **no**          | `warn`, with the adapter's fixed sentence                                                                      |
-| `Unavailable` | **no**          | `warn`; also what the route answers itself when the rail has no loaded configuration or the row does not parse |
+| Verdict            | Pulled forward? | Log                                                                                                            |
+| ------------------ | --------------- | -------------------------------------------------------------------------------------------------------------- |
+| `Verified`         | yes             | the `info` line, `verdict=verified`                                                                            |
+| `VerifiedPrevious` | yes             | the `info` line, `verdict=verified_previous`: the previous signing secret matched, so a rotation is in flight  |
+| `NotChecked`       | yes             | the `info` line (MTN, Orange); **`Unavailable` instead**, with an `error`, from a rail that declares a check   |
+| `NoSecret`         | yes             | the `info` line (a signing rail with no secret; boot already warned)                                           |
+| `Invalid`          | **no**          | `warn`, with the adapter's fixed sentence                                                                      |
+| `Unavailable`      | **no**          | `warn`; also what the route answers itself when the rail has no loaded configuration or the row does not parse |
 
 **Every case answers `202`, byte for byte**, as an unknown reference does:
 a different answer for "known charge, bad signature" would be an oracle for
@@ -165,6 +166,21 @@ secret retry a callback vpay will never accept. Each verdict is counted on
 and a reference no charge holds never reach the check and are not counted.
 No header value, body byte or secret is logged: `CallbackRequest`'s `Debug`
 prints header names and the body's length.
+
+**Hardened 2026-10-23 by RFC-0014's security review:**
+
+- **A declared check that is not performed fails closed.** A rail whose
+  adapter declares a `callback_check` other than `None` and answers
+  `NotChecked`, which is the port's default `verify_callback`, gets
+  `Unavailable` and an `error` naming the rail. Without this, an adapter that
+  declared `Signature` and forgot the override would boot with its secret
+  demanded and accepted, and admit every forgery. Proven by
+  `a_declared_check_that_was_not_performed_fails_closed`.
+- **The route borrows the rail's configuration**
+  (`RailConfig::provider_config_ref`), where it cloned it: an anonymous POST
+  no longer copies every rail credential.
+- `verdict_for`'s two `Unavailable` branches are pinned by
+  `a_check_the_route_cannot_build_admits_no_pull_forward`.
 
 What it adds to § "What an anonymous caller can and cannot get out of it": on
 a rail whose check runs, a POST the rail did not sign moves nothing at all.

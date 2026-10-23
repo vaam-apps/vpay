@@ -596,6 +596,20 @@ impl RailConfig {
     pub fn provider_config(&self) -> ProviderConfig {
         self.provider_config.clone()
     }
+
+    /// The same [`ProviderConfig`], borrowed.
+    ///
+    /// For the one caller that only reads it and is reachable without
+    /// authentication: `crate::provider_callback`, checking a rail's
+    /// callback. Cloning there would copy every rail credential (Notch Pay's
+    /// private key and Hash Key among them) onto the stack of any anonymous
+    /// POST that names a known charge, on [`RailConfig::currency`]'s
+    /// argument. _(Added 2026-10-23 from RFC-0014's security review; the
+    /// route called [`RailConfig::provider_config`] until then.)_
+    #[must_use]
+    pub fn provider_config_ref(&self) -> &ProviderConfig {
+        &self.provider_config
+    }
 }
 
 /// One merchant webhook endpoint, projected out of

@@ -1395,6 +1395,23 @@ fn notchpay_webhook(reference: Uuid) -> Vec<u8> {
     .into_bytes()
 }
 
+/// The same event as [`notchpay_webhook`], written the way no serialiser in
+/// this workspace would write it: spaced, keys out of order, a trailing
+/// newline. A signature over these bytes is a signature over these bytes
+/// only, so a route that verified a re-parsed and re-serialised body would
+/// refuse it. Added 2026-10-23 from RFC-0014's security review: the compact
+/// fixture above survives a re-serialisation byte for byte, so it could not
+/// tell the two routes apart.
+fn notchpay_webhook_as_sent(reference: Uuid) -> Vec<u8> {
+    format!(
+        "{{ \"type\" : \"payment.complete\", \"id\": \"evt.test_0001\",\n  \"data\": {{ \
+         \"status\": \"complete\", \"reference\": \"{reference}\", \"amount\": {AMOUNT}, \
+         \"currency\": \"XAF\", \"id\": \"pay.test_0001\" }},\n  \"created_at\": \
+         \"2026-10-20T10:00:00Z\" }}\n"
+    )
+    .into_bytes()
+}
+
 fn sign(secret: &str, body: &[u8]) -> String {
     vpay_provider::callback::hmac_sha256_hex(secret.as_bytes(), body)
         .expect("HMAC takes a key of any length")
@@ -1406,11 +1423,18 @@ fn sign(secret: &str, body: &[u8]) -> String {
 /// charge. Every answer is the same `202`, byte for byte, including the one
 /// for a reference no charge holds.
 ///
-/// Three forgeries, each answered `202` with the poll left parked, the queue
+/// Four forgeries, each answered `202` with the poll left parked, the queue
 /// unclaimable and the stub's read count unchanged: no signature; a
-/// signature under another secret; and Notch Pay's genuine signature of a
-/// *different* body (a captured webhook re-aimed at this charge). Then the
-/// genuine one.
+/// signature under another secret; Notch Pay's genuine signature of a
+/// *different* body (a captured webhook re-aimed at this charge); and the
+/// genuine webhook re-serialised after signing, with its genuine signature.
+/// Then the genuine one, **as sent**: spaced and out of key order
+/// ([`notchpay_webhook_as_sent`]), so its signature is over those exact
+/// bytes and a route that verified a re-serialised body would refuse it.
+/// _(Three forgeries and a compact genuine body until 2026-10-23: RFC-0014's
+/// security review found that a compact body round-trips through a
+/// re-serialisation unchanged, so nothing at the route pinned the raw
+/// bytes.)_
 ///
 /// **Mutation-checked**
 /// (`docs/status/verification/2026-10-23-webhook-signatures.md`): a Notch Pay
@@ -1478,26 +1502,37 @@ async fn a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles(
         "the parked poll is not claimable"
     );
 
-    let genuine = notchpay_webhook(SCENARIO_REF);
+    let genuine = notchpay_webhook_as_sent(SCENARIO_REF);
+    let re_serialised = serde_json::to_vec(
+        &serde_json::from_slice::<Value>(&genuine).context("the webhook as sent is JSON")?,
+    )
+    .context("re-serialising the webhook")?;
+    assert_ne!(
+        re_serialised, genuine,
+        "the case needs a body that a re-serialisation changes"
+    );
     let re_aimed = notchpay_webhook(Uuid::from_u128(0x0202));
-    let forgeries: [(&str, Option<String>); 3] = [
-        ("no signature", None),
+    let forgeries: [(&str, &[u8], Option<String>); 4] = [
+        ("no signature", &genuine, None),
         (
             "a signature under another secret",
+            &genuine,
             Some(sign("forger-secret-test_0004", &genuine)),
         ),
         (
             "Notch Pay's signature of another webhook",
+            &genuine,
             Some(sign(SIGNING_SECRET, &re_aimed)),
+        ),
+        (
+            "the genuine webhook re-serialised after signing",
+            &re_serialised,
+            Some(sign(SIGNING_SECRET, &genuine)),
         ),
     ];
     let mut answers = Vec::new();
-    for (what, signature) in &forgeries {
-        answers.push(
-            harness
-                .post_callback(&genuine, signature.as_deref())
-                .await?,
-        );
+    for (what, body, signature) in &forgeries {
+        answers.push(harness.post_callback(body, signature.as_deref()).await?);
         assert_eq!(
             poll_run_at(&harness.pool, &charge.id).await?,
             parked_at,
@@ -1523,7 +1558,8 @@ async fn a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles(
             .await?,
     );
 
-    // The genuine webhook: pulled forward, read, settled.
+    // The genuine webhook, byte for byte as sent: pulled forward, read,
+    // settled.
     answers.push(
         harness
             .post_callback(&genuine, Some(&sign(SIGNING_SECRET, &genuine)))
@@ -1559,7 +1595,7 @@ async fn a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles(
     // Counted by verdict, the unknown reference not at all; and no label
     // carries a signature or the secret.
     let scrape = metrics.render();
-    for (verdict, count) in [("invalid", 3), ("verified", 1)] {
+    for (verdict, count) in [("invalid", 4), ("verified", 1)] {
         let line = format!(
             "vpay_provider_callbacks_total{{provider=\"{SIGNING_RAIL}\",verdict=\"{verdict}\"}} {count}"
         );

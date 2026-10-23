@@ -1537,14 +1537,19 @@ pub fn router(deps: RouterDeps) -> Router {
         // `track_http_metrics` and the ordering guard below.
         .layer(from_fn(track_http_metrics));
 
-    // Unauthenticated by *necessity*, and this is the only one of the three
-    // where that word carries no qualifier: the OP's callers present a
+    // Unauthenticated by *necessity*: the OP's callers present a
     // `client_assertion`, a browser presents an intent's `client_secret`, and
-    // a rail presents **nothing at all** — neither MTN nor Orange signs a
-    // callback or sends a shared secret. So this nest is the one place a
-    // request's contents authorise nothing, and `provider_callback`'s handler
-    // is written around that: it never writes charge or intent state, and the
-    // only thing it can do is move a poll job's `run_at`.
+    // a rail presents nothing **this layer** checks. MTN signs no callback and
+    // sends no shared secret, and Orange's `notif_token` is not compared;
+    // Notch Pay signs its webhooks (`x-notch-signature`), and since RFC-0014
+    // (2026-10-23) its adapter checks that inside the handler, where a
+    // signing secret is configured. A signature that fails moves nothing,
+    // but it is answered as every other callback is, so the nest itself still
+    // authenticates nobody. `provider_callback`'s handler is written around
+    // that: it never writes charge or intent state, and the only thing it can
+    // do is move a poll job's `run_at`. _(This said "a rail presents nothing
+    // at all — neither MTN nor Orange signs" until 2026-10-23, true of the two
+    // rails it named and not of Notch Pay, which it did not.)_
     //
     // Mounted with its own body limit, its own fallback and no `CorsLayer` —
     // see `provider_callback::routes`.

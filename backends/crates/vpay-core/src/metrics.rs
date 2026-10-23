@@ -214,7 +214,7 @@ pub const ACCOUNT_HOLDER_LOOKUPS_TOTAL: &str = "vpay_account_holder_lookups_tota
 pub const CALLBACK_ENDPOINT_CHECKS_TOTAL: &str = "vpay_callback_endpoint_checks_total";
 
 /// Callbacks received for a charge vpay holds, by rail and by what the rail's
-/// check said (RFC-0014 § 3). See [`callback_verdict`] for the five values.
+/// check said (RFC-0014 § 3). See [`callback_verdict`] for the six values.
 ///
 /// Emitted by `vpay_api::provider_callback`, once per callback that named a
 /// charge this deployment holds, after the adapter's `verify_callback` and
@@ -500,23 +500,39 @@ pub mod callback_endpoint_state {
 }
 
 /// The `verdict` label on [`PROVIDER_CALLBACKS_TOTAL`]:
-/// `vpay_provider::CallbackVerdict`'s five answers, spelled once.
+/// `vpay_provider::CallbackVerdict`'s six answers, spelled once.
 ///
 /// Two of them stop the poll being pulled forward (`invalid`,
-/// `unavailable`); the other three let it, which is what every callback did
+/// `unavailable`); the other four let it, which is what every callback did
 /// before RFC-0014.
+///
+/// _(Five answers until 2026-10-23's security review split
+/// `verified_previous` out of `verified`, so that the end of a rotation is
+/// visible.)_
 ///
 /// ```
 /// use vpay_core::metrics::callback_verdict;
 ///
 /// assert_eq!(
 ///     callback_verdict::ALL,
-///     ["verified", "invalid", "not_checked", "no_secret", "unavailable"]
+///     [
+///         "verified",
+///         "verified_previous",
+///         "invalid",
+///         "not_checked",
+///         "no_secret",
+///         "unavailable"
+///     ]
 /// );
 /// ```
 pub mod callback_verdict {
-    /// The rail's check passed.
+    /// The rail's check passed, under the current signing secret.
     pub const VERIFIED: &str = "verified";
+    /// The rail's check passed under the **previous** signing secret
+    /// (`credentials.callback_signing_secret_previous`): a rotation is in
+    /// flight. When this stops increasing, the previous secret can be
+    /// removed; while it is configured, it pulls polls forward.
+    pub const VERIFIED_PREVIOUS: &str = "verified_previous";
     /// The check ran and failed: a wrong, missing or malformed signature.
     /// The poll was not pulled forward.
     pub const INVALID: &str = "invalid";
@@ -533,7 +549,14 @@ pub mod callback_verdict {
 
     /// Every value, in `vpay_provider::CallbackVerdict`'s declaration
     /// order, for a test that must cover all of them.
-    pub const ALL: [&str; 5] = [VERIFIED, INVALID, NOT_CHECKED, NO_SECRET, UNAVAILABLE];
+    pub const ALL: [&str; 6] = [
+        VERIFIED,
+        VERIFIED_PREVIOUS,
+        INVALID,
+        NOT_CHECKED,
+        NO_SECRET,
+        UNAVAILABLE,
+    ];
 }
 
 /// This build's commit, or [`UNKNOWN_GIT_SHA`].

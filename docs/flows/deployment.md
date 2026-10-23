@@ -462,9 +462,15 @@ endpoint (`present`, `created`, `foreign`) for `callbackEndpointWindow`
 `vpay_provider_callbacks_total{provider,verdict}` is emitted once per rail
 callback that names a charge this deployment holds, by
 `vpay_api::provider_callback`, with the rail's own check's answer (RFC-0014):
-`verified`, `not_checked` and `no_secret` pulled the poll forward; `invalid`
-and `unavailable` did not. `invalid` with no `verified` beside it is this
-deployment's own signing secret gone stale. No alert reads it yet.
+`verified`, `verified_previous`, `not_checked` and `no_secret` pulled the
+poll forward; `invalid` and `unavailable` did not. `invalid` with no
+`verified` beside it is this deployment's own signing secret gone stale.
+`verified_previous` counts webhooks that matched only
+`credentials.callback_signing_secret_previous`: while it still increases a
+rotation is in flight, and once it stops the previous secret can be removed
+(every server boot warns while it is set). _(Five values until 2026-10-23,
+when RFC-0014's security review split `verified_previous` out of
+`verified`.)_ No alert reads it yet.
 `docs/status.md`
 names the seam for each.
 

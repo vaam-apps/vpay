@@ -31,7 +31,7 @@ pub mod token;
 
 pub use callback::{
     CALLBACK_SIGNING_SECRET, CALLBACK_SIGNING_SECRET_PREVIOUS, CallbackCheck, CallbackRequest,
-    CallbackVerdict,
+    CallbackVerdict, SigningKey,
 };
 pub use measured::Measured;
 
@@ -1931,6 +1931,14 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// not built; such an adapter declares [`CallbackCheck::None`]. An adapter
     /// that overrides this declares the check it makes, and compares a MAC
     /// with [`callback::hmac_sha256_hex_matches`], never its own `==`.
+    ///
+    /// **An adapter that declares a check and keeps this default fails
+    /// closed.** The route treats `NotChecked` from a rail whose
+    /// [`Capabilities::callback_check`] is not [`CallbackCheck::None`] as
+    /// [`CallbackVerdict::Unavailable`] and logs an `error`: boot would have
+    /// demanded the rail's secret and accepted it, and without that rule
+    /// every forged callback would then pull a poll forward. _(Added
+    /// 2026-10-23, from the RFC-0014 security review.)_
     ///
     /// Infallible by type: a check that could not complete is
     /// [`CallbackVerdict::Unavailable`], not an error, because the route's

@@ -202,7 +202,14 @@ because they read the adapter's `callback_check` (RFC-0014 § 6):
 - **never both** (`CallbackVerifyOffWithSecret`): a configured secret is
   checked whatever `verify` says, so `off` beside one acknowledges something
   that does not happen;
-- a blank secret is no secret, in boot and in the check alike.
+- a blank secret is no secret, in boot and in the check alike;
+- **no surrounding whitespace** (`CallbackSigningSecretWhitespace`) and **no
+  previous secret without a current one**
+  (`CallbackSigningPreviousWithoutCurrent`), in either mode, and a `WARN` at
+  every boot while `callback_signing_secret_previous` is set. A webhook that
+  matches only the previous secret counts as `verified_previous`, so the
+  counter says when a rotation can end. (RFC-0014 security review,
+  2026-10-23.)
 
 ## The calls
 

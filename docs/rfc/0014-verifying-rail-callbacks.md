@@ -480,7 +480,13 @@ here.
   `CallbackVerifyOffWithSecret` (`off` beside a secret: an acknowledgement of
   something that does not happen). A blank secret is no secret, in boot and
   in the adapter alike, through one function
-  (`vpay_provider::callback::signing_secrets_in`).
+  (`vpay_provider::callback::signing_secrets_in`). The security review the
+  same day added two more, in both modes: `CallbackSigningSecretWhitespace`
+  (a non-blank secret, current or previous, with surrounding whitespace,
+  which would key the HMAC on a newline) and
+  `CallbackSigningPreviousWithoutCurrent` (a previous secret with no current
+  one: a rotation whose new key is missing). _(This bullet said "Boot
+  refuses four things" until then, and a previous secret alone booted.)_
 - **`callbacks.verify` on a per-request rail stays refused.** RFC-0013's
   `CallbacksOnPerRequestRail` refuses any `callbacks` block on such a rail,
   and no per-request rail signs today. The first one that does needs that
@@ -502,6 +508,31 @@ here.
 - **Replay is accepted** (open question 4's recommendation): Notch Pay signs
   no timestamp, and `a_replayed_genuine_webhook_still_verifies` pins that as
   a decision.
+- **A rotation ends visibly.** A match under the previous secret is
+  `CallbackVerdict::VerifiedPrevious`, counted as
+  `verdict="verified_previous"`, and `vpay-server serve` warns at every boot
+  while `callback_signing_secret_previous` is set. _(Added by the security
+  review: until then either key was `Verified`, the previous one was
+  accepted silently for as long as it stayed configured, and a rotation
+  after a leak had no end signal.)_
+- **A declared check that is not performed fails closed.** The route answers
+  `Unavailable`, with an `error`, when an adapter that declares a
+  `callback_check` other than `None` returns `NotChecked`, the port's
+  default. _(Added by the security review: until then such an adapter would
+  have had its secret demanded at boot and admitted every forgery.)_
+- **Security review, 2026-10-23.** An independent review of the branch found
+  no security defect in the comparison, the raw-body handling, rotation's
+  blank handling, the fail-closed configuration, the 202 or secret
+  redaction. Its should-fix findings are built (the two items above, the
+  whitespace refusal, a borrowed rather than cloned configuration on the
+  route, tests for both `Unavailable` branches, and a non-canonical body at
+  the route). Two are recorded and not changed: each forged callback logs one
+  `warn` and counts `verdict="invalid"`, so a caller who knows one live
+  reference can inflate both (the runbook's "is `verified` also non-zero?"
+  is the mitigation); and `the_comparison_is_the_constant_time_one` is a
+  source-text tripwire, not a proof. The
+  [verification page](../status/verification/2026-10-23-webhook-signatures.md)
+  lists every finding and what was done.
 - **HMAC lives once**, in `vpay_provider::callback`, with `hmac` and `hex`
   rather than `hmac`, `sha2` and `subtle`: `verify_slice` is `subtle`'s
   comparison underneath, and `hex` was already a workspace pin.

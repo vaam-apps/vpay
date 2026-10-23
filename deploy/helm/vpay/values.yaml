@@ -648,7 +648,12 @@ rails:
   # the overlay's notchpay block says `callbacks: { verify: off }`, which then
   # WARNs at every boot of the server; a sandbox only WARNs. Add the key to
   # the Secret BEFORE rolling an overlay that references it: an unresolved
-  # placeholder is exit 78 too.
+  # placeholder is exit 78 too. Create the Secret's value WITHOUT a trailing
+  # newline (`--from-literal`, or `printf %s`, not `echo` into a file): a
+  # value with surrounding whitespace is exit 78
+  # (CallbackSigningSecretWhitespace), because HMAC would key on the newline.
+  # A rotation is the new key there and the old one as
+  # `credentials.callback_signing_secret_previous`, never the old one alone.
   #
   # PRODUCTION RISK. Notch Pay is admitted under ADR-0031 (rule 3 amended):
   # NOTCHPAY_PUBLIC_KEY is the key Notch Pay calls public, and it

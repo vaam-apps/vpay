@@ -941,10 +941,14 @@ async fn the_signature_covers_the_raw_body_byte_for_byte() {
 }
 
 /// A rotation: a webhook signed under the previous secret still verifies
-/// while it is configured, and a secret rotated out of both keys is stale and
-/// refused. Notch Pay signs no timestamp, so "stale" can only mean the key:
-/// a genuine webhook replayed later verifies for as long as its secret is
-/// configured, which `a_replayed_genuine_webhook_still_verifies` pins.
+/// while it is configured, as `VerifiedPrevious` so that its counter says
+/// when the rotation can end, while one under the current secret is plain
+/// `Verified`; and a secret rotated out of both keys is stale and refused.
+/// Notch Pay signs no timestamp, so "stale" can only mean the key: a genuine
+/// webhook replayed later verifies for as long as its secret is configured,
+/// which `a_replayed_genuine_webhook_still_verifies` pins. Mutation-checked
+/// (2026-10-23): answering `Verified` for either key fails the first
+/// assertion.
 #[tokio::test]
 async fn the_previous_secret_verifies_during_a_rotation_and_a_retired_one_does_not() {
     let body = webhook_body();
@@ -956,7 +960,12 @@ async fn the_previous_secret_verifies_during_a_rotation_and_a_retired_one_does_n
     let under_previous = sign("previous-secret-test_0005", &body);
     assert_eq!(
         verdict(&headers_with(Some(&under_previous)), &body, &rotating).await,
-        CallbackVerdict::Verified
+        CallbackVerdict::VerifiedPrevious
+    );
+    assert_eq!(
+        verdict(&headers_with(Some(&sign(SIGNING, &body))), &body, &rotating).await,
+        CallbackVerdict::Verified,
+        "the current secret is still `verified` during a rotation"
     );
     // The rotation finished: the previous key was removed.
     let answer = verdict(

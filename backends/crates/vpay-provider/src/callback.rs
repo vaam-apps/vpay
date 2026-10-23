@@ -68,6 +68,37 @@ pub const CALLBACK_SIGNING_SECRET: &str = "callback_signing_secret";
 /// it would cost that charge its callback latency for no gain.
 pub const CALLBACK_SIGNING_SECRET_PREVIOUS: &str = "callback_signing_secret_previous";
 
+/// Which of the two configured signing secrets a value is: the key a
+/// signature matched is what tells an operator a rotation can end
+/// ([`CallbackVerdict::VerifiedPrevious`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigningKey {
+    /// [`CALLBACK_SIGNING_SECRET`].
+    Current,
+    /// [`CALLBACK_SIGNING_SECRET_PREVIOUS`].
+    Previous,
+}
+
+impl SigningKey {
+    /// The credentials key this secret is read from.
+    #[must_use]
+    pub const fn credential(self) -> &'static str {
+        match self {
+            Self::Current => CALLBACK_SIGNING_SECRET,
+            Self::Previous => CALLBACK_SIGNING_SECRET_PREVIOUS,
+        }
+    }
+
+    /// What a signature that matched this secret is.
+    #[must_use]
+    pub const fn verified(self) -> CallbackVerdict {
+        match self {
+            Self::Current => CallbackVerdict::Verified,
+            Self::Previous => CallbackVerdict::VerifiedPrevious,
+        }
+    }
+}
+
 /// The signing secrets configured for this rail, current first, blank ones
 /// skipped.
 ///
@@ -80,6 +111,13 @@ pub fn callback_signing_secrets(config: &ProviderConfig) -> Vec<&str> {
     signing_secrets_in(&config.credentials)
 }
 
+/// [`callback_signing_secrets`], each tagged with which of the two it is, for
+/// an adapter that must say which one a signature matched.
+#[must_use]
+pub fn callback_signing_keys(config: &ProviderConfig) -> Vec<(SigningKey, &str)> {
+    signing_keys_in(&config.credentials)
+}
+
 /// [`callback_signing_secrets`] over a bare credentials map, for the one
 /// caller that holds the YAML's map rather than a [`ProviderConfig`]:
 /// `vpay_api::boot::boot_seeds`, deciding whether a rail that signs has a
@@ -87,11 +125,24 @@ pub fn callback_signing_secrets(config: &ProviderConfig) -> Vec<&str> {
 /// "configured" means (a blank value is not).
 #[must_use]
 pub fn signing_secrets_in(credentials: &BTreeMap<String, String>) -> Vec<&str> {
-    [CALLBACK_SIGNING_SECRET, CALLBACK_SIGNING_SECRET_PREVIOUS]
-        .iter()
-        .filter_map(|key| credentials.get(*key))
-        .map(String::as_str)
-        .filter(|value| !value.trim().is_empty())
+    signing_keys_in(credentials)
+        .into_iter()
+        .map(|(_, value)| value)
+        .collect()
+}
+
+/// [`signing_secrets_in`], each tagged with which of the two it is, current
+/// first. The one place a blank value is decided to be absent.
+#[must_use]
+pub fn signing_keys_in(credentials: &BTreeMap<String, String>) -> Vec<(SigningKey, &str)> {
+    [SigningKey::Current, SigningKey::Previous]
+        .into_iter()
+        .filter_map(|key| {
+            credentials
+                .get(key.credential())
+                .map(|value| (key, value.as_str()))
+        })
+        .filter(|(_, value)| !value.trim().is_empty())
         .collect()
 }
 
@@ -131,8 +182,18 @@ impl fmt::Debug for CallbackRequest<'_> {
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CallbackVerdict {
-    /// The rail's own check passed.
+    /// The rail's own check passed, under the current signing secret (or by
+    /// whatever the rail's scheme checks, for a rail with one secret).
     Verified,
+    /// The rail's own check passed under the **previous** signing secret
+    /// ([`CALLBACK_SIGNING_SECRET_PREVIOUS`]): a rotation is in flight.
+    /// Admits the pull-forward exactly as [`Verified`](Self::Verified) does;
+    /// it is a separate answer only so that its counter tells an operator
+    /// when the previous secret stopped being used and can be removed.
+    /// _(Added 2026-10-23, from the RFC-0014 security review: until then a
+    /// match under either key was `Verified`, and a rotation had no end
+    /// signal.)_
+    VerifiedPrevious,
     /// The check ran and failed. The route does not pull the poll forward.
     Invalid(&'static str),
     /// This adapter checks nothing: the rail signs nothing (MTN), or vpay's
@@ -154,12 +215,16 @@ impl CallbackVerdict {
     /// Whether the route may pull the charge's poll forward on this verdict.
     ///
     /// RFC-0014 § 3's table: yes for [`Verified`](Self::Verified),
+    /// [`VerifiedPrevious`](Self::VerifiedPrevious),
     /// [`NotChecked`](Self::NotChecked) and [`NoSecret`](Self::NoSecret),
     /// which is today's behaviour on a rail that checks nothing; no for
     /// [`Invalid`](Self::Invalid) and [`Unavailable`](Self::Unavailable).
     #[must_use]
     pub const fn admits_pull_forward(&self) -> bool {
-        matches!(self, Self::Verified | Self::NotChecked | Self::NoSecret)
+        matches!(
+            self,
+            Self::Verified | Self::VerifiedPrevious | Self::NotChecked | Self::NoSecret
+        )
     }
 
     /// The `verdict` label on `vpay_provider_callbacks_total`, spelled once
@@ -169,6 +234,7 @@ impl CallbackVerdict {
         use vpay_core::metrics::callback_verdict;
         match self {
             Self::Verified => callback_verdict::VERIFIED,
+            Self::VerifiedPrevious => callback_verdict::VERIFIED_PREVIOUS,
             Self::Invalid(_) => callback_verdict::INVALID,
             Self::NotChecked => callback_verdict::NOT_CHECKED,
             Self::NoSecret => callback_verdict::NO_SECRET,
@@ -182,7 +248,7 @@ impl CallbackVerdict {
     pub const fn reason(&self) -> Option<&'static str> {
         match self {
             Self::Invalid(reason) | Self::Unavailable(reason) => Some(reason),
-            Self::Verified | Self::NotChecked | Self::NoSecret => None,
+            Self::Verified | Self::VerifiedPrevious | Self::NotChecked | Self::NoSecret => None,
         }
     }
 }
@@ -367,9 +433,35 @@ mod tests {
         );
     }
 
+    /// Which key a secret is travels with it, current first, so an adapter
+    /// can answer `VerifiedPrevious` for a match under the previous one.
+    #[test]
+    fn the_signing_keys_say_which_secret_each_is() {
+        assert_eq!(
+            callback_signing_keys(&config_with(&[
+                (CALLBACK_SIGNING_SECRET_PREVIOUS, "old"),
+                (CALLBACK_SIGNING_SECRET, "new"),
+            ])),
+            [(SigningKey::Current, "new"), (SigningKey::Previous, "old")]
+        );
+        assert_eq!(
+            callback_signing_keys(&config_with(&[
+                (CALLBACK_SIGNING_SECRET, " "),
+                (CALLBACK_SIGNING_SECRET_PREVIOUS, "old"),
+            ])),
+            [(SigningKey::Previous, "old")]
+        );
+        assert_eq!(SigningKey::Current.verified(), CallbackVerdict::Verified);
+        assert_eq!(
+            SigningKey::Previous.verified(),
+            CallbackVerdict::VerifiedPrevious
+        );
+    }
+
     #[test]
     fn only_a_verdict_that_is_not_a_refusal_admits_the_pull_forward() {
         assert!(CallbackVerdict::Verified.admits_pull_forward());
+        assert!(CallbackVerdict::VerifiedPrevious.admits_pull_forward());
         assert!(CallbackVerdict::NotChecked.admits_pull_forward());
         assert!(CallbackVerdict::NoSecret.admits_pull_forward());
         assert!(!CallbackVerdict::Invalid("x").admits_pull_forward());
@@ -381,6 +473,7 @@ mod tests {
         use vpay_core::metrics::callback_verdict;
         let labels = [
             CallbackVerdict::Verified.label(),
+            CallbackVerdict::VerifiedPrevious.label(),
             CallbackVerdict::Invalid("x").label(),
             CallbackVerdict::NotChecked.label(),
             CallbackVerdict::NoSecret.label(),

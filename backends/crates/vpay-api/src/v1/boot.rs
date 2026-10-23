@@ -21,8 +21,7 @@ use vpay_core::ProviderFlow;
 use vpay_core::error::{Category, Classify};
 use vpay_db::{CurrencySeed, DbError, ProviderSeed, Repositories};
 use vpay_provider::{
-    AcceptedExposure, CALLBACK_SIGNING_SECRET, CALLBACK_SIGNING_SECRET_PREVIOUS, CallbackCheck,
-    CallbackUrlMode, Measured, ProviderAdapter,
+    AcceptedExposure, CallbackCheck, CallbackUrlMode, Measured, ProviderAdapter, SigningKey,
 };
 
 /// A binary's linked adapters, keyed by `providers.code`.
@@ -105,9 +104,12 @@ pub fn adapters_by_code(
 /// * [`ConfigError::IncoherentCallbackCheck`] for a configured rail whose
 ///   adapter declares a `callback_check` without `delivers_callbacks`, and
 ///   [`ConfigError::CallbackSigningSecretMissing`],
-///   [`ConfigError::CallbackSigningSettingUnread`] and
-///   [`ConfigError::CallbackVerifyOffWithSecret`] for a rail's
-///   callback-signing settings (RFC-0014 §§ 2 and 6, 2026-10-23) — see
+///   [`ConfigError::CallbackSigningSettingUnread`],
+///   [`ConfigError::CallbackVerifyOffWithSecret`],
+///   [`ConfigError::CallbackSigningPreviousWithoutCurrent`] and
+///   [`ConfigError::CallbackSigningSecretWhitespace`] for a rail's
+///   callback-signing settings (RFC-0014 §§ 2 and 6, 2026-10-23; the last
+///   two from its security review the same day) — see
 ///   [`refuse_incoherent_callback_signing`];
 /// * [`ConfigError::RoutingWeightOnAnUnservedType`] for a routing weight on
 ///   a method type the rail's adapter does not serve.
@@ -262,6 +264,22 @@ pub fn boot_seeds(
 /// | `Signature`        | no     | `off`    | boots, and warns | boots, and warns at every boot |
 /// | anything else      | any    | any      | [`ConfigError::CallbackSigningSettingUnread`] if either is set | the same |
 ///
+/// Two more refusals come first on a rail that checks, in both modes
+/// (RFC-0014 security review, 2026-10-23):
+///
+/// * a non-blank secret, current or previous, that begins or ends with
+///   whitespace: [`ConfigError::CallbackSigningSecretWhitespace`]. The HMAC
+///   key is the value's exact bytes, so a trailing newline would refuse every
+///   genuine callback with nothing louder than a counter to say so;
+/// * a previous secret with no non-blank current one:
+///   [`ConfigError::CallbackSigningPreviousWithoutCurrent`]. That is a
+///   rotation whose new key is missing, and the deployment would go on
+///   accepting the key being retired. _(It booted, and a test said "the
+///   previous key is a key", until the review.)_
+///
+/// While a previous secret is set, [`warn_about_rotations_in_flight`] warns
+/// at every boot.
+///
 /// The `off` row for a rail that signs is the RFC's livemode
 /// acknowledgement (§ 6, open question 1): the operator states in the rail's
 /// own block that its callbacks go unchecked, on the shape the maintainer
@@ -269,7 +287,7 @@ pub fn boot_seeds(
 ///
 /// # Errors
 ///
-/// The three named in the table.
+/// The three named in the table and the two named below it.
 fn refuse_incoherent_callback_signing(
     provider: &ProviderHost,
     check: CallbackCheck,
@@ -279,16 +297,10 @@ fn refuse_incoherent_callback_signing(
         .callbacks
         .is_some_and(|callbacks| callbacks.verify == CallbackVerification::Off);
     if check != CallbackCheck::Signature {
-        let unread = [CALLBACK_SIGNING_SECRET, CALLBACK_SIGNING_SECRET_PREVIOUS]
+        let unread = [SigningKey::Current, SigningKey::Previous]
             .into_iter()
-            .find(|key| provider.credentials.contains_key(*key))
-            .map(|key| {
-                if key == CALLBACK_SIGNING_SECRET {
-                    "credentials.callback_signing_secret"
-                } else {
-                    "credentials.callback_signing_secret_previous"
-                }
-            })
+            .find(|key| provider.credentials.contains_key(key.credential()))
+            .map(signing_setting_path)
             .or(verify_off.then_some("callbacks.verify"));
         return match unread {
             Some(setting) => Err(ConfigError::CallbackSigningSettingUnread {
@@ -298,7 +310,27 @@ fn refuse_incoherent_callback_signing(
             None => Ok(()),
         };
     }
-    let has_secret = !vpay_provider::callback::signing_secrets_in(&provider.credentials).is_empty();
+    // A padded value is checked before the blank filter can hide it: it is
+    // a secret somebody meant, with bytes nobody meant.
+    for key in [SigningKey::Current, SigningKey::Previous] {
+        let padded = provider
+            .credentials
+            .get(key.credential())
+            .is_some_and(|value| !value.trim().is_empty() && value.trim() != value.as_str());
+        if padded {
+            return Err(ConfigError::CallbackSigningSecretWhitespace {
+                code: provider.code.clone(),
+                setting: signing_setting_path(key),
+            });
+        }
+    }
+    let keys = vpay_provider::callback::signing_keys_in(&provider.credentials);
+    if !keys.is_empty() && !keys.iter().any(|(key, _)| *key == SigningKey::Current) {
+        return Err(ConfigError::CallbackSigningPreviousWithoutCurrent {
+            code: provider.code.clone(),
+        });
+    }
+    let has_secret = !keys.is_empty();
     if has_secret && verify_off {
         return Err(ConfigError::CallbackVerifyOffWithSecret {
             code: provider.code.clone(),
@@ -310,6 +342,15 @@ fn refuse_incoherent_callback_signing(
         });
     }
     Ok(())
+}
+
+/// A signing secret's path in the YAML, for a refusal or a warning that must
+/// name the setting and never its value.
+const fn signing_setting_path(key: SigningKey) -> &'static str {
+    match key {
+        SigningKey::Current => "credentials.callback_signing_secret",
+        SigningKey::Previous => "credentials.callback_signing_secret_previous",
+    }
 }
 
 /// `routing.weights[]` entries naming a method type the rail's adapter does
@@ -502,6 +543,52 @@ pub fn warn_about_unverified_callbacks(
                  its block says callbacks: {{ verify: off }} (RFC-0014 § 6).",
             );
         }
+    }
+}
+
+/// Every **configured** rail with a non-blank
+/// `credentials.callback_signing_secret_previous`: a rotation in flight.
+///
+/// Pure, for [`accepted_exposures`]' reason; the logging is
+/// [`warn_about_rotations_in_flight`]. A previous secret with no current one
+/// never reaches here: [`boot_seeds`] refused it.
+#[must_use]
+pub fn rotating_callback_rails(config: &Config) -> Vec<String> {
+    config
+        .providers
+        .iter()
+        .filter(|provider| {
+            vpay_provider::callback::signing_keys_in(&provider.credentials)
+                .iter()
+                .any(|(key, _)| *key == SigningKey::Previous)
+        })
+        .map(|provider| provider.code.clone())
+        .collect()
+}
+
+/// Logs a `warn!` at every boot for each rail whose previous signing secret
+/// is still configured (RFC-0014; added 2026-10-23 from its security
+/// review).
+///
+/// A rotation usually follows a suspected leak, and the previous secret
+/// keeps pulling polls forward for whoever holds it until it is removed:
+/// the line names the counter (`verdict="verified_previous"`) that says when
+/// nothing signs with it any more. A callback still moves no money either
+/// way; what is at stake is a poll's timing.
+///
+/// Called by `vpay-server serve`, beside [`warn_about_unverified_callbacks`].
+/// **Never prints a secret**: it names the rail and the setting's path.
+pub fn warn_about_rotations_in_flight(config: &Config) {
+    for code in rotating_callback_rails(config) {
+        let setting = signing_setting_path(SigningKey::Previous);
+        tracing::warn!(
+            rail = %code,
+            setting,
+            "rail {code}: {setting} is set, so callbacks signed under the previous signing secret \
+             are still accepted. Remove it once vpay_provider_callbacks_total{{provider=\"{code}\",\
+             verdict=\"verified_previous\"}} stops increasing; until then, whoever holds the \
+             previous secret can still pull this rail's polls forward (RFC-0014).",
+        );
     }
 }
 
@@ -717,8 +804,9 @@ mod tests {
     use vpay_config::{CurrencyEntry, Deployment, HostEntry, ProviderHost};
     use vpay_core::Money;
     use vpay_provider::{
-        CallbackCheck, CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderConfig,
-        ProviderError, RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
+        CALLBACK_SIGNING_SECRET, CALLBACK_SIGNING_SECRET_PREVIOUS, CallbackCheck, CallbackRef,
+        Capabilities, ChargeRef, ChargeStatus, ProviderConfig, ProviderError, RefundDestination,
+        RefundTarget, Refunded, SubmitSteps, Submitted,
     };
 
     use super::*;
@@ -1082,9 +1170,119 @@ mod tests {
             matches!(error, ConfigError::CallbackSigningSecretMissing { .. }),
             "{error:?}"
         );
-        // A rotation in flight with only the previous key still verifies.
-        let mut previous_only = signing_config(true, None, false);
-        previous_only
+    }
+
+    /// RFC-0014 security review (2026-10-23): a previous secret with no
+    /// current one is a rotation whose new key is missing, refused in both
+    /// modes, and so is one beside a blank current; a rotation with both
+    /// keys boots. It booted, as "the previous key is a key", until the
+    /// review. Mutation-checked: deleting the refusal fails the first
+    /// `expect_err`.
+    #[test]
+    fn a_previous_signing_secret_without_a_current_one_is_refused() {
+        let adapters = signing_rail();
+        for livemode in [false, true] {
+            for current in [None, Some(""), Some("   ")] {
+                let mut config = signing_config(livemode, current, false);
+                config
+                    .providers
+                    .first_mut()
+                    .expect("one rail configured")
+                    .credentials
+                    .insert(
+                        CALLBACK_SIGNING_SECRET_PREVIOUS.to_owned(),
+                        SIGNING.to_owned(),
+                    );
+                let error = boot_seeds(&config, &adapters)
+                    .expect_err("a previous secret alone is a half-done rotation");
+                assert!(
+                    matches!(&error, ConfigError::CallbackSigningPreviousWithoutCurrent { code }
+                        if code == "signing"),
+                    "livemode={livemode}, current={current:?}: {error:?}"
+                );
+                assert!(!error.to_string().contains(SIGNING), "{error}");
+                assert_eq!(error.category(), Category::Configuration);
+            }
+            let mut rotating = signing_config(livemode, Some("new-secret-test_0006"), false);
+            rotating
+                .providers
+                .first_mut()
+                .expect("one rail configured")
+                .credentials
+                .insert(
+                    CALLBACK_SIGNING_SECRET_PREVIOUS.to_owned(),
+                    SIGNING.to_owned(),
+                );
+            boot_seeds(&rotating, &adapters)
+                .unwrap_or_else(|error| panic!("livemode={livemode}: a rotation boots: {error}"));
+        }
+    }
+
+    /// RFC-0014 security review (2026-10-23): a signing secret with
+    /// surrounding whitespace, current or previous, is refused in both
+    /// modes, naming the setting and never the value; a blank one is still
+    /// no secret, not this refusal. Mutation-checked: deleting the refusal
+    /// fails on the trailing newline.
+    #[test]
+    fn a_signing_secret_with_surrounding_whitespace_is_refused() {
+        let adapters = signing_rail();
+        for livemode in [false, true] {
+            for padded in [
+                format!("{SIGNING}\n"),
+                format!(" {SIGNING}"),
+                format!("{SIGNING}\t"),
+                format!("\r\n{SIGNING}\r\n"),
+            ] {
+                let error = boot_seeds(&signing_config(livemode, Some(&padded), false), &adapters)
+                    .expect_err("a padded current secret");
+                assert!(
+                    matches!(&error, ConfigError::CallbackSigningSecretWhitespace { code, setting }
+                        if code == "signing" && *setting == "credentials.callback_signing_secret"),
+                    "livemode={livemode}, {padded:?}: {error:?}"
+                );
+                assert!(!error.to_string().contains(SIGNING), "{error}");
+
+                let mut previous = signing_config(livemode, Some("new-secret-test_0006"), false);
+                previous
+                    .providers
+                    .first_mut()
+                    .expect("one rail configured")
+                    .credentials
+                    .insert(CALLBACK_SIGNING_SECRET_PREVIOUS.to_owned(), padded.clone());
+                let error = boot_seeds(&previous, &adapters).expect_err("a padded previous secret");
+                assert!(
+                    matches!(&error, ConfigError::CallbackSigningSecretWhitespace { setting, .. }
+                        if *setting == "credentials.callback_signing_secret_previous"),
+                    "livemode={livemode}, {padded:?}: {error:?}"
+                );
+            }
+        }
+        // Blank is no secret: a sandbox boots on it (and warns), livemode
+        // refuses it as a missing secret, never as whitespace.
+        boot_seeds(&signing_config(false, Some(" \n "), false), &adapters)
+            .expect("a blank secret is no secret, which a sandbox only warns about");
+        let error = boot_seeds(&signing_config(true, Some(" \n "), false), &adapters)
+            .expect_err("livemode needs a secret");
+        assert!(
+            matches!(error, ConfigError::CallbackSigningSecretMissing { .. }),
+            "{error:?}"
+        );
+    }
+
+    /// RFC-0014 security review (2026-10-23): while a previous secret is
+    /// configured, every boot says so, naming the rail, the setting and the
+    /// counter that says when to remove it, and never the secret; nothing is
+    /// said without one.
+    #[test]
+    fn a_rotation_in_flight_is_warned_about_at_every_boot() {
+        let mut config = signing_config(true, Some("new-secret-test_0006"), false);
+        assert!(rotating_callback_rails(&config).is_empty());
+        let ((), silent) = crate::test_log::with_captured_log(|| {
+            warn_about_rotations_in_flight(&config);
+        });
+        assert!(silent.is_empty(), "{silent}");
+
+        config
             .providers
             .first_mut()
             .expect("one rail configured")
@@ -1093,7 +1291,21 @@ mod tests {
                 CALLBACK_SIGNING_SECRET_PREVIOUS.to_owned(),
                 SIGNING.to_owned(),
             );
-        boot_seeds(&previous_only, &adapters).expect("the previous key is a key");
+        assert_eq!(rotating_callback_rails(&config), vec!["signing".to_owned()]);
+        let ((), log) = crate::test_log::with_captured_log(|| {
+            warn_about_rotations_in_flight(&config);
+        });
+        assert!(log.contains("WARN"), "{log}");
+        for expected in [
+            "signing",
+            "credentials.callback_signing_secret_previous",
+            "verified_previous",
+            "RFC-0014",
+        ] {
+            assert!(log.contains(expected), "{expected} missing from {log}");
+        }
+        assert!(!log.contains(SIGNING), "a secret reached the log: {log}");
+        assert!(!log.contains("new-secret-test_0006"), "{log}");
     }
 
     /// RFC-0014 § 6: a signing setting on a rail whose adapter checks no

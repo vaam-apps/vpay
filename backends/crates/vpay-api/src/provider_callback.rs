@@ -151,7 +151,9 @@ use serde_json::json;
 use vpay_core::metrics::PROVIDER_CALLBACKS_TOTAL;
 use vpay_core::{Currency, Money};
 use vpay_db::{ChargeRow, Repositories, TxOutcome, UnitOfWork as _};
-use vpay_provider::{CallbackRequest, CallbackVerdict, ChargeRef, ProviderAdapter, RefExtra};
+use vpay_provider::{
+    CallbackCheck, CallbackRequest, CallbackVerdict, ChargeRef, ProviderAdapter, RefExtra,
+};
 
 use crate::ResourceConfig;
 use crate::error::ApiError;
@@ -430,6 +432,18 @@ async fn callback(
 /// pull-forward, so a check that could not run never counts as one that
 /// passed; the poll ladder still runs, and neither can happen to a charge
 /// this deployment wrote.
+///
+/// **A rail that declares a check and answers `NotChecked` fails closed**:
+/// `Unavailable`, with an `error` naming the rail. That is an adapter that
+/// declares [`CallbackCheck::Signature`] (so boot demands and accepts its
+/// secret) and kept the port's default `verify_callback`; without this rule
+/// every forged callback on it would pull a poll forward, and nothing but
+/// the conformance suite's own list of rails would notice. _(Added
+/// 2026-10-23 from RFC-0014's security review.)_
+///
+/// The rail's configuration is borrowed
+/// ([`crate::v1::RailConfig::provider_config_ref`]), never cloned: this is
+/// the one place an anonymous request reaches a rail's credentials.
 async fn verdict_for(
     adapter: &dyn ProviderAdapter,
     resources: &ResourceConfig,
@@ -451,9 +465,23 @@ async fn verdict_for(
         body,
         received_at: SystemTime::now(),
     };
-    adapter
-        .verify_callback(&request, &charge_ref, &rail.provider_config())
-        .await
+    let verdict = adapter
+        .verify_callback(&request, &charge_ref, rail.provider_config_ref())
+        .await;
+    if verdict == CallbackVerdict::NotChecked
+        && adapter.capabilities().callback_check != CallbackCheck::None
+    {
+        tracing::error!(
+            rail = %code,
+            "this rail's adapter declares a callback check and answered NotChecked, which is the \
+             port's default: its verify_callback is not implemented. The callback is refused \
+             (verdict unavailable) and the poll ladder still runs; fix the adapter (RFC-0014)"
+        );
+        return CallbackVerdict::Unavailable(
+            "the rail's adapter declares a callback check and performed none",
+        );
+    }
+    verdict
 }
 
 /// The [`ChargeRef`] `vpay_worker`'s poll builds from the same row, built
@@ -493,7 +521,184 @@ fn charge_ref_of(charge: &ChargeRow) -> Option<ChargeRef> {
 
 #[cfg(test)]
 mod tests {
+    use vpay_core::ProviderFlow;
+    use vpay_provider::{
+        CallbackRef, CallbackUrlMode, Capabilities, ChargeStatus, ProviderConfig, ProviderError,
+        RefundDestination, RefundTarget, Refunded, SubmitSteps, Submitted,
+    };
+
     use super::*;
+
+    /// A rail that declares `check` and keeps every default the port has,
+    /// `verify_callback` included: the adapter RFC-0014's security review
+    /// was about. It talks to no rail; every rail call is `Unsupported`.
+    #[derive(Debug)]
+    struct DeclaringRail {
+        check: CallbackCheck,
+    }
+
+    #[async_trait::async_trait]
+    impl ProviderAdapter for DeclaringRail {
+        fn code(&self) -> &'static str {
+            "declaring"
+        }
+
+        fn capabilities(&self) -> Capabilities {
+            Capabilities {
+                flow: ProviderFlow::Push,
+                supports_refunds: false,
+                supports_partial_refunds: false,
+                delivers_callbacks: true,
+                requires_ip_allowlist: false,
+                supports_account_holder_lookup: false,
+                refund_destination: RefundDestination::Origin,
+                callback_url_mode: CallbackUrlMode::Registered,
+                submit_steps: SubmitSteps::One,
+                callback_check: self.check,
+                method_types: vpay_core::routing::MethodTypes::of(
+                    &vpay_core::routing::MethodType::ALL,
+                ),
+            }
+        }
+
+        async fn submit(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<Submitted, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn query_status(
+            &self,
+            _charge: &ChargeRef,
+            _config: &ProviderConfig,
+        ) -> Result<ChargeStatus, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        fn parse_callback(&self, _body: &[u8]) -> Result<CallbackRef, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+
+        async fn refund(
+            &self,
+            _charge: &ChargeRef,
+            _amount: Money,
+            _destination: Option<&RefundTarget>,
+            _config: &ProviderConfig,
+        ) -> Result<Refunded, ProviderError> {
+            Err(ProviderError::Unsupported)
+        }
+    }
+
+    /// A [`ResourceConfig`] holding `declaring` when `with_rail`, and no rail
+    /// at all otherwise.
+    fn resources(with_rail: bool) -> ResourceConfig {
+        let mut config = crate::test_fixtures::config();
+        if with_rail {
+            config.providers.push(vpay_config::ProviderHost {
+                code: "declaring".to_owned(),
+                enabled: true,
+                host: vpay_config::HostEntry {
+                    url: "https://rail.example".to_owned(),
+                    label: "rail".to_owned(),
+                },
+                settings: BTreeMap::new(),
+                callback_url: None,
+                currency: "XAF".to_owned(),
+                credentials: BTreeMap::new(),
+                display_name: None,
+                callbacks: None,
+            });
+        }
+        ResourceConfig::from_config(&config).expect("the fixture projects")
+    }
+
+    /// A charge on `declaring`, in `currency_code`.
+    fn charge(currency_code: &str) -> ChargeRow {
+        ChargeRow {
+            id: "ch_test".to_owned(),
+            payment_intent_id: "pi_test".to_owned(),
+            provider_code: "declaring".to_owned(),
+            provider_reference_id: uuid::Uuid::nil(),
+            provider_ref_extra: None,
+            provider_txn_id: None,
+            redirect_url: None,
+            return_url: None,
+            state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
+            amount: 5000,
+            currency_code: currency_code.to_owned(),
+            payer_ref: None,
+            payer_ref_masked: None,
+            method_type: None,
+            failure_code: None,
+            failure_raw: None,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            updated_at: time::OffsetDateTime::UNIX_EPOCH,
+        }
+    }
+
+    async fn verdict_on(
+        check: CallbackCheck,
+        resources: &ResourceConfig,
+        charge: &ChargeRow,
+    ) -> CallbackVerdict {
+        verdict_for(
+            &DeclaringRail { check },
+            resources,
+            "declaring",
+            charge,
+            &HeaderMap::new(),
+            b"{}",
+        )
+        .await
+    }
+
+    /// RFC-0014 security review (2026-10-23): a rail that declares a
+    /// signature check and kept the port's default `verify_callback` is
+    /// refused, not admitted; a rail that declares none is today's
+    /// `NotChecked`. Mutation-checked: deleting the rule in `verdict_for`
+    /// fails the first assertion.
+    #[tokio::test]
+    async fn a_declared_check_that_was_not_performed_fails_closed() {
+        let resources = resources(true);
+        let charge = charge("XAF");
+        for check in [CallbackCheck::Signature, CallbackCheck::BodyToken] {
+            let verdict = verdict_on(check, &resources, &charge).await;
+            assert!(
+                matches!(verdict, CallbackVerdict::Unavailable(_)),
+                "{check:?}: {verdict:?}"
+            );
+            assert!(!verdict.admits_pull_forward(), "{check:?}");
+        }
+        assert_eq!(
+            verdict_on(CallbackCheck::None, &resources, &charge).await,
+            CallbackVerdict::NotChecked
+        );
+    }
+
+    /// `verdict_for`'s two `Unavailable` branches, neither of which a
+    /// charge this deployment wrote can reach, each admitting no
+    /// pull-forward; the route pulls forward only on a verdict that admits
+    /// it. Mutation-checked: answering `NotChecked` in either branch fails
+    /// here.
+    #[tokio::test]
+    async fn a_check_the_route_cannot_build_admits_no_pull_forward() {
+        let no_rail = verdict_on(CallbackCheck::None, &resources(false), &charge("XAF")).await;
+        assert_eq!(
+            no_rail,
+            CallbackVerdict::Unavailable("this process holds no configuration for the rail")
+        );
+        assert!(!no_rail.admits_pull_forward());
+
+        let no_currency = verdict_on(CallbackCheck::None, &resources(true), &charge("ZZZ")).await;
+        assert_eq!(
+            no_currency,
+            CallbackVerdict::Unavailable("the charge's row does not parse as a charge reference")
+        );
+        assert!(!no_currency.admits_pull_forward());
+    }
 
     /// The path a rail is actually told to call, assembled from the two
     /// constants above, must be the one

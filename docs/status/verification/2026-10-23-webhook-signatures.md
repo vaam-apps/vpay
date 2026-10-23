@@ -79,16 +79,21 @@ and `verify: off`, and never prints the fake secret; a sandbox one logs
 `provider_callback.rs`'s
 `a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles`
 confirms a Notch Pay charge through the SDK, puts it on the stub's
-pending-then-complete scenario, parks its poll, and POSTs three forgeries (no
+pending-then-complete scenario, parks its poll, and POSTs four forgeries (no
 signature; a signature under another secret; Notch Pay's genuine signature of
-a different webhook). After each: the poll's `run_at` is unchanged, nothing is
+a different webhook; the genuine webhook re-serialised after signing, with its
+genuine signature). After each: the poll's `run_at` is unchanged, nothing is
 claimable, and the stub's journal holds no new read. A genuinely signed
-webhook for an unknown reference is answered too. Then the genuine webhook:
-the poll is claimable at once, the read settles the charge `succeeded`, and
-the stub has recorded exactly one more read. All five answers are the same
-`202`, byte for byte. The scrape says
-`vpay_provider_callbacks_total{provider="notchpay",verdict="invalid"} 3` and
-`verdict="verified"} 1`, and holds no secret.
+webhook for an unknown reference is answered too. Then the genuine webhook,
+byte for byte as sent (spaced, keys out of order, a trailing newline): the
+poll is claimable at once, the read settles the charge `succeeded`, and the
+stub has recorded exactly one more read. All six answers are the same `202`,
+byte for byte. The scrape says
+`vpay_provider_callbacks_total{provider="notchpay",verdict="invalid"} 4` and
+`verdict="verified"} 1`, and holds no secret. _(Three forgeries, a compact
+genuine body and `invalid"} 3` until the security review below: a compact
+body survives a re-serialisation byte for byte, so the route's use of the
+raw bytes was not pinned.)_
 
 ## Mutation checks
 
@@ -131,6 +136,73 @@ booted a livemode Notch Pay fixture with no signing secret, which
 removes it and expects `78` naming the setting, so the refusal is also proven
 on the real binary; the sandbox case asserts `serve`'s warning. `vpay-server`
 was re-run alone after the fix: 60 passed. The figures above use that run.
+
+## Security review (2026-10-23)
+
+An independent reviewer read `82a68f4e..5b1dad71` adversarially, ran the
+touched crates' tests (the integration case against real containers), and
+diffed `vpay-adapter-notchpay/src/lib.rs` against the base line by line,
+because a disk-full incident had truncated it mid-work and it was rebuilt by
+hand. **Verdict: no security defect.** The comparison is constant-time over
+the raw bytes; rotation cannot be made to accept every signature; a forgery
+gets the same `202`, moves nothing and causes no read; no secret reaches a
+log, a `Debug`, an error or a metric; and the adapter file lost nothing (its
+eleven removed lines are a reflowed import and a rewritten doc section about
+the limitation this branch removes).
+
+| #   | Finding                                                                                                                                                                | Severity   | Done                                                                                                                                                                                                                                                 | Pinned by                                                                                                                                                                                       |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | The skills say the opposite of the code                                                                                                                                | blocker    | the vpay-skills branch of the same name, updated with this change                                                                                                                                                                                    | `tools/verify-coverage.mjs`                                                                                                                                                                     |
+| 2   | The port's default fails open: an adapter that declares `Signature` and keeps the default `verify_callback` has its secret demanded at boot, then admits every forgery | should-fix | `verdict_for` answers `Unavailable` and logs `error` when a rail that declares a check answers `NotChecked`                                                                                                                                          | `a_declared_check_that_was_not_performed_fails_closed`                                                                                                                                          |
+| 3   | A rotation has no end signal; the previous key is accepted silently for ever; `_previous` alone boots                                                                  | should-fix | `CallbackVerdict::VerifiedPrevious`, label `verified_previous`; a `WARN` at every `serve` boot while it is set (`warn_about_rotations_in_flight`); `CallbackSigningPreviousWithoutCurrent` (exit 78, both modes)                                     | `the_previous_secret_verifies_during_a_rotation_and_a_retired_one_does_not`, `a_rotation_in_flight_is_warned_about_at_every_boot`, `a_previous_signing_secret_without_a_current_one_is_refused` |
+| 4   | A secret with surrounding whitespace (`"hsk_…\n"` from a file) boots and refuses every genuine webhook, with only a counter to say so                                  | should-fix | `CallbackSigningSecretWhitespace` (exit 78, both modes, current or previous, naming the setting); a blank value is still no secret                                                                                                                   | `a_signing_secret_with_surrounding_whitespace_is_refused`                                                                                                                                       |
+| 5   | The unauthenticated route cloned every rail credential per request                                                                                                     | nit        | `RailConfig::provider_config_ref`, borrowed                                                                                                                                                                                                          | (no behaviour to test)                                                                                                                                                                          |
+| 6   | `verdict_for`'s two `Unavailable` branches had no test                                                                                                                 | nit        | a unit test for each                                                                                                                                                                                                                                 | `a_check_the_route_cannot_build_admits_no_pull_forward`                                                                                                                                         |
+| 7   | Raw-body handling was not pinned at the route: the compact fixture survives a re-serialisation                                                                         | nit        | the integration case's genuine webhook is non-canonical, and its re-serialisation is a fourth forgery. Folded into the existing case rather than added beside it: that case asserts exact `notchpay` counter values, and the recorder is per process | `a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles`                                                                                                                        |
+| 8   | One `warn!` per anonymous forged request, and `verdict="invalid"` is attacker-inflatable                                                                               | nit        | **recorded, not changed**: it costs no more than before (an `info` and a transaction), and the runbook's "is `verified` also non-zero?" tells forgeries from a stale secret. A caller who knows one live reference can still drive the alert to have | —                                                                                                                                                                                               |
+| 9   | Two docs contradicted the code (`vpay-api/src/lib.rs`, "neither MTN nor Orange signs"; the threat model's flood row)                                                   | nit        | both corrected, with dated notes                                                                                                                                                                                                                     | —                                                                                                                                                                                               |
+| 10  | `the_comparison_is_the_constant_time_one` is a source-text tripwire, not a proof: a `.cmp(` or a hand-written loop with `.verify_slice(` left in a comment would pass  | nit        | **recorded, not changed**: constant time cannot be measured on a shared runner, and the tripwire catches the obvious `==` regression                                                                                                                 | —                                                                                                                                                                                               |
+
+Not done from the review: an assertion that the conformance suite's rail
+list equals `vpay_server::adapters()`. `vpay-tests-conformance` would need
+`vpay-server` as a dev-dependency, which links the whole server stack
+(`vpay-api`, `vpay-db`, `vpay-worker`, `sqlx`) into a suite that today needs
+only the port and the adapters. The fail-closed rule at the route (finding 2)
+is the guard instead.
+
+**Mutation checks, the review's.** M13 to M16 were applied **together** in
+one build (each named test fails on its own rule; none depends on another)
+and the files restored; M17 and M18 alone.
+
+| #   | Mutation                                                            | Fails                                                                         |
+| --- | ------------------------------------------------------------------- | ----------------------------------------------------------------------------- |
+| M13 | the route's fail-closed rule disabled                               | `a_declared_check_that_was_not_performed_fails_closed`                        |
+| M14 | "no configuration for the rail" answers `NotChecked`                | `a_check_the_route_cannot_build_admits_no_pull_forward`                       |
+| M15 | the previous-without-current refusal disabled                       | `a_previous_signing_secret_without_a_current_one_is_refused`                  |
+| M16 | the whitespace refusal disabled                                     | `a_signing_secret_with_surrounding_whitespace_is_refused`                     |
+| M17 | Notch Pay answers `Verified` for a match under either key           | `the_previous_secret_verifies_during_a_rotation_and_a_retired_one_does_not`   |
+| M18 | the route verifies the body re-serialised (`serde_json` round trip) | the integration case, at "a genuine webhook must make the poll claimable now" |
+
+**Gates for the review's changes**, 2026-10-23, Rust 1.98.0, `cargo test`
+(`cargo-nextest` is not installed in this environment), each package or
+filter alone:
+
+| Run                                                                                                                            | Result                                |
+| ------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------- |
+| `cargo fmt --all -- --check`                                                                                                   | clean                                 |
+| `cargo clippy` on the eight touched packages, `--all-targets -- -D warnings`                                                   | 0 warnings                            |
+| `vpay-provider` unit / doc                                                                                                     | 59 / 14 passed, 0 failed, 0 ignored   |
+| `vpay-adapter-notchpay` unit / doc                                                                                             | 64 / 1 passed, 0 failed, 0 ignored    |
+| `vpay-config` unit / doc                                                                                                       | 148 / 5 passed, 0 failed, 0 ignored   |
+| `vpay-core` unit / doc                                                                                                         | 94 / 68 passed, 0 failed, 0 ignored   |
+| `vpay-api --lib`                                                                                                               | 445 passed, 0 failed, 0 ignored       |
+| `vpay-server` (lib 9, main 8, `cli.rs` 43)                                                                                     | 60 passed, 0 failed, 0 ignored        |
+| conformance: `a_forged_callback_is_refused_by_a_rail_that_checks` (3 rails) and `every_adapter_declares_coherent_capabilities` | 4 passed, 0 failed (101 filtered out) |
+| integration: `a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles`, real Postgres and WireMock              | 1 passed, 0 failed (11 filtered out)  |
+| `just verify`                                                                                                                  | the fifteen gates passed              |
+
+Not run for the review's changes: the whole workspace, the other integration
+binaries, and `just ci`.
 
 ## What is stub-proven only, and what is not done
 

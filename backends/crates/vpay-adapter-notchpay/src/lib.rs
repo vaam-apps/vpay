@@ -761,7 +761,10 @@ impl ProviderAdapter for Adapter {
     /// * No header, a header that is not ASCII, or a signature that matches
     ///   no configured secret: [`CallbackVerdict::Invalid`], with a fixed
     ///   sentence that quotes nothing.
-    /// * A match against either secret: [`CallbackVerdict::Verified`].
+    /// * A match against the current secret: [`CallbackVerdict::Verified`];
+    ///   against the previous one only: [`CallbackVerdict::VerifiedPrevious`],
+    ///   so the counter says when a rotation can end. _(Either was `Verified`
+    ///   until the 2026-10-23 security review.)_
     ///
     /// **The raw body**, the bytes the route received, and not a
     /// re-serialisation. Notch Pay's own guide shows both: its PHP and Python
@@ -785,7 +788,7 @@ impl ProviderAdapter for Adapter {
         _charge: &ChargeRef,
         config: &ProviderConfig,
     ) -> CallbackVerdict {
-        let secrets = vpay_provider::callback::callback_signing_secrets(config);
+        let secrets = vpay_provider::callback::callback_signing_keys(config);
         if secrets.is_empty() {
             return CallbackVerdict::NoSecret;
         }
@@ -795,20 +798,21 @@ impl ProviderAdapter for Adapter {
         let Ok(signature) = header.to_str() else {
             return CallbackVerdict::Invalid("notchpay: x-notch-signature is not ASCII");
         };
-        let matched = secrets.iter().any(|secret| {
+        // Current first (`callback_signing_keys`' order), so a signature
+        // both keys would accept is counted under the current one.
+        let matched = secrets.iter().find(|(_, secret)| {
             vpay_provider::callback::hmac_sha256_hex_matches(
                 secret.as_bytes(),
                 request.body,
                 signature,
             )
         });
-        if matched {
-            CallbackVerdict::Verified
-        } else {
-            CallbackVerdict::Invalid(
+        match matched {
+            Some((key, _)) => key.verified(),
+            None => CallbackVerdict::Invalid(
                 "notchpay: x-notch-signature is not the HMAC-SHA256 of the body under any \
                  configured signing secret",
-            )
+            ),
         }
     }
 

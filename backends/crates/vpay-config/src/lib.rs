@@ -1331,6 +1331,51 @@ pub enum ConfigError {
         code: String,
     },
 
+    /// `credentials.callback_signing_secret_previous` without a non-blank
+    /// `credentials.callback_signing_secret`, on a rail whose adapter checks
+    /// signatures (RFC-0014; added 2026-10-23 from its security review).
+    ///
+    /// A previous secret is the second key of a rotation. Alone, it is a
+    /// rotation whose new key is missing (an unset or empty variable behind
+    /// the current one, most often), and the deployment would go on accepting
+    /// callbacks signed under a secret that is being retired, often because
+    /// it leaked. Refused in both modes: set the current secret, or rename
+    /// the previous one to it.
+    #[error(
+        "providers[{code}] configures credentials.callback_signing_secret_previous but no \
+         credentials.callback_signing_secret (or a blank one); a previous secret is the old key \
+         of a rotation, so set the current one too, or move the value to \
+         credentials.callback_signing_secret"
+    )]
+    CallbackSigningPreviousWithoutCurrent {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// A signing secret whose value begins or ends with whitespace, on a rail
+    /// whose adapter checks signatures (RFC-0014; added 2026-10-23 from its
+    /// security review).
+    ///
+    /// The HMAC key is the value's exact bytes, so `"hsk_…\n"` (a Secret
+    /// created from a file that ends in a newline) is a different key from
+    /// the provider's, and every genuine callback would be refused with
+    /// nothing louder than a counter to say so. Refused rather than trimmed:
+    /// the value is not this process's to rewrite, and whatever produced the
+    /// newline will produce it again. A blank value is not this refusal: it
+    /// is no secret at all. The message names the setting, never the value.
+    #[error(
+        "providers[{code}].{setting} begins or ends with whitespace (often a trailing newline \
+         from the file the secret was created from); the signature is checked against the exact \
+         value, so every genuine callback would be refused. Remove the whitespace from the \
+         value"
+    )]
+    CallbackSigningSecretWhitespace {
+        /// The `providers[].code` from the YAML.
+        code: String,
+        /// Which setting, by its path in the YAML: never its value.
+        setting: &'static str,
+    },
+
     /// `routing.weights[]` names a rail this file does not configure
     /// (RFC-0008, 2026-10-23 revision).
     ///

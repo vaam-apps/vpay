@@ -513,11 +513,16 @@ returns nothing. [runbooks/callback-endpoints.md](../runbooks/callback-endpoints
 
 `vpay_provider_callbacks_total{provider,verdict}` landed on 2026-10-23 with
 RFC-0014's callback check, the third name the plan document does not have.
-`verdict` is one of five constants in `vpay_core::metrics::callback_verdict`,
-one per `vpay_provider::CallbackVerdict` variant: `verified`, `invalid`,
-`not_checked`, `no_secret` and `unavailable`. The first is the only one a
-rail's own signature produced; `invalid` and `unavailable` are the two that
-did not pull the charge's poll forward.
+`verdict` is one of six constants in `vpay_core::metrics::callback_verdict`,
+one per `vpay_provider::CallbackVerdict` variant: `verified`,
+`verified_previous`, `invalid`, `not_checked`, `no_secret` and
+`unavailable`. The first two are the only ones a rail's own signature
+produced, under the current secret and under the previous one respectively;
+`invalid` and `unavailable` are the two that did not pull the charge's poll
+forward. `verified_previous` is the end-of-rotation signal: when it stops
+increasing, `credentials.callback_signing_secret_previous` can be removed.
+_(Five constants until 2026-10-23: RFC-0014's security review found that a
+match under either key was `verified`, so a rotation had no end signal.)_
 
 RFC-0014 § 7 wrote `{rail, verdict}`. It is `provider` because every other
 per-rail series here labels the rail so, and a join against
