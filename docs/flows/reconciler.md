@@ -114,7 +114,7 @@ MTN and Orange answer `NotChecked`. A refused callback is answered the same
 `202` and moves nothing; the ladder still asks the rail at its next rung. A
 verified one is still a hint, and moves no money: what the check buys is that
 an anonymous POST stops pulling a signing rail's polls forward. Stub-proven;
-the real scheme measured on: not yet
+never verified against a real Notch Pay delivery
 ([verification](../status/verification/2026-10-23-webhook-signatures.md)).
 
 ### Where a rail sends its callbacks

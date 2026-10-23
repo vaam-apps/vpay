@@ -65,7 +65,7 @@ rather than trusting this list to be exhaustive.
   the callback route's new step 4, `vpay_provider_callbacks_total`, and Notch
   Pay's `x-notch-signature` check against a configured Hash Key, with boot
   refusing a livemode rail that holds none unless `callbacks.verify: off`.
-  Stub-proven; the real scheme measured on: not yet. Twelve guards
+  Stub-proven; never verified against a real Notch Pay delivery. Twelve guards
   mutation-checked; nothing sent to Notch Pay.
 - [verification/2026-10-23-method-type-routing.md](verification/2026-10-23-method-type-routing.md) —
   ADR-0029 D6/D10 and RFC-0008's 2026-10-23 revision, slice 1: `mtn_wallet`

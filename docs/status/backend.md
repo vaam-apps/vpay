@@ -1190,7 +1190,7 @@ No route was mounted or unmounted and no `NotImplemented` token moved.
 The maintainer was asked "Webhook signature verification (RFC-0014) needs
 Notch Pay's hash key held by vpay as a secret. Lift the earlier 'hash key is
 evidence only, never vpay configuration' rule for this?" and answered "Yes,
-build RFC-0014". **Stub-proven; the real scheme measured on: not yet.**
+build RFC-0014". **Stub-proven; never verified against a real Notch Pay delivery.**
 
 - **The port:** `ProviderAdapter::verify_callback(request, charge, config)`,
   defaulting to `CallbackVerdict::NotChecked`; `CallbackRequest` (headers,
@@ -1220,8 +1220,12 @@ build RFC-0014". **Stub-proven; the real scheme measured on: not yet.**
   stays parked, nothing is claimable and the stub records no read for three
   forgeries, and that the genuine webhook settles the charge with every
   answer byte-identical. Twelve guards mutation-checked.
-- **Not done:** no webhook Notch Pay sent has been checked (RFC-0012 § 10
-  item 7), so whether it signs the raw body is unconfirmed; Orange's
+- **Not done:** no webhook Notch Pay sent has ever been delivered (RFC-0012
+  § 10 item 7), so the signature's format, header, encoding and retries are
+  unmeasured; the 2026-10-23 sandbox run found an API-created endpoint stored
+  with `"url": null`, so a real check needs the Hash Key and a
+  dashboard-registered endpoint, and until a delivery is seen there are no
+  Notch Pay callbacks to check; Orange's
   `BodyToken` check (RFC-0014 open question 2); Stripe's and PayPal's (no
   adapter); per-account secrets (RFC-0009) and RFC-0013's sealed store; an
   alert rule on `verdict="invalid"`; the `notchpay-sandbox` profile does not

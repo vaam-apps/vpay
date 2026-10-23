@@ -374,7 +374,7 @@ admits it, and only the authenticated read moves money.
 
 ### The signature check (RFC-0014, built 2026-10-23)
 
-**Stub-proven; the real scheme measured on: not yet.** `verify_callback`
+**Stub-proven; never verified against a real Notch Pay delivery.** `verify_callback`
 reads `x-notch-signature` and accepts it when it is the hex HMAC-SHA256 of the
 **raw body** under `credentials.callback_signing_secret` or, during a
 rotation, `credentials.callback_signing_secret_previous`, compared in constant
@@ -397,6 +397,20 @@ counted on `vpay_provider_callbacks_total{provider="notchpay",verdict}`. A
 steady `invalid` with no `verified` beside it is this deployment's own
 secret, usually rotated in the dashboard and not in the Secret. No header
 value, body byte or secret is logged.
+
+**No webhook has ever been delivered, so nothing about it is measured**: not
+the signature's format, header name or encoding, and not retries. The
+sandbox run of 2026-10-23 (branch `claude/happy-hopper-r3h6rz-notchpay-sandbox`)
+found why none arrived: an endpoint created through `POST /webhooks` with a
+public URL is answered `201` but stored with `"url": null`, nothing was
+delivered to it in 21 minutes, and reading, updating or deleting it by id
+answers `404`. That branch advises an operator who wants callbacks to
+register vpay's URL in Notch Pay's dashboard and set `callbacks.register:
+off`, a route that is itself untested. **So checking a real webhook needs two
+things: the Hash Key, and an endpoint Notch Pay actually delivers to. Until a
+delivery is seen, expect no Notch Pay callbacks at all**: the poll ladder
+settles every charge without them, and the check changes nothing for a
+deployment that receives none.
 
 What is not settled, and why it is "stub-proven": Notch Pay's guide signs
 the raw body in its PHP and Python examples and `JSON.stringify(req.body)`
@@ -521,7 +535,7 @@ without the `+`. The adapter sends the `+` form the documentation shows.
 ## Status
 
 **Built 2026-10-23: webhook signatures are checked (RFC-0014).**
-Stub-proven; the real scheme measured on: not yet. `notchpay` declares
+Stub-proven; never verified against a real Notch Pay delivery. `notchpay` declares
 `CallbackCheck::Signature`, and `verify_callback` checks `x-notch-signature`
 against the configured Hash Key; a webhook that fails moves nothing and
 causes no read, and boot refuses a livemode rail with no secret unless

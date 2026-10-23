@@ -1,7 +1,7 @@
 # RFC-0014: Verifying rail callbacks
 
 - **Status:** **The port and Notch Pay's check are built (2026-10-23),
-  stub-proven; the real scheme measured on: not yet.** The maintainer asked,
+  stub-proven; never verified against a real Notch Pay delivery.** The maintainer asked,
   on 2026-10-23, "Webhook signature verification (RFC-0014) needs Notch Pay's
   hash key held by vpay as a secret. Lift the earlier 'hash key is evidence
   only, never vpay configuration' rule for this?", and answered "Yes, build
@@ -15,8 +15,14 @@
   **Not built:** Orange's `BodyToken` check (open question 2), Stripe's and
   PayPal's checks (no adapter), RFC-0013's sealed store (§ 5 phase 2), and
   per-account secrets (RFC-0009). Every proof is against WireMock's Notch Pay
-  and a scheme transcribed from Notch Pay's guide: no webhook Notch Pay sent
-  has been checked (RFC-0012 § 10 item 7). _(This said "Draft. **Nothing in
+  and a scheme transcribed from Notch Pay's guide: **no webhook Notch Pay sent
+  has ever been delivered**, so the signature's format, header, encoding and
+  retries are unmeasured (RFC-0012 § 10 item 7). The 2026-10-23 sandbox run
+  found that an endpoint created through `POST /webhooks` is stored with
+  `"url": null` and received nothing in 21 minutes; verifying a real webhook
+  needs the Hash Key **and** an endpoint registered in Notch Pay's dashboard
+  ([adapter-notchpay.md](../flows/adapter-notchpay.md) § "The signature
+  check"). _(This said "Draft. **Nothing in
   this document is built.**" until 2026-10-23.)_
 - **Author:** vpay maintainers
 - **Date:** 2026-10-20

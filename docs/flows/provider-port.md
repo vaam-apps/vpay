@@ -244,8 +244,7 @@ comparison. `Measured` forwards it and counts nothing; the route counts the
 verdict on `vpay_provider_callbacks_total`. `notchpay` is the only adapter
 that checks (`Signature`). Proven by the conformance suite's
 `a_forged_callback_is_refused_by_a_rail_that_checks`, branched on the
-capability, and against WireMock and a real Postgres; stub-proven, the real
-scheme measured on: not yet
+capability, and against WireMock and a real Postgres; stub-proven; never verified against a real Notch Pay delivery
 ([verification](../status/verification/2026-10-23-webhook-signatures.md)).
 
 **Updated 2026-10-23: `prepare` and `submit_steps`**

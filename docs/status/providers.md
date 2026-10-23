@@ -205,8 +205,11 @@ Notes on cells that a word cannot carry:
 - **Callback verification** is [RFC-0014](../rfc/0014-verifying-rail-callbacks.md)'s
   subject. Since 2026-10-23 the port hands an adapter the headers and the raw
   body (`verify_callback`), and **Notch Pay's signature is checked** where its
-  Hash Key is configured: stub-proven; the real scheme measured on: not yet
-  ([verification](verification/2026-10-23-webhook-signatures.md)). MTN signs
+  Hash Key is configured: stub-proven; never verified against a real Notch Pay delivery
+  ([verification](verification/2026-10-23-webhook-signatures.md)). No Notch
+  Pay webhook has ever been delivered: an endpoint created through its API is
+  stored with `"url": null` (sandbox, 2026-10-23), so a real check needs the
+  Hash Key and a dashboard-registered endpoint. MTN signs
   nothing; Orange's `notif_token` is stored at submit and still never
   compared; Stripe and PayPal sign, and have no adapter. A callback is a hint
   on every row either way: it moves a poll, never money. _(This said "Today

@@ -1,7 +1,7 @@
 # 2026-10-23 — rail callbacks are checked where the rail signs (RFC-0014)
 
 Branch `claude/happy-hopper-r3h6rz-webhook-signatures`, from `master` at
-`82a68f4e`. **Stub-proven; the real scheme measured on: not yet.** Every proof
+`82a68f4e`. **Stub-proven; never verified against a real Notch Pay delivery.** Every proof
 below is against WireMock's Notch Pay, a real Postgres, and a signing scheme
 transcribed from Notch Pay's "Verify webhooks" guide. No webhook Notch Pay
 sent has been received or checked, and nothing was sent to Notch Pay.
@@ -110,6 +110,19 @@ Each mutation was applied alone, the named tests run, and the file restored
 GATE_COUNTS_PENDING
 
 ## What is stub-proven only, and what is not done
+
+- **No webhook from Notch Pay has ever been delivered** to any vpay
+  endpoint, so the signature's format, header name, encoding and Notch Pay's
+  retries are all unmeasured. The sandbox fork's run of 2026-10-23 (branch
+  `claude/happy-hopper-r3h6rz-notchpay-sandbox`, landing first) found that an
+  endpoint created through `POST /webhooks` with a public URL is answered
+  `201` and stored with `"url": null`, that nothing was delivered to it in 21
+  minutes, and that reading, updating or deleting it by id answers `404`. It
+  advises registering vpay's URL in Notch Pay's dashboard with
+  `callbacks.register: off`, which is untested. So verifying a real webhook
+  needs the Hash Key **and** a dashboard-registered endpoint, and until a
+  delivery is seen an operator should expect no Notch Pay callbacks: polling
+  settles every charge.
 
 - **What Notch Pay signs.** The check signs the raw body. Notch Pay's guide
   shows that in its PHP and Python examples and `JSON.stringify(req.body)` in

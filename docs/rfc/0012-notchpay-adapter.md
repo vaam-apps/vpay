@@ -557,8 +557,7 @@ Three things about this rail's callbacks, none of which changes the design:
   `verify_callback`, which receives the headers and the raw body after
   `parse_callback` has found the charge, and the adapter checks the header
   over the raw body in constant time. A webhook that fails it moves no poll;
-  one that passes is still a hint. Stub-proven; the real scheme measured on:
-  not yet (item 7 below). _(This said "vpay cannot check the signature
+  one that passes is still a hint. Stub-proven; never verified against a real Notch Pay delivery (item 7 below). _(This said "vpay cannot check the signature
   today", and that an unverified webhook "is worth one authenticated read and
   no money", until 2026-10-23. The second half still holds on a deployment
   that configures no secret.)_
