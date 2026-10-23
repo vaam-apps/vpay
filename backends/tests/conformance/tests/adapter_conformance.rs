@@ -226,6 +226,42 @@ fn every_adapter_declares_coherent_capabilities() {
     }
 }
 
+/// Every rail declares the payment-method types it serves (ADR-0029 D6,
+/// RFC-0008 as revised on 2026-10-23), and the declarations are exactly the
+/// vocabulary table in `docs/plans/2026-10-23-method-type-routing.md`.
+///
+/// Coherent means at least one: boot refuses an enabled rail serving none
+/// (`ConfigError::RailServesNoMethodType`). Exact, because the router reads
+/// nothing else to decide which rail may take an `mtn_wallet` payment: a rail
+/// that stopped declaring a type would silently drop out of every routed
+/// confirm for it, and one that started would join them unreviewed.
+#[test]
+fn every_adapter_declares_the_method_types_it_serves() {
+    let served: BTreeMap<&str, Vec<&str>> = adapters()
+        .iter()
+        .map(|a| {
+            let c = a.capabilities();
+            assert!(
+                c.method_types_are_coherent(),
+                "{}: declares no payment-method type",
+                a.code()
+            );
+            (
+                a.code(),
+                c.method_types.iter().map(|t| t.as_wire_str()).collect(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        served,
+        BTreeMap::from([
+            ("mtn_momo", vec!["mtn_wallet"]),
+            ("notchpay", vec!["mtn_wallet", "orange_wallet"]),
+            ("orange_money", vec!["orange_wallet"]),
+        ])
+    );
+}
+
 /// **Every shipping rail's `refund_destination` agrees with what its
 /// `parse_destination` does** — a `Required` rail has overridden it, an
 /// `Origin` rail has left the port's `Unsupported` alone.
