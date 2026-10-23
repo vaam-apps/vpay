@@ -91,6 +91,8 @@ shamefullyHoist: false
 #   UPDATE 2026-10-09: Next 16.3.8 now pins `postcss: 8.5.23` (fixed), so the
 #   16.x half of the above is stale; Next 15.5.27 (the latest 15.x, used by
 #   frontends/apps/*) still pins `8.4.31`, so the override is still load-bearing.
+#   UPDATE 2026-10-23: so does Next 15.5.28 (`postcss: 8.4.31`), the release
+#   that clears GHSA-2464-fhr4-w9xw; Next 16.4.2 pins `8.5.23`. Still load-bearing.
 #
 # overrides['@storybook/addon-actions>uuid'] and overrides.vite — REMOVED
 #   2026-09-07 by the exp26 UI revamp (docs/plans/2026-09-07-ui-revamp.md
