@@ -221,6 +221,47 @@ async fn create_omits_absent_optional_fields_rather_than_sending_them_empty() {
 }
 
 #[tokio::test]
+async fn create_sends_payment_method_types_beside_rail_codes_as_written() {
+    // ADR-0029 D6: a method type (the payer's network, routed at confirm) and
+    // a rail code (that rail, pinned) share one list, and the SDK sends each
+    // as its own wire string. The same body as the Node SDK's
+    // `payment_intents.create sends a payment-method type beside a rail code`.
+    let (server, client) = fixture().await;
+    Mock::given(method("POST"))
+        .and(path("/v1/payment_intents"))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(support::payment_intent_json("pi_1")),
+        )
+        .mount(&server)
+        .await;
+
+    client
+        .payment_intents()
+        .create(
+            CreatePaymentIntentParams {
+                amount: 5000,
+                currency: "xaf".to_string(),
+                payment_method_types: vec![
+                    PaymentMethodType::MtnWallet,
+                    PaymentMethodType::OrangeWallet,
+                    PaymentMethodType::NotchPay,
+                ],
+                ..Default::default()
+            },
+            RequestOptions::new(),
+        )
+        .await
+        .unwrap();
+
+    let request = only_request(&server, "/v1/payment_intents").await;
+    assert_eq!(
+        body_string(&request),
+        "amount=5000&currency=xaf&payment_method_types[0]=mtn_wallet\
+         &payment_method_types[1]=orange_wallet&payment_method_types[2]=notchpay"
+    );
+}
+
+#[tokio::test]
 async fn retrieve_payment_intent_is_a_get_with_no_body_and_decodes_next_action() {
     let (server, client) = fixture().await;
     Mock::given(method("GET"))

@@ -102,7 +102,7 @@ mod support;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client_with_publishable_keys,
-    migrated_postgres, serve,
+    migrated_postgres, serve, serve_with_adapters,
 };
 
 /// The merchant every test acts as, and the tenant it acts for.
@@ -725,6 +725,19 @@ async fn a_push_confirm_the_rail_accepts_moves_the_intent_to_processing() -> any
         charge.redirect_url, None,
         "a push rail hands back no URL, and none may be invented"
     );
+
+    // ADR-0029 D6: a rail code is that rail, pinned, exactly as before method
+    // types existed. The router never saw this confirm, so it wrote no
+    // decision; the charge still records the network, because `mtn_momo`
+    // serves exactly one.
+    assert_eq!(
+        stored_rail_and_type(&harness.pool, &intent.id).await?,
+        (PUSH_RAIL.to_owned(), Some("mtn_wallet".to_owned()))
+    );
+    assert!(
+        stored_decision(&harness.pool, &intent.id).await?.is_none(),
+        "a confirm by rail code is not routed, so it has no routing_decisions row"
+    );
     assert_eq!(
         charge.provider_ref_extra,
         Some(serde_json::json!({})),
@@ -941,12 +954,18 @@ async fn redirect_confirm_commits_the_rails_material_before_it_answers() -> anyh
 /// and because a `serde_json` parse here would say "the shape changed" where
 /// this says "the rail was told the wrong thing".
 async fn orange_requests_matching(harness: &Harness, pattern: &str) -> anyhow::Result<usize> {
+    stub_requests_matching(&harness.orange_origin, pattern).await
+}
+
+/// [`orange_requests_matching`] against any stub's origin: Notch Pay's, for
+/// the method-type cases, which assert the channel vpay *sent*.
+async fn stub_requests_matching(origin: &str, pattern: &str) -> anyhow::Result<usize> {
     let text = reqwest::Client::new()
-        .post(format!("{}/__admin/requests/count", harness.orange_origin))
+        .post(format!("{origin}/__admin/requests/count"))
         .body(pattern.to_owned())
         .send()
         .await
-        .context("the Orange stub's admin API answers")?
+        .context("the stub's admin API answers")?
         .text()
         .await
         .context("the count response is readable")?;
@@ -2934,6 +2953,548 @@ async fn a_two_step_confirm_whose_prompt_fails_still_holds_the_rails_reference()
         ],
         "the prepare answered, the prompt not: recovery reads the submit row and polls"
     );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ------------------------------------------------------ payment-method types
+//
+// ADR-0029 D6, D7 and D10, and RFC-0008 as revised on 2026-10-23: a confirm
+// naming a payment-method type (`mtn_wallet`, `orange_wallet`) is routed to
+// the highest-scored rail that can take it, and the decision is committed
+// with the charge. The formula is `provisional-1`, a configured weight per
+// rail (100 unless `routing.weights` says otherwise), ties to the lower rail
+// code. These cases assert the rows, not the response alone, because the
+// decision is on no `/v1` object (D10).
+
+/// The configured weight's breakdown for a candidate scoring `points`.
+fn scored(rail: &str, points: i64) -> Value {
+    serde_json::json!({
+        "rail": rail,
+        "score": {
+            "total": points,
+            "parts": [{ "component": "configured_weight", "points": points }],
+        },
+    })
+}
+
+/// A rail the router excluded, and why.
+fn excluded(rail: &str, reason: &str) -> Value {
+    serde_json::json!({ "rail": rail, "excluded": reason })
+}
+
+/// A `/v1` bearer token for `CLIENT_A` from a server's own signer.
+///
+/// [`Harness::bearer`] for a **second** server: each one's issuer is its own
+/// base URL, so a token minted by the first is refused by the second.
+fn merchant_token(signing_key: &LoadedSigningKey) -> String {
+    signing_key
+        .token_manager()
+        .issue_client_token_with_extra(
+            CLIENT_A,
+            900,
+            Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
+            Some(vpay_config::MERCHANT_AUDIENCE.to_owned()),
+            std::collections::HashMap::new(),
+        )
+        .expect("the server's own signer mints a merchant token")
+}
+
+/// A form `POST` to `{base_url}{path}` as merchant A, answering the status
+/// and the JSON body.
+///
+/// Raw HTTP where the SDK says it cannot go (`docs/sdks/parity.md`, dated
+/// 2026-10-23): `ConfirmPaymentIntentParams` names rail codes only, so it
+/// sends neither a method-type confirm nor its pin, and the SDK's closed
+/// `PaymentMethodType` cannot spell a reserved or unknown type.
+///
+/// The body is written by hand, brackets bare, as both SDKs write it
+/// (`create_payment_intent_body_matches_the_node_sdk_byte_for_byte`):
+/// `reqwest`'s `form` would percent-encode them, and `vpay_api::form` treats
+/// only a bare bracket as structure, so it would read
+/// `payment_method_data%5Btype%5D` as one flat key. Every value sent here is
+/// plain ASCII with nothing to encode.
+async fn post_form(
+    base_url: &str,
+    token: &str,
+    path: &str,
+    form: &[(&str, &str)],
+) -> anyhow::Result<(u16, Value)> {
+    let body = form
+        .iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&");
+    let response = reqwest::Client::new()
+        .post(format!("{base_url}{path}"))
+        .bearer_auth(token)
+        .header("idempotency-key", uuid::Uuid::new_v4().to_string())
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(body)
+        .send()
+        .await
+        .with_context(|| format!("POST {path}"))?;
+    let status = response.status().as_u16();
+    let body = response.json().await.context("the body is JSON")?;
+    Ok((status, body))
+}
+
+/// `body[key]` as a string, for asserting on an envelope or an object.
+fn str_at<'a>(body: &'a Value, path: &[&str]) -> Option<&'a str> {
+    path.iter()
+        .try_fold(body, |value, key| value.get(*key))
+        .and_then(Value::as_str)
+}
+
+/// The rail and method type of the one charge on an intent.
+async fn stored_rail_and_type(
+    pool: &PgPool,
+    payment_intent_id: &str,
+) -> anyhow::Result<(String, Option<String>)> {
+    sqlx::query_as::<_, (String, Option<String>)>(
+        "SELECT provider_code, method_type FROM charges WHERE payment_intent_id = $1",
+    )
+    .bind(payment_intent_id)
+    .fetch_one(pool)
+    .await
+    .context("reading the charge's rail and method type")
+}
+
+/// One `routing_decisions` row, in the columns these cases assert on.
+#[derive(Debug, sqlx::FromRow)]
+struct StoredDecision {
+    method_type: String,
+    chosen_rail: String,
+    pinned_rail: Option<String>,
+    considered: Value,
+    formula: String,
+    config_version: String,
+}
+
+/// The decision committed with an intent's charge, if the router made one.
+async fn stored_decision(
+    pool: &PgPool,
+    payment_intent_id: &str,
+) -> anyhow::Result<Option<StoredDecision>> {
+    sqlx::query_as::<_, StoredDecision>(
+        "SELECT d.method_type, d.chosen_rail, d.pinned_rail, d.considered, d.formula, \
+         d.config_version \
+         FROM routing_decisions d JOIN charges c ON c.id = d.charge_id \
+         WHERE c.payment_intent_id = $1",
+    )
+    .bind(payment_intent_id)
+    .fetch_optional(pool)
+    .await
+    .context("reading the routing decision")
+}
+
+/// Every adapter this file's rails need, Notch Pay's included: the
+/// shipping crates, on the client both binaries build.
+fn three_rail_adapters() -> BTreeMap<String, Box<dyn vpay_provider::ProviderAdapter>> {
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .expect("the vendored-roots client builds");
+    vpay_api::v1::boot::adapters_by_code(vec![
+        Box::new(vpay_adapter_mtn_momo::Adapter::new(http.clone())),
+        Box::new(vpay_adapter_orange_money::Adapter::new(http.clone())),
+        Box::new(vpay_adapter_notchpay::Adapter::new(http)),
+    ])
+}
+
+/// Notch Pay on its stub, with the conformance suite's test-marked keys and
+/// the one channel setting a rail-code charge uses.
+fn notchpay_rail(origin: &str) -> ProviderHost {
+    ProviderHost {
+        code: "notchpay".to_owned(),
+        enabled: true,
+        host: HostEntry {
+            url: origin.to_owned(),
+            label: "notchpay-wiremock".to_owned(),
+        },
+        settings: BTreeMap::from([("channel".to_owned(), "cm.mobile".to_owned())]),
+        callback_url: None,
+        currency: "XAF".to_owned(),
+        credentials: BTreeMap::from([
+            (
+                "public_key".to_owned(),
+                "stub-public-key-test_0001".to_owned(),
+            ),
+            (
+                "private_key".to_owned(),
+                "stub-private-key-test_0002".to_owned(),
+            ),
+        ]),
+        display_name: None,
+        callbacks: None,
+    }
+}
+
+/// A WireMock request pattern for a Notch Pay `process` call on `channel`.
+fn notchpay_process_on(channel: &str) -> String {
+    serde_json::json!({
+        "method": "POST",
+        "urlPathPattern": "/payments/trx\\..+",
+        "bodyPatterns": [{
+            "matchesJsonPath": { "expression": "$.channel", "equalTo": channel },
+        }],
+    })
+    .to_string()
+}
+
+#[tokio::test]
+async fn a_method_type_confirm_is_routed_and_commits_its_decision_with_the_charge()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.bearer();
+
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnWallet),
+            RequestOptions::new(),
+        )
+        .await
+        .context("an enabled rail serves mtn_wallet in XAF, so the create is accepted")?;
+    assert_eq!(intent.payment_method_types, vec!["mtn_wallet".to_owned()]);
+
+    let (status, body) = post_form(
+        &harness.base_url,
+        &token,
+        &format!("/v1/payment_intents/{}/confirm", intent.id),
+        &[
+            ("payment_method_data[type]", "mtn_wallet"),
+            ("payment_method_data[mtn_wallet][msisdn]", MSISDN),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 200, "{body:#}");
+    assert_eq!(str_at(&body, &["status"]), Some("processing"));
+    assert_eq!(
+        body.get("payment_method_types"),
+        Some(&serde_json::json!(["mtn_wallet"])),
+        "the object still says what the merchant asked for; the rail is not on it (D10)"
+    );
+
+    assert_eq!(
+        stored_rail_and_type(&harness.pool, &intent.id).await?,
+        (PUSH_RAIL.to_owned(), Some("mtn_wallet".to_owned())),
+        "the only rail here serving mtn_wallet took it, and the charge records the network"
+    );
+    let decision = stored_decision(&harness.pool, &intent.id)
+        .await?
+        .context("a routed charge commits with its decision, in one transaction")?;
+    assert_eq!(decision.method_type, "mtn_wallet");
+    assert_eq!(decision.chosen_rail, PUSH_RAIL);
+    assert_eq!(decision.pinned_rail, None);
+    assert_eq!(decision.formula, "provisional-1");
+    assert!(
+        decision.config_version.len() == 16
+            && decision
+                .config_version
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+        "16 lowercase hex digits, as the config_version_shape CHECK requires: {}",
+        decision.config_version
+    );
+    assert_eq!(
+        decision.considered,
+        Value::Array(vec![
+            scored(PUSH_RAIL, 100),
+            excluded(REDIRECT_RAIL, "does_not_serve"),
+        ]),
+        "every rail considered, the candidate with its breakdown and the other with its reason"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_network()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let notchpay = vpay_testkit::containers::start_wiremock(&mappings_dir("notchpay"))
+        .await
+        .context("the Notch Pay stub container starts")?;
+    let notchpay_origin = format!(
+        "http://127.0.0.1:{}",
+        notchpay
+            .get_host_port_ipv4(8080)
+            .await
+            .context("the Notch Pay stub's mapped port")?
+    );
+
+    // Three rails: `mtn_momo` and `notchpay` both serve `mtn_wallet`, and the
+    // operator weighs Notch Pay at 300 for it. `orange_wallet` keeps the
+    // default 100 on both of its rails.
+    let mtn = RailSetup::working(&harness.mtn_url);
+    let orange = RailSetup::working(&harness.orange_url);
+    let jwks_a = harness.jwks_a.clone();
+    let origin = notchpay_origin.clone();
+    let served = serve_with_adapters(
+        &harness.repositories,
+        &harness.server_pem,
+        |base_url| {
+            let mut config = config_with(base_url, jwks_a, &mtn, &orange);
+            config.providers.push(notchpay_rail(&origin));
+            config.routing = vpay_config::Routing {
+                weights: vec![vpay_config::RoutingWeight {
+                    rail: "notchpay".to_owned(),
+                    method_type: Some("mtn_wallet".to_owned()),
+                    weight: 300,
+                }],
+            };
+            config
+        },
+        three_rail_adapters,
+    )
+    .await?;
+    let client = harness.client_for(&served.base_url);
+    let token = merchant_token(&served.signing_key);
+    let confirm = |intent_id: String, form: Vec<(&'static str, &'static str)>| {
+        let base_url = served.base_url.clone();
+        let token = token.clone();
+        async move {
+            post_form(
+                &base_url,
+                &token,
+                &format!("/v1/payment_intents/{intent_id}/confirm"),
+                &form,
+            )
+            .await
+        }
+    };
+    let create = |method_type: PaymentMethodType| {
+        let client = client.clone();
+        async move {
+            client
+                .payment_intents()
+                .create(create_params(method_type), RequestOptions::new())
+                .await
+                .context("creating an intent for a method type this deployment serves")
+        }
+    };
+
+    // 1. The highest score wins: Notch Pay at 300 over MTN's own API at 100,
+    //    and Notch Pay is told the network, `cm.mtn`, not `cm.mobile`.
+    let first = create(PaymentMethodType::MtnWallet).await?;
+    let (status, body) = confirm(
+        first.id.clone(),
+        vec![
+            ("payment_method_data[type]", "mtn_wallet"),
+            ("payment_method_data[mtn_wallet][msisdn]", MSISDN),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 200, "{body:#}");
+    assert_eq!(str_at(&body, &["status"]), Some("processing"));
+    assert_eq!(
+        stored_rail_and_type(&harness.pool, &first.id).await?,
+        ("notchpay".to_owned(), Some("mtn_wallet".to_owned()))
+    );
+    let decision = stored_decision(&harness.pool, &first.id)
+        .await?
+        .context("the routed charge's decision")?;
+    assert_eq!(decision.chosen_rail, "notchpay");
+    assert_eq!(decision.pinned_rail, None);
+    assert_eq!(
+        decision.considered,
+        Value::Array(vec![
+            scored("notchpay", 300),
+            scored(PUSH_RAIL, 100),
+            excluded(REDIRECT_RAIL, "does_not_serve"),
+        ]),
+        "ranked by score, the loser kept with its own breakdown"
+    );
+    assert_eq!(
+        stub_requests_matching(&notchpay_origin, &notchpay_process_on("cm.mtn")).await?,
+        1,
+        "Notch Pay's channel follows the payer's network (RFC-0012 step 8)"
+    );
+
+    // 2. A pin wins over the ranking, and is recorded as a pin.
+    let second = create(PaymentMethodType::MtnWallet).await?;
+    let (status, body) = confirm(
+        second.id.clone(),
+        vec![
+            ("payment_method_data[type]", "mtn_wallet"),
+            ("payment_method_data[mtn_wallet][msisdn]", MSISDN),
+            ("payment_method_options[mtn_wallet][rail]", PUSH_RAIL),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 200, "{body:#}");
+    assert_eq!(
+        stored_rail_and_type(&harness.pool, &second.id).await?,
+        (PUSH_RAIL.to_owned(), Some("mtn_wallet".to_owned()))
+    );
+    let decision = stored_decision(&harness.pool, &second.id)
+        .await?
+        .context("a pinned confirm is still routed, and still recorded")?;
+    assert_eq!(decision.chosen_rail, PUSH_RAIL);
+    assert_eq!(decision.pinned_rail.as_deref(), Some(PUSH_RAIL));
+    assert_eq!(
+        decision.considered,
+        Value::Array(vec![
+            scored(PUSH_RAIL, 100),
+            excluded("notchpay", "not_pinned"),
+            excluded(REDIRECT_RAIL, "does_not_serve"),
+        ]),
+        "the pin is a filter, so the higher-weighted rail is excluded rather than outscored"
+    );
+
+    // 3. A pin that cannot take the payment is refused, naming itself, and
+    //    is never a fallback to another rail.
+    let third = create(PaymentMethodType::MtnWallet).await?;
+    let (status, body) = confirm(
+        third.id.clone(),
+        vec![
+            ("payment_method_data[type]", "mtn_wallet"),
+            ("payment_method_data[mtn_wallet][msisdn]", MSISDN),
+            ("payment_method_options[mtn_wallet][rail]", REDIRECT_RAIL),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 400, "{body:#}");
+    assert_eq!(
+        str_at(&body, &["error", "param"]),
+        Some("payment_method_options[mtn_wallet][rail]")
+    );
+    assert_eq!(charge_count(&harness.pool, &third.id).await?, 0);
+
+    // 4. A tie goes to the lower rail code: `notchpay` before
+    //    `orange_money`, both at 100. So this `orange_wallet` payment is a
+    //    push through Notch Pay, which is told `cm.orange`.
+    let fourth = create(PaymentMethodType::OrangeWallet).await?;
+    let (status, body) = confirm(
+        fourth.id.clone(),
+        vec![
+            ("payment_method_data[type]", "orange_wallet"),
+            ("payment_method_data[orange_wallet][msisdn]", MSISDN),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 200, "{body:#}");
+    assert_eq!(str_at(&body, &["status"]), Some("processing"));
+    let decision = stored_decision(&harness.pool, &fourth.id)
+        .await?
+        .context("the orange_wallet decision")?;
+    assert_eq!(
+        decision.considered,
+        Value::Array(vec![
+            scored("notchpay", 100),
+            scored(REDIRECT_RAIL, 100),
+            excluded(PUSH_RAIL, "does_not_serve"),
+        ])
+    );
+    assert_eq!(
+        stub_requests_matching(&notchpay_origin, &notchpay_process_on("cm.orange")).await?,
+        1
+    );
+
+    served.server.abort();
+    harness.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test]
+async fn a_type_this_deployment_cannot_take_is_a_400_naming_the_parameter() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.bearer();
+    let create = |method_type: &'static str, currency: &'static str| {
+        let base_url = harness.base_url.clone();
+        let token = token.clone();
+        async move {
+            post_form(
+                &base_url,
+                &token,
+                "/v1/payment_intents",
+                &[
+                    ("amount", "5000"),
+                    ("currency", currency),
+                    ("payment_method_types[0]", method_type),
+                ],
+            )
+            .await
+        }
+    };
+
+    // Reserved spellings are refused as reserved, not as unknown: a merchant
+    // reading the message learns they are coming, not that they are typos.
+    for reserved in ["card", "bank_transfer"] {
+        let (status, body) = create(reserved, CURRENCY).await?;
+        assert_eq!(status, 400, "{reserved}: {body:#}");
+        assert_eq!(
+            str_at(&body, &["error", "param"]),
+            Some("payment_method_types")
+        );
+        assert!(
+            str_at(&body, &["error", "message"]).is_some_and(|m| m.contains("reserved")),
+            "{reserved}: {body:#}"
+        );
+    }
+    let (status, body) = create("paypal_wallet", CURRENCY).await?;
+    assert_eq!(status, 400, "{body:#}");
+    assert_eq!(
+        str_at(&body, &["error", "param"]),
+        Some("payment_method_types")
+    );
+    // A type both rails serve, in a currency neither settles: refused at the
+    // create, where a rail code is only refused at the confirm.
+    let (status, body) = create("mtn_wallet", "eur").await?;
+    assert_eq!(status, 400, "{body:#}");
+    assert_eq!(
+        str_at(&body, &["error", "param"]),
+        Some("payment_method_types")
+    );
+
+    // A type the intent was not created with, and options that are not a
+    // pin, are refused before any charge exists.
+    let intent = harness
+        .a()
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnWallet),
+            RequestOptions::new(),
+        )
+        .await?;
+    let confirm_path = format!("/v1/payment_intents/{}/confirm", intent.id);
+    let (status, body) = post_form(
+        &harness.base_url,
+        &token,
+        &confirm_path,
+        &[
+            ("payment_method_data[type]", "orange_wallet"),
+            ("payment_method_data[orange_wallet][msisdn]", MSISDN),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 400, "{body:#}");
+    assert_eq!(
+        str_at(&body, &["error", "param"]),
+        Some("payment_method_data[type]")
+    );
+    let (status, body) = post_form(
+        &harness.base_url,
+        &token,
+        &confirm_path,
+        &[
+            ("payment_method_data[type]", "mtn_wallet"),
+            ("payment_method_data[mtn_wallet][msisdn]", MSISDN),
+            ("payment_method_options[mtn_wallet][speed]", "fast"),
+        ],
+    )
+    .await?;
+    assert_eq!(status, 400, "{body:#}");
+    assert_eq!(
+        str_at(&body, &["error", "param"]),
+        Some("payment_method_options[mtn_wallet]")
+    );
+    assert_eq!(charge_count(&harness.pool, &intent.id).await?, 0);
 
     harness.shutdown().await;
     Ok(())
