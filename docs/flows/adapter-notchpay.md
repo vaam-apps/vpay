@@ -328,7 +328,9 @@ the callback URL}`: who created it, and for which URL. An endpoint with
 - **Never modifies or deletes anything.** The client has no `PUT`, and
   `DELETE /webhooks/{id}` answered `404` in the sandbox. A current endpoint
   missing an event is reported `drifted`; superseded and duplicate ones are
-  logged at `warn`, by id, for an operator to delete in the dashboard.
+  logged at `warn`, by id, for an operator to delete in the dashboard. That
+  is the design and not a gap: the maintainer decided on 2026-10-23 that
+  retiring an endpoint is "an operator's task only, not code".
 - **Cannot see a hand-registered endpoint at vpay's URL**, because the URL is
   not echoed. A deployment that registered one by hand before 2026-10-22
   gets a second, vpay's own: each callback arrives twice, which costs a
@@ -575,10 +577,13 @@ ran.)_
   2026-10-22, when B3b ran them.)_
 - **Declared gaps:** `notchpay::refund` (token); model B, Sync, `X-Sync` (not
   offered); `cm.mtn` / `cm.orange` (step 8); webhook signature verification
-  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft);
-  retiring a superseded or duplicate webhook endpoint (no working `DELETE`).
-  _(The last item was "vpay registering its own webhook (RFC-0013)" until
-  2026-10-22.)_
+  ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md), a draft).
+  _(This list ended "retiring a superseded or duplicate webhook endpoint (no
+  working `DELETE`)" until 2026-10-23, when the maintainer decided it is "an
+  operator's task only, not code": vpay logs each such endpoint by id at
+  `warn`, and an operator deletes it in Notch Pay's dashboard (§ "Registering
+  the endpoint"). Before that the last item was "vpay registering its own
+  webhook (RFC-0013)", until 2026-10-22.)_
 - **Not wired into any running stack.** `config/application.yml` carries the
   `notchpay` block **commented out**, pointed at the `wiremock-notchpay`
   compose service. Uncommented, even with `enabled: false`, it would make

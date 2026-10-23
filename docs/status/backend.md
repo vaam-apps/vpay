@@ -1050,7 +1050,9 @@ it", then "Yes, start it". [RFC-0013](../rfc/0013-vpay-registers-its-own-callbac
 - **Not done:** no endpoint has been registered with a real Notch Pay account
   (step 5, which needs the maintainer's approval to call Notch Pay); no
   endpoint is ever retired or repaired, because Notch Pay's `DELETE`
-  answered `404` and the client has no `PUT`; a hand-registered endpoint at
+  answered `404` and the client has no `PUT` (retiring one has been an
+  operator's task since 2026-10-23, by the maintainer's decision, so it is
+  no longer a gap); a hand-registered endpoint at
   vpay's URL is invisible to the pass, so a deployment that registered one
   gets a second; Stripe and PayPal have no adapter.
 
