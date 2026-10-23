@@ -26,11 +26,7 @@ export type PaymentIntentStatus =
  * rail. `ConfirmPaymentIntentParams` still names rail codes only.
  */
 export type PaymentMethodType =
-  | "mtn_momo"
-  | "orange_money"
-  | "notchpay"
-  | "mtn_wallet"
-  | "orange_wallet";
+  "mtn_momo" | "orange_money" | "notchpay" | "mtn_wallet" | "orange_wallet";
 
 /** Redirect-rail next step, Stripe's own `next_action.redirect_to_url` shape. */
 export interface NextAction {
