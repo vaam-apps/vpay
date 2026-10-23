@@ -1,7 +1,9 @@
 # 2026-10-23 — payment-method types and a scored, explained router
 
 Branch `wip/method-routing`, from `0fb04ec5` (the head of vaam-apps/vpay#341,
-which merged as `c672fffc`). It builds slice 1 of
+which merged as `c672fffc`), **rebased onto the two-step submit**
+(vaam-apps/vpay#345, merged as `3633ca0c`): see § "Rebased onto the two-step
+submit" for what changed and the gates re-run there. It builds slice 1 of
 [the plan](../../plans/2026-10-23-method-type-routing.md): everything in
 [RFC-0008](../../rfc/0008-payment-method-routing.md)'s 2026-10-23 revision that
 does not depend on the score's final formula. **It is proven against WireMock
@@ -132,7 +134,72 @@ all expected: `charges.method_type` and its CHECK undeclared, and
 (`routing_decisions.considered`, `jsonb`). Recorded in
 [status/cratestack.md](../cratestack.md).
 
-## Gates on the final tree
+## Rebased onto the two-step submit
+
+The change was built on `0fb04ec5`. ADR-0032's two-step submit
+(vaam-apps/vpay#345) landed first, so the eight commits were rebased onto its
+head `c7aaad3d`, whose tree `3633ca0c` on `master` is. Both changes touch the
+port, the three adapters, the confirm path, the worker and the tests; every
+conflict was resolved so both survive:
+
+- **Every `Capabilities` and `ChargeRef` literal carries both new fields**:
+  `submit_steps` beside `method_types`, and `method_type` on each
+  `ChargeRef`, including the two #345 added. The confirm path's
+  `prepare_on_rail` now builds its `ChargeRef` with the routed
+  `target.method_type`, as `submit_to_rail` does; the worker builds both its
+  `prepare` and its `submit` `ChargeRef` in one function, which reads
+  `charges.method_type`.
+- **Notch Pay's channel is chosen at `submit`**, the call that sends the
+  process body. `prepare` (initialize) sends no channel, and both still refuse
+  a bad `settings.channel` before any request.
+- **Migrations**: #345's `0052_provider-requests-prepare.sql`, then this
+  change's `0053_method-types-and-routing-decisions.sql`, both in
+  `MANIFEST.sha256` in order. The counts this change had left at 52 are 53:
+  `backends/migrations/README.md`, `postgres_smoke.rs`'s applied count, and
+  `docs/status/infrastructure.md`, which names both. The drift figures stay
+  this change's (209 changes, 28 relations, 20 unmappable): `0052` moves
+  none of them, and the drift test passes with them.
+  Between this change's API commit and its renumber commit two files carry
+  `0052`, so those intermediate commits compile but would not migrate; the
+  branch head does both.
+- **Docs**: `adapter-notchpay.md`, `provider-port.md`, `docs/status/backend.md`
+  and `docs/status/README.md` carry both changes' text. The sample
+  configurations, `configuration.md`, RFC-0012's process example, the
+  sandbox runbook and three code comments no longer call `cm.mobile` "the only
+  channel": it is the only value `settings.channel` takes, and a routed
+  charge is sent `cm.mtn` or `cm.orange`.
+
+### Gates after the rebase
+
+Run on `land/method-routing` after the rebase, with Docker for Postgres,
+WireMock and Keycloak, and **`cargo nextest`**, which CI runs.
+
+| Gate                                                      | Result                                                                                                                                                       |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `cargo fmt --all -- --check`                              | clean                                                                                                                                                        |
+| `cargo clippy --workspace --all-targets -- -D warnings`   | clean                                                                                                                                                        |
+| `cargo nextest run`, every test binary of the workspace   | **54 binaries, 2 429 tests: 2 429 passed, 0 failed, 0 skipped**, counting the one rerun below. `confirm_rails` 20, `worker_recovery` 36, `postgres_smoke` 54 |
+| `cargo test --doc --workspace`                            | **136 passed, 0 failed, 1 ignored**                                                                                                                          |
+| `just verify`                                             | ok, fifteen gates; `verify-migrations` 53 files, `verify-doc-counts` 13 counts, `verify-sdk-parity` 792 tests and 46 dated gaps                              |
+| `just verify-ignored`'s three figures, from the runs      | 0 ignored, 54 binaries (expected 54), 2 429 tests (minimum 1080)                                                                                             |
+| `sdks/nodejs`: `vitest run`, `tsc --noEmit`, `eslint`     | **237 passed**; clean; clean                                                                                                                                 |
+| `sdks/stripe-compat`: `tsc --noEmit`, `eslint`            | clean; clean                                                                                                                                                 |
+| vpay-skills `tools/verify-coverage.mjs` against this tree | ok: 21 skills, 265 vpay paths, 48 feature pages                                                                                                              |
+
+**How it was run, and the one rerun.** This host's disk could not hold all
+54 debug test binaries at once (about 400 MB each), so the integration
+package ran one binary at a time with each executable deleted after its run,
+and the rest of the workspace in one `cargo nextest run`. `just verify-ignored`
+was not run as a recipe, because its `cargo nextest list` builds all 54 again;
+its three figures are read from those runs instead, and no `#[ignore]`
+attribute exists in the tree. `postgres_smoke`'s
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` failed
+once, with the measured 209 in its message, because this shell exported
+`RUST_BACKTRACE=1` and the `cratestack` CLI it runs appended a stack backtrace
+to the stderr the case compares exactly. CI's workflow does not set it. Rerun
+with the variable unset, the binary passed **54 of 54**.
+
+## Gates on the final tree, before the rebase
 
 Run on 2026-10-23 on this branch's tree, with Docker for Postgres and WireMock.
 
