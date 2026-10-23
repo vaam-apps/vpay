@@ -367,3 +367,21 @@ gutter past the rail, and the More sheet by pointer and by keyboard.
 box. `dashboard.cy.ts` scopes its identity and sign-out queries to
 `<main>`, because the sidebar's hidden copy of the account block is back in
 the DOM ahead of it.
+
+**Amended 2026-10-23: the stylesheet case "guards the OUTCOME either way",
+above, had not guarded anything since `@vaam-apps/ui` 0.5.0.** It asserted
+`--color-base-100:\s*#`, a hex value. 0.5.0
+([vaam-apps/vpay#318](https://github.com/vaam-apps/vpay/pull/318)) emits
+`--color-base-100:var(--md-sys-color-surface)` three times and puts the hex
+on the role, so the case failed after every correct build. CI never ran it
+against a build, so nobody saw it there; the recipe's own grep, which checks
+only that the token is defined, kept passing.
+The case now follows the `var()` chain to the colour the package's own
+`theme.css` resolves to, in `dark` and `light`. `just build-storybook` now
+runs this app's `a11y-gate.test.ts` against the artefact it has just built
+and fails if a case skips, so the "explicit skip" above is now only what
+`pnpm -r test` reports before a build. On this app's build, dropping the
+theme `@import` fails the case, and so does deleting the role declarations
+from the artefact while the `var()` mapping stays. The recipe's grep passes
+the second of those. Evidence:
+[../../status/verification/2026-10-23-a11y-gate-built-stylesheet.md](../../status/verification/2026-10-23-a11y-gate-built-stylesheet.md).

@@ -26,9 +26,13 @@
  *    render and axe never reaches them.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
+
+import { themeColours, type ThemeName } from "./testing/contrast";
 
 function appRoot(): string {
   let dir = process.cwd();
@@ -43,6 +47,14 @@ function appRoot(): string {
 const APP = appRoot();
 const code = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+/**
+ * The colour `--color-base-100` paints in `theme`, followed through every
+ * `var()` the way the cascade follows it — `undefined` when it is not
+ * declared, or when the chain ends at a property nothing declares.
+ */
+const base100 = (css: string, theme: ThemeName) =>
+  themeColours(postcss.parse(css), { theme }).get("base-100");
 
 describe("the browser a11y suite is still a gate", () => {
   it("preview.ts still asks the addon to FAIL on a violation", () => {
@@ -198,16 +210,44 @@ describe("the browser a11y suite is still a gate", () => {
     }
     const sheets = readdirSync(dir).filter((f) => f.endsWith(".css"));
     expect(sheets.length, "the build emitted a stylesheet").toBeGreaterThan(0);
-    const css = sheets.map((f) => readFileSync(join(dir, f), "utf8")).join("");
-    expect(
-      css,
-      "`bg-base-100` is generated but `--color-base-100` is defined nowhere. " +
-        "Either `app/globals.css` dropped the theme `@import`, or " +
-        "`storybook-static/` is STALE — a `just build-storybook` that failed " +
-        "this same check leaves its theme-less artefact on disk on purpose, " +
-        "so it can be inspected, and every later run of this test then reads " +
-        "that instead of the source. Re-run `just build-storybook`: if it " +
-        "exits 0, the tree was fine and the artefact was stale.",
-    ).toMatch(/--color-base-100:\s*#/);
+    const css = sheets
+      .map((f) => readFileSync(join(dir, f), "utf8"))
+      .join("\n");
+
+    // **Resolved, not pattern-matched — corrected 2026-10-23**, in both
+    // apps' copies of this case; the checkout's carries the full account.
+    // It asserted `--color-base-100:\s*#` until `@vaam-apps/ui` 0.5.0
+    // (vaam-apps/vpay#318) made the token
+    // `var(--md-sys-color-surface)`, after which it failed on every correct
+    // build and was seen nowhere, because CI ran it only where it skips.
+    // `just build-storybook` now runs this file against the artefact it has
+    // just built and refuses a skip there, so CI measures it for real.
+    // Now: the chain must end at the colour the package's own `theme.css`
+    // resolves to, in both themes it ships. Mutation-checked on this app's
+    // build too — the theme `@import` dropped, and the role declarations
+    // deleted from the artefact with the `var()` mapping left in place.
+    const packageTheme = readFileSync(
+      createRequire(import.meta.url).resolve("@vaam-apps/ui/styles/theme.css"),
+      "utf8",
+    );
+    for (const theme of ["dark", "light"] as const) {
+      const declared = base100(packageTheme, theme);
+      expect(
+        declared,
+        `the package's own theme.css resolves --color-base-100 in "${theme}" — ` +
+          "if it does not, either the package stopped declaring the role its " +
+          "mapping points at, or `themeColours` can no longer read this theme",
+      ).toBeDefined();
+      expect(
+        base100(css, theme),
+        `\`bg-base-100\` is generated but \`--color-base-100\` does not resolve to the package's "${theme}" ground. ` +
+          "Either `app/globals.css` dropped the theme `@import`, or " +
+          "`storybook-static/` is STALE — a `just build-storybook` that failed " +
+          "this same check leaves its theme-less artefact on disk on purpose, " +
+          "so it can be inspected, and every later run of this test then reads " +
+          "that instead of the source. Re-run `just build-storybook`: if it " +
+          "exits 0, the tree was fine and the artefact was stale.",
+      ).toEqual(declared);
+    }
   });
 });

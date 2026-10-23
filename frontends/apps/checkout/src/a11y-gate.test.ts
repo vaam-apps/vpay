@@ -28,9 +28,13 @@
  * own stylesheet instead.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
+
+import { themeColours, type ThemeName } from "./testing/contrast";
 
 function appRoot(): string {
   let dir = process.cwd();
@@ -45,6 +49,14 @@ function appRoot(): string {
 const APP = appRoot();
 const code = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+/**
+ * The colour `--color-base-100` paints in `theme`, followed through every
+ * `var()` the way the cascade follows it — `undefined` when it is not
+ * declared, or when the chain ends at a property nothing declares.
+ */
+const base100 = (css: string, theme: ThemeName) =>
+  themeColours(postcss.parse(css), { theme }).get("base-100");
 
 describe("the browser a11y suite is still a gate", () => {
   it("preview.ts still asks the addon to FAIL on a violation", () => {
@@ -147,16 +159,50 @@ describe("the browser a11y suite is still a gate", () => {
     }
     const sheets = readdirSync(dir).filter((f) => f.endsWith(".css"));
     expect(sheets.length, "the build emitted a stylesheet").toBeGreaterThan(0);
-    const css = sheets.map((f) => readFileSync(join(dir, f), "utf8")).join("");
-    expect(
-      css,
-      "`bg-base-100` is generated but `--color-base-100` is defined nowhere. " +
-        "Either `app/globals.css` dropped the theme `@import`, or " +
-        "`storybook-static/` is STALE — a `just build-storybook` that failed " +
-        "this same check leaves its theme-less artefact on disk on purpose, " +
-        "so it can be inspected, and every later run of this test then reads " +
-        "that instead of the source. Re-run `just build-storybook`: if it " +
-        "exits 0, the tree was fine and the artefact was stale.",
-    ).toMatch(/--color-base-100:\s*#/);
+    const css = sheets
+      .map((f) => readFileSync(join(dir, f), "utf8"))
+      .join("\n");
+
+    // **Resolved, not pattern-matched — corrected 2026-10-23.** This
+    // asserted `--color-base-100:\s*#`, a hex literal, until
+    // `@vaam-apps/ui` 0.5.0 (vaam-apps/vpay#318) re-expressed every daisyUI
+    // token as a `var()` onto a Material 3 role: the built sheet now says
+    // `--color-base-100:var(--md-sys-color-surface)` three times and the hex
+    // sits one hop away. So the case failed after every correct build, and
+    // nobody saw it: CI ran it only in `pnpm -r test`, which reaches the
+    // `ctx.skip()` above. Since the same date `just build-storybook` runs
+    // this file against the artefact it has just built, and fails if this
+    // case skips there, so CI's `web` job now measures it for real.
+    // What the theme guarantees is a colour at the end of the chain, so
+    // that is what is asserted now, in both themes the package ships —
+    // compared with what the package's own `theme.css` resolves to, rather
+    // than with a literal or a role name a later redesign would break the
+    // same way. Mutation-checked: dropping the theme `@import` from
+    // `app/globals.css` fails this, and so does deleting the role
+    // declarations from the artefact while leaving the `var()` mapping in
+    // place — a sheet `just build-storybook`'s own grep still passes.
+    const packageTheme = readFileSync(
+      createRequire(import.meta.url).resolve("@vaam-apps/ui/styles/theme.css"),
+      "utf8",
+    );
+    for (const theme of ["dark", "light"] as const) {
+      const declared = base100(packageTheme, theme);
+      expect(
+        declared,
+        `the package's own theme.css resolves --color-base-100 in "${theme}" — ` +
+          "if it does not, either the package stopped declaring the role its " +
+          "mapping points at, or `themeColours` can no longer read this theme",
+      ).toBeDefined();
+      expect(
+        base100(css, theme),
+        `\`bg-base-100\` is generated but \`--color-base-100\` does not resolve to the package's "${theme}" ground. ` +
+          "Either `app/globals.css` dropped the theme `@import`, or " +
+          "`storybook-static/` is STALE — a `just build-storybook` that failed " +
+          "this same check leaves its theme-less artefact on disk on purpose, " +
+          "so it can be inspected, and every later run of this test then reads " +
+          "that instead of the source. Re-run `just build-storybook`: if it " +
+          "exits 0, the tree was fine and the artefact was stale.",
+      ).toEqual(declared);
+    }
   });
 });

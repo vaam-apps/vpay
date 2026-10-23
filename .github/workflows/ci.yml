@@ -752,6 +752,12 @@ jobs:
       - run: pnpm -r test
       # Storybook, restored 2026-09-12 in `frontends/apps/checkout` after the
       # `@vaam-apps/ui` cutover deleted `@vpay/ui` and its install with it.
+      #
+      # Since 2026-10-23 the recipe also runs both apps' `a11y-gate.test.ts`
+      # against the artefact it has just built, and fails if a case skips.
+      # `pnpm -r test` above runs those files before any build exists, so
+      # their built-stylesheet case can only skip there; this step is where
+      # it is measured.
       - run: just build-storybook
       # Every checkout story rendered in a real Chromium with axe over each —
       # `just test-storybook`, not a copy of its command, so the gate and what
