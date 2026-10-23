@@ -134,8 +134,39 @@ all expected: `charges.method_type` and its CHECK undeclared, and
 
 ## Gates on the final tree
 
-**Not yet recorded in this commit.** The gates run on the tree this commit
-completes; their counts land in the next commit, on this page.
+Run on 2026-10-23 on this branch's tree, with Docker for Postgres and WireMock.
+
+| Gate                                                                   | Result                                                                                                                          |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `cargo fmt --all -- --check`                                           | clean                                                                                                                           |
+| `cargo clippy --workspace --all-targets -- -D warnings`                | clean                                                                                                                           |
+| `cargo test --workspace --all-targets --no-fail-fast`                  | 56 test binaries: **2 409 passed, 3 failed, 0 ignored**. The three are explained below the table and pass under nextest's rule  |
+| `cargo test --doc --workspace` (doctests, a separate runner)           | **136 passed, 0 failed, 1 ignored**                                                                                             |
+| `postgres_smoke` and `confirm_rails`, rerun after the renumber to 0053 | **54** and **18 passed**, 0 failed, 0 ignored                                                                                   |
+| `just verify`                                                          | ok, fifteen gates; `verify-migrations` 52 files, `verify-sdk-parity` 792 tests and 46 dated gaps, `verify-doc-counts` 13 counts |
+| `sdks/nodejs`: `vitest run`, `tsc --noEmit`, `eslint`                  | **237 passed** in 9 files; clean; clean                                                                                         |
+| `sdks/stripe-compat`: `tsc --noEmit`, `eslint`                         | clean; clean                                                                                                                    |
+| vpay-skills `tools/verify-coverage.mjs` against this tree              | ok: 21 skills, 265 vpay paths, 48 feature pages                                                                                 |
+
+**The three failures are the runner's.** All three assert exact values of
+the process-global metrics recorder:
+`webhooks.rs::the_ladder_walks_delivery_delay_and_then_succeeds`,
+`worker_e2e.rs::a_decline_after_submission_returns_the_intent_to_requires_payment_method`
+and `worker_e2e.rs::a_confirmed_payment_is_driven_to_succeeded_and_the_merchant_sees_it`.
+`cargo test` shares one process across a binary, and `worker_e2e.rs`'s own
+`METRICS` doc says that is where those counts break. `cargo nextest`, which
+`just test-rust` and CI run, gives every test its own process. It is not
+installed on this host. So each of the three was rerun alone with
+`cargo test -- --exact`, the same one-process-per-test condition, and each
+passed. None of the three touches routing.
+
+**Not run here:**
+
+- `just verify-ignored`, which needs `cargo nextest list`. No `#[ignore]` and
+  no test binary were added, so `expected_suites` stays at 54.
+- The Stripe-compat `compat` suite, which needs a live compose stack.
+- `pnpm -r test` beyond the Node SDK.
+- `just test-tauri-rust` and the frontends, which this change does not touch.
 
 ## Not done
 
