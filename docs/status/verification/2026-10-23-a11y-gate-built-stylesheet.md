@@ -8,6 +8,15 @@ on `@vaam-apps/ui` 0.5.0. The change touches four files outside `docs/`:
 - `justfile`: `build-storybook` runs both of those files;
 - `.github/workflows/ci.yml`: a comment only.
 
+A second commit on the branch ports the dependency half of
+[vaam-apps/vpay#341](https://github.com/vaam-apps/vpay/pull/341)'s `0fb04ec5`
+verbatim: `next` `^15.5.28` and 16.4.2, the lockfile, and the version
+mentions that moved with them. `master` at `8504536f` fails `just audit-web`
+on three Next.js advisories. CI's `web` job runs that audit before
+`pnpm -r test` and `just build-storybook`, so without the port this branch's
+CI would never reach the change. The evidence for the bump is #341's own page,
+`docs/status/verification/2026-10-23-npm-advisories.md`, which lands with #341.
+
 **No Rust, no migration, no route, no `NotImplemented` token and no gate in
 `just verify` moved.** [vaam-apps/vpay#341](https://github.com/vaam-apps/vpay/pull/341)
 reported the defect in its "Not done" list and its
@@ -112,6 +121,11 @@ defined 3x`, then `Tests  6 passed (6)`.
 | `pnpm -r test`, artefacts present                             | exit 0, **1663 passed, 0 skipped**: checkout 557, dashboard 457, config 66, tokens 12, stripe-js 152, nodejs 236, api-client 4, tauri plugin 71, shop 108 |
 | `pnpm -r test`, no artefacts (CI's order)                     | exit 0, **1661 passed, 2 skipped**: the built-stylesheet case in each app                                                                                 |
 | `pnpm --filter @vpay/{checkout,dashboard} typecheck` / `lint` | exit 0, all four                                                                                                                                          |
+| `just verify`                                                 | exit 0, the fifteen gates (`verify-doc-counts` reads this directory's file count; `verify-links` the four links to this page)                             |
+| `just fmt-check`, `just lint-web`                             | exit 0, before and after the port                                                                                                                         |
+| `just audit-web`                                              | exit 1 before the port, on `next` (GHSA-2464-fhr4-w9xw, GHSA-p3m5-59mp-jv5r, GHSA-673q-mjm6-r5xr); **exit 0 after it**                                    |
+| the `web` job's order, after the port                         | artefacts deleted; `pnpm -r test` exit 0, 1661 passed / 2 skipped; then `just build-storybook` exit 0, both apps' `a11y-gate.test.ts` 6 / 6               |
+| `test-storybook`, both apps, after the port                   | exit 0: checkout **26 / 26**, dashboard **36 / 36**. Not through the recipe: see below                                                                    |
 
 One run is recorded rather than dropped. The first `pnpm -r test` on this
 branch failed two dashboard cases with `Test timed out in 5000ms`, both in
@@ -119,6 +133,14 @@ branch failed two dashboard cases with `Test timed out in 5000ms`, both in
 touch. A `cargo install` was compiling on the same 4 cores at the time (load
 average 8.4). Re-run on an idle machine: that file 12 / 12, the dashboard
 suite 457 / 457, and the two full runs above.
+
+`test-storybook` ran through each app's own script, with the recipe's cache
+clearing done by hand, and not through `just test-storybook`. That recipe
+starts with `playwright install chromium`. Playwright 1.63 wants Chromium
+revision 1243, and this container has 1194 (Chromium 141), with a rule
+against downloading another. So both apps' `vitest.storybook.config.ts` were
+pointed at `/opt/pw-browsers/chromium` for the run and reverted after it. CI
+runs the pinned browser.
 
 ## Not done
 
@@ -131,5 +153,8 @@ suite 457 / 457, and the two full runs above.
 - The resolver reads tokens and does not lay out a page, so it cannot say
   whether `--color-base-100` resolves on a given element. That remains
   `just test-storybook`'s job; this case only proves the theme is in the
-  artefact that suite renders. `just test-storybook` was not run for this
-  change, because no story, screen or theme file changed.
+  artefact that suite renders.
+- The Rust half of `just ci` was not run: `clippy`, `test-rust`, `test-doc`,
+  `verify-ignored` and `deny`. No Rust or Cargo file changed. This container
+  has no Docker daemon for the testcontainers suites, and no `cargo-nextest`
+  or `cargo-deny`. `just verify`, which builds and runs `xtask`, was run.
