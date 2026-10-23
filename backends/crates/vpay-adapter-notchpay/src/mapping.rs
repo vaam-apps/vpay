@@ -38,7 +38,9 @@ use vpay_provider::{ChargeStatus, ProviderError};
 /// Every [`FailureCode`] this adapter can produce, and nothing else.
 ///
 /// `payer_timeout` (`expired`, `abandoned`), `payer_declined` (`canceled`),
-/// `provider_error` (`failed`, `rejected`, a refused initialize or process),
+/// `invalid_payer` (a process `422` on the payer's phone alone: a number the
+/// chosen network does not take, since 2026-10-23), `provider_error`
+/// (`failed`, `rejected`, any other refused initialize or process),
 /// `provider_account_blocked` (a `401`/`403` on our own keys) and
 /// `provider_unavailable` (`prepare`'s `409` for a reference no submit was
 /// ever made for: an initialize that lost its answer and prompted nobody,
@@ -55,9 +57,10 @@ use vpay_provider::{ChargeStatus, ProviderError};
 /// Its "canceled by user" number read `canceled`, which is the evidence
 /// RFC-0012 § 4 named for `payer_declined`; its "timeout" number read
 /// `expired`, which was already `payer_timeout`.
-pub const PRODUCED_FAILURE_CODES: [FailureCode; 5] = [
+pub const PRODUCED_FAILURE_CODES: [FailureCode; 6] = [
     FailureCode::PayerTimeout,
     FailureCode::PayerDeclined,
+    FailureCode::InvalidPayer,
     FailureCode::ProviderError,
     FailureCode::ProviderAccountBlocked,
     FailureCode::ProviderUnavailable,
@@ -284,6 +287,7 @@ pub(crate) enum Processed {
 /// | Notch Pay answered | Result |
 /// | --- | --- |
 /// | `422` "…already been processed" | [`Processed::AlreadyProcessed`] |
+/// | `422` whose `errors` name `phone` and nothing else | `Rejected { invalid_payer }`: the number is not one the chosen channel takes — measured 2026-10-23 for a number on the other network ("Invalid CM Orange Money", "Invalid CM Mobile Money") |
 /// | other `400`, `422` | `Rejected { provider_error }` with Notch Pay's message |
 /// | `401`, `403` | `Rejected { provider_account_blocked }` |
 /// | `404` "Payment not found" | `Malformed`: the initialize just answered, so this contradicts it |
@@ -292,6 +296,7 @@ pub(crate) enum Processed {
 pub(crate) fn process_refusal(refusal: &Refusal) -> Processed {
     Processed::Refused(match refusal.http_status {
         422 if mentions(refusal, ALREADY_PROCESSED) => return Processed::AlreadyProcessed,
+        422 if names_only_the_payers_phone(refusal) => wrong_number("processing a payment"),
         400 | 422 => declined(refusal, "processing a payment"),
         401 | 403 => keys_refused(refusal, "processing a payment"),
         404 if is_payment_not_found(refusal) => ProviderError::malformed(
@@ -348,14 +353,46 @@ pub(crate) fn keys_refused(refusal: &Refusal, doing: &str) -> ProviderError {
     }
 }
 
+/// A `422` whose `errors` name the payer's `phone` and no other field.
+///
+/// Only then is the refusal the payer's to fix: a refusal that also names the
+/// amount or the channel may be the deployment's, and calling it
+/// `invalid_payer` would tell a merchant the payer mistyped when vpay sent
+/// something wrong. Measured on 2026-10-23
+/// (`docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md`):
+/// an MTN number on `cm.orange` and an Orange number on `cm.mtn` each
+/// answered exactly `{"errors": {"phone": [...]}}` at process.
+fn names_only_the_payers_phone(refusal: &Refusal) -> bool {
+    refusal.errors.len() == 1 && refusal.errors.contains_key("phone")
+}
+
+/// The payer's number, refused for the channel it was sent on. `invalid_payer`
+/// since 2026-10-23, when the maintainer chose it over `provider_error`: a
+/// payer who picked the wrong network fixes it by choosing again, and
+/// `provider_error` would page someone for the payer's typo.
+///
+/// The message is vpay's own. Notch Pay's says which network refused, but a
+/// refusal about a phone number is the one most likely to quote it, so none
+/// of its words are carried.
+fn wrong_number(doing: &str) -> ProviderError {
+    ProviderError::Rejected {
+        code: FailureCode::InvalidPayer,
+        message: format!(
+            "notchpay: {doing} answered 422 on the payer's phone alone: the number is not one \
+             the chosen network accepts (a number on the other network, for one)"
+        ),
+    }
+}
+
 /// A validation refusal, carried as `provider_error` with Notch Pay's own
 /// words for an operator, bounded.
 ///
-/// Not mapped any finer. A `422` on the phone could be called `invalid_payer`,
-/// but the errors page names fields only by example, and a wrong guess would
-/// tell a merchant the payer mistyped when the deployment sent a bad amount.
-/// The names of the fields Notch Pay complained about are carried, never what
-/// it said about them, because a validation message can quote the value.
+/// Not mapped any finer, except a process `422` on the phone alone
+/// ([`wrong_number`]): the errors page names fields only by example, and a
+/// wrong guess would tell a merchant the payer mistyped when the deployment
+/// sent a bad amount. The names of the fields Notch Pay complained about are
+/// carried, never what it said about them, because a validation message can
+/// quote the value.
 fn declined(refusal: &Refusal, doing: &str) -> ProviderError {
     let fields = refusal
         .errors
@@ -699,6 +736,55 @@ mod tests {
         assert!(!rendered.contains("237670000000"), "{rendered}");
     }
 
+    /// The 2026-10-23 sandbox answers, verbatim but for the field's text: a
+    /// process `422` naming only `phone` is the payer's number, refused for
+    /// the network it was sent on. One that also names another field stays
+    /// `provider_error`, and so does the same refusal on initialize, which
+    /// was not measured. The message carries none of Notch Pay's words.
+    #[test]
+    fn a_number_on_the_other_network_is_an_invalid_payer() {
+        for said in ["Invalid CM Orange Money", "Invalid CM Mobile Money"] {
+            let refused = Refusal {
+                http_status: 422,
+                message: Some(said.to_owned()),
+                errors: BTreeMap::from([("phone".to_owned(), vec![said.to_owned()])]),
+            };
+            let Processed::Refused(ProviderError::Rejected { code, message }) =
+                process_refusal(&refused)
+            else {
+                panic!("a wrong-network refusal is a decline");
+            };
+            assert_eq!(code, FailureCode::InvalidPayer, "{said}");
+            assert!(!message.contains(said), "{message}");
+
+            let Initialized::Refused(ProviderError::Rejected { code, .. }) =
+                initialize_refusal(&refused)
+            else {
+                panic!("an initialize 422 is a decline");
+            };
+            assert_eq!(code, FailureCode::ProviderError, "initialize is unmeasured");
+        }
+
+        let also_the_amount = Refusal {
+            http_status: 422,
+            message: Some("The given data was invalid.".to_owned()),
+            errors: BTreeMap::from([
+                ("phone".to_owned(), vec!["…".to_owned()]),
+                ("amount".to_owned(), vec!["…".to_owned()]),
+            ]),
+        };
+        let Processed::Refused(ProviderError::Rejected { code, .. }) =
+            process_refusal(&also_the_amount)
+        else {
+            panic!("a validation refusal is a decline");
+        };
+        assert_eq!(
+            code,
+            FailureCode::ProviderError,
+            "a refusal that may be vpay's is not the payer's to fix"
+        );
+    }
+
     #[test]
     fn a_rails_prose_is_bounded_before_it_reaches_a_message() {
         let long = "x".repeat(10_000);
@@ -728,6 +814,15 @@ mod tests {
         }
         if let Initialized::Refused(ProviderError::Rejected { code, .. }) =
             initialize_refusal(&refusal(422, None))
+        {
+            produced.push(code);
+        }
+        let wrong_network = Refusal {
+            errors: BTreeMap::from([("phone".to_owned(), Vec::new())]),
+            ..refusal(422, None)
+        };
+        if let Processed::Refused(ProviderError::Rejected { code, .. }) =
+            process_refusal(&wrong_network)
         {
             produced.push(code);
         }

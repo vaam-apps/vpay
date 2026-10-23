@@ -20,13 +20,19 @@ use vpay_worker::{CallbackPlan, RailCheck, RailPass, Registration};
 use crate::StartupError;
 
 /// The deployment's registration plan: its name, and each **enabled** rail's
-/// `providers[].callbacks.register`, defaulting to `ensure`.
+/// `providers[].callbacks.register` — or, where the operator set none, the
+/// default the rail's adapter declares
+/// (`ProviderAdapter::default_callback_registration`): `ensure` unless the
+/// adapter says otherwise, `off` for `notchpay` since 2026-10-23.
 ///
 /// Every enabled rail is listed, `PerRequest` ones included: which rails are
 /// asked is the adapter's capability, read by the pass, never a list kept
-/// here. A rail with `enabled: false` is left out — an operator who turned a
-/// rail off has not asked vpay to write to its account.
-pub(crate) fn callback_plan(config: &Config) -> CallbackPlan {
+/// here, and so is which rails are written to unasked. A rail with
+/// `enabled: false` is left out — an operator who turned a rail off has not
+/// asked vpay to write to its account. A rail with no linked adapter keeps
+/// RFC-0013's `ensure`; boot refuses one before this runs, and the pass
+/// only ever asks rails it has an adapter for.
+pub(crate) fn callback_plan(config: &Config, adapters: &vpay_worker::Adapters) -> CallbackPlan {
     CallbackPlan {
         deployment: config.deployment.name.clone(),
         rails: config
@@ -34,11 +40,27 @@ pub(crate) fn callback_plan(config: &Config) -> CallbackPlan {
             .iter()
             .filter(|provider| provider.enabled)
             .map(|provider| {
-                let register = provider
-                    .callbacks
-                    .map(|callbacks| callbacks.register)
-                    .unwrap_or_default();
-                (provider.code.clone(), registration(register))
+                let configured = provider.callbacks.and_then(|callbacks| callbacks.register);
+                let register = configured.map_or_else(
+                    || {
+                        adapters
+                            .get(provider.code.as_str())
+                            .map_or(Registration::Ensure, |adapter| {
+                                Registration::from(adapter.default_callback_registration())
+                            })
+                    },
+                    registration,
+                );
+                if configured.is_none() && register == Registration::Off {
+                    tracing::info!(
+                        rail = %provider.code,
+                        "providers[].callbacks.register is unset and this rail's adapter \
+                         defaults to `off`: vpay will not create its callback endpoint. \
+                         Register vpay's callback URL in the rail's dashboard, or set \
+                         `register: ensure`; charges settle by polling either way"
+                    );
+                }
+                (provider.code.clone(), register)
             })
             .collect::<BTreeMap<_, _>>(),
     }
@@ -100,7 +122,7 @@ async fn ensure(args: &ServerArgs, check: bool) -> anyhow::Result<()> {
     let resource_config = vpay_api::ResourceConfig::from_config(&config)
         .context("projecting the deployment configuration onto the provider port")?;
     let rails = crate::worker::project_rails(&resource_config, &adapters);
-    let plan = callback_plan(&config);
+    let plan = callback_plan(&config, &adapters);
 
     let passes =
         vpay_worker::run_pass(repositories.as_ref(), &adapters, &rails, &plan, check).await;
@@ -184,7 +206,9 @@ mod tests {
             currency: "XAF".to_owned(),
             credentials: BTreeMap::new(),
             display_name: None,
-            callbacks: register.map(|register| ProviderCallbacks { register }),
+            callbacks: register.map(|register| ProviderCallbacks {
+                register: Some(register),
+            }),
         }
     }
 
@@ -207,25 +231,71 @@ mod tests {
         }
     }
 
+    /// The adapters `vpay-server` links, each wrapped in `Measured` as boot
+    /// wraps them, so a decorator that took the port's default instead of
+    /// forwarding Notch Pay's `off` fails here too.
+    fn linked_adapters() -> vpay_worker::Adapters {
+        let http = vpay_provider::http::client_with_timeouts(
+            vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+            vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+        )
+        .expect("the shared client builds without a network");
+        vpay_api::boot::adapters_by_code(vpay_server::adapters(http))
+    }
+
+    /// An explicit `register` always wins; an unset one is the rail's own
+    /// default, which its adapter declares: `off` for `notchpay` (RFC-0013
+    /// § 2 as amended 2026-10-23), RFC-0013's `ensure` for every other rail,
+    /// and the same for a rail no linked adapter answers for.
     #[test]
-    fn the_plan_defaults_to_ensure_and_reads_each_rails_setting() {
-        let plan = callback_plan(&config(vec![
-            host("notchpay", true, None),
-            host("second", true, Some(CallbackRegistration::Check)),
-            host("third", true, Some(CallbackRegistration::Off)),
-            host("fourth", false, Some(CallbackRegistration::Ensure)),
-        ]));
+    fn the_plan_reads_each_rails_setting_else_its_adapters_default() {
+        let adapters = linked_adapters();
+        let plan = callback_plan(
+            &config(vec![
+                host("notchpay", true, None),
+                host("mtn_momo", true, None),
+                host("second", true, Some(CallbackRegistration::Check)),
+                host("third", true, Some(CallbackRegistration::Off)),
+                host("fourth", false, Some(CallbackRegistration::Ensure)),
+            ]),
+            &adapters,
+        );
         assert_eq!(plan.deployment, "acme-prod");
         assert_eq!(
             plan.rails,
             BTreeMap::from([
-                ("notchpay".to_owned(), Registration::Ensure),
+                ("notchpay".to_owned(), Registration::Off),
+                ("mtn_momo".to_owned(), Registration::Ensure),
                 ("second".to_owned(), Registration::Check),
                 ("third".to_owned(), Registration::Off),
             ]),
             "a disabled rail is not in the plan"
         );
         assert_eq!(plan.marker("notchpay"), "vpay:acme-prod:notchpay:default");
+
+        // `callbacks: {}` is the absent block, and an explicit `ensure`
+        // overrides Notch Pay's `off`.
+        let mut empty_block = host("notchpay", true, None);
+        empty_block.callbacks = Some(ProviderCallbacks { register: None });
+        assert_eq!(
+            callback_plan(&config(vec![empty_block]), &adapters)
+                .rails
+                .get("notchpay")
+                .copied(),
+            Some(Registration::Off)
+        );
+        let asked = callback_plan(
+            &config(vec![host(
+                "notchpay",
+                true,
+                Some(CallbackRegistration::Ensure),
+            )]),
+            &adapters,
+        );
+        assert_eq!(
+            asked.rails.get("notchpay").copied(),
+            Some(Registration::Ensure)
+        );
     }
 
     #[test]

@@ -1,6 +1,52 @@
 {
   "mappings": [
     {
+      "name": "process refused (422, errors.phone) -- an Orange number on cm.mtn, the payer's network mismatch",
+      "priority": 5,
+      "request": {
+        "method": "POST",
+        "urlPathPattern": "/payments/trx\\.test_[0-9a-f-]{36}",
+        "headers": {
+          "X-Grant": {
+            "matches": ".+"
+          },
+          "Authorization": {
+            "matches": ".+"
+          }
+        },
+        "bodyPatterns": [
+          {
+            "matchesJsonPath": {
+              "expression": "$.channel",
+              "equalTo": "cm.mtn"
+            }
+          },
+          {
+            "matchesJsonPath": {
+              "expression": "$.data.phone",
+              "matches": "^\\+23769[0-9]{7}$"
+            }
+          }
+        ]
+      },
+      "response": {
+        "status": 422,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": "{\"code\":\"422\",\"errors\":{\"phone\":[\"Invalid CM Mobile Money\"]},\"message\":\"Invalid CM Mobile Money\",\"status\":\"Unprocessable Content\"}"
+      },
+      "metadata": {
+        "why": [
+          "Notch Pay's sandbox answered exactly this body on 2026-10-23 to process an Orange number (+23769...)",
+          "on cm.mtn (docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md). The",
+          "adapter maps a process 422 naming only phone to Rejected { invalid_payer } (the maintainer's choice,",
+          "2026-10-23); notchpay_a_number_on_the_other_network_is_an_invalid_payer drives it. Priority 5, ahead",
+          "of the accepting mapping, which would otherwise match the same request."
+        ]
+      }
+    },
+    {
       "name": "process accepted (202, processing) -- by Notch Pay's trx. reference, cm.mobile, cm.mtn or cm.orange, and a +-prefixed number under data.phone",
       "priority": 10,
       "request": {

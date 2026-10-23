@@ -58,9 +58,9 @@ use vpay_core::metrics::{
 };
 
 use crate::{
-    AcceptedExposure, AccountHolder, CallbackRef, Capabilities, ChargeRef, ChargeStatus,
-    EndpointCheck, EndpointReport, PayerField, PriorSubmits, ProviderAdapter, ProviderConfig,
-    ProviderError, RefExtra, RefundTarget, Refunded, Submitted,
+    AcceptedExposure, AccountHolder, CallbackRef, CallbackRegistrationDefault, Capabilities,
+    ChargeRef, ChargeStatus, EndpointCheck, EndpointReport, PayerField, PriorSubmits,
+    ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundTarget, Refunded, Submitted,
 };
 
 /// A [`ProviderAdapter`] that counts and times every call it forwards.
@@ -164,6 +164,17 @@ impl ProviderAdapter for Measured {
     /// `the_accepted_exposure_is_forwarded_not_defaulted` is what catches it.
     fn accepted_exposure(&self) -> Option<AcceptedExposure> {
         self.inner.accepted_exposure()
+    }
+
+    /// Forwarded for `accepted_exposure`'s reason, the other way round: the
+    /// default is `Ensure`, so a wrapper that took it would have vpay write
+    /// to every Notch Pay account whose operator left `callbacks` unset —
+    /// exactly what its adapter declares `Off` to prevent — while the
+    /// adapter's own tests, which hold it unwrapped, stayed green.
+    /// `the_default_callback_registration_is_forwarded_not_defaulted`
+    /// catches it.
+    fn default_callback_registration(&self) -> CallbackRegistrationDefault {
+        self.inner.default_callback_registration()
     }
 
     /// Forwarded for `parse_destination`'s reason: the default body is a
@@ -350,6 +361,13 @@ mod tests {
         /// `the_accepted_exposure_is_forwarded_not_defaulted`.
         fn accepted_exposure(&self) -> Option<AcceptedExposure> {
             Some(ANSWERING_EXPOSURE)
+        }
+
+        /// Declared against the trait's `Ensure`, so a wrapper that took the
+        /// default instead of forwarding is visible: see
+        /// `the_default_callback_registration_is_forwarded_not_defaulted`.
+        fn default_callback_registration(&self) -> CallbackRegistrationDefault {
+            CallbackRegistrationDefault::Off
         }
 
         fn capabilities(&self) -> Capabilities {
@@ -877,6 +895,25 @@ mod tests {
             error: None,
         }));
         assert_eq!(adapter.accepted_exposure(), Some(ANSWERING_EXPOSURE));
+    }
+
+    /// The wrapper forwards [`ProviderAdapter::default_callback_registration`]
+    /// rather than inheriting the port's `Ensure`.
+    ///
+    /// Every adapter the binary builds the `ensure_callbacks` plan from is a
+    /// `Measured`, so a missing forward would quietly turn Notch Pay's
+    /// declared `Off` back into `Ensure` on every deployment that leaves
+    /// `callbacks` unset.
+    #[test]
+    fn the_default_callback_registration_is_forwarded_not_defaulted() {
+        let adapter = Measured::wrap(Box::new(Answering {
+            code: "fixture",
+            error: None,
+        }));
+        assert_eq!(
+            adapter.default_callback_registration(),
+            CallbackRegistrationDefault::Off
+        );
     }
 
     /// The wrapper forwards [`ProviderAdapter::parse_destination`] rather

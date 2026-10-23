@@ -100,6 +100,27 @@ pub enum CallbackUrlMode {
     Registered,
 }
 
+/// What vpay's `ensure_callbacks` pass does on a rail's account when the
+/// deployment's configuration leaves `providers[].callbacks.register` unset
+/// (RFC-0013 § 2, amended 2026-10-23).
+///
+/// Declared by the adapter ([`ProviderAdapter::default_callback_registration`])
+/// so that "this rail's endpoint is the operator's to register" never becomes
+/// `if provider == "notchpay"` in the binary that builds the pass's plan
+/// (ADR-0002). An explicit `register:` always wins over it. Two values, not
+/// the configuration's three: no rail declares `check` as its default, and a
+/// variant nothing produces is a claim nothing tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackRegistrationDefault {
+    /// List the account's endpoints and create vpay's if it is missing:
+    /// RFC-0013's default, which the maintainer asked for on 2026-10-22 ("be
+    /// done automatically").
+    Ensure,
+    /// Ask the account nothing. The operator registers vpay's callback URL
+    /// with the rail (in its dashboard) or sets `register: ensure`.
+    Off,
+}
+
 /// How many calls it takes this rail to put a payment in front of a payer,
 /// and so whether the core must commit something the rail issued *between*
 /// them (ADR-0032).
@@ -2193,6 +2214,24 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// must not be able to reach the network.
     fn accepted_exposure(&self) -> Option<AcceptedExposure> {
         None
+    }
+
+    /// What the `ensure_callbacks` pass does on this rail's account when the
+    /// deployment's `providers[].callbacks.register` is unset (RFC-0013 § 2,
+    /// amended 2026-10-23).
+    ///
+    /// [`CallbackRegistrationDefault::Ensure`] is the default and RFC-0013's
+    /// own. An adapter overrides it with `Off` when the rail's endpoint API
+    /// is known not to produce a working endpoint, so that vpay writes to a
+    /// merchant's account only when an operator asked it to. Read only for a
+    /// [`CallbackUrlMode::Registered`] rail: the pass never asks a
+    /// `PerRequest` one, whatever this says.
+    ///
+    /// Synchronous and configuration-free, on
+    /// [`accepted_exposure`](ProviderAdapter::accepted_exposure)'s terms: a
+    /// fact about the provider's product, read once at boot.
+    fn default_callback_registration(&self) -> CallbackRegistrationDefault {
+        CallbackRegistrationDefault::Ensure
     }
 
     /// Makes sure this rail account has one callback endpoint vpay created,

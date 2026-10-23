@@ -46,7 +46,10 @@ use std::time::Duration;
 use vpay_core::FailureCode;
 use vpay_core::metrics::{CALLBACK_ENDPOINT_CHECKS_TOTAL, callback_endpoint_state};
 use vpay_db::{DbError, Repositories, TxOutcome, UnitOfWork as _};
-use vpay_provider::{CallbackUrlMode, EndpointCheck, EndpointReport, EndpointState, ProviderError};
+use vpay_provider::{
+    CallbackRegistrationDefault, CallbackUrlMode, EndpointCheck, EndpointReport, EndpointState,
+    ProviderError,
+};
 
 use crate::error::JobError;
 use crate::handlers::{Adapters, RailConfigs};
@@ -76,17 +79,33 @@ pub const RETRY_SOON: Duration = Duration::from_secs(5 * 60);
 /// first one already names it.
 pub const DEFAULT_ACCOUNT: &str = "default";
 
-/// `providers[].callbacks.register`, per rail.
+/// `providers[].callbacks.register`, per rail; when the operator set none,
+/// the rail's own default, which its adapter declares
+/// ([`vpay_provider::ProviderAdapter::default_callback_registration`],
+/// through `From`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Registration {
-    /// List, and create vpay's endpoint if it is missing. The default
-    /// (RFC-0013 open question 1, answered by the maintainer on 2026-10-22).
+    /// List, and create vpay's endpoint if it is missing. RFC-0013's default
+    /// (open question 1, answered by the maintainer on 2026-10-22), and still
+    /// every rail's but `notchpay`'s, which declares `Off` (2026-10-23).
     Ensure,
     /// List and report; never write. For a key that may read endpoints and
     /// not create them.
     Check,
     /// Never ask this rail about endpoints. The pass skips it.
     Off,
+}
+
+/// The adapter's declared default, as the pass's own enum: the binary maps
+/// an unset `register` through this, so which rails vpay writes to
+/// unasked is the adapters' to say (ADR-0002), never a list kept here.
+impl From<CallbackRegistrationDefault> for Registration {
+    fn from(default: CallbackRegistrationDefault) -> Self {
+        match default {
+            CallbackRegistrationDefault::Ensure => Self::Ensure,
+            CallbackRegistrationDefault::Off => Self::Off,
+        }
+    }
 }
 
 impl Registration {
@@ -531,6 +550,21 @@ mod tests {
         assert_eq!(Registration::Ensure.as_str(), "ensure");
         assert_eq!(Registration::Check.as_str(), "check");
         assert_eq!(Registration::Off.as_str(), "off");
+    }
+
+    /// An adapter's declared default reaches the pass unchanged: `Off` must
+    /// not become `Ensure` on the way, or vpay would write to an account the
+    /// adapter says to leave alone.
+    #[test]
+    fn an_adapters_default_maps_onto_the_same_setting() {
+        assert_eq!(
+            Registration::from(CallbackRegistrationDefault::Ensure),
+            Registration::Ensure
+        );
+        assert_eq!(
+            Registration::from(CallbackRegistrationDefault::Off),
+            Registration::Off
+        );
     }
 
     /// The command's exit status: non-zero exactly when the pass does not
