@@ -54,7 +54,7 @@ called, and the integration case could not run in this environment**
   (the routing section's "Not done"),
   [2026-10-23-method-type-routing.md](2026-10-23-method-type-routing.md) (the
   gap bullet, marked half closed) and [../README.md](../README.md) (this page,
-  114/91).
+  115/92 once master's a11y-gate-built-stylesheet page had merged in).
 - SDK doc comments only, no signature: `sdks/rust/src/resources.rs`
   (`RefundDestination::MobileMoney`) and `sdks/nodejs/src/types.ts`
   (`RefundDestination`). Both said a type there is refused, which vaam-apps/vpay#359
@@ -107,6 +107,8 @@ the suite's stated reason.
   clean, so the new case compiles.
 - `just verify`: exit `0`, "verify: ok — the fifteen gates above passed";
   `verify-doc-counts` agrees with this page's 114/91 in `../README.md`.
+  Re-run on the tree with master (vaam-apps/vpay#349) merged in, where the
+  count is 115/92: exit `0` again.
 - `prettier@3.9.6 --check` on the changed Markdown and TypeScript: clean.
 
 ## What was not run
