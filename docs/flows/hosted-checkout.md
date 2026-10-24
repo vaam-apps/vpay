@@ -695,3 +695,18 @@ correction. The missing edge is `loading ──► resume_redirect` on a session
 whose intent is `requires_action`, with one arrow out of it, a button press,
 back to the rail's own page — the same `#navigateTopLevel` split (top-level, or
 the parent navigates when framed) the `redirecting` edge already carries.
+
+**Updated 2026-10-23: the built-stylesheet guard runs in CI now, and it
+asserts what the 0.5.0 theme guarantees.** The `a11y-gate.test.ts` case
+that reads the built Storybook stylesheet is the check behind the "rendering
+without its theme" finding above. It skipped on every CI run, because
+`pnpm -r test` runs before `just build-storybook`. From `@vaam-apps/ui` 0.5.0
+([vaam-apps/vpay#318](https://github.com/vaam-apps/vpay/pull/318)) it also
+failed on every correct build: it demanded a hex `--color-base-100`, and the
+theme now maps that token to `var(--md-sys-color-surface)`. It now follows
+the chain to the colour the package's own `theme.css` resolves to, in both
+themes, and `just build-storybook` runs it against the artefact it has just
+built and refuses a skip. Dropping the theme `@import`, or moving it
+after `@plugin`, fails it; so does a sheet that keeps the mapping and loses
+the roles, which the recipe's grep passes. Evidence:
+[../status/verification/2026-10-23-a11y-gate-built-stylesheet.md](../status/verification/2026-10-23-a11y-gate-built-stylesheet.md).

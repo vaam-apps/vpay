@@ -26,9 +26,13 @@
  *    render and axe never reaches them.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+import postcss from "postcss";
 import { describe, expect, it } from "vitest";
+
+import { themeColours, type ThemeName } from "./testing/contrast";
 
 function appRoot(): string {
   let dir = process.cwd();
@@ -42,73 +46,16 @@ function appRoot(): string {
 
 const APP = appRoot();
 
-/**
- * Every value `css` gives the custom property `name`, in source order.
- *
- * A theme defines a token more than once (the `:root` default and each colour
- * scheme), so there are usually several, and each one is checked. A
- * definition is the name at the start of a declaration, so `var(--x)` and a
- * longer name that merely starts with `--x` are not counted.
- */
-function definitionsOf(css: string, name: string): string[] {
-  const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const pattern = new RegExp(`(?:^|[{;\\s])${escaped}\\s*:\\s*([^;}]*)`, "g");
-  return [...css.matchAll(pattern)].map((match) => (match[1] ?? "").trim());
-}
-
-/** A colour literal: `#rgb` to `#rrggbbaa`, or a CSS colour function. */
-const COLOUR_LITERAL =
-  /^(?:#[0-9a-f]{3,8}|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color|color-mix|light-dark)\(.+\))$/i;
-
-/** `var(--name)` or `var(--name, fallback)`, capturing `--name`. */
-const VAR_REFERENCE = /^var\(\s*(--[\w-]+)\s*(?:,.*)?\)$/;
-
-/**
- * Why `name` does not end in a colour in `css`, one `var()` deep: every
- * definition must be a colour literal, or a `var()` of a custom property
- * every definition of which is one. Empty when it does.
- *
- * One level is what the theme uses today (`--color-base-100:
- * var(--md-sys-color-surface)`, and `--md-sys-color-surface` a hex value per
- * scheme). A deeper chain is reported rather than followed, so a change to
- * the theme's shape is looked at instead of silently accepted.
- */
-function unresolvedColours(css: string, name: string): string[] {
-  const values = definitionsOf(css, name);
-  if (values.length === 0) {
-    return [`${name} is defined nowhere`];
-  }
-  const problems: string[] = [];
-  for (const value of new Set(values)) {
-    if (COLOUR_LITERAL.test(value)) {
-      continue;
-    }
-    const reference = VAR_REFERENCE.exec(value)?.[1];
-    if (reference === undefined) {
-      problems.push(
-        `${name}: \`${value}\` is neither a colour nor a var() of one`,
-      );
-      continue;
-    }
-    const targets = definitionsOf(css, reference);
-    if (targets.length === 0) {
-      problems.push(
-        `${name}: \`${value}\` names ${reference}, which is defined nowhere`,
-      );
-      continue;
-    }
-    for (const target of new Set(targets)) {
-      if (!COLOUR_LITERAL.test(target)) {
-        problems.push(
-          `${name}: \`${value}\` -> ${reference}: \`${target}\` is not a colour`,
-        );
-      }
-    }
-  }
-  return problems;
-}
 const code = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
+
+/**
+ * The colour `--color-base-100` paints in `theme`, followed through every
+ * `var()` the way the cascade follows it — `undefined` when it is not
+ * declared, or when the chain ends at a property nothing declares.
+ */
+const base100 = (css: string, theme: ThemeName) =>
+  themeColours(postcss.parse(css), { theme }).get("base-100");
 
 describe("the browser a11y suite is still a gate", () => {
   it("preview.ts still asks the addon to FAIL on a violation", () => {
@@ -271,24 +218,44 @@ describe("the browser a11y suite is still a gate", () => {
     }
     const sheets = readdirSync(dir).filter((f) => f.endsWith(".css"));
     expect(sheets.length, "the build emitted a stylesheet").toBeGreaterThan(0);
-    const css = sheets.map((f) => readFileSync(join(dir, f), "utf8")).join("");
-    // Corrected 2026-10-23: this asserted `--color-base-100:\s*#`, a hex
-    // literal. `@vaam-apps/ui` 0.5.0 (#318, 2026-10-21) defines the token as
-    // `var(--md-sys-color-surface)`, and each scheme gives THAT a hex value,
-    // so the case failed on every local build while CI, which skipped it,
-    // stayed green. It now resolves one `var()` and requires a colour at the
-    // end, which is what "the theme is defined" means; the message no longer
-    // dumps the whole stylesheet.
-    expect(
-      unresolvedColours(css, "--color-base-100"),
-      "`bg-base-100` is generated but `--color-base-100` does not resolve to a " +
-        "colour in the built stylesheet. " +
-        "Either `app/globals.css` dropped the theme `@import`, or " +
-        "`storybook-static/` is STALE — a `just build-storybook` that failed " +
-        "this same check leaves its theme-less artefact on disk on purpose, " +
-        "so it can be inspected, and every later run of this test then reads " +
-        "that instead of the source. Re-run `just build-storybook`: if it " +
-        "exits 0, the tree was fine and the artefact was stale.",
-    ).toEqual([]);
+    const css = sheets
+      .map((f) => readFileSync(join(dir, f), "utf8"))
+      .join("\n");
+
+    // **Resolved, not pattern-matched — corrected 2026-10-23**, in both
+    // apps' copies of this case; the checkout's carries the full account.
+    // It asserted `--color-base-100:\s*#` until `@vaam-apps/ui` 0.5.0
+    // (vaam-apps/vpay#318) made the token
+    // `var(--md-sys-color-surface)`, after which it failed on every correct
+    // build and was seen nowhere, because CI ran it only where it skips.
+    // `just build-storybook` now runs this file against the artefact it has
+    // just built and refuses a skip there, so CI measures it for real.
+    // Now: the chain must end at the colour the package's own `theme.css`
+    // resolves to, in both themes it ships. Mutation-checked on this app's
+    // build too — the theme `@import` dropped, and the role declarations
+    // deleted from the artefact with the `var()` mapping left in place.
+    const packageTheme = readFileSync(
+      createRequire(import.meta.url).resolve("@vaam-apps/ui/styles/theme.css"),
+      "utf8",
+    );
+    for (const theme of ["dark", "light"] as const) {
+      const declared = base100(packageTheme, theme);
+      expect(
+        declared,
+        `the package's own theme.css resolves --color-base-100 in "${theme}" — ` +
+          "if it does not, either the package stopped declaring the role its " +
+          "mapping points at, or `themeColours` can no longer read this theme",
+      ).toBeDefined();
+      expect(
+        base100(css, theme),
+        `\`bg-base-100\` is generated but \`--color-base-100\` does not resolve to the package's "${theme}" ground. ` +
+          "Either `app/globals.css` dropped the theme `@import`, or " +
+          "`storybook-static/` is STALE — a `just build-storybook` that failed " +
+          "this same check leaves its theme-less artefact on disk on purpose, " +
+          "so it can be inspected, and every later run of this test then reads " +
+          "that instead of the source. Re-run `just build-storybook`: if it " +
+          "exits 0, the tree was fine and the artefact was stale.",
+      ).toEqual(declared);
+    }
   });
 });

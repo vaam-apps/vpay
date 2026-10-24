@@ -67,6 +67,43 @@ ignore = [
   #
   # Added 2026-10-20, when the advisory began failing `cargo deny` on master.
   "RUSTSEC-2024-0449",
+
+  # RUSTSEC-2026-0387 — `crypto-bigint`: "Multiple timing variability issues
+  # in operations intended to be constant-time" (subtraction, zero counting,
+  # division, Montgomery multiplication), which may leak secret integers
+  # through timing or microarchitectural side channels. Fixed only in 0.7.6.
+  #
+  # Where it comes from (`cargo tree -i crypto-bigint@0.5.5 -e normal`):
+  #     crypto-bigint 0.5.5 <- elliptic-curve 0.13.8 <- ecdsa 0.16.9
+  #         <- p256 0.13.2 / p384 0.13.1 <- jsonwebtoken 11.0.0
+  #         <- authkestra-engine / authkestra-resource / authkestra-op 0.7.1
+  # so it is linked into every shipping binary. There is no upgrade that
+  # clears it today: no 0.5.x fix exists, the fix needs elliptic-curve 0.14,
+  # and jsonwebtoken's newest release (11.1.0, 2026-09-16) still requires
+  # p256 ^0.13. authkestra 0.7.1 requires jsonwebtoken 11, with the
+  # `rust_crypto` backend.
+  #
+  # Why it is accepted: no secret integer reaches it in vpay. P-256 and
+  # P-384 are used in production only to VERIFY ES256/ES384 signatures
+  # against public keys: a merchant's `private_key_jwt` client assertion
+  # (authkestra-op `client_assertion.rs`), a staff SSO id_token
+  # (`vpay-api/src/staff/sso/verify.rs`), and a DPoP proof
+  # (authkestra-engine `token/dpop.rs`). ECDSA verification computes over the
+  # signature, the message and the public key, all of which the caller
+  # already holds. Nothing in vpay or authkestra 0.7.1 signs with an EC key
+  # outside tests: the OP signs with RS256, merchant webhooks with HMAC, and
+  # the remaining keys are Ed25519 (curve25519-dalek, not crypto-bigint).
+  #
+  # Stated honestly: this rests on that reading of the call sites, checked on
+  # 2026-10-24, not on a timing measurement. If vpay ever SIGNS with an EC
+  # key, or generates one, this entry stops being safe and must go.
+  #
+  # Accepted by the maintainer on 2026-10-24 ("Accept, and upgrade
+  # authkestra"), who also asked for the authkestra upgrade, 0.7.1 -> 0.13.1,
+  # to be scoped. Remove this entry once jsonwebtoken (or authkestra) reaches
+  # p256 0.14 / elliptic-curve 0.14, or `cargo deny` reports it as no longer
+  # matching (`advisory-not-detected`).
+  "RUSTSEC-2026-0387",
 ]
 
 [licenses]
