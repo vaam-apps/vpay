@@ -729,10 +729,12 @@ impl ProviderAdapter for Adapter {
     /// quotes the body.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
         let event = vpay_notchpay::parse_event(body)?;
+        // `name()` reads `event`, the key every payment webhook the sandbox
+        // delivered used (2026-10-24), and falls back to the documented
+        // `type`; reading `type` alone refused all four real deliveries.
         let handled = event
-            .event_type
-            .as_deref()
-            .is_some_and(|event_type| PAYMENT_EVENTS.contains(&event_type));
+            .name()
+            .is_some_and(|name| PAYMENT_EVENTS.contains(&name));
         if !handled {
             return Err(ProviderError::malformed(
                 "notchpay: the webhook is not one of the five payment events vpay handles",
@@ -740,8 +742,8 @@ impl ProviderAdapter for Adapter {
         }
         // `data.trxref` first: on every payment answer Notch Pay's sandbox
         // gave (2026-10-21), `trxref` was ours and `reference` its own
-        // `trx.…`. No webhook was received to confirm the event's `data` has
-        // the same shape, so `data.reference` stays as the fallback for the
+        // `trx.…`, and the four webhooks it delivered on 2026-10-24 have the
+        // same shape. `data.reference` stays as the fallback for the
         // specification's form.
         let reference_id = [
             event.data.trxref.as_deref(),

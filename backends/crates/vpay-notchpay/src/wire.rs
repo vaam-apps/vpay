@@ -249,8 +249,16 @@ impl fmt::Debug for Payment {
 
 /// A webhook event, as Notch Pay POSTs it to a registered endpoint.
 ///
-/// `{ "id": "evt_…", "type": "payment.complete", "created_at": "…",
-/// "data": { … the payment … } }` (Webhooks API, "Webhook Event Object").
+/// The documentation shows `{ "id": "evt_…", "type": "payment.complete",
+/// "created_at": "…", "data": { … the payment … } }` (Webhooks API, "Webhook
+/// Event Object"). **The sandbox sends something else** (measured
+/// 2026-10-24, the first deliveries to a dashboard-registered endpoint): every
+/// payment event names itself under `"event"`, as in `{ "id": "whc_test.…",
+/// "event": "payment.complete", "data": { … } }`, with no `type` and no
+/// top-level `created_at`, while the `verification.test` ping the dashboard
+/// sends on registration uses `"type"`. Both keys are read; [`Event::name`]
+/// prefers `event`.
+///
 /// The event's own `data.status` is deliberately not modelled: a callback is
 /// a hint, and only the authenticated read moves money
 /// (`docs/flows/reconciler.md`). A type with nowhere to put a status cannot
@@ -259,10 +267,23 @@ impl fmt::Debug for Payment {
 pub struct Event {
     #[serde(rename = "id")]
     pub id: Option<String>,
+    /// The documented key, and the one the `verification.test` ping uses.
     #[serde(rename = "type")]
     pub event_type: Option<String>,
+    /// The key every payment webhook the sandbox delivered used (2026-10-24).
+    #[serde(rename = "event")]
+    pub event: Option<String>,
     #[serde(rename = "data")]
     pub data: EventData,
+}
+
+impl Event {
+    /// The event's name, from `event` (what the sandbox sends on a payment
+    /// webhook) or else `type` (the documentation's spelling). `None` when
+    /// the body carries neither.
+    pub fn name(&self) -> Option<&str> {
+        self.event.as_deref().or(self.event_type.as_deref())
+    }
 }
 
 /// The part of an event's `data` vpay reads: which payment it is about.
@@ -281,6 +302,7 @@ impl fmt::Debug for Event {
         f.debug_struct("Event")
             .field("id", &self.id)
             .field("event_type", &self.event_type)
+            .field("event", &self.event)
             .field("data", &self.data)
             .finish()
     }
@@ -526,9 +548,53 @@ mod tests {
         }"#;
         let event: Event = serde_json::from_slice(body).expect("decodes");
         assert_eq!(event.event_type.as_deref(), Some("payment.complete"));
+        assert_eq!(
+            event.name(),
+            Some("payment.complete"),
+            "`type` alone still names it"
+        );
         let data = event.data;
         assert_eq!(data.reference.as_deref(), Some("order_123"));
         assert_eq!(data.id.as_deref(), Some("pay_123456789"));
+    }
+
+    /// A `payment.complete` webhook exactly as Notch Pay's sandbox delivered
+    /// it to a dashboard-registered endpoint on 2026-10-24, byte for byte:
+    /// the event's name is under `event`, not the documented `type`.
+    pub(crate) const DELIVERED_PAYMENT_COMPLETE: &[u8] = br#"{"id":"whc_test.hwFmiN6rmtv96e7z","event":"payment.complete","data":{"amount":151,"fees":[],"amounts":{"total":151,"converted":151,"currency":"XAF","rate":1},"sandbox":1,"payment_method":"pm.test_DkA37f7vq7SouqFH","description":"vpay sandbox probe (ADR-0032 \/ RFC-0012 step 8)","reference":"trx.test_vwTAcbfxYr5cgcnpCQpYzglh","merchant_reference":"a9d73439-cb96-4b41-956b-46c520d9600d","trxref":"a9d73439-cb96-4b41-956b-46c520d9600d","status":"complete","currency":"XAF","customer":"cus.test_Ph6xD6j0XGHRRTbp","charge":"business","callback":null,"created_at":"2026-10-24T08:26:53.000000Z"}}"#;
+
+    /// The ping Notch Pay's dashboard sent the same endpoint on registration,
+    /// 2026-10-24: unsigned, and named under `type`.
+    pub(crate) const DELIVERED_VERIFICATION_PING: &[u8] = br#"{"id":"evt_verification_yiU5Gsm0Ti","type":"verification.test","created":1792829985,"data":{"message":"This is a check of your webhook endpoint","timestamp":"2026-10-24T09:19:45+01:00"}}"#;
+
+    #[test]
+    fn a_delivered_payment_webhook_is_named_under_event() {
+        let event: Event = serde_json::from_slice(DELIVERED_PAYMENT_COMPLETE).expect("decodes");
+        assert_eq!(event.name(), Some("payment.complete"));
+        assert_eq!(event.event_type, None, "the delivery carries no `type`");
+        assert_eq!(
+            event.data.trxref.as_deref(),
+            Some("a9d73439-cb96-4b41-956b-46c520d9600d"),
+            "trxref is the merchant's (vpay's) reference"
+        );
+        assert_eq!(
+            event.data.reference.as_deref(),
+            Some("trx.test_vwTAcbfxYr5cgcnpCQpYzglh")
+        );
+    }
+
+    #[test]
+    fn the_registration_ping_is_named_under_type() {
+        let event: Event = serde_json::from_slice(DELIVERED_VERIFICATION_PING).expect("decodes");
+        assert_eq!(event.name(), Some("verification.test"));
+        assert_eq!(event.event, None);
+    }
+
+    #[test]
+    fn event_wins_when_a_body_names_itself_both_ways() {
+        let body = br#"{"type":"payment.created","event":"payment.complete","data":{}}"#;
+        let event: Event = serde_json::from_slice(body).expect("decodes");
+        assert_eq!(event.name(), Some("payment.complete"));
     }
 
     #[test]
