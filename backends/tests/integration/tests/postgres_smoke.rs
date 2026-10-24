@@ -4983,13 +4983,14 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 ///     Undeclared on purpose, like `provider_requests`: `considered` is
 ///     `jsonb`, and nothing would read the row through a delegate.
 ///
-/// **209 -> 212 on 2026-10-24 (migration 0054, the rail on `/v1`), PREDICTED
-/// and not measured** — the change was written in a container with no Docker
-/// daemon, so CI's run of this case is the measurement, and this note is to
-/// be corrected if it disagrees. Derived from cratestack-migrate 0.15.0's
-/// source rather than guessed: `payment_intents` is already modelled and
+/// **209 -> 212 on 2026-10-24 (migration 0054, the rail on `/v1`), predicted
+/// and then measured.** The change was written in a container with no Docker
+/// daemon, so the number was derived from cratestack-migrate 0.15.0's source
+/// first; CI's run on vaam-apps/vpay#365 then reported `drift detected in 28
+/// table(s)/view(s) (212 change(s) total)`, with exactly the three lines
+/// below. The derivation: `payment_intents` is already modelled and
 /// already drifts, so `EXPECTED_DRIFTED_RELATIONS` does not move, and the
-/// three new lines should be
+/// three new lines are
 ///
 ///   * `payment_intents`: `[lossy] column charge_rail exists in the live
 ///     database but is not declared in the schema`, and the same for
@@ -5000,7 +5001,10 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 ///     `method_type_is_known`.
 ///
 /// Nothing else: `charge_method_type_needs_a_rail` spans two columns and
-/// `introspect/postgres/mod.rs` skips multi-column CHECKs ("Known gaps"), and
+/// `introspect/postgres/mod.rs` skips multi-column CHECKs ("Known gaps") — so
+/// it belongs in `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`'s
+/// multi-column list instead, which the first version of this change left
+/// it out of, and that list is what failed in CI — and
 /// `charge_rail`'s foreign key onto `providers` costs nothing because foreign
 /// keys are not introspected at all. Both new columns are `TEXT`, so
 /// `EXPECTED_UNMAPPABLE_COLUMNS` does not move either.
@@ -5693,6 +5697,12 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             ("manual_payments", "received_before_recorded"),
             ("oauth_signing_keys", "active_key_has_no_expiry"),
             ("oauth_signing_keys", "expiry_after_creation"),
+            // Migration 0054: an intent names a charge's type only beside its
+            // rail. `charge_method_type IS NULL OR charge_rail IS NOT NULL`
+            // spans both columns, so the drift report cannot see it and it
+            // moves `EXPECTED_DRIFT_CHANGES` by zero (212 measured in CI on
+            // 2026-10-24, the same as without it).
+            ("payment_intents", "charge_method_type_needs_a_rail"),
             ("payment_intents", "lpe_paired"),
             // The over-refund guard.
             ("payment_intents", "no_over_refund"),

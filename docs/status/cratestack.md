@@ -574,22 +574,25 @@ three new lines:
   reason: `considered` is `jsonb` (the 20th unmappable column) and the row is
   an explanation an operator reads, written once and never decided from.
 
-## 2026-10-24 — migration `0054` (the rail on `/v1`), and drift goes 209 → 212, predicted
+## 2026-10-24 — migration `0054` (the rail on `/v1`), and drift goes 209 → 212, predicted and measured
 
 `payment_intents.charge_rail` and `charge_method_type`, **with no model
 change**, for `0053`'s reason: no query on `payment_intents` runs through
 CrateStack, and a field would be a second spelling of the column to keep in
-step. **Predicted, not measured**: the change was written in a container with
-no Docker daemon, so CI's `postgres_smoke` run is the measurement, and this
-section is to be corrected if it disagrees. Derived from cratestack-migrate
-0.15.0's source:
+step. **Predicted, then measured.** The change was written in a container
+with no Docker daemon, so the number was derived first from cratestack-migrate
+0.15.0's source; CI's `postgres_smoke` run on vaam-apps/vpay#365 then reported
+`drift detected in 28 table(s)/view(s) (212 change(s) total)`, with exactly
+these lines:
 
 - `payment_intents`: two `[lossy] column … not declared` lines, one per
   column, and one `[safe] CHECK charge_method_type_is_known … not declared`,
   a single-column CHECK like `0053`'s `method_type_is_known`.
 - Nothing else. `charge_method_type_needs_a_rail` spans two columns, and
   `introspect/postgres/mod.rs` skips multi-column CHECKs. `charge_rail`'s
-  foreign key costs nothing, because foreign keys are not introspected.
+  foreign key costs nothing, because foreign keys are not introspected. The
+  two-column CHECK goes in the test's multi-column list instead; the first
+  version of this change left it out, and that list is what failed in CI.
   `payment_intents` already drifted, so `EXPECTED_DRIFTED_RELATIONS` stays
   28, and both columns are `TEXT`, so `EXPECTED_UNMAPPABLE_COLUMNS` stays 20.
 

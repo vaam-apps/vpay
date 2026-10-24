@@ -1380,8 +1380,8 @@ A", [plan](../plans/2026-10-24-rail-on-v1.md)):
   Also the stripe-compat case. CI is the first run of all of them.
 
 - **Not done:** the Flutter plugin does not model the key; there is no `/v1`
-  charge object; old `notchpay` charges cannot be typed; the drift count is
-  predicted.
+  charge object; old `notchpay` charges cannot be typed. (The drift count, 212, was
+  predicted and then measured in CI.)
 
 No route was mounted or unmounted and no `NotImplemented` token moved.
 [verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).

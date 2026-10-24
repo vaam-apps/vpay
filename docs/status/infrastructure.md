@@ -109,8 +109,8 @@ by copying, never by inferring a type the charge does not record, and
 corrects `0053`'s `COMMENT ON TABLE routing_decisions`, which said "never on
 the /v1 object" of what is now half on it. `vpay_db::charges::insert_for_intent`
 writes the pair in the transaction that opens a charge. `postgres_smoke.rs`
-records 54 applied. Its drift cost is predicted, not measured, in
-[status/cratestack.md](cratestack.md) § 2026-10-24. See
+records 54 applied. Its drift cost, predicted and then measured in CI (212),
+is in [status/cratestack.md](cratestack.md) § 2026-10-24. See
 [verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).
 
 **53 as of 2026-10-23.** Two arrived that day.
