@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.0](https://github.com/vaam-apps/vpay/compare/v0.13.0...v0.14.0) (2026-10-24)
+
+
+### Features
+
+* **api:** an intent names the rail its charge was made on — payment_method_details ([#365](https://github.com/vaam-apps/vpay/issues/365)) ([08fb256](https://github.com/vaam-apps/vpay/commit/08fb2566b27974aad74d05c7b7d8302e715c72a9))
+
 ## [0.13.0](https://github.com/vaam-apps/vpay/compare/v0.12.1...v0.13.0) (2026-10-24)
 
 
