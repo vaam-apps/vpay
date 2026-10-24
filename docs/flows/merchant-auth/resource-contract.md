@@ -137,8 +137,9 @@ Two things the create adds to the row below, both of them capability-driven
 and neither a provider check (ADR-0002). `destination[<rail code>][…]`
 is **required** on a rail whose `RefundDestination` is `Required` — `mtn_momo`
 and `orange_money` — and **refused** on one that returns money to the instrument
-that paid, which `notchpay` does. The key is always the charge's **rail** code,
-never a payment-method type such as `mtn_wallet`;
+that paid, which `notchpay` does. The key is the charge's **rail** code or,
+since 2026-10-24, the payment-method type the charge records (such as
+`mtn_wallet`), never another type and never both;
 the adapter parses the inner map, so the core never learns a rail's wire keys.
 **The cancel refuses every refund the create produces, and that is the rule
 rather than a gap.** `POST /v1/refunds` writes its `provider_requests` row

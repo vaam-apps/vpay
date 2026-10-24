@@ -1139,6 +1139,109 @@ async fn a_missing_or_malformed_destination_is_the_callers_400() -> anyhow::Resu
     Ok(())
 }
 
+// ---------------------------------------------- test 8b (2026-10-24)
+
+/// **A charge is refunded under the payment-method type it records, and
+/// only under that one.**
+///
+/// A charge confirmed by `mtn_wallet` was routed to a rail the merchant did
+/// not pick, and no `/v1` object names that rail. So `POST /v1/refunds` also
+/// accepts `destination[<the charge's method_type>][…]`, and the rail is
+/// instructed exactly as under its own code. Three intents, one per branch,
+/// through the real route and a real Postgres:
+///
+/// * the charge records `mtn_wallet`: the type key is accepted, the refund is
+///   `pending` and MTN's journal shows the one transfer;
+/// * the charge records no type (as before migration `0053`): the same key
+///   is a `400` naming `destination`;
+/// * the charge records `mtn_wallet` and the body names both the rail and the
+///   type: a `400`, because a refund has one payee.
+///
+/// The method type is written onto the seeded charge directly, for
+/// [`RailHarness::captured_intent`]'s reason: routing is `confirm_rails.rs`'s
+/// subject, and this suite's is the refund surface.
+#[tokio::test]
+async fn a_charge_is_refunded_under_the_method_type_it_records() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let record_type = |intent_id: String| {
+        let pool = harness.pool.clone();
+        async move {
+            sqlx::query(
+                "UPDATE charges SET method_type = 'mtn_wallet' WHERE payment_intent_id = $1",
+            )
+            .bind(&intent_id)
+            .execute(&pool)
+            .await
+            .context("recording the charge's method type")?;
+            anyhow::Ok(intent_id)
+        }
+    };
+
+    let routed = record_type(harness.captured_intent(AMOUNT).await?).await?;
+    let accepted = harness
+        .create_refund_on(&routed, Some(REFUND_AMOUNT), PAYEE, "mtn_wallet")
+        .await?;
+    assert_eq!(accepted.status, 201, "{:#}", accepted.body);
+    assert_eq!(
+        accepted.body.get("status").and_then(Value::as_str),
+        Some("pending"),
+        "{:#}",
+        accepted.body
+    );
+    let reference: uuid::Uuid =
+        sqlx::query_scalar("SELECT provider_reference_id FROM refunds WHERE id = $1")
+            .bind(accepted.id())
+            .fetch_one(&harness.pool)
+            .await
+            .context("reading the refund's reference")?;
+    assert_eq!(
+        harness
+            .transfers_with_reference(&reference.to_string())
+            .await?,
+        1,
+        "the rail under the type key is the charge's own, and it was instructed once"
+    );
+
+    let untyped = harness.captured_intent(AMOUNT).await?;
+    let refused = harness
+        .create_refund_on(&untyped, Some(REFUND_AMOUNT), PAYEE, "mtn_wallet")
+        .await?;
+    assert_eq!(refused.status, 400, "{:#}", refused.body);
+    assert_eq!(
+        refused.body.pointer("/error/param").and_then(Value::as_str),
+        Some("destination"),
+        "a charge that records no type cannot be named by one: {:#}",
+        refused.body
+    );
+
+    let both = record_type(harness.captured_intent(AMOUNT).await?).await?;
+    let ambiguous = harness
+        .post_refund_form(&format!(
+            "payment_intent={both}&amount={REFUND_AMOUNT}\
+             &destination[{RAIL}][msisdn]={PAYEE}&destination[mtn_wallet][msisdn]={PAYEE}"
+        ))
+        .await?;
+    assert_eq!(ambiguous.status, 400, "{:#}", ambiguous.body);
+    assert_eq!(
+        ambiguous
+            .body
+            .pointer("/error/param")
+            .and_then(Value::as_str),
+        Some("destination"),
+        "one refund, one payee, one key: {:#}",
+        ambiguous.body
+    );
+
+    // Only the accepted refund was written.
+    let refunds: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
+        .fetch_one(&harness.pool)
+        .await?;
+    assert_eq!(refunds, 1);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 // ------------------------------------------------------------------ test 9
 
 /// A payee the rail has no record of is refused **before** any money is

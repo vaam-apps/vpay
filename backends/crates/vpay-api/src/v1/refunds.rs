@@ -515,6 +515,7 @@ async fn resolve_target<'a>(
     let destination = resolve_destination(
         adapter.as_ref(),
         &charge.provider_code,
+        charge.method_type.as_deref(),
         params.destination.as_ref(),
         capabilities.refund_destination,
     )?;
@@ -648,9 +649,26 @@ fn resolve_amount(
 /// forbidden from putting the number in it, but a `400` body is not the place
 /// to start trusting that. The sentence names the parameter and the shape,
 /// which is what an integrator can act on.
+///
+/// # The charge's payment-method type also names it (2026-10-24)
+///
+/// A charge confirmed by a payment-method type (`mtn_wallet`,
+/// `orange_wallet`; ADR-0029 D6) was routed to a rail the merchant did not
+/// pick, and no `/v1` object names that rail yet. So the outer key may also be
+/// the type the charge records (`charges.method_type`, migration `0053`:
+/// set on every routed charge and on a rail-code charge whose rail serves one
+/// type; `NULL` on a rail-code charge on a rail serving several, and on every
+/// charge written before `0053`), as `destination[mtn_wallet][…]`. Only that
+/// type is accepted: another type, or any type on a charge that records none,
+/// is refused as a key naming nothing this charge used. Naming both the rail
+/// and the type is refused too, because a refund has one payee and picking
+/// between two would be a guess. Whichever key is used, the adapter is handed
+/// the same rail-scoped inner map, so nothing below this function learns
+/// which spelling the merchant chose.
 fn resolve_destination(
     adapter: &dyn ProviderAdapter,
     code: &str,
+    method_type: Option<&str>,
     destination: Option<&Map<String, Value>>,
     capability: RefundDestination,
 ) -> Result<Option<RefundTarget>, ApiError> {
@@ -667,15 +685,33 @@ fn resolve_destination(
             DESTINATION_PARAM,
             "This payment method returns money by transfer, so a refund needs a payee: send \
              it as `destination[<rail code>][…]`, under the code of the rail the charge was \
-             made on (such as `mtn_momo`), not a payment-method type such as `mtn_wallet`.",
+             made on (such as `mtn_momo`), or under the charge's payment-method type (such \
+             as `mtn_wallet`).",
         )),
         (RefundDestination::Required, Some(map)) => {
-            let inner = map.get(code).and_then(Value::as_object).ok_or_else(|| {
+            // A type equal to the rail's own code would make one entry look
+            // like two; the vocabularies are disjoint, so this only guards a
+            // corrupt row.
+            let by_type = method_type
+                .filter(|method_type| *method_type != code)
+                .and_then(|method_type| map.get(method_type));
+            let entry = match (map.get(code), by_type) {
+                (Some(_), Some(_)) => {
+                    return Err(ApiError::invalid_param(
+                        DESTINATION_PARAM,
+                        "`destination` names both the rail this intent was charged on and its \
+                         payment-method type. A refund has one payee: send it under one of them.",
+                    ));
+                }
+                (Some(entry), None) | (None, Some(entry)) => Some(entry),
+                (None, None) => None,
+            };
+            let inner = entry.and_then(Value::as_object).ok_or_else(|| {
                 ApiError::invalid_param(
                     DESTINATION_PARAM,
                     "`destination` must name the rail this intent was charged on, as \
-                     `destination[<rail code>][…]` (such as `mtn_momo`), not a payment-method \
-                     type such as `mtn_wallet`.",
+                     `destination[<rail code>][…]` (such as `mtn_momo`), or by the charge's \
+                     payment-method type (such as `mtn_wallet`).",
                 )
             })?;
 
@@ -693,8 +729,8 @@ fn resolve_destination(
                     DESTINATION_PARAM,
                     "`destination` is not a payee this payment method can be given. A \
                      mobile-money payee is sent as \
-                     `destination[<rail code>][msisdn]` in international form, \
-                     starting with `+`.",
+                     `destination[<rail code or method type>][msisdn]` in international \
+                     form, starting with `+`.",
                 )
             })
         }
@@ -1965,6 +2001,7 @@ mod tests {
         let error = resolve_destination(
             &OriginRail,
             "origin_rail",
+            None,
             Some(&destination_map("origin_rail", PAYEE)),
             RefundDestination::Origin,
         )
@@ -2003,6 +2040,7 @@ mod tests {
             &required(),
             "required_rail",
             None,
+            None,
             RefundDestination::Required,
         )
         .expect_err("a Required rail needs a payee");
@@ -2018,6 +2056,7 @@ mod tests {
         let error = resolve_destination(
             &required(),
             "required_rail",
+            None,
             Some(&Map::new()),
             RefundDestination::Required,
         )
@@ -2039,6 +2078,7 @@ mod tests {
         let destination = resolve_destination(
             &required(),
             "required_rail",
+            None,
             Some(&destination_map("required_rail", PAYEE)),
             RefundDestination::Required,
         )
@@ -2055,11 +2095,129 @@ mod tests {
         let error = resolve_destination(
             &required(),
             "required_rail",
+            None,
             Some(&destination_map("some_other_rail", PAYEE)),
             RefundDestination::Required,
         )
         .expect_err("the envelope must name this rail");
         assert_eq!(param_of(&error), DESTINATION_PARAM);
+    }
+
+    /// **A charge may be refunded under the payment-method type it records**
+    /// (2026-10-24): `/v1` does not name the rail a routed charge went to, so
+    /// the type the merchant sent on the intent is accepted as the outer key,
+    /// and the adapter is handed the same inner map it would have been under
+    /// the rail's code.
+    #[test]
+    fn a_charge_accepts_its_method_type_as_the_destination_key() {
+        let destination = resolve_destination(
+            &required(),
+            "required_rail",
+            Some("mtn_wallet"),
+            Some(&destination_map("mtn_wallet", PAYEE)),
+            RefundDestination::Required,
+        )
+        .expect("a routed charge's own type names it")
+        .expect("a Required rail yields Some");
+        assert_eq!(destination.msisdn(), "237600000200");
+    }
+
+    /// The rail's code keeps working on a charge that records a type:
+    /// accepting the type adds a spelling, it does not take one away.
+    #[test]
+    fn a_charge_with_a_method_type_still_accepts_its_rail_code() {
+        let destination = resolve_destination(
+            &required(),
+            "required_rail",
+            Some("mtn_wallet"),
+            Some(&destination_map("required_rail", PAYEE)),
+            RefundDestination::Required,
+        )
+        .expect("the rail's code still names the charge")
+        .expect("a Required rail yields Some");
+        assert_eq!(destination.msisdn(), "237600000200");
+    }
+
+    /// **One payee, one key.** A map naming both the rail and the type could
+    /// carry two different numbers, and choosing one would be a guess about
+    /// where a payer's money goes.
+    #[test]
+    fn naming_both_the_rail_and_the_method_type_is_refused() {
+        let mut map = destination_map("required_rail", PAYEE);
+        map.extend(destination_map("mtn_wallet", "+237600000201"));
+        let error = resolve_destination(
+            &required(),
+            "required_rail",
+            Some("mtn_wallet"),
+            Some(&map),
+            RefundDestination::Required,
+        )
+        .expect_err("two keys are two payees");
+        assert_eq!(param_of(&error), DESTINATION_PARAM);
+    }
+
+    /// A type is accepted only on a charge that records it. A charge with no
+    /// recorded type (before migration `0053`, or confirmed by the code of a
+    /// rail serving several types) has nothing `destination[mtn_wallet]`
+    /// could name.
+    #[test]
+    fn a_method_type_key_on_a_charge_with_no_recorded_type_is_refused() {
+        let error = resolve_destination(
+            &required(),
+            "required_rail",
+            None,
+            Some(&destination_map("mtn_wallet", PAYEE)),
+            RefundDestination::Required,
+        )
+        .expect_err("an unrouted charge has no type to be named by");
+        assert_eq!(param_of(&error), DESTINATION_PARAM);
+    }
+
+    /// Another type is refused as another rail is: the key must be this
+    /// charge's own.
+    #[test]
+    fn another_method_type_is_refused() {
+        let error = resolve_destination(
+            &required(),
+            "required_rail",
+            Some("mtn_wallet"),
+            Some(&destination_map("orange_wallet", PAYEE)),
+            RefundDestination::Required,
+        )
+        .expect_err("orange_wallet is not this charge's type");
+        assert_eq!(param_of(&error), DESTINATION_PARAM);
+    }
+
+    /// The type key changes nothing on an `Origin` rail: a destination is
+    /// refused there under any key.
+    #[test]
+    fn an_origin_rail_refuses_a_destination_keyed_by_method_type() {
+        let error = resolve_destination(
+            &OriginRail,
+            "origin_rail",
+            Some("orange_wallet"),
+            Some(&destination_map("orange_wallet", PAYEE)),
+            RefundDestination::Origin,
+        )
+        .expect_err("an Origin rail takes no destination");
+        assert_eq!(param_of(&error), DESTINATION_PARAM);
+    }
+
+    /// A malformed payee under the type key is still the caller's `400`,
+    /// never a rail's `502`: the type key reaches the same parser through the
+    /// same translation.
+    #[test]
+    fn a_malformed_payee_under_the_method_type_is_still_the_callers_error() {
+        let error = resolve_destination(
+            &required(),
+            "required_rail",
+            Some("mtn_wallet"),
+            Some(&destination_map("mtn_wallet", "600000200")),
+            RefundDestination::Required,
+        )
+        .expect_err("a bare national number is not an international one");
+        assert_eq!(param_of(&error), DESTINATION_PARAM);
+        assert_eq!(error.category().http_status(), 400);
     }
 
     /// **A malformed payee is a `400` naming `destination`, never a `502`.**
@@ -2076,6 +2234,7 @@ mod tests {
         let error = resolve_destination(
             &required(),
             "required_rail",
+            None,
             // No `+`: `RefundTarget::mobile_money` refuses it, because a
             // market-agnostic crate has no country to attach it to.
             Some(&destination_map("required_rail", "600000200")),
@@ -2101,6 +2260,7 @@ mod tests {
         let error = resolve_destination(
             &required(),
             "required_rail",
+            None,
             Some(&destination_map("required_rail", "+23760000020x")),
             RefundDestination::Required,
         )

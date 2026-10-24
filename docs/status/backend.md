@@ -1183,9 +1183,11 @@ maintainer the questions that decide it.
   the completion rate, reported for the operator to weigh by hand rather
   than scored; not built), the confirm following the page's rail
   (R8.4, answered, not built), `cm.mtn`/`cm.orange` against
-  Notch Pay's real sandbox, and a merchant-readable decision on `/v1` —
-  which a refund of a routed charge needs, because `destination` is keyed on
-  the rail's code, never the method type (recorded 2026-10-24).
+  Notch Pay's real sandbox, and a merchant-readable decision on `/v1`. A
+  refund of a routed charge needed that decision until 2026-10-24, when
+  `POST /v1/refunds` began accepting the charge's method type as the
+  `destination` key; the rail itself is still on no `/v1` object
+  ([verification/2026-10-24-refund-by-method-type.md](verification/2026-10-24-refund-by-method-type.md)).
 
 No route was mounted or unmounted and no `NotImplemented` token moved.
 [verification/2026-10-23-method-type-routing.md](verification/2026-10-23-method-type-routing.md).

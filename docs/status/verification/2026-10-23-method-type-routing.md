@@ -319,4 +319,8 @@ none moves money:
   accepting `destination[<the charge's method type>]`, or `/v1` naming the
   rail. Both are API decisions for the maintainer. Today only `mtn_momo` and
   `orange_money` need a destination, so the gap is a routed charge that
-  landed on one of those two.
+  landed on one of those two. _(Half closed 2026-10-24: the maintainer chose
+  "Both". The refund route now also accepts the type the charge records
+  ([2026-10-24-refund-by-method-type.md](2026-10-24-refund-by-method-type.md)),
+  so neither the merchant nor an SDK caller builds a refused key any more.
+  The rail on `/v1` is the other half, decided and not built.)_

@@ -239,7 +239,8 @@ predictable consequence of the header, not because anything observed it.
   - `destination[<rail code>][msisdn]` is **required** on `mtn_momo` and
     `orange_money`, because a refund there is an outbound transfer and needs
     a payee (RFC-0003 § 1); `notchpay` refunds to the instrument that paid
-    and refuses one. Stripe has no such parameter, so
+    and refuses one. Since 2026-10-24 the key may instead be the
+    payment-method type the charge records (`destination[mtn_wallet][msisdn]`). Stripe has no such parameter, so
     `stripe.refunds.create({ payment_intent })` is a `400` naming
     `destination`. **Both merchant SDKs carry the field** — `destination` on
     `CreateRefundParams` in `sdks/rust/src/resources.rs` and on the

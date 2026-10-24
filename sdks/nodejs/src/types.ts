@@ -1354,8 +1354,9 @@ export type ListCheckoutSessionsParams = {
  * On the wire this is `destination[<rail code>][…]` — a rail-agnostic
  * container with a rail-specific interior, much as
  * `payment_method_data[<payment_method_type>][…]` is on the confirm path. The
- * outer key is always the code of the **rail** the charge was made on, never a
- * payment-method type: the server refuses `destination[mtn_wallet]`. The
+ * outer key is the code of the **rail** the charge was made on or, since the
+ * server's 2026-10-24 change, the payment-method type the charge records
+ * (`destination[mtn_wallet]` for a charge routed by `mtn_wallet`). The
  * server strips the outer key and hands the interior to that rail's own
  * adapter, which is the only thing that knows what a payee looks like there.
  * An SDK that flattened this, or that wrote one rail's code into the body
@@ -1411,16 +1412,17 @@ export type RefundDestination = {
   /**
    * The rail the charge was made on — its code becomes the outer key.
    *
-   * A **rail code** (`"mtn_momo"`, `"orange_money"`, `"notchpay"`), never a
-   * payment-method type: `"mtn_wallet"` or `"orange_wallet"` here is refused by
-   * the server with a `400` naming `destination`. For an intent created with a
-   * type, the rail its charge was routed to is on no `/v1` object yet, so the
-   * caller has to know it another way.
+   * A **rail code** (`"mtn_momo"`, `"orange_money"`, `"notchpay"`), or the
+   * payment-method type the charge records (`"mtn_wallet"`, `"orange_wallet"`):
+   * a server since 2026-10-24 accepts the type for a charge routed by it, which
+   * is how to refund one without knowing the rail it went to (no `/v1` object
+   * names that rail yet). Another type, or a type on an older server, is
+   * refused with a `400` naming `destination`.
    */
   payment_method_type: PaymentMethodType;
   /**
    * The payee's number, **in international form, starting with `+`**. Sent as
-   * `destination[<rail code>][msisdn]`.
+   * `destination[<rail code or method type>][msisdn]`.
    */
   msisdn: string;
 };
