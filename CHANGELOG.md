@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.1](https://github.com/vaam-apps/vpay/compare/v0.12.0...v0.12.1) (2026-10-24)
+
+
+### Bug Fixes
+
+* **api:** a refund destination is keyed by the rail's code, and say so; correct the reconciler's Notch Pay registration claim ([#359](https://github.com/vaam-apps/vpay/issues/359)) ([1c8bd7b](https://github.com/vaam-apps/vpay/commit/1c8bd7b0bdd30b2cff395177a3a6e523dadbaddf))
+
 ## [0.12.0](https://github.com/vaam-apps/vpay/compare/v0.11.0...v0.12.0) (2026-10-24)
 
 
