@@ -712,7 +712,8 @@ pub fn describe_all() {
         PROVIDER_CALLBACKS_TOTAL,
         Unit::Count,
         "Callbacks received for a charge this deployment holds, by provider code and by what \
-         the rail's check said: verified, invalid, not_checked, no_secret or unavailable. \
+         the rail's check said: verified, verified_previous (matched the previous signing \
+         secret, during a rotation), invalid, not_checked, no_secret or unavailable. \
          invalid and unavailable did not pull the charge's poll forward."
     );
 }
