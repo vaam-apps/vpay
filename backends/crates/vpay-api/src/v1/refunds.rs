@@ -666,14 +666,16 @@ fn resolve_destination(
         (RefundDestination::Required, None) => Err(ApiError::invalid_param(
             DESTINATION_PARAM,
             "This payment method returns money by transfer, so a refund needs a payee: send \
-             it as `destination[<payment_method_type>][…]`.",
+             it as `destination[<rail code>][…]`, under the code of the rail the charge was \
+             made on (such as `mtn_momo`), not a payment-method type such as `mtn_wallet`.",
         )),
         (RefundDestination::Required, Some(map)) => {
             let inner = map.get(code).and_then(Value::as_object).ok_or_else(|| {
                 ApiError::invalid_param(
                     DESTINATION_PARAM,
-                    "`destination` must name the payment method this intent was charged on, \
-                     as `destination[<payment_method_type>][…]`.",
+                    "`destination` must name the rail this intent was charged on, as \
+                     `destination[<rail code>][…]` (such as `mtn_momo`), not a payment-method \
+                     type such as `mtn_wallet`.",
                 )
             })?;
 
@@ -691,7 +693,7 @@ fn resolve_destination(
                     DESTINATION_PARAM,
                     "`destination` is not a payee this payment method can be given. A \
                      mobile-money payee is sent as \
-                     `destination[<payment_method_type>][msisdn]` in international form, \
+                     `destination[<rail code>][msisdn]` in international form, \
                      starting with `+`.",
                 )
             })

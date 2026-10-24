@@ -14,7 +14,7 @@
  *
  * The refund surface is the one where that would cost the most. Its
  * `destination` is a rail-agnostic envelope around a rail-specific interior
- * (`destination[<payment_method_type>][msisdn]`), the server strips the outer
+ * (`destination[<rail code>][msisdn]`), the server strips the outer
  * key and hands the interior to that rail's own adapter, and the MSISDN rule
  * it applies there is **not** the rule `GET /v1/account_holders` applies: a
  * payee must be international, starting with `+`.

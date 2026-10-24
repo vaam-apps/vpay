@@ -122,12 +122,18 @@ never verified against a real Notch Pay delivery
 A rail learns the URL one of two ways, and `Capabilities::callback_url_mode`
 says which ([provider-port.md](provider-port.md#capabilities)). `mtn_momo`
 and `orange_money` are told it on every submit (`PerRequest`). `notchpay` holds
-it registered with the account (`Registered`), and since 2026-10-22 vpay keeps
-it there: the worker's `ensure_callbacks` singleton lists the account's
-endpoints at every worker start and hourly, and creates vpay's when it is
-missing ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md),
+it registered with the account (`Registered`). The worker's `ensure_callbacks`
+singleton can keep it there: on a rail whose `callbacks.register` is `ensure`
+it lists the account's endpoints at every worker start and hourly and creates
+vpay's when it is missing, and on `check` it only lists and reports
+([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md),
 [vpay-worker.md](../reference/vpay-worker.md#registering-callback-endpoints)).
-None of this changes what a callback can do. A rail with no endpoint
+**On `notchpay` it does neither unless told to:** with `register` unset the
+rail is `off` (since 2026-10-23, the adapter's
+`default_callback_registration`), vpay asks the account nothing, and the
+operator registers vpay's URL in Notch Pay's dashboard
+([adapter-notchpay.md](adapter-notchpay.md) § "Callbacks"). None of this
+changes what a callback can do. A rail with no endpoint
 registered sends nothing, and its charges settle by polling, as above.
 
 ## Status
@@ -151,7 +157,11 @@ escalation's). Extended 2026-10-23
 on a two-step rail the resubmit calls `prepare` before `submit`, and a
 `prepare` refused for a charge no submit ever prompted fails the charge
 through the declined path; the poll ladder and the recovery table are
-unchanged ([crash-safety.md](crash-safety.md) § "Two-step push rails").**
+unchanged ([crash-safety.md](crash-safety.md) § "Two-step push rails").
+Corrected 2026-10-24, with nothing in the loop changed: § "Where a rail sends
+its callbacks" said that since 2026-10-22 vpay keeps Notch Pay's endpoint
+registered, which stopped being true on 2026-10-23, when `off` became that
+rail's default; found by vpay-docs' re-read for v0.12.0.**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at

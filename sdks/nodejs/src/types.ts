@@ -1351,9 +1351,11 @@ export type ListCheckoutSessionsParams = {
  *
  * # The rail's code is the outer key, and that is the whole point
  *
- * On the wire this is `destination[<payment_method_type>][…]` — a
- * rail-agnostic container with a rail-specific interior, exactly as
+ * On the wire this is `destination[<rail code>][…]` — a rail-agnostic
+ * container with a rail-specific interior, much as
  * `payment_method_data[<payment_method_type>][…]` is on the confirm path. The
+ * outer key is always the code of the **rail** the charge was made on, never a
+ * payment-method type: the server refuses `destination[mtn_wallet]`. The
  * server strips the outer key and hands the interior to that rail's own
  * adapter, which is the only thing that knows what a payee looks like there.
  * An SDK that flattened this, or that wrote one rail's code into the body
@@ -1406,11 +1408,19 @@ export type RefundDestination = {
    * widening this one.
    */
   kind: "mobile_money";
-  /** The rail the charge was made on — its code becomes the outer key. */
+  /**
+   * The rail the charge was made on — its code becomes the outer key.
+   *
+   * A **rail code** (`"mtn_momo"`, `"orange_money"`, `"notchpay"`), never a
+   * payment-method type: `"mtn_wallet"` or `"orange_wallet"` here is refused by
+   * the server with a `400` naming `destination`. For an intent created with a
+   * type, the rail its charge was routed to is on no `/v1` object yet, so the
+   * caller has to know it another way.
+   */
   payment_method_type: PaymentMethodType;
   /**
    * The payee's number, **in international form, starting with `+`**. Sent as
-   * `destination[<payment_method_type>][msisdn]`.
+   * `destination[<rail code>][msisdn]`.
    */
   msisdn: string;
 };

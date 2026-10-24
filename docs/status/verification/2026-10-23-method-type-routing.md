@@ -283,7 +283,12 @@ None of these moves money wrongly, and none is fixed here:
   even if they then type the other network's number. `cm.mobile` resolved the
   network from the number; the chosen channel does not. vpay carries no
   number-plan table, by design. What Notch Pay answers for a mismatched
-  number has not been observed.
+  number has not been observed. _(Observed the same evening through the
+  probe, not vpay: a `422` at process whose `errors` name `phone`
+  ([2026-10-23-notchpay-sandbox-two-step-and-channels.md](2026-10-23-notchpay-sandbox-two-step-and-channels.md)),
+  which the adapter maps to `invalid_payer` since
+  [2026-10-23-notchpay-defaults-and-wrong-network.md](2026-10-23-notchpay-defaults-and-wrong-network.md).
+  Noted 2026-10-24.)_
 - **Rolling back below this change.** An older image does not know
   `mtn_wallet` or `orange_wallet`. An intent created with one returns a `500`
   on its checkout page (`build_rails` finds no adapter for it) and a `400`
@@ -294,3 +299,24 @@ None of these moves money wrongly, and none is fixed here:
 - **A scalar `payment_method_options` is now refused.** Before this change a
   confirm whose `payment_method_options` was a plain string was accepted and
   the field ignored. It must now be a map. No Stripe SDK sends a scalar.
+
+Found on 2026-10-24 by vpay-docs' re-read for v0.12.0, and not fixed either;
+none moves money:
+
+- **A routed charge cannot be refunded by its method type, and `/v1` does
+  not say which rail it went to.** `POST /v1/refunds` keys `destination` on
+  the charge's **rail** code (`refunds.rs`, `map.get(code)`), as it always
+  has. Before this change a rail code was the only thing an intent could
+  name, so the API reference, three of the route's own error messages and
+  both SDKs' doc comments called the key `<payment_method_type>`. They now
+  say `<rail code>` and that a type is refused. A merchant refunding a routed
+  `mtn_wallet` charge on `mtn_momo` must send `destination[mtn_momo][…]`;
+  `destination[mtn_wallet][…]` is a `400` naming `destination`, and the rail
+  that won is on no `/v1` object (the "merchant-readable decision" above).
+  The SDKs' `RefundDestination` takes a `PaymentMethodType`, which since this
+  change also holds `MtnWallet` and `OrangeWallet`, so an SDK caller can build
+  the refused key. Two ways out, neither taken: the refund route also
+  accepting `destination[<the charge's method type>]`, or `/v1` naming the
+  rail. Both are API decisions for the maintainer. Today only `mtn_momo` and
+  `orange_money` need a destination, so the gap is a routed charge that
+  landed on one of those two.
