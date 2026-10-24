@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.13.0](https://github.com/vaam-apps/vpay/compare/v0.12.1...v0.13.0) (2026-10-24)
+
+
+### Features
+
+* **api:** a refund's destination may name the charge's payment-method type ([#363](https://github.com/vaam-apps/vpay/issues/363)) ([98f4d32](https://github.com/vaam-apps/vpay/commit/98f4d32ba8fdca60c86227b35db6a72ddf73f2e3))
+
+
+### Bug Fixes
+
+* **deps:** accept RUSTSEC-2026-0387 (crypto-bigint 0.5.5), documented; no release clears it ([#361](https://github.com/vaam-apps/vpay/issues/361)) ([55e848f](https://github.com/vaam-apps/vpay/commit/55e848fa1ec96d3015761b3eba2a14df43e6a704))
+* **notchpay:** read a webhook's event name from `event`, as the sandbox sends it; record the first delivered webhooks ([#364](https://github.com/vaam-apps/vpay/issues/364)) ([4df5e0d](https://github.com/vaam-apps/vpay/commit/4df5e0d2b06cdfb847dac23243b238753afa6fc3))
+* **storybook:** the built-stylesheet a11y case follows the theme's var() chain, and build-storybook runs it ([#349](https://github.com/vaam-apps/vpay/issues/349)) ([3bdbbea](https://github.com/vaam-apps/vpay/commit/3bdbbeacd2a98a6d5776d981140060971c1ce37d))
+
 ## [0.12.1](https://github.com/vaam-apps/vpay/compare/v0.12.0...v0.12.1) (2026-10-24)
 
 
