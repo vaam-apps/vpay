@@ -77,6 +77,24 @@ export interface LastPaymentError {
   message: string;
 }
 
+/**
+ * What a {@link PaymentIntent}'s one charge was made with (vpay since
+ * 2026-10-24): the payment-method type the payer used and the rail vpay
+ * charged it on. The outcome of routing; why that rail won is not on the API.
+ */
+export interface PaymentMethodDetails {
+  /**
+   * The charge's payment-method type (`"mtn_wallet"`, `"orange_wallet"`), or
+   * `null` where the charge records none: one confirmed by the code of a rail
+   * serving several types (`notchpay`), or made before vpay recorded types.
+   * A `string` rather than a closed union, so a type this SDK predates still
+   * type-checks.
+   */
+  type: string | null;
+  /** The code of the rail the charge was made on (`"mtn_momo"`, `"notchpay"`, …). */
+  rail: string;
+}
+
 export interface PaymentIntent {
   id: string;
   object: "payment_intent";
@@ -86,6 +104,14 @@ export interface PaymentIntent {
   currency: string;
   status: PaymentIntentStatus;
   payment_method_types: string[];
+  /**
+   * What the intent's one charge was made with, or `null` while it has none.
+   *
+   * `?` because a vpay predating 2026-10-24 omits the key entirely, for
+   * {@link PaymentIntent.customer}'s reason: `undefined` and `null` both mean
+   * "no charge to describe".
+   */
+  payment_method_details?: PaymentMethodDetails | null;
   next_action: NextAction | null;
   last_payment_error: LastPaymentError | null;
   metadata: Record<string, string>;

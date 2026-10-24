@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 53,
-        "all fifty-three migration files under backends/migrations should be recorded as applied \
+        applied, 54,
+        "all fifty-four migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -393,7 +393,9 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          0053, which adds charges.method_type (the payment-method type the payer \
          chose, ADR-0029 D6) and creates routing_decisions, the router's scored \
          decision for each routed charge, written in the transaction that \
-         opens it (D10).)"
+         opens it (D10), and 0054, which copies the charge's rail and type \
+         onto payment_intents.charge_rail and charge_method_type -- what /v1 \
+         renders as payment_method_details, D10 as amended on 2026-10-24.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -4980,7 +4982,29 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 ///     its five CHECKs and its primary key are not reported separately.
 ///     Undeclared on purpose, like `provider_requests`: `considered` is
 ///     `jsonb`, and nothing would read the row through a delegate.
-const EXPECTED_DRIFT_CHANGES: u32 = 209;
+///
+/// **209 -> 212 on 2026-10-24 (migration 0054, the rail on `/v1`), PREDICTED
+/// and not measured** — the change was written in a container with no Docker
+/// daemon, so CI's run of this case is the measurement, and this note is to
+/// be corrected if it disagrees. Derived from cratestack-migrate 0.15.0's
+/// source rather than guessed: `payment_intents` is already modelled and
+/// already drifts, so `EXPECTED_DRIFTED_RELATIONS` does not move, and the
+/// three new lines should be
+///
+///   * `payment_intents`: `[lossy] column charge_rail exists in the live
+///     database but is not declared in the schema`, and the same for
+///     `charge_method_type`. `model PaymentIntent` was not extended, for
+///     0053's reason above: no query on this table runs through CrateStack.
+///   * `payment_intents`: `[safe] CHECK charge_method_type_is_known exists
+///     ... not declared` — single-column, so reported, like 0053's
+///     `method_type_is_known`.
+///
+/// Nothing else: `charge_method_type_needs_a_rail` spans two columns and
+/// `introspect/postgres/mod.rs` skips multi-column CHECKs ("Known gaps"), and
+/// `charge_rail`'s foreign key onto `providers` costs nothing because foreign
+/// keys are not introspected at all. Both new columns are `TEXT`, so
+/// `EXPECTED_UNMAPPABLE_COLUMNS` does not move either.
+const EXPECTED_DRIFT_CHANGES: u32 = 212;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes

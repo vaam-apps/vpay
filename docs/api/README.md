@@ -216,11 +216,13 @@ gained a writer and migration `0039` added `customer.created` and
 configuration read at render time, so redeploying does not change what a
 delivered event says about itself.
 
-**`data.object` is the same 13-key `payment_intent`
+**`data.object` is the same 14-key `payment_intent`
 `GET /v1/payment_intents/{id}` returns** — `id`, `object`, `amount`, `currency`,
-`status`, `payment_method_types`, `next_action`, `last_payment_error`,
-`metadata`, `description`, `customer`, `created`, `livemode` — twelve until
-2026-09-06, when S4a's `customer` made thirteen; rendered by
+`status`, `payment_method_types`, `payment_method_details`, `next_action`,
+`last_payment_error`, `metadata`, `description`, `customer`, `created`,
+`livemode` — twelve until 2026-09-06, when S4a's `customer` made thirteen, and
+thirteen until 2026-10-24, when `payment_method_details` made fourteen (an
+event written before then has thirteen); rendered by
 `vpay_api::model::PaymentIntentObject` at the moment the transition happened and
 stored verbatim. It is a **snapshot, not a re-read**: an intent that changed
 afterwards still shows what was true when the event was emitted. Neither the
@@ -310,11 +312,14 @@ redirect rail (`orange_money`, which needs `return_url`) and a push rail
 know which fields to send. The checkout session's browser answer carries
 the ranked rail's flow and fields under the type's own entry; the checkout
 page rendering it is slice 2 of
-[the plan](../plans/2026-10-23-method-type-routing.md), unverified. And the
-rail chosen, the method type and the ranking are recorded in vpay's database (`charges.method_type`, `routing_decisions`), not
-on the `/v1` object: a merchant cannot read them from the API yet. Neither
-SDK can send a method-type confirm or a pin
-([../sdks/parity.md](../sdks/parity.md), dated 2026-10-23).
+[the plan](../plans/2026-10-23-method-type-routing.md), unverified. The
+rail chosen and the method type are on the intent since 2026-10-24, as
+`payment_method_details` (below); the ranking that chose the rail is
+recorded in vpay's database (`routing_decisions`) and is on no `/v1` object.
+Neither SDK can send a method-type confirm or a pin
+([../sdks/parity.md](../sdks/parity.md), dated 2026-10-23). _(Until
+2026-10-24 this said the rail and the type were "not on the `/v1` object: a
+merchant cannot read them from the API yet".)_
 
 **A routed charge is refunded under its method type or its rail's code.**
 Since 2026-10-24 `POST /v1/refunds` accepts the charge's method type as the
@@ -325,10 +330,43 @@ which rail won. The type is the one the charge records (`charges.method_type`,
 migration `0053`): set on every routed charge and on a rail-code charge whose
 rail serves one type, absent on a rail-code charge on a rail serving several
 and on charges written before `0053`. Another type, a type on a charge that
-records none, or both keys at once, is a `400` naming `destination`. **The
-rail itself is still on no `/v1` object**: the maintainer's decision
-("Both", 2026-10-24) is to show it there later; it is not built
+records none, or both keys at once, is a `400` naming `destination`
 ([verification](../status/verification/2026-10-24-refund-by-method-type.md)).
+The rail itself is on the intent since the same day, the second half of the
+maintainer's "Both": `payment_method_details.rail`. _(Until then this said
+"the rail itself is still on no `/v1` object … it is not built".)_
+
+**`payment_method_details`: what the intent's charge was made with.** Since
+2026-10-24 (migration `0054`, the maintainer's "Go with A") every
+`payment_intent` carries it — `null` until the intent has a charge, then:
+
+```json
+"payment_method_details": { "type": "mtn_wallet", "rail": "mtn_momo" }
+"payment_method_details": { "type": null, "rail": "notchpay" }
+```
+
+- `rail` is the code of the rail the charge was made on, and is never `null`
+  inside the object. One charge per intent, forever, so it is one rail.
+- `type` is the method type the charge records — the same value a refund's
+  `destination[<method type>]` must name — or `null` where it records none:
+  a confirm by the code of a rail serving several types (`notchpay`), or a
+  charge made before migration `0053`. It is never inferred from the rail,
+  so an old `mtn_momo` charge says `null`, not `mtn_wallet`.
+- It is the **outcome** of routing, never the decision: the candidates,
+  scores, exclusions and configuration version stay in `routing_decisions`
+  ([ADR-0029](../adr/0029-card-and-bank-adapters-and-payment-method-routing.md)
+  D10, amended that day).
+- Every surface that renders the intent carries it — the `/v1` routes, the
+  payer's `/v1/browser` routes (so the payer sees the rail too) and every
+  `payment_intent.*` event written since. An event written before
+  2026-10-24 is the snapshot it was and has no such key; nothing rewrites
+  `events.data`.
+- The name is Stripe's, from its `Charge` object; Stripe puts no such key
+  on a PaymentIntent, so stripe-node passes it through untyped. Both vpay
+  SDKs model it as optional, because an older vpay omits it.
+
+Evidence: [verification](../status/verification/2026-10-24-rail-on-v1.md);
+the plan: [../plans/2026-10-24-rail-on-v1.md](../plans/2026-10-24-rail-on-v1.md).
 
 ### The `customer` object (S4a)
 

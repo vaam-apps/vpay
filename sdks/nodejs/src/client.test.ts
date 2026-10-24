@@ -530,6 +530,42 @@ describe("resource methods", () => {
     expect(server.requests).toHaveLength(0);
   });
 
+  it("payment_intents.retrieve decodes payment_method_details in both shapes, and its absence", async () => {
+    const bodies: Record<string, PaymentIntent> = {
+      "/v1/payment_intents/pi_typed": makeSamplePaymentIntent({
+        id: "pi_typed",
+        status: "processing",
+        payment_method_details: { type: "mtn_wallet", rail: "mtn_momo" },
+      }),
+      "/v1/payment_intents/pi_untyped": makeSamplePaymentIntent({
+        id: "pi_untyped",
+        status: "processing",
+        payment_method_details: { type: null, rail: "notchpay" },
+      }),
+      // A vpay predating 2026-10-24 omits the key entirely.
+      "/v1/payment_intents/pi_older": makeSamplePaymentIntent({
+        id: "pi_older",
+      }),
+    };
+    const server = await withServer({
+      resource: (req) => ({ status: 200, body: bodies[req.url] }),
+    });
+    const client = makeClient(server);
+
+    const typed = await client.paymentIntents.retrieve("pi_typed");
+    expect(typed.payment_method_details).toEqual({
+      type: "mtn_wallet",
+      rail: "mtn_momo",
+    });
+    const untyped = await client.paymentIntents.retrieve("pi_untyped");
+    expect(untyped.payment_method_details).toEqual({
+      type: null,
+      rail: "notchpay",
+    });
+    const older = await client.paymentIntents.retrieve("pi_older");
+    expect(older.payment_method_details).toBeUndefined();
+  });
+
   it("payment_intents.retrieve: exact GET path", async () => {
     const server = await withServer({
       resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),

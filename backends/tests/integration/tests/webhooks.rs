@@ -1357,8 +1357,9 @@ async fn reading_events_requires_a_scope() {
 ///    a webhook for a cancel that did not happen.
 ///
 /// The body carries **no `client_secret`**: `cancel` answers
-/// `SecretRendering::Omit` and the event renders the same thirteen-key object
-/// (this said "twelve-key" until 2026-09-23),
+/// `SecretRendering::Omit` and the event renders the same fourteen-key object
+/// (this said "twelve-key" until 2026-09-23, and "thirteen-key" until
+/// 2026-10-24),
 /// so the payer credential cannot reach a body that is stored, signed and
 /// replayed on every rung of the ladder.
 #[tokio::test]

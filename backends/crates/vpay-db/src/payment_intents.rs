@@ -37,7 +37,8 @@ use crate::error::{DbError, classify_write};
 const COLUMNS: &str = "id, seq, merchant_id, livemode, amount, amount_received, amount_refunded, \
                        amount_refund_pending, currency_code, status, last_payment_error_code, \
                        last_payment_error_message, payment_method_types, metadata, description, \
-                       customer_id, client_secret_suffix, created_at, updated_at";
+                       customer_id, client_secret_suffix, created_at, updated_at, charge_rail, \
+                       charge_method_type";
 
 /// One `payment_intents` row, exactly as stored.
 ///
@@ -115,6 +116,26 @@ pub struct PaymentIntentRow {
     /// When the row last changed. Maintained by [`PaymentIntents::transition`], not by a
     /// trigger — see migration 0014's closing note.
     pub updated_at: OffsetDateTime,
+    /// The rail (`providers.code`) of this intent's one charge, or `None`
+    /// while it has none (migration `0054`).
+    ///
+    /// A copy of the charge's `provider_code`, written by
+    /// [`crate::TxRepositories::insert_for_intent`] in the transaction that
+    /// opens the charge and never changed afterwards: one charge per intent,
+    /// forever (ADR-0029 D11). It is here, rather than read from the charge
+    /// at render time, so that every surface built from this row — the `/v1`
+    /// routes, the payer's browser routes and the worker's event snapshot —
+    /// carries it without a second query (`vpay_api`'s
+    /// `payment_method_details`).
+    pub charge_rail: Option<String>,
+    /// The payment-method type of this intent's one charge
+    /// (`vpay_core::routing::MethodType`'s spelling), copied from the
+    /// charge's `method_type` with [`Self::charge_rail`] — `None` where the
+    /// charge records none (a rail-code charge on a rail serving several
+    /// types, or one written before migration `0053`), and while there is no
+    /// charge. `charge_method_type_needs_a_rail` (`0054`) refuses a type
+    /// without a rail.
+    pub charge_method_type: Option<String>,
 }
 
 /// Redacts [`PaymentIntentRow::client_secret_suffix`] and
@@ -172,13 +193,16 @@ impl fmt::Debug for PaymentIntentRow {
             )
             .field("created_at", &self.created_at)
             .field("updated_at", &self.updated_at)
+            .field("charge_rail", &self.charge_rail)
+            .field("charge_method_type", &self.charge_method_type)
             .finish()
     }
 }
 
 /// The columns a caller supplies when creating an intent: [`PaymentIntentRow`]
-/// minus `seq`, `updated_at` and the three `amount_*` running totals, all of
-/// which the database or a later transition owns.
+/// minus `seq`, `updated_at`, the three `amount_*` running totals and the
+/// charge's `charge_rail`/`charge_method_type` pair, all of which the
+/// database or a later write owns.
 ///
 /// `created_at` **is** a field here, and that is a deliberate reading of
 /// this step's design (which removes only `seq`, `updated_at` and
@@ -1228,6 +1252,8 @@ mod tests {
             client_secret_suffix: "neverlogthispayercredential00000".to_owned(),
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
+            charge_rail: None,
+            charge_method_type: None,
         }
     }
 

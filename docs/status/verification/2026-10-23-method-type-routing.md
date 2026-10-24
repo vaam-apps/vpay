@@ -263,7 +263,10 @@ passed. None of the three touches routing.
   maintainer answers R8.
 - **`cm.mtn` and `cm.orange` against Notch Pay's real sandbox.** Stub only.
 - **A merchant-readable decision**: the method type and the rail are on no
-  `/v1` object (D10 as written).
+  `/v1` object (D10 as written). _(The type and the rail are since
+  2026-10-24, as the intent's `payment_method_details`; the decision record
+  itself is still on none.
+  [2026-10-24-rail-on-v1.md](2026-10-24-rail-on-v1.md).)_
 - **No Stripe-compat case** sends a method type.
 
 Found by an independent read-only review of the final tree, on 2026-10-23.
@@ -323,4 +326,5 @@ none moves money:
   "Both". The refund route now also accepts the type the charge records
   ([2026-10-24-refund-by-method-type.md](2026-10-24-refund-by-method-type.md)),
   so neither the merchant nor an SDK caller builds a refused key any more.
-  The rail on `/v1` is the other half, decided and not built.)_
+  The rail on `/v1` is the other half, decided and not built. Built later
+  that day: [2026-10-24-rail-on-v1.md](2026-10-24-rail-on-v1.md).)_

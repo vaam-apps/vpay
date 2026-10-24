@@ -1368,6 +1368,106 @@ async fn a_second_charge_for_one_intent_is_refused_as_a_named_unique_violation()
     Ok(())
 }
 
+/// Migration `0054`: opening a charge gives its intent the charge's rail and
+/// payment-method type, in the same transaction, and nothing else does.
+///
+/// Read back two ways — straight from the columns, and through
+/// `PaymentIntents::get_for_merchant`, whose `COLUMNS` list is what every
+/// `/v1` render and every event snapshot decodes. A refused second charge
+/// rolls back without touching the pair, and the two CHECKs refuse what the
+/// renderer treats as a broken invariant.
+#[tokio::test]
+async fn opening_a_charge_gives_its_intent_the_charges_rail_and_type() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    let pair = |id: &'static str| {
+        let pool = pool.clone();
+        async move {
+            sqlx::query_as::<_, (Option<String>, Option<String>)>(
+                "SELECT charge_rail, charge_method_type FROM payment_intents WHERE id = $1",
+            )
+            .bind(id)
+            .fetch_one(&pool)
+            .await
+            .context("reading the intent's pair")
+        }
+    };
+
+    for id in ["pi_typed", "pi_untyped"] {
+        repositories
+            .insert(&fixture_intent(id, "XAF"))
+            .await
+            .context("inserting the intent")?;
+        assert_eq!(pair(id).await?, (None, None), "no charge, no rail");
+    }
+
+    let mut typed = fixture_charge("ch_typed", "pi_typed");
+    typed.method_type = Some("mtn_wallet".to_owned());
+    one_tx::insert_for_intent(repositories.as_ref(), &typed)
+        .await
+        .context("opening a typed charge")?;
+    one_tx::insert_for_intent(
+        repositories.as_ref(),
+        &fixture_charge("ch_untyped", "pi_untyped"),
+    )
+    .await
+    .context("opening an untyped charge")?;
+
+    assert_eq!(
+        pair("pi_typed").await?,
+        (Some("mtn_momo".to_owned()), Some("mtn_wallet".to_owned()))
+    );
+    assert_eq!(
+        pair("pi_untyped").await?,
+        (Some("mtn_momo".to_owned()), None),
+        "an untyped charge leaves the type null; the rail does not imply one"
+    );
+    let row = PaymentIntents::get_for_merchant(repositories.as_ref(), "merchant_a", "pi_typed")
+        .await?
+        .context("the typed intent reads back")?;
+    assert_eq!(row.charge_rail.as_deref(), Some("mtn_momo"));
+    assert_eq!(row.charge_method_type.as_deref(), Some("mtn_wallet"));
+
+    // A second charge is refused by the unique index before the copy runs,
+    // and its rolled-back transaction leaves the first charge's pair alone.
+    let mut second = fixture_charge("ch_second", "pi_typed");
+    second.method_type = Some("orange_wallet".to_owned());
+    one_tx::insert_for_intent(repositories.as_ref(), &second)
+        .await
+        .expect_err("one charge per intent");
+    assert_eq!(
+        pair("pi_typed").await?,
+        (Some("mtn_momo".to_owned()), Some("mtn_wallet".to_owned()))
+    );
+
+    for (statement, expected) in [
+        (
+            "UPDATE payment_intents SET charge_rail = NULL WHERE id = 'pi_typed'",
+            "charge_method_type_needs_a_rail",
+        ),
+        (
+            "UPDATE payment_intents SET charge_method_type = 'mtn_momo' WHERE id = 'pi_untyped'",
+            "charge_method_type_is_known",
+        ),
+    ] {
+        let error = sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect_err("the CHECK must refuse this");
+        assert_eq!(
+            error
+                .as_database_error()
+                .and_then(|e| e.constraint())
+                .unwrap_or_default(),
+            expected,
+            "{statement}"
+        );
+    }
+
+    Ok(())
+}
+
 /// The two URL columns on `charges` are the only values in this schema that
 /// end up in a *browser*, and migration `0019` constrains both.
 ///

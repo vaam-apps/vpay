@@ -595,6 +595,8 @@ mod tests {
             client_secret_suffix: "thisisthesecretsuffix".to_owned(),
             created_at: time::OffsetDateTime::UNIX_EPOCH,
             updated_at: time::OffsetDateTime::UNIX_EPOCH,
+            charge_rail: None,
+            charge_method_type: None,
         }
     }
 }

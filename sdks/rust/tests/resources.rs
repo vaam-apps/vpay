@@ -318,7 +318,7 @@ async fn retrieve_payment_intent_is_a_get_with_no_body_and_decodes_next_action()
 #[tokio::test]
 async fn create_surfaces_client_secret_when_the_server_sends_it() {
     // `POST /v1/payment_intents` renders `PaymentIntentWithSecret` (Step 5c's
-    // D2) — the thirteen documented keys plus `client_secret`.
+    // D2) — the fourteen documented keys plus `client_secret`.
     let (server, client) = fixture().await;
     let mut body = support::payment_intent_json("pi_1");
     body["client_secret"] = json!("pi_1_secret_abc123");
@@ -2906,6 +2906,63 @@ async fn a_payment_intents_customer_decodes_and_survives_a_server_that_omits_it(
     let older = client.payment_intents().retrieve("pi_2").await.unwrap();
     assert_eq!(
         older.customer, None,
+        "an older vpay omits the key; that must decode, not fail"
+    );
+}
+
+/// An intent's `payment_method_details` decodes in both of its shapes, and
+/// is absent-tolerant (vpay since 2026-10-24).
+///
+/// A typed charge names its type and its rail; a charge that records no type
+/// (a rail-code confirm on a rail serving several, such as `notchpay`)
+/// decodes with `method_type: None` and still names its rail; and a vpay
+/// predating the key omits it, which `#[serde(default)]` decodes to `None`
+/// for `customer`'s reason above.
+#[tokio::test]
+async fn a_payment_intents_payment_method_details_decodes_and_survives_a_server_that_omits_it() {
+    let (server, client) = fixture().await;
+
+    let mut typed = support::payment_intent_json("pi_1");
+    typed["status"] = json!("processing");
+    typed["payment_method_details"] = json!({ "type": "mtn_wallet", "rail": "mtn_momo" });
+    let mut untyped = support::payment_intent_json("pi_2");
+    untyped["status"] = json!("processing");
+    untyped["payment_method_details"] = json!({ "type": null, "rail": "notchpay" });
+    let mut older = support::payment_intent_json("pi_3");
+    older
+        .as_object_mut()
+        .expect("an object")
+        .remove("payment_method_details");
+
+    for (id, body) in [("pi_1", typed), ("pi_2", untyped), ("pi_3", older)] {
+        Mock::given(method("GET"))
+            .and(path(format!("/v1/payment_intents/{id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(body))
+            .mount(&server)
+            .await;
+    }
+
+    let typed = client.payment_intents().retrieve("pi_1").await.unwrap();
+    assert_eq!(
+        typed.payment_method_details,
+        Some(vpay_sdk::PaymentMethodDetails {
+            method_type: Some("mtn_wallet".to_owned()),
+            rail: "mtn_momo".to_owned(),
+        })
+    );
+
+    let untyped = client.payment_intents().retrieve("pi_2").await.unwrap();
+    assert_eq!(
+        untyped.payment_method_details,
+        Some(vpay_sdk::PaymentMethodDetails {
+            method_type: None,
+            rail: "notchpay".to_owned(),
+        })
+    );
+
+    let older = client.payment_intents().retrieve("pi_3").await.unwrap();
+    assert_eq!(
+        older.payment_method_details, None,
         "an older vpay omits the key; that must decode, not fail"
     );
 }

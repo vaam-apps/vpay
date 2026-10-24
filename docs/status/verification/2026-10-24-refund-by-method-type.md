@@ -14,7 +14,10 @@ called, and the integration case could not run in this environment**
   recorded (a routed charge is refunded under its rail's code, and no `/v1`
   object names the rail), they chose **"Both"**: "Accept the method type now
   and show the rail on /v1 later." This page is the first half. The second,
-  the rail on `/v1`, is decided and not built.
+  the rail on `/v1`, is decided and not built. _(Built later the same day, in
+  the shape the maintainer chose ("Go with A"): the intent's
+  `payment_method_details`,
+  [2026-10-24-rail-on-v1.md](2026-10-24-rail-on-v1.md).)_
 - **The implementer's, each reversible and named here:**
   - the type accepted is the one the charge **records** (`charges.method_type`,
     migration `0053`), not "the type the charge was routed by". `0053` sets
@@ -123,4 +126,5 @@ error (Connect)` at `postgres:16-alpine`, before any test body. The existing
 - **Any rail.** No refund reached MTN, Orange or Notch Pay. `mtn_momo::refund`
   has still never been called against MTN; `orange_money::refund` and
   `notchpay::refund` are still `NotImplemented`.
-- **The rail on `/v1`**, the maintainer's second half. Not built.
+- **The rail on `/v1`**, the maintainer's second half. Not built. _(Built
+  later on 2026-10-24: [2026-10-24-rail-on-v1.md](2026-10-24-rail-on-v1.md).)_

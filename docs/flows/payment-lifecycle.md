@@ -114,6 +114,16 @@ noticeably from Stripe's ergonomics, and it is deliberate.
 
 ## Status
 
+**Updated 2026-10-24: the intent names the rail its charge was made on.**
+The lifecycle did not change. When a confirm opens the intent's one charge,
+the same transaction copies the charge's rail and payment-method type onto
+the intent (migration `0054`), and every rendering of the intent carries
+them as `payment_method_details: {type, rail}`, `null` before a charge. A
+declined charge keeps them: it is still the intent's one charge. The routing
+decision itself stays in `routing_decisions` (ADR-0029 D10, amended that day).
+See [../api/README.md](../api/README.md) and
+[verification](../status/verification/2026-10-24-rail-on-v1.md).
+
 **Updated 2026-10-23: a confirm may name a payment-method type.** The
 lifecycle did not change: one charge per intent, forever (ADR-0029 D11), and
 the same states. What changed is step 2 of a confirm: when

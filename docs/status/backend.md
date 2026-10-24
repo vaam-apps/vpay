@@ -1168,7 +1168,8 @@ maintainer the questions that decide it.
   code keeps meaning that rail, pinned); a confirm by type is routed, and
   `payment_method_options[<type>][rail]` pins. The decision is committed with
   the charge in `routing_decisions` (migration `0053`) and is on no `/v1`
-  object. The checkout session's browser answer renders a type as one entry
+  object. _(Since 2026-10-24 its outcome is: the charge's type and rail are
+  the intent's `payment_method_details`, § "The rail on `/v1`" below.)_ The checkout session's browser answer renders a type as one entry
   flowing as the first-ranked rail.
 - **Proven:** unit tests on the router (exhaustive over small inputs, in
   place of property tests), the config and the boot refusals; three new
@@ -1188,6 +1189,8 @@ maintainer the questions that decide it.
   `POST /v1/refunds` began accepting the charge's method type as the
   `destination` key; the rail itself is still on no `/v1` object
   ([verification/2026-10-24-refund-by-method-type.md](verification/2026-10-24-refund-by-method-type.md)).
+  _(It is since later that day: `payment_method_details`, § "The rail on
+  `/v1`" below.)_
 
 No route was mounted or unmounted and no `NotImplemented` token moved.
 [verification/2026-10-23-method-type-routing.md](verification/2026-10-23-method-type-routing.md).
@@ -1335,3 +1338,50 @@ new `dashboard-deliveries` phase, which creates and deletes no endpoint:
 
 No route was mounted or unmounted and no `NotImplemented` token moved.
 [verification/2026-10-24-notchpay-dashboard-webhooks.md](verification/2026-10-24-notchpay-dashboard-webhooks.md).
+
+## The rail on `/v1`: `payment_method_details` on the intent (2026-10-24, ADR-0029 D10 amended)
+
+The second half of the maintainer's "Both", in the shape they chose ("Go with
+A", [plan](../plans/2026-10-24-rail-on-v1.md)):
+
+- **The wire:** every `payment_intent` carries `payment_method_details`,
+  `null` until it has a charge, then `{type, rail}`. `rail` is the charge's
+  rail. `type` is the method type the charge records, or `null` where it
+  records none (a rail-code confirm on `notchpay`, or a charge from before
+  migration `0053`). The type is never inferred from the rail. The object went
+  from thirteen keys to fourteen, and the browser wrapper from fourteen to
+  fifteen.
+- **Everywhere the intent is rendered:** the `/v1` routes, `/v1/browser` and
+  the checkout session's expansion (so the payer sees the rail), and every
+  `payment_intent.*` event snapshot written since. Older events are not
+  rewritten.
+- **The source:** migration `0054`'s `payment_intents.charge_rail` and
+  `charge_method_type`, written by `vpay_db::charges::insert_for_intent` in
+  the transaction that opens the charge, from the row it inserted. It is a
+  compare-and-swap guarded on `charge_rail IS NULL`, ADR-0025 D1's shape. The
+  backfill copies each existing charge's pair.
+- **The decision record stays off `/v1`.** `routing_decisions` is on no
+  object (D10 as amended).
+- **Proven locally:** `vpay-api`'s model tests (both shapes, `null`, the two
+  refused states, a stored row through `try_from`, the fourteen-key
+  tripwire) and `vpay-db`'s statement test; both SDKs' decoding tests; the
+  three JS packages' suites.
+- **Written and compiled, not run here (no Docker):** `vpay-db`'s
+  `opening_a_charge_gives_its_intent_the_charges_rail_and_type` (both shapes,
+  the refused second charge, the two CHECKs by name) and the integration
+  assertions in `confirm_rails.rs` and `payment_intents.rs`. These cover:
+  - a rail-code confirm on `mtn_momo`, a routed one, a pinned one;
+  - a rail-code confirm on `notchpay` (`type: null`);
+  - a refused pin and a canceled intent (no rail);
+  - a decline (the pair stays);
+  - the event snapshot;
+  - the intent's pair against its charge's, on each path.
+
+  Also the stripe-compat case. CI is the first run of all of them.
+
+- **Not done:** the Flutter plugin does not model the key; there is no `/v1`
+  charge object; old `notchpay` charges cannot be typed; the drift count is
+  predicted.
+
+No route was mounted or unmounted and no `NotImplemented` token moved.
+[verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).

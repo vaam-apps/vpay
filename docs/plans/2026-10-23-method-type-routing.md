@@ -83,7 +83,10 @@ silently ignored.
      transaction that opens the charge (D10). It holds the type, every rail
      considered with its exclusion reason or its score and breakdown, the
      chosen and pinned rails, the formula, and a configuration version.
-   - Neither is on the `/v1` object (D10).
+   - Neither is on the `/v1` object (D10). _(Amended 2026-10-24: the
+     charge's type and rail are, as the intent's `payment_method_details`;
+     the `routing_decisions` row is still on none.
+     [2026-10-24-rail-on-v1.md](2026-10-24-rail-on-v1.md).)_
 6. **Notch Pay** sends `cm.mtn` for `mtn_wallet` and `cm.orange` for
    `orange_wallet`. A rail-code charge keeps `settings.channel`
    (`cm.mobile`). This is RFC-0012 delivery step 8, proven against the stub
@@ -155,4 +158,8 @@ built.
   pin.
 - **Cards**, until RFC-0010.
 - **Stripe's `payment_method_details`** on a charge object, which would show
-  a merchant the method type on `/v1`.
+  a merchant the method type on `/v1`. _(Built on 2026-10-24 in another
+  shape: on the intent rather than on a charge object, with the rail beside
+  the type. The maintainer chose that shape ("Go with A");
+  [2026-10-24-rail-on-v1.md](2026-10-24-rail-on-v1.md) has why, and a `/v1`
+  charge object is still not built.)_

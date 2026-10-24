@@ -82,15 +82,32 @@ export interface LastPaymentError {
 }
 
 /**
+ * What a {@link PaymentIntent}'s one charge was made with (vpay since
+ * 2026-10-24): the payment-method type the payer chose and the rail vpay
+ * charged it on.
+ */
+export interface PaymentMethodDetails {
+  /**
+   * `"mtn_wallet"`, `"orange_wallet"`, or `null` where the charge records no
+   * type (a rail-code confirm on a rail serving several, such as `notchpay`).
+   */
+  type: string | null;
+  /** The code of the rail the charge was made on (`"mtn_momo"`, `"notchpay"`, …). */
+  rail: string;
+}
+
+/**
  * `vpay_api::model::PaymentIntentWithSecret`: `PaymentIntentObject`'s keys —
- * pinned server-side at thirteen by
+ * pinned server-side at fourteen by
  * `every_documented_key_is_present_including_the_null_ones` — plus the
  * `client_secret` the browser surface flattens in alongside them (D2).
  *
- * **Twelve of the thirteen are declared here.** `customer` (`cus_…` or
+ * **Thirteen of the fourteen are declared here.** `customer` (`cus_…` or
  * `null`, on the wire since 2026-09-06) is not: it arrives and is simply
  * untyped. This comment said "the twelve keys of `PaymentIntentObject`"
- * until 2026-09-23, which was the server's count before `customer`.
+ * until 2026-09-23, which was the server's count before `customer`, and
+ * "twelve of the thirteen" until 2026-10-24, before
+ * `payment_method_details`.
  *
  * `client_secret` is `string`, not Stripe's `string | null`: the browser
  * routes are reachable *only* by presenting one, so a response that omitted
@@ -105,6 +122,11 @@ export interface PaymentIntent {
   currency: string;
   status: PaymentIntentStatus;
   payment_method_types: string[];
+  /**
+   * What the one charge was made with, `null` until there is one. `?`
+   * because a vpay predating 2026-10-24 omits the key.
+   */
+  payment_method_details?: PaymentMethodDetails | null;
   /** `null` on a push rail, and on an intent nobody has confirmed. */
   next_action: NextAction | null;
   /** Present *with* `requires_payment_method` — there is no `failed` status. */

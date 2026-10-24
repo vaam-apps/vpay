@@ -131,7 +131,10 @@ export function notFoundEnvelope(id: string): {
 
 export const SAMPLE_SECRET_SUFFIX = "a".repeat(32);
 
-/** A `PaymentIntentWithSecret` body: the twelve documented keys plus `client_secret`. */
+/**
+ * A `PaymentIntentWithSecret` body: every documented key this package types
+ * — all but `customer` — plus `client_secret`.
+ */
 export function samplePaymentIntent(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -142,6 +145,7 @@ export function samplePaymentIntent(
     currency: "xaf",
     status: "requires_payment_method",
     payment_method_types: ["mtn_momo"],
+    payment_method_details: null,
     next_action: null,
     last_payment_error: null,
     metadata: {},

@@ -1927,6 +1927,8 @@ mod tests {
             client_secret_suffix: "x".repeat(32),
             created_at: OffsetDateTime::UNIX_EPOCH,
             updated_at: OffsetDateTime::UNIX_EPOCH,
+            charge_rail: Some("mtn_momo".to_owned()),
+            charge_method_type: Some("mtn_wallet".to_owned()),
         }
     }
 

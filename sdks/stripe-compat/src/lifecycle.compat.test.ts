@@ -23,6 +23,18 @@ import {
 const stripe = stripeClient();
 
 /**
+ * vpay's `payment_method_details` off a stripe-node `PaymentIntent`. The
+ * official types do not declare it — Stripe has the name on its `Charge`, not
+ * on an intent — so it is read through `unknown`, which is exactly what a
+ * merchant on stripe-node has to do.
+ */
+function paymentMethodDetails(intent: Stripe.PaymentIntent): unknown {
+  return (intent as unknown as Record<string, unknown>)[
+    "payment_method_details"
+  ];
+}
+
+/**
  * How long the settlement case waits, and how often it asks.
  *
  * A ceiling, not an expectation, and the spread it has to cover is wide.
@@ -126,6 +138,10 @@ describe("payment intent lifecycle through stripe-node", () => {
 
     expect(canceled.id).toBe(created.id);
     expect(canceled.status).toBe("canceled");
+    // vpay's `payment_method_details` (2026-10-24) is not a key Stripe puts
+    // on a PaymentIntent, so stripe-node does not type it — but it passes it
+    // through, and an intent canceled before any charge carries `null`.
+    expect(paymentMethodDetails(canceled)).toBeNull();
 
     const retrieved = await stripe.paymentIntents.retrieve(created.id);
     expect(retrieved.status).toBe("canceled");
@@ -143,6 +159,13 @@ describe("payment intent lifecycle through stripe-node", () => {
     expect(confirmed.status).toBe("processing");
     expect(confirmed.next_action).toBeNull();
     expect(confirmed.last_payment_error).toBeNull();
+    // The rail the charge went to, and the type it records: `mtn_momo`
+    // serves one, so the type is `mtn_wallet`. stripe-node decodes the
+    // object without knowing the key, and hands it to the merchant intact.
+    expect(paymentMethodDetails(confirmed)).toEqual({
+      type: "mtn_wallet",
+      rail: RAIL,
+    });
 
     // The confirm's response and a fresh read must be the same object, so a
     // status that was rendered but never committed fails here.

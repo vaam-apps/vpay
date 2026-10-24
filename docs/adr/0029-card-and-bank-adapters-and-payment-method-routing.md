@@ -70,6 +70,18 @@
       [RFC-0008](../rfc/0008-payment-method-routing.md) § R8.1).
     - D14–D16 are still unconfirmed. The body below is unchanged; RFC-0008
       § R7 and § R8 carry the detail.
+
+  - **D10 amended by the maintainer on 2026-10-24.** Asked how a merchant
+    refunds a routed charge, the maintainer answered "Both": the refund
+    route accepts the charge's method type, and `/v1` shows the rail. On
+    the shape of the second half they answered "Go with A"
+    ([plans/2026-10-24-rail-on-v1.md](../plans/2026-10-24-rail-on-v1.md)).
+    So the **outcome** of a decision, the method type and the chosen rail,
+    is on the `/v1` intent as `payment_method_details` (migration `0054`).
+    The **decision record**, with every candidate, its score or exclusion
+    reason, the formula and the configuration version, stays in
+    `routing_decisions` and on no `/v1` object. D10's text below carries the
+    amendment where it applies.
 - **Implementation:** none. This ADR records decisions, not capability.
   Nothing it decides exists in code on the day it is written: the port has no
   `method_types`, no `amount_limits`, no `supports_off_session`, no
@@ -241,6 +253,16 @@ type, every candidate with its estimated fee and the reason any was excluded,
 the chosen rail, and the configuration version — in a `routing_decisions`
 table keyed by charge, never on the `/v1` object. An operator asked "why did
 this card go through the expensive provider" answers from a row.
+
+_Amended 2026-10-24 (the maintainer's "Both", then "Go with A"): the
+decision record stays as written, never on the `/v1` object. Its **outcome**
+is on it, though. The charge's method type and the rail it was made on reach
+every rendering of the intent as `payment_method_details: {type, rail}`,
+copied onto `payment_intents` in the transaction that opens the charge
+(migration `0054`;
+[verification](../status/verification/2026-10-24-rail-on-v1.md)). Until
+that day this paragraph's "never on the `/v1` object" covered the outcome
+too._
 
 **D11. No automatic cascading.** One charge per intent, forever. If the chosen
 rail declines, the router does not retry the intent on the next rail; a retry

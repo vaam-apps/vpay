@@ -209,14 +209,17 @@ impl PendingTransaction {
 /// finds its callers.
 #[async_trait]
 pub trait TxRepositories: Send {
-    /// `charges`: opens a charge. See [`crate::charges`] for why the unique
-    /// index, and not a preceding `SELECT`, is what enforces one charge per
-    /// intent.
+    /// `charges`: opens a charge, and copies its rail and payment-method type
+    /// onto its intent (`payment_intents.charge_rail`/`charge_method_type`,
+    /// migration `0054`) in the same transaction. See [`crate::charges`] for
+    /// why the unique index, and not a preceding `SELECT`, is what enforces
+    /// one charge per intent.
     ///
     /// # Errors
     ///
     /// [`DbError::UniqueViolation`] naming `one_charge_per_intent` when the
-    /// intent already has one; [`DbError::Query`] otherwise.
+    /// intent already has one; [`DbError::WriteMatchedNoRow`] if the intent
+    /// already carries a charge's rail; [`DbError::Query`] otherwise.
     async fn insert_for_intent(
         &mut self,
         new: &crate::NewCharge,

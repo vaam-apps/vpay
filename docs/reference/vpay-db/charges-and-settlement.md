@@ -19,6 +19,17 @@ transaction that does all three (see [`settlement`](#settlement)); splitting
 them across this module would have made it possible to call one without the
 others, which is the specific thing that transaction exists to prevent.
 
+Since 2026-10-24 `insert_for_intent` also writes the charge's intent, once.
+In the same transaction, from the row its `INSERT` returned, it copies the
+charge's `provider_code` and `method_type` onto
+`payment_intents.charge_rail`/`charge_method_type` (migration `0054`). That
+is a compare-and-swap guarded on `charge_rail IS NULL`, ADR-0025 D1's shape,
+and it keeps `updated_at` current. It lives here rather than in each caller so
+that no path can open a charge and leave its intent naming no rail. A
+`WriteMatchedNoRow` from it is a broken invariant: the unique index below has
+already refused a second charge. `/v1` renders the pair as the intent's
+`payment_method_details`.
+
 `insert_for_intent` takes a connection and not a pool because
 [crash-safety.md](../../flows/crash-safety.md) requires the charge row — carrying
 the `provider_reference_id` the rail will be given — to be committed _before_

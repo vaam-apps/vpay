@@ -33,6 +33,7 @@ export type {
   EmbeddedCheckoutCompleteEvent,
   InitEmbeddedCheckoutOptions,
   PaymentIntent,
+  PaymentMethodDetails,
   PaymentIntentResult,
   PaymentIntentStatus,
   NextAction,

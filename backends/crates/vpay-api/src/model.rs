@@ -37,6 +37,7 @@ use serde::{Serialize, Serializer};
 use serde_json::{Map, Value};
 use time::OffsetDateTime;
 use vpay_core::privacy::{SafeUrl, Secret};
+use vpay_core::routing::MethodType;
 use vpay_core::{IntentStatus, RefundStatus};
 
 use crate::ApiError;
@@ -438,6 +439,15 @@ pub struct PaymentIntentObject {
     pub status: IntentStatus,
     /// The rail codes this intent may be confirmed against.
     pub payment_method_types: Vec<String>,
+    /// What the intent's one charge was made with: `null` until it has a
+    /// charge, then the charge's payment-method type and rail (migration
+    /// `0054`, 2026-10-24). See [`PaymentMethodDetails`].
+    ///
+    /// Present and `null` rather than absent before a charge, for
+    /// [`Self::customer`]'s reason: an SDK models it as optional so an older
+    /// vpay still decodes, and an absent key would decode without complaint
+    /// in either client.
+    pub payment_method_details: Option<PaymentMethodDetails>,
     /// Redirect rails only; `null` on a push rail.
     pub next_action: Option<NextAction>,
     /// The last rail refusal, if any. Present *with*
@@ -496,6 +506,35 @@ impl PaymentIntentObject {
     }
 }
 
+/// A `payment_intent`'s `payment_method_details`: what its one charge was
+/// made with (2026-10-24 — the second half of the maintainer's "Both", shape
+/// A of `docs/plans/2026-10-24-rail-on-v1.md`, chosen as "Go with A").
+///
+/// Stripe's name, from its `Charge` object. It sits on the intent because
+/// `/v1` has no charge object, and one charge per intent, forever (ADR-0029
+/// D11), makes "the intent's charge" one charge. `rail` sits beside `type`
+/// rather than under a `<type>` key so that a charge with no recorded type
+/// still names its rail, and so per-type attributes (ADR-0029 D12's
+/// `card.brand`) can arrive later under `<type>` without moving either key.
+///
+/// The **outcome** of routing, never the decision: the candidates, their
+/// scores and exclusions, the formula and the configuration version stay in
+/// `routing_decisions` (ADR-0029 D10, as amended 2026-10-24).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PaymentMethodDetails {
+    /// The charge's payment-method type (`mtn_wallet`, `orange_wallet`), or
+    /// `null` where the charge records none: one confirmed by the code of a
+    /// rail serving several types (`notchpay`), or written before migration
+    /// `0053`. Present and `null`, never absent, and never inferred from the
+    /// rail.
+    #[serde(rename = "type")]
+    pub method_type: Option<String>,
+    /// The code of the rail the charge was made on (`mtn_momo`,
+    /// `orange_money`, `notchpay`). Never `null` inside the object.
+    pub rail: String,
+}
+
 /// A `payment_intent` **plus the payer credential that addresses it** —
 /// what `POST /v1/payment_intents`, `GET /v1/payment_intents/{id}` and the
 /// two `/v1/browser` routes answer with (Step 5c's D2).
@@ -516,16 +555,18 @@ impl PaymentIntentObject {
 ///
 /// Neither of those is a hypothetical: both are the *current* callers of
 /// `PaymentIntentObject::try_from`. `every_documented_key_is_present_including_the_null_ones`
-/// below asserts that object has exactly thirteen keys, and that assertion is
+/// below asserts that object has exactly fourteen keys, and that assertion is
 /// the tripwire this type exists to leave standing. _(This comment, and five
 /// more on this type, [`PaymentIntentWithSecret`] and [`ExpandableIntent`],
 /// said twelve until 2026-09-23 —
 /// as did three in `v1::payment_intents` and one in the integration suite's
 /// `webhooks.rs`. The object has had
 /// thirteen since `customer` was added on 2026-09-06, and the test has
-/// pinned 13 since then; only the prose lagged.)_
+/// pinned 13 since then; only the prose lagged. It has had fourteen since
+/// `payment_method_details` was added on 2026-10-24, and the test, this
+/// comment and the others moved together that day.)_
 ///
-/// # `#[serde(flatten)]`, so the wire shape is the thirteen keys plus one
+/// # `#[serde(flatten)]`, so the wire shape is the fourteen keys plus one
 ///
 /// A payer's client decodes one object, not a nested one:
 /// `sdks/stripe-js/src/types.ts`'s `PaymentIntent` is
@@ -550,7 +591,7 @@ impl PaymentIntentObject {
 #[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub struct PaymentIntentWithSecret {
-    /// The thirteen documented keys, unchanged and rendered by the same code
+    /// The fourteen documented keys, unchanged and rendered by the same code
     /// every other surface uses.
     #[serde(flatten)]
     pub intent: PaymentIntentObject,
@@ -653,9 +694,9 @@ impl PaymentIntentWithSecret {
 pub enum ExpandableIntent {
     /// `"pi_…"` — the merchant surface's answer.
     Id(String),
-    /// The thirteen documented keys, and no credential.
+    /// The fourteen documented keys, and no credential.
     Expanded(Box<PaymentIntentObject>),
-    /// The thirteen keys plus `client_secret`.
+    /// The fourteen keys plus `client_secret`.
     ExpandedWithSecret(Box<PaymentIntentWithSecret>),
 }
 
@@ -1360,6 +1401,44 @@ fn payment_method_types_of(value: &Value) -> Result<Vec<String>, ApiError> {
         .collect()
 }
 
+/// Renders a row's `charge_rail`/`charge_method_type` pair (migration
+/// `0054`) as `payment_method_details`.
+///
+/// No rail is no charge, so `null`. A type without a rail is what
+/// `charge_method_type_needs_a_rail` refuses, and a type outside
+/// [`MethodType`] is what `charge_method_type_is_known` refuses, so either
+/// one is this layer's invariant failing: `Internal`, never a guess. The
+/// type is rendered as stored, never derived from the rail.
+fn payment_method_details_of(
+    rail: Option<&str>,
+    method_type: Option<&str>,
+) -> Result<Option<PaymentMethodDetails>, ApiError> {
+    let Some(rail) = rail else {
+        return match method_type {
+            None => Ok(None),
+            Some(_) => Err(ApiError::Internal(
+                "payment_intents.charge_method_type is set and charge_rail is not".to_owned(),
+            )),
+        };
+    };
+    let method_type = method_type
+        .map(|stored| {
+            MethodType::from_wire(stored)
+                .map(|method_type| method_type.as_wire_str().to_owned())
+                .ok_or_else(|| {
+                    ApiError::Internal(format!(
+                        "payment_intents.charge_method_type holds `{stored}`, which is not a \
+                         MethodType"
+                    ))
+                })
+        })
+        .transpose()?;
+    Ok(Some(PaymentMethodDetails {
+        method_type,
+        rail: rail.to_owned(),
+    }))
+}
+
 /// The JSON type name, for an operator-facing message. `serde_json::Value` has
 /// no `Display` for its discriminant and printing the *value* here would put a
 /// merchant's metadata into a log line.
@@ -1553,6 +1632,10 @@ impl TryFrom<&vpay_db::PaymentIntentRow> for PaymentIntentObject {
             currency: row.currency_code.to_lowercase(),
             status,
             payment_method_types: payment_method_types_of(&row.payment_method_types)?,
+            payment_method_details: payment_method_details_of(
+                row.charge_rail.as_deref(),
+                row.charge_method_type.as_deref(),
+            )?,
             // Always `null` here: `next_action` lives on the charge, not the
             // intent. See `with_next_action`.
             next_action: None,
@@ -2382,6 +2465,7 @@ mod tests {
             "currency": "xaf",
             "status": "requires_payment_method",
             "payment_method_types": ["mtn_momo"],
+            "payment_method_details": null,
             "next_action": null,
             "last_payment_error": null,
             "metadata": { "order_id": "1234" },
@@ -2400,6 +2484,7 @@ mod tests {
             currency: "xaf".to_owned(),
             status: IntentStatus::RequiresPaymentMethod,
             payment_method_types: vec!["mtn_momo".to_owned()],
+            payment_method_details: None,
             next_action: None,
             last_payment_error: None,
             metadata: metadata_from_pairs(&BTreeMap::from([(
@@ -2437,6 +2522,10 @@ mod tests {
             "currency",
             "status",
             "payment_method_types",
+            // Since 2026-10-24 (migration 0054): what the one charge was
+            // made with, `null` until there is one. Present-and-null for
+            // `customer`'s reason below.
+            "payment_method_details",
             "next_action",
             "last_payment_error",
             "metadata",
@@ -2455,10 +2544,11 @@ mod tests {
         }
         assert_eq!(
             object.len(),
-            13,
+            14,
             "an undocumented key was added: {object:?}"
         );
         for null_key in [
+            "payment_method_details",
             "next_action",
             "last_payment_error",
             "description",
@@ -2472,7 +2562,100 @@ mod tests {
         }
     }
 
-    /// The browser wrapper is the thirteen keys **plus one**, at the top level
+    /// A charge that records its type renders both keys, and `type` is the
+    /// stored type, not the rail's code.
+    #[test]
+    fn a_typed_charge_renders_its_type_and_its_rail() {
+        let details =
+            payment_method_details_of(Some("mtn_momo"), Some("mtn_wallet")).expect("renders");
+        assert_eq!(
+            serde_json::to_value(details).expect("serialises"),
+            json!({ "type": "mtn_wallet", "rail": "mtn_momo" })
+        );
+    }
+
+    /// A rail-code charge on a rail serving several types records no type:
+    /// `type` is present and `null`, and is never inferred from the rail.
+    #[test]
+    fn a_charge_without_a_type_names_its_rail_beside_a_null_type() {
+        let details = payment_method_details_of(Some("notchpay"), None).expect("renders");
+        let rendered = serde_json::to_value(details).expect("serialises");
+        assert_eq!(rendered, json!({ "type": null, "rail": "notchpay" }));
+        assert_eq!(
+            rendered.get("type"),
+            Some(&Value::Null),
+            "`type` must be present and null, not absent"
+        );
+    }
+
+    /// No rail means no charge, and no charge means `null`.
+    #[test]
+    fn an_intent_without_a_charge_has_no_details() {
+        assert_eq!(
+            payment_method_details_of(None, None).expect("renders"),
+            None
+        );
+    }
+
+    /// The two states migration `0054`'s CHECKs refuse are an invariant
+    /// failing, never something to render.
+    #[test]
+    fn a_type_without_a_rail_or_outside_the_vocabulary_is_internal() {
+        assert!(matches!(
+            payment_method_details_of(None, Some("mtn_wallet")),
+            Err(ApiError::Internal(_))
+        ));
+        // A rail code in the type column: `charge_method_type_is_known`
+        // refuses it, and rendering it would put a rail where a type goes.
+        assert!(matches!(
+            payment_method_details_of(Some("mtn_momo"), Some("mtn_momo")),
+            Err(ApiError::Internal(_))
+        ));
+    }
+
+    /// From a stored row, through `try_from`: the two columns reach the
+    /// object, the right way round, beside the other thirteen keys.
+    #[test]
+    fn a_stored_row_renders_its_charges_rail_and_type() {
+        let mut row = vpay_db::PaymentIntentRow {
+            id: "pi_1".to_owned(),
+            seq: 1,
+            merchant_id: "acme".to_owned(),
+            livemode: false,
+            amount: 5000,
+            amount_received: 0,
+            amount_refunded: 0,
+            amount_refund_pending: 0,
+            currency_code: "XAF".to_owned(),
+            status: "processing".to_owned(),
+            last_payment_error_code: None,
+            last_payment_error_message: None,
+            payment_method_types: json!(["orange_wallet"]),
+            metadata: json!({}),
+            description: None,
+            customer_id: None,
+            client_secret_suffix: "0".repeat(32),
+            created_at: OffsetDateTime::UNIX_EPOCH,
+            updated_at: OffsetDateTime::UNIX_EPOCH,
+            charge_rail: Some("orange_money".to_owned()),
+            charge_method_type: Some("orange_wallet".to_owned()),
+        };
+        let rendered = serde_json::to_value(PaymentIntentObject::try_from(&row).expect("renders"))
+            .expect("serialises");
+        assert_eq!(
+            rendered.get("payment_method_details"),
+            Some(&json!({ "type": "orange_wallet", "rail": "orange_money" }))
+        );
+        assert_eq!(rendered.as_object().map(Map::len), Some(14));
+
+        row.charge_rail = None;
+        row.charge_method_type = None;
+        let rendered = serde_json::to_value(PaymentIntentObject::try_from(&row).expect("renders"))
+            .expect("serialises");
+        assert_eq!(rendered.get("payment_method_details"), Some(&Value::Null));
+    }
+
+    /// The browser wrapper is the fourteen keys **plus one**, at the top level
     /// — not a nested object.
     ///
     /// `sdks/stripe-js/src/types.ts`'s `PaymentIntent` is written against
@@ -2481,7 +2664,7 @@ mod tests {
     /// `intent` and every browser call would decode to something with no
     /// `status` on it.
     #[test]
-    fn the_browser_wrapper_is_the_thirteen_keys_plus_the_client_secret() {
+    fn the_browser_wrapper_is_the_fourteen_keys_plus_the_client_secret() {
         let rendered = serde_json::to_value(PaymentIntentWithSecret::new(
             sample("pi_1"),
             "pi_1_secret_abc".to_owned(),
@@ -2491,15 +2674,15 @@ mod tests {
 
         assert_eq!(
             object.len(),
-            14,
-            "the browser object must be exactly the thirteen documented keys plus \
+            15,
+            "the browser object must be exactly the fourteen documented keys plus \
              `client_secret` — got a different key count"
         );
         assert_eq!(
             object.get("client_secret").and_then(Value::as_str),
             Some("pi_1_secret_abc")
         );
-        // Every one of the thirteen is still there, at the top level, byte for
+        // Every one of the fourteen is still there, at the top level, byte for
         // byte what the merchant surface renders.
         let plain = serde_json::to_value(sample("pi_1")).expect("serialises");
         let plain = plain.as_object().expect("an object");
@@ -2549,7 +2732,7 @@ mod tests {
     /// body render through.
     ///
     /// `every_documented_key_is_present_including_the_null_ones` already
-    /// pins `len() == 13`; this says out loud what that number is protecting,
+    /// pins `len() == 14`; this says out loud what that number is protecting,
     /// so a future reader tempted to "just add the field" finds the reason
     /// rather than only the assertion.
     #[test]
@@ -2560,7 +2743,7 @@ mod tests {
             !object.contains_key("client_secret"),
             "a payer credential must not reach the /v1 list or events.data: {object:?}"
         );
-        assert_eq!(object.len(), 13);
+        assert_eq!(object.len(), 14);
     }
 
     /// The contract's whole point: a merchant's own client decodes what this
@@ -4264,7 +4447,7 @@ mod tests {
             .get("payment_intent")
             .and_then(Value::as_object)
             .expect("`untagged` renders the object with no discriminator");
-        assert_eq!(expanded.len(), 14, "the thirteen keys plus client_secret");
+        assert_eq!(expanded.len(), 15, "the fourteen keys plus client_secret");
         assert_eq!(expanded.get("client_secret"), Some(&json!(secret)));
         // The fields the page cannot paint without.
         assert_eq!(expanded.get("amount"), Some(&json!(5000)));
@@ -4277,7 +4460,7 @@ mod tests {
         assert!(expanded.contains_key("next_action"));
         assert!(expanded.contains_key("last_payment_error"));
 
-        // /v1/browser return read — the same thirteen keys, and no credential.
+        // /v1/browser return read — the same fourteen keys, and no credential.
         let without = merchant.with_expanded_intent(ExpandableIntent::Expanded(Box::new(intent)));
         let rendered = serde_json::to_value(&without).expect("serialises");
         let expanded = rendered
@@ -4286,8 +4469,8 @@ mod tests {
             .expect("an object");
         assert_eq!(
             expanded.len(),
-            13,
-            "the thirteen documented keys, and no more"
+            14,
+            "the fourteen documented keys, and no more"
         );
         assert!(
             !expanded.contains_key("client_secret"),

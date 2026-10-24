@@ -769,6 +769,10 @@ async fn cancel_is_legal_only_from_requires_payment_method() -> anyhow::Result<(
         .context("cancelling a fresh intent")?;
     assert_eq!(canceled.status, IntentStatus::Canceled);
     assert_eq!(canceled.id, intent.id);
+    assert_eq!(
+        canceled.payment_method_details, None,
+        "an intent canceled before any charge has no rail to name (migration 0054)"
+    );
 
     // A second cancel: the object exists, its status forbids the move.
     let error = client

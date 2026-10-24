@@ -1042,9 +1042,10 @@ async fn the_client_secret_is_on_create_and_retrieve_and_never_on_the_list() -> 
         );
         assert_eq!(
             item.as_object().map(serde_json::Map::len),
-            Some(13),
-            "the listed object is the thirteen documented keys — twelve until 2026-09-06, \
-             when S4a added `customer`: {item:#}"
+            Some(14),
+            "the listed object is the fourteen documented keys — twelve until 2026-09-06, \
+             when S4a added `customer`, and thirteen until 2026-10-24, when \
+             `payment_method_details` arrived: {item:#}"
         );
     }
     // Not merely absent as a key — absent as a *value* anywhere in the page.
@@ -1124,9 +1125,10 @@ async fn no_event_body_carries_a_client_secret() -> anyhow::Result<()> {
         );
         assert_eq!(
             data.as_object().map(serde_json::Map::len),
-            Some(13),
-            "{event_type}: events.data is the thirteen documented keys — twelve until \
-             2026-09-06, when S4a added `customer`: {data:#}"
+            Some(14),
+            "{event_type}: events.data is the fourteen documented keys — twelve until \
+             2026-09-06, when S4a added `customer`, and thirteen until 2026-10-24, when \
+             `payment_method_details` arrived: {data:#}"
         );
         assert!(
             !serde_json::to_string(data)?.contains(&secret),

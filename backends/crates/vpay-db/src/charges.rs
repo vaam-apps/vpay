@@ -2,7 +2,8 @@
 //! plus the `updated_at` column added by `0014` and `return_url` by `0019`).
 //!
 //! Three writes: [`crate::TxRepositories::insert_for_intent`] opens the charge
-//! before the rail is called, and
+//! before the rail is called — and, in the same call, copies its rail and
+//! payment-method type onto its intent (migration `0054`) — and
 //! [`crate::TxRepositories::mark_submitted`]/[`crate::TxRepositories::mark_failed`]
 //! record what the rail answered as compare-and-swaps out of `submitting`. All
 //! three run inside a *caller's* transaction, because
@@ -339,10 +340,33 @@ impl fmt::Debug for NewCharge {
     }
 }
 
-/// Opens the single charge for an intent, inside the caller's transaction.
+/// Copies a just-opened charge's rail and payment-method type onto its intent
+/// (migration `0054`): `$1` the intent, `$2` the charge's `provider_code`,
+/// `$3` its `method_type`.
+///
+/// ADR-0025 D1's shape, for the same reasons: a compare-and-swap on the
+/// intent inside the caller's transaction, guarded on the column it fills,
+/// keeping `updated_at` current because no trigger does. The guard is
+/// `charge_rail IS NULL` and not a check on the values: the pair is written
+/// once, with the charge, and `one_charge_per_intent` means a second charge
+/// for the intent was refused before this statement could run.
+pub(crate) const RECORD_CHARGE_ON_INTENT: &str = "UPDATE payment_intents \
+     SET charge_rail = $2, charge_method_type = $3, updated_at = now() \
+     WHERE id = $1 AND charge_rail IS NULL";
+
+/// Opens the single charge for an intent, inside the caller's transaction,
+/// and records its rail and type on the intent in the same transaction.
 ///
 /// Does **not** count the transition: the caller owns the commit, so the
 /// caller calls [`Charges::record_opened`] once it has one. See this module's header.
+///
+/// # The intent's copy (migration `0054`)
+///
+/// `payment_intents.charge_rail` and `charge_method_type` are written here,
+/// from the row the `INSERT` returned, rather than by each caller, so that
+/// no path can open a charge and leave its intent saying it has none: every
+/// charge vpay opens goes through this function. They are what `/v1` renders
+/// as the intent's `payment_method_details`.
 ///
 /// # Errors
 ///
@@ -351,7 +375,9 @@ impl fmt::Debug for NewCharge {
 /// `a_second_charge_for_one_intent_is_refused_by_name` pins. Also
 /// [`DbError::UniqueViolation`] on `charges_pkey` for a reused `id`,
 /// [`DbError::ForeignKeyViolation`] for an unknown intent, provider or
-/// currency, and [`DbError::Query`] otherwise.
+/// currency, [`DbError::WriteMatchedNoRow`] if the intent already carries a
+/// charge's rail (a broken invariant: the unique index makes it a second
+/// charge, refused above), and [`DbError::Query`] otherwise.
 pub(crate) async fn insert_for_intent(
     tx: &mut PgConnection,
     new: &NewCharge,
@@ -381,6 +407,23 @@ pub(crate) async fn insert_for_intent(
         .fetch_one(&mut *tx)
         .await
         .map_err(classify_write)?;
+
+    // From the returned row, not from `new`: the intent copies what the
+    // database stored for the charge.
+    let recorded = sqlx::query(RECORD_CHARGE_ON_INTENT)
+        .bind(&row.payment_intent_id)
+        .bind(&row.provider_code)
+        .bind(row.method_type.as_deref())
+        .execute(&mut *tx)
+        .await
+        .map_err(classify_write)?
+        .rows_affected();
+    if recorded != 1 {
+        return Err(DbError::WriteMatchedNoRow {
+            table: "payment_intents",
+            key: row.payment_intent_id.clone(),
+        });
+    }
 
     Ok(row)
 }
@@ -819,7 +862,25 @@ mod tests {
     use time::OffsetDateTime;
     use uuid::Uuid;
 
-    use super::{ChargeRow, NewCharge};
+    use super::{ChargeRow, NewCharge, RECORD_CHARGE_ON_INTENT};
+
+    /// The statement that gives an intent its charge's rail and type sets
+    /// both columns, from the charge's two binds, only on an intent that has
+    /// none, and keeps `updated_at` current. A database-backed case
+    /// (`vpay-db/tests/repositories.rs`) proves it runs; this one pins what
+    /// it says, so a reordered bind or a dropped guard is a unit failure.
+    #[test]
+    fn the_intent_copy_sets_both_columns_once_and_keeps_updated_at() {
+        let sql = RECORD_CHARGE_ON_INTENT
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        assert_eq!(
+            sql,
+            "UPDATE payment_intents SET charge_rail = $2, charge_method_type = $3, \
+             updated_at = now() WHERE id = $1 AND charge_rail IS NULL"
+        );
+    }
 
     /// A payer's number as a rail would carry it. The trailing digits are
     /// the canary every negative assertion keys on.

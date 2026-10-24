@@ -99,6 +99,20 @@ Measured, 2026-09-16.)_
 
 ## Migrations
 
+**54 as of 2026-10-24.** `0054_payment-intents-charge-rail.sql` (the
+maintainer's "Both" on routed refunds, second half; ADR-0029 D10 as amended
+that day) adds `payment_intents.charge_rail` (a foreign key onto
+`providers`) and `payment_intents.charge_method_type` (CHECK
+`charge_method_type_is_known`, the same list as `charges.method_type`), with
+`charge_method_type_needs_a_rail`. It backfills both from each intent's charge
+by copying, never by inferring a type the charge does not record, and
+corrects `0053`'s `COMMENT ON TABLE routing_decisions`, which said "never on
+the /v1 object" of what is now half on it. `vpay_db::charges::insert_for_intent`
+writes the pair in the transaction that opens a charge. `postgres_smoke.rs`
+records 54 applied. Its drift cost is predicted, not measured, in
+[status/cratestack.md](cratestack.md) § 2026-10-24. See
+[verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).
+
 **53 as of 2026-10-23.** Two arrived that day.
 `0052_provider-requests-prepare.sql`
 ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md))

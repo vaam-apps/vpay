@@ -63,6 +63,7 @@ export type {
   UpdateInvoiceItemParams,
   PaymentIntent,
   PaymentIntentStatus,
+  PaymentMethodDetails,
   PaymentMethodType,
   NextAction,
   LastPaymentError,

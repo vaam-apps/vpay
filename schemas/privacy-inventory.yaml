@@ -790,6 +790,14 @@ elements:
       - kind: column
         table: oauth_codes
         column: code_challenge_method
+      # The intent's copy of its charge's rail and type (migration 0054),
+      # classified as the charge's own two columns above are.
+      - kind: column
+        table: payment_intents
+        column: charge_method_type
+      - kind: column
+        table: payment_intents
+        column: charge_rail
       - kind: column
         table: payment_intents
         column: payment_method_types

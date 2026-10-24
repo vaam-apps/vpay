@@ -68,7 +68,8 @@ pub use model::{
     CheckoutSessionStatus, CheckoutUiMode, Customer, DeletedCustomer, DeletedInvoice,
     DeletedInvoiceItem, Event, EventData, IntentStatus, Invoice, InvoiceLine, InvoiceStatus,
     InvoiceStatusTransitions, KnownEventType, LastPaymentError, List, NextAction, OutOfBandMethod,
-    OutOfBandPayment, PaymentIntent, PaymentMethodType, RedirectToUrl, Refund, RefundStatus,
+    OutOfBandPayment, PaymentIntent, PaymentMethodDetails, PaymentMethodType, RedirectToUrl,
+    Refund, RefundStatus,
 };
 pub use resources::{
     AccountHoldersResource, AddressParams, BalanceResource, CheckoutResource,

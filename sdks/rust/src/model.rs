@@ -151,6 +151,29 @@ pub struct LastPaymentError {
     pub message: String,
 }
 
+/// What a [`PaymentIntent`]'s one charge was made with — its
+/// [`PaymentIntent::payment_method_details`] (vpay since 2026-10-24).
+///
+/// The **outcome** of routing: the payment-method type the payer used and
+/// the rail vpay charged it on. Why that rail won is not on the API.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PaymentMethodDetails {
+    /// The charge's payment-method type (`"mtn_wallet"`, `"orange_wallet"`),
+    /// or `None` where the charge records none: one confirmed by the code of
+    /// a rail serving several types (`notchpay`), or made before vpay
+    /// recorded types.
+    ///
+    /// A `String`, not [`PaymentMethodType`], for
+    /// [`PaymentIntent::payment_method_types`]' reason: a response naming a
+    /// type this SDK version predates must still decode.
+    #[serde(rename = "type")]
+    pub method_type: Option<String>,
+    /// The code of the rail the charge was made on (`"mtn_momo"`,
+    /// `"orange_money"`, `"notchpay"`). Never empty: a charge always has a
+    /// rail.
+    pub rail: String,
+}
+
 /// A payment attempt against `/v1/payment_intents`.
 ///
 /// `Debug` is **hand-written** below rather than derived, because
@@ -180,6 +203,14 @@ pub struct PaymentIntent {
     /// ([`crate::CreatePaymentIntentParams::payment_method_types`]) is the
     /// closed enum, matching the Node SDK's split exactly.
     pub payment_method_types: Vec<String>,
+    /// What the intent's one charge was made with — its payment-method type
+    /// and the rail it went to — or `None` while the intent has no charge.
+    ///
+    /// `#[serde(default)]` because a vpay predating 2026-10-24 omits the key
+    /// entirely, which [`Self::customer`] explains; absent and `null` both
+    /// mean "no charge to describe" here.
+    #[serde(default)]
+    pub payment_method_details: Option<PaymentMethodDetails>,
     /// Redirect rails only; `None` on a push rail, which has nothing for a
     /// browser to do.
     pub next_action: Option<NextAction>,
@@ -239,6 +270,7 @@ impl std::fmt::Debug for PaymentIntent {
             .field("currency", &self.currency)
             .field("status", &self.status)
             .field("payment_method_types", &self.payment_method_types)
+            .field("payment_method_details", &self.payment_method_details)
             .field("next_action", &self.next_action)
             .field("last_payment_error", &self.last_payment_error)
             .field("metadata", &self.metadata)
@@ -1546,7 +1578,7 @@ mod tests {
         // The shape `POST /v1/payment_intents` and `GET
         // /v1/payment_intents/{id}` actually send
         // (`vpay_api::model::PaymentIntentWithSecret`, Step 5c's D2):
-        // the thirteen documented keys, flattened, plus `client_secret`.
+        // the documented keys, flattened, plus `client_secret`.
         let intent: PaymentIntent = serde_json::from_str(
             r#"{"id":"pi_1","object":"payment_intent","amount":5000,"currency":"xaf",
                 "status":"requires_payment_method","payment_method_types":["mtn_momo"],

@@ -73,7 +73,7 @@ describe("retrievePaymentIntent", () => {
     expect(request.body).toBe("");
   });
 
-  it("renders all thirteen keys of PaymentIntentWithSecret", async () => {
+  it("renders all fourteen keys of the sample PaymentIntentWithSecret", async () => {
     const { stripe } = await withStub(
       answering(200, samplePaymentIntent()).handler,
     );
@@ -91,6 +91,7 @@ describe("retrievePaymentIntent", () => {
         "metadata",
         "next_action",
         "object",
+        "payment_method_details",
         "payment_method_types",
         "status",
       ].sort(),

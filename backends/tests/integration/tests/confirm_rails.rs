@@ -694,6 +694,10 @@ async fn a_push_confirm_the_rail_accepts_moves_the_intent_to_processing() -> any
         .await
         .context("creating the intent to confirm")?;
     assert_eq!(intent.status, IntentStatus::RequiresPaymentMethod);
+    assert_eq!(
+        intent.payment_method_details, None,
+        "an intent with no charge has nothing to describe"
+    );
 
     let confirmed = client
         .payment_intents()
@@ -738,6 +742,18 @@ async fn a_push_confirm_the_rail_accepts_moves_the_intent_to_processing() -> any
         stored_decision(&harness.pool, &intent.id).await?.is_none(),
         "a confirm by rail code is not routed, so it has no routing_decisions row"
     );
+    // Migration 0054: the intent copies both, and `/v1` shows them — the
+    // type because `mtn_momo` serves exactly one, the rail because it is the
+    // charge's.
+    assert_eq!(
+        confirmed.payment_method_details,
+        Some(vpay_sdk::PaymentMethodDetails {
+            method_type: Some("mtn_wallet".to_owned()),
+            rail: PUSH_RAIL.to_owned(),
+        }),
+        "a rail-code confirm on a rail serving one type names that type and the rail"
+    );
+    assert_the_intent_copies_its_charge(&harness.pool, &intent.id).await?;
     assert_eq!(
         charge.provider_ref_extra,
         Some(serde_json::json!({})),
@@ -2001,6 +2017,15 @@ async fn a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read() -> 
         after.next_action, None,
         "a push rail that declined has nothing for a browser to do"
     );
+    assert_eq!(
+        after.payment_method_details,
+        Some(vpay_sdk::PaymentMethodDetails {
+            method_type: Some("mtn_wallet".to_owned()),
+            rail: PUSH_RAIL.to_owned(),
+        }),
+        "a declined charge is still the intent's one charge, forever: its rail and type stay"
+    );
+    assert_the_intent_copies_its_charge(&harness.pool, &intent.id).await?;
     let last = after
         .last_payment_error
         .as_ref()
@@ -2095,6 +2120,12 @@ async fn a_payer_the_rail_does_not_know_is_a_decline_the_merchant_can_read() -> 
         None,
         "an event body is stored, signed and replayed; a payer credential must not be in \
          one: {data}"
+    );
+    assert_eq!(
+        data.get("payment_method_details"),
+        Some(&serde_json::json!({ "type": "mtn_wallet", "rail": PUSH_RAIL })),
+        "the snapshot is rendered from the row, so the charge's rail and type travel in the \
+         webhook body too: {data}"
     );
 
     // AND THE THREE WRITES SHARE ONE TRANSACTION, observably.
@@ -2836,6 +2867,20 @@ async fn a_two_step_confirm_prepares_commits_and_then_prompts() -> anyhow::Resul
         .await
         .context("the Notch Pay stub initializes and processes any reference")?;
     assert_eq!(confirmed.status, IntentStatus::Processing);
+    // A rail-code confirm on a rail serving two types records no type
+    // (migration 0053), and the intent says so rather than guessing one.
+    assert_eq!(
+        confirmed.payment_method_details,
+        Some(vpay_sdk::PaymentMethodDetails {
+            method_type: None,
+            rail: "notchpay".to_owned(),
+        }),
+        "the rail, and a null type: `notchpay` alone does not say which network paid"
+    );
+    assert_eq!(
+        stored_intent_rail_and_type(&harness.pool, &intent.id).await?,
+        (Some("notchpay".to_owned()), None)
+    );
 
     let (charge_id, state, ref_extra, reference) =
         two_step_charge(&harness.pool, &intent.id).await?;
@@ -3061,6 +3106,38 @@ async fn stored_rail_and_type(
     .context("reading the charge's rail and method type")
 }
 
+/// The intent's own copy of its charge's rail and type (migration `0054`),
+/// read from the row rather than off a rendered object.
+async fn stored_intent_rail_and_type(
+    pool: &PgPool,
+    payment_intent_id: &str,
+) -> anyhow::Result<(Option<String>, Option<String>)> {
+    sqlx::query_as::<_, (Option<String>, Option<String>)>(
+        "SELECT charge_rail, charge_method_type FROM payment_intents WHERE id = $1",
+    )
+    .bind(payment_intent_id)
+    .fetch_one(pool)
+    .await
+    .context("reading the intent's charge_rail and charge_method_type")
+}
+
+/// Migration `0054`'s invariant, asserted from the database: an intent with
+/// a charge carries that charge's `provider_code` and `method_type`, exactly
+/// — what `/v1` renders as `payment_method_details`.
+async fn assert_the_intent_copies_its_charge(
+    pool: &PgPool,
+    payment_intent_id: &str,
+) -> anyhow::Result<()> {
+    let (rail, method_type) = stored_rail_and_type(pool, payment_intent_id).await?;
+    assert_eq!(
+        stored_intent_rail_and_type(pool, payment_intent_id).await?,
+        (Some(rail), method_type),
+        "the intent's charge_rail/charge_method_type must be its one charge's, copied in the \
+         transaction that opened it"
+    );
+    Ok(())
+}
+
 /// One `routing_decisions` row, in the columns these cases assert on.
 #[derive(Debug, sqlx::FromRow)]
 struct StoredDecision {
@@ -3176,7 +3253,18 @@ async fn a_method_type_confirm_is_routed_and_commits_its_decision_with_the_charg
     assert_eq!(
         body.get("payment_method_types"),
         Some(&serde_json::json!(["mtn_wallet"])),
-        "the object still says what the merchant asked for; the rail is not on it (D10)"
+        "the object still says what the merchant asked for"
+    );
+    // ADR-0029 D10 as amended on 2026-10-24: the outcome is on `/v1`, the
+    // decision record (below) is not.
+    assert_eq!(
+        body.get("payment_method_details"),
+        Some(&serde_json::json!({ "type": "mtn_wallet", "rail": PUSH_RAIL })),
+        "a routed charge names the type the payer chose and the rail that won: {body:#}"
+    );
+    assert!(
+        body.get("considered").is_none() && body.pointer("/payment_method_details/score").is_none(),
+        "the ranking never reaches the object: {body:#}"
     );
 
     assert_eq!(
@@ -3184,6 +3272,7 @@ async fn a_method_type_confirm_is_routed_and_commits_its_decision_with_the_charg
         (PUSH_RAIL.to_owned(), Some("mtn_wallet".to_owned())),
         "the only rail here serving mtn_wallet took it, and the charge records the network"
     );
+    assert_the_intent_copies_its_charge(&harness.pool, &intent.id).await?;
     let decision = stored_decision(&harness.pool, &intent.id)
         .await?
         .context("a routed charge commits with its decision, in one transaction")?;
@@ -3296,6 +3385,12 @@ async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_net
         stored_rail_and_type(&harness.pool, &first.id).await?,
         ("notchpay".to_owned(), Some("mtn_wallet".to_owned()))
     );
+    assert_eq!(
+        body.get("payment_method_details"),
+        Some(&serde_json::json!({ "type": "mtn_wallet", "rail": "notchpay" })),
+        "the rail that won the ranking: {body:#}"
+    );
+    assert_the_intent_copies_its_charge(&harness.pool, &first.id).await?;
     let decision = stored_decision(&harness.pool, &first.id)
         .await?
         .context("the routed charge's decision")?;
@@ -3332,6 +3427,12 @@ async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_net
         stored_rail_and_type(&harness.pool, &second.id).await?,
         (PUSH_RAIL.to_owned(), Some("mtn_wallet".to_owned()))
     );
+    assert_eq!(
+        body.get("payment_method_details"),
+        Some(&serde_json::json!({ "type": "mtn_wallet", "rail": PUSH_RAIL })),
+        "a pinned confirm names the pinned rail: {body:#}"
+    );
+    assert_the_intent_copies_its_charge(&harness.pool, &second.id).await?;
     let decision = stored_decision(&harness.pool, &second.id)
         .await?
         .context("a pinned confirm is still routed, and still recorded")?;
@@ -3365,6 +3466,11 @@ async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_net
         Some("payment_method_options[mtn_wallet][rail]")
     );
     assert_eq!(charge_count(&harness.pool, &third.id).await?, 0);
+    assert_eq!(
+        stored_intent_rail_and_type(&harness.pool, &third.id).await?,
+        (None, None),
+        "a refused pin opened no charge, so the intent names no rail"
+    );
 
     // 4. A tie goes to the lower rail code: `notchpay` before
     //    `orange_money`, both at 100. So this `orange_wallet` payment is a
@@ -3380,6 +3486,12 @@ async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_net
     .await?;
     assert_eq!(status, 200, "{body:#}");
     assert_eq!(str_at(&body, &["status"]), Some("processing"));
+    assert_eq!(
+        body.get("payment_method_details"),
+        Some(&serde_json::json!({ "type": "orange_wallet", "rail": "notchpay" })),
+        "{body:#}"
+    );
+    assert_the_intent_copies_its_charge(&harness.pool, &fourth.id).await?;
     let decision = stored_decision(&harness.pool, &fourth.id)
         .await?
         .context("the orange_wallet decision")?;

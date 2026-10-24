@@ -111,7 +111,8 @@ describe("retrieveCheckoutSession", () => {
     // id — `@vaam-apps/vpay-sdk` and `vpay_sdk` both keep it a string — and on the
     // browser routes it is the whole intent. A test that only checked
     // `typeof payment_intent === "object"` would pass for a half-rendered
-    // one, so this asserts the intent's thirteen keys.
+    // one, so this asserts the intent's fourteen keys (the sample's: every
+    // documented one but `customer`, plus `client_secret`).
     const session = sampleCheckoutSession();
     const { stripe } = await withStub(answering(200, session));
 
@@ -130,6 +131,7 @@ describe("retrieveCheckoutSession", () => {
       "metadata",
       "next_action",
       "object",
+      "payment_method_details",
       "payment_method_types",
       "status",
     ]);

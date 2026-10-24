@@ -315,3 +315,28 @@ only, so neither SDK can confirm by type or send
 [sdks/parity.md](../sdks/parity.md), owned by slice 2 of
 [the plan](../plans/2026-10-23-method-type-routing.md). The Rust enum is
 `#[non_exhaustive]`, so the two variants are not a breaking change.
+
+## `payment_method_details` on the intent, optional in both SDKs (2026-10-24)
+
+The server renders `payment_method_details: null | {type, rail}` on every
+`payment_intent` since migration `0054`. Both SDKs model it as optional, so an
+older vpay that omits the key still decodes:
+
+- Rust: `vpay_sdk::PaymentMethodDetails { method_type: Option<String>, rail:
+String }` (`type` on the wire) and `PaymentIntent::payment_method_details`,
+  `#[serde(default)]`.
+- Node: `PaymentMethodDetails` and `payment_method_details?: … | null`.
+
+Proven by
+`a_payment_intents_payment_method_details_decodes_and_survives_a_server_that_omits_it`
+and `payment_intents.retrieve decodes payment_method_details in both shapes,
+and its absence`, a row in [sdks/parity.md](../sdks/parity.md). Also:
+
+- `@vaam-apps/vpay-stripe-js` types it, so the payer's browser sees the rail.
+- The Tauri plugin's fixture carries it.
+- A stripe-compat case asserts stripe-node passes it through untyped. It runs
+  only against the compose stack, in CI's `e2e` job.
+- The Flutter checkout plugin does not model it. Its `fromJson` reads named
+  keys and ignores this one. No Dart toolchain was available to change it.
+
+[verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).

@@ -573,3 +573,26 @@ three new lines:
   schema does not declare, beside `provider_requests` and for the same kind of
   reason: `considered` is `jsonb` (the 20th unmappable column) and the row is
   an explanation an operator reads, written once and never decided from.
+
+## 2026-10-24 — migration `0054` (the rail on `/v1`), and drift goes 209 → 212, predicted
+
+`payment_intents.charge_rail` and `charge_method_type`, **with no model
+change**, for `0053`'s reason: no query on `payment_intents` runs through
+CrateStack, and a field would be a second spelling of the column to keep in
+step. **Predicted, not measured**: the change was written in a container with
+no Docker daemon, so CI's `postgres_smoke` run is the measurement, and this
+section is to be corrected if it disagrees. Derived from cratestack-migrate
+0.15.0's source:
+
+- `payment_intents`: two `[lossy] column … not declared` lines, one per
+  column, and one `[safe] CHECK charge_method_type_is_known … not declared`,
+  a single-column CHECK like `0053`'s `method_type_is_known`.
+- Nothing else. `charge_method_type_needs_a_rail` spans two columns, and
+  `introspect/postgres/mod.rs` skips multi-column CHECKs. `charge_rail`'s
+  foreign key costs nothing, because foreign keys are not introspected.
+  `payment_intents` already drifted, so `EXPECTED_DRIFTED_RELATIONS` stays
+  28, and both columns are `TEXT`, so `EXPECTED_UNMAPPABLE_COLUMNS` stays 20.
+
+`EXPECTED_DRIFT_CHANGES` is 212 in `postgres_smoke.rs`, with the same
+derivation beside it.
+[verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).

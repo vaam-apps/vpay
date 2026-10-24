@@ -35,7 +35,10 @@ export const INTENT_SECRET = `${INTENT_ID}_secret_${INTENT_SECRET_SUFFIX}`;
 /** `{base}/c/{cs_id}?key={pk}#{cs_secret}` — exactly what `vpay_api` renders (D6). */
 export const SESSION_URL = `https://checkout.example/c/${SESSION_ID}?key=${PUBLISHABLE_KEY}#${SESSION_SECRET}`;
 
-/** The thirteen keys `PaymentIntentWithSecret` carries, `client_secret` included. */
+/**
+ * The keys `PaymentIntentWithSecret` carries, `client_secret` included — all
+ * but `customer`, which nothing here reads.
+ */
 export function paymentIntentBody(
   overrides: Record<string, unknown> = {},
 ): Record<string, unknown> {
@@ -46,6 +49,7 @@ export function paymentIntentBody(
     currency: "xaf",
     status: "processing",
     payment_method_types: ["mtn_momo"],
+    payment_method_details: null,
     next_action: null,
     last_payment_error: null,
     metadata: {},

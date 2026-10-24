@@ -165,6 +165,9 @@ pub(crate) fn payment_intent_json(id: &str) -> Value {
         "currency": "xaf",
         "status": "requires_payment_method",
         "payment_method_types": ["mtn_momo"],
+        // Since 2026-10-24: `null` until the intent has a charge. Present and
+        // null, for `customer`'s reason below.
+        "payment_method_details": null,
         "next_action": null,
         "last_payment_error": null,
         "metadata": { "order_id": "1234" },
