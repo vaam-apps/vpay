@@ -1441,8 +1441,9 @@ export type RefundDestination = {
    * A **rail code** (`"mtn_momo"`, `"orange_money"`, `"notchpay"`), or the
    * payment-method type the charge records (`"mtn_wallet"`, `"orange_wallet"`):
    * a server since 2026-10-24 accepts the type for a charge routed by it, which
-   * is how to refund one without knowing the rail it went to (no `/v1` object
-   * names that rail yet). Another type, or a type on an older server, is
+   * is how to refund one without knowing the rail it went to. (Since v0.14.0
+   * the intent names that rail too, as `payment_method_details.rail`, so the
+   * rail code is also at hand.) Another type, or a type on an older server, is
    * refused with a `400` naming `destination`.
    */
   payment_method_type: PaymentMethodType;

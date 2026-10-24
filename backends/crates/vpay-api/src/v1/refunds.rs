@@ -652,19 +652,20 @@ fn resolve_amount(
 ///
 /// # The charge's payment-method type also names it (2026-10-24)
 ///
-/// A charge confirmed by a payment-method type (`mtn_wallet`,
-/// `orange_wallet`; ADR-0029 D6) was routed to a rail the merchant did not
-/// pick, and no `/v1` object names that rail yet. So the outer key may also be
-/// the type the charge records (`charges.method_type`, migration `0053`:
-/// set on every routed charge and on a rail-code charge whose rail serves one
-/// type; `NULL` on a rail-code charge on a rail serving several, and on every
-/// charge written before `0053`), as `destination[mtn_wallet][…]`. Only that
-/// type is accepted: another type, or any type on a charge that records none,
-/// is refused as a key naming nothing this charge used. Naming both the rail
-/// and the type is refused too, because a refund has one payee and picking
-/// between two would be a guess. Whichever key is used, the adapter is handed
-/// the same rail-scoped inner map, so nothing below this function learns
-/// which spelling the merchant chose.
+/// A charge confirmed by a payment-method type (`mtn_wallet`, `orange_wallet`;
+/// ADR-0029 D6) was routed to a rail the merchant did not pick, and no `/v1`
+/// object named that rail until v0.14.0 (it is now the intent's
+/// `payment_method_details.rail`, migration `0054`). So the outer key may also
+/// be the type the charge records (`charges.method_type`, migration `0053`: set
+/// on every routed charge and on a rail-code charge whose rail serves one type;
+/// `NULL` on a rail-code charge on a rail serving several, and on every charge
+/// written before `0053`), as `destination[mtn_wallet][…]`. Only that type is
+/// accepted: another type, or any type on a charge that records none, is
+/// refused as a key naming nothing this charge used. Naming both the rail and
+/// the type is refused too, because a refund has one payee and picking between
+/// two would be a guess. Whichever key is used, the adapter is handed the same
+/// rail-scoped inner map, so nothing below this function learns which spelling
+/// the merchant chose.
 fn resolve_destination(
     adapter: &dyn ProviderAdapter,
     code: &str,

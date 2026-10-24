@@ -1145,10 +1145,11 @@ async fn a_missing_or_malformed_destination_is_the_callers_400() -> anyhow::Resu
 /// only under that one.**
 ///
 /// A charge confirmed by `mtn_wallet` was routed to a rail the merchant did
-/// not pick, and no `/v1` object names that rail. So `POST /v1/refunds` also
-/// accepts `destination[<the charge's method_type>][…]`, and the rail is
-/// instructed exactly as under its own code. Three intents, one per branch,
-/// through the real route and a real Postgres:
+/// not pick, and until v0.14.0 no `/v1` object named that rail (it is now the
+/// intent's `payment_method_details.rail`, migration `0054`). So the refund
+/// route also accepts `destination[<the charge's method_type>][…]`, and the
+/// rail is instructed exactly as under its own code. Three intents, one per
+/// branch, through the real route and a real Postgres:
 ///
 /// * the charge records `mtn_wallet`: the type key is accepted, the refund is
 ///   `pending` and MTN's journal shows the one transfer;
