@@ -247,8 +247,13 @@ comparison. `Measured` forwards it and counts nothing; the route counts the
 verdict on `vpay_provider_callbacks_total`. `notchpay` is the only adapter
 that checks (`Signature`). Proven by the conformance suite's
 `a_forged_callback_is_refused_by_a_rail_that_checks`, branched on the
-capability, and against WireMock and a real Postgres; stub-proven; never verified against a real Notch Pay delivery
-([verification](../status/verification/2026-10-23-webhook-signatures.md)).
+capability, and against WireMock and a real Postgres
+([verification](../status/verification/2026-10-23-webhook-signatures.md));
+on 2026-10-24 `notchpay`'s check also answered `Verified` for four real
+Notch Pay webhooks, recorded by a capture endpoint and checked offline, never
+through a running vpay's route ([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)). _(This said
+"stub-proven; never verified against a real Notch Pay delivery" until
+2026-10-24.)_
 The same day's security review added `CallbackVerdict::VerifiedPrevious` and
 `vpay_provider::SigningKey` (which configured secret a value is), and made a
 declared check that is not performed fail closed at the route.

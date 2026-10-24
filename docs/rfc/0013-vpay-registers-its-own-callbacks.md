@@ -8,8 +8,12 @@
   real Notch Pay account by this code** (step 5): the integration suite runs
   it against a WireMock stub. **Since 2026-10-23 the pass is `off` for Notch
   Pay unless `register` says otherwise** (§ "As built", the amendment of that
-  date): the sandbox stored the one endpoint created through this API with
-  no URL, and delivered nothing. _(This said "Nothing in this document is
+  date): the one endpoint created through this API in the sandbox delivered
+  nothing, and an endpoint registered in Notch Pay's dashboard does deliver
+  (2026-10-24, [verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)). _(Until 2026-10-24 this said the sandbox
+  "stored the one endpoint created through this API with no URL": its
+  listing shows `"url": null` for the dashboard endpoint that delivers too.)_
+  _(This said "Nothing in this document is
   built. What exists is two calls in the Notch Pay client,
   `Client::list_webhooks` and `Client::create_webhook`, … and nothing calls
   them" until 2026-10-22. The second half had been false since 2026-10-20,
@@ -851,8 +855,7 @@ registers a Notch Pay webhook endpoint by default (RFC-0013,
 "Default to `off` for Notch Pay". The evidence is that day's sandbox run
 ([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md),
 RFC-0012 § 10 items 24 and 25): the endpoint the probe created through
-`POST /webhooks` was stored with `"url": null` and delivered nothing in
-21 minutes, and four payments processed after it was created stayed
+`POST /webhooks` delivered nothing in 21 minutes, and four payments processed after it was created stayed
 `processing`, where eleven before it settled in about 5 s. The second is a
 correlation, not a shown cause. Either way, an endpoint vpay creates on a
 merchant's Notch Pay account has not been shown to work and may not be
@@ -878,8 +881,19 @@ the binary (ADR-0002: no provider code is matched outside an adapter crate):
 
 An operator who wants Notch Pay's callbacks registers
 `{public_base_url}/provider/notchpay/callback` in Notch Pay's dashboard for
-the five payment events. That route is as unmeasured as vpay's own create:
-no callback has been delivered to vpay by either. Proven against WireMock
+the five payment events. **That route was measured on 2026-10-24**
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)): an endpoint registered in the dashboard, at a
+capture inbox, received a signed `payment.created` and a final event for
+each of two sandbox payments within seconds, and its listing shows
+`"url": null` as the API-created one's did, so that null is how the API lists
+every endpoint and not why the API-created one delivered nothing (which is
+still unknown). With that endpoint gone and only the dashboard one left,
+both payments settled within about 5 s: consistent with item 25's stall
+being caused by the API-created endpoint, on two payments. No callback has
+yet been delivered to a running vpay by either route. _(This said "That
+route is as unmeasured as vpay's own create: no callback has been delivered
+to vpay by either", and that the probe's endpoint was stored
+with `"url": null`, until 2026-10-24.)_ Proven against WireMock
 and a real Postgres in `callback_registration.rs`
 (`an_unset_register_leaves_a_notch_pay_account_alone`: no request reaches
 the stub's `/webhooks`, then an explicit `ensure` creates one), and in the

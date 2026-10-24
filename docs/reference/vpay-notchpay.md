@@ -54,8 +54,12 @@ that vpay registers its own endpoints
 only performs them; when, how often and how a duplicate is avoided is that
 RFC's design. Since 2026-10-23 nothing calls them unless the deployment
 writes `callbacks.register: check` or `ensure` for the rail: unset, Notch
-Pay's adapter declares `off` (RFC-0013's amendment, after the sandbox stored
-an endpoint created by `create_webhook` with `"url": null`).
+Pay's adapter declares `off` (RFC-0013's amendment, after an endpoint
+created by `create_webhook` in the sandbox delivered nothing). _(This said
+the sandbox "stored" that endpoint "with `"url": null`" until 2026-10-24,
+when the listing showed the same null for an endpoint registered in the
+dashboard that delivers
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).)_
 
 `status::PaymentStatus` names the eleven payment statuses Notch Pay
 documents, in Notch Pay's spelling (`partialy-refunded` included). It does
@@ -203,6 +207,14 @@ lists every one for the first sandbox session.
 | A webhook's signing secret             | absent from the schema                 | "when creating a webhook via the API"                                      |
 | What a webhook signature covers        | —                                      | raw body on two pages; a re-serialised object in one example               |
 
+The sandbox settled two of these on 2026-10-24
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)):
+the signature is over the **raw body**, and a re-serialisation does not
+match; and a delivered payment webhook names its event under **`event`**,
+where Notch Pay's Webhooks API page shows `type`. Only the dashboard's
+unsigned `verification.test` ping uses `type`.
+`wire::Event` keeps both and `Event::name()` reads `event` first.
+
 ## The sandbox probe
 
 `examples/sandbox_probe.rs` asks Notch Pay's real sandbox RFC-0012 § 10's
@@ -231,8 +243,16 @@ each `--reference`, read-only, for item 19. Four phases were added on
 
 They ran the same day
 ([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
-The webhook pair found that the sandbox stores `"url": null` and answers
-`404` to every route that takes an endpoint's id.
+The webhook pair found that the endpoint it created was listed with
+`"url": null` and delivered nothing, and that the sandbox answers `404` to
+every route that takes an endpoint's id. _(This said the sandbox "stores
+`"url": null`" until 2026-10-24; the listing shows that null for every
+endpoint, including one that delivers.)_ `dashboard-deliveries` was added on
+2026-10-24 and creates and deletes no endpoint: for one an operator
+registered in the dashboard, it lists the account's endpoints, makes
+`webhook-receive`'s two payments, waits `NOTCHPAY_PROBE_DELIVERY_WAIT`
+seconds and lists them again
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).
 
 `--ca-bundle <path>` is a cloud-only aid, off unless given: it adds that
 file's PEM certificates to the vendored roots for the probe's own client,

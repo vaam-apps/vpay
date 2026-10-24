@@ -200,9 +200,10 @@ fn code_matches_the_payment_method_type() {
 }
 
 /// RFC-0013 § 2 as amended 2026-10-23: with `callbacks` unset, vpay leaves a
-/// Notch Pay account alone. An endpoint created through the API was stored
-/// with no URL and delivered nothing in the sandbox, so the default is the
-/// operator's dashboard, not a write vpay makes unasked.
+/// Notch Pay account alone. An endpoint created through the API delivered
+/// nothing in the sandbox (and one registered in the dashboard does, as
+/// measured on 2026-10-24), so the default is the operator's dashboard, not a
+/// write vpay makes unasked.
 #[test]
 fn the_callback_registration_default_is_off() {
     assert_eq!(
@@ -1075,8 +1076,39 @@ fn an_origin_rail_parses_no_destination() {
 
 /// The payment object's shape Notch Pay's sandbox answered with on
 /// 2026-10-21: `reference` is Notch Pay's `trx.…`, `trxref` is ours. A
-/// callback in that shape names our charge. (No webhook was received, so the
-/// event's own `data` is assumed, not measured, to share the shape.)
+/// callback in that shape names our charge. (Measured on a delivered webhook
+/// on 2026-10-24: see the next test.)
+/// A `payment.complete` webhook byte for byte as the sandbox delivered it on
+/// 2026-10-24. It names itself under `event`, not the documented `type`:
+/// until that date `parse_callback` read `type` only and refused all four
+/// real deliveries as malformed, so the route would have answered `400`.
+const DELIVERED_PAYMENT_COMPLETE: &str = r#"{"id":"whc_test.hwFmiN6rmtv96e7z","event":"payment.complete","data":{"amount":151,"fees":[],"amounts":{"total":151,"converted":151,"currency":"XAF","rate":1},"sandbox":1,"payment_method":"pm.test_DkA37f7vq7SouqFH","description":"vpay sandbox probe (ADR-0032 \/ RFC-0012 step 8)","reference":"trx.test_vwTAcbfxYr5cgcnpCQpYzglh","merchant_reference":"a9d73439-cb96-4b41-956b-46c520d9600d","trxref":"a9d73439-cb96-4b41-956b-46c520d9600d","status":"complete","currency":"XAF","customer":"cus.test_Ph6xD6j0XGHRRTbp","charge":"business","callback":null,"created_at":"2026-10-24T08:26:53.000000Z"}}"#;
+
+#[test]
+fn a_webhook_the_sandbox_delivered_names_our_charge() {
+    let parsed = adapter()
+        .parse_callback(DELIVERED_PAYMENT_COMPLETE.as_bytes())
+        .expect("a delivered payment webhook parses");
+    assert_eq!(
+        parsed.reference_id,
+        Uuid::parse_str("a9d73439-cb96-4b41-956b-46c520d9600d").expect("uuid"),
+        "named by data.trxref, vpay's own reference"
+    );
+    assert!(parsed.ref_extra.is_empty());
+}
+
+/// The unsigned ping the dashboard sends on registration (2026-10-24) is not
+/// a payment event and names no charge, so it is refused as today. Whether
+/// Notch Pay needs a 2xx for it to keep an endpoint is not known.
+#[test]
+fn the_registration_ping_is_not_a_payment_event() {
+    let ping = r#"{"id":"evt_verification_yiU5Gsm0Ti","type":"verification.test","created":1792829985,"data":{"message":"This is a check of your webhook endpoint","timestamp":"2026-10-24T09:19:45+01:00"}}"#;
+    assert!(matches!(
+        adapter().parse_callback(ping.as_bytes()),
+        Err(ProviderError::Malformed { .. })
+    ));
+}
+
 #[test]
 fn a_callback_in_the_sandboxs_payment_shape_names_our_charge_by_trxref() {
     let reference = Uuid::from_u128(0x0202);

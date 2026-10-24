@@ -126,8 +126,13 @@ the hour, or straight away if you ran `vpay-server callbacks ensure` (without
   `VpayJobQueueBehind` ([worker-queue.md](worker-queue.md)) are the rules for
   that.
 - **Whether callbacks actually arrive.** A `present` endpoint says the rail
-  holds vpay's URL. It does not say the rail posts to it. No Notch Pay webhook
-  has ever been received (RFC-0012 § 10 item 7).
+  holds vpay's URL. It does not say the rail posts to it. On Notch Pay's
+  sandbox, the endpoint `POST /webhooks` created on 2026-10-23 delivered
+  nothing in 21 minutes, while one registered by hand in the dashboard
+  delivered four webhooks on 2026-10-24
+  ([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).
+  No Notch Pay webhook has reached a running vpay. _(This said "No Notch Pay
+  webhook has ever been received (RFC-0012 § 10 item 7)" until 2026-10-24.)_
 - **Endpoints vpay does not own on Notch Pay**: superseded and duplicate ones.
   Each is logged at `warn` by id for an operator to delete in the dashboard.
   That is an operator's task since 2026-10-23, by the maintainer's decision.

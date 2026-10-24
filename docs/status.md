@@ -114,7 +114,13 @@ run for this entry and no capability moved. The step is recorded in
 > `payer_timeout` and `payer_declined`
 > ([verification](status/verification/2026-10-22-notchpay-b3b.md)). (This
 > said "and Orange was not run through vpay on Notch Pay either" until
-> 2026-10-22.) No webhook has been received from Notch Pay; `notchpay::refund` is
+> 2026-10-22.) No webhook from Notch Pay has reached a running vpay. On
+> 2026-10-24 the sandbox delivered four to a capture endpoint registered by
+> hand in its dashboard, signed over the raw body as vpay checks it, and
+> vpay's check verified them offline
+> ([verification](status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).
+> (This said "No webhook has been received from Notch Pay" until
+> 2026-10-24.) `notchpay::refund` is
 > a `NotImplemented` token, so it has refunded nothing; and the short
 > collection's escalation to `unresolved` was not observed. (This said
 > "which the code does at the 24 h horizon" until 2026-10-23. Since

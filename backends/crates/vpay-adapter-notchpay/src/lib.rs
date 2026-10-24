@@ -500,9 +500,11 @@ impl ProviderAdapter for Adapter {
     ///
     /// The sandbox measured that day
     /// (`docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md`):
-    /// an endpoint created through `POST /webhooks` with a public URL is
-    /// stored with `"url": null`, delivered nothing in 21 minutes, and
-    /// cannot be read, updated or deleted by its id. Four payments processed
+    /// an endpoint created through `POST /webhooks` with a public URL
+    /// delivered nothing in 21 minutes, and cannot be read, updated or
+    /// deleted by its id. (Its listing shows `"url": null`, but so does a
+    /// dashboard-registered endpoint's, and that one delivers: 2026-10-24,
+    /// `docs/status/verification/2026-10-24-notchpay-dashboard-webhooks.md`.) Four payments processed
     /// after one was created stayed `processing` for 3 to 55 minutes, where
     /// eleven before it settled in about 5 s — a correlation, not a shown
     /// cause, and enough not to write to a merchant's account unasked.
@@ -729,10 +731,12 @@ impl ProviderAdapter for Adapter {
     /// quotes the body.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
         let event = vpay_notchpay::parse_event(body)?;
+        // `name()` reads `event`, the key every payment webhook the sandbox
+        // delivered used (2026-10-24), and falls back to the documented
+        // `type`; reading `type` alone refused all four real deliveries.
         let handled = event
-            .event_type
-            .as_deref()
-            .is_some_and(|event_type| PAYMENT_EVENTS.contains(&event_type));
+            .name()
+            .is_some_and(|name| PAYMENT_EVENTS.contains(&name));
         if !handled {
             return Err(ProviderError::malformed(
                 "notchpay: the webhook is not one of the five payment events vpay handles",
@@ -740,8 +744,8 @@ impl ProviderAdapter for Adapter {
         }
         // `data.trxref` first: on every payment answer Notch Pay's sandbox
         // gave (2026-10-21), `trxref` was ours and `reference` its own
-        // `trx.…`. No webhook was received to confirm the event's `data` has
-        // the same shape, so `data.reference` stays as the fallback for the
+        // `trx.…`, and the four webhooks it delivered on 2026-10-24 have the
+        // same shape. `data.reference` stays as the fallback for the
         // specification's form.
         let reference_id = [
             event.data.trxref.as_deref(),
@@ -788,9 +792,12 @@ impl ProviderAdapter for Adapter {
     /// re-serialisation. Notch Pay's own guide shows both: its PHP and Python
     /// examples sign the raw payload, its Node example signs
     /// `JSON.stringify(req.body)`, which is the raw body for a body Notch Pay
-    /// itself serialised compactly. RFC-0012 § 10 item 7 asks which; until a
-    /// webhook Notch Pay sent is captured and checked, this is proven against
-    /// the stub only (`docs/status/verification/2026-10-23-webhook-signatures.md`).
+    /// itself serialised compactly. RFC-0012 § 10 item 7 asked which, and
+    /// four webhooks the sandbox delivered on 2026-10-24 answered it: the raw
+    /// body. Their HMACs matched over it and not over a `JSON.stringify`
+    /// re-serialisation, because Notch Pay escapes `/` as `\/`, and this
+    /// method answered `Verified` for each, run offline
+    /// (`docs/status/verification/2026-10-24-notchpay-dashboard-webhooks.md`).
     ///
     /// **No timestamp, so no replay window.** A captured genuine webhook
     /// verifies for ever (RFC-0012 § 6, RFC-0014 open question 4). What a
