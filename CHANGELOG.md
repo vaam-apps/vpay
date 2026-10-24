@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.12.0](https://github.com/vaam-apps/vpay/compare/v0.11.0...v0.12.0) (2026-10-24)
+
+
+### Features
+
+* **notchpay:** leave the account alone unless asked, and a wrong-network number is invalid_payer ([#353](https://github.com/vaam-apps/vpay/issues/353)) ([71a351d](https://github.com/vaam-apps/vpay/commit/71a351df4a06b0418a00d5e673d724bdf1546274))
+* **provider:** verify rail callbacks, Notch Pay's signature first (RFC-0014) ([#357](https://github.com/vaam-apps/vpay/issues/357)) ([820c52b](https://github.com/vaam-apps/vpay/commit/820c52b3c84ae5b1b178b79c560e4912e5baf925))
+* **routing:** the payer picks a network and a scored, explained router picks the rail (ADR-0029 D6, RFC-0008 revised) ([#346](https://github.com/vaam-apps/vpay/issues/346)) ([f0a2f7d](https://github.com/vaam-apps/vpay/commit/f0a2f7d7e90281ea40cfa99dcb82f57a7c7785c7))
+
+
+### Bug Fixes
+
+* **api:** the account-holder lookup asks for a rail code, not a method type; record the routing review's gaps ([#348](https://github.com/vaam-apps/vpay/issues/348)) ([82a68f4](https://github.com/vaam-apps/vpay/commit/82a68f4e4e81d0e45a17c22253ac28518373347a))
+* **deps:** tokio 1.53.3 clears RUSTSEC-2026-0386 ([#358](https://github.com/vaam-apps/vpay/issues/358)) ([c122c86](https://github.com/vaam-apps/vpay/commit/c122c86d9ca6f5a1d91819572a71a6c7b6805b03))
+* **deps:** zod 4.6.7 clears GHSA-mrhx-c7xc-m3w5 ([#352](https://github.com/vaam-apps/vpay/issues/352)) ([f115165](https://github.com/vaam-apps/vpay/commit/f1151654f58bc4689429affc5fc47057bb8fcde1))
+
+
+### Documentation
+
+* ADR-0032 accepted; RFC-0008's routing questions answered ([#351](https://github.com/vaam-apps/vpay/issues/351)) ([d01dd2a](https://github.com/vaam-apps/vpay/commit/d01dd2a47aa000cae70ce27718bcf64dbbbf1907))
+* **notchpay:** measure the sandbox for the two-step split, the per-network channels and a webhook ([#350](https://github.com/vaam-apps/vpay/issues/350)) ([9499f09](https://github.com/vaam-apps/vpay/commit/9499f09dc175bd4464a0ab7426c40908323e5c30))
+* **status:** retire three claims B3b and [#341](https://github.com/vaam-apps/vpay/issues/341) made stale ([#354](https://github.com/vaam-apps/vpay/issues/354)) ([14fc624](https://github.com/vaam-apps/vpay/commit/14fc62413b6a8df1382afe9744398e1b3e049fec))
+
+
+### Tests
+
+* **web:** the a11y gate's built-theme case resolves var() to a colour, and build-storybook runs it ([#355](https://github.com/vaam-apps/vpay/issues/355)) ([37fd72d](https://github.com/vaam-apps/vpay/commit/37fd72dff146be9cda03283fd859b978472f3bff))
+
 ## [0.11.0](https://github.com/vaam-apps/vpay/compare/v0.10.4...v0.11.0) (2026-10-23)
 
 
