@@ -133,3 +133,43 @@ sources ok`.
 
 Not run here: the workspace build and tests, which CI's `rust` job runs on the
 new lockfile.
+
+## 2026-10-24: RUSTSEC-2026-0387 accepted, not fixed
+
+Another Rust advisory recorded here. CI's `supply chain` job failed on
+vaam-apps/vpay#349 at 08:19 UTC with `advisories FAILED` on
+**RUSTSEC-2026-0387**, published that day against `crypto-bigint`: "Multiple
+timing variability issues in operations intended to be constant-time". The
+only fixed version is 0.7.6. `master` at `630c8a34` resolves **0.5.5**
+through `elliptic-curve` 0.13.8 ← `ecdsa`/`p256` 0.13.2/`p384` 0.13.1 ←
+`jsonwebtoken` 11.0.0 ← authkestra 0.7.1, so `master` fails the same check
+whenever the job runs.
+
+**No upgrade clears it.** crates.io on 2026-10-24 showed:
+
+- no 0.5.x fix;
+- `elliptic-curve` 0.14 (which uses `crypto-bigint` ^0.7.5) is out;
+- `jsonwebtoken` 11.1.0, its newest release, still requires `p256` ^0.13;
+- authkestra 0.7.1 requires `jsonwebtoken` 11 with the `rust_crypto` backend.
+
+**It is accepted, by the maintainer** ("Accept, and upgrade authkestra"),
+because no secret integer reaches the affected code. P-256 and P-384 are
+used in production only to verify ES256/ES384 signatures against public keys:
+
+- merchant `private_key_jwt` client assertions (authkestra-op
+  `client_assertion.rs`);
+- staff SSO id_tokens (`staff/sso/verify.rs`);
+- DPoP proofs (authkestra-engine `token/dpop.rs`).
+
+Every EC signing call found in vpay and authkestra 0.7.1 is in a test. This is
+a reading of the call sites, not a timing measurement; the `deny.toml` entry
+says when it must go. The authkestra 0.7.1 → 0.13.1 upgrade is being scoped
+separately.
+
+Measured with cargo-deny 0.20.2:
+
+- `cargo deny check advisories` on `master` at `630c8a34`: **FAILED**,
+  RUSTSEC-2026-0387.
+- `cargo deny check` with the entry: `advisories ok, bans ok, licenses ok,
+sources ok`, and `-L info` reports `note[advisory-ignored]` for it, so the
+  entry is load-bearing.

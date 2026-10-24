@@ -150,6 +150,26 @@ build-web:
 # deliberately carries no `@vaam-apps/ui/styles/theme.css` resolve alias —
 # measured unnecessary on today's dependency tree, and this is what would
 # catch a dependency bump making it necessary again.
+#
+# AND THE RECIPE NOW RUNS THAT CASE ITSELF — 2026-10-23. "It still skips
+# (it is the regression net for anyone who HAS built locally)" above was the
+# whole problem. `@vaam-apps/ui` 0.5.0 (vaam-apps/vpay#318) made the token
+# `--color-base-100:var(--md-sys-color-surface)`. The case still demanded a
+# hex, so it failed after every correct build, on every machine that built,
+# and CI never saw it, because CI only ever reached the skip. Both apps'
+# case now follows the `var()` chain to the colour the package's own
+# `theme.css` resolves to, in both themes, and this recipe runs each app's
+# `a11y-gate.test.ts` against the artefact it has just built. The grep stays:
+# it is the cheap first check, and its counts are the diagnostic. But it
+# cannot follow a `var()`. A sheet with the mapping and without the roles
+# behind it prints "defined 3x" and passes the grep; the case fails it
+# (measured, both apps).
+#
+# The JSON report is read because Vitest exits 0 on a skipped case
+# (measured: `numPendingTests: 1`, exit 0). The grep has just proved the
+# stylesheet exists, so the case should not skip here. If it ever does, say
+# because the directory it reads moves, this check fails the recipe instead
+# of reporting a skip as a pass.
 build-storybook:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -178,15 +198,21 @@ build-storybook:
         echo "  so every colour-contrast verdict test-storybook returns is about a ground no user ever sees (PR #135)." >&2
         exit 1
       fi
+      report=$(mktemp)
+      # `VPAY_STORYBOOK_BUILT=1` makes the case itself fail, with its own
+      # message, if it finds no artefact; the JSON report below catches any
+      # other skip. #355 ran this file a second time after the loop with only
+      # the variable; merged into this one run on 2026-10-24.
+      VPAY_STORYBOOK_BUILT=1 pnpm --filter "@vpay/$app" exec vitest run src/a11y-gate.test.ts \
+        --reporter=default --reporter=json --outputFile.json="$report"
+      node -e '
+        const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));
+        if (r.numTotalTests === 0 || r.numPassedTests !== r.numTotalTests) {
+          console.error(`build-storybook: ${process.argv[2]} a11y-gate.test.ts passed ${r.numPassedTests} of ${r.numTotalTests} cases against the artefact just built; a skipped case measured nothing`);
+          process.exit(1);
+        }' "$report" "$app"
+      rm -f "$report"
     done
-    # The jsdom case itself, run here against the artefact just built (added
-    # 2026-10-23). The count above proves a definition exists; this proves it
-    # resolves to a colour, one `var()` deep. Until this line the case only
-    # ever ran on a developer's machine, where it had been failing since the
-    # `@vaam-apps/ui` 0.5.0 theme (#318) while CI skipped it.
-    # `VPAY_STORYBOOK_BUILT=1` makes a missing build a failure, not a skip.
-    VPAY_STORYBOOK_BUILT=1 pnpm --filter @vpay/checkout exec vitest run src/a11y-gate.test.ts
-    VPAY_STORYBOOK_BUILT=1 pnpm --filter @vpay/dashboard exec vitest run src/a11y-gate.test.ts
 
 # Every checkout AND dashboard story, rendered in a real Chromium, with axe
 # over each one.

@@ -1,5 +1,16 @@
 # 2026-10-23 — the a11y gate's built-theme case resolves `var()`, and runs in CI
 
+_**Superseded 2026-10-24 by
+[2026-10-23-a11y-gate-built-stylesheet.md](2026-10-23-a11y-gate-built-stylesheet.md)
+(vaam-apps/vpay#349).** The two changes fixed the same case in parallel; this
+one merged first. On #349's merge the case's one-`var()` regex resolution
+gave way to #349's: it follows the whole chain per theme (`postcss` and the
+apps' `themeColours`) and compares it with what the package's own `theme.css`
+resolves to. `just build-storybook`'s separate run after its loop folded into
+#349's per-app run, which keeps `VPAY_STORYBOOK_BUILT=1` and adds a
+JSON-report check that fails on any skip. Everything below is true of the tree
+it was measured on._
+
 ## What this is
 
 The maintainer said "Fix it" about a finding first recorded on
