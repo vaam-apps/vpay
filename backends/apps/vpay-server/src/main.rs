@@ -559,6 +559,14 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // ADR-0031 condition 4: one `warn!` per configured rail admitted on the
     // amended rule 3, after the join has refused anything unlinked.
     vpay_api::boot::warn_about_accepted_exposures(&config, &adapters);
+    // RFC-0014 § 6: the process that answers callbacks says which rails it
+    // cannot check. `boot_seeds` above has already refused a livemode rail
+    // that neither holds a secret nor says `callbacks.verify: off`.
+    vpay_api::boot::warn_about_unverified_callbacks(&config, &adapters);
+    // And which rails still accept their previous signing secret: a rotation
+    // nobody finished keeps a retired key working (RFC-0014's security
+    // review, 2026-10-23).
+    vpay_api::boot::warn_about_rotations_in_flight(&config);
 
     let signing_key = load_signing_key(args, &config)?;
 

@@ -157,9 +157,9 @@ use testcontainers::{ContainerAsync, GenericImage};
 use uuid::Uuid;
 use vpay_core::{Currency, FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, EndpointCheck, EndpointState,
-    PriorSubmits, ProviderAdapter, ProviderConfig, ProviderError, RefundDestination, RefundTarget,
-    SubmitSteps, Submitted,
+    CallbackCheck, CallbackRequest, CallbackUrlMode, CallbackVerdict, Capabilities, ChargeRef,
+    ChargeStatus, EndpointCheck, EndpointState, PriorSubmits, ProviderAdapter, ProviderConfig,
+    ProviderError, RefundDestination, RefundTarget, SubmitSteps, Submitted,
 };
 use vpay_testkit::containers::start_wiremock;
 
@@ -221,6 +221,13 @@ fn every_adapter_declares_coherent_capabilities() {
         assert!(
             c.is_coherent(),
             "{}: partial refunds without refunds",
+            a.code()
+        );
+        // RFC-0014 § 2: a check on a rail that never calls back is one boot
+        // refuses (`ConfigError::IncoherentCallbackCheck`).
+        assert!(
+            c.callback_check_is_coherent(),
+            "{}: a callback check without delivers_callbacks",
             a.code()
         );
     }
@@ -1588,6 +1595,40 @@ async fn notchpay_a_duplicate_no_submit_prompted_for_is_a_clean_decline() {
     );
 }
 
+/// Notch Pay only: an Orange number sent on `cm.mtn` — a payer who chose MTN
+/// and typed the other network's number — is refused at process with a
+/// `422` naming only `phone`, as the sandbox answered on 2026-10-23
+/// (`docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md`).
+/// It is `invalid_payer`, the payer's to fix by choosing again, never
+/// `provider_error`, which pages. The stub's mapping matches the channel and
+/// the number's prefix, so this case also proves the routed charge was sent
+/// `cm.mtn`.
+#[tokio::test]
+async fn notchpay_a_number_on_the_other_network_is_an_invalid_payer() {
+    let rail = start(
+        RailUnderTest::NotchPay,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let mut charge = rail.charge(REF_ACCEPTED);
+    charge.method_type = Some(vpay_core::routing::MethodType::MtnWallet);
+    charge.payer_ref = Some("237690000000".to_owned());
+
+    let outcome = rail.adapter.submit(&charge, &rail.config).await;
+
+    assert!(
+        matches!(
+            outcome,
+            Err(ProviderError::Rejected {
+                code: FailureCode::InvalidPayer,
+                ..
+            })
+        ),
+        "an Orange number on cm.mtn is the payer's to fix: {outcome:?}"
+    );
+}
+
 /// ADR-0032's census: `prepare` answers `Unsupported` exactly on the rails
 /// that declare [`SubmitSteps::One`], and on a
 /// [`SubmitSteps::PrepareThenSubmit`] rail returns the key material that
@@ -1751,6 +1792,15 @@ fn the_declines_prove_every_code_each_rail_can_produce(#[case] rail: RailUnderTe
         proven.push(FailureCode::ProviderUnavailable);
     }
 
+    // Notch Pay's `invalid_payer` is a process `422` naming only the payer's
+    // phone — a number the chosen network does not take (2026-10-23) — so a
+    // refused submit, not a read, and no row in the decline table.
+    // `notchpay_a_number_on_the_other_network_is_an_invalid_payer` is the case
+    // that drives it.
+    if rail == RailUnderTest::NotchPay {
+        proven.push(FailureCode::InvalidPayer);
+    }
+
     proven.sort_unstable_by_key(|code| code.as_str());
     proven.dedup();
 
@@ -1866,6 +1916,191 @@ async fn a_callback_body_round_trips_to_identifiers_only(#[case] rail_under_test
     // field — and this line is what would stop compiling if one were added.
     // "Callbacks are hints"; only the authenticated status query moves money.
     let _: &vpay_provider::RefExtra = &parsed.ref_extra;
+}
+
+/// The signing secret this suite configures on every rail for the callback
+/// check (RFC-0014): fixture-shaped, so nothing mistakes it for a real
+/// provider's (Notch Pay's are `hsk_test_…`).
+const CALLBACK_SIGNING_SECRET: &str = "stub-signing-secret-test_0003";
+
+/// How each rail **signs** a callback, as data: the headers a rail that signs
+/// would send with `body`, signed under `secret`; `None` for a rail that
+/// signs nothing.
+///
+/// Rail-specific data, one shared test body, on [`documented_callback_body`]'s
+/// terms. The signer is `vpay_provider::callback::hmac_sha256_hex`, the
+/// function the check is proven against, so this table and the adapter
+/// cannot each carry their own HMAC.
+///
+/// Notch Pay's row is its documentation's scheme (`x-notch-signature`, hex
+/// HMAC-SHA256 of the raw body under the endpoint's Hash Key), **not** a
+/// webhook Notch Pay was seen to send: RFC-0012 § 10 item 7 is that
+/// measurement, and `docs/status/verification/2026-10-23-webhook-signatures.md`
+/// says it is open.
+fn documented_callback_signature(
+    rail: RailUnderTest,
+    secret: &str,
+    body: &[u8],
+) -> Option<vpay_provider::callback::HeaderMap> {
+    match rail {
+        // MTN signs nothing (`docs/flows/adapter-mtn-momo.md`); Orange's
+        // `notif_token` is in the body and its check is not built.
+        RailUnderTest::MtnMomo | RailUnderTest::OrangeMoney => None,
+        RailUnderTest::NotchPay => {
+            let signature = vpay_provider::callback::hmac_sha256_hex(secret.as_bytes(), body)
+                .expect("HMAC takes a key of any length");
+            let mut headers = vpay_provider::callback::HeaderMap::new();
+            headers.insert(
+                "x-notch-signature",
+                vpay_provider::callback::HeaderValue::from_str(&signature)
+                    .expect("hex is a header value"),
+            );
+            Some(headers)
+        }
+    }
+}
+
+/// RFC-0014 § 8's table function: a callback the rail did not sign is
+/// refused by every rail whose adapter declares a check, and every other
+/// rail says plainly that it checked nothing.
+///
+/// Branched on [`CallbackCheck`], never on the rail. For a `Signature` rail:
+/// a forged signature, a missing one, and a genuine one over a body altered
+/// after signing are each `Invalid`; the genuine one is `Verified`; and with
+/// no secret configured the answer is `NoSecret`, whatever the header says.
+/// For a `None` rail, the same requests are each `NotChecked`, with a secret
+/// configured that it must not read.
+///
+/// **Mutation-checked** (`docs/status/verification/2026-10-23-webhook-signatures.md`):
+/// a Notch Pay `verify_callback` that always answers `Verified` fails the
+/// forged row, and one that answers the port's default fails the genuine one.
+///
+/// No container: the check is pure CPU over what arrived, and must stay so.
+/// The configuration points at a closed port, so a check that reached for
+/// the rail would fail to connect rather than pass.
+#[rstest]
+#[case::mtn_momo(RailUnderTest::MtnMomo)]
+#[case::orange_money(RailUnderTest::OrangeMoney)]
+#[case::notchpay(RailUnderTest::NotchPay)]
+#[tokio::test]
+async fn a_forged_callback_is_refused_by_a_rail_that_checks(
+    #[case] rail_under_test: RailUnderTest,
+) {
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let adapter: Box<dyn ProviderAdapter> = match rail_under_test {
+        RailUnderTest::MtnMomo => Box::new(vpay_adapter_mtn_momo::Adapter::new(http)),
+        RailUnderTest::OrangeMoney => Box::new(vpay_adapter_orange_money::Adapter::new(http)),
+        RailUnderTest::NotchPay => Box::new(vpay_adapter_notchpay::Adapter::new(http)),
+    };
+    let check = adapter.capabilities().callback_check;
+    let body = documented_callback_body(rail_under_test, REF_ACCEPTED);
+    let genuine = documented_callback_signature(rail_under_test, CALLBACK_SIGNING_SECRET, &body);
+    assert_eq!(
+        genuine.is_some(),
+        check == CallbackCheck::Signature,
+        "{}: a rail that declares a signature check must have a signing row here, and only one",
+        adapter.code()
+    );
+    let forged = documented_callback_signature(rail_under_test, "forger-secret-test_0004", &body)
+        .unwrap_or_default();
+
+    let config_with = |secret: Option<&str>| ProviderConfig {
+        base_url: "http://127.0.0.1:1".to_owned(),
+        callback_url: format!("http://127.0.0.1:1/provider/{}/callback", adapter.code()),
+        currency: Currency::Xaf,
+        settings: BTreeMap::new(),
+        credentials: secret
+            .map(|secret| {
+                BTreeMap::from([(
+                    vpay_provider::CALLBACK_SIGNING_SECRET.to_owned(),
+                    secret.to_owned(),
+                )])
+            })
+            .unwrap_or_default(),
+        connect_timeout: SHORT_REQUEST_TIMEOUT,
+        request_timeout: SHORT_REQUEST_TIMEOUT,
+    };
+    let configured = config_with(Some(CALLBACK_SIGNING_SECRET));
+    let unconfigured = config_with(None);
+    let charge = ChargeRef {
+        reference_id: REF_ACCEPTED,
+        method_type: None,
+        amount: Money::new(5_000, Currency::Xaf).expect("non-negative"),
+        payer_ref: Some("237600000000".to_owned()),
+        ref_extra: submitted_key_material(rail_under_test, REF_ACCEPTED),
+        return_url: None,
+    };
+    let verdict =
+        |headers, body, config| verdict_of(adapter.as_ref(), &charge, headers, body, config);
+
+    let none = vpay_provider::callback::HeaderMap::new();
+    let mut altered = body.clone();
+    altered.extend_from_slice(b" ");
+    let genuine_headers = genuine.clone().unwrap_or_default();
+    let refused = [
+        ("a forged signature", &forged, &body),
+        ("no signature", &none, &body),
+        ("a body altered after signing", &genuine_headers, &altered),
+    ];
+
+    match check {
+        CallbackCheck::Signature => {
+            for (what, headers, body) in refused {
+                let answer = verdict(headers, body, &configured).await;
+                assert!(
+                    matches!(answer, CallbackVerdict::Invalid(_)),
+                    "{}: {what} must be refused, got {answer:?}",
+                    adapter.code()
+                );
+                assert!(!answer.admits_pull_forward());
+            }
+            assert_eq!(
+                verdict(&genuine_headers, &body, &configured).await,
+                CallbackVerdict::Verified,
+                "{}: the rail's own signature must verify",
+                adapter.code()
+            );
+            for headers in [&genuine_headers, &forged, &none] {
+                assert_eq!(
+                    verdict(headers, &body, &unconfigured).await,
+                    CallbackVerdict::NoSecret,
+                    "{}: no secret configured is NoSecret, whatever the header says",
+                    adapter.code()
+                );
+            }
+        }
+        CallbackCheck::None => {
+            for (what, headers, body) in refused {
+                assert_eq!(
+                    verdict(headers, body, &configured).await,
+                    CallbackVerdict::NotChecked,
+                    "{}: {what}: a rail that checks nothing must say so",
+                    adapter.code()
+                );
+            }
+        }
+        CallbackCheck::BodyToken => panic!(
+            "{}: no rail declared BodyToken when this case was written; add its rows (a stored \
+             and a received token, equal and unequal) before declaring it",
+            adapter.code()
+        ),
+    }
+}
+
+/// One callback check, as the route asks it.
+async fn verdict_of(
+    adapter: &dyn ProviderAdapter,
+    charge: &ChargeRef,
+    headers: &vpay_provider::callback::HeaderMap,
+    body: &[u8],
+    config: &ProviderConfig,
+) -> CallbackVerdict {
+    let request = CallbackRequest {
+        headers,
+        body,
+        received_at: std::time::SystemTime::now(),
+    };
+    adapter.verify_callback(&request, charge, config).await
 }
 
 /// A payee's number that belongs to nobody, as a merchant sends it.

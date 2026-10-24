@@ -199,6 +199,18 @@ fn code_matches_the_payment_method_type() {
     assert_eq!(adapter().code(), "notchpay");
 }
 
+/// RFC-0013 § 2 as amended 2026-10-23: with `callbacks` unset, vpay leaves a
+/// Notch Pay account alone. An endpoint created through the API was stored
+/// with no URL and delivered nothing in the sandbox, so the default is the
+/// operator's dashboard, not a write vpay makes unasked.
+#[test]
+fn the_callback_registration_default_is_off() {
+    assert_eq!(
+        adapter().default_callback_registration(),
+        CallbackRegistrationDefault::Off
+    );
+}
+
 /// ADR-0031 condition 4: the exposure is declared through the port, names the
 /// credential by its configuration key, lists the four operations RFC-0012
 /// records, and points at the page that explains them.
@@ -792,6 +804,245 @@ fn a_callback_for_an_event_vpay_does_not_handle_is_refused() {
         adapter().parse_callback(b"not json"),
         Err(ProviderError::Malformed { .. })
     ));
+}
+
+/// The fixture signing secret: the shape of Notch Pay's Hash Key
+/// (`hsk_test_…`) is deliberately not imitated, so no scanner and no reader
+/// mistakes it for one.
+const SIGNING: &str = "signing-secret-test_0003";
+
+fn signed_config() -> ProviderConfig {
+    let mut config = closed();
+    config.credentials.insert(
+        vpay_provider::CALLBACK_SIGNING_SECRET.to_owned(),
+        SIGNING.to_owned(),
+    );
+    config
+}
+
+/// A `payment.complete` webhook as Notch Pay's documentation shows one,
+/// serialised compactly, for [`charge`].
+fn webhook_body() -> Vec<u8> {
+    serde_json::json!({
+        "id": "evt.test_0001",
+        "type": "payment.complete",
+        "created_at": "2026-10-20T10:00:00Z",
+        "data": {
+            "id": "pay.test_0001",
+            "reference": Uuid::from_u128(0x0202).to_string(),
+            "status": "complete",
+            "amount": 5_000,
+            "currency": "XAF"
+        }
+    })
+    .to_string()
+    .into_bytes()
+}
+
+fn sign(secret: &str, body: &[u8]) -> String {
+    vpay_provider::callback::hmac_sha256_hex(secret.as_bytes(), body).expect("HMAC takes any key")
+}
+
+fn headers_with(signature: Option<&str>) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+    headers.insert(
+        reqwest::header::CONTENT_TYPE,
+        reqwest::header::HeaderValue::from_static("application/json"),
+    );
+    if let Some(signature) = signature {
+        headers.insert(
+            "x-notch-signature",
+            reqwest::header::HeaderValue::from_str(signature).expect("hex is a header value"),
+        );
+    }
+    headers
+}
+
+async fn verdict(
+    headers: &reqwest::header::HeaderMap,
+    body: &[u8],
+    config: &ProviderConfig,
+) -> CallbackVerdict {
+    let request = CallbackRequest {
+        headers,
+        body,
+        received_at: std::time::SystemTime::now(),
+    };
+    adapter().verify_callback(&request, &charge(), config).await
+}
+
+#[test]
+fn notch_pay_declares_the_signature_check() {
+    let capabilities = adapter().capabilities();
+    assert_eq!(capabilities.callback_check, CallbackCheck::Signature);
+    assert!(capabilities.callback_check_is_coherent());
+}
+
+/// RFC-0014 § 4: a body signed under the configured secret verifies, and the
+/// adapter reads nothing else to say so. The config is [`closed`]: a check
+/// that reached for the rail would fail to connect, not verify.
+#[tokio::test]
+async fn a_webhook_signed_under_the_configured_secret_is_verified() {
+    let body = webhook_body();
+    let signature = sign(SIGNING, &body);
+    assert_eq!(
+        verdict(&headers_with(Some(&signature)), &body, &signed_config()).await,
+        CallbackVerdict::Verified
+    );
+    // Notch Pay's samples print lower-case hex; upper-case is the same MAC.
+    assert_eq!(
+        verdict(
+            &headers_with(Some(&signature.to_uppercase())),
+            &body,
+            &signed_config()
+        )
+        .await,
+        CallbackVerdict::Verified
+    );
+}
+
+#[tokio::test]
+async fn a_webhook_with_no_signature_is_invalid() {
+    let body = webhook_body();
+    let answer = verdict(&headers_with(None), &body, &signed_config()).await;
+    assert!(matches!(answer, CallbackVerdict::Invalid(_)), "{answer:?}");
+}
+
+#[tokio::test]
+async fn a_webhook_signed_under_another_secret_or_not_at_all_is_invalid() {
+    let body = webhook_body();
+    for signature in [
+        sign("another-secret-test_0004", &body),
+        sign(PUBLIC, &body),
+        sign(PRIVATE, &body),
+        "0".repeat(64),
+        "not hex at all".to_owned(),
+        String::new(),
+    ] {
+        let answer = verdict(&headers_with(Some(&signature)), &body, &signed_config()).await;
+        assert!(
+            matches!(answer, CallbackVerdict::Invalid(_)),
+            "{signature:?}: {answer:?}"
+        );
+    }
+}
+
+/// The bytes the route received are what is compared: the same event
+/// re-serialised with spaces, or with one byte changed, is not the message
+/// Notch Pay signed.
+#[tokio::test]
+async fn the_signature_covers_the_raw_body_byte_for_byte() {
+    let body = webhook_body();
+    let signature = sign(SIGNING, &body);
+    let value: serde_json::Value = serde_json::from_slice(&body).expect("the fixture is JSON");
+    let pretty = serde_json::to_vec_pretty(&value).expect("re-serialises");
+    let mut tampered = body.clone();
+    let five = tampered
+        .windows(4)
+        .position(|window| window == b"5000")
+        .expect("the amount is in the body");
+    *tampered.get_mut(five).expect("within the body") = b'9';
+    for altered in [pretty, tampered, [body.as_slice(), b"\n"].concat()] {
+        let answer = verdict(&headers_with(Some(&signature)), &altered, &signed_config()).await;
+        assert!(
+            matches!(answer, CallbackVerdict::Invalid(_)),
+            "{}: {answer:?}",
+            String::from_utf8_lossy(&altered)
+        );
+    }
+}
+
+/// A rotation: a webhook signed under the previous secret still verifies
+/// while it is configured, as `VerifiedPrevious` so that its counter says
+/// when the rotation can end, while one under the current secret is plain
+/// `Verified`; and a secret rotated out of both keys is stale and refused.
+/// Notch Pay signs no timestamp, so "stale" can only mean the key: a genuine
+/// webhook replayed later verifies for as long as its secret is configured,
+/// which `a_replayed_genuine_webhook_still_verifies` pins. Mutation-checked
+/// (2026-10-23): answering `Verified` for either key fails the first
+/// assertion.
+#[tokio::test]
+async fn the_previous_secret_verifies_during_a_rotation_and_a_retired_one_does_not() {
+    let body = webhook_body();
+    let mut rotating = signed_config();
+    rotating.credentials.insert(
+        vpay_provider::CALLBACK_SIGNING_SECRET_PREVIOUS.to_owned(),
+        "previous-secret-test_0005".to_owned(),
+    );
+    let under_previous = sign("previous-secret-test_0005", &body);
+    assert_eq!(
+        verdict(&headers_with(Some(&under_previous)), &body, &rotating).await,
+        CallbackVerdict::VerifiedPrevious
+    );
+    assert_eq!(
+        verdict(&headers_with(Some(&sign(SIGNING, &body))), &body, &rotating).await,
+        CallbackVerdict::Verified,
+        "the current secret is still `verified` during a rotation"
+    );
+    // The rotation finished: the previous key was removed.
+    let answer = verdict(
+        &headers_with(Some(&under_previous)),
+        &body,
+        &signed_config(),
+    )
+    .await;
+    assert!(matches!(answer, CallbackVerdict::Invalid(_)), "{answer:?}");
+}
+
+/// The exposure RFC-0012 § 6 and RFC-0014 open question 4 accept, pinned so
+/// that it is a decision rather than a surprise: Notch Pay's signature has no
+/// timestamp, so a captured genuine webhook verifies again. What it can do
+/// is pull one poll forward; it cannot move a charge.
+#[tokio::test]
+async fn a_replayed_genuine_webhook_still_verifies() {
+    let body = webhook_body();
+    let signature = sign(SIGNING, &body);
+    let headers = headers_with(Some(&signature));
+    for _ in 0..2 {
+        assert_eq!(
+            verdict(&headers, &body, &signed_config()).await,
+            CallbackVerdict::Verified
+        );
+    }
+}
+
+/// No secret configured: `NoSecret`, whatever the header says, so the route
+/// keeps today's behaviour and the counter says why. Boot is what refuses
+/// this in livemode (RFC-0014 § 6).
+#[tokio::test]
+async fn with_no_signing_secret_the_check_answers_no_secret() {
+    let body = webhook_body();
+    let forged = sign("anything", &body);
+    let mut blank = closed();
+    blank.credentials.insert(
+        vpay_provider::CALLBACK_SIGNING_SECRET.to_owned(),
+        "   ".to_owned(),
+    );
+    for config in [closed(), blank] {
+        for headers in [headers_with(None), headers_with(Some(&forged))] {
+            assert_eq!(
+                verdict(&headers, &body, &config).await,
+                CallbackVerdict::NoSecret
+            );
+        }
+    }
+}
+
+/// A refusal's reason is a fixed sentence: it never quotes the signature it
+/// was handed, the secret it compared against, or a body byte, because the
+/// route logs it.
+#[tokio::test]
+async fn a_refusal_carries_no_secret_signature_or_body() {
+    let body = webhook_body();
+    let forged = sign("forger-secret-test_0006", &body);
+    for headers in [headers_with(None), headers_with(Some(&forged))] {
+        let answer = verdict(&headers, &body, &signed_config()).await;
+        let reason = answer.reason().expect("a refusal has a reason");
+        for leaked in [SIGNING, forged.as_str(), "evt.test_0001", "5000"] {
+            assert!(!reason.contains(leaked), "{reason}");
+        }
+        assert!(!format!("{answer:?}").contains(SIGNING));
+    }
 }
 
 /// A declared gap, naming this rail: `verify-status` matches the token

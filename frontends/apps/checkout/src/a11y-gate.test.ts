@@ -47,6 +47,7 @@ function appRoot(): string {
 }
 
 const APP = appRoot();
+
 const code = (s: string) =>
   s.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/[^\n]*/g, "");
 
@@ -154,6 +155,13 @@ describe("the browser a11y suite is still a gate", () => {
     // apps (see the recipe's own comment).
     const dir = join(APP, "storybook-static/assets");
     if (!existsSync(dir)) {
+      // `just build-storybook` sets this when it runs this case straight
+      // after building (added 2026-10-23): there a missing build is a broken
+      // recipe, and skipping would be the green-and-blind result above.
+      expect(
+        process.env.VPAY_STORYBOOK_BUILT,
+        `${dir} does not exist, yet \`just build-storybook\` says it just built it`,
+      ).not.toBe("1");
       ctx.skip();
       return;
     }

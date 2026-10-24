@@ -185,3 +185,33 @@ branch does not change `Cargo.lock`, which is identical to `master`'s, and
   `verify-ignored` and `deny`. No Rust or Cargo file changed. This container
   has no Docker daemon for the testcontainers suites, and no `cargo-nextest`
   or `cargo-deny`. `just verify`, which builds and runs `xtask`, was run.
+
+## Merged with `master` on 2026-10-24
+
+[vaam-apps/vpay#355](https://github.com/vaam-apps/vpay/pull/355) fixed the
+same case first, in parallel, with a one-`var()` regex resolution and a
+second run of this file after the recipe's loop with `VPAY_STORYBOOK_BUILT=1`
+([2026-10-23-a11y-gate-built-theme.md](2026-10-23-a11y-gate-built-theme.md)).
+The maintainer chose to merge this branch as well, so `master` was merged into
+it and the three conflicts were resolved like this:
+
+- **Both `a11y-gate.test.ts` files.** This branch's assertion is kept: the
+  whole chain per theme, compared with the package's own `theme.css`. #355's
+  four one-hop helpers (`definitionsOf`, `COLOUR_LITERAL`, `VAR_REFERENCE`,
+  `unresolvedColours`) are removed, since nothing calls them now. #355's skip
+  guard is kept: with `VPAY_STORYBOOK_BUILT=1` and no artefact, the case fails
+  with its own message.
+- **`justfile`.** One run per app, inside the loop. It sets
+  `VPAY_STORYBOOK_BUILT=1` and keeps this branch's JSON-report check. #355's
+  two runs after the loop are removed, because they ran the same file again.
+- **`docs/status/README.md`.** Both lists are kept and the counts are now
+  114 files, 91 named. #355's page and its rows in `frontend.md` and the
+  dashboard flow are marked superseded rather than rewritten.
+
+Measured on the merge, in this session:
+
+| Check                                                                                       | Result                                                                                  |
+| ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------- |
+| `pnpm install --frozen-lockfile`, typecheck and lint for both apps                          | exit 0                                                                                  |
+| `just build-storybook`                                                                      | exit 0; each app's `a11y-gate.test.ts` ran once against the fresh artefact, 6 of 6 each |
+| Mutation: every `--md-sys-color-surface:` declaration removed from the checkout's built CSS | the case fails (1 failed, 5 passed); restored, 6 of 6                                   |

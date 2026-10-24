@@ -5,7 +5,7 @@
 //! module owns the vocabulary and each binary owns the exporter it renders
 //! through; [`describe_all`] is the one call that connects the two, and it is
 //! a no-op until a recorder exists. Why a library must not install one, why
-//! the names are `const`s, and where each of the fourteen is emitted:
+//! the names are `const`s, and where each of the fifteen is emitted:
 //! [docs/reference/vpay-core.md § metrics](../../../../docs/reference/vpay-core.md#metrics).
 //!
 //! # The list
@@ -31,9 +31,10 @@
 //! vpay_alert_events_total{category,code}                            counter
 //! vpay_account_holder_lookups_total{outcome}                        counter
 //! vpay_callback_endpoint_checks_total{provider,state}               counter
+//! vpay_provider_callbacks_total{provider,verdict}                   counter
 //! ```
 //!
-//! The last two lines are the only ones that are **not** in that plan
+//! The last three lines are the only ones that are **not** in that plan
 //! document. The first landed with `GET /v1/account_holders` (issue #47),
 //! after it was written. It is here rather than folded into
 //! `vpay_http_requests_total` because the four outcomes a lookup has are not
@@ -41,7 +42,9 @@
 //! them apart is the whole question an operator asks of this route. The
 //! second landed with RFC-0013's `ensure_callbacks` pass on 2026-10-22; see
 //! [`CALLBACK_ENDPOINT_CHECKS_TOTAL`] for why it is a counter where the RFC
-//! proposed a gauge.
+//! proposed a gauge. The third landed with RFC-0014's callback check on
+//! 2026-10-23; see [`PROVIDER_CALLBACKS_TOTAL`] for why its label is
+//! `provider` where the RFC wrote `rail`.
 //!
 //! A described-but-unrecorded metric never appears in a scrape (the
 //! Prometheus exporter renders registered *handles*, not descriptions), so a
@@ -210,6 +213,25 @@ pub const ACCOUNT_HOLDER_LOOKUPS_TOTAL: &str = "vpay_account_holder_lookups_tota
 /// endpoint `missing`" has one answer however many workers there are.
 pub const CALLBACK_ENDPOINT_CHECKS_TOTAL: &str = "vpay_callback_endpoint_checks_total";
 
+/// Callbacks received for a charge vpay holds, by rail and by what the rail's
+/// check said (RFC-0014 § 3). See [`callback_verdict`] for the six values.
+///
+/// Emitted by `vpay_api::provider_callback`, once per callback that named a
+/// charge this deployment holds, after the adapter's `verify_callback` and
+/// before the poll is or is not pulled forward. A body that does not parse
+/// and a reference no charge holds are not counted: neither reached a check,
+/// and both are answered exactly as a counted one is.
+///
+/// **`provider`, where RFC-0014 § 3 wrote `{rail,verdict}`.** Every other
+/// per-rail series in this module labels the rail `provider`, so a join of
+/// this against [`PROVIDER_REQUESTS_TOTAL`] needs no `label_replace`.
+///
+/// No label carries a reference, a header or a body byte. A steady rate of
+/// `invalid` is either a misconfigured secret (every callback refused) or
+/// somebody sending forgeries (some refused); the runbook tells them apart
+/// by whether `verified` is also non-zero.
+pub const PROVIDER_CALLBACKS_TOTAL: &str = "vpay_provider_callbacks_total";
+
 /// Every name in this module, in the order the module doc lists them.
 ///
 /// Public so a binary's own test can assert its `/metrics` output against the
@@ -248,6 +270,7 @@ pub const ALL: &[&str] = &[
     ALERT_EVENTS_TOTAL,
     ACCOUNT_HOLDER_LOOKUPS_TOTAL,
     CALLBACK_ENDPOINT_CHECKS_TOTAL,
+    PROVIDER_CALLBACKS_TOTAL,
 ];
 
 /// The `outcome` label on [`JOBS_COMPLETED_TOTAL`].
@@ -476,6 +499,66 @@ pub mod callback_endpoint_state {
     pub const FAILED: &str = "failed";
 }
 
+/// The `verdict` label on [`PROVIDER_CALLBACKS_TOTAL`]:
+/// `vpay_provider::CallbackVerdict`'s six answers, spelled once.
+///
+/// Two of them stop the poll being pulled forward (`invalid`,
+/// `unavailable`); the other four let it, which is what every callback did
+/// before RFC-0014.
+///
+/// _(Five answers until 2026-10-23's security review split
+/// `verified_previous` out of `verified`, so that the end of a rotation is
+/// visible.)_
+///
+/// ```
+/// use vpay_core::metrics::callback_verdict;
+///
+/// assert_eq!(
+///     callback_verdict::ALL,
+///     [
+///         "verified",
+///         "verified_previous",
+///         "invalid",
+///         "not_checked",
+///         "no_secret",
+///         "unavailable"
+///     ]
+/// );
+/// ```
+pub mod callback_verdict {
+    /// The rail's check passed, under the current signing secret.
+    pub const VERIFIED: &str = "verified";
+    /// The rail's check passed under the **previous** signing secret
+    /// (`credentials.callback_signing_secret_previous`): a rotation is in
+    /// flight. When this stops increasing, the previous secret can be
+    /// removed; while it is configured, it pulls polls forward.
+    pub const VERIFIED_PREVIOUS: &str = "verified_previous";
+    /// The check ran and failed: a wrong, missing or malformed signature.
+    /// The poll was not pulled forward.
+    pub const INVALID: &str = "invalid";
+    /// vpay checks nothing on this rail's callbacks, today MTN's and
+    /// Orange's.
+    pub const NOT_CHECKED: &str = "not_checked";
+    /// The rail signs, and no signing secret is configured. Boot warned (or,
+    /// in livemode, was told `callbacks.verify: off`).
+    pub const NO_SECRET: &str = "no_secret";
+    /// The check could not complete, or the route could not build what it
+    /// needed to ask (the rail's configuration, the charge's reference). The
+    /// poll was not pulled forward; the ladder still runs.
+    pub const UNAVAILABLE: &str = "unavailable";
+
+    /// Every value, in `vpay_provider::CallbackVerdict`'s declaration
+    /// order, for a test that must cover all of them.
+    pub const ALL: [&str; 6] = [
+        VERIFIED,
+        VERIFIED_PREVIOUS,
+        INVALID,
+        NOT_CHECKED,
+        NO_SECRET,
+        UNAVAILABLE,
+    ];
+}
+
 /// This build's commit, or [`UNKNOWN_GIT_SHA`].
 ///
 /// `option_env!` reads the environment rustc was invoked with, and
@@ -624,6 +707,14 @@ pub fn describe_all() {
         Unit::Count,
         "Callback-endpoint checks made by the ensure_callbacks pass, by provider code and by \
          what it found: present, created, drifted, foreign, missing, locked or failed."
+    );
+    describe_counter!(
+        PROVIDER_CALLBACKS_TOTAL,
+        Unit::Count,
+        "Callbacks received for a charge this deployment holds, by provider code and by what \
+         the rail's check said: verified, verified_previous (matched the previous signing \
+         secret, during a rotation), invalid, not_checked, no_secret or unavailable. \
+         invalid and unavailable did not pull the charge's poll forward."
     );
 }
 

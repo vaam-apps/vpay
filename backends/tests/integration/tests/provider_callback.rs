@@ -89,10 +89,11 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
+use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use rstest::rstest;
 use serde_json::Value;
 use sqlx::PgPool;
@@ -1156,6 +1157,451 @@ async fn a_reference_this_deployment_has_no_charge_for_is_accepted_anyway(
         before,
         "neither an unknown reference nor another rail's reference may enqueue anything"
     );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// ----------------------------------------- a rail that signs (RFC-0014)
+
+/// The rail whose adapter checks a signature: Notch Pay, the only one.
+const SIGNING_RAIL: &str = "notchpay";
+
+/// The signing secret this suite configures for it, fixture-shaped so that
+/// nothing mistakes it for a Notch Pay Hash Key (`hsk_test_…`).
+const SIGNING_SECRET: &str = "stub-signing-secret-test_0003";
+
+/// Notch Pay's own reference for [`SCENARIO_REF`]: `payments-scenario.json`
+/// walks `pending` then `complete` for exactly this path.
+const NOTCHPAY_SCENARIO_TRX: &str = "trx.test_00000000-0000-0000-0000-000000000ce0";
+
+/// This test binary's Prometheus recorder, for the one case that reads the
+/// callback counter. Installed on first use, once per process, as
+/// `webhooks.rs`'s identical static explains; under `cargo nextest` that is
+/// once per test, so the counts below are exact.
+static METRICS: LazyLock<PrometheusHandle> = LazyLock::new(|| {
+    let recorder = PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    metrics::set_global_recorder(recorder).expect("this test binary installs exactly one recorder");
+    vpay_core::metrics::describe_all();
+    handle
+});
+
+/// Postgres, the Notch Pay stub, and a server whose `notchpay` rail holds a
+/// signing secret. Its own harness rather than a third container in
+/// [`harness`], for `confirm_rails.rs`'s `TwoStepHarness` reason.
+struct SigningHarness {
+    _postgres: ContainerAsync<PostgresImage>,
+    _notchpay: ContainerAsync<GenericImage>,
+    server: tokio::task::JoinHandle<()>,
+    repositories: Arc<dyn Repositories>,
+    pool: PgPool,
+    base_url: String,
+    stub_origin: String,
+    pem_a: String,
+    adapters: Arc<Adapters>,
+    rails: Arc<RailConfigs>,
+    http: reqwest::Client,
+}
+
+impl SigningHarness {
+    fn client(&self) -> vpay_sdk::Client {
+        vpay_sdk::Client::builder(&self.base_url)
+            .credentials(
+                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
+            )
+            .build()
+            .expect("the SDK client builds from a base URL and a credential")
+    }
+
+    /// [`Harness::step`], over this harness's rail.
+    async fn step(&self) -> anyhow::Result<Option<Settled>> {
+        let endpoints = support::no_webhook_endpoints();
+        vpay_worker::run_once(
+            self.repositories.as_ref(),
+            &self.adapters,
+            &self.rails,
+            &RecoveryPolicy::default(),
+            &vpay_worker::WebhookContext {
+                endpoints: &endpoints,
+                egress: support::default_egress_policy(),
+            },
+            &vpay_worker::CallbackPlan::none(),
+            "provider-callback-signing-suite",
+        )
+        .await
+        .context("running one job")
+    }
+
+    /// How many times Notch Pay's stub was asked to **read** the scenario
+    /// payment: the only witness for "this callback caused no rail read".
+    async fn reads_of_the_payment(&self) -> anyhow::Result<u64> {
+        let counted: Value = self
+            .http
+            .post(format!("{}/__admin/requests/count", self.stub_origin))
+            .json(&serde_json::json!({
+                "method": "GET",
+                "urlPath": format!("/payments/{NOTCHPAY_SCENARIO_TRX}"),
+            }))
+            .send()
+            .await
+            .context("the stub's admin API answers")?
+            .json()
+            .await
+            .context("the count is JSON")?;
+        counted
+            .get("count")
+            .and_then(Value::as_u64)
+            .context("the admin answer carries a count")
+    }
+
+    /// One POST to Notch Pay's callback path, with `signature` in
+    /// `x-notch-signature` when there is one: the status and the exact body
+    /// bytes, for the byte-identity assertion.
+    async fn post_callback(
+        &self,
+        body: &[u8],
+        signature: Option<&str>,
+    ) -> anyhow::Result<(u16, Vec<u8>)> {
+        let mut request = self
+            .http
+            .post(format!(
+                "{}/provider/{SIGNING_RAIL}/callback",
+                self.base_url
+            ))
+            .header("content-type", "application/json")
+            .body(body.to_vec());
+        if let Some(signature) = signature {
+            request = request.header("x-notch-signature", signature);
+        }
+        let response = request
+            .send()
+            .await
+            .context("POSTing a Notch Pay webhook")?;
+        let status = response.status().as_u16();
+        let bytes = response.bytes().await.context("reading the answer")?;
+        Ok((status, bytes.to_vec()))
+    }
+
+    async fn shutdown(self) {
+        self.server.abort();
+    }
+}
+
+/// Notch Pay on its stub, with the conformance suite's test-marked keys and,
+/// the point of this harness, a signing secret.
+fn signing_rail(origin: &str) -> ProviderHost {
+    ProviderHost {
+        code: SIGNING_RAIL.to_owned(),
+        enabled: true,
+        host: HostEntry {
+            url: origin.to_owned(),
+            label: "notchpay-wiremock".to_owned(),
+        },
+        settings: BTreeMap::from([("channel".to_owned(), "cm.mobile".to_owned())]),
+        callback_url: None,
+        currency: CURRENCY.to_ascii_uppercase(),
+        credentials: BTreeMap::from([
+            (
+                "public_key".to_owned(),
+                "stub-public-key-test_0001".to_owned(),
+            ),
+            (
+                "private_key".to_owned(),
+                "stub-private-key-test_0002".to_owned(),
+            ),
+            (
+                vpay_provider::CALLBACK_SIGNING_SECRET.to_owned(),
+                SIGNING_SECRET.to_owned(),
+            ),
+        ]),
+        display_name: None,
+        callbacks: None,
+    }
+}
+
+fn signing_adapters() -> BTreeMap<String, Box<dyn vpay_provider::ProviderAdapter>> {
+    let http = vpay_provider::http::client_with_timeouts(
+        vpay_provider::DEFAULT_CONNECT_TIMEOUT,
+        vpay_provider::DEFAULT_REQUEST_TIMEOUT,
+    )
+    .expect("the vendored-roots client builds");
+    vpay_api::v1::boot::adapters_by_code(vec![Box::new(vpay_adapter_notchpay::Adapter::new(http))
+        as Box<dyn vpay_provider::ProviderAdapter>])
+}
+
+async fn signing_harness() -> anyhow::Result<SigningHarness> {
+    ensure_crypto_provider_installed();
+
+    let (postgres, repositories, pool) = migrated_postgres().await?;
+    let notchpay = vpay_testkit::containers::start_wiremock(&mappings_dir("notchpay"))
+        .await
+        .context("the Notch Pay stub container starts")?;
+    let stub_origin = format!(
+        "http://127.0.0.1:{}",
+        notchpay
+            .get_host_port_ipv4(8080)
+            .await
+            .context("the Notch Pay stub's mapped port")?
+    );
+
+    let (server_pem, _server_jwks) = generate_key();
+    let (pem_a, jwks_a) = generate_key();
+    let make_config = |base_url: &str, jwks: Value| Config {
+        providers: vec![signing_rail(&stub_origin)],
+        ..config_with(base_url, jwks, "http://127.0.0.1:1", "http://127.0.0.1:1")
+    };
+    let jwks_for_server = jwks_a.clone();
+    let served = support::serve_with_adapters(
+        &repositories,
+        &server_pem,
+        |base_url| make_config(base_url, jwks_for_server),
+        signing_adapters,
+    )
+    .await?;
+    let config = make_config(&served.base_url, jwks_a);
+
+    Ok(SigningHarness {
+        _postgres: postgres,
+        _notchpay: notchpay,
+        server: served.server,
+        repositories,
+        pool,
+        base_url: served.base_url,
+        stub_origin,
+        pem_a,
+        adapters: Arc::new(signing_adapters()),
+        rails: Arc::new(rail_configs(&config)),
+        http: reqwest::Client::new(),
+    })
+}
+
+/// A `payment.complete` webhook as Notch Pay documents one, naming
+/// `reference`, serialised compactly.
+fn notchpay_webhook(reference: Uuid) -> Vec<u8> {
+    serde_json::json!({
+        "id": "evt.test_0001",
+        "type": "payment.complete",
+        "created_at": "2026-10-20T10:00:00Z",
+        "data": {
+            "id": "pay.test_0001",
+            "reference": reference.to_string(),
+            "amount": AMOUNT,
+            "currency": "XAF",
+            "status": "complete"
+        }
+    })
+    .to_string()
+    .into_bytes()
+}
+
+/// The same event as [`notchpay_webhook`], written the way no serialiser in
+/// this workspace would write it: spaced, keys out of order, a trailing
+/// newline. A signature over these bytes is a signature over these bytes
+/// only, so a route that verified a re-parsed and re-serialised body would
+/// refuse it. Added 2026-10-23 from RFC-0014's security review: the compact
+/// fixture above survives a re-serialisation byte for byte, so it could not
+/// tell the two routes apart.
+fn notchpay_webhook_as_sent(reference: Uuid) -> Vec<u8> {
+    format!(
+        "{{ \"type\" : \"payment.complete\", \"id\": \"evt.test_0001\",\n  \"data\": {{ \
+         \"status\": \"complete\", \"reference\": \"{reference}\", \"amount\": {AMOUNT}, \
+         \"currency\": \"XAF\", \"id\": \"pay.test_0001\" }},\n  \"created_at\": \
+         \"2026-10-20T10:00:00Z\" }}\n"
+    )
+    .into_bytes()
+}
+
+fn sign(secret: &str, body: &[u8]) -> String {
+    vpay_provider::callback::hmac_sha256_hex(secret.as_bytes(), body)
+        .expect("HMAC takes a key of any length")
+}
+
+/// RFC-0014 § 8, through the route: on a rail whose adapter checks a
+/// signature, a webhook it did not sign **moves nothing and causes no rail
+/// read**, and a genuine one pulls the poll forward and the read settles the
+/// charge. Every answer is the same `202`, byte for byte, including the one
+/// for a reference no charge holds.
+///
+/// Four forgeries, each answered `202` with the poll left parked, the queue
+/// unclaimable and the stub's read count unchanged: no signature; a
+/// signature under another secret; Notch Pay's genuine signature of a
+/// *different* body (a captured webhook re-aimed at this charge); and the
+/// genuine webhook re-serialised after signing, with its genuine signature.
+/// Then the genuine one, **as sent**: spaced and out of key order
+/// ([`notchpay_webhook_as_sent`]), so its signature is over those exact
+/// bytes and a route that verified a re-serialised body would refuse it.
+/// _(Three forgeries and a compact genuine body until 2026-10-23: RFC-0014's
+/// security review found that a compact body round-trips through a
+/// re-serialisation unchanged, so nothing at the route pinned the raw
+/// bytes.)_
+///
+/// **Mutation-checked**
+/// (`docs/status/verification/2026-10-23-webhook-signatures.md`): a Notch Pay
+/// `verify_callback` that always answers `Verified`, and a route with the
+/// `admits_pull_forward` gate deleted, each fail at the first forgery's
+/// `run_at` assertion.
+///
+/// What this proves is vpay's half, against the documented scheme on a stub.
+/// That Notch Pay signs its webhooks this way is RFC-0012 § 10 item 7, which
+/// the sandbox answers and this suite cannot.
+#[tokio::test]
+async fn a_webhook_the_rail_did_not_sign_moves_nothing_and_a_signed_one_settles()
+-> anyhow::Result<()> {
+    let metrics = METRICS.clone();
+    let harness = signing_harness().await?;
+
+    let client = harness.client();
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::NotchPay),
+            RequestOptions::new(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("creating the intent: {error}"))?;
+    client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::notchpay(MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .map_err(|error| anyhow::anyhow!("confirming on notchpay: {error}"))?;
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+
+    // Onto the scenario, both halves: vpay's reference, which the webhook
+    // names, and Notch Pay's, which the read is addressed by. The module
+    // docs say why a charge is moved onto a scenario rather than confirmed
+    // onto it.
+    sqlx::query(
+        "UPDATE charges SET provider_reference_id = $2, \
+         provider_ref_extra = jsonb_build_object('notchpay_reference', $3::TEXT) WHERE id = $1",
+    )
+    .bind(&charge.id)
+    .bind(SCENARIO_REF)
+    .bind(NOTCHPAY_SCENARIO_TRX)
+    .execute(&harness.pool)
+    .await
+    .context("pointing the charge at the scenario")?;
+
+    // Poll #1: pending, back onto the ladder; then out to a later rung.
+    let first = harness.step().await?.context("the confirm queued a poll")?;
+    assert!(
+        matches!(first.disposition, Disposition::Rescheduled(_)),
+        "the first read must leave the charge live, got {:?} ({:?})",
+        first.disposition,
+        first.error
+    );
+    assert_eq!(harness.reads_of_the_payment().await?, 1);
+    park_the_poll_at_a_later_rung(&harness.pool, &charge.id).await?;
+    let parked_at = poll_run_at(&harness.pool, &charge.id).await?;
+    assert!(
+        harness.step().await?.is_none(),
+        "the parked poll is not claimable"
+    );
+
+    let genuine = notchpay_webhook_as_sent(SCENARIO_REF);
+    let re_serialised = serde_json::to_vec(
+        &serde_json::from_slice::<Value>(&genuine).context("the webhook as sent is JSON")?,
+    )
+    .context("re-serialising the webhook")?;
+    assert_ne!(
+        re_serialised, genuine,
+        "the case needs a body that a re-serialisation changes"
+    );
+    let re_aimed = notchpay_webhook(Uuid::from_u128(0x0202));
+    let forgeries: [(&str, &[u8], Option<String>); 4] = [
+        ("no signature", &genuine, None),
+        (
+            "a signature under another secret",
+            &genuine,
+            Some(sign("forger-secret-test_0004", &genuine)),
+        ),
+        (
+            "Notch Pay's signature of another webhook",
+            &genuine,
+            Some(sign(SIGNING_SECRET, &re_aimed)),
+        ),
+        (
+            "the genuine webhook re-serialised after signing",
+            &re_serialised,
+            Some(sign(SIGNING_SECRET, &genuine)),
+        ),
+    ];
+    let mut answers = Vec::new();
+    for (what, body, signature) in &forgeries {
+        answers.push(harness.post_callback(body, signature.as_deref()).await?);
+        assert_eq!(
+            poll_run_at(&harness.pool, &charge.id).await?,
+            parked_at,
+            "{what}: a webhook the rail did not sign must not move the poll"
+        );
+        assert!(
+            harness.step().await?.is_none(),
+            "{what}: nothing may become claimable"
+        );
+        assert_eq!(
+            harness.reads_of_the_payment().await?,
+            1,
+            "{what}: a webhook the rail did not sign must cause no rail read"
+        );
+    }
+
+    // A reference no charge holds, genuinely signed: answered exactly as the
+    // rest, and never reaching the check.
+    let unknown = notchpay_webhook(Uuid::from_u128(0x0404));
+    answers.push(
+        harness
+            .post_callback(&unknown, Some(&sign(SIGNING_SECRET, &unknown)))
+            .await?,
+    );
+
+    // The genuine webhook, byte for byte as sent: pulled forward, read,
+    // settled.
+    answers.push(
+        harness
+            .post_callback(&genuine, Some(&sign(SIGNING_SECRET, &genuine)))
+            .await?,
+    );
+    assert!(
+        poll_run_at(&harness.pool, &charge.id).await? <= support::db_now(&harness.pool).await?,
+        "a genuine webhook must make the poll claimable now"
+    );
+    let second = harness
+        .step()
+        .await?
+        .context("the pulled-forward poll is claimable")?;
+    assert!(
+        matches!(second.disposition, Disposition::Finished),
+        "the read a genuine webhook pulled forward settles the charge, got {:?} ({:?})",
+        second.disposition,
+        second.error
+    );
+    assert_eq!(harness.reads_of_the_payment().await?, 2);
+    assert_eq!(
+        stored_charge(&harness.pool, &intent.id).await?.state,
+        "succeeded"
+    );
+
+    // Every answer the same, byte for byte: forged, unknown and genuine.
+    let first_answer = answers.first().cloned().context("at least one answer")?;
+    assert_eq!(first_answer.0, 202);
+    for answer in &answers {
+        assert_eq!(answer, &first_answer, "the route must not be an oracle");
+    }
+
+    // Counted by verdict, the unknown reference not at all; and no label
+    // carries a signature or the secret.
+    let scrape = metrics.render();
+    for (verdict, count) in [("invalid", 4), ("verified", 1)] {
+        let line = format!(
+            "vpay_provider_callbacks_total{{provider=\"{SIGNING_RAIL}\",verdict=\"{verdict}\"}} {count}"
+        );
+        assert!(scrape.contains(&line), "{line} missing from:\n{scrape}");
+    }
+    assert!(!scrape.contains(SIGNING_SECRET), "{scrape}");
 
     harness.shutdown().await;
     Ok(())

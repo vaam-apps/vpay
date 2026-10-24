@@ -1337,7 +1337,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2403,7 +2403,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "merchant-demo"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2520,7 +2520,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3386,7 +3386,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3443,7 +3443,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4209,7 +4209,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -4339,9 +4339,9 @@ checksum = "1f3ccbac311fea05f86f61904b462b55fb3df8837a366dfc601a0161d0532f20"
 
 [[package]]
 name = "tokio"
-version = "1.53.1"
+version = "1.53.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "202caea871b69668250d242070849eb495be178ed697a3e98aebce5bc81a0bed"
+checksum = "ce3335fa71841cda333a58d7615b03901380ecf09d59b3296d21f8bbac0dde4e"
 dependencies = [
  "bytes",
  "libc",
@@ -4776,7 +4776,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vpay-adapter-mtn-momo"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4791,7 +4791,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-adapter-notchpay"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "hex",
@@ -4808,7 +4808,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-adapter-orange-money"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -4823,7 +4823,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-api"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -4869,7 +4869,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-config"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "clap",
  "figment",
@@ -4887,7 +4887,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-core"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "hex",
  "hmac 0.12.1",
@@ -4904,7 +4904,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-db"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4933,7 +4933,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-ledger"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "serde",
  "thiserror",
@@ -4944,7 +4944,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-notchpay"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "hex",
  "hmac 0.12.1",
@@ -4962,9 +4962,11 @@ dependencies = [
 
 [[package]]
 name = "vpay-provider"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "async-trait",
+ "hex",
+ "hmac 0.12.1",
  "metrics",
  "metrics-exporter-prometheus",
  "reqwest",
@@ -4981,7 +4983,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-sdk"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "authkestra-op",
  "base64 0.22.1",
@@ -5006,7 +5008,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-server"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "axum",
@@ -5040,7 +5042,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-testkit"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "serde_json",
  "testcontainers",
@@ -5053,7 +5055,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-tests-conformance"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "rstest",
  "serde_json",
@@ -5072,7 +5074,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-tests-integration"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5116,7 +5118,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-worker"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "axum",
  "hex",
@@ -5309,7 +5311,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5535,7 +5537,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.11.0"
+version = "0.12.1"
 dependencies = [
  "base64 0.22.1",
  "rand 0.8.7",

@@ -3806,6 +3806,7 @@ mod tests {
                 refund_destination: vpay_provider::RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
                 submit_steps: vpay_provider::SubmitSteps::One,
+                callback_check: vpay_provider::CallbackCheck::None,
                 method_types,
             }
         }

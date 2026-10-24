@@ -51,11 +51,14 @@ providers:
     # authenticated read is what moves money. Notch Pay registers webhook URLs
     # on the account, not per payment (RFC-0012 § 6).
     #
-    # `check`, not the default `ensure` (RFC-0013, 2026-10-22): the worker
-    # lists this account's webhook endpoints at every start and hourly, and
-    # with `ensure` it would CREATE one at the URL above on the real sandbox
-    # account as a side effect of runbook B2. Registering is runbook B4, a
-    # deliberate step of its own; it changes this line to `ensure`.
+    # `check` (RFC-0013, 2026-10-22): the worker lists this account's webhook
+    # endpoints at every start and hourly, and reports. Unset, this rail is
+    # `off` since 2026-10-23 (its adapter's default: the sandbox stored the
+    # endpoint its API created with no URL) and the list would not happen;
+    # `ensure` would CREATE one at the URL above on the real sandbox account
+    # as a side effect of runbook B2. Registering is runbook B4, a deliberate
+    # step of its own; it changes this line to `ensure`. (This said "`check`,
+    # not the default `ensure`" until 2026-10-23.)
     callbacks:
       register: check
 

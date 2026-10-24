@@ -150,6 +150,15 @@ Measured: `cargo test -p vpay-adapter-notchpay --lib`, **54 passed, 0 failed,
 `the_declines_prove_every_code_each_rail_can_produce::case_3_notchpay` failed;
 restored.
 
+## Accepted (2026-10-23, later the same day)
+
+Asked "ADR-0032 (two-step submit) is merged and the sandbox behaved as
+designed. Should I mark it Accepted?", the maintainer answered "Yes". The ADR
+is **Accepted**; the "Proposed" above is the state this page was written in,
+kept as written. The sandbox evidence the question referred to is
+[2026-10-23-notchpay-sandbox-two-step-and-channels.md](2026-10-23-notchpay-sandbox-two-step-and-channels.md),
+measured through `sandbox_probe`, not through vpay.
+
 ## Not done
 
 - **The split has not met Notch Pay.** No sandbox run has sent `prepare` and

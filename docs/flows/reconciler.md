@@ -68,6 +68,8 @@ POST /provider/{code}/callback
   → adapter.parse_callback() extracts identifiers ONLY
       not a notification this rail could send → 400
   → the reference names no charge here        → 202, nothing enqueued
+  → adapter.verify_callback() (RFC-0014)
+      Invalid or Unavailable                  → 202, nothing enqueued, warn
   → one transaction: INSERT job (poll_charge, dedupe_key='poll:<ref>')
       ON CONFLICT DO NOTHING, then pull that poll forward unless it is
       already due within PULL_FORWARD_FLOOR
@@ -104,17 +106,34 @@ an unauthenticated request.
 
 The `dedupe_key` is what stops duplicate callbacks becoming a job storm.
 
+**A rail that signs its callbacks has them checked** (RFC-0014, 2026-10-23).
+Between finding the charge and moving its poll, the route asks the rail's
+adapter (`verify_callback`), with the headers and the raw body. Today only
+`notchpay` checks (`x-notch-signature`, where its Hash Key is configured);
+MTN and Orange answer `NotChecked`. A refused callback is answered the same
+`202` and moves nothing; the ladder still asks the rail at its next rung. A
+verified one is still a hint, and moves no money: what the check buys is that
+an anonymous POST stops pulling a signing rail's polls forward. Stub-proven;
+never verified against a real Notch Pay delivery
+([verification](../status/verification/2026-10-23-webhook-signatures.md)).
+
 ### Where a rail sends its callbacks
 
 A rail learns the URL one of two ways, and `Capabilities::callback_url_mode`
 says which ([provider-port.md](provider-port.md#capabilities)). `mtn_momo`
 and `orange_money` are told it on every submit (`PerRequest`). `notchpay` holds
-it registered with the account (`Registered`), and since 2026-10-22 vpay keeps
-it there: the worker's `ensure_callbacks` singleton lists the account's
-endpoints at every worker start and hourly, and creates vpay's when it is
-missing ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md),
+it registered with the account (`Registered`). The worker's `ensure_callbacks`
+singleton can keep it there: on a rail whose `callbacks.register` is `ensure`
+it lists the account's endpoints at every worker start and hourly and creates
+vpay's when it is missing, and on `check` it only lists and reports
+([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md),
 [vpay-worker.md](../reference/vpay-worker.md#registering-callback-endpoints)).
-None of this changes what a callback can do. A rail with no endpoint
+**On `notchpay` it does neither unless told to:** with `register` unset the
+rail is `off` (since 2026-10-23, the adapter's
+`default_callback_registration`), vpay asks the account nothing, and the
+operator registers vpay's URL in Notch Pay's dashboard
+([adapter-notchpay.md](adapter-notchpay.md) § "Callbacks"). None of this
+changes what a callback can do. A rail with no endpoint
 registered sends nothing, and its charges settle by polling, as above.
 
 ## Status
@@ -138,7 +157,11 @@ escalation's). Extended 2026-10-23
 on a two-step rail the resubmit calls `prepare` before `submit`, and a
 `prepare` refused for a charge no submit ever prompted fails the charge
 through the declined path; the poll ladder and the recovery table are
-unchanged ([crash-safety.md](crash-safety.md) § "Two-step push rails").**
+unchanged ([crash-safety.md](crash-safety.md) § "Two-step push rails").
+Corrected 2026-10-24, with nothing in the loop changed: § "Where a rail sends
+its callbacks" said that since 2026-10-22 vpay keeps Notch Pay's endpoint
+registered, which stopped being true on 2026-10-23, when `off` became that
+rail's default; found by vpay-docs' re-read for v0.12.0.**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at

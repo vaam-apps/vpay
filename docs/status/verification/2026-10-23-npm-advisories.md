@@ -64,6 +64,12 @@ build-storybook`, so the case takes its `ctx.skip()` branch. That leaves the
 guard a test that does not run in CI and fails locally after any Storybook
 build. It is reported, not fixed here.
 
+_Fixed later on 2026-10-23, at the maintainer's "Fix it": the case now
+resolves `--color-base-100` one `var()` deep to a colour, and `just
+build-storybook` runs it straight after building, so CI runs it too
+([2026-10-23-a11y-gate-built-theme.md](2026-10-23-a11y-gate-built-theme.md)).
+The paragraph above is kept as written._
+
 ## Not run
 
 - `test-storybook`, the axe suites, which need a browser; CI's `web` job
@@ -71,3 +77,59 @@ build. It is reported, not fixed here.
 - The `e2e (compose)` images; CI builds them.
 - Nothing was ignored, and nothing was added to `ignoreGhsas` or
   `minimumReleaseAgeExclude`.
+
+## Later the same day: zod 4.6.7 clears GHSA-mrhx-c7xc-m3w5
+
+CI's `web` job on vaam-apps/vpay#351, a docs-only change, failed `just
+audit-web` at about 21:55 UTC: one **high** finding, GHSA-mrhx-c7xc-m3w5,
+"Zod can exhaust memory while validating oversized constrained collections",
+`zod <4.6.6`, patched `>=4.6.6`. `master` at `9499f09d` resolves the same
+version, so its next run fails the same step.
+
+`zod` reaches the workspace in one place: `examples/shop` pins it exactly at
+`4.5.4`, and `@zenstackhq/orm`, `@zenstackhq/zod` and `zod-validation-error`
+take it as a peer from there. The pin moves to **`4.6.7`**, the latest,
+published 2026-10-12, past pnpm's 24-hour window; nothing needed
+`minimumReleaseAgeExclude`. `pnpm install` changed only `zod`'s lines in
+`pnpm-lock.yaml`: its resolution and integrity, and the eighteen peer
+references that name it.
+
+Measured after, with pnpm 11.18.0:
+
+- `just audit-web`: **no known vulnerabilities**, production graph and whole
+  workspace. Before: 1 high.
+- `examples/shop`: `typecheck` and `lint` exit 0; `test` **108 passed** of
+  108 in 12 files.
+
+Not run: the shop's `next build` and the `e2e (compose)` images, which CI's
+`e2e` job builds.
+
+## Later still: tokio 1.53.3 clears RUSTSEC-2026-0386
+
+A Rust advisory, recorded here with the day's npm ones. CI's `supply chain`
+job (`cargo deny check`, which runs only when a change touches Cargo files)
+failed on vaam-apps/vpay#357 at 23:47 UTC: `advisories FAILED`, on
+**RUSTSEC-2026-0386**, an _unsound_ advisory against `tokio`: "`AsyncFd::new`
+and related constructors violate I/O safety". The fixed versions are
+`>=1.51.6, <1.52.0` or `>=1.53.3`. `master` at `37fd72df` resolves tokio
+**1.53.1** in both `Cargo.lock` and `examples/tauri-checkout/src-tauri/Cargo.lock`,
+so it fails the same check whenever the job runs.
+
+The fix is `cargo update -p tokio --precise 1.53.3` in both workspaces: a
+patch release on the same minor line, published 2026-10-13. 1.54.0 is yanked
+and 1.54.1 is two days old, so neither was taken. The workspace's
+requirement stays `tokio = "1"`. In the root lockfile the same command also
+re-pointed six crates' Windows-only `windows-sys` dependency at versions
+the lockfile already held (0.52.0 and 0.59.0 instead of 0.61.2), and two in
+the Tauri example's lockfile (0.59.0). No package was
+added or removed, and nothing a Linux build compiles changed.
+
+Measured with cargo-deny 0.20.2 and cargo 1.98.0:
+
+- `cargo deny check advisories` on `master` at `37fd72df`: **FAILED**,
+  RUSTSEC-2026-0386.
+- `cargo deny check` on this change: `advisories ok, bans ok, licenses ok,
+sources ok`.
+
+Not run here: the workspace build and tests, which CI's `rust` job runs on the
+new lockfile.

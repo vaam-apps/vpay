@@ -236,9 +236,10 @@ predictable consequence of the header, not because anything observed it.
   **Two divergences a Stripe-shaped client will meet on the create**, both
   deliberate and neither of them Stripe's:
 
-  - `destination[<payment_method_type>][msisdn]` is **required** on every
-    rail vpay carries, because a mobile-money refund is an outbound transfer
-    and needs a payee (RFC-0003 § 1). Stripe has no such parameter, so
+  - `destination[<rail code>][msisdn]` is **required** on `mtn_momo` and
+    `orange_money`, because a refund there is an outbound transfer and needs
+    a payee (RFC-0003 § 1); `notchpay` refunds to the instrument that paid
+    and refuses one. Stripe has no such parameter, so
     `stripe.refunds.create({ payment_intent })` is a `400` naming
     `destination`. **Both merchant SDKs carry the field** — `destination` on
     `CreateRefundParams` in `sdks/rust/src/resources.rs` and on the

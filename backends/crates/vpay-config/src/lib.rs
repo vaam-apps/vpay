@@ -27,9 +27,9 @@ pub use cli::{
     CallbacksCommand, CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs,
 };
 pub use config::{
-    CallbackRegistration, CheckoutConfig, Config, CurrencyEntry, ProviderCallbacks, ProviderHost,
-    RailDisplayName, RateLimitPolicy, RateLimits, Routing, RoutingWeight, StaffAuth, StaffSso,
-    WebhookPolicy,
+    CallbackRegistration, CallbackVerification, CheckoutConfig, Config, CurrencyEntry,
+    ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits, Routing,
+    RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use oauth::{
     DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
@@ -1256,6 +1256,124 @@ pub enum ConfigError {
     CallbacksOnPerRequestRail {
         /// The `providers[].code` from the YAML.
         code: String,
+    },
+
+    /// A configured provider's adapter declares a `callback_check` without
+    /// `delivers_callbacks`: the rule
+    /// `vpay_provider::Capabilities::callback_check_is_coherent` encodes
+    /// (RFC-0014 § 2).
+    ///
+    /// A linking mistake on [`Self::IncoherentCallbackMode`]'s terms: a rail
+    /// that never calls back has nothing to check, and a check declared on
+    /// one would make boot ask for a secret nothing reads.
+    #[error(
+        "provider {code} declares a callback_check without delivers_callbacks; a rail whose \
+         callbacks are checked must be one that calls back (the rule \
+         vpay_provider::Capabilities::callback_check_is_coherent encodes)"
+    )]
+    IncoherentCallbackCheck {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// A **livemode** deployment configures a rail whose adapter checks
+    /// signatures (`CallbackCheck::Signature`), with no
+    /// `credentials.callback_signing_secret` and without
+    /// `callbacks.verify: off` (RFC-0014 § 6, built 2026-10-23).
+    ///
+    /// Booting it would accept every callback unverified on a rail that signs
+    /// them, which is exactly what this check exists to stop: an anonymous
+    /// POST pulling a live charge's poll forward. Test mode only warns. The
+    /// message names the setting and the variable shape, never a value.
+    #[error(
+        "providers[{code}] signs its callbacks and this livemode deployment configures no \
+         signing secret: set credentials.callback_signing_secret to a ${{VAR}} placeholder \
+         holding the secret from the provider's dashboard, or state that this deployment \
+         accepts unverified callbacks with callbacks: {{ verify: off }}"
+    )]
+    CallbackSigningSecretMissing {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// A callback-signing setting on a rail whose adapter checks no
+    /// signature: `credentials.callback_signing_secret` (or `_previous`), or
+    /// `callbacks.verify: off` (RFC-0014 § 6).
+    ///
+    /// Nothing would read it, and a secret held for no reason is the thing
+    /// RFC-0012 § 2 refused to hold; a setting that does nothing is one
+    /// somebody believes in. A YAML mistake: remove the setting.
+    #[error(
+        "providers[{code}].{setting} is set, but {code}'s adapter checks no callback signature, \
+         so nothing would read it; remove it"
+    )]
+    CallbackSigningSettingUnread {
+        /// The `providers[].code` from the YAML.
+        code: String,
+        /// Which setting, by its path in the YAML: never its value.
+        setting: &'static str,
+    },
+
+    /// `callbacks.verify: off` beside a configured signing secret
+    /// (RFC-0014 § 6).
+    ///
+    /// The secret is checked whenever it is configured, so `off` would be an
+    /// acknowledgement of something that does not happen. Refused rather
+    /// than resolved either way, because both readings are somebody's
+    /// mistake: remove `verify: off`, or the secret.
+    #[error(
+        "providers[{code}] configures credentials.callback_signing_secret and also says \
+         callbacks: {{ verify: off }}; the secret is checked whenever it is set, so remove one \
+         of the two"
+    )]
+    CallbackVerifyOffWithSecret {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// `credentials.callback_signing_secret_previous` without a non-blank
+    /// `credentials.callback_signing_secret`, on a rail whose adapter checks
+    /// signatures (RFC-0014; added 2026-10-23 from its security review).
+    ///
+    /// A previous secret is the second key of a rotation. Alone, it is a
+    /// rotation whose new key is missing (an unset or empty variable behind
+    /// the current one, most often), and the deployment would go on accepting
+    /// callbacks signed under a secret that is being retired, often because
+    /// it leaked. Refused in both modes: set the current secret, or rename
+    /// the previous one to it.
+    #[error(
+        "providers[{code}] configures credentials.callback_signing_secret_previous but no \
+         credentials.callback_signing_secret (or a blank one); a previous secret is the old key \
+         of a rotation, so set the current one too, or move the value to \
+         credentials.callback_signing_secret"
+    )]
+    CallbackSigningPreviousWithoutCurrent {
+        /// The `providers[].code` from the YAML.
+        code: String,
+    },
+
+    /// A signing secret whose value begins or ends with whitespace, on a rail
+    /// whose adapter checks signatures (RFC-0014; added 2026-10-23 from its
+    /// security review).
+    ///
+    /// The HMAC key is the value's exact bytes, so `"hsk_…\n"` (a Secret
+    /// created from a file that ends in a newline) is a different key from
+    /// the provider's, and every genuine callback would be refused with
+    /// nothing louder than a counter to say so. Refused rather than trimmed:
+    /// the value is not this process's to rewrite, and whatever produced the
+    /// newline will produce it again. A blank value is not this refusal: it
+    /// is no secret at all. The message names the setting, never the value.
+    #[error(
+        "providers[{code}].{setting} begins or ends with whitespace (often a trailing newline \
+         from the file the secret was created from); the signature is checked against the exact \
+         value, so every genuine callback would be refused. Remove the whitespace from the \
+         value"
+    )]
+    CallbackSigningSecretWhitespace {
+        /// The `providers[].code` from the YAML.
+        code: String,
+        /// Which setting, by its path in the YAML: never its value.
+        setting: &'static str,
     },
 
     /// `routing.weights[]` names a rail this file does not configure

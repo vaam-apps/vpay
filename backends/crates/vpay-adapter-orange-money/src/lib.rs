@@ -40,9 +40,9 @@ use uuid::Uuid;
 use vpay_core::routing::{MethodType, MethodTypes};
 use vpay_core::{FailureCode, Money, ProviderFlow};
 use vpay_provider::{
-    CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter,
-    ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded,
-    SubmitSteps, Submitted,
+    CallbackCheck, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef, ChargeStatus,
+    ProviderAdapter, ProviderConfig, ProviderError, RefExtra, RefundDestination, RefundTarget,
+    Refunded, SubmitSteps, Submitted,
 };
 
 use crate::token::{cache_entry, fingerprint, token_url};
@@ -426,6 +426,7 @@ impl ProviderAdapter for Adapter {
             // pass never asks this rail anything (RFC-0013 § 1).
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            callback_check: CallbackCheck::None,
             // Orange's own wallet, and nothing else (ADR-0029 D6, D12).
             method_types: MethodTypes::of(&[MethodType::OrangeWallet]),
         }

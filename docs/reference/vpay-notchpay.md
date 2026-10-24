@@ -52,7 +52,10 @@ The two webhook calls are here because the maintainer decided on 2026-10-20
 that vpay registers its own endpoints
 ([RFC-0013](../rfc/0013-vpay-registers-its-own-callbacks.md)). The client
 only performs them; when, how often and how a duplicate is avoided is that
-RFC's design.
+RFC's design. Since 2026-10-23 nothing calls them unless the deployment
+writes `callbacks.register: check` or `ensure` for the rail: unset, Notch
+Pay's adapter declares `off` (RFC-0013's amendment, after the sandbox stored
+an endpoint created by `create_webhook` with `"url": null`).
 
 `status::PaymentStatus` names the eleven payment statuses Notch Pay
 documents, in Notch Pay's spelling (`partialy-refunded` included). It does
@@ -73,8 +76,12 @@ adapter's mapping table will.
 - **Transfers, beneficiaries, customers, balance, channels.** vpay calls none
   of them.
 - **Webhook signature verification.** Notch Pay signs with HMAC-SHA256 in
-  `x-notch-signature`, but the port's `parse_callback` receives no headers
-  (RFC-0010 open question 4), so a verifier would be code nothing can call.
+  `x-notch-signature`. The check is not this client's: since 2026-10-23 it is
+  the adapter's `verify_callback` (RFC-0014), over the HMAC helper in
+  `vpay_provider::callback`, because the route hands the adapter the headers
+  and the raw body and this client never sees a webhook. _(This said the
+  port's `parse_callback` "receives no headers … so a verifier would be code
+  nothing can call" until 2026-10-23.)_
 - **A signing secret on `Webhook`.** The specification's schema has no field
   for one, although the API reference says the secret is shown "when creating
   a webhook via the API" (RFC-0012 § 10 item 13).
@@ -211,7 +218,21 @@ sandbox always answers `404`, so it waits out the whole poll window and then
 reads once by Notch Pay's reference; and its webhook cleanup uses the
 documented `DELETE /webhooks/{id}`, which the sandbox answered `404`.
 Its `search` phase (added the same day) calls `GET /payments?search=` for
-each `--reference`, read-only, for item 19.
+each `--reference`, read-only, for item 19. Four phases were added on
+2026-10-23, all addressing by Notch Pay's `trx.…`:
+
+- `two-step` (ADR-0032, item 22);
+- `channels` (`cm.mtn` and `cm.orange` with every outcome number, RFC-0012
+  step 8, item 23);
+- `webhook-receive` (one endpoint at a URL you can read, then the documented
+  `DELETE`);
+- `webhook-update` (the documented `GET` and `PUT /webhooks/{id}` for one
+  endpoint it created).
+
+They ran the same day
+([verification](../status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md)).
+The webhook pair found that the sandbox stores `"url": null` and answers
+`404` to every route that takes an endpoint's id.
 
 `--ca-bundle <path>` is a cloud-only aid, off unless given: it adds that
 file's PEM certificates to the vendored roots for the probe's own client,

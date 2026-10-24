@@ -422,12 +422,13 @@ namespace only — a policy it can only express because the two are different
 ports, where a path-based exclusion would depend on an ingress controller's
 rule ordering staying correct forever.
 
-**What is emitted.** Fourteen names (twelve until 2026-09-05, when issue
-#47's `vpay_account_holder_lookups_total` landed, and thirteen until
-2026-10-22, when RFC-0013's `vpay_callback_endpoint_checks_total` did; the
-heading keeps "thirteen" so links to it keep working), owned by
+**What is emitted.** Fifteen names (twelve until 2026-09-05, when issue
+#47's `vpay_account_holder_lookups_total` landed, thirteen until
+2026-10-22, when RFC-0013's `vpay_callback_endpoint_checks_total` did, and
+fourteen until 2026-10-23, when RFC-0014's `vpay_provider_callbacks_total`
+did; the heading keeps "thirteen" so links to it keep working), owned by
 `vpay_core::metrics`, which describes them and installs no recorder — each
-binary installs exactly one, beside its rustls provider. All fourteen have a
+binary installs exactly one, beside its rustls provider. All fifteen have a
 live seam:
 `vpay_build_info`; `vpay_http_requests_total` and
 `vpay_http_request_duration_seconds` (labelled by matched route _pattern_,
@@ -458,6 +459,18 @@ vpay did not create. Since 2026-10-23 the chart alerts on it:
 `VpayCallbackEndpointUnconfirmed` fires when a rail's passes confirmed no
 endpoint (`present`, `created`, `foreign`) for `callbackEndpointWindow`
 ([runbooks/callback-endpoints.md](../runbooks/callback-endpoints.md)).
+`vpay_provider_callbacks_total{provider,verdict}` is emitted once per rail
+callback that names a charge this deployment holds, by
+`vpay_api::provider_callback`, with the rail's own check's answer (RFC-0014):
+`verified`, `verified_previous`, `not_checked` and `no_secret` pulled the
+poll forward; `invalid` and `unavailable` did not. `invalid` with no
+`verified` beside it is this deployment's own signing secret gone stale.
+`verified_previous` counts webhooks that matched only
+`credentials.callback_signing_secret_previous`: while it still increases a
+rotation is in flight, and once it stops the previous secret can be removed
+(every server boot warns while it is set). _(Five values until 2026-10-23,
+when RFC-0014's security review split `verified_previous` out of
+`verified`.)_ No alert reads it yet.
 `docs/status.md`
 names the seam for each.
 

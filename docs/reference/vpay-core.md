@@ -23,7 +23,7 @@ page points at it rather than restating it.
 | `failure`    | the closed taxonomy                     | why the policy lives on the code                                                                                 |
 | `settlement` | `settle` and `contradiction`            | why this is a sibling of `state` and not part of it                                                              |
 | `error`      | `Classify`, `Category`, `source_chain`  | the three tiers and the five questions ([ADR-0011](../adr/0011-error-modelling.md))                              |
-| `metrics`    | the fourteen names and their labels     | why a library describes but does not install, and the caveats on four of the series                              |
+| `metrics`    | the fifteen names and their labels      | why a library describes but does not install, and the caveats on four of the series                              |
 
 ---
 
@@ -508,6 +508,32 @@ confirming states (`present`, `created`, `foreign`) increased in it. It is
 `unless` rather than `== 0` because a rail never once confirmed has no
 confirming series at all, and a comparison over a series that does not exist
 returns nothing. [runbooks/callback-endpoints.md](../runbooks/callback-endpoints.md).
+
+### The callback-verdict series, and its `provider` label
+
+`vpay_provider_callbacks_total{provider,verdict}` landed on 2026-10-23 with
+RFC-0014's callback check, the third name the plan document does not have.
+`verdict` is one of six constants in `vpay_core::metrics::callback_verdict`,
+one per `vpay_provider::CallbackVerdict` variant: `verified`,
+`verified_previous`, `invalid`, `not_checked`, `no_secret` and
+`unavailable`. The first two are the only ones a rail's own signature
+produced, under the current secret and under the previous one respectively;
+`invalid` and `unavailable` are the two that did not pull the charge's poll
+forward. `verified_previous` is the end-of-rotation signal: when it stops
+increasing, `credentials.callback_signing_secret_previous` can be removed.
+_(Five constants until 2026-10-23: RFC-0014's security review found that a
+match under either key was `verified`, so a rotation had no end signal.)_
+
+RFC-0014 § 7 wrote `{rail, verdict}`. It is `provider` because every other
+per-rail series here labels the rail so, and a join against
+`vpay_provider_requests_total` should need no `label_replace`. The label set
+is the rail's code and a closed verdict; no reference, header or body byte is
+a label. Emitted once per callback that reaches the check (a body that does
+not parse, or a reference no charge holds, never does), by
+`vpay_api::provider_callback`. A steady `invalid` with `verified` beside it is
+somebody sending forgeries; `invalid` with no `verified` at all is this
+deployment's own secret, usually rotated in the provider's dashboard and not
+in the Secret. **No alert rule reads it yet.**
 
 ### Why the names are `const`s and not string literals at call sites
 

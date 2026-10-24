@@ -142,7 +142,11 @@ build-web:
 # time, and a skipped test is not a passing test. It still skips (it is the
 # regression net for anyone who HAS built locally), and the assertion that
 # actually runs in CI is here, against the artefact this recipe just
-# produced. It matters most for the dashboard, whose `.storybook/main.ts`
+# produced. _(Since 2026-10-23 this recipe also RUNS that case, after the
+# count, with `VPAY_STORYBOOK_BUILT=1` so it cannot skip: the case had been
+# asserting a hex `--color-base-100` the 0.5.0 theme no longer writes, and
+# failed locally for two days while CI skipped it. It now resolves one
+# `var()` to a colour.)_ It matters most for the dashboard, whose `.storybook/main.ts`
 # deliberately carries no `@vaam-apps/ui/styles/theme.css` resolve alias —
 # measured unnecessary on today's dependency tree, and this is what would
 # catch a dependency bump making it necessary again.
@@ -195,7 +199,11 @@ build-storybook:
         exit 1
       fi
       report=$(mktemp)
-      pnpm --filter "@vpay/$app" exec vitest run src/a11y-gate.test.ts \
+      # `VPAY_STORYBOOK_BUILT=1` makes the case itself fail, with its own
+      # message, if it finds no artefact; the JSON report below catches any
+      # other skip. #355 ran this file a second time after the loop with only
+      # the variable; merged into this one run on 2026-10-24.
+      VPAY_STORYBOOK_BUILT=1 pnpm --filter "@vpay/$app" exec vitest run src/a11y-gate.test.ts \
         --reporter=default --reporter=json --outputFile.json="$report"
       node -e '
         const r = JSON.parse(require("node:fs").readFileSync(process.argv[1], "utf8"));

@@ -630,7 +630,8 @@ rails:
   # so this does not leak.
   existingSecret: vpay-rails
 
-  # NOTCH PAY ADDS TWO KEYS, AND ONLY IF YOU CONFIGURE IT (RFC-0012).
+  # NOTCH PAY ADDS THREE KEYS, AND ONLY IF YOU CONFIGURE IT (RFC-0012,
+  # RFC-0014).
   #
   # The baked `config/application.yml` carries a `notchpay` block commented
   # out, so the ten keys above are unchanged. A `config.overlay` that adds a
@@ -638,6 +639,21 @@ rails:
   # `${NOTCHPAY_PRIVATE_KEY}`, and both must then be in the Secret above,
   # non-blank. In livemode neither may contain `test.` or
   # `test_`; outside it both must contain one (real sandbox keys carry `test.`).
+  #
+  # The third is the webhook endpoint's Hash Key, written in the overlay as
+  # `credentials.callback_signing_secret: ${NOTCHPAY_HASH_KEY}` (RFC-0014,
+  # 2026-10-23). vpay checks every Notch Pay webhook's `x-notch-signature`
+  # against it, and one that does not match moves nothing. A livemode
+  # deployment without it REFUSES to boot (exit 78, both Deployments) unless
+  # the overlay's notchpay block says `callbacks: { verify: off }`, which then
+  # WARNs at every boot of the server; a sandbox only WARNs. Add the key to
+  # the Secret BEFORE rolling an overlay that references it: an unresolved
+  # placeholder is exit 78 too. Create the Secret's value WITHOUT a trailing
+  # newline (`--from-literal`, or `printf %s`, not `echo` into a file): a
+  # value with surrounding whitespace is exit 78
+  # (CallbackSigningSecretWhitespace), because HMAC would key on the newline.
+  # A rotation is the new key there and the old one as
+  # `credentials.callback_signing_secret_previous`, never the old one alone.
   #
   # PRODUCTION RISK. Notch Pay is admitted under ADR-0031 (rule 3 amended):
   # NOTCHPAY_PUBLIC_KEY is the key Notch Pay calls public, and it

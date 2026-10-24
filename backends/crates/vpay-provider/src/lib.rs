@@ -6,12 +6,15 @@
 //!
 //! See `docs/adr/0002-provider-port.md` and `docs/flows/provider-port.md`.
 //!
-//! Three modules carry what belongs to *every* rail rather than to any one
+//! Four modules carry what belongs to *every* rail rather than to any one
 //! of them, so that no adapter holds a copy of a cross-rail concern:
 //! [`http`] (the outbound client and the bounded body read), [`token`] (the
-//! bearer cache and its credential fingerprint) and [`measured`] (the counter
-//! and histogram a rail call is recorded on). `docs/reference/rails.md` says
-//! why each lives here and what each adapter deliberately keeps for itself.
+//! bearer cache and its credential fingerprint), [`measured`] (the counter
+//! and histogram a rail call is recorded on) and [`callback`] (what a
+//! callback carries besides identifiers, and the one HMAC comparison,
+//! RFC-0014). `docs/reference/rails.md` says why each lives here and what
+//! each adapter deliberately keeps for itself. _(It said "Three modules"
+//! until 2026-10-23.)_
 //!
 //! `#[warn(clippy::missing_errors_doc)]` is on the crate rather than in
 //! `Cargo.toml`: cargo refuses `[lints.clippy]` beside `[lints] workspace =
@@ -21,10 +24,15 @@
 //! `# Errors` section, and `cargo clippy -- -D warnings` fails if one stops.
 #![warn(clippy::missing_errors_doc)]
 
+pub mod callback;
 pub mod http;
 pub mod measured;
 pub mod token;
 
+pub use callback::{
+    CALLBACK_SIGNING_SECRET, CALLBACK_SIGNING_SECRET_PREVIOUS, CallbackCheck, CallbackRequest,
+    CallbackVerdict, SigningKey,
+};
 pub use measured::Measured;
 
 use std::collections::BTreeMap;
@@ -98,6 +106,27 @@ pub enum CallbackUrlMode {
     /// The URL is registered with the provider account, out of band, and
     /// vpay's `ensure_callbacks` pass keeps one endpoint of its own there.
     Registered,
+}
+
+/// What vpay's `ensure_callbacks` pass does on a rail's account when the
+/// deployment's configuration leaves `providers[].callbacks.register` unset
+/// (RFC-0013 § 2, amended 2026-10-23).
+///
+/// Declared by the adapter ([`ProviderAdapter::default_callback_registration`])
+/// so that "this rail's endpoint is the operator's to register" never becomes
+/// `if provider == "notchpay"` in the binary that builds the pass's plan
+/// (ADR-0002). An explicit `register:` always wins over it. Two values, not
+/// the configuration's three: no rail declares `check` as its default, and a
+/// variant nothing produces is a claim nothing tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallbackRegistrationDefault {
+    /// List the account's endpoints and create vpay's if it is missing:
+    /// RFC-0013's default, which the maintainer asked for on 2026-10-22 ("be
+    /// done automatically").
+    Ensure,
+    /// Ask the account nothing. The operator registers vpay's callback URL
+    /// with the rail (in its dashboard) or sets `register: ensure`.
+    Off,
 }
 
 /// How many calls it takes this rail to put a payment in front of a payer,
@@ -245,6 +274,19 @@ pub struct Capabilities {
     /// [`supports_account_holder_lookup`](Capabilities::supports_account_holder_lookup)'s
     /// terms.
     pub method_types: vpay_core::routing::MethodTypes,
+    /// What vpay's adapter checks on this rail's callbacks before the route
+    /// pulls a poll forward (RFC-0014 § 2).
+    ///
+    /// A statement about vpay's adapter, not about the rail: see
+    /// [`CallbackCheck`]. Boot reads it to decide whether a livemode
+    /// deployment without a [`CALLBACK_SIGNING_SECRET`] may start, and
+    /// [`Capabilities::callback_check_is_coherent`] refuses a check on a rail
+    /// that delivers no callbacks.
+    ///
+    /// Deliberately **not persisted**, on
+    /// [`supports_account_holder_lookup`](Capabilities::supports_account_holder_lookup)'s
+    /// terms.
+    pub callback_check: CallbackCheck,
 }
 
 impl Capabilities {
@@ -327,6 +369,20 @@ impl Capabilities {
     #[must_use]
     pub const fn method_types_are_coherent(&self) -> bool {
         !self.method_types.is_empty()
+    }
+
+    /// A rail that delivers no callbacks checks none (RFC-0014 § 2).
+    ///
+    /// A method of its own for [`Capabilities::callbacks_are_coherent`]'s
+    /// reason: it has no database half. Boot refuses a configured rail that
+    /// fails it with `ConfigError::IncoherentCallbackCheck`, because a check
+    /// on callbacks that never arrive would make boot demand a signing secret
+    /// nothing will ever read. The other direction — a check that answers
+    /// `Invalid` to a forged callback — is the conformance suite's
+    /// `a_forged_callback_is_refused_by_a_rail_that_checks`.
+    #[must_use]
+    pub const fn callback_check_is_coherent(&self) -> bool {
+        self.delivers_callbacks || matches!(self.callback_check, CallbackCheck::None)
     }
 }
 
@@ -1875,6 +1931,48 @@ pub trait ProviderAdapter: Debug + Send + Sync {
     /// generated, must be refused rather than attributed to something.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError>;
 
+    /// Whether this callback is the rail's own (RFC-0014 § 2).
+    ///
+    /// Called by `vpay_api::provider_callback` **after**
+    /// [`parse_callback`](ProviderAdapter::parse_callback) and after the
+    /// charge is found: the charge is how a per-payment token is found
+    /// (Orange's `notif_token`), and under RFC-0009 the secret belongs to the
+    /// charge's account, so neither is known before parsing. `parse_callback`
+    /// stays exactly what its contract says — no network, no credential, no
+    /// configuration.
+    ///
+    /// The verdict decides one thing: whether the route pulls the poll
+    /// forward. **It never decides a status**, and nothing it returns reaches
+    /// the charge row; the authenticated
+    /// [`query_status`](ProviderAdapter::query_status) is still the only
+    /// thing that moves money (module docs of [`callback`]).
+    ///
+    /// The default answers [`CallbackVerdict::NotChecked`], which is the
+    /// truth for a rail that signs nothing (MTN) and for one whose check is
+    /// not built; such an adapter declares [`CallbackCheck::None`]. An adapter
+    /// that overrides this declares the check it makes, and compares a MAC
+    /// with [`callback::hmac_sha256_hex_matches`], never its own `==`.
+    ///
+    /// **An adapter that declares a check and keeps this default fails
+    /// closed.** The route treats `NotChecked` from a rail whose
+    /// [`Capabilities::callback_check`] is not [`CallbackCheck::None`] as
+    /// [`CallbackVerdict::Unavailable`] and logs an `error`: boot would have
+    /// demanded the rail's secret and accepted it, and without that rule
+    /// every forged callback would then pull a poll forward. _(Added
+    /// 2026-10-23, from the RFC-0014 security review.)_
+    ///
+    /// Infallible by type: a check that could not complete is
+    /// [`CallbackVerdict::Unavailable`], not an error, because the route's
+    /// answer to the rail is `202` whatever the verdict (RFC-0014 § 3).
+    async fn verify_callback(
+        &self,
+        _request: &CallbackRequest<'_>,
+        _charge: &ChargeRef,
+        _config: &ProviderConfig,
+    ) -> CallbackVerdict {
+        CallbackVerdict::NotChecked
+    }
+
     /// Turns this rail's own `destination[<rail_code>][…]` sub-map into a
     /// [`RefundTarget`].
     ///
@@ -2195,6 +2293,24 @@ pub trait ProviderAdapter: Debug + Send + Sync {
         None
     }
 
+    /// What the `ensure_callbacks` pass does on this rail's account when the
+    /// deployment's `providers[].callbacks.register` is unset (RFC-0013 § 2,
+    /// amended 2026-10-23).
+    ///
+    /// [`CallbackRegistrationDefault::Ensure`] is the default and RFC-0013's
+    /// own. An adapter overrides it with `Off` when the rail's endpoint API
+    /// is known not to produce a working endpoint, so that vpay writes to a
+    /// merchant's account only when an operator asked it to. Read only for a
+    /// [`CallbackUrlMode::Registered`] rail: the pass never asks a
+    /// `PerRequest` one, whatever this says.
+    ///
+    /// Synchronous and configuration-free, on
+    /// [`accepted_exposure`](ProviderAdapter::accepted_exposure)'s terms: a
+    /// fact about the provider's product, read once at boot.
+    fn default_callback_registration(&self) -> CallbackRegistrationDefault {
+        CallbackRegistrationDefault::Ensure
+    }
+
     /// Makes sure this rail account has one callback endpoint vpay created,
     /// at [`ProviderConfig::callback_url`], subscribed to the rail's charge
     /// events (RFC-0013 §§ 1–3).
@@ -2379,6 +2495,7 @@ mod tests {
             refund_destination: RefundDestination::Required,
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            callback_check: CallbackCheck::None,
             method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
         assert!(!bad.is_coherent());
@@ -2398,6 +2515,7 @@ mod tests {
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::Registered,
             submit_steps: SubmitSteps::One,
+            callback_check: CallbackCheck::None,
             method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
         assert!(base.callbacks_are_coherent());
@@ -2411,6 +2529,7 @@ mod tests {
                 delivers_callbacks,
                 callback_url_mode: CallbackUrlMode::PerRequest,
                 submit_steps: SubmitSteps::One,
+                callback_check: CallbackCheck::None,
                 method_types: vpay_core::routing::MethodTypes::of(
                     &vpay_core::routing::MethodType::ALL,
                 ),
@@ -2475,6 +2594,7 @@ mod tests {
             refund_destination: RefundDestination::Origin,
             callback_url_mode: CallbackUrlMode::PerRequest,
             submit_steps: SubmitSteps::One,
+            callback_check: CallbackCheck::None,
             method_types: vpay_core::routing::MethodTypes::of(&vpay_core::routing::MethodType::ALL),
         };
 
@@ -2847,6 +2967,7 @@ mod tests {
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
                     submit_steps: SubmitSteps::One,
+                    callback_check: CallbackCheck::None,
                     method_types: vpay_core::routing::MethodTypes::of(
                         &vpay_core::routing::MethodType::ALL,
                     ),
@@ -2943,6 +3064,7 @@ mod tests {
                     refund_destination: RefundDestination::Origin,
                     callback_url_mode: CallbackUrlMode::PerRequest,
                     submit_steps: SubmitSteps::One,
+                    callback_check: CallbackCheck::None,
                     method_types: vpay_core::routing::MethodTypes::of(
                         &vpay_core::routing::MethodType::ALL,
                     ),

@@ -7,6 +7,11 @@
 # carries it still logs the warning. The test runs this file as written, and
 # a copy with the acknowledgement removed, which must not boot.
 #
+# RFC-0014 § 6 (2026-10-23): in livemode a rail that signs its callbacks
+# must hold `credentials.callback_signing_secret` (or say
+# `callbacks: { verify: off }`). The test also runs a copy with the secret
+# removed, which must not boot either.
+#
 # The keys are `${VAR}`s (livemode refuses literals) that the test sets to
 # values without `test_` (livemode refuses test keys). Nothing calls the host:
 # the run stops on the missing signing key, after the warning.
@@ -28,3 +33,4 @@ providers:
     credentials:
       public_key: ${CLI_NOTCHPAY_PUBLIC_KEY}
       private_key: ${CLI_NOTCHPAY_PRIVATE_KEY}
+      callback_signing_secret: ${CLI_NOTCHPAY_HASH_KEY}

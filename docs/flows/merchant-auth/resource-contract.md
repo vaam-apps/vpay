@@ -134,9 +134,11 @@ question 8). A refund created here is therefore _instructed_, never _paid_,
 and `status` on the object is the whole of that answer.
 
 Two things the create adds to the row below, both of them capability-driven
-and neither a provider check (ADR-0002). `destination[<payment_method_type>][…]`
-is **required** on a rail whose `RefundDestination` is `Required` — both rails
-here — and **refused** on one that returns money to the instrument that paid;
+and neither a provider check (ADR-0002). `destination[<rail code>][…]`
+is **required** on a rail whose `RefundDestination` is `Required` — `mtn_momo`
+and `orange_money` — and **refused** on one that returns money to the instrument
+that paid, which `notchpay` does. The key is always the charge's **rail** code,
+never a payment-method type such as `mtn_wallet`;
 the adapter parses the inner map, so the core never learns a rail's wire keys.
 **The cancel refuses every refund the create produces, and that is the rule
 rather than a gap.** `POST /v1/refunds` writes its `provider_requests` row

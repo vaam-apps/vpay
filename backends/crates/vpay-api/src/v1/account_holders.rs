@@ -573,6 +573,7 @@ mod tests {
                 refund_destination: RefundDestination::Origin,
                 callback_url_mode: vpay_provider::CallbackUrlMode::PerRequest,
                 submit_steps: vpay_provider::SubmitSteps::One,
+                callback_check: vpay_provider::CallbackCheck::None,
                 method_types: vpay_core::routing::MethodTypes::of(
                     &vpay_core::routing::MethodType::ALL,
                 ),

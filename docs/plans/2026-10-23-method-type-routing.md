@@ -16,7 +16,9 @@
     carries the dated note).
   - **D8 and D9 are being redesigned**, as a score per checkout, by
     [RFC-0008](../rfc/0008-payment-method-routing.md)'s 2026-10-23 revision.
-    That revision is a proposal for the maintainer, not a decision.
+    That revision was a proposal for the maintainer, not a decision. **Its
+    open questions R8.1–R8.5 were answered on 2026-10-23** ("go with your
+    defaults"); RFC-0008 § R8 records each answer and what is built.
   - [RFC-0012](../rfc/0012-notchpay-adapter.md) delivery step 8 is the Notch
     Pay half.
 - **Status:** slice 1 is built in the change that carries this page,
@@ -113,7 +115,8 @@ a rail and never a score. It needs:
   gap). A merchant's own server confirming `orange_wallet` has to pin today
   to know whether to send `return_url` or `msisdn`, because the payer fields
   depend on the rail; RFC-0008's open question R8.4 is the same problem seen
-  from the checkout;
+  from the checkout. _(Answered 2026-10-23: the confirm follows the rail the
+  page showed while it is still eligible. Not built; RFC-0008 § R8.4.)_;
 - D10's "at checkout render and again at confirm": the render-time ranking is
   advisory, and the confirm decides and records.
 
@@ -131,6 +134,14 @@ wanted in v1:
 Each is a component with its own source, its own coefficient and its own line
 in the breakdown. The formula name moves past `provisional-1` when the first
 one lands.
+
+**Chosen 2026-10-23 (RFC-0008 § R8.1):** the estimated fee next, as a score
+component; then the completion rate, as a reported measure the operator reads
+to set a configured weight by hand, not a score input ("Go with (a)"). Health
+is not a component (R8.3: it reports only), and
+latency and amount fit were not chosen. The merchant-level preference waits on
+RFC-0009 (R8.2: the operator sets weights until then). None of this is
+built.
 
 ## Deferred, and why
 
