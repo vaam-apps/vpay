@@ -1883,8 +1883,10 @@ async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
 /// as a `NOT EXISTS` predicate of its own `UPDATE` rather than as a preceding
 /// `SELECT`. That closes the window in which a charge is already committed
 /// when the cancel's statement takes its snapshot. It cannot close the other
-/// one: a confirm commits its charge *while* a cancel's transaction is open,
+/// one: a confirm opens its charge *while* a cancel's transaction is open,
 /// which is a legal interleaving of two requests and not a defect in either.
+/// Since migration `0054` that charge waits for the cancel to commit and then
+/// commits onto the `canceled` intent; before it, it committed at once.
 /// What stops that from becoming a payment settled onto a withdrawn intent is
 /// the **settlement's own** status guard —
 /// `payment_intents::succeed_after_submission`'s
@@ -1898,13 +1900,22 @@ async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
 /// # Direction 1 is a real interleaving, forced with a barrier
 ///
 /// The cancel's transaction is held open after its `UPDATE` and its event.
-/// A charge is then committed on another connection — which no lock prevents,
-/// because a charge insert does not touch `payment_intents` — and
-/// `Settlement::apply_succeeded` is started against it. It updates `charges`,
-/// reaches `payment_intents`, and **blocks** on the row the cancel holds;
-/// the 750 ms assertion below is what proves it blocked rather than passed.
-/// Releasing the cancel then makes the settlement re-evaluate its guard
-/// against the committed `canceled` row and match nothing.
+/// A confirm then opens a charge on another connection. Until migration
+/// `0054` no lock stood in its way, because a charge insert did not touch
+/// `payment_intents`, and the settlement started against that charge was
+/// what blocked on the cancel's row. Since `0054` the charge insert itself
+/// copies its rail and type onto the intent (`charges::insert_for_intent`),
+/// so it is the confirm that **blocks** on the row the cancel holds; the
+/// 750 ms assertion below is what proves it waited rather than passed, and
+/// it is the one database-backed check that the intent write is there at all.
+/// Releasing the cancel lets the charge commit onto the now-`canceled` intent
+/// (its `charge_rail IS NULL` guard still matches), and the settlement started
+/// against it then meets the committed `canceled` row and matches nothing.
+///
+/// _(Until 2026-10-24 this test committed the charge synchronously while the
+/// cancel held the row, which `0054` turned into a wait the test never
+/// released: the job ran until it was cancelled after two hours, in
+/// vaam-apps/vpay#365's first CI run.)_
 ///
 /// The settlement's answer is [`vpay_db::DbError::WriteMatchedNoRow`], and
 /// that is asserted rather than glossed: `vpay_db::settlement`'s own comment
@@ -1971,28 +1982,15 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
 
     cancel_is_in.await.context("the cancel took the row")?;
 
-    // The confirm's half of the interleaving: a charge committed on another
-    // connection while the cancel's transaction is open. Nothing refuses it
-    // — `charges` is a different table and the cancel's `NOT EXISTS` has
-    // already been evaluated.
+    // The confirm's half of the interleaving: a charge opened on another
+    // connection while the cancel's transaction is open. The cancel's
+    // `NOT EXISTS` has already been evaluated, so nothing refuses it — but
+    // since `0054` it writes the intent's row, so it waits for the cancel.
     let mut charge = fixture_charge("ch_race_cancel_first", "pi_race_cancel_first");
     charge.state = "submitted".to_owned();
-    one_tx::insert_for_intent(repositories.as_ref(), &charge)
-        .await
-        .context("the charge a confirm commits before calling the rail")?;
-
-    let settler = Arc::clone(&repositories);
-    let settlement = tokio::spawn(async move {
-        settler
-            .apply_succeeded(
-                "ch_race_cancel_first",
-                Some("MTN-TXN-RACE"),
-                "evt_race_cancel_first",
-                &json!({"id": "pi_race_cancel_first", "object": "payment_intent", "status": "succeeded"}),
-                None,
-            )
-            .await
-    });
+    let opener = Arc::clone(&repositories);
+    let opening =
+        tokio::spawn(async move { one_tx::insert_for_intent(opener.as_ref(), &charge).await });
 
     // It must not answer while the cancel holds the intent's row. 750 ms for
     // `a_locked_customer_read_waits_for_the_writer_and_then_sees_its_value`'s
@@ -2000,9 +1998,9 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
     // cancel's transaction stays open until `release` fires below.
     tokio::time::sleep(std::time::Duration::from_millis(750)).await;
     assert!(
-        !settlement.is_finished(),
-        "the settlement answered while the cancel still held the intent's row lock, so the \
-         two are not serialised and both terminal writes can land"
+        !opening.is_finished(),
+        "the charge opened while the cancel still held the intent's row lock, so opening a \
+         charge no longer copies its rail onto the intent and /v1 cannot name it"
     );
 
     release.send(()).expect("the cancel is still waiting");
@@ -2010,10 +2008,20 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
         .await
         .context("the cancel task did not panic")?
         .context("the cancel commits")?;
-
-    let refused = settlement
+    opening
         .await
-        .context("the settlement task did not panic")?
+        .context("the charge task did not panic")?
+        .context("the charge a confirm commits before calling the rail")?;
+
+    let refused = repositories
+        .apply_succeeded(
+            "ch_race_cancel_first",
+            Some("MTN-TXN-RACE"),
+            "evt_race_cancel_first",
+            &json!({"id": "pi_race_cancel_first", "object": "payment_intent", "status": "succeeded"}),
+            None,
+        )
+        .await
         .expect_err("a settlement onto a canceled intent must not succeed quietly");
     assert!(
         matches!(
