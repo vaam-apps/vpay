@@ -1,5 +1,15 @@
 # 2026-10-23 — rail callbacks are checked where the rail signs (RFC-0014)
 
+_**Updated 2026-10-24:** the check has now met real Notch Pay webhooks. Four
+delivered to a dashboard-registered capture endpoint were signed over the raw
+body, and this adapter's `verify_callback`, run offline over the recorded
+requests, answered `Verified` for each. The same deliveries found that
+`parse_callback` could not read them: they name the event under `event`, not
+`type`. That was fixed the same day. See
+[2026-10-24-notchpay-dashboard-webhooks.md](2026-10-24-notchpay-dashboard-webhooks.md).
+"Stub-proven; never verified against a real Notch Pay delivery" below is true
+of this page's own date._
+
 Branch `claude/happy-hopper-r3h6rz-webhook-signatures`, from `master` at
 `82a68f4e`. **Stub-proven; never verified against a real Notch Pay delivery.** Every proof
 below is against WireMock's Notch Pay, a real Postgres, and a signing scheme

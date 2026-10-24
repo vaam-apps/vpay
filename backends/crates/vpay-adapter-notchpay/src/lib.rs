@@ -500,9 +500,11 @@ impl ProviderAdapter for Adapter {
     ///
     /// The sandbox measured that day
     /// (`docs/status/verification/2026-10-23-notchpay-sandbox-two-step-and-channels.md`):
-    /// an endpoint created through `POST /webhooks` with a public URL is
-    /// stored with `"url": null`, delivered nothing in 21 minutes, and
-    /// cannot be read, updated or deleted by its id. Four payments processed
+    /// an endpoint created through `POST /webhooks` with a public URL
+    /// delivered nothing in 21 minutes, and cannot be read, updated or
+    /// deleted by its id. (Its listing shows `"url": null`, but so does a
+    /// dashboard-registered endpoint's, and that one delivers: 2026-10-24,
+    /// `docs/status/verification/2026-10-24-notchpay-dashboard-webhooks.md`.) Four payments processed
     /// after one was created stayed `processing` for 3 to 55 minutes, where
     /// eleven before it settled in about 5 s — a correlation, not a shown
     /// cause, and enough not to write to a merchant's account unasked.
@@ -790,9 +792,12 @@ impl ProviderAdapter for Adapter {
     /// re-serialisation. Notch Pay's own guide shows both: its PHP and Python
     /// examples sign the raw payload, its Node example signs
     /// `JSON.stringify(req.body)`, which is the raw body for a body Notch Pay
-    /// itself serialised compactly. RFC-0012 § 10 item 7 asks which; until a
-    /// webhook Notch Pay sent is captured and checked, this is proven against
-    /// the stub only (`docs/status/verification/2026-10-23-webhook-signatures.md`).
+    /// itself serialised compactly. RFC-0012 § 10 item 7 asked which, and
+    /// four webhooks the sandbox delivered on 2026-10-24 answered it: the raw
+    /// body. Their HMACs matched over it and not over a `JSON.stringify`
+    /// re-serialisation, because Notch Pay escapes `/` as `\/`, and this
+    /// method answered `Verified` for each, run offline
+    /// (`docs/status/verification/2026-10-24-notchpay-dashboard-webhooks.md`).
     ///
     /// **No timestamp, so no replay window.** A captured genuine webhook
     /// verifies for ever (RFC-0012 § 6, RFC-0014 open question 4). What a

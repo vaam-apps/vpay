@@ -174,8 +174,8 @@ pub struct ProviderHost {
     /// adapter declares (`ProviderAdapter::default_callback_registration`):
     /// `ensure` unless the adapter says otherwise, and **`off` for
     /// `notchpay`** since 2026-10-23, when the maintainer chose "Default to
-    /// `off` for Notch Pay" after its sandbox stored an API-created endpoint
-    /// with no URL and delivered nothing. Nothing at all on a rail that
+    /// `off` for Notch Pay" after an endpoint its sandbox created through the
+    /// API delivered nothing. Nothing at all on a rail that
     /// declares `PerRequest`, whose URL travels on every submit. **Present on a `PerRequest` rail refuses to boot**
     /// (`ConfigError::CallbacksOnPerRequestRail`), because a setting that
     /// does nothing is one somebody believes in.

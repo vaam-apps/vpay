@@ -113,9 +113,13 @@ adapter (`verify_callback`), with the headers and the raw body. Today only
 MTN and Orange answer `NotChecked`. A refused callback is answered the same
 `202` and moves nothing; the ladder still asks the rail at its next rung. A
 verified one is still a hint, and moves no money: what the check buys is that
-an anonymous POST stops pulling a signing rail's polls forward. Stub-proven;
-never verified against a real Notch Pay delivery
-([verification](../status/verification/2026-10-23-webhook-signatures.md)).
+an anonymous POST stops pulling a signing rail's polls forward. Proven
+against WireMock and a real Postgres
+([verification](../status/verification/2026-10-23-webhook-signatures.md)),
+and on 2026-10-24 offline against four real Notch Pay webhooks a capture
+endpoint recorded, all `Verified`; none has reached a running vpay
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)). _(This said "Stub-proven; never verified against a
+real Notch Pay delivery" until 2026-10-24.)_
 
 ### Where a rail sends its callbacks
 
@@ -161,7 +165,12 @@ unchanged ([crash-safety.md](crash-safety.md) § "Two-step push rails").
 Corrected 2026-10-24, with nothing in the loop changed: § "Where a rail sends
 its callbacks" said that since 2026-10-22 vpay keeps Notch Pay's endpoint
 registered, which stopped being true on 2026-10-23, when `off` became that
-rail's default; found by vpay-docs' re-read for v0.12.0.**
+rail's default; found by vpay-docs' re-read for v0.12.0. Updated the same
+day, with nothing in the loop changed: § "Callbacks are hints" no longer
+calls Notch Pay's signature check "never verified against a real Notch Pay
+delivery"; four real webhooks, recorded by a dashboard-registered capture
+endpoint, were checked offline and all verified
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at

@@ -79,14 +79,17 @@
 //! deliveries, then deletes the endpoint and lists the account's endpoints
 //! to show whether the delete worked. `webhook-update` reads one endpoint
 //! this probe created (`--reference ep_…`) by id and sends it the documented
-//! `PUT /webhooks/{id}` with the URL again, because `POST /webhooks` stores
-//! `"url": null`. Reading the inbox and checking
+//! `PUT /webhooks/{id}` with the URL again, because the endpoint
+//! `POST /webhooks` created is listed with `"url": null` and delivered
+//! nothing. (On 2026-10-24 the listing showed that null for a dashboard
+//! endpoint that delivers, too, so it is how the API lists every endpoint,
+//! not proof the URL was dropped.) Reading the inbox and checking
 //! `x-notch-signature` (with `verify-signature`) are done by hand; the probe
 //! never talks to the capture service.
 //!
 //! **Added 2026-10-24.** `dashboard-deliveries` creates and deletes **no**
 //! endpoint: the maintainer registers one by hand in Notch Pay's dashboard,
-//! because the one `POST /webhooks` creates stores `"url": null`. It lists
+//! because the one `POST /webhooks` created delivered nothing. It lists
 //! the account's endpoints, makes the same two payments as
 //! `webhook-receive` (MTN's success and other-failure numbers), waits
 //! `NOTCHPAY_PROBE_DELIVERY_WAIT` seconds, and lists the endpoints again.

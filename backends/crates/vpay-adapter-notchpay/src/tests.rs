@@ -200,9 +200,10 @@ fn code_matches_the_payment_method_type() {
 }
 
 /// RFC-0013 § 2 as amended 2026-10-23: with `callbacks` unset, vpay leaves a
-/// Notch Pay account alone. An endpoint created through the API was stored
-/// with no URL and delivered nothing in the sandbox, so the default is the
-/// operator's dashboard, not a write vpay makes unasked.
+/// Notch Pay account alone. An endpoint created through the API delivered
+/// nothing in the sandbox (and one registered in the dashboard does, as
+/// measured on 2026-10-24), so the default is the operator's dashboard, not a
+/// write vpay makes unasked.
 #[test]
 fn the_callback_registration_default_is_off() {
     assert_eq!(

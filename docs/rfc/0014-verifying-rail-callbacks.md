@@ -1,7 +1,10 @@
 # RFC-0014: Verifying rail callbacks
 
 - **Status:** **The port and Notch Pay's check are built (2026-10-23),
-  stub-proven; never verified against a real Notch Pay delivery.** The maintainer asked,
+  stub-proven, and since 2026-10-24 checked offline against four real Notch
+  Pay webhooks, all `Verified`; none has reached a running vpay.** _(This
+  said "stub-proven; never verified against a real Notch Pay delivery" until
+  2026-10-24.)_ The maintainer asked,
   on 2026-10-23, "Webhook signature verification (RFC-0014) needs Notch Pay's
   hash key held by vpay as a secret. Lift the earlier 'hash key is evidence
   only, never vpay configuration' rule for this?", and answered "Yes, build
@@ -14,15 +17,24 @@
   ([verification](../status/verification/2026-10-23-webhook-signatures.md)).
   **Not built:** Orange's `BodyToken` check (open question 2), Stripe's and
   PayPal's checks (no adapter), RFC-0013's sealed store (§ 5 phase 2), and
-  per-account secrets (RFC-0009). Every proof is against WireMock's Notch Pay
-  and a scheme transcribed from Notch Pay's guide: **no webhook Notch Pay sent
-  has ever been delivered**, so the signature's format, header, encoding and
-  retries are unmeasured (RFC-0012 § 10 item 7). The 2026-10-23 sandbox run
-  found that an endpoint created through `POST /webhooks` is stored with
-  `"url": null` and received nothing in 21 minutes; verifying a real webhook
-  needs the Hash Key **and** an endpoint registered in Notch Pay's dashboard
+  per-account secrets (RFC-0009). The built proofs are against WireMock's
+  Notch Pay and a scheme transcribed from Notch Pay's guide. **On 2026-10-24
+  the scheme was measured**: an endpoint registered in Notch Pay's dashboard
+  received four signed payment webhooks, each `x-notch-signature` the hex
+  HMAC-SHA256 of the raw body under the Hash Key (a `JSON.stringify`
+  re-serialisation does not match), and the adapter's `verify_callback`
+  answered `Verified` for all four, run offline over the recorded requests
+  (RFC-0012 § 10 item 7, answered;
+  [verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).
+  The same deliveries showed the event named under `event`, not `type`, which
+  `parse_callback` then refused; fixed that day. Retries and replay are
+  unmeasured, and no delivery has gone through vpay's route. An endpoint
+  created through `POST /webhooks` (2026-10-23) received nothing in 21
+  minutes, so the working route is the dashboard
   ([adapter-notchpay.md](../flows/adapter-notchpay.md) § "The signature
-  check"). _(This said "Draft. **Nothing in
+  check"). _(Until 2026-10-24 this said "**no webhook Notch Pay sent has ever
+  been delivered**", and that such an endpoint "is stored with `"url": null`":
+  the listing shows `null` for a dashboard endpoint that delivers too.)_ _(This said "Draft. **Nothing in
   this document is built.**" until 2026-10-23.)_
 - **Author:** vpay maintainers
 - **Date:** 2026-10-20
@@ -82,7 +94,7 @@ value passes (`rails.md`, "`parse_callback` fails closed").
 | `orange_money` | A `notif_token` in the body. Orange also returns one in the `webpayment` response, and `submit` stores it in the charge's `ref_extra` when present (`vpay-adapter-orange-money/src/mapping.rs:156`) | **None new**: the stored `notif_token` is per payment and already in the database  | `adapter-orange-money.md`, `rails.md` |
 | `stripe`       | `Stripe-Signature: t=…,v1=…`, HMAC-SHA256 over `"{t}.{body}"`, "byte-identical to vpay's own `Vpay-Signature`"                                                                                      | The endpoint's `whsec_…`                                                           | RFC-0010 § 6                          |
 | `paypal`       | RSA over `transmission_id\|timestamp\|webhook_id\|crc32(body)` with `PAYPAL-TRANSMISSION-ID`, `-TIME`, `-SIG`, `PAYPAL-CERT-URL`, `PAYPAL-AUTH-ALGO`; or a call to `verify-webhook-signature`       | The `webhook_id`, which "is not a secret" (RFC-0013 § 6), and PayPal's certificate | RFC-0011 § 6                          |
-| `notchpay`     | `x-notch-signature`, a hex HMAC-SHA256 keyed by the endpoint's Hash Key (`hsk_test_…` in the sandbox). The raw body or a re-serialisation (to confirm). No timestamp                                | The endpoint's Hash Key                                                            | RFC-0012 § 6, § 10 item 7             |
+| `notchpay`     | `x-notch-signature`, a hex HMAC-SHA256 keyed by the endpoint's Hash Key (`hsk_test_…` in the sandbox). The raw body (measured 2026-10-24; a re-serialisation does not match). No timestamp          | The endpoint's Hash Key                                                            | RFC-0012 § 6, § 10 item 7             |
 
 Stripe and PayPal have RFCs and no adapter. Notch Pay's adapter is in review
 (vaam-apps/vpay#295) and checks no signature. Orange ships, and its one
@@ -507,7 +519,11 @@ here.
   (`Mac::verify_slice`), lower- or upper-case hex. Notch Pay's guide shows
   both a raw-body (PHP, Python) and a `JSON.stringify(req.body)` (Node)
   example, and the latter is the raw body only for a compactly serialised
-  body. RFC-0012 § 10 item 7 is the measurement that decides it.
+  body. RFC-0012 § 10 item 7 is the measurement that decides it. _(Decided
+  2026-10-24: on four real deliveries the raw body's HMAC matched and a
+  `JSON.stringify` of the parsed body did not, because Notch Pay escapes `/`
+  as `\/`
+  ([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).)_
 - **Replay is accepted** (open question 4's recommendation): Notch Pay signs
   no timestamp, and `a_replayed_genuine_webhook_still_verifies` pins that as
   a decision.
