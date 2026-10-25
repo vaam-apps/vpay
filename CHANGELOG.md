@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.14.1](https://github.com/vaam-apps/vpay/compare/v0.14.0...v0.14.1) (2026-10-25)
+
+
+### Bug Fixes
+
+* **worker:** a failed callback check releases its lock before it returns ([#369](https://github.com/vaam-apps/vpay/issues/369)) ([1240c60](https://github.com/vaam-apps/vpay/commit/1240c60b2ae0dcb99b001a2c7c3d412dc0f4a900))
+
+
+### Documentation
+
+* **sdks:** refund destination comments name the intent's rail since v0.14.0 ([#367](https://github.com/vaam-apps/vpay/issues/367)) ([bcbbf6f](https://github.com/vaam-apps/vpay/commit/bcbbf6fed4971fa21fc0495471a8983dcf310ee4))
+
 ## [0.14.0](https://github.com/vaam-apps/vpay/compare/v0.13.0...v0.14.0) (2026-10-24)
 
 
