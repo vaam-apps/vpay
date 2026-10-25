@@ -1385,3 +1385,36 @@ A", [plan](../plans/2026-10-24-rail-on-v1.md)):
 
 No route was mounted or unmounted and no `NotImplemented` token moved.
 [verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).
+
+## A failed callback check releases its lock before it returns (2026-10-25)
+
+Found by the `rust` job of the v0.14.1 release PR (vaam-apps/vpay#368, run
+`40110843337`), which changes nothing but version numbers:
+`the_job_reschedules_after_a_refusal_and_sooner_after_silence` failed with
+`a 401 is the account's keys refused: Locked`. The same test passed on
+`master` at `bcbbf6fe` and on #367.
+
+- **The cause, in `vpay-worker`:** `check_one` returned a rail's failure as the
+  transaction closure's `Err`. `UnitOfWork::transaction` drops an erring
+  transaction rather than awaiting its rollback, and sqlx 0.9 only queues a
+  dropped transaction's `ROLLBACK` (`Transaction::drop`), sending it from the
+  task `PoolConnection::drop` spawns. Until that task ran, the connection
+  still held `pg_try_advisory_xact_lock(vpaycbk)`, so a pass started straight
+  after a refused or unanswered one could answer `locked` for a rail nobody
+  was checking. In production that costs one rail one hour (the next pass
+  catches up); in the test it is a red build.
+- **The fix:** the rail's error is carried inside `TxOutcome::Abandon`, whose
+  rollback `transaction` awaits, so the lock is free when `check_one`
+  returns. A database error still leaves as `Err`. `UnitOfWork::transaction`
+  itself is unchanged.
+- **The test** now asserts, after the refused call and after the unanswered
+  one, that a fresh transaction can take the lock. With the fix that is
+  deterministic; without it, it is the race.
+- **Not done:** the other `Err` paths of `UnitOfWork::transaction` still
+  drop. A later caller blocked on a row lock such a transaction holds waits
+  for the queued `ROLLBACK`. A `SKIP LOCKED` query (the job claim,
+  `rate_limits`) passes the row by until its next call. Nothing measured
+  shows a failure there. `pg_try_advisory_xact_lock` has no other caller.
+
+No route moved and no `NotImplemented` token moved.
+[verification/2026-10-25-callback-lock-release.md](verification/2026-10-25-callback-lock-release.md).

@@ -1143,7 +1143,13 @@ transaction, tries `pg_try_advisory_xact_lock(vpaycbk)`
 (`TxRepositories::try_lock_callback_registration`), and on `false` reports
 `locked` and asks nothing. On `true` it calls the adapter inside the
 transaction, so the lock is held across the rail's list and create and
-released by the commit, a rollback, or a dropped connection. Per rail rather
+released by the commit, a rollback, or a dropped connection. A rail's
+failure leaves the transaction through `TxOutcome::Abandon`, whose rollback
+is awaited, and not as the closure's error, which `UnitOfWork::transaction`
+drops: sqlx sends a dropped transaction's `ROLLBACK` from the spawned task
+that returns its connection to the pool, so a pass started straight after a
+refused or unanswered one could find the lock still held and report
+`locked` (2026-10-25, the `rust` job of vaam-apps/vpay#368). Per rail rather
 than per pass, so a rail that spends its whole request budget holds one
 pooled connection for itself only. The cost: two passes at once may split
 the rails between them, each `locked` on the other's. The next pass catches

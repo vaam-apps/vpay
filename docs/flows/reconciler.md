@@ -170,7 +170,13 @@ day, with nothing in the loop changed: § "Callbacks are hints" no longer
 calls Notch Pay's signature check "never verified against a real Notch Pay
 delivery"; four real webhooks, recorded by a dashboard-registered capture
 endpoint, were checked offline and all verified
-([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).**
+([verification](../status/verification/2026-10-24-notchpay-dashboard-webhooks.md)).
+Fixed 2026-10-25, with nothing in the poll ladder changed: an
+`ensure_callbacks` check the rail refused or did not answer held the
+registration lock until sqlx's deferred `ROLLBACK` ran, so a pass started
+straight afterwards could report `locked`; the lock is now released before
+the check returns
+([verification](../status/verification/2026-10-25-callback-lock-release.md)).**
 
 **Fixed 2026-09-16: the claim latency the bullet below measures was not the
 whole latency a payment saw.** A fresh `poll_charge` job was committed at

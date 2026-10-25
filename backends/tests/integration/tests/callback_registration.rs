@@ -40,6 +40,7 @@ use anyhow::Context as _;
 use serde_json::Value;
 use testcontainers::{ContainerAsync, GenericImage};
 use vpay_core::Currency;
+use vpay_db::{TxOutcome, UnitOfWork as _};
 use vpay_provider::{EndpointState, ProviderAdapter, ProviderConfig};
 use vpay_worker::callbacks::{ENSURE_INTERVAL, RETRY_SOON};
 use vpay_worker::{
@@ -194,6 +195,24 @@ fn only(passes: Vec<RailPass>) -> RailPass {
         "only the rail that registers its URL is asked; mtn_momo is told its URL per request"
     );
     passes.into_iter().next().expect("one pass")
+}
+
+/// Whether a fresh transaction can take the registration lock right now,
+/// i.e. whether the call before it released the lock before returning. A
+/// check that failed used to leave it to sqlx's spawned `ROLLBACK`, and a
+/// pass started straight afterwards could find it still held (the module
+/// docs of `vpay_worker::callbacks`).
+async fn lock_is_free(h: &Harness) -> anyhow::Result<bool> {
+    let taken = h
+        .repositories
+        .transaction(|tx| {
+            Box::pin(async move {
+                let taken = tx.try_lock_callback_registration().await?;
+                Ok::<_, anyhow::Error>(TxOutcome::Abandon(taken))
+            })
+        })
+        .await?;
+    Ok(taken.into_inner())
 }
 
 fn state(pass: &RailPass) -> &EndpointState {
@@ -417,6 +436,10 @@ async fn the_job_reschedules_after_a_refusal_and_sooner_after_silence() -> anyho
         Outcome::RescheduleAfter(ENSURE_INTERVAL),
         "a refused key is a person's to fix; asking every five minutes repeats the alert"
     );
+    assert!(
+        lock_is_free(&h).await?,
+        "a refused check released the lock before it returned"
+    );
 
     let silent = vpay_worker::handle_ensure_callbacks(
         h.repositories.as_ref(),
@@ -426,6 +449,10 @@ async fn the_job_reschedules_after_a_refusal_and_sooner_after_silence() -> anyho
     )
     .await?;
     assert_eq!(silent, Outcome::RescheduleAfter(RETRY_SOON));
+    assert!(
+        lock_is_free(&h).await?,
+        "an unanswered check released the lock before it returned"
+    );
 
     let passes = vpay_worker::run_pass(
         h.repositories.as_ref(),

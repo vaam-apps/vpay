@@ -31,6 +31,14 @@
 //! rail is ever checked by two passes at once — which is the property Notch
 //! Pay's non-idempotent create needs.
 //!
+//! A rail's failure leaves through [`TxOutcome::Abandon`], whose rollback
+//! `UnitOfWork::transaction` awaits, and never as the closure's error, which
+//! it drops. sqlx only queues a dropped transaction's `ROLLBACK` and sends it
+//! from the spawned task that returns the connection to the pool, so until
+//! that task runs the lock is still held: a pass started straight after a
+//! refused or unanswered one could report [`RailCheck::Locked`] for a rail
+//! nobody was checking (2026-10-25, the `rust` job of vaam-apps/vpay#368).
+//!
 //! # Why the job never fails
 //!
 //! [`handle_ensure_callbacks`] answers `Ok` on every path. A dead-lettered
@@ -235,19 +243,6 @@ impl RailPass {
     }
 }
 
-/// The transaction's failure: a closure handed to `UnitOfWork::transaction`
-/// returns one error type, and it must be `From<DbError>`.
-enum PassFailure {
-    Db(DbError),
-    Provider(ProviderError),
-}
-
-impl From<DbError> for PassFailure {
-    fn from(error: DbError) -> Self {
-        Self::Db(error)
-    }
-}
-
 /// Runs one pass over every registered rail, and answers one [`RailPass`]
 /// per rail it considered.
 ///
@@ -296,6 +291,10 @@ pub async fn run_pass(
 }
 
 /// One rail, under the lock, in its own transaction.
+///
+/// The rail's error is a value inside [`TxOutcome::Abandon`], not the
+/// closure's `Err`, so the lock is released before this returns (module
+/// docs, "Why one rail's check is one transaction").
 async fn check_one(
     repositories: &dyn Repositories,
     adapter: &dyn vpay_provider::ProviderAdapter,
@@ -311,19 +310,20 @@ async fn check_one(
                 if !tx.try_lock_callback_registration().await? {
                     return Ok(TxOutcome::Abandon(None));
                 }
-                let report = adapter
-                    .ensure_callback_endpoint(check, config)
-                    .await
-                    .map_err(PassFailure::Provider)?;
-                Ok::<_, PassFailure>(TxOutcome::Commit(Some(report)))
+                Ok::<_, DbError>(
+                    match adapter.ensure_callback_endpoint(check, config).await {
+                        Ok(report) => TxOutcome::Commit(Some(Ok(report))),
+                        Err(error) => TxOutcome::Abandon(Some(Err(error))),
+                    },
+                )
             })
         })
         .await;
     match answer.map(TxOutcome::into_inner) {
-        Ok(Some(report)) => RailCheck::Answered(report),
+        Ok(Some(Ok(report))) => RailCheck::Answered(report),
+        Ok(Some(Err(error))) => RailCheck::Provider(error),
         Ok(None) => RailCheck::Locked,
-        Err(PassFailure::Provider(error)) => RailCheck::Provider(error),
-        Err(PassFailure::Db(error)) => RailCheck::Db(error),
+        Err(error) => RailCheck::Db(error),
     }
 }
 
