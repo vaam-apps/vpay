@@ -18,5 +18,24 @@ anonymous caller can get out of the callback route. Those are not threat
 models and are not listed here. The rails that predate this directory,
 `mtn_momo` and `orange_money`, have none.
 
+**Notch Pay callbacks are signature-verified; MTN and Orange are not.** Notch
+Pay's `x-notch-signature` is checked as the HMAC-SHA256 of the raw body under
+the endpoint's Hash Key ([RFC-0014](../rfc/0014-verifying-rail-callbacks.md),
+PR #357). MTN does not sign callbacks, and Orange's `BodyToken` check is not
+built. A callback is still a hint that advances a poll; only the authenticated
+status read moves money.
+
 Personal data has its own inventory, which a gate checks:
 [reference/personal-data-inventory.md](../reference/personal-data-inventory.md).
+
+Security assets, trust boundaries and ISO 27001 control evidence are documented
+in:
+
+- [trust-boundaries.md](trust-boundaries.md) — five trust tiers and their
+  crossing controls
+- [data-flows.md](data-flows.md) — payment, webhook and SSO data-flow maps
+- [reference/security-asset-inventory.md](../reference/security-asset-inventory.md)
+  — human-facing asset and control inventory
+- [../../schemas/security-inventory.yaml](../../schemas/security-inventory.yaml)
+  — machine-readable inventory checked by
+  `cargo xtask verify-security-inventory`

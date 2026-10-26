@@ -1146,3 +1146,34 @@ must not match. **Measured 2026-10-09:** 307 columns, 26 elements, 10 surfaces,
 **24** `debug_protections`. _(The first version of the PR registered 17; the
 review fixes added seven. Evidence:
 [verification/2026-10-01-protected-diagnostics.md](verification/2026-10-01-protected-diagnostics.md).)_
+
+## 2026-10-26 — `verify-security-inventory`, the sixteenth gate (issue #150, ADR-0034)
+
+New 2026-10-26. It reads `schemas/security-inventory.yaml` and fails when the
+map disagrees with the tree. It is the security counterpart of
+`verify-privacy-inventory`: every deployable service path and named crate must
+exist, every table a migration creates must appear in a state store and every
+table a state store names must be created by a migration, every secret
+`config_keys` entry must be one of the closed set of `vpay-config` paths the
+gate knows, every implementation and evidence path and every cited test name
+must exist, every control status must be `implemented`, `partial` or `gap`, a
+`gap` control must name a gap, and every gap must name exactly one tracker. A
+tracked issue number must be cited by a document under `docs/`, which is an
+offline liveness proxy; the gate does not call GitHub, and
+`verify-citations` remains the network check.
+
+`deny_unknown_fields` is on every inventory struct. That is what closes the
+hole the first draft had: a misspelt `tables:` key was silently ignored, so a
+bogus or missing table passed. The first draft also checked the table set in
+one direction only and never deserialized `implementation`, `evidence` or
+`crate`; each of those is a failing case in `test_security_inventory` now, and
+each was driven against a temporary tree.
+
+**Measured on this tree, 2026-10-26:** `cargo xtask verify-security-inventory`
+— 5 services, 4 state stores, 33 tables, 10 secret classes, 15 material
+controls and 7 tracked gaps — and the live table set derived from
+`backends/migrations` contains the same 33 names, including the five
+`authkestra.oauth_*` tables. The gate is wired into `just verify` and CI's
+`self-checks` job, and both `count:verify-gates` tallies moved to sixteen in
+the same change. The full `just ci` evidence is in
+[verification/2026-10-26-security-inventory-gate.md](verification/2026-10-26-security-inventory-gate.md).

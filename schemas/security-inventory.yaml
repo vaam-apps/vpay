@@ -1,0 +1,727 @@
+# vpay security asset, data-flow, and control-evidence inventory (issue #150, EPIC #155, ADR-0034)
+#
+# ISO/IEC 27001:2022 statement of boundary:
+# Certification applies to the organisation (VAAM) and its scoped ISMS, not to this repository alone.
+# This file records code-grounded engineering assets, trust boundaries, secret classifications, and
+# repeatable control evidence for ingestion into the organizational Statement of Applicability (SoA)
+# and risk assessment.
+version: 1
+
+metadata:
+  standard: "ISO/IEC 27001:2022"
+  issue: 150
+  epic: 155
+  adr: "docs/adr/0034-security-asset-and-control-evidence-inventory.md"
+  reference: "docs/reference/security-asset-inventory.md"
+  updated: "2026-10-26"
+
+# Tiers 0 through 4 are the five boundaries drawn in
+# docs/security/trust-boundaries.md. Every deployable service names one.
+trust_boundaries:
+  - id: tier_0_external
+    name: "Untrusted external networks"
+    description: "Merchants, payers, rails and identity providers. Nothing here is trusted."
+    crossing_controls:
+      - "TLS at the ingress; the server itself binds plain TCP"
+      - "OAuth2 private_key_jwt or bearer access tokens on /v1"
+      - "Rail callbacks are unauthenticated hints, not authenticated status reads"
+  - id: tier_1_edge
+    name: "Edge and ingress"
+    description: "The deployment's Kubernetes ingress or reverse proxy. TLS terminates here."
+    crossing_controls:
+      - "TLS termination and certificate management are operator-owned"
+      - "The chart's NetworkPolicy is opt-in, default off, and has never been applied to a cluster"
+  - id: tier_2_application
+    name: "Application tier"
+    description: "vpay-server serving the API, the same binary's worker mode, and the opt-in management-only surface."
+    crossing_controls:
+      - "Authentication and authorization per surface (/v1, /dash/v1, /v1/browser, /provider)"
+      - "Database access through sqlx with bind parameters"
+  - id: tier_3_frontend
+    name: "Payer and dashboard frontends"
+    description: "The hosted checkout app and the merchant/staff dashboard."
+    crossing_controls:
+      - "Checkout holds only an ephemeral client secret and talks to /v1/browser"
+      - "The dashboard holds vpay-issued opaque tokens in httpOnly cookies and talks to /dash/v1"
+  - id: tier_4_persistent
+    name: "Persistent state"
+    description: "PostgreSQL, which is the only durable store. Jobs and idempotency are tables in it."
+    crossing_controls:
+      - "Transport TLS and volume encryption are operator-owned assumptions, not enforced by this repository"
+      - "Backups and restore drills are not implemented (issue #153, ADR-0013 Proposed)"
+
+deployable_services:
+  - id: vpay_server
+    name: "vpay API Server"
+    path: "backends/apps/vpay-server"
+    crate: "vpay-server"
+    kind: "service_binary"
+    runtime: "Rust (musl static binary in a scratch image)"
+    trust_tier: "tier_2_application"
+    interfaces:
+      - name: "merchant_api"
+        surface: "/v1"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "OAuth2 private_key_jwt or bearer access token (ADR-0010)"
+        purpose: "Payment intents, refunds, customers, invoices"
+      - name: "merchant_oauth"
+        surface: "/v1/oauth"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "OAuth2 client credentials and authorization-code flows"
+        purpose: "Merchant token issuance and discovery"
+      - name: "browser_checkout"
+        surface: "/v1/browser"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "Publishable key plus an ephemeral checkout session client secret"
+        purpose: "Payer reads and confirmation for hosted and embedded checkout"
+      - name: "dashboard_bff"
+        surface: "/dash/v1"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "vpay-issued bearer access token; the dashboard holds it in an httpOnly cookie"
+        purpose: "Merchant and staff read surface plus the staff sign-in routes"
+      - name: "provider_callbacks"
+        surface: "/provider/{code}/callback"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "Rail-specific: Notch Pay verifies x-notch-signature (HMAC-SHA256); MTN and Orange callbacks are unauthenticated hints"
+        purpose: "Inbound notification from a rail; no callback moves money"
+      - name: "liveness"
+        surface: "/healthz"
+        protocol: "HTTP/1.1"
+        auth: "Unauthenticated by design; a SELECT 1 readiness probe on the public port"
+        purpose: "Kubernetes readiness"
+      - name: "observability"
+        surface: "/livez and /metrics"
+        protocol: "HTTP/1.1"
+        auth: "Separate observability port, never the public server port"
+        purpose: "Liveness and Prometheus telemetry"
+
+  - id: vpay_worker
+    name: "vpay Background Worker"
+    path: "backends/apps/vpay-server"
+    crate: "vpay-server"
+    kind: "daemon_binary"
+    runtime: "Rust (the same image, started with the `worker` argument)"
+    trust_tier: "tier_2_application"
+    interfaces:
+      - name: "worker_observability"
+        surface: "/livez and /metrics"
+        protocol: "HTTP/1.1"
+        auth: "Cluster-internal observability port"
+        purpose: "Liveness and Prometheus telemetry"
+    responsibilities:
+      - "Claim and run transactional-outbox jobs from the jobs table"
+      - "Poll a rail for an authoritative charge status (poll_charge, scan_live_charges)"
+      - "Resubmit a charge whose submit outcome is unknown (resubmit_charge)"
+      - "Fan out events and deliver signed merchant webhooks with backoff"
+      - "Sweep expired idempotency records and the twelve-month customer retention set"
+      - "Keep one vpay-created callback endpoint registered where a rail supports it"
+
+  - id: vpay_management
+    name: "vpay Management API"
+    path: "backends/apps/vpay-server"
+    crate: "vpay-server"
+    kind: "surface_split_binary"
+    runtime: "The same image with deployment.surfaces forced to [management]"
+    trust_tier: "tier_2_application"
+    interfaces:
+      - name: "management_api"
+        surface: "/dash/v1"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "vpay-issued bearer access token; the dashboard holds it in an httpOnly cookie"
+        purpose: "Staff and merchant management reads"
+    upstream_apis: []
+    responsibilities:
+      - "Serve /dash/v1 alone; every /v1 route is unmounted (ADR-0022), and the chart's NetworkPolicy is opt-in and never applied"
+
+  - id: merchant_dashboard
+    name: "Merchant and Staff Dashboard"
+    path: "frontends/apps/dashboard"
+    kind: "web_application"
+    runtime: "Next.js 15 standalone output, non-root Node container"
+    trust_tier: "tier_3_frontend"
+    interfaces:
+      - name: "dashboard_ui"
+        surface: "dashboard HTTP port 3000"
+        protocol: "HTTP/1.1"
+        auth: "TOTP-enrolled staff password or OIDC SSO; opaque vpay token in an httpOnly cookie"
+        purpose: "Merchant and staff read surface"
+    upstream_apis:
+      - "vpay_server /dash/v1"
+
+  - id: hosted_checkout
+    name: "Hosted Checkout Web App"
+    path: "frontends/apps/checkout"
+    kind: "web_application"
+    runtime: "Next.js 15 standalone output, non-root Node container"
+    trust_tier: "tier_3_frontend"
+    interfaces:
+      - name: "checkout_ui"
+        surface: "checkout HTTP port 3000"
+        protocol: "HTTP/1.1"
+        auth: "Ephemeral checkout session client secret in the URL fragment"
+        purpose: "Payer payment page"
+    upstream_apis:
+      - "vpay_server /v1/browser"
+
+state_stores:
+  - id: postgres_primary
+    name: "Primary PostgreSQL Relational Database"
+    engine: "PostgreSQL 16+"
+    migrations_dir: "backends/migrations"
+    driver: "sqlx runtime queries with bind parameters; AssertSqlSafe audited by vpay-db/src/sql_audit.rs"
+    backup_runbook: "docs/runbooks/restore-from-backup.md"
+    backup_adr: "docs/adr/0013-database-backups-and-retention.md"
+    encryption_at_rest: "Operator-owned storage encryption; not enforced by this repository"
+    transport_encryption: "Operator-owned; the server does not require TLS to Postgres"
+    # `authkestra.*` tables are listed by base name. The gate normalises a
+    # schema-qualified name, the same way verify-privacy-inventory does.
+    invariants:
+      - "One charge per payment intent, forever, by a plain unique index"
+      - "Callbacks are hints; only an authenticated status read moves money"
+      - "Tenant scoping is applied in the repository layer"
+    tables:
+      - charges
+      - checkout_sessions
+      - credentials
+      - currencies
+      - customers
+      - disabled_clients
+      - events
+      - idempotency_keys
+      - invoice_items
+      - invoice_number_sequences
+      - invoices
+      - jobs
+      - ledger_entries
+      - ledger_transactions
+      - manual_payments
+      - oauth_authorization_codes
+      - oauth_client_assertion_jtis
+      - oauth_clients
+      - oauth_codes
+      - oauth_device_codes
+      - oauth_dpop_jti
+      - oauth_refresh_tokens
+      - oauth_signing_keys
+      - payment_intents
+      - provider_requests
+      - providers
+      - rate_limit_windows
+      - refunds
+      - routing_decisions
+      - staff_members
+      - staff_sessions
+      - staff_sso_attempts
+      - webhook_deliveries
+
+  - id: transactional_job_queue
+    name: "Durable Job Queue (Transactional Outbox)"
+    backing_store: "postgres_primary"
+    table: "jobs"
+    implementation: "backends/crates/vpay-db/src/jobs.rs"
+    invariants:
+      - "Job enqueue is atomic with the business entity transaction"
+      - "Worker lock acquisition uses SELECT FOR UPDATE SKIP LOCKED"
+      - "Job schedule clock uses database time (ADR-0026)"
+
+  - id: idempotency_store
+    name: "Idempotency Lock and Response Store"
+    backing_store: "postgres_primary"
+    table: "idempotency_keys"
+    implementation: "backends/crates/vpay-db/src/idempotency.rs"
+    invariants:
+      - "A retried intent creation reuses the recorded answer rather than charging twice"
+
+  - id: replay_cache
+    name: "Client Assertion JTI Replay Cache"
+    backing_store: "postgres_primary"
+    table: "oauth_client_assertion_jtis"
+    implementation: "backends/crates/vpay-db/src/client_assertion.rs"
+    adr: "docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md"
+    invariants:
+      - "A spent private_key_jwt assertion cannot be replayed within the validator leeway"
+
+secrets_and_credentials:
+  - class: mtn_momo_collection_credentials
+    description: "MTN MoMo Collections API subscription key and API key"
+    managed_in: "vpay-config"
+    config_keys:
+      - "providers.mtn_momo.credentials.subscription_key"
+      - "providers.mtn_momo.credentials.api_key"
+    storage: "Environment variables referenced by ${VAR} placeholders in config/application.yml"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+
+  - class: mtn_momo_disbursement_credentials
+    description: "MTN MoMo Disbursements subscription key and API key (refunds); no deployment holds a real set"
+    managed_in: "vpay-config"
+    config_keys:
+      - "providers.mtn_momo.credentials.disbursement_subscription_key"
+      - "providers.mtn_momo.credentials.disbursement_api_key"
+    storage: "Environment variables referenced by ${VAR} placeholders"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+
+  - class: orange_money_credentials
+    description: "Orange Money Web Payment client ID, client secret and merchant key"
+    managed_in: "vpay-config"
+    config_keys:
+      - "providers.orange_money.credentials.client_id"
+      - "providers.orange_money.credentials.client_secret"
+      - "providers.orange_money.credentials.merchant_key"
+    storage: "Environment variables referenced by ${VAR} placeholders"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+
+  - class: notchpay_credentials
+    description: "Notch Pay public key (treated as sensitive) and private grant key"
+    managed_in: "vpay-config"
+    config_keys:
+      - "providers.notchpay.credentials.public_key"
+      - "providers.notchpay.credentials.private_key"
+    storage: "Environment variables referenced by ${VAR} placeholders; kept server-side"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+    adr: "docs/adr/0031-a-status-read-authenticated-by-a-server-side-key.md"
+
+  - class: merchant_webhook_signing_secrets
+    description: "One HMAC-SHA256 signing secret per merchant webhook endpoint; a list allows rotation"
+    managed_in: "vpay-config"
+    config_keys:
+      - "merchant_clients[].webhooks[].secrets"
+    algorithm: "HMAC-SHA256 over timestamp and body, sent as vpay-signature"
+    storage: "Environment variables referenced by ${VAR} placeholders; two secrets may be live at once to allow rotation. No rotation runbook exists yet."
+    adr: "docs/adr/0016-engineering-standards.md"
+
+  - class: staff_password_pepper
+    description: "Server-side pepper mixed into every Argon2id staff password hash"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.password_pepper"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet"
+    adr: "docs/adr/0017-staff-authentication.md"
+
+  - class: staff_totp_encryption_key
+    description: "AES-256-GCM key that seals stored staff TOTP secrets"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.totp_encryption_key"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet"
+    adr: "docs/adr/0017-staff-authentication.md"
+
+  - class: staff_sso_client_secret
+    description: "OIDC client secret for federated staff sign-in"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.sso.client_secret"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet"
+    adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+
+  - class: oauth_signing_key
+    description: "RSA private key that signs vpay-issued access tokens"
+    managed_in: "vpay-server CLI"
+    cli_flags:
+      - "--oauth-signing-key-file"
+    env_vars:
+      - "VPAY_OAUTH_SIGNING_KEY_FILE"
+    storage: "Mounted Secret file; one key per process, rotation is a restart"
+    rotation_runbook: "docs/runbooks/rotate-signing-key.md"
+
+  - class: database_credentials
+    description: "PostgreSQL connection URI credentials"
+    managed_in: "vpay-server CLI / environment"
+    cli_flags:
+      - "--database-url"
+    env_vars:
+      - "DATABASE_URL"
+    storage: "Kubernetes Secret or environment variable; required at boot"
+
+external_integrations:
+  - id: mtn_momo_rail
+    name: "MTN Mobile Money Gateway"
+    party: "MTN Cameroon / Ericsson M-Commerce"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS (rustls, redirects refused)"
+    inbound_routes:
+      - "/provider/mtn_momo/callback"
+    outbound_destinations:
+      - "sandbox.momodeveloper.mtn.com (sandbox)"
+      - "proxy.momoapi.mtn.com (production)"
+    security_controls:
+      - "Outbound client is pinned to rustls roots and refuses redirects"
+      - "The callback is unauthenticated and only advances a poll; MTN does not sign callbacks"
+      - "Only the authenticated status read settles a charge"
+    data_elements:
+      ["payer_phone_number", "transaction_amount", "currency", "external_id"]
+    privacy_inventory_ref: "docs/reference/personal-data-inventory.md"
+
+  - id: orange_money_rail
+    name: "Orange Money Web Payment Gateway"
+    party: "Orange Cameroun"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS (rustls, redirects refused)"
+    inbound_routes:
+      - "/provider/orange_money/callback"
+    outbound_destinations:
+      - "api.orange.com"
+    security_controls:
+      - "The callback is unauthenticated and only advances a poll; Orange's BodyToken check is not built"
+      - "Only the authenticated status read settles a charge"
+    data_elements: ["payer_phone_number", "order_id", "transaction_amount"]
+    privacy_inventory_ref: "docs/reference/personal-data-inventory.md"
+
+  - id: notchpay_rail
+    name: "Notch Pay Payment Aggregator"
+    party: "Notch Pay"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS (rustls, redirects refused)"
+    inbound_routes:
+      - "/provider/notchpay/callback"
+    outbound_destinations:
+      - "api.notchpay.co"
+    security_controls:
+      - "Public/private key separation and X-Grant on every outbound call"
+      - "Callbacks are verified: x-notch-signature is the hex HMAC-SHA256 of the raw body under the endpoint's Hash Key (RFC-0014 § 4), and boot refuses a configured rail without the key"
+      - "A verified callback is still a hint; only the authenticated status read moves money"
+    data_elements: ["payer_phone_number", "payment_reference", "amount"]
+    threat_model: "docs/security/threat-models/notchpay.md"
+    adr: "docs/adr/0031-a-status-read-authenticated-by-a-server-side-key.md"
+
+  - id: oidc_identity_provider
+    name: "Federated OpenID Connect Identity Provider"
+    party: "Enterprise IdP (for example Keycloak or Okta)"
+    direction: "outbound"
+    protocol: "HTTPS (rustls)"
+    security_controls:
+      - "Authorization-code flow with state, nonce and PKCE generated by vpay"
+      - "ID token signature, iss, aud, azp, exp, iat, nonce, group and second-factor checks"
+    adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+
+  - id: merchant_webhook_endpoints
+    name: "Merchant Webhook Endpoints"
+    party: "Integrated merchants"
+    direction: "outbound"
+    protocol: "HTTPS; private targets are refused by default and the SSRF guard vets resolved addresses"
+    security_controls:
+      - "vpay-signature: t=<timestamp>,v1=<hmac_sha256>"
+      - "Redirects are refused; the resolved address is vetted before connecting (vpay-worker/src/ssrf.rs)"
+    data_elements: ["event_type", "payment_intent_id", "amount", "status"]
+
+ci_cd_and_release:
+  pipeline_workflows:
+    - name: "Continuous Integration"
+      file: ".github/workflows/ci.yml"
+      checks:
+        - "verify job: individual cargo xtask/just gates"
+        - "rust job: cargo fmt --check, clippy -D warnings, cargo nextest run --workspace, cargo test --doc"
+        - "supply chain job: cargo deny check"
+        - "web job: prettier --check, pnpm typecheck/lint/vitest, pnpm audit --audit-level=moderate"
+        - "e2e job: compose stack and Cypress"
+      purpose: "Build, test and the offline invariant gates"
+    - name: "Quality and Security Gates"
+      file: ".github/workflows/quality.yml"
+      checks:
+        - "CodeQL SAST"
+        - "Super-linter"
+        - "Trivy image and filesystem scan"
+      purpose: "Static analysis and vulnerability scanning"
+    - name: "Automated Release Please"
+      file: ".github/workflows/release-please.yml"
+      checks:
+        - "release-please pull request and tag creation"
+      purpose: "Semantic versioning and changelog generation"
+    - name: "Release"
+      file: ".github/workflows/release.yml"
+      checks:
+        - "buildx image index with provenance mode=max and sbom=true"
+        - "cosign keyless signing for images and the Helm chart"
+        - "npm publish for the two shipping SDKs"
+      purpose: "Signed images, chart and SDK publishing"
+
+  container_artifacts:
+    - target: "vpay-server"
+      dockerfile: "backends/Dockerfile"
+      stage: "server"
+      security_attributes:
+        - "FROM scratch, so no shell and no package manager in the runtime image"
+        - "USER 65532:65532"
+    - target: "dashboard"
+      dockerfile: "frontends/Dockerfile"
+      stage: "runner"
+      security_attributes:
+        - "numeric USER 1000:1000"
+        - "standalone Next.js output"
+        - "EXPOSE 3000"
+    - target: "checkout"
+      dockerfile: "frontends/Dockerfile"
+      stage: "checkout"
+      security_attributes:
+        - "numeric USER 1000:1000"
+        - "standalone Next.js output"
+        - "EXPOSE 3000"
+
+  published_packages:
+    - name: "@vaam-apps/vpay-sdk"
+      manifest: "sdks/nodejs/package.json"
+      scope: "official merchant Node.js SDK"
+    - name: "@vaam-apps/vpay-stripe-js"
+      manifest: "sdks/stripe-js/package.json"
+      scope: "payer browser client"
+
+material_controls:
+  - id: "A.5.15"
+    theme: "Organizational"
+    name: "Access Control"
+    implementation: "Merchant access is authorized per surface and per scope; every query is tenant-scoped."
+    implementation_paths:
+      - "backends/crates/vpay-api/src/v1/mod.rs"
+      - "backends/crates/vpay-api/src/resource_auth.rs"
+    evidence: "OAuth2 private_key_jwt with tenant-bound merchant claims and scoped endpoints (ADR-0010)."
+    evidence_paths:
+      - "docs/adr/0010-merchant-auth-private-key-jwt.md"
+    evidence_tests: []
+    status: "implemented"
+
+  - id: "A.8.2"
+    theme: "Technological"
+    name: "Privileged Access Rights"
+    implementation: "Staff sign-in requires a password plus TOTP or a federated OIDC assertion; sessions are server-side rows."
+    implementation_paths:
+      - "backends/crates/vpay-api/src/staff/sso/mod.rs"
+      - "backends/crates/vpay-api/src/staff/sso/verify.rs"
+      - "backends/crates/vpay-api/src/staff_auth/mod.rs"
+    evidence: "OIDC ID-token checks, TOTP replay guard, session revocation and durable sign-in/password-change rate limits in rate_limit_windows; dual control and automated key lifecycle remain gap #152."
+    evidence_paths:
+      - "docs/adr/0017-staff-authentication.md"
+      - "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+    evidence_tests:
+      - "the_second_factor_rule_is_acr_or_amr_and_a_password_alone_is_not_one"
+    status: "implemented"
+
+  - id: "A.8.7"
+    theme: "Technological"
+    name: "Protection Against Malware and Supply Chain Risks"
+    implementation: "Lockfiles, cargo-deny and pnpm audit pin and screen the dependency graph."
+    implementation_paths:
+      - "Cargo.lock"
+      - "pnpm-lock.yaml"
+      - "deny.toml"
+      - "pnpm-workspace.yaml"
+    evidence: "cargo deny check (bans, licenses, sources, advisories) and pnpm audit at moderate. One JS advisory is risk-accepted and ignored by id; GAP-103 tracks the missing dated allowlist."
+    evidence_paths:
+      - "deny.toml"
+      - "pnpm-workspace.yaml"
+    evidence_tests: []
+    status: "implemented"
+    related_gap: "GAP-103"
+
+  - id: "A.8.8"
+    theme: "Technological"
+    name: "Management of Technical Vulnerabilities"
+    implementation: "Dependency auditing runs in CI and locally; there is no formal CVE intake or remediation SLA."
+    implementation_paths:
+      - ".github/workflows/ci.yml"
+      - "justfile"
+    evidence: "cargo-deny advisories and pnpm audit fail on moderate, high and critical findings. Remediation SLAs are gap #151."
+    evidence_paths:
+      - "deny.toml"
+    evidence_tests: []
+    status: "implemented"
+    related_gap: "GAP-151"
+
+  - id: "A.8.9"
+    theme: "Technological"
+    name: "Configuration Management"
+    implementation: "Configuration is validated at boot; unknown keys, literal livemode secrets and test/live mismatches are refused."
+    implementation_paths:
+      - "backends/crates/vpay-config/src/config.rs"
+    evidence: "Strict boot-time validation with named configuration errors."
+    evidence_paths:
+      - "docs/flows/configuration.md"
+    evidence_tests:
+      - "a_livemode_config_with_a_literal_secret_is_rejected"
+    status: "implemented"
+
+  - id: "A.8.11"
+    theme: "Technological"
+    name: "Data Masking and Privacy Protection"
+    implementation: "Sensitive types carry hand-written redacting Debug implementations; a gate keeps the classification in step with migrations."
+    implementation_paths:
+      - "backends/crates/vpay-core/src/privacy.rs"
+      - "schemas/privacy-inventory.yaml"
+    evidence: "cargo xtask verify-privacy-inventory checks every migrated column and every registered redacting type in both directions."
+    evidence_paths:
+      - "docs/reference/personal-data-inventory.md"
+    evidence_tests: []
+    status: "implemented"
+
+  - id: "A.8.12"
+    theme: "Technological"
+    name: "Data Leakage Prevention"
+    implementation: "Provider and webhook HTTP clients refuse redirects, and outbound merchant webhook addresses pass an SSRF guard."
+    implementation_paths:
+      - "backends/crates/vpay-provider/src/http.rs"
+      - "backends/crates/vpay-worker/src/ssrf.rs"
+    evidence: "Conformance suite proves redirects are refused and never followed; the SSRF guard vets the resolved address before connecting."
+    evidence_paths:
+      - "docs/flows/webhooks.md"
+    evidence_tests:
+      - "redirects_are_refused_and_never_followed"
+    status: "implemented"
+
+  - id: "A.8.13"
+    theme: "Technological"
+    name: "Information Backup"
+    implementation: "Not implemented. The restore runbook and ADR-0013 exist as a proposed procedure only."
+    implementation_paths:
+      - "docs/runbooks/restore-from-backup.md"
+      - "docs/adr/0013-database-backups-and-retention.md"
+    evidence: "No vpay database has ever been backed up or restored; the migration checksum gate protects applied migrations, not data."
+    evidence_paths:
+      - "docs/runbooks/restore-from-backup.md"
+    evidence_tests: []
+    status: "gap"
+    related_gap: "GAP-153"
+
+  - id: "A.8.15"
+    theme: "Technological"
+    name: "Logging"
+    implementation: "Structured application logging exists; centralized security-event logging and SIEM ingestion do not."
+    implementation_paths:
+      - "backends/crates/vpay-core/src/lib.rs"
+    evidence: "Request logs and error categories are emitted, but there is no standardized security audit log. Tracked as gap #154."
+    evidence_paths:
+      - "docs/flows/errors.md"
+    evidence_tests: []
+    status: "gap"
+    related_gap: "GAP-154"
+
+  - id: "A.8.16"
+    theme: "Technological"
+    name: "Monitoring Activities"
+    implementation: "Prometheus metrics, alert rules and ServiceMonitors ship in the Helm chart."
+    implementation_paths:
+      - "deploy/helm/vpay/templates/prometheusrule.yaml"
+      - "deploy/helm/vpay/templates/servicemonitor.yaml"
+    evidence: "Alert rules are unit-tested against synthetic series; no alert has ever fired on a running deployment."
+    evidence_paths:
+      - "deploy/helm/vpay/ci/prometheusrule.test.yaml"
+    evidence_tests: []
+    status: "implemented"
+
+  - id: "A.8.20"
+    theme: "Technological"
+    name: "Network Security"
+    implementation: "Outbound clients use rustls with vendored roots and refuse redirects; the server binds plain TCP and relies on the ingress for TLS."
+    implementation_paths:
+      - "backends/crates/vpay-provider/src/http.rs"
+      - "deploy/helm/vpay/templates/networkpolicy.yaml"
+    evidence: "TLS is operator-terminated. The chart's NetworkPolicy is disabled by default and has never been applied to a cluster."
+    evidence_paths:
+      - "docs/adr/0005-rustls-only.md"
+    evidence_tests: []
+    status: "partial"
+
+  - id: "A.8.24"
+    theme: "Technological"
+    name: "Use of Cryptography"
+    implementation: "Argon2id for staff passwords, AES-256-GCM for TOTP secrets and tokens, HMAC-SHA256 for webhook signatures, RSA for OAuth tokens."
+    implementation_paths:
+      - "backends/crates/vpay-api/src/staff_auth/password.rs"
+      - "backends/crates/vpay-api/src/staff_auth/secret_box.rs"
+      - "backends/crates/vpay-api/src/staff_auth/totp.rs"
+      - "backends/crates/vpay-worker/src/signing.rs"
+    evidence: "Primitives are implemented and tested. Automated key rotation and dual control for production keys are gap #152."
+    evidence_paths:
+      - "docs/adr/0005-rustls-only.md"
+    evidence_tests:
+      - "every_signature_is_64_lowercase_hex_characters"
+    status: "partial"
+    related_gap: "GAP-152"
+
+  - id: "A.8.25"
+    theme: "Technological"
+    name: "Secure Development Life Cycle"
+    implementation: "just verify runs the invariant gates; vulnerability intake and remediation SLAs are not formalized."
+    implementation_paths:
+      - "justfile"
+      - ".github/workflows/ci.yml"
+    evidence: "The sixteen offline gates plus the Storybook axe gate and pnpm audit. A written SSDLC and CVE remediation SLA are gap #151."
+    evidence_paths:
+      - "AGENTS.md"
+    evidence_tests: []
+    status: "gap"
+    related_gap: "GAP-151"
+
+  - id: "A.8.28"
+    theme: "Technological"
+    name: "Secure Coding"
+    implementation: "Clippy, rustfmt and a closed lint policy apply; SQL uses bind parameters and an AssertSqlSafe audit rather than compile-time query macros."
+    implementation_paths:
+      - "clippy.toml"
+      - "Cargo.toml"
+      - "backends/crates/vpay-db/src/sql_audit.rs"
+    evidence: "indexing_slicing is warn (fatal under CI's -D warnings); every dynamic SQL site is audited by the sql_audit test."
+    evidence_paths:
+      - "docs/adr/0007-lint-policy.md"
+    evidence_tests: []
+    status: "implemented"
+
+  - id: "A.8.31"
+    theme: "Technological"
+    name: "Separation of Development, Test and Production Environments"
+    implementation: "Profiles select configuration files; livemode refuses test keys, literal secrets and http hosts."
+    implementation_paths:
+      - "backends/crates/vpay-config/src/config.rs"
+      - "config/application-live.yml"
+    evidence: "Strict rejection of test keys in livemode and live credentials in testmode."
+    evidence_paths:
+      - "docs/flows/configuration.md"
+    evidence_tests:
+      - "a_sandbox_config_with_a_literal_secret_loads"
+    status: "implemented"
+
+known_security_gaps:
+  - id: "GAP-103"
+    title: "Web dependency audit allowlist and one ignored advisory"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/103"
+    description: "pnpm audit runs at --audit-level=moderate. GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) is ignored by id in pnpm-workspace.yaml under the maintainer decision of 2026-10-09; the dated allowlist-with-reason escape hatch #103 asked for is not built."
+    status: "open"
+    related_control: "A.8.7"
+
+  - id: "GAP-56"
+    title: "Account-holder lookup audit and rate limiting controls"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/56"
+    description: "A dedicated scope and durable per-key audit log for account-holder lookups are not built."
+    status: "open"
+    related_control: "A.5.15"
+
+  - id: "GAP-151"
+    title: "Formal secure SDLC policy and vulnerability remediation evidence"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/151"
+    description: "No written procedure links CVE intake to a fix-release SLA."
+    status: "open"
+    related_control: "A.8.25"
+
+  - id: "GAP-152"
+    title: "Hardened privileged access and cryptographic key lifecycle"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
+    description: "Automated rotation and dual-control procedures for production rail and signing keys are not built."
+    status: "open"
+    related_control: "A.8.24"
+
+  - id: "GAP-153"
+    title: "Repeatable backup and disaster-recovery restore drills"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/153"
+    description: "No database backup exists and no restore drill has run; ADR-0013 is Proposed."
+    status: "open"
+    related_control: "A.8.13"
+
+  - id: "GAP-154"
+    title: "Centralized security logging, SIEM ingestion and incident evidence"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/154"
+    description: "No standardized audit event schema exists for login failures, key changes or access denials."
+    status: "open"
+    related_control: "A.8.15"
+
+  - id: "GAP-CALLBACK-VERIFICATION"
+    title: "MTN and Orange callbacks are not verified; Notch Pay has no per-account secret"
+    tracking_document: "docs/rfc/0014-verifying-rail-callbacks.md"
+    description: "Notch Pay's callback is verified: x-notch-signature is the hex HMAC-SHA256 of the raw body under the endpoint's Hash Key (RFC-0014, built by PR #357). MTN does not sign callbacks, Orange's BodyToken check is not built, and no per-account callback secret exists (RFC-0009). Callbacks remain hints for every rail: only the authenticated status read moves money."
+    status: "open"
