@@ -20,7 +20,7 @@ module is private" because they sit between the two on `vpay-db.md` as it was:
 
 `vpay-db` compiles `schemas/vpay.cstack` with
 [CrateStack](https://cratestack.dev)'s `include_server_schema!` macro
-(`cratestack = { package = "cratestack-pg", version = "=0.15.0" }`) and runs
+(`cratestack = { package = "cratestack-pg", version = "=0.16.0" }`) and runs
 **thirty-two** statements through the generated data layer, spread over
 **twelve** tables.
 This section says which twelve, what deliberately did not move, and which of
@@ -334,6 +334,14 @@ CrateStack call in this crate was a read.
 set is `default-features = false, features = ["postgres"]`, which drops
 `decimal-rust-decimal` (this schema declares no `Decimal`; vpay's money is
 integer minor units) and `codec-json` (vpay generates no client).
+
+**Since 0.16.0 (2026-10-26) the feature set is `["postgres", "envelope", "cose"]`.**
+The two added features compile the signed-transport modules of `cratestack-axum`
+and `cratestack-client-rust` into `vpay-server` and add `cratestack-cose` and
+its RustCrypto dependencies to the graph (`Cargo.lock` 523 to 543 packages, no
+new licence or ban in `cargo deny check`); no router mounts an `EnvelopeLayer`
+yet. [../../status/cratestack.md](../../status/cratestack.md), "CrateStack 0.15.0 →
+0.16.0", has the list and the measurements.
 
 Two of the twenty-eight are **BlueOak-1.0.0** — `minicbor` and
 `minicbor-serde` — and they are not optional. `cratestack-pg` declares

@@ -32,8 +32,8 @@ pub use config::{
     RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use oauth::{
-    DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
-    MerchantClient, WebhookEndpoint,
+    COSE_KEY_LABEL_MAX_CHARS, CoseKey, DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType,
+    InvoiceDefaults, MERCHANT_AUDIENCE, MerchantClient, RegisteredCoseKey, WebhookEndpoint,
 };
 pub use signal::ShutdownSignals;
 
@@ -372,6 +372,48 @@ pub enum ConfigError {
     /// rejects.
     #[error("merchant client {0} has an empty or missing JWK set")]
     EmptyMerchantJwks(String),
+    /// A `merchant_clients[].cose_keys` entry that is not a usable Ed25519
+    /// public key, or whose `label` breaks its rule (VP-2).
+    ///
+    /// Fatal at boot, not skipped with a warning: a key dropped silently is a
+    /// merchant whose every signed request answers `401` with nothing in the
+    /// server's log connecting the two, and a key that parsed wrongly could be
+    /// someone else's. `index` is the entry's position in this client's list,
+    /// counted from 0, because the value itself may be the malformed part and
+    /// is not echoed (it is public, but a 400-character paste is no help in a
+    /// boot log). See [`oauth::CoseKey::verify_key`] for the rules.
+    #[error("merchant client {client_id} cose_keys[{index}]: {reason}")]
+    MalformedCoseKey {
+        /// The registration the entry belongs to.
+        client_id: String,
+        /// The entry's position, from 0.
+        index: usize,
+        /// Which rule it broke.
+        reason: &'static str,
+    },
+    /// One Ed25519 key registered twice — by two merchants, or twice by one.
+    ///
+    /// Refused because the signed transport resolves a verified key's
+    /// thumbprint to exactly one merchant: with a key shared, one signature
+    /// would authenticate as either tenant, and nothing downstream could tell
+    /// which was meant. The same reason [`Self::DuplicateMerchantId`] and
+    /// [`Self::DuplicatePublishableKey`] exist for their identifiers. The
+    /// thumbprint (RFC 9679, lowercase hex) is named rather than the key: it is
+    /// what a verified request records and what a log line carries, and it is
+    /// the same whichever way the value was spelled.
+    #[error(
+        "COSE key with thumbprint {thumbprint} is registered by both merchant client {first} \
+         and merchant client {second}"
+    )]
+    DuplicateCoseKey {
+        /// The key's RFC 9679 thumbprint, lowercase hex.
+        thumbprint: String,
+        /// The `client_id` that registered it first, in file order.
+        first: String,
+        /// The `client_id` that registered it again (the same one, if the
+        /// duplicate is within a single list).
+        second: String,
+    },
     /// ADR-0010 drops the device-authorization grant and refresh tokens for
     /// `/v1` outright — a merchant client may declare `client_credentials`
     /// and nothing else.

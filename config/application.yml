@@ -230,6 +230,17 @@ merchant_clients:
           alg: RS256
           n: placeholder-rsa-modulus-replace-with-the-merchants-real-public-key
           e: AQAB
+    # The Ed25519 keys this merchant will sign `/v1` requests with once the
+    # signed transport lands (VP-2 registers them; nothing verifies a request
+    # against them yet, so `jwks` above is still what authenticates). Public
+    # keys only: 43 characters of unpadded base64url each, no key may appear
+    # twice anywhere in this file, and an invalid one is refused at boot
+    # (ConfigError::MalformedCoseKey / DuplicateCoseKey). Left empty here on
+    # purpose — a placeholder would have to be a real curve point.
+    #
+    # cose_keys:
+    #   - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+    #     label: ci-2026-10
     grant_types: [client_credentials]
     # What this credential may do, and — because a token request that names
     # no scope is granted this list (RFC 6749 §3.3's default scope, applied
