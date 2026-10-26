@@ -11718,6 +11718,21 @@ async fn the_rate_limit_table_grows_by_one_window_and_is_then_swept() -> anyhow:
 
 // ----------------------------------------------------- envelope_nonces ----
 //
+// Every nonce below is drawn at run time by `fresh_envelope_nonce`, once per
+// claim the test is about and then reused where the test needs the *same*
+// value twice (a replay, a race). A literal would be a hard-coded nonce in the
+// code's own words, which is what a static analyser reads it as, and it would
+// also make two tests against one database collide on the id by accident.
+
+/// `cose:<kid>:<cti>` in cratestack's own shape, 46 characters, new each call.
+fn fresh_envelope_nonce() -> String {
+    format!(
+        "cose:{:08x}:{}",
+        uuid::Uuid::new_v4().as_fields().0,
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
 // The replay cache of the signed `/v1` transport (migration 0055, VP-3). The
 // two unit tests in `src/envelope_nonces.rs` read the statement's text; these
 // run it, because "atomic" and "spares a live row" are claims about Postgres.
@@ -11731,25 +11746,25 @@ async fn an_envelope_nonce_is_unseen_once_then_a_replay_and_the_replay_does_not_
 -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
     let first_window = time::OffsetDateTime::now_utc() + time::Duration::seconds(600);
+    let nonce = fresh_envelope_nonce();
+    let sibling = fresh_envelope_nonce();
 
     assert!(
         repositories
-            .record_envelope_nonce_if_unseen("cose:aa:01", first_window)
+            .record_envelope_nonce_if_unseen(&nonce, first_window)
             .await?,
         "the first use of a nonce is unseen"
     );
     assert!(
         !repositories
-            .record_envelope_nonce_if_unseen(
-                "cose:aa:01",
-                first_window + time::Duration::seconds(3600)
-            )
+            .record_envelope_nonce_if_unseen(&nonce, first_window + time::Duration::seconds(3600))
             .await?,
         "the second use inside the window is a replay"
     );
 
     let stored: time::OffsetDateTime =
-        sqlx::query_scalar("SELECT expires_at FROM envelope_nonces WHERE id = 'cose:aa:01'")
+        sqlx::query_scalar("SELECT expires_at FROM envelope_nonces WHERE id = $1")
+            .bind(&nonce)
             .fetch_one(&pool)
             .await?;
     assert_eq!(
@@ -11761,7 +11776,7 @@ async fn an_envelope_nonce_is_unseen_once_then_a_replay_and_the_replay_does_not_
     // Another nonce of the same client is a different request.
     assert!(
         repositories
-            .record_envelope_nonce_if_unseen("cose:aa:02", first_window)
+            .record_envelope_nonce_if_unseen(&sibling, first_window)
             .await?
     );
     Ok(())
@@ -11777,28 +11792,29 @@ async fn an_envelope_nonce_past_its_window_is_taken_over_rather_than_refused() -
     let (_container, repositories, pool) = migrated_postgres().await?;
     let past = time::OffsetDateTime::now_utc() - time::Duration::seconds(5);
     let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(600);
+    let nonce = fresh_envelope_nonce();
 
     assert!(
         repositories
-            .record_envelope_nonce_if_unseen("cose:bb:01", past)
+            .record_envelope_nonce_if_unseen(&nonce, past)
             .await?
     );
     assert!(
         repositories
-            .record_envelope_nonce_if_unseen("cose:bb:01", future)
+            .record_envelope_nonce_if_unseen(&nonce, future)
             .await?,
         "an elapsed row is not a replay"
     );
     assert!(
         !repositories
-            .record_envelope_nonce_if_unseen("cose:bb:01", future)
+            .record_envelope_nonce_if_unseen(&nonce, future)
             .await?,
         "and once taken over it is live again"
     );
-    let rows: i64 =
-        sqlx::query_scalar("SELECT count(*) FROM envelope_nonces WHERE id = 'cose:bb:01'")
-            .fetch_one(&pool)
-            .await?;
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM envelope_nonces WHERE id = $1")
+        .bind(&nonce)
+        .fetch_one(&pool)
+        .await?;
     assert_eq!(rows, 1, "taken over in place, not duplicated");
     Ok(())
 }
@@ -11810,13 +11826,16 @@ async fn concurrent_claims_of_one_envelope_nonce_yield_exactly_one_unseen() -> a
     let (_container, repositories, _pool) = migrated_postgres().await?;
     let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(600);
 
+    // Drawn once and shared: the point is ten claims of the SAME nonce.
+    let nonce = fresh_envelope_nonce();
     const ATTEMPTS: usize = 10;
     let mut handles = Vec::with_capacity(ATTEMPTS);
     for _ in 0..ATTEMPTS {
         let repositories = Arc::clone(&repositories);
+        let nonce = nonce.clone();
         handles.push(tokio::spawn(async move {
             repositories
-                .record_envelope_nonce_if_unseen("cose:cc:race", expires_at)
+                .record_envelope_nonce_if_unseen(&nonce, expires_at)
                 .await
         }));
     }
@@ -11840,11 +11859,12 @@ async fn the_envelope_nonce_sweep_takes_only_what_closed_before_the_retention() 
 {
     let (_container, repositories, pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
-    for (id, offset) in [
-        ("cose:dd:long-gone", -7200),
-        ("cose:dd:just-closed", -10),
-        ("cose:dd:live", 600),
-    ] {
+    let (long_gone, just_closed, live) = (
+        fresh_envelope_nonce(),
+        fresh_envelope_nonce(),
+        fresh_envelope_nonce(),
+    );
+    for (id, offset) in [(&long_gone, -7200), (&just_closed, -10), (&live, 600)] {
         sqlx::query("INSERT INTO envelope_nonces (id, expires_at) VALUES ($1, $2)")
             .bind(id)
             .bind(now + time::Duration::seconds(offset))
@@ -11865,7 +11885,9 @@ async fn the_envelope_nonce_sweep_takes_only_what_closed_before_the_retention() 
             .fetch_all(&pool)
             .await?;
     remaining.sort();
-    assert_eq!(remaining, ["cose:dd:just-closed", "cose:dd:live"]);
+    let mut survivors = vec![just_closed, live];
+    survivors.sort();
+    assert_eq!(remaining, survivors);
 
     // Nothing left to take: a second sweep removes nothing.
     assert_eq!(
