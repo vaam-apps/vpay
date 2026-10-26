@@ -599,3 +599,57 @@ these lines:
 `EXPECTED_DRIFT_CHANGES` is 212 in `postgres_smoke.rs`, with the same
 derivation beside it.
 [verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).
+
+## CrateStack 0.15.0 → 0.16.0 (2026-10-26)
+
+**A version bump, not a feature.** The schema declares no `mcp` block and no
+`@mcp`/`@@mcp` attribute, so the release's MCP binding (`cratestack-mcp`,
+reached through a facade's `mcp` feature) is not in vpay's graph.
+[ADR-0033](../adr/0033-mcp-is-the-primary-agent-surface.md) (Proposed)
+decides what will use it.
+
+**What moved, all together:**
+
+- `justfile`'s `cratestack_version`, the root `Cargo.toml`'s `cratestack`
+  (`cratestack-pg`) and `vpay-db`'s `cratestack-codec-json` are now `=0.16.0`.
+- `Cargo.lock`, via `cargo update -p cratestack-pg --precise 0.16.0`. The
+  twelve `cratestack-*` packages moved; nothing was added or removed. The new
+  edges go only to crates already locked at the same versions:
+  `serde_path_to_error`, and `sqlx-core`/`sqlx-postgres` at `=0.9.0`.
+- Both `install-cratestack-cli` steps in `.github/workflows/ci.yml` now point
+  at `f90ddbf`, the v0.16.0 tag commit. It is a lightweight tag, and
+  `action.yml` is byte-identical to v0.15.0's.
+
+**What the 0.15.1–0.16.0 changelogs could have broken, and what did: nothing.**
+
+- **#1128.** `@default(autoincrement())` is refused, and `dbgenerated()`
+  must be the whole default. vpay writes exactly `@default(dbgenerated())`.
+- **0.15.4.** Field attributes became a closed list per declaration kind.
+  vpay uses only model-field attributes on that list.
+- **Three-valued policies (`$N::text` claims).** vpay's model policies are
+  all `auth().isSystem()` and its procedure policies all `auth() != null`.
+  Both still evaluate to a plain boolean.
+- **Unchanged at 0.16.0, by a source diff:** `AuthProvider`,
+  `CratestackContext`, `ProcedureRegistry` codegen, `procedure_router`'s
+  signature, upsert/`do_nothing`, `run_in_tx`, and the pg/sqlx/macros feature
+  tables.
+- **Toolchain.** Every 0.16.0 crate declares `rust-version = "1.98.0"`, so
+  `rust-toolchain.toml` and the Dockerfile stay put.
+
+**The drift measurement is unmoved.** The 0.16.0 CLI's
+`migrate baseline --strict` reports
+`drift detected in 28 table(s)/view(s) (212 change(s) total)`, which is the
+constant `postgres_smoke.rs` already asserted. The one change in the report is
+a severity label (#1129: a CHECK on a table created in the same diff is
+`[safe]`), and no assertion pins labels.
+
+**One fix the bump's verification found, in the test, not the product.**
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` compares
+the CLI's refusal byte for byte. In a shell that exports `RUST_BACKTRACE=1`,
+`anyhow` appends a stack trace to it, so the test failed with every count
+right. That is true at 0.15.0 as much as 0.16.0, and CI sets neither variable.
+The test now removes `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE` from the
+subprocess, and passes with `RUST_BACKTRACE=1` set.
+
+`just ci` is green, in full and with Docker.
+[verification/2026-10-26-cratestack-0.16.md](verification/2026-10-26-cratestack-0.16.md).
