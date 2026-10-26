@@ -23,9 +23,9 @@
 //! Postgres's index lookup — which is not a timing oracle over a secret,
 //! because the value being indexed is already a hash of it.
 
-use argon2::password_hash::rand_core::{OsRng, RngCore as _};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rand_core::{OsRng, RngCore as _};
 use sha2::{Digest as _, Sha256};
 
 /// How many random bytes a session token or an authorization code carries.
