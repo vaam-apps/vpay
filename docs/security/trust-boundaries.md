@@ -33,7 +33,7 @@ where the surface provides them; where it does not, the document says so.
  │ TIER 2: Application tier    │                  │ TIER 3: Frontend tier      │
  │                             │                  │                            │
  │ • vpay-server               │                  │ • checkout Next.js app     │
- │   - /v1 (private_key_jwt)   │                  │   - /v1/browser only       │
+ │   - /v1 (signed, COSE)      │                  │   - /v1/browser only       │
  │   - /v1/oauth               │                  │ • dashboard Next.js app    │
  │   - /v1/browser             │                  │   - /dash/v1, opaque token │
  │   - /dash/v1 (staff token)  │                  │                            │
@@ -61,12 +61,14 @@ where the surface provides them; where it does not, the document says so.
 - **Protocol:** HTTP behind an operator-terminated TLS ingress. The server
   itself binds plain TCP; rustls is used for outbound calls
   ([ADR-0005](../adr/0005-rustls-only.md)).
-- **Authentication:** OAuth2 `private_key_jwt`
-  ([ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md)) or bearer access
-  tokens. A client assertion needs a valid signature from an active merchant
-  credential, an unexpired timestamp, and a `jti` not recorded in
-  `oauth_client_assertion_jtis`
-  ([ADR-0028](../adr/0028-a-spent-jti-outlives-the-validators-leeway.md)).
+- **Authentication:** every request is a COSE_Sign1 envelope from a merchant
+  Ed25519 key registered in `merchant_clients[].cose_keys`, and every answer is
+  sealed by vpay's own key
+  ([ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md)). An envelope
+  needs a valid signature from an enabled client's key, an `iat` inside the
+  freshness window, and a nonce not recorded in `envelope_nonces`. Bearer
+  tokens are refused on `/v1`; the OAuth OP at `/v1/oauth` still mints them
+  until VP-4 deletes it, and nothing accepts them.
 - **Authorization:** Scopes are checked per handler, and every read and write
   is scoped to the authenticated `merchant_id`.
 

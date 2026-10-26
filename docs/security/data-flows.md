@@ -109,13 +109,14 @@ Staff Browser           Next.js Dashboard               vpay-server             
 
 There is no `jti` check in the ID-token flow. Replay defence in the dashboard
 surface is the single-use authorization code and the server-side session row;
-the `jti` replay cache belongs to merchant client assertions and lives in
-`oauth_client_assertion_jtis`.
+the merchant API's replay cache is the signed transport's nonce store,
+`envelope_nonces`.
 
 ## Security Controls Embedded in Flows
 
-1. **Replay defence:** Merchant client assertions record their `jti` in
-   `oauth_client_assertion_jtis` past the validator leeway.
+1. **Replay defence:** Every verified `/v1` envelope claims its nonce in
+   `envelope_nonces`, once, for the freshness window
+   ([ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md)).
 2. **Crash safety:** A rail-issued reference is persisted before the prompt
    ([ADR-0032](../adr/0032-a-rail-issued-reference-is-committed-before-the-prompt.md)).
 3. **Data redaction:** Payer MSISDN and other personal data are protected in

@@ -23,7 +23,7 @@ trust_boundaries:
     description: "Merchants, payers, rails and identity providers. Nothing here is trusted."
     crossing_controls:
       - "TLS at the ingress; the server itself binds plain TCP"
-      - "OAuth2 private_key_jwt or bearer access tokens on /v1"
+      - "Every /v1 request is a COSE_Sign1 envelope from a registered merchant Ed25519 key, and every answer is sealed (ADR-0033); bearer tokens are refused on /v1"
       - "Rail callbacks are unauthenticated hints, not authenticated status reads"
   - id: tier_1_edge
     name: "Edge and ingress"
@@ -62,12 +62,12 @@ deployable_services:
       - name: "merchant_api"
         surface: "/v1"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "OAuth2 private_key_jwt or bearer access token (ADR-0010)"
+        auth: "COSE_Sign1 signed request from a registered merchant Ed25519 key, sealed answer (ADR-0033)"
         purpose: "Payment intents, refunds, customers, invoices"
       - name: "merchant_oauth"
         surface: "/v1/oauth"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "OAuth2 client credentials and authorization-code flows"
+        auth: "OAuth2 client credentials and authorization-code flows; the tokens it mints are refused on /v1 and the OP is deleted in VP-4"
         purpose: "Merchant token issuance and discovery"
       - name: "browser_checkout"
         surface: "/v1/browser"
@@ -186,6 +186,7 @@ state_stores:
       - currencies
       - customers
       - disabled_clients
+      - envelope_nonces
       - events
       - idempotency_keys
       - invoice_items
@@ -240,6 +241,16 @@ state_stores:
     adr: "docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md"
     invariants:
       - "A spent private_key_jwt assertion cannot be replayed within the validator leeway"
+
+  - id: envelope_replay_cache
+    name: "Signed-Transport Nonce Replay Cache"
+    backing_store: "postgres_primary"
+    table: "envelope_nonces"
+    implementation: "backends/crates/vpay-db/src/envelope_nonces.rs"
+    adr: "docs/adr/0033-v1-is-a-signed-message-not-a-token.md"
+    invariants:
+      - "A verified envelope's nonce is claimed once, atomically, and a replay inside the freshness window is refused"
+      - "A nonce is recorded only after the signature and freshness checks pass, and is swept only once expired"
 
 secrets_and_credentials:
   - class: mtn_momo_collection_credentials
@@ -322,6 +333,18 @@ secrets_and_credentials:
       - "VPAY_OAUTH_SIGNING_KEY_FILE"
     storage: "Mounted Secret file; one key per process, rotation is a restart"
     rotation_runbook: "docs/runbooks/rotate-signing-key.md"
+
+  - class: envelope_signing_keys
+    description: "Ed25519 keys that seal every /v1 answer: the current key, and the next key merchants already pin for rotation"
+    managed_in: "vpay-server CLI"
+    cli_flags:
+      - "--envelope-signing-key-file"
+      - "--envelope-signing-key-next-file"
+    env_vars:
+      - "VPAY_ENVELOPE_SIGNING_KEY_FILE"
+      - "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE"
+    storage: "Mounted Secret files; both are required at boot, must differ, and only their public halves are logged"
+    adr: "docs/adr/0033-v1-is-a-signed-message-not-a-token.md"
 
   - class: database_credentials
     description: "PostgreSQL connection URI credentials"
@@ -472,10 +495,13 @@ material_controls:
     implementation_paths:
       - "backends/crates/vpay-api/src/v1/mod.rs"
       - "backends/crates/vpay-api/src/resource_auth.rs"
-    evidence: "OAuth2 private_key_jwt with tenant-bound merchant claims and scoped endpoints (ADR-0010)."
+      - "backends/crates/vpay-api/src/envelope/scope.rs"
+    evidence: "Signed /v1 requests from registered merchant keys, resolved to a tenant-bound merchant with per-route scopes (ADR-0033)."
     evidence_paths:
-      - "docs/adr/0010-merchant-auth-private-key-jwt.md"
-    evidence_tests: []
+      - "docs/adr/0033-v1-is-a-signed-message-not-a-token.md"
+    evidence_tests:
+      - "every_route_refuses_an_unsigned_request_with_the_coarse_401"
+      - "a_foreign_tenant_gets_the_uniform_sealed_404"
     status: "implemented"
 
   - id: "A.8.2"
@@ -621,7 +647,7 @@ material_controls:
   - id: "A.8.24"
     theme: "Technological"
     name: "Use of Cryptography"
-    implementation: "Argon2id for staff passwords, AES-256-GCM for TOTP secrets and tokens, HMAC-SHA256 for webhook signatures, RSA for OAuth tokens."
+    implementation: "Argon2id for staff passwords, AES-256-GCM for TOTP secrets and tokens, HMAC-SHA256 for webhook signatures, Ed25519 COSE_Sign1 for every /v1 request and answer, RSA for the OAuth OP's tokens until VP-4."
     implementation_paths:
       - "backends/crates/vpay-api/src/staff_auth/password.rs"
       - "backends/crates/vpay-api/src/staff_auth/secret_box.rs"
