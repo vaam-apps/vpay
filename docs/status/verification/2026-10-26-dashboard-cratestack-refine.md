@@ -132,6 +132,20 @@ scratch copy of the Dockerfile that adds only this session's proxy CA:
 The checkout image was built and not run. `examples/shop`'s image was not
 built.
 
+## CodeQL alert #187 — dismissed as not exploitable (maintainer, 2026-10-26)
+
+CodeQL flagged `origin.replace(/\/+$/, "")` in the generated
+`frontends/packages/dash-client/src/runtime.ts` ("polynomial regular
+expression used on uncontrolled data"). The file is `cratestack
+generate-typescript` output that `just check-schema` holds byte for byte, so
+it is not patched here. The only value that reaches `origin` is
+`config.apiBaseUrl` — `VPAY_DASH_API`, read from the container's environment
+at boot (`src/dash/cratestack-client.ts`); the browser constructs no generated
+client, and no request data reaches the constructor. The maintainer chose
+dismissal over excluding the package from scanning or waiting on an upstream
+fix. The real fix is a non-backtracking trim in cratestack's
+`rest-runtime.ts.j2`; it is not filed from here.
+
 ## Not run
 
 - **Cypress / any browser.** `dashboard.cy.ts` was not run against these
