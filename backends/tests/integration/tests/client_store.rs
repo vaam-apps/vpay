@@ -67,6 +67,7 @@ fn configured_merchant() -> MerchantClient {
         merchant_id: MERCHANT_ID.to_owned(),
         // Nothing the OP does renders a name to anyone.
         display_name: None,
+        cose_keys: Vec::new(),
         jwks: Some(serde_json::json!({
             "keys": [{
                 "kty": "RSA",

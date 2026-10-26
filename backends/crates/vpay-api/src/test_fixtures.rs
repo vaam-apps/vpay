@@ -122,6 +122,7 @@ pub(crate) fn merchant(client_id: &str, scopes: &[&str]) -> MerchantClient {
         // should exercise by default, since it is the one an operator who
         // has not read `config/application.yml` will have.
         display_name: None,
+        cose_keys: Vec::new(),
         jwks: Some(serde_json::json!({ "keys": [] })),
         grant_types: vec![GrantType::ClientCredentials],
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),

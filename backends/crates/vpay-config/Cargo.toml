@@ -33,3 +33,15 @@ serde_yaml_ng.workspace = true
 url.workspace = true
 clap.workspace = true
 tokio.workspace = true
+# `oauth::CoseKey::verify_key`: reading a merchant's Ed25519 public key
+# (`CoseVerifyKey`, which also refuses bytes that are not a curve point) and
+# its RFC 9679 thumbprint, so the boot check and the `/v1` key registry in
+# `vpay-api` parse a key with the same code. Not the `cratestack` facade: that
+# is `cratestack-pg`, and linking `cratestack-sqlx` into the crate that reads
+# YAML to check 32 bytes is the wrong direction. No new package in the lock
+# (`cratestack-cose` is there since VP-1).
+cratestack-cose.workspace = true
+# Unpadded base64url, the encoding a JWK and a COSE key thumbprint are written
+# in, for `cose_keys[].public_key`. The same `0.22` pin `vpay-api` declares at
+# member level; `cratestack-core` also brings 0.23 for its own use.
+base64 = "0.22"

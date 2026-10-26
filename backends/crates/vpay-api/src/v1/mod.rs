@@ -62,6 +62,9 @@ pub mod boot;
 /// [`payment_intents`]'s reason: one resource, one file, and the routes
 /// below name it.
 pub mod checkout_sessions;
+/// [`V1_ROUTES`] held to `vpay_wire::V1_CONTRACTS`, in both directions: the
+/// table a signed request binds (VP-2).
+pub mod contracts;
 /// The Customer resource (S4a): `/v1/customers`, five routes.
 ///
 /// Its own module for [`payment_intents`]'s reason — one resource, one file
