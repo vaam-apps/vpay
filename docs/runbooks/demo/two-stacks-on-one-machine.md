@@ -154,6 +154,18 @@ So: **two demos brought up in sequence coexist and both serve; the older one's
 Bring the second stack up _before_ you start walking the first, or accept that
 only the most recently generated key pair authenticates.
 
+**Since VP-3 the shared pair is different and the failure reads differently
+(2026-10-26).** The merchant key is an Ed25519 seed,
+`.e2e/demo-merchant/signing.seed` (public half `signing.pub`, registered in the
+overlay as `cose_keys`), beside the server's response keys under
+`.e2e/envelope/`. Regenerating the overlay for another `demo_port` still
+re-keys the merchant, and the first stack's server still holds the old public
+key, so its walkthrough now fails at step 1 with the coarse unsigned `401`
+instead of `invalid_client` — and, because that `401` is the same for an unknown
+key, a wrong audience (the overlay's `public_base_url` is the port) and a
+replay, the port is the first thing to check. The transcript above is the
+pre-VP-3 capture.
+
 The fix is to key the `.e2e/` artefacts on `demo_project` the way the Compose
 project is keyed. It was **not** done in Step 8: `.e2e/demo-merchant/oauth-signing-key.pem`
 is a literal in `.github/workflows/ci.yml` (twice), in `just stripe-compat`, in

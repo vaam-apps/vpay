@@ -2,6 +2,12 @@
 
 _Moved out of [docs/runbooks/demo.md](../demo.md) on 2026-09-11 by exp57, which split a 1 426-line runbook into the procedure and its steps. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a `§` cross-reference pointed at a section that is now on another page, the page it moved to._
 
+> **Superseded in part, 2026-10-26 (VP-3).** The first bullet below described the
+> token handshake. `/v1` is signed now: the demo proves a **signed read** opens
+> under the response keys it pins, that a **bearer token buys nothing**, and that
+> a request with **no signature** gets vpay's coarse unsigned `401`. See
+> [../../flows/signed-transport.md](../../flows/signed-transport.md).
+
 ## 5. What this proves, and what it does not
 
 **Proves**, because a run that did not do it fails and exits non-zero:

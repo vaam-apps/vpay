@@ -69,21 +69,31 @@ Each developer generates their own throwaway keys; none are committed.
 ### The keys
 
 ```bash
-# vpay's OP signs /v1 access tokens with this. Any throwaway key works locally.
+# vpay's OP still signs its tokens with this until VP-4 removes the OP. Any
+# throwaway key works locally.
 cargo xtask gen-signing-key --out secrets            # -> secrets/oauth-signing-key.pem
 
-# The `live-merchant` signing keypair. Generate a FRESH one: the private half
-# must be yours, and its public half must be the one the live profile trusts.
+# vpay's two Ed25519 RESPONSE keys: what the signed /v1 seals every answer with.
+# Every client pins the public halves.
+cargo xtask gen-envelope-key --out secrets --name envelope-current   # .seed and .pub
+cargo xtask gen-envelope-key --out secrets --name envelope-next
+
+# The `live-merchant` Ed25519 SIGNING key. Generate a FRESH one: the private
+# seed must be yours, and its public half must be the one the live profile trusts.
+cargo xtask gen-envelope-key --out .e2e/live-merchant --name signing # -> .e2e/live-merchant/signing.seed
+# The OP's RS256 key for the same merchant (only its token endpoint reads it):
 cargo xtask gen-signing-key --out .e2e/live-merchant # -> .e2e/live-merchant/oauth-signing-key.pem
 ```
 
-`cargo xtask gen-signing-key --out <dir>` writes `<dir>/oauth-signing-key.pem`
-(the private half, mode 0600) and prints the matching `kid` + public JWK.
-`config/application-live.yml` references the **public** half only — vpay never
-holds the private half (ADR-0010) — through two `${VAR}` placeholders. Put
-**your** key's `kid` and modulus `n` (both printed by `gen-signing-key`) into
-`.env.live` as `LIVE_MERCHANT_JWK_KID` and `LIVE_MERCHANT_JWK_N`, replacing the
-example values. `.e2e/` and `secrets/` are git-ignored.
+`cargo xtask gen-envelope-key --out <dir> --name <stem>` writes `<stem>.seed`
+(the private half, mode 0600) and `<stem>.pub`, and prints the public key.
+`config/application-live.yml` references **public** halves only — vpay never
+holds a merchant's private half (ADR-0033) — through `${VAR}` placeholders.
+Put the merchant's **public key** into `.env.live` as `LIVE_MERCHANT_COSE_KEY`;
+that is what authenticates every `/v1` request. The RS256 `kid` and modulus `n`
+that `gen-signing-key` prints go in as `LIVE_MERCHANT_JWK_KID` and
+`LIVE_MERCHANT_JWK_N` (the OP's token endpoint reads them, nothing on `/v1`
+does), replacing the example values. `.e2e/` and `secrets/` are git-ignored.
 
 ### The credentials
 
@@ -110,6 +120,8 @@ set -a; . ./.env.live; set +a
   --profile live --config config/application.yml \
   --database-url postgres://vpay:vpay@localhost:5433/vpay \
   --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
+  --envelope-signing-key-file ./secrets/envelope-current.seed \
+  --envelope-signing-key-next-file ./secrets/envelope-next.seed \
   --bind 127.0.0.1:8080 --log-format text
 ```
 
@@ -158,7 +170,9 @@ cd <repo root>
 set -a; . ./.env.live; set +a
 
 VPAY_MERCHANT_CLIENT_ID=live-merchant \
-VPAY_MERCHANT_PRIVATE_KEY_PATH=.e2e/live-merchant/oauth-signing-key.pem \
+VPAY_MERCHANT_SIGNING_SEED_PATH=.e2e/live-merchant/signing.seed \
+VPAY_SERVER_KEY_CURRENT_PATH=secrets/envelope-current.pub \
+VPAY_SERVER_KEY_NEXT_PATH=secrets/envelope-next.pub \
 CHECKOUT_PUBLISHABLE_KEY=pk_test_livesandboxmerchant01 \
 MINT_CURRENCY=eur \
 node examples/checkout-browser/mint.mjs
@@ -256,8 +270,10 @@ docker rm -f vpay-pg   # if you want to drop the database too
 
 ## What is and is not proven by a successful run
 
-**Proven** (all observed on 2026-09-15): merchant `private_key_jwt`
-authentication; creating an EUR `mtn_momo` intent; confirming it through the
+**Proven** (all observed on 2026-09-15, when `/v1` still took a token
+minted from a `private_key_jwt` assertion; the signed transport of 2026-10-26
+has not been re-run against the real sandbox): merchant authentication;
+creating an EUR `mtn_momo` intent; confirming it through the
 browser path; the worker's `query_status` settling it to `succeeded` against
 `https://sandbox.momodeveloper.mtn.com`; the dashboard's staff sign-in against
 a real database.

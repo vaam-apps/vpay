@@ -537,13 +537,11 @@ test-flutter-web: _flutter-preflight
 # touches anything else already on the stack.
 #
 # The one merchant-only call this needs — expiring the second session, to
-# prove a session that is not `open` refuses the confirm — is made with a
-# real access token this recipe mints itself, the same `private_key_jwt`
-# exchange `examples/merchant-demo` and `just sdk-conformance-node` already
-# do: it reads WHICHEVER private key the running shop container already has
-# baked in (`docker cp`, never generated or committed here) and signs an
-# assertion with `sdks/nodejs`'s own `mintClientAssertion` via
-# `sdks/nodejs/scripts/mint-assertion.mjs`.
+# prove a session that is not `open` refuses the confirm — is a signed `/v1`
+# call this recipe makes itself, with `sdks/nodejs/scripts/vpay-call.mjs` (the
+# SDK's sealing path from a shell): it reads WHICHEVER signing seed the running
+# shop container already has mounted (`docker cp`, never generated or committed
+# here) and pins the server keys `gen-demo-keys` wrote under `.e2e/envelope/`.
 test-flutter-e2e: _flutter-preflight
     #!/usr/bin/env bash
     set -euo pipefail
@@ -588,9 +586,9 @@ test-flutter-e2e: _flutter-preflight
     shop_env="$(docker inspect "$shop_container" --format '{{{{range .Config.Env}}{{{{println .}}{{{{end}}')"
     client_id="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_CLIENT_ID=//p')"
     publishable_key="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_PUBLISHABLE_KEY=//p')"
-    private_key_path="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_PRIVATE_KEY_FILE=//p')"
-    if [ -z "$client_id" ] || [ -z "$publishable_key" ] || [ -z "$private_key_path" ]; then
-        echo "test-flutter-e2e: FAIL — could not read VPAY_CLIENT_ID/VPAY_PUBLISHABLE_KEY/VPAY_PRIVATE_KEY_FILE" >&2
+    seed_path="$(printf '%s\n' "$shop_env" | sed -n 's/^VPAY_SIGNING_SEED_FILE=//p')"
+    if [ -z "$client_id" ] || [ -z "$publishable_key" ] || [ -z "$seed_path" ]; then
+        echo "test-flutter-e2e: FAIL — could not read VPAY_CLIENT_ID/VPAY_PUBLISHABLE_KEY/VPAY_SIGNING_SEED_FILE" >&2
         echo "test-flutter-e2e:   off the running vpay-shop container's own environment." >&2
         exit 1
     fi
@@ -598,7 +596,7 @@ test-flutter-e2e: _flutter-preflight
 
     tmp="$(mktemp -d)"
     trap 'rm -rf "$tmp"' EXIT
-    docker cp "$shop_container:$private_key_path" "$tmp/merchant.pem"
+    docker cp "$shop_container:$seed_path" "$tmp/merchant.seed"
 
     # Two real orders, through the shop's real server — the same
     # `orders.create` mutation a buyer's browser calls
@@ -636,7 +634,7 @@ test-flutter-e2e: _flutter-preflight
     }
     expiring_cs_id="$(printf '%s' "$expiring_url" | sed -E 's#^[^#]*/c/([a-zA-Z0-9_]+).*#\1#')"
     expiring_cs_secret="${expiring_url#*#}"
-    echo "test-flutter-e2e: minted 2 real checkout sessions (real private_key_jwt, real cs_… ids)"
+    echo "test-flutter-e2e: minted 2 real checkout sessions (real signed calls, real cs_… ids)"
 
     # Read the expiring session ONCE while it is still `open`, to capture
     # the intent's own client_secret (D2 item 1) BEFORE expiring it below —
@@ -647,37 +645,24 @@ test-flutter-e2e: _flutter-preflight
     expiring_intent_id="$(printf '%s' "$expiring_session" | jq -er '.payment_intent.id')"
     expiring_intent_secret="$(printf '%s' "$expiring_session" | jq -er '.payment_intent.client_secret')"
 
-    # A real merchant access token, minted the same way
-    # `examples/merchant-demo` and `just sdk-conformance-node` do —
-    # `client_credentials` + `private_key_jwt`, signed with whichever key
-    # the running shop container actually has.
+    # The merchant-only call: a signed `POST /v1/checkout/sessions/{id}/expire`,
+    # sealed with whichever seed the running shop container actually has.
     pnpm install --filter @vaam-apps/vpay-sdk... >/dev/null
     pnpm --filter @vaam-apps/vpay-sdk build >/dev/null
-    assertion="$(VPAY_CLIENT_ID="$client_id" VPAY_PRIVATE_KEY_FILE="$tmp/merchant.pem" \
-        VPAY_AUDIENCE="$base_url/v1/oauth/token" \
-        node sdks/nodejs/scripts/mint-assertion.mjs | jq -er '.assertion')"
-    token_response="$(curl -sS -X POST "$base_url/v1/oauth/token" \
-        -H 'Content-Type: application/x-www-form-urlencoded' \
-        --data-urlencode 'grant_type=client_credentials' \
-        --data-urlencode "client_assertion=${assertion}" \
-        --data-urlencode 'client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer' \
-        --data-urlencode 'audience=vpay:v1')"
-    merchant_token="$(printf '%s' "$token_response" | jq -er '.access_token')" || {
-        echo "test-flutter-e2e: FAIL — could not mint a merchant access token to expire the fixture session." >&2
-        echo "test-flutter-e2e:   token endpoint answered: $token_response" >&2
-        exit 1
-    }
-
-    expire_status="$(curl -sS -o "$tmp/expire.json" -w '%{http_code}' -X POST \
-        "$base_url/v1/checkout/sessions/${expiring_cs_id}/expire" \
-        -H "Authorization: Bearer ${merchant_token}" \
-        -H "Idempotency-Key: test-flutter-e2e-expire-$(date +%s)-$$")"
-    if [ "$expire_status" != "200" ]; then
-        echo "test-flutter-e2e: FAIL — expiring the fixture session answered HTTP $expire_status:" >&2
-        cat "$tmp/expire.json" >&2
+    expire_status=0
+    VPAY_BASE_URL="$base_url" VPAY_MERCHANT_CLIENT_ID="$client_id" \
+        VPAY_MERCHANT_SIGNING_SEED_PATH="$tmp/merchant.seed" \
+        VPAY_SERVER_KEY_CURRENT_PATH="$PWD/.e2e/envelope/current.pub" \
+        VPAY_SERVER_KEY_NEXT_PATH="$PWD/.e2e/envelope/next.pub" \
+        VPAY_AUDIENCE="$base_url" \
+        node sdks/nodejs/scripts/vpay-call.mjs POST "/checkout/sessions/${expiring_cs_id}/expire" \
+            --key "test-flutter-e2e-expire-$(date +%s)-$$" >"$tmp/expire.json" 2>"$tmp/expire.err" || expire_status=$?
+    if [ "$expire_status" != "0" ]; then
+        echo "test-flutter-e2e: FAIL — expiring the fixture session failed (exit $expire_status):" >&2
+        cat "$tmp/expire.err" "$tmp/expire.json" >&2
         exit 1
     fi
-    echo "test-flutter-e2e: expired session $expiring_cs_id (real private_key_jwt token, real 200)"
+    echo "test-flutter-e2e: expired session $expiring_cs_id (real signed call, real 200)"
 
     fixture="$tmp/fixture.json"
     jq -n \
@@ -1076,16 +1061,40 @@ build-checkout-browser: build-sdk-browser
     cp sdks/stripe-js/dist/*.js sdks/stripe-js/dist/*.d.ts examples/checkout-browser/dist/stripe-js/
     echo "build-checkout-browser: vendored sdks/stripe-js/dist/ into examples/checkout-browser/dist/stripe-js/"
 
-# Cross-language conformance: mint a private_key_jwt assertion with the Node
-# SDK and verify it with the REAL OP verifier vpay will run
-# (authkestra_op::client_assertion::verify_client_assertion at the pinned
-# version, wrapped by sdks/rust/examples/verify_assertion.rs). The Rust SDK
-# has this as a test; the Node SDK cannot link the Rust crate, so this
-# recipe is the bridge. Not part of `just ci` — run it by hand, and record
-# the outcome in docs/status.md when you do.
-sdk-conformance-node: build-sdk-node
-    set -o pipefail; \
-      tmp=$(mktemp -d);       node -e 'const {generateKeyPairSync}=require("node:crypto"); const {privateKey}=generateKeyPairSync("rsa",{modulusLength:2048}); process.stdout.write(privateKey.export({type:"pkcs8",format:"pem"}))' > "$tmp/key.pem";       VPAY_CLIENT_ID=merchant_a VPAY_PRIVATE_KEY_FILE="$tmp/key.pem" VPAY_KID=k1         VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token         node sdks/nodejs/scripts/mint-assertion.mjs       | cargo run -q -p vpay-sdk --example verify_assertion -- - merchant_a           https://api.vpay.example/v1/oauth/token https://api.vpay.example/v1/oauth;       status=$?; rm -rf "$tmp"; exit $status
+# Installs the `wasm-bindgen` command-line tool at the version `Cargo.lock` pins
+# for the crate, if the one on PATH is not that. CI runs this, not a copy of it,
+# so the version has one source. `cargo install` and not a prebuilt download:
+# the tool and the crate agree on a private interface, and a download pinned
+# anywhere but the lock is a second place for the version to drift from.
+wasm-tools:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    wanted="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' Cargo.lock)"
+    if command -v wasm-bindgen >/dev/null 2>&1 && [ "$(wasm-bindgen --version | awk '{print $2}')" = "$wanted" ]; then
+        echo "wasm-tools: wasm-bindgen $wanted is installed"
+    else
+        cargo install wasm-bindgen-cli --locked --version "$wanted"
+    fi
+    rustup target add wasm32-unknown-unknown
+
+# The Node SDK's sealing module and the Rust crate it is built from.
+#
+# `@vaam-apps/vpay-sdk` does not implement the signed transport in TypeScript:
+# it calls `sdks/rust/wasm` (the Rust SDK's own sealing path over cratestack's
+# envelope), compiled to WebAssembly and wrapped for Node by `wasm-bindgen`.
+# So there is no cross-implementation conformance recipe to run — there is one
+# implementation — and the old `sdk-conformance-node` (a Node-minted JWT checked
+# by the Rust verifier) went with the JWT.
+#
+# `wasm-bindgen`'s command-line tool has to be exactly the version of the crate
+# `Cargo.lock` pins; `scripts/build-wasm.sh` says which to install when it is not.
+wasm-build:
+    bash sdks/nodejs/scripts/build-wasm.sh
+
+# The same crate with its `responder` feature on: cratestack's server envelope,
+# which the Node SDK's vitest suites run against. Not shipped.
+wasm-build-test:
+    bash sdks/nodejs/scripts/build-wasm.sh --responder
 
 # Cypress against the real stack, from nothing.
 #
@@ -1370,7 +1379,9 @@ e2e-specs:
       VPAY_CHECKOUT_URL=http://localhost:{{demo_checkout_port}} \
       VPAY_ORANGE_STUB_URL=http://localhost:{{demo_orange_port}} \
       VPAY_MERCHANT_CLIENT_ID=shop-merchant \
-      VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/shop-merchant/oauth-signing-key.pem" \
+      VPAY_MERCHANT_SIGNING_SEED_PATH="$PWD/.e2e/shop-merchant/signing.seed" \
+      VPAY_SERVER_KEY_CURRENT_PATH="$PWD/.e2e/envelope/current.pub" \
+      VPAY_SERVER_KEY_NEXT_PATH="$PWD/.e2e/envelope/next.pub" \
       CHECKOUT_BROWSER_PORT={{demo_fixture_port}} \
       VPAY_E2E_FRAME_FIXTURE_PORT=$(({{demo_fixture_port}} + 1)) \
       pnpm --filter @vpay/e2e e2e
@@ -1438,7 +1449,7 @@ clippy:
 
 # Depends on `build-sdk-node` because the typecheck does: `sdks/stripe-compat`
 # imports `@vaam-apps/vpay-sdk/stripe`, whose types resolve through that package's
-# `exports` map to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Without
+# `exports` map to `dist/stripe-http-client.d.ts`, and `dist/` is gitignored. Without
 # the build this recipe fails on a clean checkout with `TS2307: Cannot find
 # module '@vaam-apps/vpay-sdk/stripe'` — a missing artefact reported as a broken import.
 #
@@ -3125,7 +3136,21 @@ expected_ignored := "0"
 # test, `V1_CONTRACTS`). Every other VP-2 test went into binaries that already
 # existed. Measured by CI's `rust` job on `3d2152b0`, which failed here with
 # `vpay-wire` in its listing: **55** binaries, **2516** total, **0** ignored.
-expected_suites := "55"
+#
+# **55 -> 56 on 2026-10-26 (VP-3 + VP-5 + VP-7, the signed `/v1`)**: net one
+# binary, from four moves. `backends/tests/integration/tests/signed_transport.rs`
+# is new (the `EnvelopeLayer` against a real Postgres and the shipping router;
+# its own file because each case boots a container), the new crate
+# `sdks/rust/wasm` has native tests of its sealing core, and
+# `sdks/rust/tests/signing.rs` is new (the SDK's seal against a verifier it does
+# not share code with). Two binaries left: `sdks/rust/tests/op_conformance.rs`
+# and `token_exchange.rs`, whose subject (an OAuth token exchange and the
+# bearer-token conformance walk) no longer exists. Measured 2026-10-26 with
+# `cargo nextest list -p <package>` over every workspace package in turn (the
+# one-shot `--workspace` link does not fit the disk this was written on, and the
+# per-package listings sum to the same thing): **56** binaries, **2536** tests,
+# **0** ignored. `merchant-demo` is one of the 56 with no tests in it, as before.
+expected_suites := "56"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
@@ -3371,9 +3396,10 @@ wrapper := "deploy/helm/fixtures/wrapper"
 # `just ci`; corrected 2026-09-16. The missing binaries still justify the
 # exclusion; the offline argument no longer does on its own.
 #
-# What it proves: the chart lints, all FOUR value sets render, the twenty-four
-# named guards are exactly the twenty-four `ci/guards/` names on disk and each
-# of the twenty-five fixtures there fires its own guard with a non-zero exit
+# What it proves: the chart lints, all FOUR value sets render, the twenty-five
+# named guards are exactly the twenty-five `ci/guards/` names on disk and each
+# of the twenty-seven fixtures there fires its own guard (the envelope-keys guard
+# has a fixture per direction, as `connection-budget` does) with a non-zero exit
 # (twenty-five because `connection-budget` has a fixture per direction — see
 # the `.<n>` note at the guard loop), the default render templates no checkout
 # page and `ci/values-full.yaml`'s does, the Ingress path carries its
@@ -3459,6 +3485,7 @@ helm-check:
         connection-budget
         dashboard-public-origin
         database-secret
+        envelope-keys-secret
         extra-env-collision
         grace-period
         image-digest-format
@@ -4332,6 +4359,35 @@ demo_staff_password_file := ".e2e/" + demo_project + "/staff-password.txt"
 demo_staff_token_ttl := "30"
 
 
+# The signed transport's throwaway server keys for the compose stacks: the two
+# Ed25519 response keys `vpay-server` seals every `/v1` answer with
+# (`VPAY_ENVELOPE_SIGNING_KEY_FILE` / `..._NEXT_FILE`, mounted by
+# compose.e2e.yml), and their public halves, which every client pins
+# (`serverKeys` / `ServerKeys`). Written under `.e2e/envelope/`, git-ignored.
+#
+# Idempotent as a SET: all four files present, keep them; anything else,
+# regenerate all four — a `current.pub` that is not the public half of
+# `current.seed` is a client that refuses every answer as unverified. 0644
+# because the scratch image runs as UID 65532 (`--world-readable`); these are
+# generated per stack and thrown away, and a real deployment generates its own
+# with the same `cargo xtask gen-envelope-key` and keeps the seeds in a Secret.
+# Merchant signing keys are `gen-demo-keys`', beside the overlay that registers
+# their public halves.
+gen-envelope-keys:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    command -v cargo >/dev/null 2>&1 || { echo "gen-envelope-keys: needs 'cargo' on PATH" >&2; exit 1; }
+    dir=.e2e/envelope
+    if [ -e "$dir/current.seed" ] && [ -e "$dir/current.pub" ] && [ -e "$dir/next.seed" ] && [ -e "$dir/next.pub" ]; then
+        echo "gen-envelope-keys: $dir already holds the server's current and next keys, keeping them"
+        exit 0
+    fi
+    rm -rf "$dir"
+    mkdir -p "$dir"
+    cargo xtask gen-envelope-key --out "$dir" --name current --world-readable >/dev/null
+    cargo xtask gen-envelope-key --out "$dir" --name next --world-readable >/dev/null
+    echo "gen-envelope-keys: wrote $dir/current.{seed,pub} and $dir/next.{seed,pub} (throwaway Ed25519, mode 0644)"
+
 # Everything `just demo` needs on disk before a container starts: the server's
 # own OP signing key (the `gen-e2e-signing-key` dependency above) and the demo
 # merchant's key pair plus the profile overlay that registers its PUBLIC half.
@@ -4352,7 +4408,7 @@ demo_staff_token_ttl := "30"
 # does the demo binary it exists to feed.
 #
 # Generate the demo's throwaway keys and its profile overlay (idempotent).
-gen-demo-keys: gen-e2e-signing-key
+gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     #!/usr/bin/env bash
     set -euo pipefail
     for tool in cargo jq; do
@@ -4455,6 +4511,13 @@ gen-demo-keys: gen-e2e-signing-key
     # one merchant and answers `invalid_client` to the other.
     shop_key=.e2e/shop-merchant/oauth-signing-key.pem
     overlay=.e2e/application-demo.yml
+    # The merchants' Ed25519 signing seeds (VP-3): what the SDKs sign `/v1`
+    # with. The RSA pairs above remain only because the OP (`/v1/oauth`) stays
+    # until VP-4 and its registration still requires a JWKS; no client signs
+    # with them any more. Treated as part of the same one artefact as the
+    # overlay, which carries their public halves in `cose_keys`.
+    demo_seed=.e2e/demo-merchant/signing.seed
+    shop_seed=.e2e/shop-merchant/signing.seed
 
     # The MERCHANT's endpoint list, which is a different thing from the
     # top-level `webhooks:` block and lives at a different indentation:
@@ -4478,6 +4541,18 @@ gen-demo-keys: gen-e2e-signing-key
     merchant_webhooks_present() {
         grep -qE '^[[:space:]]+webhooks:[[:space:]]*$' "$overlay" \
             && grep -qE '^[[:space:]]+url: http://wiremock-webhook' "$overlay"
+    }
+
+    # VP-3. A signed `/v1` call finds its merchant by the key that verified, so
+    # a registration without `cose_keys` (or with the public half of a seed
+    # that is no longer on disk) is a merchant nobody can call: every request
+    # is the coarse unsigned 401, naming nothing. Keyed on the public halves
+    # the seed files currently hold, so a regenerated seed regenerates the
+    # overlay.
+    cose_keys_present() {
+        [ -e "$demo_seed" ] && [ -e "$shop_seed" ] || return 1
+        grep -qF "cose_keys: [\"$(cat .e2e/demo-merchant/signing.pub)\"]" "$overlay" \
+            && grep -qF "cose_keys: [\"$(cat .e2e/shop-merchant/signing.pub)\"]" "$overlay"
     }
 
     # Step 9. `checkout.public_base_url` is a TOP-LEVEL block whose one key is
@@ -4592,7 +4667,7 @@ gen-demo-keys: gen-e2e-signing-key
             && grep -qE '^  access_token_ttl_seconds: {{demo_staff_token_ttl}}$' "$overlay"
     }
 
-    if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ]; then
+    if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ] && [ -e "$demo_seed" ] && [ -e "$shop_seed" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
         # generated before that makes the server exit 78 on every restart
@@ -4621,8 +4696,9 @@ gen-demo-keys: gen-e2e-signing-key
             && mtn_settles_xaf \
             && dashboard_binding_present \
             && dashboard_redirect_present \
+            && cose_keys_present \
             && staff_auth_present; then
-            echo "gen-demo-keys: $key, $shop_key and $overlay already exist, keeping them"
+            echo "gen-demo-keys: $key, $shop_key, $demo_seed, $shop_seed and $overlay already exist, keeping them"
             exit 0
         fi
         if ! grep -q '^\s*merchant_id:' "$overlay"; then
@@ -4691,6 +4767,8 @@ gen-demo-keys: gen-e2e-signing-key
             # the dashboard's first call is a 404 and the login page reports
             # it as though the address were wrong.
             echo "gen-demo-keys: $overlay is missing a \`staff_auth\` line this stack needs — either both secrets (without which it serves no staff login at all) or \`access_token_ttl_seconds: {{demo_staff_token_ttl}}\` — regenerating the pair"
+        elif ! cose_keys_present; then
+            echo "gen-demo-keys: $overlay does not register the merchants' current Ed25519 signing keys (cose_keys) — regenerating the pair"
         elif ! checkout_base_present; then
             # Added 2026-09-04 (Step 9, D3/D6). `checkout.public_base_url` is
             # the origin every payer link vpay mints is built on. Stale, and
@@ -4712,10 +4790,10 @@ gen-demo-keys: gen-e2e-signing-key
             # could fix.
             echo "gen-demo-keys: $overlay does not settle \`mtn_momo\` in XAF — regenerating the pair"
         fi
-    elif [ -e "$key" ] || [ -e "$shop_key" ] || [ -e "$overlay" ]; then
-        echo "gen-demo-keys: $key, $shop_key and $overlay are out of sync — regenerating all three"
+    elif [ -e "$key" ] || [ -e "$shop_key" ] || [ -e "$overlay" ] || [ -e "$demo_seed" ] || [ -e "$shop_seed" ]; then
+        echo "gen-demo-keys: $key, $shop_key, $demo_seed, $shop_seed and $overlay are out of sync — regenerating all of them"
     fi
-    rm -f "$key" "$shop_key" "$overlay"
+    rm -f "$key" "$shop_key" "$overlay" "$demo_seed" "$shop_seed" .e2e/demo-merchant/signing.pub .e2e/shop-merchant/signing.pub
 
     generated=$(cargo xtask gen-signing-key --out .e2e/demo-merchant)
     jwk=$(printf '%s\n' "$generated" | grep -m1 '^{"kty"' || true)
@@ -4742,6 +4820,15 @@ gen-demo-keys: gen-e2e-signing-key
     shop_n=$(printf '%s' "$shop_jwk" | jq -er .n)
     shop_e=$(printf '%s' "$shop_jwk" | jq -er .e)
     shop_kid=$(printf '%s' "$shop_jwk" | jq -er .kid)
+
+    # The merchants' signing seeds. The demo merchant's stays on the host (0600,
+    # the demo binary runs outside the stack as a merchant's own process would);
+    # the shop's is mounted into the shop container, which runs as uid 1000, so
+    # it is world-readable like its RSA sibling below.
+    cargo xtask gen-envelope-key --out .e2e/demo-merchant --name signing >/dev/null
+    cargo xtask gen-envelope-key --out .e2e/shop-merchant --name signing --world-readable >/dev/null
+    cose_demo=$(cat .e2e/demo-merchant/signing.pub)
+    cose_shop=$(cat .e2e/shop-merchant/signing.pub)
 
     # ADR-0017's two staff-auth secrets, drawn from the OS CSPRNG and written
     # only into the git-ignored overlay. base64url without padding for the
@@ -4977,6 +5064,10 @@ gen-demo-keys: gen-e2e-signing-key
               kid: "$kid"
               n: "$n"
               e: "$e"
+        # VP-3: the key \`/v1\` calls are signed with. The server finds this
+        # merchant by the key that verified, so this line, not \`client_id\`, is
+        # what makes a signed request \`demo-merchant\`'s.
+        cose_keys: ["$cose_demo"]
         grant_types: [client_credentials]
         # What the demo is authorised to do. The SDK asks for no scope, so
         # this list is what its token carries (RFC 6749 §3.3 default scope,
@@ -5044,6 +5135,7 @@ gen-demo-keys: gen-e2e-signing-key
               kid: "$shop_kid"
               n: "$shop_n"
               e: "$shop_e"
+        cose_keys: ["$cose_shop"]
         grant_types: [client_credentials]
         # \`payments:write\` covers both POST /v1/payment_intents and
         # POST /v1/checkout/sessions, which is the pair the shop makes per
@@ -5084,6 +5176,7 @@ gen-demo-keys: gen-e2e-signing-key
 
     echo "gen-demo-keys: wrote $key (3072-bit RSA, mode 0600, host-only)"
     echo "gen-demo-keys: wrote $shop_key (3072-bit RSA, mode 0644, mounted into vpay-shop)"
+    echo "gen-demo-keys: wrote $demo_seed (Ed25519, mode 0600, host-only) and $shop_seed (mode 0644, mounted into vpay-shop)"
     echo "gen-demo-keys: wrote $overlay — client_id=demo-merchant kid=$kid"
     echo "gen-demo-keys: wrote $overlay — client_id=shop-merchant kid=$shop_kid"
     echo "gen-demo-keys: both rails settle XAF in this overlay (config/application.yml keeps mtn_momo on EUR — the sandbox's own currency)"
@@ -5327,7 +5420,7 @@ demo-dashboard:
 # looks like.
 #
 # `build-sdk-node` is not optional: the suite imports `@vaam-apps/vpay-sdk/stripe`,
-# which resolves to `sdks/nodejs/dist/stripe-auth.js`.
+# which resolves to `sdks/nodejs/dist/stripe-http-client.js`.
 #
 # The stack is left UP on purpose, exactly as `just demo` leaves it — a failed
 # conformance run is when you most want to go and read
@@ -5383,7 +5476,9 @@ stripe-compat: gen-demo-keys build-sdk-node
     VPAY_BASE_URL=http://localhost:{{demo_port}} \
     VPAY_RECEIVER_URL=http://localhost:{{demo_receiver_port}} \
     VPAY_MERCHANT_CLIENT_ID=demo-merchant \
-    VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
+    VPAY_MERCHANT_SIGNING_SEED_PATH="$PWD/.e2e/demo-merchant/signing.seed" \
+    VPAY_SERVER_KEY_CURRENT_PATH="$PWD/.e2e/envelope/current.pub" \
+    VPAY_SERVER_KEY_NEXT_PATH="$PWD/.e2e/envelope/next.pub" \
       pnpm --filter @vaam-apps/vpay-stripe-compat compat
     status=$?
     set -e
@@ -5450,7 +5545,9 @@ sdk-live: gen-demo-keys
 
     export VPAY_BASE_URL=http://localhost:{{demo_port}}
     export VPAY_MERCHANT_CLIENT_ID=demo-merchant
-    export VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem"
+    export VPAY_MERCHANT_SIGNING_SEED_PATH="$PWD/.e2e/demo-merchant/signing.seed"
+    export VPAY_SERVER_KEY_CURRENT_PATH="$PWD/.e2e/envelope/current.pub"
+    export VPAY_SERVER_KEY_NEXT_PATH="$PWD/.e2e/envelope/next.pub"
 
     set +e
     # Both live binaries, named rather than left to `--features live-stack`

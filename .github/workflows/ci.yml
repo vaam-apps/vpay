@@ -156,6 +156,12 @@ jobs:
             web-sources: &web-sources
               - 'frontends/**'
               - 'sdks/nodejs/**'
+              # The Node SDK's sealing module, compiled from this crate.
+              - 'sdks/rust/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.cargo/**'
+              - 'rust-toolchain.toml'
               - 'sdks/stripe-compat/**'
               - 'sdks/stripe-js/**'
               - 'examples/**'
@@ -580,6 +586,9 @@ jobs:
           # "Unexpected input(s) 'clippy'" and clippy only worked because the
           # runner image happens to preinstall it.
           components: rustfmt, clippy
+          # The Node SDK's sealing module is `sdks/rust/wasm` compiled to
+          # WebAssembly, and its `build` (below) does that.
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16
         with:
@@ -594,6 +603,7 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version-file: .nvmrc, cache: pnpm }
       - run: pnpm install --frozen-lockfile
+      - run: just wasm-tools
       - run: pnpm --filter @vaam-apps/vpay-sdk build
       # The CrateStack CLI, for `postgres_smoke`'s drift test, which shells
       # out to `cratestack migrate baseline --strict` and is a red failure
@@ -682,6 +692,18 @@ jobs:
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with: { node-version-file: .nvmrc, cache: pnpm }
+      # A Rust toolchain in the *web* job, which used to have none. The Node
+      # SDK does not seal anything in TypeScript: its `build` and its `test`
+      # compile `sdks/rust/wasm` to WebAssembly (`just wasm-tools` installs the
+      # `wasm-bindgen` CLI at the version `Cargo.lock` pins), and `lint-web`'s
+      # typecheck needs that build. `cargo fmt` stays the `rust` job's.
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = \"\(.*\)\"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # For `just audit-web` below. Pinned to a full commit SHA — matching
       # what `deploy` does, and for the reason stated there: a mutable tag is
       # a promise from whoever can move it, and this is the step that decides
@@ -701,6 +723,7 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
       - run: pnpm install --frozen-lockfile
+      - run: just wasm-tools
       # Immediately after install and before anything is built, so a
       # known-vulnerable dependency fails this job in seconds rather than
       # after a Storybook build. `just audit-web`, not a copy of its
@@ -733,10 +756,10 @@ jobs:
       #
       # The build comes first, and not only to catch an emit-time failure in
       # the one package whose `build` actually emits JS (`dist/`, consumed by
-      # merchants and by `just sdk-conformance-node`). It is a *prerequisite*
+      # merchants). It is a *prerequisite*
       # of both checks after it: `sdks/stripe-compat` imports
       # `@vaam-apps/vpay-sdk/stripe`, whose types resolve through the package's
-      # `exports` to `dist/stripe-auth.d.ts`, and `dist/` is gitignored. Run
+      # `exports` to `dist/stripe-http-client.d.ts`, and `dist/` is gitignored. Run
       # in the old order this job failed on a clean checkout with `TS2307:
       # Cannot find module '@vaam-apps/vpay-sdk/stripe'`; the lint is worse, because an
       # unbuilt `dist/` resolves to `any` and the type-aware rules report the
@@ -811,10 +834,16 @@ jobs:
       # short compile, not a build of the server.
       - id: toolchain
         run: echo "channel=$(sed -n 's/^channel = \"\(.*\)\"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      # `targets:` and the `wasm-tools` step are for the Node SDK, whose sealing
+      # code is `sdks/rust/wasm` compiled to WebAssembly (`pnpm ... build`
+      # below runs it): the e2e job builds `dist/` for the shop, the checkout
+      # example and stripe-node, and every one of them signs through it.
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05
         with:
           toolchain: ${{ steps.toolchain.outputs.channel }}
+          targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - run: just wasm-tools
       # With `CYPRESS_INSTALL_BINARY` unset, the `cypress` package's own
       # postinstall downloads the binary during `pnpm install`. `verify` then
       # proves it is actually runnable before a stack is built for it.
@@ -834,7 +863,7 @@ jobs:
         env:
           CYPRESS_VERIFY_TIMEOUT: "120000"
       # The Node SDK's `dist/` — `sdks/stripe-compat` imports
-      # `@vaam-apps/vpay-sdk/stripe`, which resolves to `dist/stripe-auth.js`. The `web`
+      # `@vaam-apps/vpay-sdk/stripe`, which resolves to `dist/stripe-http-client.js`. The `web`
       # job builds it too; this job cannot borrow that job's artefacts.
       - run: pnpm --filter @vaam-apps/vpay-sdk build
       # `@vaam-apps/vpay-stripe-js`'s built ESM, vendored into
@@ -1010,7 +1039,7 @@ jobs:
       - name: the browser specs (the recipe, not a copy of its environment)
         run: just e2e-specs
       # The official `stripe` package, driven against this same running stack
-      # through `createStripeAuthenticator` (docs/flows/stripe-sdk-compat.md).
+      # through the sealing `httpClient` (docs/flows/stripe-sdk-compat.md).
       # Out of process on purpose: half of what it proves is header behaviour
       # through the real router, which an in-process harness cannot see.
       #
@@ -1031,8 +1060,12 @@ jobs:
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
           # Absolute: `pnpm --filter` runs the script with the cwd set to the
           # package, not to the checkout, so a relative path here would be
-          # resolved against `sdks/stripe-compat/`.
-          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+          # resolved against `sdks/stripe-compat/`. The seed is the merchant's
+          # signing key; the two `.pub` files are the server keys it pins, all
+          # written by `gen-demo-keys`.
+          VPAY_MERCHANT_SIGNING_SEED_PATH: ${{ github.workspace }}/.e2e/demo-merchant/signing.seed
+          VPAY_SERVER_KEY_CURRENT_PATH: ${{ github.workspace }}/.e2e/envelope/current.pub
+          VPAY_SERVER_KEY_NEXT_PATH: ${{ github.workspace }}/.e2e/envelope/next.pub
         run: pnpm --filter @vaam-apps/vpay-stripe-compat compat
       # The two merchant SDKs' OWN live cases against this same stack —
       # `just sdk-live`, split into its two halves so a failure names the SDK.
@@ -1068,7 +1101,9 @@ jobs:
         env:
           VPAY_BASE_URL: http://localhost:8080
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
-          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+          VPAY_MERCHANT_SIGNING_SEED_PATH: ${{ github.workspace }}/.e2e/demo-merchant/signing.seed
+          VPAY_SERVER_KEY_CURRENT_PATH: ${{ github.workspace }}/.e2e/envelope/current.pub
+          VPAY_SERVER_KEY_NEXT_PATH: ${{ github.workspace }}/.e2e/envelope/next.pub
         run: cargo test -p vpay-sdk --features live-stack --test live_invoices --test live_refunds
       - name: sdks/nodejs invoice and refund lifecycles against the running stack
         env:
@@ -1076,7 +1111,9 @@ jobs:
           VPAY_MERCHANT_CLIENT_ID: demo-merchant
           # Absolute: `pnpm --filter` runs the script with the cwd set to the
           # package, not to the checkout.
-          VPAY_MERCHANT_PRIVATE_KEY_PATH: ${{ github.workspace }}/.e2e/demo-merchant/oauth-signing-key.pem
+          VPAY_MERCHANT_SIGNING_SEED_PATH: ${{ github.workspace }}/.e2e/demo-merchant/signing.seed
+          VPAY_SERVER_KEY_CURRENT_PATH: ${{ github.workspace }}/.e2e/envelope/current.pub
+          VPAY_SERVER_KEY_NEXT_PATH: ${{ github.workspace }}/.e2e/envelope/next.pub
         run: pnpm --filter @vaam-apps/vpay-sdk test:live
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log

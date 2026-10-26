@@ -14,6 +14,7 @@
     "config",
     "database",
     "signingKey",
+    "envelopeKeys",
     "rails",
     "observability",
     "metrics",
@@ -341,6 +342,30 @@
       "properties": {
         "existingSecret": { "type": "string" },
         "key": { "type": "string" },
+        "mountPath": { "type": "string", "minLength": 1 },
+        "defaultMode": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 511,
+          "description": "Decimal representation of the file mode. values.yaml writes it as 0440, which YAML parses as octal, i.e. 288."
+        }
+      }
+    },
+
+    "envelopeKeys": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "existingSecret",
+        "current",
+        "next",
+        "mountPath",
+        "defaultMode"
+      ],
+      "properties": {
+        "existingSecret": { "type": "string" },
+        "current": { "type": "string" },
+        "next": { "type": "string" },
         "mountPath": { "type": "string", "minLength": 1 },
         "defaultMode": {
           "type": "integer",

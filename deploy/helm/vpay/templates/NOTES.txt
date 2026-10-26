@@ -46,6 +46,7 @@ READ THIS.
   * This chart creates no Secret and no database. These must already exist:
       Secret/{{ .Values.database.existingSecret }} (key {{ .Values.database.existingSecretKey }}) — the Postgres URL
       Secret/{{ .Values.signingKey.existingSecret }} (key {{ .Values.signingKey.key }}) — the RS256 signing key
+      Secret/{{ .Values.envelopeKeys.existingSecret }} (keys {{ .Values.envelopeKeys.current }}, {{ .Values.envelopeKeys.next }}) — the signed /v1 transport's two Ed25519 response seeds; hand merchants both PUBLIC halves
       Secret/{{ .Values.rails.existingSecret }} — the rail credentials, one key per ${VAR} in the config
 
   * Staff single sign-on (`staff_auth.sso` in the overlay) is on only if the

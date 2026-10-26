@@ -15,7 +15,7 @@ export const dynamic = "force-dynamic";
  *
  * The two values the browser needs — the publishable key and the checkout
  * app's origin — are read from the server's environment here and passed down
- * as props. `VPAY_PRIVATE_KEY_FILE` and `VPAY_WEBHOOK_SECRET` are read by the
+ * as props. `VPAY_SIGNING_SEED_FILE` and `VPAY_WEBHOOK_SECRET` are read by the
  * same module and stay on this side of the boundary.
  */
 export default async function OrderEmbeddedPage({

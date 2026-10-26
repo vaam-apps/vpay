@@ -309,14 +309,21 @@ belong in [../runbooks/release.md](../runbooks/release.md).
 Both binaries refuse to start rather than start half-configured. Every item
 here is a hard failure, not a degraded mode.
 
-| Needed                                          | Supplied as                                        | Missing ⇒                                                                            |
-| ----------------------------------------------- | -------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| `VPAY_CONFIG`                                   | baked `ENV` in the image                           | exit 78                                                                              |
-| `DATABASE_URL`                                  | Secret (`database.existingSecret`)                 | exit 78, **both** modes (it was a bare non-zero — `1` — until 2026-09-10, issue #87) |
-| Every `${VAR}` in the config                    | Secret, `envFrom` (`rails.existingSecret`)         | exit 78, **both** binaries                                                           |
-| The RS256 signing key                           | Secret, mounted file (`signingKey.existingSecret`) | exit 78, **server only**                                                             |
-| Postgres, reachable and migratable              | outside the chart entirely                         | exit 69                                                                              |
-| `VPAY_WORKER_CONCURRENCY` ≤ 5, in `worker` mode | `worker.concurrency` in the chart                  | exit 78, **worker only** (new 2026-09-10, issue #63)                                 |
+| Needed                                          | Supplied as                                           | Missing ⇒                                                                            |
+| ----------------------------------------------- | ----------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `VPAY_CONFIG`                                   | baked `ENV` in the image                              | exit 78                                                                              |
+| `DATABASE_URL`                                  | Secret (`database.existingSecret`)                    | exit 78, **both** modes (it was a bare non-zero — `1` — until 2026-09-10, issue #87) |
+| Every `${VAR}` in the config                    | Secret, `envFrom` (`rails.existingSecret`)            | exit 78, **both** binaries                                                           |
+| The RS256 signing key                           | Secret, mounted file (`signingKey.existingSecret`)    | exit 78, **server only**                                                             |
+| The two Ed25519 envelope keys (VP-3)            | Secret, mounted files (`envelopeKeys.existingSecret`) | exit 78, **server only**, wherever `/v1` is mounted                                  |
+| Postgres, reachable and migratable              | outside the chart entirely                            | exit 69                                                                              |
+| `VPAY_WORKER_CONCURRENCY` ≤ 5, in `worker` mode | `worker.concurrency` in the chart                     | exit 78, **worker only** (new 2026-09-10, issue #63)                                 |
+
+The envelope keys are what `/v1` answers are signed with, and the chart generates
+none and fails the render unless `envelopeKeys.existingSecret` names a Secret
+holding two different seeds (`_validate.tpl`; the guard
+fixtures `envelope-keys-secret.yaml` and `envelope-keys-secret.2.yaml` prove it).
+The worker does not mount them. Every merchant pins the two public halves.
 
 The signing key is a _file_, never an environment value: that is how a
 Kubernetes Secret reaches a pod, and migration `0010` dropped the column that
@@ -567,6 +574,14 @@ the life of the process. Update the Secret, restart the server Deployment.
 **Rolling back to a retired `kid` crash-loops with exit 78**, not 69 —
 `DbError::SigningKeyRetired`. Roll forward.
 → [../runbooks/rotate-signing-key.md](../runbooks/rotate-signing-key.md)
+
+**Envelope keys.** Rotation needs no flag day, because every merchant pins both
+public keys: hand merchants `next`'s public half first, then make `next` the new
+`current`, generate a new `next`, update the Secret and restart the server
+Deployment. An answer sealed under either pinned key verifies throughout; a
+merchant that never learned `next` refuses the first answer after the swap, which
+is the failure the order avoids. See
+[signed-transport.md](signed-transport.md), "Where the keys come from".
 
 **Rail credentials.** Update the Secret and restart both workloads; the worker
 reads the same configuration as the server and will fail the same way if a

@@ -408,28 +408,27 @@ pnpm --filter @vpay-examples/shop dev
 catalogue is a data migration, not a seed script, so there is nothing else to
 remember to run.
 
-### `VPAY_OAUTH_AUDIENCE`, and why it exists
+### `VPAY_AUDIENCE`, and why it exists
 
-`VPAY_API_URL` is where this server sends its requests. The client
-assertion's `aud` claim is a different fact: it is what **vpay's OP calls
-itself**, and `authenticate_client` compares the claim against its own two
-names — `{deployment.public_base_url}/v1/oauth/token` and that `/v1/oauth`
-issuer — and against nothing else. The URL you POSTed to is never consulted.
+`VPAY_API_URL` is where this server sends its requests. The audience is a
+different fact: it is **vpay's configured name for itself**
+(`deployment.public_base_url`), every signed request is addressed to it, and
+the signature binds it. A server that was configured with another name refuses
+the request with the coarse unsigned `401`, the same answer as for an
+unregistered key.
 
 They coincide for a shop on the public internet, which is why the variable is
 optional. They do not coincide in the demo stack:
 
-| Variable              | The demo stack's value, and what it names                              |
-| --------------------- | ---------------------------------------------------------------------- |
-| `VPAY_API_URL`        | `http://vpay-server:8080` — vpay as **this container** reaches it      |
-| `VPAY_OAUTH_AUDIENCE` | `http://localhost:8080/v1/oauth/token` — vpay as **vpay** names itself |
+| Variable        | The demo stack's value, and what it names                         |
+| --------------- | ----------------------------------------------------------------- |
+| `VPAY_API_URL`  | `http://vpay-server:8080` — vpay as **this container** reaches it |
+| `VPAY_AUDIENCE` | `http://localhost:8080` — vpay as **vpay** names itself           |
 
-Leave it unset there and every token request answers `invalid_client`, with
-the signature, the `client_id`, the `kid` and the lifetime all correct and
-nothing in the response pointing at the audience. `compose.e2e.yml` and
-`compose.demo.yml` set it on `vpay-shop` for exactly this reason.
-
-The `/v1/oauth` issuer works too — the OP accepts either.
+Leave it unset there and every request is refused, with the key, the signature
+and the `client_id` all correct and nothing in the response pointing at the
+audience. `compose.e2e.yml` and `compose.demo.yml` set it on `vpay-shop` for
+exactly this reason.
 
 ## The stack, and why each piece is here
 

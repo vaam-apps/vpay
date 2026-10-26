@@ -2,16 +2,20 @@
 
 One payment, driven by the **official `stripe` package** against a real vpay.
 
-vpay accepts no API key ([ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md)),
-so the client is built with an empty key and a `config.authenticator` that
-performs vpay's `client_credentials` + `private_key_jwt` handshake:
+vpay accepts no API key and no token: every `/v1` call is a COSE_Sign1 message
+signed with your Ed25519 key, and every answer is one signed by vpay
+([signed transport](../../docs/flows/signed-transport.md)). The signature is the
+request body, which `config.authenticator` (headers only) cannot carry, so the
+client is built with a `config.httpClient` that seals each request and opens the
+answer:
 
 ```js
-const stripe = new Stripe("", {
-  authenticator: createStripeAuthenticator({
+const stripe = new Stripe("unused-placeholder", {
+  httpClient: createStripeHttpClient({
     baseUrl: "http://localhost:18080",
     clientId: "demo-merchant",
-    privateKey: readFileSync("./merchant-key.pem", "utf8"),
+    privateKey: readFileSync("./merchant.seed", "utf8"),
+    serverKeys: { current: readFileSync("./vpay-current.pub", "utf8") },
   }),
   host: "localhost",
   port: "18080",
@@ -25,21 +29,20 @@ Everything after those lines is ordinary stripe-node.
 
 Ten steps, from a clean checkout. `18080` is only "a port that is probably
 free"; use `8080` if it is free on your machine, and keep the number the same
-everywhere — the OP's issuer is derived from it.
+everywhere — the signature is addressed to it.
 
 1. `pnpm install`
 2. `pnpm --filter @vaam-apps/vpay-sdk build` — the example imports
    `@vaam-apps/vpay-sdk/stripe`, which resolves to `sdks/nodejs/dist/`.
-3. `just demo_port=18080 gen-demo-keys` — writes a throwaway merchant keypair
-   into git-ignored `.e2e/` and the profile overlay that registers its public
-   half.
+3. `just demo_port=18080 gen-demo-keys` — writes a throwaway merchant signing
+   seed and vpay's response keys into git-ignored `.e2e/`, and the profile
+   overlay that registers the seed's public half (`cose_keys`).
 4. `docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml up -d --build postgres wiremock-mtn wiremock-orange vpay-server vpay-worker`
    (with `VPAY_DEMO_PORT=18080` exported).
 5. `curl -fsS http://localhost:18080/healthz` until it answers — the server's
    image is `FROM scratch` and has no container healthcheck.
 6. `VPAY_BASE_URL=http://localhost:18080 pnpm --filter @vpay-examples/merchant-stripe-node start`
-7. Read the four numbered lines it prints: authenticated, created, confirmed,
-   settled.
+7. Read the three numbered lines it prints: created, confirmed, settled.
 8. Expect it to end on **`succeeded`**, usually a second or two after the
    confirm — see below.
 9. `docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs vpay-server vpay-worker`
@@ -49,11 +52,13 @@ everywhere — the OP's issuer is derived from it.
 Steps 3–5 are what `just demo_port=18080 stripe-compat` does for the
 conformance suite; run that first and this example can start at step 6.
 
-| Variable                         | Default                                    |
-| -------------------------------- | ------------------------------------------ |
-| `VPAY_BASE_URL`                  | `http://localhost:18080`                   |
-| `VPAY_MERCHANT_CLIENT_ID`        | `demo-merchant`                            |
-| `VPAY_MERCHANT_PRIVATE_KEY_PATH` | `.e2e/demo-merchant/oauth-signing-key.pem` |
+| Variable                          | Default                           |
+| --------------------------------- | --------------------------------- |
+| `VPAY_BASE_URL`                   | `http://localhost:18080`          |
+| `VPAY_MERCHANT_CLIENT_ID`         | `demo-merchant`                   |
+| `VPAY_MERCHANT_SIGNING_SEED_PATH` | `.e2e/demo-merchant/signing.seed` |
+| `VPAY_SERVER_KEY_CURRENT_PATH`    | `.e2e/envelope/current.pub`       |
+| `VPAY_SERVER_KEY_NEXT_PATH`       | `.e2e/envelope/next.pub`          |
 
 ## How it reaches `succeeded`, and what this file does _not_ do
 

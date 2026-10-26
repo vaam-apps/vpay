@@ -97,8 +97,9 @@ $EDITOR ~/.config/vpay/notchpay-sandbox.env
 NOTCHPAY_TEST_PUBLIC_KEY=...      # dashboard: Settings > API keys, test mode
 NOTCHPAY_TEST_PRIVATE_KEY=...     # sent as X-Grant on every call
 NOTCHPAY_TEST_HASH_KEY=...        # Part A item 7 only; this profile gives vpay no signing secret
-NOTCHPAY_SANDBOX_MERCHANT_JWK_KID=...   # Part B, from gen-signing-key below
-NOTCHPAY_SANDBOX_MERCHANT_JWK_N=...     # Part B, from gen-signing-key below
+NOTCHPAY_SANDBOX_MERCHANT_COSE_KEY=...  # Part B, the merchant's Ed25519 public key, from gen-envelope-key below
+NOTCHPAY_SANDBOX_MERCHANT_JWK_KID=...   # Part B, from gen-signing-key below (the OP's token endpoint only)
+NOTCHPAY_SANDBOX_MERCHANT_JWK_N=...     # Part B, from gen-signing-key below (the OP's token endpoint only)
 ```
 
 Load it in every terminal with `set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a`.
@@ -400,9 +401,13 @@ done
 
 ```bash
 cargo build -p vpay-server
-cargo xtask gen-signing-key --out secrets                                # the OP's signing key
-cargo xtask gen-signing-key --out .e2e/notchpay-sandbox-merchant         # the merchant's keypair
-# put the printed kid and n into the env file as NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / _N
+cargo xtask gen-signing-key --out secrets                                # the OP's signing key (until VP-4)
+cargo xtask gen-envelope-key --out secrets --name envelope-current       # vpay's response keys (.seed, .pub)
+cargo xtask gen-envelope-key --out secrets --name envelope-next
+cargo xtask gen-envelope-key --out .e2e/notchpay-sandbox-merchant --name signing   # the merchant's signing key
+cargo xtask gen-signing-key --out .e2e/notchpay-sandbox-merchant         # the merchant's RS256 key, for the OP's token endpoint
+# put the printed public key into the env file as NOTCHPAY_SANDBOX_MERCHANT_COSE_KEY,
+# and the RS256 kid and n as NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / _N
 pnpm install --filter "@vpay-examples/merchant-node..." && pnpm --filter @vaam-apps/vpay-sdk build
 docker run -d --name vpay-pg-notchpay -p 127.0.0.1:5434:5432 \
   -e POSTGRES_USER=vpay -e POSTGRES_PASSWORD=vpay -e POSTGRES_DB=vpay postgres:16-alpine
@@ -414,7 +419,8 @@ every interface. _(This said `-p 5434:5432` until 2026-10-22; B3b's run
 bound loopback instead
 ([verification](../status/verification/2026-10-22-notchpay-b3b.md)).)_ A
 merchant keypair from an earlier run can be reused instead of generated, if
-its public half is the env file's `_KID` and `_N`: B3b's run did that.
+its public half is the env file's `_COSE_KEY` (and `_KID`/`_N`): B3b's run
+reused an RS256 pair that way, before the signed transport.
 
 ### B1. Terminal 1: the server
 
@@ -424,6 +430,8 @@ set -a; . ~/.config/vpay/notchpay-sandbox.env; set +a
   --profile notchpay-sandbox --config config/application.yml \
   --database-url postgres://vpay:vpay@localhost:5434/vpay \
   --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
+  --envelope-signing-key-file ./secrets/envelope-current.seed \
+  --envelope-signing-key-next-file ./secrets/envelope-next.seed \
   --bind 127.0.0.1:8080 --observability-bind 127.0.0.1:9090 \
   --log-format text 2>&1 | tee ~/notchpay-server.log
 ```
@@ -463,7 +471,8 @@ callback URL` at `warn`, which is expected here. Creating one is B4.
 for pair in 237670000000:210 237670000002:220 237670000001:230; do
   n=${pair%%:*}; amt=${pair##*:}
   VPAY_BASE_URL=http://localhost:8080 VPAY_CLIENT_ID=notchpay-sandbox-merchant \
-  VPAY_PRIVATE_KEY_FILE=.e2e/notchpay-sandbox-merchant/oauth-signing-key.pem \
+  VPAY_SIGNING_SEED_FILE=.e2e/notchpay-sandbox-merchant/signing.seed \
+  VPAY_SERVER_KEY_CURRENT_FILE=secrets/envelope-current.pub VPAY_SERVER_KEY_NEXT_FILE=secrets/envelope-next.pub \
   VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=$n VPAY_AMOUNT=$amt VPAY_ORDER="np-$n-$(date +%s)" \
     node examples/merchant-node/index.mjs
 done
@@ -524,7 +533,8 @@ and never through vpay. Same stack, same terminal:
 for pair in 237670000003:240 237670000004:250 237690000000:260; do
   n=${pair%%:*}; amt=${pair##*:}
   VPAY_BASE_URL=http://localhost:8080 VPAY_CLIENT_ID=notchpay-sandbox-merchant \
-  VPAY_PRIVATE_KEY_FILE=.e2e/notchpay-sandbox-merchant/oauth-signing-key.pem \
+  VPAY_SIGNING_SEED_FILE=.e2e/notchpay-sandbox-merchant/signing.seed \
+  VPAY_SERVER_KEY_CURRENT_FILE=secrets/envelope-current.pub VPAY_SERVER_KEY_NEXT_FILE=secrets/envelope-next.pub \
   VPAY_RAIL=notchpay VPAY_PAYER_MSISDN=$n VPAY_AMOUNT=$amt VPAY_ORDER="np-$n-$(date +%s)" \
     node examples/merchant-node/index.mjs
 done
