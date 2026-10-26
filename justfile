@@ -4566,8 +4566,8 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     # overlay.
     cose_keys_present() {
         [ -e "$demo_seed" ] && [ -e "$shop_seed" ] || return 1
-        grep -qF "cose_keys: [\"$(cat .e2e/demo-merchant/signing.pub)\"]" "$overlay" \
-            && grep -qF "cose_keys: [\"$(cat .e2e/shop-merchant/signing.pub)\"]" "$overlay"
+        grep -qF "cose_keys: [{ public_key: \"$(cat .e2e/demo-merchant/signing.pub)\", label: demo }]" "$overlay" \
+            && grep -qF "cose_keys: [{ public_key: \"$(cat .e2e/shop-merchant/signing.pub)\", label: shop }]" "$overlay"
     }
 
     # Step 9. `checkout.public_base_url` is a TOP-LEVEL block whose one key is
@@ -5082,7 +5082,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
         # VP-3: the key \`/v1\` calls are signed with. The server finds this
         # merchant by the key that verified, so this line, not \`client_id\`, is
         # what makes a signed request \`demo-merchant\`'s.
-        cose_keys: ["$cose_demo"]
+        cose_keys: [{ public_key: "$cose_demo", label: demo }]
         grant_types: [client_credentials]
         # What the demo is authorised to do. The SDK asks for no scope, so
         # this list is what its token carries (RFC 6749 §3.3 default scope,
@@ -5150,7 +5150,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
               kid: "$shop_kid"
               n: "$shop_n"
               e: "$shop_e"
-        cose_keys: ["$cose_shop"]
+        cose_keys: [{ public_key: "$cose_shop", label: shop }]
         grant_types: [client_credentials]
         # \`payments:write\` covers both POST /v1/payment_intents and
         # POST /v1/checkout/sessions, which is the pair the shop makes per
