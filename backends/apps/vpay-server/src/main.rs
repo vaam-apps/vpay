@@ -386,31 +386,56 @@ async fn run() -> anyhow::Result<()> {
     );
     tracing::info!(addr = %bound, "listening");
 
-    let deps =
-        RouterDeps {
-            repositories: booted.repositories,
-            merchant_op: booted.merchant_op,
-            merchant_validator,
-            dashboard_validator,
-            adapters: Arc::new(booted.adapters),
-            // The projection, not the whole `Config` — see `ResourceConfig`, and
-            // note this is the only way `deployment.livemode` reaches a handler.
-            resource_config: Arc::new(
-                ResourceConfig::from_config(&booted.config)
-                    .context("projecting the validated configuration onto the /v1 request path")?,
-            ),
-            staff_login: booted.staff_login,
-            // Already validated by `Config::load` -> `validate_all`
-            // (ADR-0022): an empty or unknown `deployment.surfaces` is a boot
-            // failure long before this line, so this `?` is unreachable for a
-            // `Config` that made it this far — `.context` rather than
-            // `.expect()` anyway, because this function returns `anyhow::Result`
-            // and every other fallible line in it already propagates rather
-            // than panics.
-            surfaces: booted.config.deployment.enabled_surfaces().context(
-                "re-resolving deployment.surfaces after Config::load already validated it",
-            )?,
-        };
+    // Already validated by `Config::load` -> `validate_all` (ADR-0022): an
+    // empty or unknown `deployment.surfaces` is a boot failure long before
+    // this line, so this `?` is unreachable for a `Config` that made it this
+    // far — `.context` rather than `.expect()` anyway, because this function
+    // returns `anyhow::Result` and every other fallible line in it already
+    // propagates rather than panics.
+    let surfaces = booted
+        .config
+        .deployment
+        .enabled_surfaces()
+        .context("re-resolving deployment.surfaces after Config::load already validated it")?;
+    // The projection, not the whole `Config` — see `ResourceConfig`, and note
+    // this is the only way `deployment.livemode` reaches a handler.
+    let resource_config = Arc::new(
+        ResourceConfig::from_config(&booted.config)
+            .context("projecting the validated configuration onto the /v1 request path")?,
+    );
+    let adapters = Arc::new(booted.adapters);
+    // ADR-0033: built only when `deployment.surfaces` names `mcp`, so an
+    // absent key never gains it.
+    let merchant_mcp = match surfaces.mcp {
+        true => {
+            let public_base_url = booted.config.deployment.public_base_url.clone();
+            let parts = vpay_api::mcp::MerchantMcpParts {
+                repositories: Arc::clone(&booted.repositories),
+                config: Arc::clone(&resource_config),
+                adapters: Arc::clone(&adapters),
+                validator: loopback_mcp_validator(bound, &booted.merchant_op, &public_base_url)?,
+                public_base_url,
+                issuer: booted.merchant_op.issuer().to_owned(),
+            };
+            Some(
+                vpay_api::mcp::merchant_router(parts)
+                    .context("building the merchant MCP endpoint (ADR-0033)")?,
+            )
+        }
+        false => None,
+    };
+
+    let deps = RouterDeps {
+        repositories: booted.repositories,
+        merchant_op: booted.merchant_op,
+        merchant_validator,
+        dashboard_validator,
+        adapters,
+        resource_config,
+        staff_login: booted.staff_login,
+        surfaces,
+        merchant_mcp,
+    };
 
     let (observability, observability_shutdown_tx) =
         start_observability(args.common.observability_bind, metrics).await?;
@@ -724,6 +749,28 @@ fn loopback_validator(
         )
         .context("building the JWKS client the /v1 token validator fetches with")?,
     ))
+}
+
+/// The merchant MCP endpoint's token validator (ADR-0033 D9).
+///
+/// [`loopback_validator`]'s JWKS, issuer and loopback URL, and a **different
+/// audience**: the MCP resource identifier, which a merchant client lists in
+/// its `allowed_audiences` to opt in. A second validator rather than one with
+/// both audiences, for [`loopback_dashboard_validator`]'s reason: a validator
+/// configured with two audiences accepts a token for either, so a `/v1` token
+/// would pass here and an MCP token on `/v1`.
+fn loopback_mcp_validator(
+    bound: SocketAddr,
+    merchant_op: &MerchantOp,
+    public_base_url: &str,
+) -> anyhow::Result<JwtValidator> {
+    JwtValidator::new(
+        loopback_jwks_url(bound),
+        JWKS_REFRESH_INTERVAL,
+        merchant_op.issuer(),
+        vpay_api::mcp::merchant_resource(public_base_url),
+    )
+    .context("building the JWKS client the MCP token validator fetches with")
 }
 
 /// The `/dash/v1` token validator, or `None` when this deployment registers

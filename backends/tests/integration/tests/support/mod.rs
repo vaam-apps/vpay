@@ -472,6 +472,10 @@ pub(crate) fn router_deps_with(
             .deployment
             .enabled_surfaces()
             .expect("the suite's deployment.surfaces is valid"),
+        // Built by `mcp_merchant.rs` alone, through `vpay_api::mcp::merchant_router`,
+        // exactly as `vpay-server`'s `main` builds it; every other suite
+        // mounts no MCP endpoint.
+        merchant_mcp: None,
     }
 }
 
@@ -1011,7 +1015,8 @@ pub(crate) async fn serve_with_adapters(
     );
 
     let dashboard_validator = dashboard_validator_for(&base_url, merchant_op.issuer(), &config);
-    let deps = router_deps_with(
+    let issuer = merchant_op.issuer().to_owned();
+    let mut deps = router_deps_with(
         Arc::clone(repositories),
         merchant_op,
         merchant_validator,
@@ -1020,6 +1025,30 @@ pub(crate) async fn serve_with_adapters(
         &config,
         adapters(),
     );
+    // The merchant MCP endpoint (ADR-0033), built exactly as `vpay-server`'s
+    // `main` builds it — only when `deployment.surfaces` names `mcp`, over
+    // a validator whose audience is the MCP resource and whose JWKS is this
+    // server's own.
+    if deps.surfaces.mcp {
+        let validator = JwtValidator::new(
+            format!("{base_url}/v1/oauth/jwks.json"),
+            Duration::from_secs(300),
+            issuer.clone(),
+            vpay_api::mcp::merchant_resource(&base_url),
+        )
+        .expect("the vendored-roots JWKS client builds");
+        let parts = vpay_api::mcp::MerchantMcpParts {
+            repositories: Arc::clone(&deps.repositories),
+            config: Arc::clone(&deps.resource_config),
+            adapters: Arc::clone(&deps.adapters),
+            validator,
+            public_base_url: base_url.clone(),
+            issuer,
+        };
+        deps.merchant_mcp = Some(
+            vpay_api::mcp::merchant_router(parts).context("building the merchant MCP endpoint")?,
+        );
+    }
     let server = tokio::spawn(async move {
         // `into_make_service_with_connect_info`, exactly as
         // `vpay-server`'s own `serve_with_bounded_drain` does it. Without it
