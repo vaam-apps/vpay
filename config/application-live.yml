@@ -82,17 +82,18 @@ providers:
 # acme-cameroon is gone — dashboard_client.merchant_id below is repointed to
 # this one to keep the boot guard (DashboardUnknownMerchant) happy.
 #
-# live-merchant's PUBLIC JWK corresponds to the PRIVATE key generated with:
-#     cargo xtask gen-signing-key --out .e2e/live-merchant
-# (private half at .e2e/live-merchant/oauth-signing-key.pem). vpay holds only
-# the public half; the merchant signs client_credentials assertions with the
-# private half (ADR-0010).
+# live-merchant signs every `/v1` request with an Ed25519 key generated with:
+#     cargo xtask gen-envelope-key --out .e2e/live-merchant --name signing
+# (private seed at .e2e/live-merchant/signing.seed). vpay holds only the public
+# half, `cose_keys` below (ADR-0033, docs/flows/signed-transport.md). Put the
+# printed public key in `.env.live` as LIVE_MERCHANT_COSE_KEY: it is a ${VAR}
+# placeholder resolved from the environment, not a literal.
 #
-# The key-specific halves (`kid` and the RSA modulus `n`) are ${VAR}
-# placeholders resolved from the environment, not literals — set
-# LIVE_MERCHANT_JWK_KID / LIVE_MERCHANT_JWK_N in `.env.live` (git-ignored) to
-# the values `cargo xtask gen-signing-key` prints. `kty`/`use`/`alg`/`e` are
-# fixed and not key-specific (the generator always emits 3072-bit RSA, e = AQAB).
+# The `jwks` block is the RS256 key the OP's token endpoint still checks until
+# VP-4 removes the OP; nothing on `/v1` reads it. Its halves (`kid` and the RSA
+# modulus `n`) are LIVE_MERCHANT_JWK_KID / LIVE_MERCHANT_JWK_N, the values
+# `cargo xtask gen-signing-key` prints. `kty`/`use`/`alg`/`e` are fixed (the
+# generator always emits 3072-bit RSA, e = AQAB).
 merchant_clients:
   - client_id: live-merchant
     merchant_id: live-merchant
@@ -105,6 +106,9 @@ merchant_clients:
           alg: RS256
           n: ${LIVE_MERCHANT_JWK_N}
           e: AQAB
+    cose_keys:
+      - public_key: ${LIVE_MERCHANT_COSE_KEY}
+        label: live-sandbox
     grant_types: [client_credentials]
     # Both scopes, so a single merchant can read its own intents too.
     scopes: [payments:write, payments:read]

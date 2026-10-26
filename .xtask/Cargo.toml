@@ -14,6 +14,11 @@ name = "xtask"
 path = "src/main.rs"
 
 [dependencies]
+# `gen-envelope-key` only: the Ed25519 public half of a seed. A workspace pin
+# (`cratestack-cose`, `=0.16.0`) already in the lockfile through `vpay-api`, so
+# no new package, and the same implementation the server and the SDK derive keys
+# with — a key this tool prints is the key they will use.
+cratestack-cose.workspace = true
 # `gen-signing-key` only — see the module docs in src/main.rs for why xtask,
 # which had no dependencies at all, has four now, and why none of them is a
 # workspace crate. All four are already in the lockfile via vpay-api and the

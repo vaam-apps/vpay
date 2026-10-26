@@ -700,3 +700,24 @@ the two CLI installs in `ci.yml`. Taken directly, not through the facade, so
 the crate that reads YAML does not link `cratestack-sqlx`; `cratestack-cose`'s
 `auth` feature is not taken. No new package in the lock beyond `vpay-wire`
 itself: both crates were already there through `cratestack-pg`.
+
+## 2026-10-26 — migration `0055` (the replay cache of the signed `/v1`), and drift goes 212 → 214, measured
+
+`envelope_nonces` is the one table VP-3 adds: one row per accepted
+`(kid, cti)` and the instant its replay window closes. `model EnvelopeNonce`
+declares the two columns and the primary key and nothing else, so the report
+moved by exactly two `[safe]` lines under one new relation, measured by
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` against a
+freshly migrated Postgres 16:
+`drift detected in 29 table(s)/view(s) (214 change(s) total)`.
+
+- `CHECK envelope_nonces_id_length`, a single-column CHECK like `0053`'s.
+- `index envelope_nonces_expires_at_idx`, the sweep's index.
+- Nothing lossy: both columns are `TEXT`/`TIMESTAMPTZ`, so
+  `EXPECTED_UNMAPPABLE_COLUMNS` stays 20.
+
+`EXPECTED_DRIFT_CHANGES` is 214 and `EXPECTED_DRIFTED_RELATIONS` 29 in
+`postgres_smoke.rs`, with the same derivation beside them; the migration count
+that `schema_migrates_cleanly_on_an_empty_database` pins is 55. The model has
+no policy arm on purpose: the claim is one raw statement made by the layer's
+own store (`vpay-db/src/envelope_nonces.rs`), as `rate_limit_windows`' is.

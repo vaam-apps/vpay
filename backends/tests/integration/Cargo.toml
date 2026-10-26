@@ -117,8 +117,19 @@ axum.workspace = true
 # dev-dependency-only feature addition `authkestra-op`'s `sqlx-postgres` above
 # already does.
 reqwest = { workspace = true, features = ["query", "form"] }
-# Mints the RSA keypairs those tests sign with — the merchant's and the
-# server's — so nothing is verified against hard-coded material. Pinned
+# `tests/support/sealed.rs` (VP-3/VP-5): the merchant side of the signed `/v1`
+# transport, sealing with cratestack's own `ClientEnvelope` and binding routes
+# from `vpay-wire`, independently of `vpay-sdk`. `vpay-wire` is a workspace crate
+# with no `vpay-*` dependency; `bytes`, `percent-encoding` and `url` are already
+# in the lock.
+vpay-wire.workspace = true
+serde.workspace = true
+cratestack-client-rust.workspace = true
+bytes = "1"
+percent-encoding = "2"
+url = "2"
+# Mints the RSA keypairs the OP's `client_assertion` and signing key use (the
+# OP stays until VP-4) — so nothing is verified against hard-coded material. Pinned
 # directly at the same "0.9" `vpay-api` uses (neither is a workspace
 # dependency); already in the resolved graph via `authkestra-engine`.
 rsa = "0.9"

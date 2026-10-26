@@ -49,6 +49,10 @@ vpay-wire.workspace = true
 # `CratestackError` the resolver trait's signature returns.
 cratestack-cose.workspace = true
 cratestack-core.workspace = true
+# `envelope`: the `EnvelopeLayer` `/v1` is wrapped in, its `BindingResolver`
+# over `V1_ROUTES`, and the `VerifiedSigner` it records (VP-3). See the root
+# manifest for why this is a workspace pin with `default-features = false`.
+cratestack-axum.workspace = true
 axum.workspace = true
 tokio.workspace = true
 # `ServiceBuilder`, so `router()`'s middleware order is written top-down in

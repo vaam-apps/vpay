@@ -74,21 +74,28 @@
 //! `backends/tests/integration/tests/confirm_rails.rs`, which stubs both
 //! rails as WireMock hosts.
 //!
-//! `just sdk-conformance-node` cannot be pointed at this server — it verifies
-//! an assertion shape only — so nothing here claims Node/Rust SDK parity
-//! against a live vpay. The Rust SDK is exercised; the Node one is not.
+//! Node/Rust SDK parity is not claimed here: the Node SDK's live cases are
+//! `sdks/nodejs/src/*.live.test.ts`, run by CI's `e2e` job against a stack,
+//! and both SDKs seal through the same Rust code (`sdks/rust/wasm`).
 //!
-//! # Why the SDK and not a hand-rolled client
+//! # Which client, and why
 //!
-//! `vpay-sdk` (`sdks/rust`) is the artefact a merchant integrates, not a test
-//! double. Where a raw `reqwest` request appears below it is because the SDK
-//! deliberately cannot express it: a request with no bearer token (test 9), a
-//! `POST` with no `Idempotency-Key` (test 10 — the SDK always sends one), and
-//! the byte-level body comparison test 8 needs.
+//! Every request to `/v1` is a signed message (`docs/flows/signed-transport.md`),
+//! so a "raw" request is no longer a `reqwest` call with a header changed. The
+//! suite uses two clients, and says which at each use:
+//!
+//! * `vpay-sdk` (`sdks/rust`), the artefact a merchant integrates, for the
+//!   cases that are about the resource and not the transport.
+//! * `support::sealed::SealedHttp`, an independent sealer built on
+//!   cratestack's client and the vendored operation table, for the cases the SDK
+//!   deliberately cannot express: a `POST` with no `Idempotency-Key` (test 10,
+//!   the SDK always sends one), a replay, and the byte-level body comparison
+//!   test 8 needs. A plain `reqwest` client remains only for the requests that
+//!   must be **unsigned** (test 9).
 
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use anyhow::Context as _;
 use serde_json::Value;
@@ -96,15 +103,16 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
-    ConfirmPaymentIntentParams, CreateCustomerParams, CreatePaymentIntentParams, Credentials,
-    IntentStatus, ListPaymentIntentsParams, PaymentMethodType, RequestOptions,
+    ConfirmPaymentIntentParams, CreateCustomerParams, CreatePaymentIntentParams, IntentStatus,
+    ListPaymentIntentsParams, PaymentMethodType, RequestOptions,
 };
 
 mod support;
+
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client, merchant_client_with_scopes,
@@ -130,6 +138,11 @@ const MERCHANT_B: &str = "beta-douala-tenant";
 const CLIENT_C: &str = "gamma-yaounde";
 const MERCHANT_C: &str = "gamma-yaounde-tenant";
 
+/// The fourth merchant: registered for `payments:read` and nothing else, so
+/// test 11 can show a read scope authorising a `GET` and not a `POST`.
+const CLIENT_D: &str = "delta-bafoussam";
+const MERCHANT_D: &str = "delta-bafoussam-tenant";
+
 /// The push rail (MTN) and the redirect rail (Orange), both configured and
 /// both enabled — the flow branch in `confirm` is only meaningful with one of
 /// each.
@@ -152,69 +165,30 @@ struct Harness {
     /// state no repository method owns.
     pool: PgPool,
     base_url: String,
-    /// Merchant A's, B's and C's private keys, PEM-encoded.
-    pem_a: String,
-    pem_b: String,
-    pem_c: String,
-    /// The server's own signing key, so a test can mint a bearer token
-    /// directly for the raw requests the SDK cannot make.
-    signing_key: LoadedSigningKey,
 }
 
 impl Harness {
-    fn sdk(&self, client_id: &str, pem: &str) -> vpay_sdk::Client {
+    fn sdk(&self, client_id: &str) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(client_id, pem).expect("the generated PEM parses as RSA"),
-            )
+            .credentials(support::sealed::sdk_credentials(client_id))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
 
     /// Merchant A's SDK client — the one almost every test uses.
     fn a(&self) -> vpay_sdk::Client {
-        self.sdk(CLIENT_A, &self.pem_a)
+        self.sdk(CLIENT_A)
     }
 
     /// Merchant B's SDK client.
     fn b(&self) -> vpay_sdk::Client {
-        self.sdk(CLIENT_B, &self.pem_b)
+        self.sdk(CLIENT_B)
     }
 
     /// Merchant C's SDK client — the one registered for no scopes.
     fn c(&self) -> vpay_sdk::Client {
-        self.sdk(CLIENT_C, &self.pem_c)
-    }
-
-    /// A bearer token for `client_id`, minted with the server's own signer.
-    ///
-    /// The same shape the OP would mint — same issuer, same key, same
-    /// `vpay:v1` audience — so a request carrying it is indistinguishable to
-    /// `/v1` from one the SDK obtained. It exists because the SDK holds its
-    /// token privately, and the raw-request tests below need one in hand.
-    fn bearer(&self, client_id: &str) -> String {
-        self.bearer_with_scope(client_id, Some(vpay_api::SCOPE_PAYMENTS_WRITE))
-    }
-
-    /// The same, with the `scope` claim named explicitly.
-    ///
-    /// The OP grants a client's registered scopes when a token request names
-    /// none (RFC 6749 §3.3, `vpay_api::op::token::token_handler`), so a
-    /// hand-minted token has to say what it carries or it would be *less*
-    /// authorised than the one the SDK obtains — and every raw-request test
-    /// below would be asserting against a `403` instead of the answer it is
-    /// actually about.
-    fn bearer_with_scope(&self, client_id: &str, scope: Option<&str>) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                scope.map(str::to_owned),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
+        self.sdk(CLIENT_C)
     }
 
     fn url(&self, path: &str) -> String {
@@ -325,6 +299,12 @@ fn config_with(
             merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
             // Registered, and registered for nothing — see `CLIENT_C`.
             merchant_client_with_scopes(CLIENT_C, MERCHANT_C, jwks_c, &[]),
+            merchant_client_with_scopes(
+                CLIENT_D,
+                MERCHANT_D,
+                generate_key().1,
+                &[vpay_api::SCOPE_PAYMENTS_READ],
+            ),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
@@ -348,9 +328,9 @@ async fn harness() -> anyhow::Result<Harness> {
     let (container, repositories, pool) = migrated_postgres().await?;
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
-    let (pem_b, jwks_b) = generate_key();
-    let (pem_c, jwks_c) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
+    let (_pem_b, jwks_b) = generate_key();
+    let (_pem_c, jwks_c) = generate_key();
 
     let served = serve(&repositories, &server_pem, |base_url| {
         config_with(base_url, jwks_a, jwks_b, jwks_c, true)
@@ -363,14 +343,17 @@ async fn harness() -> anyhow::Result<Harness> {
         repositories,
         pool,
         base_url: served.base_url,
-        pem_a,
-        pem_b,
-        pem_c,
-        signing_key: served.signing_key,
     })
 }
 
-fn raw_client() -> reqwest::Client {
+/// The raw client the SDK cannot be: it seals like a merchant does, and
+/// names which merchant per request (`.signed_by(..)`).
+fn raw_client() -> SealedHttp {
+    SealedHttp::new()
+}
+
+/// A plain-HTTP client for the requests that must arrive unsigned.
+fn plain_client() -> reqwest::Client {
     reqwest::Client::builder()
         .build()
         .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed")
@@ -956,12 +939,11 @@ async fn merchant_b_cannot_read_merchant_as_intent() -> anyhow::Result<()> {
         .await
         .context("merchant A creates an intent")?;
 
-    let bearer_b = harness.bearer(CLIENT_B);
     let http = raw_client();
 
     let foreign = http
         .get(harness.url(&format!("/v1/payment_intents/{}", intent.id)))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .send()
         .await
         .context("merchant B asks for merchant A's intent")?;
@@ -972,7 +954,7 @@ async fn merchant_b_cannot_read_merchant_as_intent() -> anyhow::Result<()> {
     let missing_id = "pi_00000000000000000000000x";
     let missing = http
         .get(harness.url(&format!("/v1/payment_intents/{missing_id}")))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .send()
         .await
         .context("merchant B asks for an id that never existed")?;
@@ -1009,7 +991,7 @@ async fn merchant_b_cannot_read_merchant_as_intent() -> anyhow::Result<()> {
     for path in ["confirm", "cancel"] {
         let response = http
             .post(harness.url(&format!("/v1/payment_intents/{}/{path}", intent.id)))
-            .bearer_auth(&bearer_b)
+            .signed_by(CLIENT_B)
             .header("Idempotency-Key", format!("b-tries-{path}"))
             .header("content-type", "application/x-www-form-urlencoded")
             .body("payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000")
@@ -1038,23 +1020,29 @@ async fn merchant_b_cannot_read_merchant_as_intent() -> anyhow::Result<()> {
 
 // ------------------------------------------------------------------ test 9
 
-/// Step 2's D3, asserted over the router's *own* route table: every path
-/// `vpay_api::V1_ROUTES` registers, on every method it registers, answers
-/// `401` with no bearer token.
+/// Step 2's D3, asserted over the router's *own* route table, and held to the
+/// signed transport: every path `vpay_api::V1_ROUTES` registers, on every
+/// method it registers, answers the envelope layer's coarse `401` to a request
+/// that carries no signature (the test keeps its name from before the signed
+/// transport; "a token" is now "a signed envelope").
 ///
 /// The table is not a copy — `vpay_api::v1::routes` folds the same constant
 /// into the `Router`, so a route cannot exist without appearing here, and
 /// this test cannot fall behind the surface it is checking. Removing the
-/// `require_merchant_token` layer from the `/v1` nest fails this test on
-/// every entry.
+/// `EnvelopeLayer` from the `/v1` nest fails this test on every entry.
 ///
 /// Path parameters are filled with a syntactically valid id: a `401` decided
 /// before routing would pass either way, but a `{id}` left literal would make
 /// a *routing* failure look like a boundary success.
+///
+/// The answer is **not** the Stripe envelope any more: the layer's refusal
+/// is identical for every cause (no signature, a bearer token, a key nobody
+/// registered), which is the point of its being coarse
+/// (`docs/reference/api.md`, "The unsigned answer").
 #[tokio::test]
 async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Result<()> {
     let harness = harness().await?;
-    let http = raw_client();
+    let http = plain_client();
 
     assert!(
         !vpay_api::V1_ROUTES.is_empty(),
@@ -1098,6 +1086,7 @@ async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Resul
                 other => panic!("this test does not know how to send {other}"),
             };
             let response = request
+                .header("accept", "application/json")
                 .send()
                 .await
                 .with_context(|| format!("{method} {url}"))?;
@@ -1108,8 +1097,8 @@ async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Resul
             );
             let body: Value = response.json().await.context("the 401 body is JSON")?;
             assert_eq!(
-                body.pointer("/error/type").and_then(Value::as_str),
-                Some("authentication_error"),
+                body.get("code").and_then(Value::as_str),
+                Some("UNAUTHORIZED"),
                 "{method} /v1{path}: got {body:#}"
             );
             checked += 1;
@@ -1120,30 +1109,30 @@ async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Resul
         "the four /v1 routes answer five method/path pairs; only {checked} were checked"
     );
 
-    // The other side: an unrouted `/v1` path is *also* behind the boundary,
-    // so a caller with no token cannot learn which resources exist.
-    for path in ["/v1/balance", "/v1/events", "/v1/refunds"] {
+    // Routed paths the SDKs expose are behind the boundary whatever their
+    // method: an unsigned caller learns nothing about them but the 401.
+    for path in ["/v1/events", "/v1/refunds"] {
         let response = http
             .get(harness.url(path))
+            .header("accept", "application/json")
             .send()
             .await
-            .context("an unrouted /v1 path")?;
-        assert_eq!(
-            response.status().as_u16(),
-            401,
-            "{path} is not implemented, and an anonymous caller must not learn that"
-        );
+            .context("a routed /v1 path")?;
+        assert_eq!(response.status().as_u16(), 401, "{path}");
     }
 
-    // And with a token, an unrouted path is the honest 404 — the pair of
-    // answers that shows the boundary is in front of the fallback too.
-    let bearer = harness.bearer(CLIENT_A);
+    // A `/v1` path that is not an operation at all is the honest 404, signed
+    // or not: the envelope layer lets a plain request for a path it does not
+    // bind through to the router's fallback (`V1Binding`'s `NotAnOp`), because
+    // the operations are public (`docs/reference/api.md`) and answering `401`
+    // to a path nothing serves would tell a caller nothing true. The signed
+    // half of the pair cannot be written here: the signing client, like the
+    // SDKs, refuses to seal a path no operation serves.
     let response = http
         .get(harness.url("/v1/balance"))
-        .bearer_auth(&bearer)
         .send()
         .await
-        .context("an authenticated request for an unimplemented resource")?;
+        .context("a request for an unimplemented resource")?;
     assert_eq!(response.status().as_u16(), 404);
     let body: Value = response.json().await.context("the 404 body is JSON")?;
     assert_eq!(
@@ -1167,11 +1156,10 @@ async fn every_registered_v1_path_answers_401_without_a_token() -> anyhow::Resul
 async fn a_post_without_an_idempotency_key_is_the_documented_400() -> anyhow::Result<()> {
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let response = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("content-type", "application/x-www-form-urlencoded")
         .body("amount=5000&currency=xaf&payment_method_types[0]=mtn_momo")
         .send()
@@ -1204,7 +1192,7 @@ async fn a_post_without_an_idempotency_key_is_the_documented_400() -> anyhow::Re
     // header and not about the body.
     let response = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "with-a-key")
         .header("content-type", "application/x-www-form-urlencoded")
         .body("amount=5000&currency=xaf&payment_method_types[0]=mtn_momo")
@@ -1452,45 +1440,37 @@ async fn a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_no
         .context("a registered, scoped client must still get through")?;
     assert_eq!(created.status, IntentStatus::RequiresPaymentMethod);
 
-    // A read scope authorises a GET and not a POST. Hand-minted because no
-    // registration here holds `payments:read` — the rule under test is the
-    // middleware's, not the registry's.
+    // A read scope authorises a GET and not a POST. `CLIENT_D` is registered
+    // for `payments:read` alone, because a scope now lives in the
+    // registration and nowhere else: a signed call carries no claim to
+    // narrow — the rule under test is the middleware's, not the registry's.
     let http = raw_client();
-    let read_only = harness.bearer_with_scope(CLIENT_A, Some(vpay_api::SCOPE_PAYMENTS_READ));
     let response = http
         .get(harness.url("/v1/payment_intents"))
-        .bearer_auth(&read_only)
+        .signed_by(CLIENT_D)
         .send()
         .await
-        .context("a read-scoped token listing intents")?;
+        .context("a read-scoped client listing intents")?;
     assert_eq!(response.status().as_u16(), 200);
 
     let response = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&read_only)
+        .signed_by(CLIENT_D)
         .header("Idempotency-Key", "read-only-tries-to-write")
         .header("content-type", "application/x-www-form-urlencoded")
         .body("amount=5000&currency=xaf&payment_method_types[0]=mtn_momo")
         .send()
         .await
-        .context("a read-scoped token creating an intent")?;
+        .context("a read-scoped client creating an intent")?;
     assert_eq!(
         response.status().as_u16(),
         403,
         "a read-only credential must not be able to take a payment"
     );
 
-    // A token with no scope claim at all is refused, not admitted by
-    // default — the shape every token had before the OP learned to apply a
-    // default scope.
-    let unscoped = harness.bearer_with_scope(CLIENT_A, None);
-    let response = http
-        .get(harness.url("/v1/payment_intents"))
-        .bearer_auth(&unscoped)
-        .send()
-        .await
-        .context("an unscoped token")?;
-    assert_eq!(response.status().as_u16(), 403);
+    // The registration with no scope at all was refused on a read above
+    // (`CLIENT_C`): a client with no scope is admitted to nothing, never
+    // by default.
 
     harness.shutdown().await;
     Ok(())
@@ -1626,7 +1606,7 @@ async fn a_replay_survives_the_rail_being_disabled() -> anyhow::Result<()> {
 
     // The redeploy: a second server over the same database, with the rail
     // the intent was created for switched off.
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
     let (_pem_c, jwks_c) = generate_key();
     let (server_pem, _server_jwks) = generate_key();
@@ -1635,9 +1615,8 @@ async fn a_replay_survives_the_rail_being_disabled() -> anyhow::Result<()> {
     })
     .await?;
     let after_change = vpay_sdk::Client::builder(&served.base_url)
-        .credentials(
-            vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the generated PEM parses"),
-        )
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
         .build()
         .expect("the SDK client builds");
 
@@ -1709,11 +1688,10 @@ async fn a_key_whose_first_request_is_still_running_is_answered_with_its_own_cod
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let created = http
         .post(harness.url(PATH))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", KEY)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(BODY)
@@ -1742,7 +1720,7 @@ async fn a_key_whose_first_request_is_still_running_is_answered_with_its_own_cod
 
     let response = http
         .post(harness.url(PATH))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", KEY)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(BODY)
@@ -1840,7 +1818,6 @@ async fn a_failed_store_releases_the_key_so_the_retry_re_executes() -> anyhow::R
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     sqlx::raw_sql(
         "CREATE FUNCTION refuse_completion() RETURNS trigger AS $$ \
@@ -1855,7 +1832,7 @@ async fn a_failed_store_releases_the_key_so_the_retry_re_executes() -> anyhow::R
 
     let response = http
         .post(harness.url(PATH))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", KEY)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(BODY)
@@ -1909,7 +1886,7 @@ async fn a_failed_store_releases_the_key_so_the_retry_re_executes() -> anyhow::R
 
     let response = http
         .post(harness.url(PATH))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", KEY)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(BODY)
@@ -1960,10 +1937,9 @@ async fn a_failed_store_releases_the_key_so_the_retry_re_executes() -> anyhow::R
 
 /// The Stripe SDK spelling of the request id, and the one this API has
 /// always used, side by side on the response.
-fn request_id_headers(response: &reqwest::Response) -> (Option<String>, Option<String>) {
+fn request_id_headers(headers: &reqwest::header::HeaderMap) -> (Option<String>, Option<String>) {
     let read = |name: &str| {
-        response
-            .headers()
+        headers
             .get(name)
             .map(|value| value.to_str().expect("a request id is ascii").to_owned())
     };
@@ -1971,9 +1947,8 @@ fn request_id_headers(response: &reqwest::Response) -> (Option<String>, Option<S
 }
 
 /// `stripe-should-retry` as an SDK would read it, or `None` when absent.
-fn retry_advice(response: &reqwest::Response) -> Option<String> {
-    response
-        .headers()
+fn retry_advice(headers: &reqwest::header::HeaderMap) -> Option<String> {
+    headers
         .get("stripe-should-retry")
         .map(|value| value.to_str().expect("the advisory is ascii").to_owned())
 }
@@ -2000,13 +1975,12 @@ fn retry_advice(response: &reqwest::Response) -> Option<String> {
 async fn every_response_carries_the_request_id_under_stripes_header_too() -> anyhow::Result<()> {
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
     const BODY: &str = "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo";
 
     // 200 — a handler's own response.
     let created = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "request-id-on-a-success")
         .header("content-type", "application/x-www-form-urlencoded")
         .body(BODY)
@@ -2017,7 +1991,7 @@ async fn every_response_carries_the_request_id_under_stripes_header_too() -> any
     // 400 — an extractor rejection, decided before the handler runs.
     let no_key = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(BODY)
         .send()
@@ -2025,27 +1999,32 @@ async fn every_response_carries_the_request_id_under_stripes_header_too() -> any
         .context("a create with no Idempotency-Key")?;
 
     // 404 — the router's fallback, with no handler involved at all.
-    let unrouted = http
+    let unrouted = plain_client()
         .get(harness.url("/not_a_vpay_route"))
         .send()
         .await
         .context("an unrouted path")?;
 
     // 401 — the authentication boundary, outside every handler.
-    let unauthenticated = http
+    let unauthenticated = plain_client()
         .get(harness.url("/v1/payment_intents"))
         .send()
         .await
-        .context("a /v1 request with no bearer token")?;
+        .context("a /v1 request with no signature")?;
 
-    for (label, expected_status, response) in [
-        ("200", 200, created),
-        ("400", 400, no_key),
-        ("404", 404, unrouted),
-        ("401", 401, unauthenticated),
+    for (label, expected_status, status, headers) in [
+        ("200", 200, created.status(), created.headers().clone()),
+        ("400", 400, no_key.status(), no_key.headers().clone()),
+        ("404", 404, unrouted.status(), unrouted.headers().clone()),
+        (
+            "401",
+            401,
+            unauthenticated.status(),
+            unauthenticated.headers().clone(),
+        ),
     ] {
-        assert_eq!(response.status().as_u16(), expected_status, "{label}");
-        let (x_request_id, stripe) = request_id_headers(&response);
+        assert_eq!(status.as_u16(), expected_status, "{label}");
+        let (x_request_id, stripe) = request_id_headers(&headers);
         let x_request_id = x_request_id
             .unwrap_or_else(|| panic!("{label}: no x-request-id on the response at all"));
         assert!(!x_request_id.is_empty(), "{label}");
@@ -2087,7 +2066,6 @@ async fn every_response_carries_the_request_id_under_stripes_header_too() -> any
 async fn a_rail_failure_and_a_conflict_carry_opposite_retry_advice() -> anyhow::Result<()> {
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let intent = harness
         .a()
@@ -2098,7 +2076,7 @@ async fn a_rail_failure_and_a_conflict_carry_opposite_retry_advice() -> anyhow::
 
     let confirm = |key: &'static str| {
         http.post(harness.url(&format!("/v1/payment_intents/{}/confirm", intent.id)))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body("payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000")
@@ -2112,7 +2090,7 @@ async fn a_rail_failure_and_a_conflict_carry_opposite_retry_advice() -> anyhow::
         "this suite's rail is unreachable by configuration"
     );
     assert_eq!(
-        retry_advice(&unreachable_rail).as_deref(),
+        retry_advice(unreachable_rail.headers()).as_deref(),
         Some("true"),
         "`Category::Rail` is `Retry::AfterBackoff`; the rail may answer later"
     );
@@ -2121,7 +2099,7 @@ async fn a_rail_failure_and_a_conflict_carry_opposite_retry_advice() -> anyhow::
         .await
         .context("the second confirm")?;
     assert_eq!(already_charged.status().as_u16(), 409);
-    let advice = retry_advice(&already_charged);
+    let advice = retry_advice(already_charged.headers());
     let body: Value = already_charged
         .json()
         .await
@@ -2169,11 +2147,10 @@ async fn an_in_flight_idempotency_key_tells_a_stripe_sdk_to_retry_its_400() -> a
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let post = || {
         http.post(harness.url(PATH))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", KEY)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(BODY)
@@ -2205,7 +2182,7 @@ async fn an_in_flight_idempotency_key_tells_a_stripe_sdk_to_retry_its_400() -> a
     let in_flight = post().await.context("a POST under a key still in flight")?;
     assert_eq!(in_flight.status().as_u16(), 400);
     assert_eq!(
-        retry_advice(&in_flight).as_deref(),
+        retry_advice(in_flight.headers()).as_deref(),
         Some("true"),
         "the one 4xx on this surface that heals on its own must say so, or a \
          Stripe SDK will never retry it"
@@ -2243,11 +2220,10 @@ async fn confirm_on_create_is_refused_and_names_the_field() -> anyhow::Result<()
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let create = |key: &'static str, body: String| {
         http.post(harness.url(PATH))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body)
@@ -2325,11 +2301,10 @@ async fn confirm_on_create_is_refused_and_names_the_field() -> anyhow::Result<()
 async fn a_request_shaped_the_way_stripe_node_sends_it_is_accepted() -> anyhow::Result<()> {
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let response = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "stripe-node-retry-abc-123")
         .header("content-type", "application/x-www-form-urlencoded")
         // The exact set `RequestSender._makeHeaders` builds, minus the ones
@@ -2397,11 +2372,10 @@ async fn a_refused_create_hands_its_idempotency_key_back() -> anyhow::Result<()>
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let post = |key: &'static str, body: String| {
         http.post(harness.url(PATH))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body)
@@ -2513,7 +2487,6 @@ async fn a_confirm_refuses_the_same_fields_a_create_does() -> anyhow::Result<()>
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let intent = harness
         .a()
@@ -2524,7 +2497,7 @@ async fn a_confirm_refuses_the_same_fields_a_create_does() -> anyhow::Result<()>
 
     let confirm = |key: &'static str, body: String| {
         http.post(harness.url(&format!("/v1/payment_intents/{}/confirm", intent.id)))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body)
@@ -2645,7 +2618,6 @@ async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> 
 
     let harness = harness().await?;
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let intent = harness
         .a()
@@ -2656,7 +2628,7 @@ async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> 
 
     let confirm = |key: &'static str| {
         http.post(harness.url(&format!("/v1/payment_intents/{}/confirm", intent.id)))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body("payment_method_data[type]=mtn_momo&payment_method_data[mtn_momo][msisdn]=237670000000")
@@ -2679,7 +2651,7 @@ async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> 
     // stored under KEY.
     let original = confirm(KEY).await.context("the stored 409")?;
     assert_eq!(original.status().as_u16(), 409);
-    let original_advice = retry_advice(&original);
+    let original_advice = retry_advice(original.headers());
     assert_eq!(
         original_advice.as_deref(),
         Some("false"),
@@ -2691,7 +2663,7 @@ async fn a_replayed_error_carries_the_same_retry_advisory_the_original_did() -> 
     let replayed = confirm(KEY).await.context("the replay of the stored 409")?;
     assert_eq!(replayed.status().as_u16(), 409);
     assert_eq!(
-        retry_advice(&replayed),
+        retry_advice(replayed.headers()),
         original_advice,
         "a replay must re-emit the advisory the response it replays carried — equality with \
          the original, not merely presence, is what rules out a hard-coded value in `replay`"
@@ -2889,14 +2861,13 @@ async fn the_customer_filter_pages_inside_its_set_and_is_not_an_oracle() -> anyh
     assert_eq!(ids, vec![z1.clone()]);
     // …and A's answer for Z is byte for byte A's answer for an id no merchant
     // has ever had: 200, an empty page, and nothing that tells them apart.
-    let bearer_a = harness.bearer(CLIENT_A);
     let raw = |path: String| {
-        let request = http.get(harness.url(&path)).bearer_auth(&bearer_a);
+        let request = http.get(harness.url(&path)).signed_by(CLIENT_A);
         async move {
             let response = request.send().await?;
             let status = response.status().as_u16();
             let body = response.text().await?;
-            Ok::<_, reqwest::Error>((status, body))
+            Ok::<_, anyhow::Error>((status, body))
         }
     };
     let (foreign_status, foreign) = raw(format!("/v1/payment_intents?customer={z}")).await?;

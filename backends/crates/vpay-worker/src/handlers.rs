@@ -142,6 +142,21 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// assertion whose `exp` is 30 s past is accepted once, swept, and refused on replay.
 pub const CLIENT_ASSERTION_JTI_RETENTION: Duration = Duration::from_secs(5 * 60);
 
+/// How long after its own `expires_at` a recorded envelope nonce is kept before
+/// the housekeeping sweep may delete it: five minutes.
+///
+/// Unlike [`CLIENT_ASSERTION_JTI_RETENTION`] this is not what keeps replay
+/// protection correct, and the number is not derived from a validator's leeway.
+/// cratestack already sets a nonce's `expires_at` to `iat + 2·skew + 1`, the
+/// second `skew` being its own margin for clock disagreement between replicas
+/// and the store, and `vpay_db::EnvelopeNonces::record_envelope_nonce_if_unseen`
+/// takes over a row whose window has closed rather than reading it as a replay.
+/// So a row the sweep has not reached is harmless, and one it deletes early is
+/// a request that was already outside its freshness window. The retention is
+/// slack on top, the same five minutes as the `jti` table's, so that the two
+/// replay caches are swept on one rule an operator has to remember once.
+pub const ENVELOPE_NONCE_RETENTION: Duration = Duration::from_secs(5 * 60);
+
 /// How often the backstop scan runs, and how stale a live charge must be
 /// before the scan considers it unattended.
 ///
@@ -1209,11 +1224,12 @@ async fn commit_resubmission(
 }
 
 /// Retires what has expired: idempotency records, client-assertion `jti`s,
-/// job leases whose worker died, and checkout sessions past their horizon.
+/// envelope nonces (VP-3), job leases whose worker died, and checkout sessions
+/// past their horizon.
 ///
 /// The first three were previously run once at `vpay-server` boot, which meant
 /// a process that stayed up for a month never swept anything
-/// (`docs/status.md`). They are three independent statements, each its own
+/// (`docs/status.md`). They are independent statements (four since VP-3), each its own
 /// transaction: they share nothing, and one failing should not roll back the
 /// others' work. Always reschedules — a sweep that found nothing is the
 /// healthy case.
@@ -1242,11 +1258,15 @@ async fn sweep_expired(
     // therefore the reaping — unclaimable forever. Reaping here as well costs
     // one statement an hour and keeps the sweep's own description honest.
     let leases = repositories.reap_expired_leases(policy.lease).await?;
+    let nonces = repositories
+        .delete_expired_envelope_nonces(ENVELOPE_NONCE_RETENTION)
+        .await?;
     let sessions = expire_due_sessions(repositories, job).await?;
 
     tracing::info!(
         idempotency_keys = idempotency,
         client_assertion_jtis = assertions,
+        envelope_nonces = nonces,
         expired_leases = leases,
         checkout_sessions = sessions.expired,
         checkout_sessions_page = sessions.page,

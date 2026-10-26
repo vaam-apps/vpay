@@ -230,13 +230,15 @@ merchant_clients:
           alg: RS256
           n: placeholder-rsa-modulus-replace-with-the-merchants-real-public-key
           e: AQAB
-    # The Ed25519 keys this merchant will sign `/v1` requests with once the
-    # signed transport lands (VP-2 registers them; nothing verifies a request
-    # against them yet, so `jwks` above is still what authenticates). Public
-    # keys only: 43 characters of unpadded base64url each, no key may appear
-    # twice anywhere in this file, and an invalid one is refused at boot
+    # The Ed25519 keys this merchant signs `/v1` requests with — the only thing
+    # that authenticates a `/v1` call since VP-3 (`jwks` above serves the OP's
+    # token endpoint, which opens nothing on `/v1`, until VP-4 removes it).
+    # Public keys only: 43 characters of unpadded base64url each, no key may
+    # appear twice anywhere in this file, and an invalid one is refused at boot
     # (ConfigError::MalformedCoseKey / DuplicateCoseKey). Left empty here on
-    # purpose — a placeholder would have to be a real curve point.
+    # purpose — a placeholder would have to be a real curve point, and this
+    # merchant is a placeholder: with no key it can sign nothing, which is the
+    # right state for a file that ships in the image.
     #
     # cose_keys:
     #   - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo

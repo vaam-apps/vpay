@@ -2,6 +2,14 @@
 
 _Moved out of [docs/reference/vpay-api.md](../vpay-api.md) on 2026-09-11 by exp57, which split a 1 566-line reference into a page per surface. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a cross-reference pointed at a heading that is now on another page, the page it moved to._
 
+> **Superseded for `/v1`, 2026-10-26 (VP-3).** `require_merchant_token`,
+> `MerchantJwtValidator` and `AuthenticatedMerchant` are deleted: `/v1` is
+> authenticated by the signed transport ([envelope.md](envelope.md)), and the
+> tenant and scopes come from the verified key (`MerchantScope`). What this page
+> says about the **dashboard** half (`/dash/v1`, `DashboardJwtValidator`,
+> `require_dashboard_token`) is unchanged. The merchant paragraphs below are the
+> record of what stood until then.
+
 ## Resource-server JWT validation (`resource_auth.rs`)
 
 `docs/api/README.md` defines three surfaces with three different protections;

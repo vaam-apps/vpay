@@ -295,6 +295,41 @@ fn generated_key_path() -> &'static str {
         .expect("the cargo target tmpdir path is valid utf-8")
 }
 
+/// The two Ed25519 seeds the envelope keys are read from (VP-3), as the
+/// unpadded base64url text a Secret mount holds: distinct, written once per
+/// test process next to the OAuth key and for the same reason (nothing
+/// hard-coded in the repository to be mistaken for a real key).
+static ENVELOPE_SEED_FILES: LazyLock<(PathBuf, PathBuf)> = LazyLock::new(|| {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    let write = |label: &str| {
+        let seed: [u8; 32] = rand::random();
+        let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+            .join(format!("envelope-{label}-{}.seed", pid()));
+        std::fs::write(&path, format!("{}\n", URL_SAFE_NO_PAD.encode(seed)))
+            .expect("the seed is written to the cargo target tmpdir");
+        path
+    };
+    (write("current"), write("next"))
+});
+
+/// `VPAY_ENVELOPE_SIGNING_KEY_FILE`'s value.
+fn envelope_key_path() -> &'static str {
+    ENVELOPE_SEED_FILES
+        .0
+        .to_str()
+        .expect("the cargo target tmpdir path is valid utf-8")
+}
+
+/// `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE`'s value.
+fn envelope_next_key_path() -> &'static str {
+    ENVELOPE_SEED_FILES
+        .1
+        .to_str()
+        .expect("the cargo target tmpdir path is valid utf-8")
+}
+
 /// A file that exists and is readable but is not a private key of any kind.
 ///
 /// Written next to the real one, and deliberately *not* "an RSA key with a
@@ -920,6 +955,11 @@ fn an_unreachable_database_is_exit_69_naming_postgres() {
     let output = bin()
         .env("VPAY_CONFIG", valid_config_path())
         .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+        .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+        .env(
+            "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+            envelope_next_key_path(),
+        )
         .env("DATABASE_URL", UNREACHABLE_DATABASE_URL)
         .output()
         .expect("spawn vpay-server");
@@ -965,6 +1005,11 @@ fn a_missing_database_url_is_exit_78_naming_the_problem() {
         .env_remove("DATABASE_URL")
         .env("VPAY_CONFIG", valid_config_path())
         .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+        .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+        .env(
+            "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+            envelope_next_key_path(),
+        )
         .output()
         .expect("spawn vpay-server");
 
@@ -1099,6 +1144,97 @@ fn a_signing_key_file_that_is_not_a_key_is_exit_78_without_echoing_its_contents(
     );
 }
 
+/// The envelope keys (VP-3) are required wherever `/v1` is mounted, and their
+/// absence is a configuration failure too — exit `78`, naming the flag that is
+/// missing. One case per flag, because the operator who mounted one Secret key
+/// and forgot the other needs to be told *which*.
+///
+/// Needs no Docker, for the ordering argument the OAuth key's test makes: the
+/// envelope keys are read between the OAuth key and `--database-url`.
+#[test]
+fn a_missing_envelope_key_flag_is_exit_78_naming_the_flag() {
+    for (omit_next, expected) in [
+        (false, "--envelope-signing-key-file"),
+        (true, "--envelope-signing-key-next-file"),
+    ] {
+        let mut command = bin();
+        command
+            .env("VPAY_CONFIG", valid_config_path())
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path());
+        if omit_next {
+            command.env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path());
+        }
+        let output = command.output().expect("spawn vpay-server");
+
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "expected EX_CONFIG (78) with {expected} unset, got {:?}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains(expected),
+            "stderr should name {expected}, got: {stderr}"
+        );
+    }
+}
+
+/// A rotation prepared with a copy of the current key rotates nothing, and a
+/// seed that is not a seed would fail the merchant who pinned it. Both are
+/// refused at boot with `78`, and neither echoes the file's contents.
+#[test]
+fn identical_or_malformed_envelope_keys_are_exit_78_without_echoing_them() {
+    let target = PathBuf::from(env!("CARGO_TARGET_TMPDIR"));
+    let junk = target.join(format!("envelope-junk-{}.seed", pid()));
+    std::fs::write(&junk, "this is not a seed, it is SECRETLOOKINGTEXT\n").expect("written");
+
+    let cases = [
+        (
+            "the same seed twice",
+            envelope_key_path(),
+            envelope_key_path(),
+            "same seed",
+        ),
+        (
+            "a malformed current key",
+            junk.to_str().expect("utf-8"),
+            envelope_next_key_path(),
+            "not an Ed25519 seed",
+        ),
+        (
+            "a malformed next key",
+            envelope_key_path(),
+            junk.to_str().expect("utf-8"),
+            "not an Ed25519 seed",
+        ),
+    ];
+    for (what, current, next, expected) in cases {
+        let output = bin()
+            .env("VPAY_CONFIG", valid_config_path())
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", current)
+            .env("VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE", next)
+            .output()
+            .expect("spawn vpay-server");
+
+        assert_eq!(
+            output.status.code(),
+            Some(78),
+            "{what}: expected EX_CONFIG (78), got {:?}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains(expected), "{what}: {stderr}");
+        assert!(
+            !stderr.contains("SECRETLOOKINGTEXT"),
+            "{what}: the file's contents must never be echoed: {stderr}"
+        );
+    }
+}
+
 /// The positive counterpart to the two tests above: a config file that
 /// exists and passes validation lets this binary boot all the way to
 /// serving a real `200` from `/healthz` — proving `main.rs` actually calls
@@ -1114,7 +1250,12 @@ fn a_valid_config_lets_the_server_boot_and_serve_healthz() {
                 .env("VPAY_BIND", addr.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path()),
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                ),
         );
 
         let status = poll_healthz(&mut guard, addr, Duration::from_secs(5));
@@ -1200,6 +1341,11 @@ fn a_server_that_is_alive_but_silent_times_out_with_none() {
             .env("VPAY_BIND", addr.to_string())
             .env("VPAY_CONFIG", valid_config_path())
             .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+            .env(
+                "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                envelope_next_key_path(),
+            )
             .env("DATABASE_URL", UNREACHABLE_DATABASE_URL),
     );
 
@@ -1233,6 +1379,11 @@ fn the_report_of_a_server_read_through_a_channel_still_carries_its_stdout() {
     cmd.env("VPAY_BIND", addr.to_string())
         .env("VPAY_CONFIG", valid_config_path())
         .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+        .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+        .env(
+            "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+            envelope_next_key_path(),
+        )
         .env("DATABASE_URL", UNREACHABLE_DATABASE_URL);
     let (guard, rx) = spawn_and_capture_stdout(cmd);
 
@@ -1314,7 +1465,7 @@ const PINNED_INVALID_TOKEN: &str = concat!(
 /// negotiated — which is precisely why the old failure was so easy to miss.
 /// The trust store was consulted at *client construction*, not at connect.
 #[test]
-fn a_server_with_no_os_trust_store_boots_and_still_validates_tokens() {
+fn a_server_with_no_os_trust_store_boots_and_still_validates_dashboard_tokens() {
     with_live_postgres(|database_url| {
         let addr = free_addr();
         #[cfg_attr(not(unix), allow(unused_mut))]
@@ -1322,8 +1473,16 @@ fn a_server_with_no_os_trust_store_boots_and_still_validates_tokens() {
             bin()
                 .env("VPAY_BIND", addr.to_string())
                 .env("DATABASE_URL", &database_url)
-                .env("VPAY_CONFIG", valid_config_path())
+                // A config that registers a `dashboard_client`: `/v1` holds no
+                // token validator since VP-3 (it verifies signatures), so the
+                // JWKS client this test is about now guards `/dash/v1` alone.
+                .env("VPAY_CONFIG", staff_config_path())
                 .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                )
                 // The whole point of the test: no readable trust store.
                 .env("SSL_CERT_FILE", "/nonexistent/certs.pem")
                 .env("SSL_CERT_DIR", "/nonexistent"),
@@ -1338,11 +1497,11 @@ fn a_server_with_no_os_trust_store_boots_and_still_validates_tokens() {
         );
 
         let request = format!(
-            "GET /v1/payment_intents/pi_does_not_exist HTTP/1.1\r\nHost: localhost\r\n\
+            "GET /dash/v1/payment_intents HTTP/1.1\r\nHost: localhost\r\n\
              Authorization: Bearer {BOGUS_TOKEN_WITH_UNKNOWN_KID}\r\nConnection: close\r\n\r\n"
         );
         let (code, response) =
-            http_request(addr, &request).expect("the authenticated /v1 surface answers");
+            http_request(addr, &request).expect("the authenticated /dash/v1 surface answers");
 
         assert_eq!(
             code, 401,
@@ -1398,7 +1557,12 @@ fn bind_and_log_format_env_vars_are_actually_applied() {
                 .env("VPAY_LOG_FORMAT", "text")
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path()),
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                ),
         );
 
         let status = poll_healthz(&mut guard, addr, Duration::from_secs(5));
@@ -1432,6 +1596,11 @@ fn an_explicit_flag_wins_over_a_conflicting_env_var() {
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
                 .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                )
                 .args(["--bind", &flag_addr.to_string()]),
         );
 
@@ -1484,6 +1653,11 @@ fn shutdown_grace_period_flag_still_allows_a_prompt_clean_exit_with_no_in_flight
             .env("DATABASE_URL", &database_url)
             .env("VPAY_CONFIG", valid_config_path())
             .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+            .env(
+                "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                envelope_next_key_path(),
+            )
             .args(["--shutdown-grace-seconds", "2"]);
         #[cfg_attr(not(unix), allow(unused_mut))]
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
@@ -1542,7 +1716,12 @@ fn the_observability_listener_serves_livez_and_metrics_on_its_own_port_only() {
                 .env("VPAY_OBSERVABILITY_BIND", observability.to_string())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path()),
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                ),
         );
 
         // The traffic port coming up means every fallible startup step
@@ -1782,6 +1961,11 @@ fn an_in_flight_request_that_outlasts_the_grace_period_is_exit_1_and_says_so() {
             .env("DATABASE_URL", &database_url)
             .env("VPAY_CONFIG", valid_config_path())
             .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+            .env(
+                "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                envelope_next_key_path(),
+            )
             .args(["--shutdown-grace-seconds", &GRACE.as_secs().to_string()]);
         let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
@@ -1999,7 +2183,12 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
                 .env("VPAY_LOG_FORMAT", "text")
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_CONFIG", valid_config_path())
-                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path());
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                );
             let (mut guard, rx) = spawn_and_capture_stdout(cmd);
 
             std::thread::sleep(DELAY);
