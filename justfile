@@ -2014,6 +2014,55 @@ check-schema:
     cratestack check --schema "$schema"
     echo "check-schema: ok — $schema type-checks under cratestack $found"
 
+    # The dashboard's generated client (`frontends/packages/dash-client`) is a
+    # second thing this schema produces, and a schema edit that is not
+    # regenerated leaves the dashboard compiling against procedure types the
+    # server no longer answers with. `--check` regenerates in memory and diffs.
+    # Added 2026-10-26 with the package; see `gen-dash-client` for the flags.
+    #
+    # Against a COPY without `node_modules/`, not the package itself, and
+    # that is a measured upstream bug rather than caution: cratestack
+    # 0.15.0's (and 0.16.0's) drift walker follows pnpm's `node_modules/decimal.js` symlink, asks
+    # `git check-ignore` about the files beyond it, gets "fatal: pathspec ...
+    # is beyond a symbolic link" (exit 128), and `drift.rs`'s `git_ignored`
+    # reads any non-zero exit as "nothing is ignored" — so six files of
+    # `decimal.js` reported as drift on a checkout with nothing stale in it.
+    # The copy keeps the check's meaning, including the stale-file arm for
+    # anything that is not a dependency.
+    dash_copy="$(mktemp -d)"
+    trap 'rm -rf "$dash_copy"' EXIT
+    tar --exclude=./node_modules -C frontends/packages/dash-client -cf - . | tar -C "$dash_copy" -xf -
+    if ! cratestack generate-typescript {{ dash_client_flags }} --out "$dash_copy" --check; then
+        echo "check-schema: FAIL — frontends/packages/dash-client is stale against $schema." >&2
+        echo "check-schema: run 'just gen-dash-client' and commit the result in the same change." >&2
+        exit 1
+    fi
+    echo "check-schema: ok — frontends/packages/dash-client matches $schema"
+
+# The flags `gen-dash-client` and `check-schema` share, so the two can never
+# generate different clients.
+#
+# * No `--refine`. Its manifest maps all twenty-one MODELS to generated CRUD
+#   routes, and vpay mounts none of them — only `procedure_router`
+#   (`backends/crates/vpay-db/src/schema.rs`). Worse, the generated
+#   `PaymentIntentApi.list()` would reach the hand-written
+#   `GET /dash/v1/payment_intents` and cast its `ListObject` to an array. The
+#   dashboard binds `@cratestack/refine` to the procedures by hand instead
+#   (`frontends/apps/dashboard/src/dash/procedure-resources.ts`).
+# * `--template-dir schemas/typescript-client` overrides `package.json.j2`
+#   alone, so the package is consumed as TypeScript source like every other
+#   workspace package — the stock template builds `dist/` with its own
+#   `typescript ^7`, a second compiler major in this workspace.
+dash_client_flags := "--schema schemas/vpay.cstack --package-name @vpay/dash-client --base-path /dash/v1 --template-dir schemas/typescript-client"
+
+# Regenerate `frontends/packages/dash-client` from schemas/vpay.cstack.
+#
+# ANY edit to the schema needs this, a comment included: the generated
+# `runtime.ts` carries the schema file's SHA-256, which every request sends
+# as `x-cratestack-schema-sha` (vpay warns on a mismatch and never refuses).
+gen-dash-client:
+    cratestack generate-typescript {{ dash_client_flags }} --out frontends/packages/dash-client
+
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and
 # every #[allow]/#[expect] in production code. It exits 0 whatever it finds.

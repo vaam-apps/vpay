@@ -10,10 +10,15 @@
 # matches to zero packages and carries on (the same property
 # `frontends/Dockerfile` relies on for `examples/*`).
 
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 # Prisma's engines are dynamically linked against OpenSSL 3 on musl. Prisma
 # left the request path at the ZenStack 3 upgrade but not the image: v3's
 # migration engine still drives Prisma Migrate.
+#
+# `openssl` is not version-pinned (hadolint DL3018) on purpose: Alpine drops
+# superseded package revisions from its index, so a pin fails the build at
+# the next point release. The `node:24-alpine` base is the pin.
+# hadolint ignore=DL3018
 RUN apk add --no-cache openssl && corepack enable
 WORKDIR /build
 
@@ -34,9 +39,14 @@ ENV CYPRESS_INSTALL_BINARY=0 \
 # `next build` type-checks against it. It is generated rather than committed,
 # for the reason .gitignore gives.
 RUN pnpm install --frozen-lockfile --filter @vpay-examples/shop...
+# A separate layer from the install on purpose (hadolint DL3059): a source
+# edit then rebuilds without re-resolving every dependency.
+# hadolint ignore=DL3059
 RUN pnpm --filter @vpay-examples/shop build
 
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
+# Not version-pinned, for the reason the builder stage gives.
+# hadolint ignore=DL3018
 RUN apk add --no-cache openssl
 WORKDIR /app
 

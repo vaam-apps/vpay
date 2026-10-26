@@ -19,8 +19,8 @@ extended by Step 9, reduced by issue #77).
 | Image            | Base             | Contents                                                                                   |
 | ---------------- | ---------------- | ------------------------------------------------------------------------------------------ |
 | `vpay-server`    | `scratch`        | one static musl binary, plus `config/` baked at `/config`. Runs **both** backend workloads |
-| `vpay-dashboard` | `node:22-alpine` | the Next standalone server                                                                 |
-| `vpay-checkout`  | `node:22-alpine` | vpay's own hosted/embedded payment page                                                    |
+| `vpay-dashboard` | `node:24-alpine` | the Next standalone server                                                                 |
+| `vpay-checkout`  | `node:24-alpine` | vpay's own hosted/embedded payment page                                                    |
 
 ### `ghcr.io/vaam-apps/vpay-worker` is retired, as of 2026-09-07
 
