@@ -169,9 +169,9 @@ generated from `schemas/vpay.cstack`, with `@cratestack/refine` as their
 Refine data provider. The reads are still made server side with the
 session's token; the browser-side provider is bound to the existing `GET`
 BFF routes, so no new surface was added. Payments did not move — its list is
-cursor-paged and its detail a four-table composite. No browser and no real
-vpay has run these screens since; the evidence is unit tests against a
-stubbed network and a green `next build`. Details on
+cursor-paged and its detail a four-table composite. Cypress has run the five
+screens against the compose stack (`dashboard.cy.ts`, real vpay and real OP,
+WireMock rails) — 24/24 and 6/6 twice; no real rail has. Details on
 [dashboard/status-read-seam-and-bff.md](dashboard/status-read-seam-and-bff.md)
 and [../status/verification/2026-10-26-dashboard-cratestack-refine.md](../status/verification/2026-10-26-dashboard-cratestack-refine.md).
 

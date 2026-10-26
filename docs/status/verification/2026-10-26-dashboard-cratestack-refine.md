@@ -3,13 +3,17 @@
 **What this page is evidence for:** the dashboard's four procedure-backed
 lists (refunds, deliveries, customers, checkouts) and its Overview read
 through `@vpay/dash-client`, a TypeScript client generated from
-`schemas/vpay.cstack`, with `@cratestack/refine` 0.15.4 as their Refine data
-provider; `just check-schema` drift-checks the client; `.nvmrc` moved to Node
-24.21.0. **What it is not evidence for:** any browser, any real vpay, any
-built image — see "Not run" at the bottom.
+`schemas/vpay.cstack`, with `@cratestack/refine` as their Refine data
+provider (0.15.4 when first measured, 0.16.0 since the master merge below);
+`just check-schema` drift-checks the client; `.nvmrc` moved to Node 24.21.0;
+and the five screens render in a real browser against the compose stack.
+**What it is not evidence for:** any real rail, any production deployment —
+see "Not run" at the bottom.
 
 Base: `master` at `172a13a`. Toolchain: Node `24.21.0` (`.nvmrc`), pnpm
-`11.18.0`, `cratestack` CLI `0.15.0`, rustc `1.98.0`.
+`11.18.0`, `cratestack` CLI `0.15.0`, rustc `1.98.0`. Re-based by merge onto
+`master` at `e16cca7c` (cratestack 0.16.0) — see "After the merge with
+cratestack 0.16.0".
 
 ## Decisions taken, with the maintainer
 
@@ -129,8 +133,8 @@ scratch copy of the Dockerfile that adds only this session's proxy CA:
 `runner` (dashboard) and `checkout` both build. The dashboard image run as
 `docker run --read-only --tmpfs /tmp --user 1000:1000` answered `/healthz`
 `200`, `id -u` → `1000`, and Docker's own `HEALTHCHECK` reported `healthy`.
-The checkout image was built and not run. `examples/shop`'s image was not
-built.
+The checkout image was built and not run here; it, the shop's and the
+server's images then ran in the e2e stack below.
 
 ## CodeQL alert #187 — dismissed as not exploitable (maintainer, 2026-10-26)
 
@@ -146,10 +150,72 @@ dismissal over excluding the package from scanning or waiting on an upstream
 fix. The real fix is a non-backtracking trim in cratestack's
 `rest-runtime.ts.j2`; it is not filed from here.
 
+## e2e: the compose stack and Cypress (head `f3ffa70d`)
+
+`dashboard.cy.ts` gained one case, "reads the Overview and the four
+procedure-backed lists, none of them refused". After the shop payment the
+spec already makes, it visits `/overview`, `/refunds`, `/deliveries`,
+`/customers` and `/checkouts`, and on each asserts the screen's `h2`, that
+**no** `[role="alert"]` exists (so a refused read fails the test instead of
+reading as "none"), and either table rows or the screen's own empty-state
+sentence.
+
+The stack was `just test-e2e`'s: `compose.yml` + `compose.e2e.yml` +
+`compose.demo.yml`, WireMock standing in for the rails, real Postgres, real
+OP sign-in. All four images (server, dashboard, checkout, shop) were built
+from this head with direct `docker build` and a scratch Dockerfile copy that
+adds only this session's proxy CA (Compose's bake builder needs privileges
+this session lacks); then `demo-staff`, both Cypress projects, `down -v`.
+Two complete runs:
+
+| Run | `e2e:default` (checkout, dashboard, shop-hosted) | `e2e:framed` (shop-embedded) |
+| --- | ------------------------------------------------ | ---------------------------- |
+| 1   | 24 / 24 passed (1, 19, 4), 0 pending, 0 skipped  | 6 / 6 passed                 |
+| 2   | 24 / 24 passed, 0 pending, 0 skipped             | 6 / 6 passed                 |
+
+What the screenshots showed: the Overview's counts (4 payments), two
+`delivered` rows on Deliveries, one complete/paid session on Checkouts, and
+Refunds and Customers each on their empty-state sentence — nothing in this
+stack writes a refund or a customer. Screenshots are gitignored and were
+shown to the maintainer, not committed. This head predates the master merge
+below; CI's own `e2e` job runs the same spec on every later head.
+
+## After the merge with cratestack 0.16.0 (`master` at `e16cca7c`)
+
+`master` moved the CLI and the crates to `=0.16.0` while this branch was
+open. The merge regenerated `@vpay/dash-client` with the 0.16.0 CLI
+(`README.md`, `src/models.ts`, `src/runtime.ts` changed: `BigInt` field
+handling, ADR 0019 upstream; `package.json.j2` is byte-identical between
+0.15.0 and 0.16.0, so the override needed nothing) and moved
+`@cratestack/refine` to 0.16.0. The `--check` symlink bug above is still in
+0.16.0: run against the package itself, it reports the same six
+`node_modules/decimal.js/*` files.
+
+- `just check-schema`: `type-checks under cratestack 0.16.0`, `no drift
+detected`, exit 0.
+- `just verify`: `verify: ok — the sixteen gates above passed`.
+- `just lint-web`: exit 0. `just test-web`: exit 0; the dashboard 40 files,
+  482 passed, 1 skipped — unchanged; `@vpay/config` 67/67.
+- `pnpm --filter @vpay/dashboard typecheck`: clean. `build`: every First
+  Load JS figure in the table above unchanged.
+- Integration, Docker-backed (real Postgres per test), the three suites
+  behind every `/dash/v1` read and the staff sign-in this dashboard uses:
+  `CARGO_INCREMENTAL=0 cargo nextest run --no-fail-fast -p
+vpay-tests-integration -E 'binary(dashboard_procedure_transport) |
+binary(dashboard_read_surface) | binary(staff_sign_in)'` → **52 tests run:
+  52 passed, 0 skipped** (`dashboard_procedure_transport` 4,
+  `dashboard_read_surface` 21, `staff_sign_in` 27). The first attempt failed
+  one case before any test body ran — Docker Hub answered the
+  `postgres:16-alpine` pull with `429`; the image was pulled from
+  `mirror.gcr.io` and retagged, and the re-run is the result above. The
+  workspace's other 22 test binaries were not run here.
+
 ## Not run
 
-- **Cypress / any browser.** `dashboard.cy.ts` was not run against these
-  screens.
-- **Any real vpay.** Every read in the suites is a stubbed `fetch`.
-- **`examples/shop`'s Node 24 image**, and the checkout image's runtime
-  behaviour (it was built, not run).
+- **Any real rail.** The e2e stack's rails are WireMock hosts; every read in
+  the vitest suites is a stubbed `fetch`.
+- **The e2e suite on the post-merge head, locally.** It ran twice on
+  `f3ffa70d`; the 0.16.0 head relies on CI's `e2e` job.
+- **`just ci` in one piece.** `test-rust` (beyond the three integration
+  binaries above), `test-doc` and `verify-ignored` were not run to completion
+  here (disk, see above); CI's Rust jobs are the evidence for those.
