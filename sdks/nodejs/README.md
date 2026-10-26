@@ -393,6 +393,15 @@ verify and a body over 8 MiB are returned as Stripe-shaped error responses with
 (`"unverified_response"`, `"response_too_large"`) otherwise, the cause in
 `message`. A gateway's unsigned `5xx` stays retryable.
 
+Two more are answered the same way, and neither can resolve as a result or be
+retried. A request the contract has no operation for (a `GET` on a `POST`-only
+path, a path outside `/v1`) is never sent: `StripeInvalidRequestError`, status
+`404`, `code: "unknown_operation"`. A sealed `4xx`/`5xx` that is not in the
+Stripe error envelope (the body bound's `413` is the one you can meet) is an
+error with its status and `code: "unexpected_error_response"`, or
+`"request_too_large"` for the `413` (a `StripeAPIError`, as stripe-node has no
+class for it); the `413` carries vpay's `request-id`.
+
 A real transport failure (DNS, TLS, a reset, a timeout) still rejects, is a
 `StripeConnectionError` with the original at `err.detail`, and is retried up to
 `maxNetworkRetries` times, re-sealed each time. A `POST` keeps the

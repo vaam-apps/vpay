@@ -151,26 +151,45 @@ fresh, so a hard-coded `false` in `replay` fails it) and
 integration test in `backends/tests/integration`, against a real Postgres and
 a real replay reached through the real "one charge per intent" refusal).
 
-### Two responses that carry neither the envelope nor the header
+### Two requests that never get an envelope from the server
 
-`405` (a route asked with the wrong method) is axum's own, with an empty body.
-`413` (a body past 64 KiB) is tower-http's, `text/plain`. Neither passes
-through `ApiError::into_response`, so neither carries the Stripe envelope nor
-`stripe-should-retry`.
+`405` (a route asked with the wrong method) and `413` (a body past 64 KiB) are
+not rendered by `ApiError::into_response`: the first is axum's own, with an
+empty body, and the second is answered by `RequestBodyLimitLayer`, in front of
+the renderer. Neither carries the Stripe envelope or `stripe-should-retry`.
 
-The consequence is worse than a missing header, and it is **measured, not
-inferred** (`sdks/stripe-compat/src/errors.compat.test.ts`): stripe-node meets
-a non-JSON body by discarding everything it knows about the response and
-throwing
+Before the signed transport, stripe-node met that non-JSON body by discarding
+everything it knew about the response and throwing `StripeAPIError: Invalid JSON
+received from the Stripe API`, with `statusCode` and `headers` both `undefined`,
+so a merchant could not tell a 405 from a 413 from a proxy's HTML 502. Under
+the signed transport the two end differently, and both are **measured against a
+live stack with stripe-node's default retries on**
+(`sdks/stripe-compat/src/errors.compat.test.ts`):
 
-```text
-StripeAPIError: Invalid JSON received from the Stripe API
-```
+- **A method the contract has no route for never reaches the server.** The
+  sealing `httpClient` binds every request to an operation in the contract
+  table before it signs anything, so a `GET` on a `POST`-only path has no
+  operation to bind to and is refused on the client, unsent and unsigned. It
+  resolves as a `404` `StripeInvalidRequestError`, `code: "unknown_operation"`,
+  `stripe-should-retry: false`, once. It used to _reject_, which stripe-node
+  reports as a `StripeConnectionError` and retries twice. There is no
+  `requestId`: no exchange took place. A `405` from the server is unreachable
+  through this client.
+- **A body past the limit is a sealed `413` outside the Stripe envelope.** The
+  signed transport seals the limit layer's answer as it finds it, in
+  cratestack's `{ code, message, details }`, and stripe-node reads an error only
+  from an `error` key. So unchanged, the call _resolved_: the merchant's
+  `await paymentIntents.create(...)` returned `{ code: "INTERNAL_ERROR", ... }`
+  as though it were an intent. The client now re-presents any verified `4xx`/`5xx`
+  without an `error` object as an error: for a `413`, `StripeAPIError`
+  (stripe-node picks the class from the status and has none for 413),
+  `statusCode: 413`, `code: "request_too_large"`, `stripe-should-retry: false`,
+  with the server's `request-id` in `requestId`, which survives and is what a
+  merchant quotes to support. Any other such status becomes
+  `code: "unexpected_error_response"` (retryable only for a `5xx`).
 
-with `statusCode` and `headers` both `undefined`. So a merchant cannot tell a
-405 from a 413 from a proxy's HTML 502 — the only thing that survives is
-`err.requestId`. A `method_not_allowed` renderer for the whole surface, and an
-envelope for the body limit, would fix both; neither exists.
+A Stripe-shaped `413` rendered by the server itself would still be better than
+a client that translates one; none exists.
 
 ### A `502` from the rail is re-POSTed
 
@@ -389,8 +408,8 @@ accepted and the refused confirm leaving the intent still at
 `requires_payment_method`; `stripe-should-retry: false` read back off the 409
 through the SDK's own error object, inside a time bound no retried request
 could meet; `Idempotency-Key` replay returning the same object and a changed
-body under the same key returning `StripeIdempotencyError`; and the 405/413
-collapse described above.
+body under the same key returning `StripeIdempotencyError`; and the refused
+unknown operation and the over-limit body described above, each answered once.
 
 **What is not proven, and must not be read as proven:**
 

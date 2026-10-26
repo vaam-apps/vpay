@@ -128,46 +128,67 @@ describe("error mapping", () => {
   });
 
   /**
-   * The two responses on this surface that are **not** rendered by
-   * `ApiError::into_response`, and what a stripe-node user sees instead of
-   * an error they can act on.
+   * The two ways a request on this surface can end that vpay's own error
+   * renderer never sees, and what a stripe-node user sees now that every
+   * request is sealed.
    *
-   * `405` (a POST-only route asked with GET) is axum's own, with an empty
-   * body; `413` (past `V1_BODY_LIMIT_BYTES`, 64 KiB) is tower-http's, with a
-   * `text/plain` body. Neither passes through the renderer, so neither
-   * carries the Stripe envelope nor `stripe-should-retry`.
+   * **A route asked with the wrong method** (a GET on a POST-only path) can no
+   * longer reach the server as a `405`. The sealing `httpClient` binds each
+   * request to an operation in the contract table before it signs anything, so
+   * a method the contract has no route for is refused on the client, unsent:
+   * a resolved `404`, `StripeInvalidRequestError`, `code: unknown_operation`,
+   * `stripe-should-retry: false`. It was a *rejection* before, which
+   * stripe-node reports as `StripeConnectionError` and retries twice.
    *
-   * **Measured, not inferred:** stripe-node meets a non-JSON body by
-   * discarding everything it knows about the response and throwing
-   * `StripeAPIError: "Invalid JSON received from the Stripe API"` — with
-   * `statusCode` and `headers` both `undefined`. So a merchant cannot tell a
-   * 405 from a 413 from a proxy's HTML 502; the only thing that survives is
-   * the request id, which stripe-node reads out of the header separately.
-   * That is the actual cost of these two responses lacking an envelope, and
-   * it is bigger than the missing retry advisory. See
-   * `docs/flows/stripe-sdk-compat.md`.
+   * **A body past `V1_BODY_LIMIT_BYTES`** (64 KiB) is answered by a layer in
+   * front of the error renderer, and the signed transport seals that answer
+   * as it finds it, in cratestack's `{ code, message, details }` shape, not
+   * the Stripe envelope. stripe-node reads an error only from an `error` key,
+   * so unchanged this *resolved*: `await paymentIntents.create(...)` handed the
+   * merchant `{ code: "INTERNAL_ERROR", ... }` as if it were their intent. The
+   * client now presents it as `StripeAPIError` (stripe-node has no class for a
+   * 413), `statusCode: 413`, `code: request_too_large`, non-retryable, with the
+   * server's `request-id` kept for support.
+   *
+   * Both are measured against a live stack with **stripe-node's default
+   * retries on**, and bounded in time by the floor a retry costs (see the 409
+   * case above): a request retried even once cannot finish in 900 ms.
+   * See `docs/flows/stripe-sdk-compat.md`.
    */
-  it("collapses 405 and 413 into an opaque StripeAPIError that keeps only the request id", async () => {
-    for (const provoke of [
+  it("refuses an operation the contract lacks, and a body past the limit, once each and as errors a merchant can act on", async () => {
+    const retrying = stripeClient({ maxNetworkRetries: 2 });
+
+    const started = Date.now();
+    const unknown = await caught(() =>
       // `rawRequest` because no generated resource method can produce a GET
       // on a POST-only path.
-      (): Promise<unknown> =>
-        stripe.rawRequest("GET", "/v1/payment_intents/pi_x/confirm"),
-      (): Promise<unknown> =>
-        createIntent(stripe, { description: "x".repeat(70_000) }),
-    ]) {
-      const error = await caught(provoke);
+      retrying.rawRequest("GET", "/v1/payment_intents/pi_x/confirm"),
+    );
+    const tooLarge = await caught(() =>
+      createIntent(retrying, { description: "x".repeat(70_000) }),
+    );
+    const elapsedMs = Date.now() - started;
 
-      expect(error).toBeInstanceOf(Stripe.errors.StripeAPIError);
-      const stripeError = error as Stripe.errors.StripeAPIError;
-      expect(stripeError.message).toBe(
-        "Invalid JSON received from the Stripe API",
-      );
-      expect(stripeError.statusCode).toBeUndefined();
-      expect(stripeError.headers).toBeUndefined();
-      // The one thing a merchant can still quote to support.
-      expect(stripeError.requestId).toMatch(UUID);
-    }
+    expect(unknown).toBeInstanceOf(Stripe.errors.StripeInvalidRequestError);
+    const unknownError = unknown as Stripe.errors.StripeInvalidRequestError;
+    expect(unknownError.statusCode).toBe(404);
+    expect(unknownError.code).toBe("unknown_operation");
+    expect(unknownError.message).toContain(
+      "GET /v1/payment_intents/pi_x/confirm",
+    );
+    expect(unknownError.headers?.["stripe-should-retry"]).toBe("false");
+
+    expect(tooLarge).toBeInstanceOf(Stripe.errors.StripeAPIError);
+    const tooLargeError = tooLarge as Stripe.errors.StripeAPIError;
+    expect(tooLargeError.statusCode).toBe(413);
+    expect(tooLargeError.code).toBe("request_too_large");
+    expect(tooLargeError.message).toContain("over the limit");
+    expect(tooLargeError.headers?.["stripe-should-retry"]).toBe("false");
+    // The one thing a merchant can quote to support: the server's own id,
+    // which the sealed 413 carried.
+    expect(tooLargeError.requestId).toMatch(UUID);
+
+    expect(elapsedMs).toBeLessThan(900);
   });
 });
 

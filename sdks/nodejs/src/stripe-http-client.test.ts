@@ -291,6 +291,79 @@ describe("createStripeHttpClient — refusals reach the caller", () => {
     expect(server.wire).toHaveLength(1);
   });
 
+  // The client-side counterpart of the refusals above. A method the contract
+  // has no route for (a GET on a POST-only path) cannot be sealed. Rejecting
+  // would have stripe-node retry it as a connection error, three times over;
+  // it is a resolved, non-retryable invalid-request error, and nothing, signed
+  // or not, goes to the server.
+  it("answers an operation the contract does not have once, as StripeInvalidRequestError, and sends nothing", async () => {
+    const server = await withServer(() => ({
+      status: 200,
+      body: SAMPLE_INTENT,
+    }));
+
+    const error: unknown = await stripeFor(server, {}, { maxNetworkRetries: 2 })
+      .rawRequest("GET", "/v1/payment_intents/pi_1/confirm")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Stripe.errors.StripeInvalidRequestError);
+    const stripeError = error as Stripe.errors.StripeInvalidRequestError;
+    expect(stripeError.statusCode).toBe(404);
+    expect(stripeError.code).toBe("unknown_operation");
+    expect(stripeError.message).toContain("GET");
+    expect(server.wire).toHaveLength(0);
+  });
+
+  // A sealed refusal that did not come from vpay's own error renderer: the body
+  // bound is answered by a layer in front of it, sealed in cratestack's
+  // `{ code, message, details }`. stripe-node reads an error only from an
+  // `error` key, so this used to RESOLVE, handing the merchant that object as
+  // though it were their PaymentIntent.
+  it("answers a sealed 413 that is not in the Stripe envelope as an error, once, and never as a result", async () => {
+    const server = await withServer(() => ({
+      status: 413,
+      body: {
+        code: "INTERNAL_ERROR",
+        message: "internal error",
+        details: null,
+      },
+    }));
+
+    const error = await stripeFor(server, {}, { maxNetworkRetries: 2 })
+      .paymentIntents.create({ amount: 5000, currency: "xaf" })
+      .catch((e: unknown) => e);
+
+    // stripe-node picks the class from the status alone, and has none for 413.
+    expect(error).toBeInstanceOf(Stripe.errors.StripeAPIError);
+    const stripeError = error as Stripe.errors.StripeAPIError;
+    expect(stripeError.statusCode).toBe(413);
+    expect(stripeError.code).toBe("request_too_large");
+    expect(stripeError.message).toContain("over the limit");
+    expect(stripeError.headers?.["stripe-should-retry"]).toBe("false");
+    expect(server.wire).toHaveLength(1);
+  });
+
+  it("answers any other sealed error outside the Stripe envelope as an error naming its status", async () => {
+    const server = await withServer(() => ({
+      status: 500,
+      body: {
+        code: "INTERNAL_ERROR",
+        message: "internal error",
+        details: null,
+      },
+    }));
+
+    const error = await stripeFor(server, {}, { maxNetworkRetries: 0 })
+      .paymentIntents.retrieve("pi_1")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Stripe.errors.StripeAPIError);
+    const stripeError = error as Stripe.errors.StripeAPIError;
+    expect(stripeError.statusCode).toBe(500);
+    expect(stripeError.code).toBe("unexpected_error_response");
+    expect(stripeError.message).toContain("500 (INTERNAL_ERROR)");
+  });
+
   it("still retries a genuine transport failure, which is what maxNetworkRetries is for", async () => {
     const server = await withServer(() => ({
       status: 200,
@@ -435,30 +508,43 @@ describe("createStripeHttpClient — host binding", () => {
 
   it("refuses a path outside /v1, and a verb /v1 has no operation for", async () => {
     const { client, url } = await bound();
-    await expect(
-      client.makeRequest(
-        url.hostname,
-        url.port,
-        "/oauth/token",
-        "GET",
-        {},
-        "",
-        "http",
-        1000,
-      ),
-    ).rejects.toThrow(/\/v1/u);
-    await expect(
-      client.makeRequest(
-        url.hostname,
-        url.port,
-        "/v1/payment_intents/pi_1",
-        "PUT",
-        {},
-        "",
-        "http",
-        1000,
-      ),
-    ).rejects.toThrow(/no PUT operation/u);
+    const outside = await client.makeRequest(
+      url.hostname,
+      url.port,
+      "/oauth/token",
+      "GET",
+      {},
+      "",
+      "http",
+      1000,
+    );
+    expect(outside.getStatusCode()).toBe(404);
+    expect(outside.getHeaders()["stripe-should-retry"]).toBe("false");
+    expect(await outside.toJSON()).toMatchObject({
+      error: {
+        type: "invalid_request_error",
+        code: "unknown_operation",
+        message: expect.stringMatching(/\/v1/u) as unknown,
+      },
+    });
+
+    const put = await client.makeRequest(
+      url.hostname,
+      url.port,
+      "/v1/payment_intents/pi_1",
+      "PUT",
+      {},
+      "",
+      "http",
+      1000,
+    );
+    expect(put.getStatusCode()).toBe(404);
+    expect(await put.toJSON()).toMatchObject({
+      error: {
+        code: "unknown_operation",
+        message: expect.stringMatching(/no PUT operation/u) as unknown,
+      },
+    });
   });
 });
 

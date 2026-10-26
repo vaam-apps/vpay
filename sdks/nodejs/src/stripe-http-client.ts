@@ -46,6 +46,7 @@
 import { randomUUID } from "node:crypto";
 import {
   VpayConfigError,
+  VpayInvalidParamsError,
   VpayResponseTooLargeError,
   VpayUnsignedResponseError,
   VpayUnverifiedResponseError,
@@ -262,24 +263,117 @@ class SealedResponse implements VpayStripeHttpResponse {
  * ordinary `StripeAuthenticationError` / `StripeAPIError` with the cause in
  * `message`, once. A gateway's own `5xx` is left retryable: that is what
  * `maxNetworkRetries` is for, and a keyed write is safe to repeat.
+ *
+ * A request this client cannot seal at all (no such operation) is the same
+ * shape: it was never sent, retrying it cannot change that, and it is the
+ * caller's request that is wrong, so it is an `invalid_request_error`
+ * (`StripeInvalidRequestError`), as Stripe answers an unrecognised URL.
  */
 function refusal(
   status: number,
   code: string,
   message: string,
   retryable: boolean,
+  type:
+    "authentication_error" | "invalid_request_error" | "api_error" = status ===
+  401
+    ? "authentication_error"
+    : "api_error",
+  requestId?: string,
 ): SealedResponse {
-  const body = JSON.stringify({
-    error: {
-      type: status === 401 ? "authentication_error" : "api_error",
-      code,
-      message,
-    },
+  const body = JSON.stringify({ error: { type, code, message } });
+  return new SealedResponse(status, body, {
+    ...(retryable ? {} : { "stripe-should-retry": "false" }),
+    // The server's own id for the exchange, so the merchant has something to
+    // quote to support. Not authenticated, and used for nothing else.
+    ...(requestId === undefined ? {} : { "request-id": requestId }),
   });
-  return new SealedResponse(
+}
+
+/** Whether a verified payload is already a Stripe error envelope (`{ error: { … } }`). */
+function isStripeErrorEnvelope(text: string): boolean {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    return (
+      typeof parsed === "object" &&
+      parsed !== null &&
+      typeof (parsed as Record<string, unknown>)["error"] === "object" &&
+      (parsed as Record<string, unknown>)["error"] !== null
+    );
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A verified `4xx`/`5xx` whose payload is not a Stripe error envelope, put in
+ * one.
+ *
+ * Not every refusal vpay seals comes from its own error renderer: the body
+ * bound (`413`) is answered by a layer in front of it, and the signed
+ * transport seals that answer as it finds it, in cratestack's own
+ * `{ code, message, details }` shape. stripe-node reads an error only from an
+ * `error` key, so without this a `413` **resolved**: the merchant's `await
+ * paymentIntents.create(…)` returned `{ code: "INTERNAL_ERROR", … }` as though
+ * it were a PaymentIntent, and nothing threw. It is now an error that says what
+ * happened, never retried when it is a `4xx` (the caller's request) and left
+ * retryable when it is a `5xx` (vpay's). stripe-node picks the class from the
+ * status alone: `StripeAPIError` for a `413` and a `5xx`, which have no class
+ * of their own. The status is the signed
+ * one; the sealed body's wording is not repeated (it is `internal error` for a
+ * `413`), only its `code`, bounded, when it is a short string.
+ */
+function unenveloped(
+  status: number,
+  text: string,
+  headers: Record<string, string>,
+): SealedResponse {
+  const requestId = headers["request-id"] ?? headers["x-request-id"];
+  if (status === 413) {
+    return refusal(
+      413,
+      "request_too_large",
+      "vpay refused the request: its body is over the limit vpay accepts on /v1 (413)",
+      false,
+      "invalid_request_error",
+      requestId,
+    );
+  }
+  let sealedCode = "";
+  try {
+    const parsed = JSON.parse(text) as { code?: unknown };
+    if (typeof parsed.code === "string" && parsed.code.length <= 64) {
+      sealedCode = ` (${parsed.code})`;
+    }
+  } catch {
+    // Not JSON: the status alone is reported.
+  }
+  return refusal(
     status,
-    body,
-    retryable ? {} : { "stripe-should-retry": "false" },
+    "unexpected_error_response",
+    `vpay answered ${status}${sealedCode} with an error that is not in the Stripe error envelope`,
+    status >= 500,
+    status >= 500
+      ? "api_error"
+      : status === 401
+        ? "authentication_error"
+        : "invalid_request_error",
+    requestId,
+  );
+}
+
+/**
+ * What a request this client cannot seal is answered with: a resolved,
+ * non-retryable `404` `invalid_request_error` / `unknown_operation`. It is
+ * never sent, signed or not, so no message leaves the process.
+ */
+function unknownOperation(message: string): SealedResponse {
+  return refusal(
+    404,
+    "unknown_operation",
+    message,
+    false,
+    "invalid_request_error",
   );
 }
 
@@ -310,11 +404,11 @@ class SealingStripeHttpClient implements VpayStripeHttpClient {
 
     const verb = method.toUpperCase();
     if (verb !== "GET" && verb !== "POST" && verb !== "DELETE") {
-      throw new VpayConfigError(`vpay's /v1 has no ${verb} operation`);
+      return unknownOperation(`vpay's /v1 has no ${verb} operation`);
     }
     const [pathname = "", query] = path.split("?", 2);
     if (!pathname.startsWith("/v1/")) {
-      throw new VpayConfigError(
+      return unknownOperation(
         `refusing to seal ${pathname}: vpay serves /v1/… only`,
       );
     }
@@ -351,8 +445,18 @@ class SealingStripeHttpClient implements VpayStripeHttpClient {
           ? timeout
           : this.#auth.timeoutMs,
       );
+      if (status >= 400 && !isStripeErrorEnvelope(text)) {
+        return unenveloped(status, text, responseHeaders);
+      }
       return new SealedResponse(status, text, responseHeaders);
     } catch (err) {
+      // The sealing module found no such operation in the contract table (a
+      // GET on a POST-only path, a path with no route): nothing was sent.
+      if (err instanceof VpayInvalidParamsError) {
+        return unknownOperation(
+          `vpay's /v1 has no ${verb} ${pathname} operation`,
+        );
+      }
       if (err instanceof VpayUnsignedResponseError) {
         return refusal(
           err.status,
@@ -415,8 +519,15 @@ class SealingStripeHttpClient implements VpayStripeHttpClient {
  * `response_too_large`) otherwise, with the cause in `message`. A gateway's
  * unsigned `5xx` stays retryable.
  *
+ * A request this client cannot seal, because the contract has no such
+ * operation (a `GET` on a `POST`-only path, a path outside `/v1`, a verb `/v1`
+ * does not use), is refused the same way, before anything is sent:
+ * `StripeInvalidRequestError` with `statusCode: 404` and `code:
+ * "unknown_operation"`, once.
+ *
  * What does reject is a real transport failure (DNS, TLS, a reset, a timeout)
- * and a {@link VpayConfigError}, reported as `StripeConnectionError` with the
+ * and a {@link VpayConfigError} (a request addressed to another origin, a
+ * misconfigured key), reported as `StripeConnectionError` with the
  * original at `err.detail` / `err.raw.exception`, and retried up to
  * `maxNetworkRetries` times. Each retry re-seals the call (a new message). A
  * `POST` keeps the `Idempotency-Key` stripe-node chose, so the retry is the
