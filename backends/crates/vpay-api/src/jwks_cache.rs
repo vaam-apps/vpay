@@ -1,9 +1,15 @@
 //! A time-bounded JWKS cache that takes its HTTP client as an argument.
 //!
 //! A deliberate port of `authkestra_resource::jwt::JwksCache` and
-//! `validate_jwt_generic` at the workspace's `=0.7.1` pin
+//! `validate_jwt_generic`, made at the `=0.7.1` pin
 //! (`authkestra-resource-0.7.1/src/jwt.rs`, lines 110–201 and 1299–1319). The
-//! caching policy below is theirs. It had to be ported rather than called
+//! caching policy below is theirs, and is unchanged at 0.13.1 (`get_jwks` and
+//! `refresh`, re-read 2026-10-26). Two things upstream added since 0.7.1 and
+//! this port's behaviour after the bump: `Jwks::find_key` now skips a key
+//! published with `use` other than `sig` (0.10), which this port inherits
+//! because it calls `find_key`; and `validate_jwt_generic` now narrows its
+//! algorithm list to the header's key family (0.9.2), which an RS256-only
+//! policy has no use for. It had to be ported rather than called
 //! because the original's `new` builds its own `reqwest::Client`, which panics
 //! inside this workspace's `FROM scratch` runtime image.
 //!

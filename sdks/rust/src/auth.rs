@@ -5,7 +5,8 @@
 //!
 //! This is a **reimplementation**, not a call through, of
 //! `authkestra_engine::client_assertion::mint_client_assertion`
-//! (`authkestra-engine-0.7.1/src/client_assertion.rs`, pinned `=0.7.1`). That
+//! (`authkestra-engine-0.13.1/src/client_assertion.rs`, pinned `=0.13.1`;
+//! the function is byte-identical to the `=0.7.1` this port was made from). That
 //! crate is not a dependency of this one — it reaches the test binaries only
 //! transitively, through the dev-dependency on `authkestra-op` — and a
 //! merchant SDK deliberately does not take vpay's own OP engine as a runtime
@@ -64,7 +65,7 @@ pub const CLIENT_ASSERTION_TYPE_JWT_BEARER: &str =
 pub const MIN_ASSERTION_LIFETIME_SECS: u64 = 1;
 
 /// Upper bound, matching `authkestra_engine::client_assertion::
-/// MAX_CLIENT_ASSERTION_LIFETIME_SECS` at the pinned `=0.7.1` — the same
+/// MAX_CLIENT_ASSERTION_LIFETIME_SECS` at the pinned `=0.13.1` — the same
 /// ceiling the OP verifier this crate's conformance test exercises enforces
 /// on the receiving end. A longer-lived assertion would only fail there for
 /// a reason invisible from here, so the SDK refuses it before it is minted.

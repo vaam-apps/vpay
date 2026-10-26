@@ -17,7 +17,9 @@ adapt to the other.
 
 Everything below was derived from what the pinned OP actually enforces —
 `authkestra-op = "=0.7.1"`, `src/client_assertion.rs` and
-`src/handlers/token.rs` — not from the RFCs alone. Cited inline.
+`src/handlers/token.rs` — not from the RFCs alone. Cited inline. Re-read at
+`=0.13.1` on 2026-10-26: no rule below changed; the store traits those
+functions call did.
 
 ## The handshake
 
@@ -233,7 +235,7 @@ before you treat anything above as safe with money.
 a spent assertion's `jti` now outlives the validator's leeway.** The
 paragraph on single use above is true only while the `jti` row exists, and the
 hourly sweep used to delete it at `expires_at < now()`, where `expires_at` is
-the assertion's own `exp`. `authkestra-op` 0.7.1 accepts an assertion for up
+the assertion's own `exp`. `authkestra-op` (0.7.1, and 0.13.1 since 2026-10-26) accepts an assertion for up
 to 61 s past `exp` (`jsonwebtoken`'s 60 s default leeway, which vpay cannot
 set, on a whole-second `now`). A sweep landing in that 61 s let a captured,
 already-spent assertion be replayed once for a second access token. The
@@ -616,7 +618,7 @@ What the SDKs themselves prove is unchanged by any of this:
 
 - **Rust SDK** (`sdks/rust`, crate `vpay-sdk`): the assertion it mints is
   accepted by the real verifier, `authkestra_op::client_assertion::
-verify_client_assertion` at the pinned 0.7.1, against a `ClientRegistration`
+verify_client_assertion` at the pinned 0.13.1, against a `ClientRegistration`
   holding the corresponding public JWK — with and without a `kid` — and an
   assertion signed by a different key, or for a different audience, is
   refused by that same verifier (`tests/op_conformance.rs`). Since

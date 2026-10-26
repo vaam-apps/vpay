@@ -39,7 +39,7 @@ The audience is the registered `dashboard_client.client_id`. It was the
 constant `vpay:dash/v1` until 2026-09-07, and the constant could not survive a
 login: `default_handle_authorization_code` mints with `aud = <client_id>` and
 has **no requested-audience path at all**
-(`authkestra-op-0.7.1/src/handlers/token.rs`, step 7), so no token from the
+(`authkestra-op-0.13.1/src/handlers/token.rs`, step 7), so no token from the
 only grant that can produce a dashboard credential would ever have carried it.
 ADR-0017 changed the _validator_ to expect what the grant produces rather than
 forking the handler, and `Surface::audience()` is gone —

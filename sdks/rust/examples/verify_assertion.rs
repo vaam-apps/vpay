@@ -1,6 +1,6 @@
 //! Verifies a `private_key_jwt` client assertion with the **real** OP
 //! verifier — `authkestra_op::client_assertion::verify_client_assertion` at
-//! the pinned `=0.7.1` — and reports whether it would authenticate.
+//! the pinned `=0.13.1` — and reports whether it would authenticate.
 //!
 //! This exists so the *Node* SDK's assertions can be checked against the same
 //! verifier the Rust SDK's own test suite uses (`tests/op_conformance.rs`).

@@ -45,7 +45,7 @@ pub const MERCHANT_AUDIENCE: &str = "vpay:v1";
 /// because `Surface::Dashboard`'s validator demanded a literal audience; the
 /// authorization-code grant mints `aud = <client_id>` and has no
 /// requested-audience path at all
-/// (`authkestra-op-0.7.1/src/handlers/token.rs`, step 7), so a token from the
+/// (`authkestra-op-0.13.1/src/handlers/token.rs`, step 7), so a token from the
 /// only grant that can ever produce a dashboard credential would never have
 /// carried it. The validator was changed to expect what the grant produces:
 /// the audience is now [`DashboardClient::client_id`], passed to

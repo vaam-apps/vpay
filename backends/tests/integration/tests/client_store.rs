@@ -106,7 +106,7 @@ fn configured_merchant() -> MerchantClient {
 #[tokio::test]
 async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Result<()> {
     let (_container, repositories, _pool) = migrated_postgres().await?;
-    let store = YamlClientStore::new(&[configured_merchant()], Arc::clone(&repositories));
+    let mut store = YamlClientStore::new(&[configured_merchant()], Arc::clone(&repositories));
 
     let found = store
         .find_client(CLIENT_ID)
@@ -162,7 +162,7 @@ async fn find_client_reflects_the_disabled_clients_kill_switch() -> anyhow::Resu
 #[tokio::test]
 async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
+    let mut store = vpay_db::client_assertion_store(repositories.op_store_pool());
     let now = as_chrono(db_now(&pool).await?)?;
 
     // Recorded through the real store rather than a hand-written INSERT, so
@@ -208,7 +208,7 @@ async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> any
 /// the **database's** clock, by reading the rows back.
 ///
 /// This is the cut the whole of ADR-0028 is about. `expires_at` is the
-/// client's own `exp`, and `authkestra-op` 0.7.1 accepts an assertion for a
+/// client's own `exp`, and `authkestra-op` 0.13.1 accepts an assertion for a
 /// further 60 seconds past it (`jsonwebtoken`'s default leeway), plus the
 /// second its whole-second `now` truncates away. A sweep that deleted at
 /// `expires_at < now()` removed a `jti` that could still be presented, and
@@ -230,7 +230,7 @@ async fn expired_client_assertion_jtis_are_swept_and_live_ones_are_kept() -> any
 async fn a_spent_jti_survives_the_sweep_while_its_assertion_could_still_verify()
 -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
+    let mut store = vpay_db::client_assertion_store(repositories.op_store_pool());
     let now = as_chrono(db_now(&pool).await?)?;
     let horizon = ChronoDuration::from_std(RETENTION).context("the horizon fits chrono")?;
 
@@ -287,7 +287,7 @@ async fn a_spent_jti_survives_the_sweep_while_its_assertion_could_still_verify()
 #[tokio::test]
 async fn the_sweep_horizon_is_the_callers_duration_on_the_databases_clock() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
-    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
+    let mut store = vpay_db::client_assertion_store(repositories.op_store_pool());
     let now = as_chrono(db_now(&pool).await?)?;
     let horizon = std::time::Duration::from_secs(120);
 

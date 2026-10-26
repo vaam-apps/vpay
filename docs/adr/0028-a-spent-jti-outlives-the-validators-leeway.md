@@ -39,6 +39,13 @@ Real time after `exp` is therefore up to **61 s**. The same function refuses an
 `exp` further than 300 s in the future. vpay cannot configure any of this; the
 dependency is pinned `=0.7.1` and the leeway is a constant inside it.
 
+_2026-10-26: still true at `=0.13.1`. The upgrade left
+`verify_client_assertion`'s `Validation`, its leeway comment and the 300 s
+ceiling as they were; only the store trait it calls changed shape.
+`an_assertion_older_than_the_sweep_horizon_is_refused_by_the_validator` in
+`merchant_token_flow.rs` is the check that a later bump has not widened the
+leeway._
+
 **The sweep's.** The store keeps the client's raw `exp` as `expires_at`. The
 worker's hourly `sweep_expired` job
 (`vpay_worker::handlers::sweep_expired`, `SWEEP_INTERVAL` = 3600 s) ran

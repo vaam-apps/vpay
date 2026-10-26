@@ -764,7 +764,8 @@ been checked against the real OP verifier by hand.** An assertion minted by
 this SDK was fed directly to
 `authkestra_op::client_assertion::verify_client_assertion` at the pinned
 `authkestra-op = "=0.7.1"`, against a `ClientRegistration` holding the
-corresponding public JWK, and was accepted. `just sdk-conformance-node`
+corresponding public JWK, and was accepted — and again at `=0.13.1` on
+2026-10-26, when the pin moved. `just sdk-conformance-node`
 reproduces it: the recipe mints an assertion via `scripts/mint-assertion.mjs`
 and pipes it into `cargo run -p vpay-sdk --example verify_assertion`. It is a
 manual check, run on demand — it needs a Rust toolchain, it is not part of

@@ -88,8 +88,9 @@ https://static.crates.io/crates/authkestra-axum/authkestra-axum-<version>.crate
 ```
 
 — and compare `src/op.rs::axum_token_handler` against `op::token`, whose tail as
-of `0.7.1` (lines 239-247) is inlined here so the comparison target is local and
-a drift is visible without a download:
+of `0.7.1` (lines 239-247; identical at `0.13.1`, lines 271-278, compared
+2026-10-26) is inlined here so the comparison target is local and a drift is
+visible without a download:
 
 ```text
         Ok(resp) => (StatusCode::OK, Json(resp)).into_response(),
