@@ -27,8 +27,9 @@
 //! The cost is stated plainly in ADR-0017's Consequences and in migration
 //! 0035's own comment: **losing the pepper invalidates every stored hash.**
 
-use argon2::password_hash::{PasswordHash, PasswordHasher as _, PasswordVerifier as _, SaltString};
-use argon2::{Algorithm, Argon2, Params, Version};
+use argon2::{
+    Algorithm, Argon2, Params, PasswordHash, PasswordHasher as _, PasswordVerifier as _, Version,
+};
 
 use super::{StaffAuthError, StaffCredentials};
 
@@ -80,16 +81,20 @@ impl StaffCredentials {
 
     /// Hashes a password for storage, with a fresh random salt.
     ///
+    /// The salt is sixteen bytes from the OS CSPRNG, drawn by argon2's own
+    /// `hash_password` (through `getrandom`), which is the PHC format's
+    /// recommended length and the same length `SaltString::generate` gave
+    /// under argon2 0.5.
+    ///
     /// # Errors
     ///
     /// [`StaffAuthError::Password`] if argon2 refuses the parameters or the
-    /// hash. Neither carries the password: `argon2::Error` and
-    /// `password_hash::Error` are both parameter-level types.
+    /// hash, or the OS refuses randomness. None carries the password:
+    /// `argon2::Error` and `password_hash::Error` are parameter-level types.
     pub fn hash_password(&self, password: &str) -> Result<String, StaffAuthError> {
-        let salt = SaltString::generate(&mut argon2::password_hash::rand_core::OsRng);
-        let hash = self
+        let hash: PasswordHash = self
             .hasher()?
-            .hash_password(password.as_bytes(), &salt)
+            .hash_password(password.as_bytes())
             .map_err(|error| StaffAuthError::Password(error.to_string()))?;
         Ok(hash.to_string())
     }
@@ -228,6 +233,42 @@ mod tests {
                 "{stored}"
             );
         }
+    }
+
+    /// A PHC string written by argon2 **0.5.3**, the version vpay hashed staff
+    /// passwords with until 2026-10-26, captured from `hash_password` on that
+    /// version with the pepper and password below. Every `password_hash` row
+    /// written before the move to 0.6 looks like this one, and they must keep
+    /// verifying, because nothing re-hashes them: the move ships no migration.
+    /// If an argon2 bump ever changes how a stored string is parsed, or how
+    /// the pepper is mixed in, this is the case that fails, before a deploy
+    /// locks every staff member out.
+    const WRITTEN_BY_ARGON2_0_5: &str = "$argon2id$v=19$m=19456,t=2,p=1\
+        $2bb5jERNrTFlelqeL/pC7A$+xqlhQLyeP07ASLnIw3XEZJJ242t+YwKtpwAhUoPvBo";
+
+    #[test]
+    fn a_hash_written_by_argon2_0_5_still_verifies() {
+        let credentials =
+            StaffCredentials::new("argon2-0.5-fixture-pepper", &"A".repeat(43)).expect("key");
+        assert!(
+            credentials
+                .verify_password("a password hashed by argon2 0.5", WRITTEN_BY_ARGON2_0_5)
+                .expect("verification runs"),
+            "a staff password hashed before the move to argon2 0.6 no longer verifies"
+        );
+        assert!(
+            !credentials
+                .verify_password("a password hashed by argon2 0.6", WRITTEN_BY_ARGON2_0_5)
+                .expect("verification runs"),
+            "the old hash must still refuse a wrong password"
+        );
+        let other = StaffCredentials::new("another-pepper", &"A".repeat(43)).expect("key");
+        assert!(
+            !other
+                .verify_password("a password hashed by argon2 0.5", WRITTEN_BY_ARGON2_0_5)
+                .expect("verification runs"),
+            "the old hash must still depend on the pepper it was written under"
+        );
     }
 
     /// The dummy hash has to be a *parseable* one, or the no-such-account

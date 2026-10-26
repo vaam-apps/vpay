@@ -19,11 +19,13 @@ CI runs it.
 `just verify` is the gates the `verify` recipe lists in the `justfile`, and
 one report. **The recipe is the list; this paragraph is a description of it,
 and it has gone stale at nearly every count it has carried** — see below. On
-this commit the gates are 16 <!-- count:verify-gates --> (`verify-no-mocks`, `verify-status`,
+this commit the gates are 17 <!-- count:verify-gates --> (`verify-no-mocks`, `verify-status`,
 `verify-errors`, `verify-sdk-parity`, `verify-links`, `verify-npm-scope`,
 `check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`,
 `verify-ui`, `verify-migrations`, `verify-versions`,
-`verify-privacy-inventory`, `verify-doc-counts`, `verify-mcp-parity`) and they fail the build. That
+`verify-privacy-inventory`, `verify-doc-counts`, `verify-security-inventory`,
+`verify-mcp-parity`)
+and they fail the build. That
 number is written in digits and carries a `count:verify-gates` marker because
 `verify-doc-counts` re-reads it off the recipe on every `just verify`; the
 names beside it are still prose nothing checks. If that list and the
@@ -76,7 +78,15 @@ thirteen of them numbers that had silently drifted, and not one of them in a
 claim any gate reads. **Write the opening delimiter out in a `*.md` file and
 the gate will try to measure your example**: it scans raw text and has no
 notion of a code span, which is why this paragraph names the marker without
-it. And `verify-mcp-parity` makes it **sixteen** on 2026-10-26 (ADR-0033 D8):
+it. And `verify-security-inventory` makes it **sixteen** on 2026-10-26
+(issue #150, [ADR-0034](docs/adr/0034-security-asset-and-control-evidence-inventory.md)):
+it reads `schemas/security-inventory.yaml`, refuses an unknown key, checks
+every path and every cited test name, derives the live table set from the
+migrations and checks it in **both** directions, validates each secret
+`config_keys` path against a closed set, and requires every control gap and
+every tracked gap to resolve. It runs after `verify-doc-counts` and before
+`verify-docs`, so both annotated tallies moved to sixteen in that change.
+Then `verify-mcp-parity` makes it **seventeen** the same day (ADR-0033 D8):
 every `/v1` route has a row in `docs/api/mcp-parity.md` naming the MCP tool
 that serves it or a dated gap, every declared tool is named, and both
 directions fail.
@@ -90,7 +100,7 @@ said "Eleven of the thirteen", which was right for a tree that had not seen
 #201 and wrong for one that had. `master` at `eb078020` said "twelve" and "Ten
 of the twelve". Neither side was right for the merge, which is fourteen and
 twelve.)_
-Fourteen of the sixteen are `cargo xtask` commands; `check-schema` and
+Fifteen of the seventeen are `cargo xtask` commands; `check-schema` and
 `verify-ui` are justfile recipes — the first shells out to the CrateStack CLI,
 a binary this workspace does not build, and the second is a handful of
 `git grep`s.
@@ -386,7 +396,7 @@ process to a reader who will decide what to do. A skill briefs an agent that is
 already doing it, and is therefore judged on a different question: not "is this
 accurate and complete" but "would an agent that read only this do the right
 thing on its first attempt". That is why they are a separate repository — a
-briefing that has to clear fifteen gates to be corrected is a briefing nobody
+briefing that has to clear sixteen gates to be corrected is a briefing nobody
 corrects — and why drift between them and this tree is gated rather than
 trusted.
 

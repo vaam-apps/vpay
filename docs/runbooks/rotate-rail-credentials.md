@@ -3,9 +3,9 @@
 Two different jobs on one page, because operators reach for the same word for
 both and the mechanisms have nothing in common:
 
-- **§1–§4 — a rail credential** (MTN, Orange): an environment variable from a
-  Kubernetes Secret. Rotating it is a Secret edit plus a restart of **both**
-  workloads.
+- **§1–§4 — a rail credential** (MTN, Orange, Notch Pay): an environment
+  variable from a Kubernetes Secret. Rotating it is a Secret edit plus a
+  restart of **both** workloads.
 - **§5 — a merchant's own credential**: vpay holds no merchant secret at all,
   so there is nothing to rotate. Revoking one needs the
   [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) **dual-authority
@@ -31,8 +31,9 @@ process environment at boot. From `config/application.yml`:
 | -------------- | -------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `mtn_momo`     | `target_environment`, `api_user` = `${MTN_API_USER}`, `disbursement_api_user` = `${MTN_DISBURSEMENT_API_USER}` | `subscription_key` = `${MTN_SUBSCRIPTION_KEY}`, `api_key` = `${MTN_API_KEY}`, `disbursement_subscription_key` = `${MTN_DISBURSEMENT_SUBSCRIPTION_KEY}`, `disbursement_api_key` = `${MTN_DISBURSEMENT_API_KEY}` |
 | `orange_money` | `env`, `lang`                                                                                                  | `merchant_key` = `${ORANGE_MERCHANT_KEY}`, `client_id` = `${ORANGE_CLIENT_ID}`, `client_secret` = `${ORANGE_CLIENT_SECRET}`                                                                                    |
+| `notchpay`     | `channel`, `description`, `accept_public_key_exposure` (livemode)                                              | `public_key` = `${NOTCHPAY_PUBLIC_KEY}`, `private_key` = `${NOTCHPAY_PRIVATE_KEY}`. `public_key` is treated as sensitive: it can read and initiate payments on the merchant's account.                         |
 
-Nine rail variables in this table, plus `MERCHANT_WEBHOOK_SECRET`
+Eleven rail variables in this table, plus `MERCHANT_WEBHOOK_SECRET`
 (`docs/flows/webhooks.md`, Step 5) for ten **on this branch, as of
 2026-09-15**. The three `MTN_DISBURSEMENT_*` names arrived that day with
 `mtn_momo::refund` (RFC-0003 § 5). They are the one group here that should
@@ -61,6 +62,10 @@ adapter that matches on a provider code ([ADR-0012](../adr/0012-rail-configurati
 MTN requires `target_environment` + `api_user` and `subscription_key` +
 `api_key`; Orange requires `merchant_key`, `client_id`, `client_secret`. An
 unresolved `${VAR}` is a **named fatal error**, never an empty string.
+
+Notch Pay is commented out of `config/application.yml` by default; its two
+keys become mandatory only once the block is uncommented. Rotate them exactly
+as the others, and remember that `public_key` is not a display-only value.
 
 `api_user` is a `settings` key deliberately — it is an identifier, not a
 bearer secret — but it still comes from the same Secret, and omitting it is

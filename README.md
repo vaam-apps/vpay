@@ -289,7 +289,9 @@ just up               # Postgres + a WireMock host per rail
 `!reset`), the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl`
 and `openssl`. `pnpm` is needed only to work on the web packages; `just demo`
 builds every image it needs in Docker. The Node baseline is `.nvmrc` —
-`22.23.2` — and `.npmrc` sets `engine-strict=true`, so `pnpm install` **fails**
+`24.21.0` since 2026-10-26, when `@cratestack/refine` (which declares
+`engines.node >= 24` in every release) joined the dashboard; it was `22.23.2`
+before — and `.npmrc` sets `engine-strict=true`, so `pnpm install` **fails**
 rather than warns on an older Node.
 
 ```bash
@@ -406,7 +408,7 @@ Three commands, with genuinely different requirements:
 
 | Command         | Needs                                                    | Runs                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | --------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just verify`   | Rust, and the pinned `cratestack` CLI on `PATH`; seconds | the gates the `verify` recipe lists in the [justfile](justfile) — sixteen of them on this commit — and one advisory report, `verify-docs`, which never fails. The recipe echoes its own count on success, so the justfile is the number and this sentence is not. See [AGENTS.md](AGENTS.md) for what each gate refuses. `check-schema` **fails** rather than skips when the CLI is missing, because a skipped check checked nothing        |
+| `just verify`   | Rust, and the pinned `cratestack` CLI on `PATH`; seconds | the gates the `verify` recipe lists in the [justfile](justfile) — seventeen of them on this commit — and one advisory report, `verify-docs`, which never fails. The recipe echoes its own count on success, so the justfile is the number and this sentence is not. See [AGENTS.md](AGENTS.md) for what each gate refuses. `check-schema` **fails** rather than skips when the CLI is missing, because a skipped check checked nothing      |
 | `just test`     | **Docker**, and Node                                     | `cargo nextest run --workspace`, `cargo test --doc --workspace` and `pnpm -r test`. The Postgres-backed suites use testcontainers and **fail loudly** without a reachable daemon — they never skip, so a green run is a real one. The adapter conformance suite needs Docker too: it starts a real `wiremock/wiremock` container per rail rather than an in-process HTTP double, because a stub rail is a host reached over HTTP (ADR-0006) |
 | `just test-e2e` | Docker, and Cypress's binary                             | builds the images, boots `compose.yml` + `compose.e2e.yml` + `compose.demo.yml`, runs the browser suite, tears the stack down. Four specs, 11 tests. This is what CI's `e2e` job does                                                                                                                                                                                                                                                       |
 

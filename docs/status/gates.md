@@ -399,6 +399,25 @@ correction.
   guess, and a wrong guess fails correct documents), `http(s)` URLs, and
   reference _usages_ with no definition (which render as literal text, so a
   reader sees them).
+- **`check-schema` grew a second direction on 2026-10-26: the generated
+  dashboard client.** `frontends/packages/dash-client` (`@vpay/dash-client`)
+  is `cratestack generate-typescript` output from `schemas/vpay.cstack`,
+  committed, and the recipe now regenerates it in memory with `--check` and
+  fails if the committed tree differs — a modified file or a stale extra one.
+  Both arms were mutated and measured: appending a line to `src/models.ts`
+  printed `modified: src/models.ts` and exit 1; adding `src/stale.ts` printed
+  `unexpected: src/stale.ts` and exit 1. A schema edit nobody regenerated is
+  the case it exists for: adding `probe Int?` to `type RefundSummary` failed
+  it with `src/models.ts` **and** `src/runtime.ts` modified — the second
+  because `runtime.ts` embeds the schema file's SHA-256, so **any** schema
+  edit, a comment included, needs `just gen-dash-client`. The check runs
+  against a copy of the package without `node_modules/`, because cratestack
+  0.15.0's drift walker (0.16.0's too, re-measured the same day) follows pnpm's `node_modules/decimal.js` symlink,
+  `git check-ignore` refuses those paths ("beyond a symbolic link", exit
+  128), and the CLI reads that as "nothing is ignored" — six `decimal.js`
+  files reported as drift on a clean checkout, measured. That is an upstream
+  bug, not filed from here. The gate count did not move (15): this is a
+  direction of an existing gate, not a new one.
 - **`check-schema` — a gate, in `just verify`, `just ci` and CI's
   `self-checks` job.** `cratestack check --schema schemas/vpay.cstack` at the
   version this repository pins. It is the first gate here that shells out to
@@ -1147,7 +1166,38 @@ must not match. **Measured 2026-10-09:** 307 columns, 26 elements, 10 surfaces,
 review fixes added seven. Evidence:
 [verification/2026-10-01-protected-diagnostics.md](verification/2026-10-01-protected-diagnostics.md).)_
 
-## 2026-10-26 — `verify-mcp-parity`, the sixteenth gate (ADR-0033 D8)
+## 2026-10-26 — `verify-security-inventory`, the sixteenth gate (issue #150, ADR-0034)
+
+New 2026-10-26. It reads `schemas/security-inventory.yaml` and fails when the
+map disagrees with the tree. It is the security counterpart of
+`verify-privacy-inventory`: every deployable service path and named crate must
+exist, every table a migration creates must appear in a state store and every
+table a state store names must be created by a migration, every secret
+`config_keys` entry must be one of the closed set of `vpay-config` paths the
+gate knows, every implementation and evidence path and every cited test name
+must exist, every control status must be `implemented`, `partial` or `gap`, a
+`gap` control must name a gap, and every gap must name exactly one tracker. A
+tracked issue number must be cited by a document under `docs/`, which is an
+offline liveness proxy; the gate does not call GitHub, and
+`verify-citations` remains the network check.
+
+`deny_unknown_fields` is on every inventory struct. That is what closes the
+hole the first draft had: a misspelt `tables:` key was silently ignored, so a
+bogus or missing table passed. The first draft also checked the table set in
+one direction only and never deserialized `implementation`, `evidence` or
+`crate`; each of those is a failing case in `test_security_inventory` now, and
+each was driven against a temporary tree.
+
+**Measured on this tree, 2026-10-26:** `cargo xtask verify-security-inventory`
+— 5 services, 4 state stores, 33 tables, 10 secret classes, 15 material
+controls and 7 tracked gaps — and the live table set derived from
+`backends/migrations` contains the same 33 names, including the five
+`authkestra.oauth_*` tables. The gate is wired into `just verify` and CI's
+`self-checks` job, and both `count:verify-gates` tallies moved to sixteen in
+the same change. The full `just ci` evidence is in
+[verification/2026-10-26-security-inventory-gate.md](verification/2026-10-26-security-inventory-gate.md).
+
+## 2026-10-26 — `verify-mcp-parity`, the seventeenth gate (ADR-0033 D8)
 
 **What it refuses.** It reads three files: `V1_ROUTES` in
 `backends/crates/vpay-api/src/v1/mod.rs`, the `@mcp(tool: …)` lines in

@@ -57,7 +57,10 @@ arguments)`. A replay returns the first answer. The same key with different
 - **The dashboard transport serves none of it.** CrateStack's generated
   procedure router mounts every procedure, so `/dash/v1/$procs` has an
   allowlist of its five searches. The write procedures' policy also refuses a
-  dashboard context.
+  dashboard context. The generated `@vpay/dash-client` still lists all seven
+  merchant procedures (`openPaymentIntent`, `issueRefund`, …), because
+  `cratestack generate-typescript` emits every procedure in the schema. The
+  dashboard calls none of them, and `/dash/v1/$procs` answers each with 404.
 
 ## What can go wrong
 

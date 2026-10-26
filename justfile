@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Fifteen invariants this repo enforces on itself, all wired into `just verify`:
+# Seventeen invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -45,6 +45,10 @@
 #     what the tree measures — including this list's own gate tally, which the
 #     `verify-gates` measurer reads off the `verify:` recipe below rather than
 #     off any prose (`verify-doc-counts`, 2026-09-20)
+#   * every security asset, trust tier, live table, secret class, control
+#     evidence path and tracked gap in schemas/security-inventory.yaml still
+#     matches the tree, in both directions for the table set
+#     (`verify-security-inventory`, 2026-10-26 — issue #150, ADR-0034)
 #
 # This block said "Eleven" and listed eleven until 2026-09-11: the
 # `verify-migrations` bullet had been pasted into the MIDDLE of the sentence
@@ -66,15 +70,21 @@
 # every "fourteen" below became a "fifteen" in the same change, and the gate
 # would have failed the build if one had been missed.
 #
-# `verify-mcp-parity` makes it **sixteen** on 2026-10-26 (ADR-0033 D8): every
+# `verify-security-inventory` makes it **sixteen** on 2026-10-26 (issue #150,
+# ADR-0034). It reads schemas/security-inventory.yaml, checks paths and tables
+# against the tree in both directions, and ties every control gap to a tracker.
+# It is appended after `verify-doc-counts` and before `verify-docs`; both
+# annotated tallies moved to sixteen in the same change.
+#
+# `verify-mcp-parity` makes it **seventeen** on 2026-10-26 (ADR-0033 D8): every
 # `/v1` route is mapped to an MCP tool or a dated gap, in both directions.
 #
-# `just verify` prints a sixteenth thing that is NOT an invariant and never
+# `just verify` prints an eighteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# A seventeenth check is a gate that is NOT in `just ci`, because it needs the
+# A nineteenth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -973,7 +983,7 @@ test-flutter-emulator: _flutter-preflight
 # Android and an Apple target the CI image has no toolchain for. Adding
 # either is a runner-image change — the maintainer's call. `just ci` and
 # `just verify` are deliberately untouched by this block, and the gate tally
-# in this file's own header is unchanged at fifteen.
+# in this file's own header is unchanged at sixteen.
 #
 # The JavaScript half needs no recipe to be gated and has none of its own
 # beyond the convenience one below: `pnpm-workspace.yaml` names
@@ -1650,8 +1660,8 @@ audit-web:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
 # verify-links, verify-npm-scope, check-schema, verify-serde,
 # verify-repositories, verify-toolchain, verify-ui, verify-migrations,
-# verify-versions, verify-privacy-inventory, verify-doc-counts, and then
-# verify-docs last.
+# verify-versions, verify-privacy-inventory, verify-doc-counts,
+# verify-security-inventory, and then verify-docs last.
 #
 # _(That list named eleven and stopped at `verify-ui` until 2026-09-17. It had
 # been three gates short since `verify-versions` (PR #201) and one short since
@@ -1742,14 +1752,15 @@ audit-web:
 # gate above it is where it is: the list is chronological, so every ordinal
 # already written down elsewhere stays true when a gate is added.
 #
-# `verify-mcp-parity` joined on 2026-10-26 as the sixteenth (ADR-0033 D8):
+# `verify-mcp-parity` joined on 2026-10-26 as the seventeenth (ADR-0033 D8), after
+# `verify-security-inventory`:
 # every `/v1` route has a row in docs/api/mcp-parity.md saying which MCP tool
 # serves it, or a dated gap, and every declared tool is named. Last, for the
 # chronological reason above.
 #
-# The sixteen self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-mcp-parity verify-docs
-    @echo "verify: ok — the sixteen gates above passed; the verify-docs report is advisory"
+# The seventeen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-security-inventory verify-mcp-parity verify-docs
+    @echo "verify: ok — the seventeen gates above passed; the verify-docs report is advisory"
 
 # ADR-0033 D8: the merchant MCP endpoint's parity with `/v1` is a gate, not a
 # promise. Two-directional: a mounted `/v1` route with no row in
@@ -2019,6 +2030,55 @@ check-schema:
     echo "check-schema: cratestack $found, schema $schema ($declarations model/enum declarations, datasource present)"
     cratestack check --schema "$schema"
     echo "check-schema: ok — $schema type-checks under cratestack $found"
+
+    # The dashboard's generated client (`frontends/packages/dash-client`) is a
+    # second thing this schema produces, and a schema edit that is not
+    # regenerated leaves the dashboard compiling against procedure types the
+    # server no longer answers with. `--check` regenerates in memory and diffs.
+    # Added 2026-10-26 with the package; see `gen-dash-client` for the flags.
+    #
+    # Against a COPY without `node_modules/`, not the package itself, and
+    # that is a measured upstream bug rather than caution: cratestack
+    # 0.15.0's (and 0.16.0's) drift walker follows pnpm's `node_modules/decimal.js` symlink, asks
+    # `git check-ignore` about the files beyond it, gets "fatal: pathspec ...
+    # is beyond a symbolic link" (exit 128), and `drift.rs`'s `git_ignored`
+    # reads any non-zero exit as "nothing is ignored" — so six files of
+    # `decimal.js` reported as drift on a checkout with nothing stale in it.
+    # The copy keeps the check's meaning, including the stale-file arm for
+    # anything that is not a dependency.
+    dash_copy="$(mktemp -d)"
+    trap 'rm -rf "$dash_copy"' EXIT
+    tar --exclude=./node_modules -C frontends/packages/dash-client -cf - . | tar -C "$dash_copy" -xf -
+    if ! cratestack generate-typescript {{ dash_client_flags }} --out "$dash_copy" --check; then
+        echo "check-schema: FAIL — frontends/packages/dash-client is stale against $schema." >&2
+        echo "check-schema: run 'just gen-dash-client' and commit the result in the same change." >&2
+        exit 1
+    fi
+    echo "check-schema: ok — frontends/packages/dash-client matches $schema"
+
+# The flags `gen-dash-client` and `check-schema` share, so the two can never
+# generate different clients.
+#
+# * No `--refine`. Its manifest maps all twenty-one MODELS to generated CRUD
+#   routes, and vpay mounts none of them — only `procedure_router`
+#   (`backends/crates/vpay-db/src/schema.rs`). Worse, the generated
+#   `PaymentIntentApi.list()` would reach the hand-written
+#   `GET /dash/v1/payment_intents` and cast its `ListObject` to an array. The
+#   dashboard binds `@cratestack/refine` to the procedures by hand instead
+#   (`frontends/apps/dashboard/src/dash/procedure-resources.ts`).
+# * `--template-dir schemas/typescript-client` overrides `package.json.j2`
+#   alone, so the package is consumed as TypeScript source like every other
+#   workspace package — the stock template builds `dist/` with its own
+#   `typescript ^7`, a second compiler major in this workspace.
+dash_client_flags := "--schema schemas/vpay.cstack --package-name @vpay/dash-client --base-path /dash/v1 --template-dir schemas/typescript-client"
+
+# Regenerate `frontends/packages/dash-client` from schemas/vpay.cstack.
+#
+# ANY edit to the schema needs this, a comment included: the generated
+# `runtime.ts` carries the schema file's SHA-256, which every request sends
+# as `x-cratestack-schema-sha` (vpay warns on a mismatch and never refuses).
+gen-dash-client:
+    cratestack generate-typescript {{ dash_client_flags }} --out frontends/packages/dash-client
 
 # A REPORT, not a gate: doc-comment lines against code lines per crate, the
 # production functions of 80 lines or more, every ```ignore doctest fence and
@@ -2562,6 +2622,11 @@ verify-migrations:
 # stale inventory row cannot survive the column it named.
 verify-privacy-inventory:
     cargo xtask verify-privacy-inventory
+
+# Code-grounded security assets, trust boundaries and ISO/IEC 27001 control
+# evidence map (issue #150, EPIC #155, ADR-0034).
+verify-security-inventory:
+    cargo xtask verify-security-inventory
 
 # Every number a document marks `<!-- count:KIND ARG... -->` still equals what
 # the tree measures. Fifteenth gate, new 2026-09-20.

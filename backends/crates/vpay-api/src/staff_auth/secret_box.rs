@@ -33,9 +33,9 @@
 
 use aes_gcm::aead::{Aead as _, KeyInit as _};
 use aes_gcm::{Aes256Gcm, Key, Nonce};
-use argon2::password_hash::rand_core::{OsRng, RngCore as _};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use rand_core::{OsRng, RngCore as _};
 
 use super::{StaffAuthError, StaffCredentials};
 

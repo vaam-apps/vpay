@@ -188,7 +188,7 @@ export interface PaymentDetail {
 export const SESSION_HEADER = "x-vpay-staff-session";
 
 /** The request id from either spelling, or `null`. */
-function requestIdOf(response: Response): string | null {
+export function requestIdOf(response: Response): string | null {
   for (const header of REQUEST_ID_HEADERS) {
     const value = response.headers.get(header);
     if (value !== null && value.trim().length > 0) {
@@ -206,21 +206,37 @@ function requestIdOf(response: Response): string | null {
  * sits in front of vpay.
  */
 async function failureOf(response: Response): Promise<ApiFailure> {
-  const requestId = requestIdOf(response);
-  let message = `vpay answered ${response.status}.`;
+  let body: unknown = null;
   try {
-    const body: unknown = await response.json();
-    const envelope = (body as { error?: { message?: unknown } } | null)?.error;
-    if (
-      typeof envelope?.message === "string" &&
-      envelope.message.trim().length > 0
-    ) {
-      message = envelope.message.trim();
-    }
+    body = await response.json();
   } catch {
-    // Left as the status sentence above.
+    // Left as the status sentence `envelopeMessage` falls back to.
   }
-  return { status: response.status, message, requestId };
+  return {
+    status: response.status,
+    message: envelopeMessage(response.status, body),
+    requestId: requestIdOf(response),
+  };
+}
+
+/**
+ * `error.message` out of an already-decoded vpay envelope, or the sentence
+ * naming the status.
+ *
+ * Split out of `failureOf` so the generated CrateStack client's refusals
+ * (`src/dash/cratestack-client.ts`), which arrive already decoded on a
+ * `CratestackHttpError`, render the same sentence a hand-written call
+ * would have — never the raw body, for the reason above.
+ */
+export function envelopeMessage(status: number, body: unknown): string {
+  const envelope = (body as { error?: { message?: unknown } } | null)?.error;
+  if (
+    typeof envelope?.message === "string" &&
+    envelope.message.trim().length > 0
+  ) {
+    return envelope.message.trim();
+  }
+  return `vpay answered ${status}.`;
 }
 
 /** Everything a call may carry beyond its body. */
@@ -251,7 +267,7 @@ function authHeaders(options: CallOptions): Record<string, string> {
  * would otherwise render Next's own error page — which tells a staff member
  * nothing and an operator less.
  */
-function unreachable(error: unknown): ApiFailure {
+export function unreachable(error: unknown): ApiFailure {
   const detail = error instanceof Error ? error.message : String(error);
   return {
     status: 0,
@@ -315,63 +331,6 @@ export async function getJson<T>(
       // A dashboard that showed a cached payment would be worse than one
       // that showed none: an operator reads it to decide whether something
       // is still happening.
-      cache: "no-store",
-      redirect: "error",
-    });
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-  if (!response.ok) {
-    return { ok: false, failure: await failureOf(response) };
-  }
-  try {
-    return { ok: true, value: (await response.json()) as T };
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-}
-
-/**
- * `POST` a JSON body and read a JSON document back.
- *
- * `getJson`'s sibling, and it exists because the three Lane D read slices
- * are **CrateStack procedures**, not REST routes: the generated transport
- * mounts them at `POST /dash/v1/$procs/<procedureName>` unconditionally
- * (`cratestack-macros-0.12.0/src/axum/procedure/route_attrs.rs`), with the
- * arguments in the body rather than the query string.
- *
- * **A `POST` here is still a read.** The method is a fact about the wire
- * shape a procedure call takes, not a loosening of `/dash/v1`'s "reads only"
- * boundary: the procedures carry no write policy arm, no model CRUD route is
- * mounted, and `vpay_api`'s procedure boundary admits `POST` and nothing
- * else. The browser-facing half of this app stays `GET`-only regardless —
- * `middleware.ts` answers `405` to every method but `GET`/`HEAD` on
- * `/api/dash/:path*`, so this `POST` is only ever made by this process,
- * server side, on behalf of a `GET` the browser made.
- *
- * Everything else is `getJson`'s behaviour, deliberately: `no-store` because
- * an operator reads this to decide whether something is still happening,
- * `redirect: "error"` because a redirect from this surface is a
- * misconfiguration rather than something to follow, and the same
- * `failureOf`/`unreachable` split so a refusal and an outage stay
- * distinguishable.
- */
-export async function postJson<T>(
-  apiBaseUrl: string,
-  path: string,
-  body: unknown,
-  options: CallOptions = {},
-): Promise<ApiResult<T>> {
-  let response: Response;
-  try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        accept: "application/json",
-        "content-type": "application/json",
-        ...authHeaders(options),
-      },
-      body: JSON.stringify(body),
       cache: "no-store",
       redirect: "error",
     });
