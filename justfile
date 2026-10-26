@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Fifteen invariants this repo enforces on itself, all wired into `just verify`:
+# Sixteen invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -45,6 +45,10 @@
 #     what the tree measures — including this list's own gate tally, which the
 #     `verify-gates` measurer reads off the `verify:` recipe below rather than
 #     off any prose (`verify-doc-counts`, 2026-09-20)
+#   * every security asset, trust tier, live table, secret class, control
+#     evidence path and tracked gap in schemas/security-inventory.yaml still
+#     matches the tree, in both directions for the table set
+#     (`verify-security-inventory`, 2026-10-26 — issue #150, ADR-0034)
 #
 # This block said "Eleven" and listed eleven until 2026-09-11: the
 # `verify-migrations` bullet had been pasted into the MIDDLE of the sentence
@@ -65,6 +69,12 @@
 # claim. It is the first gate whose own arrival changes a number it checks:
 # every "fourteen" below became a "fifteen" in the same change, and the gate
 # would have failed the build if one had been missed.
+#
+# `verify-security-inventory` makes it **sixteen** on 2026-10-26 (issue #150,
+# ADR-0034). It reads schemas/security-inventory.yaml, checks paths and tables
+# against the tree in both directions, and ties every control gap to a tracker.
+# It is appended after `verify-doc-counts` and before `verify-docs`; both
+# annotated tallies moved to sixteen in the same change.
 #
 # `just verify` prints a sixteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
@@ -970,7 +980,7 @@ test-flutter-emulator: _flutter-preflight
 # Android and an Apple target the CI image has no toolchain for. Adding
 # either is a runner-image change — the maintainer's call. `just ci` and
 # `just verify` are deliberately untouched by this block, and the gate tally
-# in this file's own header is unchanged at fifteen.
+# in this file's own header is unchanged at sixteen.
 #
 # The JavaScript half needs no recipe to be gated and has none of its own
 # beyond the convenience one below: `pnpm-workspace.yaml` names
@@ -1647,8 +1657,8 @@ audit-web:
 # verify-no-mocks, verify-status, verify-errors, verify-sdk-parity,
 # verify-links, verify-npm-scope, check-schema, verify-serde,
 # verify-repositories, verify-toolchain, verify-ui, verify-migrations,
-# verify-versions, verify-privacy-inventory, verify-doc-counts, and then
-# verify-docs last.
+# verify-versions, verify-privacy-inventory, verify-doc-counts,
+# verify-security-inventory, and then verify-docs last.
 #
 # _(That list named eleven and stopped at `verify-ui` until 2026-09-17. It had
 # been three gates short since `verify-versions` (PR #201) and one short since
@@ -1739,9 +1749,9 @@ audit-web:
 # gate above it is where it is: the list is chronological, so every ordinal
 # already written down elsewhere stays true when a gate is added.
 #
-# The fifteen self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-docs
-    @echo "verify: ok — the fifteen gates above passed; the verify-docs report is advisory"
+# The sixteen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-security-inventory verify-docs
+    @echo "verify: ok — the sixteen gates above passed; the verify-docs report is advisory"
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -1839,7 +1849,7 @@ verify-npm-scope:
 # jobs there already use to read the compiler channel out of
 # `rust-toolchain.toml`. Bump it here and CI follows; there is no second copy
 # to forget.
-cratestack_version := "0.15.0"
+cratestack_version := "0.16.0"
 
 # The floor for `check-schema`'s "is there anything here?" assertion: the
 # number of top-level `model`/`enum` declarations schemas/vpay.cstack must
@@ -2011,8 +2021,8 @@ check-schema:
     # Added 2026-10-26 with the package; see `gen-dash-client` for the flags.
     #
     # Against a COPY without `node_modules/`, not the package itself, and
-    # that is a measured upstream bug rather than caution: cratestack 0.15.0's
-    # drift walker follows pnpm's `node_modules/decimal.js` symlink, asks
+    # that is a measured upstream bug rather than caution: cratestack
+    # 0.15.0's (and 0.16.0's) drift walker follows pnpm's `node_modules/decimal.js` symlink, asks
     # `git check-ignore` about the files beyond it, gets "fatal: pathspec ...
     # is beyond a symbolic link" (exit 128), and `drift.rs`'s `git_ignored`
     # reads any non-zero exit as "nothing is ignored" — so six files of
@@ -2596,6 +2606,11 @@ verify-migrations:
 verify-privacy-inventory:
     cargo xtask verify-privacy-inventory
 
+# Code-grounded security assets, trust boundaries and ISO/IEC 27001 control
+# evidence map (issue #150, EPIC #155, ADR-0034).
+verify-security-inventory:
+    cargo xtask verify-security-inventory
+
 # Every number a document marks `<!-- count:KIND ARG... -->` still equals what
 # the tree measures. Fifteenth gate, new 2026-09-20.
 #
@@ -3167,7 +3182,14 @@ expected_ignored := "0"
 # `f25930e5`, which failed here with the new name in its listing: **54**
 # binaries, **2382** total, **0** ignored. Not run locally first: `just` is not
 # installed where this was written, and this recipe is not one `verify` names.
-expected_suites := "54"
+#
+# **54 -> 55 on 2026-10-26 (VP-2, merchant keys and the `/v1` contract
+# table)**: one new binary, the unit tests of the new crate
+# `backends/crates/vpay-wire` (`V1_OPERATIONS`, `contract_digest` and its golden
+# test, `V1_CONTRACTS`). Every other VP-2 test went into binaries that already
+# existed. Measured by CI's `rust` job on `3d2152b0`, which failed here with
+# `vpay-wire` in its listing: **55** binaries, **2516** total, **0** ignored.
+expected_suites := "55"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

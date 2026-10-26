@@ -82,7 +82,10 @@ use serde::{Deserialize, Serialize};
 use vpay_core::Currency;
 use vpay_provider::ProviderConfig;
 
-use crate::oauth::{DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key};
+use crate::oauth::{
+    DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key,
+    validate_cose_keys,
+};
 use crate::{
     ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret,
     validate_webhook_url,
@@ -1573,6 +1576,10 @@ impl Config {
             }
             validate_webhook_endpoints(merchant, livemode, raw_secrets)?;
         }
+        // After the per-merchant rules, because a duplicate cannot be
+        // recognised until both sides parse; a whole-document rule like the
+        // dashboard ones below it.
+        validate_cose_keys(&self.merchant_clients)?;
         if let Some(dashboard) = &self.dashboard_client {
             validate_dashboard_client(dashboard, livemode)?;
             // Passed the whole slice rather than checked inside
@@ -3424,6 +3431,7 @@ mod tests {
                 client_id: "acme-cameroon".to_owned(),
                 merchant_id: "acme-cameroon-tenant".to_owned(),
                 display_name: None,
+                cose_keys: Vec::new(),
                 jwks: Some(serde_json::json!({ "keys": [{ "kty": "RSA", "kid": "k1" }] })),
                 grant_types: vec![crate::oauth::GrantType::ClientCredentials],
                 scopes: vec!["payments:write".to_owned()],
@@ -3452,6 +3460,236 @@ mod tests {
             .join("tests/fixtures")
             .join(name);
         Config::load_with_env(Some(&path), "does-not-exist", &example_env(BTreeMap::new()))
+    }
+
+    /// RFC 8032 §7.1 test vectors 1 and 2, as unpadded base64url — real
+    /// Ed25519 public keys, so the tests below fail on the one property they
+    /// name rather than on a made-up key.
+    const COSE_KEY_A: &str = "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo";
+    const COSE_KEY_B: &str = "PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw";
+    /// The RFC 9679 thumbprint of [`COSE_KEY_A`], lowercase hex: SHA-256 of
+    /// `a3 01 01 20 06 21 58 20 ‖ x`, computed outside this workspace.
+    const COSE_KEY_A_THUMBPRINT: &str =
+        "866eefbd6718c8846cd7ddfe43fc74ab1daac4538ff8514ea2ec2d410a415743";
+    /// 32 bytes, unpadded base64url, and not on the curve (y = 2).
+    const COSE_KEY_NOT_A_POINT: &str = "AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+    fn cose_key(public_key: &str, label: Option<&str>) -> crate::oauth::CoseKey {
+        crate::oauth::CoseKey {
+            public_key: public_key.to_owned(),
+            label: label.map(str::to_owned),
+        }
+    }
+
+    fn with_cose_keys(keys: Vec<crate::oauth::CoseKey>) -> Config {
+        let mut config = valid_config();
+        config
+            .merchant_clients
+            .first_mut()
+            .expect("the fixture registers one merchant")
+            .cose_keys = keys;
+        config
+    }
+
+    /// The key list is optional, because `jwks` still carries `/v1` until the
+    /// OP is deleted: every config written before VP-2 has none and must boot.
+    #[test]
+    fn a_merchant_with_no_cose_keys_still_loads() {
+        assert!(valid_config().validate_all(&RawSecrets::default()).is_ok());
+        let config = Config::load_with_env(
+            Some(Path::new(EXAMPLE_BASE)),
+            "does-not-exist",
+            &example_env(BTreeMap::new()),
+        )
+        .expect("example config should load");
+        assert!(
+            config
+                .merchant_clients
+                .iter()
+                .all(|merchant| merchant.cose_keys.is_empty()),
+            "config/application.yml registers a JWK and no COSE key: the example is a pre-VP-2 file on purpose"
+        );
+    }
+
+    /// The YAML shape the doc comment promises: a list of `public_key` /
+    /// optional `label` entries, several per merchant.
+    #[test]
+    fn cose_keys_deserialize_from_yaml_and_validate() {
+        let yaml = format!(
+            "\
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [\"vpay:v1\"]
+    cose_keys:
+      - public_key: {COSE_KEY_A}
+        label: ci-2026-10
+      - public_key: {COSE_KEY_B}
+"
+        );
+        let config: Config = serde_yaml_ng::from_str(&yaml).expect("the documented shape parses");
+        let merchant = config.merchant_clients.first().expect("one merchant");
+        assert_eq!(
+            merchant.cose_keys,
+            vec![
+                cose_key(COSE_KEY_A, Some("ci-2026-10")),
+                cose_key(COSE_KEY_B, None),
+            ]
+        );
+        config
+            .validate_all(&RawSecrets::default())
+            .expect("two distinct Ed25519 keys are a valid registration");
+        let registered = merchant.cose_verify_keys().expect("both keys read");
+        assert_eq!(registered.len(), 2);
+        assert_eq!(
+            registered.first().and_then(|key| key.label.as_deref()),
+            Some("ci-2026-10")
+        );
+        assert_ne!(
+            registered.first().map(|key| key.key.thumbprint()),
+            registered.get(1).map(|key| key.key.thumbprint()),
+        );
+    }
+
+    #[test]
+    fn two_merchants_registering_one_cose_key_are_rejected() {
+        let err = load_fixture("cose-key-duplicate.yml")
+            .expect_err("one COSE key naming two merchants must be rejected");
+        let ConfigError::DuplicateCoseKey {
+            thumbprint,
+            first,
+            second,
+        } = err
+        else {
+            panic!("expected DuplicateCoseKey, got {err:?}");
+        };
+        assert_eq!(first, "acme-cameroon");
+        assert_eq!(second, "beta-douala");
+        // The RFC 9679 thumbprint of RFC 8032's first public key, lowercase
+        // hex — derived independently of this crate (SHA-256 over the
+        // deterministic CBOR of {1: 1, -1: 6, -2: x}), so a change in how
+        // vpay computes it fails here rather than silently re-keying every
+        // log line that names a key.
+        assert_eq!(thumbprint.len(), 64);
+        assert!(
+            thumbprint.chars().all(|c| c.is_ascii_hexdigit()),
+            "{thumbprint}"
+        );
+        assert_eq!(thumbprint, COSE_KEY_A_THUMBPRINT);
+    }
+
+    /// The same defect inside one registration: one merchant, one key listed
+    /// twice, once under a label.
+    #[test]
+    fn one_merchant_listing_a_cose_key_twice_is_rejected() {
+        let config = with_cose_keys(vec![
+            cose_key(COSE_KEY_A, None),
+            cose_key(COSE_KEY_B, None),
+            cose_key(COSE_KEY_A, Some("again")),
+        ]);
+        let err = config
+            .validate_all(&RawSecrets::default())
+            .expect_err("a key listed twice must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DuplicateCoseKey {
+                thumbprint: COSE_KEY_A_THUMBPRINT.to_owned(),
+                first: "acme-cameroon".to_owned(),
+                second: "acme-cameroon".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn a_cose_key_that_is_not_an_ed25519_point_is_rejected() {
+        let err = load_fixture("cose-key-not-a-point.yml")
+            .expect_err("32 bytes off the curve must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MalformedCoseKey {
+                client_id: "acme-cameroon".to_owned(),
+                // The second entry: the first is valid and must not be blamed.
+                index: 1,
+                reason: "public_key is 32 bytes but not a valid Ed25519 public key",
+            }
+        );
+    }
+
+    /// Every other way a `cose_keys` entry is wrong, against the same rule, in
+    /// memory — one file per near-miss would be a dozen files saying one thing.
+    #[test]
+    fn every_malformed_cose_key_is_rejected_with_its_own_reason() {
+        let padded = format!("{COSE_KEY_A}=");
+        let standard_alphabet = COSE_KEY_A.replace('_', "/").replace('-', "+");
+        // 42 and 44 characters of unpadded base64url are 31 and 33 bytes.
+        let thirty_one = "A".repeat(42);
+        let thirty_three = "A".repeat(44);
+        let long_label = "x".repeat(65);
+        let not_base64url = "not base64url, but 43 characters long..........";
+        let hex = "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a";
+
+        const NOT_BASE64URL: &str = "public_key must be unpadded base64url (RFC 4648 §5, characters A-Z a-z 0-9 - _ and no `=`)";
+        const WRONG_LENGTH: &str =
+            "public_key must decode to exactly 32 bytes (an Ed25519 public key)";
+        let cases: Vec<(crate::oauth::CoseKey, &str)> = vec![
+            (cose_key("", None), WRONG_LENGTH),
+            (cose_key(&padded, None), NOT_BASE64URL),
+            (cose_key(&standard_alphabet, None), NOT_BASE64URL),
+            (cose_key(not_base64url, None), NOT_BASE64URL),
+            // Hex is inside the base64url alphabet: 64 characters read as 48 bytes.
+            (cose_key(hex, None), WRONG_LENGTH),
+            (cose_key(&thirty_one, None), WRONG_LENGTH),
+            (cose_key(&thirty_three, None), WRONG_LENGTH),
+            (
+                cose_key(COSE_KEY_NOT_A_POINT, None),
+                "public_key is 32 bytes but not a valid Ed25519 public key",
+            ),
+            (
+                cose_key(COSE_KEY_A, Some("  ")),
+                "label must not be blank; omit the key entirely to leave it unnamed",
+            ),
+            (
+                cose_key(COSE_KEY_A, Some(&long_label)),
+                "label must be at most 64 characters",
+            ),
+        ];
+        for (entry, reason) in cases {
+            let err = with_cose_keys(vec![entry.clone()])
+                .validate_all(&RawSecrets::default())
+                .expect_err("a malformed entry must be rejected");
+            assert_eq!(
+                err,
+                ConfigError::MalformedCoseKey {
+                    client_id: "acme-cameroon".to_owned(),
+                    index: 0,
+                    reason,
+                },
+                "for {entry:?}"
+            );
+        }
+
+        // And the two values at the label bound that must be accepted.
+        let at_the_bound = "x".repeat(64);
+        for label in [Some("a"), Some(at_the_bound.as_str()), None] {
+            assert!(
+                with_cose_keys(vec![cose_key(COSE_KEY_A, label)])
+                    .validate_all(&RawSecrets::default())
+                    .is_ok(),
+                "label {label:?}"
+            );
+        }
     }
 
     /// The rules `validate_webhook_endpoints` enforces, one fixture each.

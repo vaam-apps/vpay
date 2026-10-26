@@ -30,7 +30,8 @@ export const Decimal = DecimalJs.clone({ toExpNeg: -1e9, toExpPos: 1e9 });
 export type Decimal = DecimalJs;
 
 /** One model/`type`'s own decode-time shape: `decimalKeys` /
- *  `bytesKeys` / `bytesListKeys` are its *direct* field wire names whose
+ *  `bigintKeys` / `bytesKeys` / `bytesListKeys` are its *direct* field wire
+ *  names whose
  *  decoded values need converting out of their wire form, and `nested`
  *  maps a field name to the shape name (a {@link wireShapes} key) that
  *  field's own value should be revived against, for any field whose type
@@ -42,9 +43,18 @@ export type Decimal = DecimalJs;
  *  self-identifying at every value: a populated `Bytes` is `number[]` and
  *  a populated `Bytes[]` is `number[][]`, but `[]` is both — an empty
  *  `Uint8Array` and an empty list of them are the same three characters
- *  on the wire. The schema knows which; the runtime cannot. */
+ *  on the wire. The schema knows which; the runtime cannot.
+ *
+ *  `bigintKeys` is one list for every arity: a `BigInt` leaf is a string
+ *  and a `BigInt[]` is an array of strings, which {@link toBigInt} tells
+ *  apart structurally. An empty `[]` needs no conversion either way.
+ *
+ *  `decimalKeys` likewise covers every arity, scalar and list: a `Decimal`
+ *  leaf is a string and a `Decimal[]` is an array of strings, which
+ *  {@link toDecimal} maps element by element. */
 export interface WireShape {
   readonly decimalKeys: readonly string[];
+  readonly bigintKeys: readonly string[];
   readonly bytesKeys: readonly string[];
   readonly bytesListKeys: readonly string[];
   readonly nested: Readonly<Record<string, string>>;
@@ -75,44 +85,50 @@ export interface WireShape {
  *  `Account.total` is only ever checked against *Account's* shape (which,
  *  correctly, has no `total` key) — not `Order`'s. */
 export const wireShapes: Readonly<Record<string, WireShape>> = {
-  Currency: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intents': 'PaymentIntent', 'charges': 'Charge', 'refunds': 'Refund', 'ledger_entries': 'LedgerEntry' } },
-  Provider: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'charges': 'Charge' } },
-  PaymentIntent: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'currency': 'Currency', 'customer': 'Customer', 'charges': 'Charge', 'refunds': 'Refund', 'checkout_sessions': 'CheckoutSession' } },
-  Charge: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intent': 'PaymentIntent', 'provider': 'Provider', 'currency': 'Currency', 'refunds': 'Refund', 'ledger_transactions': 'LedgerTransaction' } },
-  Refund: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intent': 'PaymentIntent', 'charge': 'Charge', 'currency': 'Currency' } },
-  CheckoutSession: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intent': 'PaymentIntent', 'customer': 'Customer' } },
-  LedgerTransaction: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'charge': 'Charge', 'entries': 'LedgerEntry' } },
-  LedgerEntry: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'transaction': 'LedgerTransaction', 'currency': 'Currency' } },
-  DisabledClient: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  Event: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  WebhookDelivery: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  Customer: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  StaffMember: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  StaffSession: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  StaffSsoAttempt: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  OauthAuthorizationCode: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  Credential: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  Invoice: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  InvoiceItem: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  ManualPayment: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  RateLimitWindow: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  PaymentIntentSummary: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  PaymentIntentListFilter: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  RefundSummary: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  RefundListFilter: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  WebhookDeliverySummary: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  WebhookDeliveryListFilter: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  CustomerSummary: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  CustomerListFilter: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  CheckoutSessionSummary: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  CheckoutSessionListFilter: { decimalKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  Currency: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intents': 'PaymentIntent', 'charges': 'Charge', 'refunds': 'Refund', 'ledger_entries': 'LedgerEntry' } },
+  Provider: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'charges': 'Charge' } },
+  PaymentIntent: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'currency': 'Currency', 'customer': 'Customer', 'charges': 'Charge', 'refunds': 'Refund', 'checkout_sessions': 'CheckoutSession' } },
+  Charge: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intent': 'PaymentIntent', 'provider': 'Provider', 'currency': 'Currency', 'refunds': 'Refund', 'ledger_transactions': 'LedgerTransaction' } },
+  Refund: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intent': 'PaymentIntent', 'charge': 'Charge', 'currency': 'Currency' } },
+  CheckoutSession: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_intent': 'PaymentIntent', 'customer': 'Customer' } },
+  LedgerTransaction: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'charge': 'Charge', 'entries': 'LedgerEntry' } },
+  LedgerEntry: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'transaction': 'LedgerTransaction', 'currency': 'Currency' } },
+  DisabledClient: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  Event: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  WebhookDelivery: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  Customer: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  StaffMember: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  StaffSession: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  StaffSsoAttempt: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  OauthAuthorizationCode: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  Credential: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  Invoice: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  InvoiceItem: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  ManualPayment: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  RateLimitWindow: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  PaymentIntentSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  PaymentIntentListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  RefundSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  RefundListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  WebhookDeliverySummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  WebhookDeliveryListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  CustomerSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  CustomerListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  CheckoutSessionSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  CheckoutSessionListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
 };
 
 /** Decodes `value` against the named entry in {@link wireShapes},
- *  replacing every string at a key that shape's own `decimalKeys` names
- *  with a real {@link Decimal} and every wire integer array at a
- *  `bytesKeys`/`bytesListKeys` name with a `Uint8Array`, and recursing
- *  into any key `nested` names using *that* field's own shape.
+ *  replacing every string (or, for a `Decimal[]` field, every element of
+ *  an array of strings) at a key that shape's own `decimalKeys` names
+ *  with a real {@link Decimal}, every canonical decimal string (or array
+ *  of them) at a `bigintKeys` name with a `bigint`, and every wire integer
+ *  array at a `bytesKeys`/`bytesListKeys` name with a `Uint8Array`, and
+ *  recursing into any key `nested` names using *that* field's own shape.
+ *
+ *  A `bigintKeys` key holding anything but a canonical decimal string (or
+ *  an array of them, or `null`) **throws** a `TypeError` naming the type
+ *  and field. See {@link toBigInt}.
  *
  *  A `shapeName` not found in the registry (a plain scalar or enum
  *  return, e.g. `echoName(): string`) is a documented no-op fast path, so
@@ -123,7 +139,7 @@ export function reviveWireFields(value: unknown, shapeName: string): unknown {
   if (!shape) {
     return value;
   }
-  return reviveShaped(value, shape);
+  return reviveShaped(value, shape, shapeName);
 }
 
 /** {@link reviveWireFields} for a `Page<T>` envelope: applies `T`'s own
@@ -137,12 +153,12 @@ export function revivePagedWireFields(value: unknown, shapeName: string): unknow
     return value;
   }
   const page = value as { items: unknown };
-  return { ...page, items: reviveShaped(page.items, shape) };
+  return { ...page, items: reviveShaped(page.items, shape, shapeName) };
 }
 
-function reviveShaped(value: unknown, shape: WireShape): unknown {
+function reviveShaped(value: unknown, shape: WireShape, shapeName: string): unknown {
   if (Array.isArray(value)) {
-    return value.map((item) => reviveShaped(item, shape));
+    return value.map((item) => reviveShaped(item, shape, shapeName));
   }
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};
@@ -150,9 +166,11 @@ function reviveShaped(value: unknown, shape: WireShape): unknown {
       const nestedShapeName = shape.nested[key];
       if (nestedShapeName !== undefined) {
         const nestedShape = wireShapes[nestedShapeName];
-        result[key] = nestedShape ? reviveShaped(entry, nestedShape) : entry;
-      } else if (shape.decimalKeys.includes(key) && typeof entry === "string") {
-        result[key] = new Decimal(entry);
+        result[key] = nestedShape ? reviveShaped(entry, nestedShape, nestedShapeName) : entry;
+      } else if (shape.decimalKeys.includes(key)) {
+        result[key] = toDecimal(entry);
+      } else if (shape.bigintKeys.includes(key)) {
+        result[key] = toBigInt(entry, `${shapeName}.${key}`);
       } else if (shape.bytesKeys.includes(key)) {
         result[key] = toBytes(entry);
       } else if (shape.bytesListKeys.includes(key)) {
@@ -164,6 +182,64 @@ function reviveShaped(value: unknown, shape: WireShape): unknown {
     return result;
   }
   return value;
+}
+
+/** One `Decimal` leaf (or an array of them), wire form -> {@link Decimal}.
+ *
+ *  The same conversion as {@link reviveWireScalar}'s `"decimal"` arm, for a
+ *  field rather than a bare procedure return (cratestack#1155). A `Decimal[]`
+ *  field shares the one `decimalKeys` list with a scalar `Decimal`, so an
+ *  array is revived item by item here, as `reviveWireScalar` already does
+ *  for a bare `Decimal[]` return. A `null` element, a `null` array and a
+ *  non-string value pass through untouched, as they did before. */
+function toDecimal(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(toDecimal);
+  }
+  return typeof value === "string" ? new Decimal(value) : value;
+}
+
+/** The canonical `BigInt` wire grammar (ADR 0019 D2): `0`, or an optional
+ *  `-`, a non-zero digit and at most 18 more digits. No `+`, no leading
+ *  zeros, no `-0`, no whitespace. The server writes only this form, so a
+ *  string outside it is not something to normalise but something to refuse. */
+const CANONICAL_BIGINT = /^(0|-?[1-9][0-9]{0,18})$/;
+const I64_MIN = -(2n ** 63n);
+const I64_MAX = 2n ** 63n - 1n;
+
+/** One `BigInt` leaf (or an array of them), wire form -> `bigint`.
+ *
+ *  `null` passes through: a nullable `BigInt` column is `null` on the wire
+ *  and `null` in the generated `bigint | null` type. An array is revived
+ *  item by item, which is how a `BigInt[]` field decodes.
+ *
+ *  **Anything else throws**, unlike {@link toBytes}, which hands back what
+ *  it was given. A `number` (or a `bigint`, which `@cratestack/cbor-node`
+ *  returns for a large CBOR integer) at a `BigInt` key means the server
+ *  predates the cutover, and a JSON number above 2^53 may already have been
+ *  rounded on its way here. Reading it as the integer it appears to be would
+ *  be a silent wrong answer, and passing it through would put a `number`
+ *  under a `bigint` type. A string that is not the canonical form, or is
+ *  outside `i64`, is refused for the same reason.
+ *
+ *  `where` is the `Type.field` the value was found at, for the message. */
+function toBigInt(value: unknown, where: string): unknown {
+  if (value === null || value === undefined) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => toBigInt(item, where));
+  }
+  if (typeof value === "string" && CANONICAL_BIGINT.test(value)) {
+    const parsed = BigInt(value);
+    if (parsed >= I64_MIN && parsed <= I64_MAX) {
+      return parsed;
+    }
+  }
+  const found = typeof value === "object" ? "an object" : `${typeof value} ${String(value)}`;
+  throw new TypeError(
+    `BigInt field ${where}: expected a canonical decimal string, got ${found}`,
+  );
 }
 
 /** One `Bytes` leaf, wire form -> `Uint8Array`.
@@ -183,7 +259,8 @@ function toBytes(value: unknown): unknown {
 }
 
 /** Counterpart to {@link reviveWireFields} for a procedure whose return
- *  type is a bare revivable scalar — `Decimal` or `Bytes`, at any arity —
+ *  type is a bare revivable scalar — `Decimal`, `BigInt` or `Bytes`, at any
+ *  arity —
  *  rather than an object with such fields. {@link reviveWireFields} only
  *  walks object/array *containers* looking for shaped properties, so a
  *  raw top-level decoded value needs this simpler counterpart instead
@@ -210,6 +287,11 @@ export function reviveWireScalar(value: unknown, kind: string): unknown {
     // here rather than by recursing through the `"bytes"` branch, which
     // would see the outer array and convert it whole.
     return Array.isArray(value) ? value.map(toBytes) : value;
+  }
+  if (kind === "bigint") {
+    // A bare `BigInt`, `BigInt?` or `BigInt[]` return. Strict, like the
+    // field-level key: see {@link toBigInt}.
+    return toBigInt(value, "procedure return");
   }
   if (kind !== "decimal") {
     return value;
@@ -244,6 +326,15 @@ export function reviveWireScalar(value: unknown, kind: string): unknown {
  *  Confirmed against the actually-published `@cratestack/cbor`, not
  *  theorized.
  *
+ *  A `bigint` (a `BigInt` field, ADR 0019) is converted here too, to its
+ *  canonical decimal string, for BOTH codecs: that string is the one wire
+ *  form on JSON and CBOR alike. Unlike a `Decimal`, a `bigint` is not merely
+ *  awkward for the native codec but silently wrong: it would be encoded as a
+ *  CBOR integer, which the server refuses for a `BigInt` field. Also unlike
+ *  a `Decimal`, `JSON.stringify` has no `toJSON` to fall back on and throws,
+ *  so the JSON codec needs {@link encodeBinaryAsJson}'s own `bigint` arm for
+ *  the callers that never reach this function.
+ *
  *  Deliberately NOT built on {@link wireShapes}/{@link reviveShaped}'s
  *  by-field-name registry, unlike the decode-side functions above: this
  *  direction already has a real, unambiguous {@link Decimal} instance in
@@ -269,14 +360,28 @@ export function reviveWireScalar(value: unknown, kind: string): unknown {
  *  `{% if native_cbor %}` branch in these already-branchy
  *  templates. */
 /** Rewrites every `Uint8Array` in `value` into the plain integer array a
- *  `Bytes` field travels as on the wire, leaving everything else alone.
+ *  `Bytes` field travels as on the wire, every `bigint` into its canonical
+ *  decimal string, and every {@link Decimal} into its string, leaving
+ *  everything else alone.
  *
- *  **JSON encode paths only** — {@link jsonRpcCodec} and the REST
- *  runtime's request body. The native `@cratestack/cbor` codec must keep
+ *  **JSON encode paths only** — {@link jsonRpcCodec}, the REST runtime's
+ *  request body, and the REST runtime's JSON-encoded query values
+ *  (`computedParams`). The native `@cratestack/cbor` codec must keep
  *  receiving the real `Uint8Array`, because it encodes one as a CBOR byte
  *  string (RFC 8949 major type 2, cratestack#783), which is both correct
  *  and about half the bytes of the integer array. Applying this
  *  unconditionally would throw that away.
+ *
+ *  The `bigint` and `Decimal` arms are the reason this walk, and not
+ *  `JSON.stringify` alone, sits in front of every JSON encode.
+ *  `JSON.stringify` throws on a `bigint` ("Do not know how to serialize a
+ *  BigInt"), and a `Decimal` only survives because of its `toJSON`, which
+ *  this walk would otherwise bypass: it rebuilds every object through
+ *  `Object.entries`, turning a `Decimal` into its internal `{s, e, d}`
+ *  fields. Converting both here means no JSON path can reach
+ *  `JSON.stringify` holding either, whichever caller got there first
+ *  (`@cratestack/link-batch` hands a codec raw inputs that
+ *  {@link encodeWireFields} never saw).
  *
  *  `JSON.stringify` cannot do this itself: a `Uint8Array` has no `toJSON`,
  *  so it serializes as an index-keyed *object* (`{"0":1,"1":2}`) that no
@@ -291,6 +396,9 @@ export function reviveWireScalar(value: unknown, kind: string): unknown {
  *  value first sidesteps `toJSON` entirely, so a `Buffer` and a plain
  *  `Uint8Array` encode identically. Measured, not assumed. */
 export function encodeBinaryAsJson(value: unknown): unknown {
+  if (typeof value === "bigint" || value instanceof Decimal) {
+    return value.toString();
+  }
   if (value instanceof Uint8Array) {
     return Array.from(value);
   }
@@ -299,10 +407,8 @@ export function encodeBinaryAsJson(value: unknown): unknown {
   }
   // `instanceof Uint8Array` above already caught every typed array this
   // client's own types can produce; anything else object-shaped is walked
-  // for nested binary. `Decimal` instances are deliberately NOT
-  // special-cased here — `encodeWireFields` has already converted them by
-  // the time a codec runs, and on the REST path `Decimal.prototype.toJSON`
-  // handles them inside `JSON.stringify`.
+  // for nested binary. (`Decimal` and `bigint` were handled above, before
+  // this walk can rebuild them.)
   if (value !== null && typeof value === "object") {
     const result: Record<string, unknown> = {};
     for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
@@ -315,6 +421,16 @@ export function encodeBinaryAsJson(value: unknown): unknown {
 
 export function encodeWireFields(value: unknown): unknown {
   if (value instanceof Decimal) {
+    return value.toString();
+  }
+  // A `BigInt` field travels as its canonical decimal string on every codec
+  // (ADR 0019 D2), so unlike `Uint8Array` below there is no codec that wants
+  // the real value. Required, not cosmetic: `JSON.stringify` throws on a
+  // `bigint`, and the native codec would silently encode one as a CBOR
+  // *integer*, which a server refuses (a `BigInt` is a text string there).
+  // `bigint.toString()` is plain decimal (`i64`'s `Display`), so the output
+  // is always the canonical form.
+  if (typeof value === "bigint") {
     return value.toString();
   }
   // Pass a `Bytes` value through UNTOUCHED (cratestack#820). Load-bearing
@@ -405,6 +521,11 @@ export interface StringFilter extends ComparableFilter<string> {
 }
 
 export type NumberFilter = ComparableFilter<number>;
+// ADR 0019: `bigint`, the exact `i64` counterpart to `NumberFilter`. Like
+// `DecimalFilter` it only travels outbound, as part of a `<Model>Where`/
+// `FindMany` procedure argument, and `encodeWireFields` turns each operand
+// into the canonical decimal string the server reads.
+export type BigIntFilter = ComparableFilter<bigint>;
 export type BooleanFilter = EqualityFilter<boolean>;
 export type UuidFilter = ComparableFilter<string>;
 export type DateTimeFilter = ComparableFilter<string>;

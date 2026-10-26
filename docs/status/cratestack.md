@@ -488,7 +488,7 @@ generated client or fixture embeds `SCHEMA_SHA256` here, so the #1065 digest
 change (every `SCHEMA_SHA256` moves once) touches nothing in this tree.
 _(**Both halves of that sentence stopped being true on 2026-10-26**, and it
 stays as written because it was true of the 0.15.0 bump it describes. The
-dashboard now depends on `@cratestack/refine` 0.15.4, and
+dashboard now depends on `@cratestack/refine` 0.16.0, and
 `frontends/packages/dash-client` is a committed `generate-typescript` client
 whose `runtime.ts` embeds `SCHEMA_SHA256` — so the next digest change does
 move something, and `just check-schema` will say so. See
@@ -607,16 +607,117 @@ these lines:
 derivation beside it.
 [verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).
 
+## CrateStack 0.15.0 → 0.16.0, with `envelope` and `cose` on (2026-10-26)
+
+**A version bump that stays behaviour-neutral (VP-1).** The next tickets put an
+`EnvelopeLayer` on `/v1`; this one only makes the workspace compile against
+0.16.0 with the two features that layer needs, and mounts nothing. Moved
+together: the root `Cargo.toml`'s `cratestack` (`cratestack-pg`) to `=0.16.0`
+with `features = ["postgres", "envelope", "cose"]` (`cose` implies `envelope`;
+at 0.16.0 they are `cratestack-axum/envelope`, and `cratestack-axum/cose` plus
+`cratestack-client-rust/cose`), `vpay-db`'s `cratestack-codec-json` to
+`=0.16.0`, `justfile`'s `cratestack_version`, both `install-cratestack-cli`
+steps in `.github/workflows/ci.yml` (now the commit `v0.16.0` was tagged at,
+`f90ddbfcf94f5c64d0074d8babf6c9030e9b3d6a`, a lightweight tag:
+`git ls-remote` returns the same SHA for the tag and for `^{}`), and
+`Cargo.lock` by `cargo update -p cratestack-pg --precise 0.16.0`. `CLAUDE.md`'s
+"bump them together" bullet and
+[../reference/vpay-db/cratestack.md](../reference/vpay-db/cratestack.md) quote
+the pin and say `=0.16.0` now.
+
+**The lockfile.** 523 packages to 543 (+20). The twelve `cratestack-*` entries
+moved, `ctutils` went 0.4.5 → 0.4.6, and the rest is new: `cratestack-cose` and
+the RustCrypto stack it signs with (`ed25519-dalek` 3.0.0, `ed25519` 3.0.0,
+`curve25519-dalek` 5.0.0, `p256` 0.14.0, `ecdsa`, `elliptic-curve`, `signature`,
+`der`, `sec1`, and their small helpers). `ed25519-dalek` and `p256` now appear
+twice, each at the older major `authkestra-crypto-util` (2.2.0) and
+`jsonwebtoken` (`p256` 0.13.2) already brought in; `cargo deny check` reports
+`advisories ok, bans ok, licenses ok, sources ok`, `cargo tree -i aws-lc-rs`
+still matches nothing and there is still exactly one `sqlx`. These crates
+are linked into `vpay-server` now and nothing calls them.
+
+**What the 0.15.1–0.16.0 changelogs could have broken, and what did.**
+
+- _Field attributes are a closed list per declaration kind (0.16.0, #679)._
+  `cratestack check` at 0.16.0 accepts `schemas/vpay.cstack` unchanged (30
+  model/enum declarations): no schema edit.
+- _`@default(autoincrement())` refused, `dbgenerated()` must be the whole
+  expression (0.16.0, #1128)._ The schema writes `@default(dbgenerated())` on
+  nine fields and `autoincrement` nowhere; all nine are the bare marker.
+- _CBOR bodies with trailing bytes refused (0.16.0, #1153)._ Nothing in
+  `backends/` or `sdks/` names `CborCodec`: the generated procedure transport
+  runs on `cratestack-codec-json`, and `/v1` is vpay's own router.
+- _A COSE signer authenticates through the registries (0.16.0, #1077)._ vpay
+  implements no `CoseSigner`, `CoseVerifierResolver`, `CoseAuthProvider` or
+  `EnvelopeLayer`; nothing to change, and the first ticket that does reads that
+  changelog entry's "Security" paragraph before it enables
+  `authenticate_devices`.
+- _Binding version 2, per-op contract digests (0.15.2)._ Nothing binds a digest
+  in this tree yet; the flag day is the signed-transport tickets'.
+
+**`migrate diff` for a pure bump.** `schemas/vpay.cstack` has no committed
+snapshot (the migrations under `backends/migrations/` are authoritative and the
+drift below is the measurement), so "no DDL" was shown by running `cratestack
+migrate diff --backend postgres` over the one schema with the 0.15.3 CLI and the
+0.16.0 CLI into empty directories and comparing: `up.sql` and `down.sql` are
+identical and `schema.snapshot.json` is byte-identical. The one difference is
+0.16.0's #1129: the first migration of a `@db_enforce` schema is `(safe)`
+rather than `(blocking)`, so 0.15.3 prepended a WARNING block and scaffolded an
+`up.pre.sql` that 0.16.0 does not. No migration was committed.
+
+**The drift measurement did not move.**
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` ran the
+0.16.0 CLI's `migrate baseline --strict` against a freshly migrated Postgres 16
+and reported `drift detected in 28 table(s)/view(s) (212 change(s) total)`, the
+constants it already pins (`EXPECTED_DRIFT_CHANGES` 212,
+`EXPECTED_DRIFTED_RELATIONS` 28, `EXPECTED_UNMAPPABLE_COLUMNS` 20).
+
+**What could not run, and how the Postgres suites were run anyway.** The cloud
+session that made this change has no Docker daemon. `vpay-db`'s `repositories`
+suite (123 tests) and `postgres_smoke` (54 tests) were run against a throwaway
+local Postgres 16 by a temporary, uncommitted patch to the container helpers,
+`--test-threads=1`: 123 and 53 passed; `creating_a_refund_reserves_its_amount_against_the_intent`
+failed once in the sequence and passed alone (the patch drops and recreates the
+one database between tests, which a leftover pool can race), and
+`check_connection_fails_against_a_dead_database` in `vpay-db`'s `postgres` suite
+cannot pass under that patch, which has no container to stop. Every suite that
+needs a WireMock or receiver container (`checkout_sessions`, `refunds`,
+`webhooks`, `worker_recovery`, `confirm_rails`, `provider_callback`,
+`browser_checkout`, `account_holders`, `worker_e2e`, `worker_kill9`), `vpay-tests-conformance` and `vpay-server`'s `cli` suite
+were not run and need CI. A `cargo nextest run --workspace` without those two
+crates ran 1 972 tests: 1 812 passed and 160 failed, every one of the 160 for
+want of a Docker daemon (`vpay-db`'s 123 `repositories`, 4 `postgres` and 15
+in-crate tests, `vpay-server`'s 17 `cli` and one `vpay-testkit` test); the 138
+doctests passed. `verify-ignored` did not run: it builds every test binary,
+including the two excluded crates', and the session's disk filled first.
+`just fmt-check`, `clippy -D warnings`, `just verify` (fifteen gates), `just
+deny`, `just lint-web`, `just test-web` and `just audit-web` passed.
+
+## Two more direct `cratestack-*` pins: `cratestack-cose` and `cratestack-core` (2026-10-26, VP-2)
+
+`vpay-config` reads a merchant's Ed25519 key and its RFC 9679 thumbprint
+(`CoseVerifyKey`, `cratestack_cose::thumbprint`), `vpay-api` implements
+`CoseVerifierResolver`, and `vpay-wire` declares its table as
+`AcceptedContracts`. Each is a workspace pin at `=0.16.0`
+(`cratestack-cose`, `cratestack-core`, both `default-features = false`), beside
+`cratestack` in the root `Cargo.toml`, so they bump **with it** — the list in
+`CLAUDE.md` is now four lines long: `cratestack`, `cratestack-cose`,
+`cratestack-core` and `vpay-db`'s `cratestack-codec-json`, plus `justfile` and
+the two CLI installs in `ci.yml`. Taken directly, not through the facade, so
+the crate that reads YAML does not link `cratestack-sqlx`; `cratestack-cose`'s
+`auth` feature is not taken. No new package in the lock beyond `vpay-wire`
+itself: both crates were already there through `cratestack-pg`.
+
 ## 2026-10-26: a generated TypeScript client and `@cratestack/refine`
 
 **What moved.** The schema now produces a second thing:
 `frontends/packages/dash-client` (`@vpay/dash-client`), the output of
-`cratestack generate-typescript` 0.15.0 over `schemas/vpay.cstack`,
+`cratestack generate-typescript` 0.16.0 over `schemas/vpay.cstack`,
 regenerated by `just gen-dash-client` and held to the schema by
 `just check-schema --check` ([gates.md](gates.md)). The dashboard reads its
 four procedure-backed lists (refunds, deliveries, customers, checkouts) and
 the Overview's twelve counts through that client's **procedures**, and its
-Refine data provider for those lists is `@cratestack/refine` 0.15.4. The
+Refine data provider for those lists is `@cratestack/refine` 0.16.0. The
 hand-written procedure transport (`callDashProcedure`, `postJson`,
 `ProcedurePage<T>`) and the four hand-written row types are gone; the
 generated `*Summary` types are the only TypeScript copy of those wire shapes.

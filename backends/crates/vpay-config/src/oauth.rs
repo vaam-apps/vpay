@@ -15,11 +15,17 @@
 //! directly, and the field-by-field map onto it:
 //! [docs/reference/vpay-config.md § OAuth client shapes](../../../../docs/reference/vpay-config.md#oauth-client-shapes).
 
+use std::collections::BTreeMap;
 use std::fmt;
 
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use cratestack_cose::CoseVerifyKey;
 use garde::Validate;
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
+
+use crate::ConfigError;
 
 /// The `aud` value every `/v1` access token must carry, and therefore the one
 /// value every merchant registration must list in
@@ -199,6 +205,99 @@ impl fmt::Debug for WebhookEndpoint {
     }
 }
 
+/// The longest `cose_keys[].label` boot accepts, in characters. A label is a
+/// name an operator reads in a log line and a runbook (`ci-2026-10`,
+/// `payroll-service`), and nothing renders it to a payer, so the bound is a
+/// sanity limit rather than a layout rule.
+pub const COSE_KEY_LABEL_MAX_CHARS: usize = 64;
+
+/// One Ed25519 public key a merchant signs `/v1` requests with
+/// (`merchant_clients[].cose_keys`, VP-2).
+///
+/// **Public key material, on the same footing as [`MerchantClient::jwks`]:**
+/// a literal in a livemode file is correct and it prints in `Debug`. vpay never
+/// holds the private half. The only algorithm is Ed25519, so there is no `alg`
+/// to write: cratestack's COSE verifier also takes ESP256 and two HMAC
+/// variants, and a shared HMAC secret is exactly what ADR-0010's "no shared
+/// secret" rules out.
+///
+/// The key's identity is derived, never written: its RFC 9679 thumbprint is
+/// what `kid` is cut from and what a verified request records, so two entries
+/// cannot disagree about it and an operator has no id to mistype.
+///
+/// ```yaml
+/// cose_keys:
+///   - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo   # 43 characters
+///     label: ci-2026-10
+/// ```
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CoseKey {
+    /// The 32-byte Ed25519 public key as **unpadded base64url** (RFC 4648 §5),
+    /// the encoding a JWK's `x` and a COSE thumbprint use — 43 characters.
+    /// Padded base64, standard-alphabet base64, hex and a PEM are all refused
+    /// rather than guessed at: a key that decodes under a lenient reading is a
+    /// different key from the one the merchant holds only when the lenient
+    /// reading was wrong, and boot is the cheap place to find out.
+    pub public_key: String,
+    /// A name for the key in logs and runbooks, so a rotation can say which
+    /// one it retires. Optional; non-blank and at most
+    /// [`COSE_KEY_LABEL_MAX_CHARS`] characters if present. Nothing reads it
+    /// but a human: it is not part of the key's identity.
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+impl CoseKey {
+    /// Reads [`Self::public_key`] into the verification key cratestack's COSE
+    /// envelope verifies with.
+    ///
+    /// # Errors
+    ///
+    /// A reason naming which rule the value broke: not unpadded base64url, not
+    /// 32 bytes once decoded, or 32 bytes that are not an Ed25519 point
+    /// (`CoseVerifyKey::ed25519` decompresses it). Callers wrap it with the
+    /// registration and position ([`ConfigError::MalformedCoseKey`]).
+    ///
+    /// A point of small order (the identity, say) is a valid encoding and is
+    /// accepted here; cratestack's verifier is strict and never accepts a
+    /// signature under one, so such a key is inert rather than dangerous.
+    ///
+    /// ```
+    /// use vpay_config::oauth::CoseKey;
+    ///
+    /// let good = CoseKey {
+    ///     public_key: "11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo".to_owned(),
+    ///     label: None,
+    /// };
+    /// assert!(good.verify_key().is_ok());
+    ///
+    /// let short = CoseKey { public_key: "AAAA".to_owned(), label: None };
+    /// assert!(short.verify_key().is_err());
+    /// ```
+    pub fn verify_key(&self) -> Result<CoseVerifyKey, &'static str> {
+        let bytes = URL_SAFE_NO_PAD.decode(&self.public_key).map_err(|_| {
+            "public_key must be unpadded base64url (RFC 4648 §5, characters A-Z a-z 0-9 - _ and no `=`)"
+        })?;
+        let bytes: [u8; 32] = bytes
+            .try_into()
+            .map_err(|_| "public_key must decode to exactly 32 bytes (an Ed25519 public key)")?;
+        CoseVerifyKey::ed25519(&bytes)
+            .map_err(|_| "public_key is 32 bytes but not a valid Ed25519 public key")
+    }
+}
+
+/// A [`CoseKey`] that has been read: the key `cratestack-cose` verifies with,
+/// and the label it was registered under.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegisteredCoseKey {
+    /// The operator's name for it, if one was written.
+    pub label: Option<String>,
+    /// The verification key. Its [`thumbprint`](CoseVerifyKey::thumbprint) is
+    /// the key's identity.
+    pub key: CoseVerifyKey,
+}
+
 /// A statically registered merchant OAuth2 client (ADR-0010): `/v1`
 /// authenticates with `client_credentials` + `private_key_jwt`.
 ///
@@ -270,6 +369,31 @@ pub struct MerchantClient {
     #[garde(skip)]
     #[serde(default)]
     pub jwks: Option<JsonValue>,
+    /// The Ed25519 public keys this merchant signs `/v1` requests with — the
+    /// registry the signed transport verifies against (VP-2). See [`CoseKey`].
+    ///
+    /// **Coexists with [`Self::jwks`] for now and reads nothing at request
+    /// time yet**: the OAuth path above is unchanged, `jwks` stays required, and
+    /// the only consumer of this list is `vpay_api::merchant_keys`, which no
+    /// router mounts. The envelope that verifies against it is VP-3 and the
+    /// deletion of `jwks` is VP-4, so an empty list is legal today and means
+    /// this merchant cannot yet sign anything.
+    ///
+    /// YAML stays authoritative for identity, as for everything on this type:
+    /// `disabled_clients` can only subtract a merchant, never add a key
+    /// (ADR-0010). Each key must be an Ed25519 point, and no key may appear
+    /// twice across the whole file, this merchant's own entries included
+    /// ([`ConfigError::MalformedCoseKey`], [`ConfigError::DuplicateCoseKey`]):
+    /// two tenants sharing a key would be one signature authenticating as
+    /// either. Several keys per merchant are the point — a rotation adds the
+    /// new one, deploys, then removes the old.
+    ///
+    /// Validated in `Config::validate_all`, not here, for
+    /// [`Self::publishable_keys`]'s reason: uniqueness is a property of the
+    /// whole `merchant_clients` list, and the report must name the merchant.
+    #[garde(skip)]
+    #[serde(default)]
+    pub cose_keys: Vec<CoseKey>,
     /// Grant types this client is permitted to use. ADR-0010: a merchant
     /// client declaring anything other than `[client_credentials]` is fatal
     /// at boot ([`ConfigError::DisallowedMerchantGrant`](crate::ConfigError::DisallowedMerchantGrant)) —
@@ -513,6 +637,10 @@ impl fmt::Debug for MerchantClient {
             // a payer reports the wrong shop name on the checkout page.
             .field("display_name", &self.display_name)
             .field("jwks", &self.jwks)
+            // Public keys, in full, for `jwks`' reason: "which keys did this
+            // deployment load?" is the first question when a signed request
+            // answers 401.
+            .field("cose_keys", &self.cose_keys)
             .field("grant_types", &self.grant_types)
             .field("scopes", &self.scopes)
             .field("allowed_audiences", &self.allowed_audiences)
@@ -613,6 +741,87 @@ impl fmt::Debug for DashboardClient {
     }
 }
 
+impl MerchantClient {
+    /// Reads every entry of [`Self::cose_keys`], in configuration order.
+    ///
+    /// The one parse of a registered key: `Config::validate_all` runs it to
+    /// refuse a bad file at boot, and `vpay_api::merchant_keys` runs it again
+    /// to build the registry, so the two cannot read a key differently. Also
+    /// applies the label rule, which is a property of the entry and not of the
+    /// key.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MalformedCoseKey`], naming this client and the entry's
+    /// position, for the first entry that breaks a rule.
+    pub fn cose_verify_keys(&self) -> Result<Vec<RegisteredCoseKey>, ConfigError> {
+        self.cose_keys
+            .iter()
+            .enumerate()
+            .map(|(index, entry)| {
+                let malformed = |reason: &'static str| ConfigError::MalformedCoseKey {
+                    client_id: self.client_id.clone(),
+                    index,
+                    reason,
+                };
+                if let Some(label) = entry.label.as_deref() {
+                    if label.trim().is_empty() {
+                        return Err(malformed(
+                            "label must not be blank; omit the key entirely to leave it unnamed",
+                        ));
+                    }
+                    if label.chars().count() > COSE_KEY_LABEL_MAX_CHARS {
+                        return Err(malformed("label must be at most 64 characters"));
+                    }
+                }
+                let key = entry.verify_key().map_err(malformed)?;
+                Ok(RegisteredCoseKey {
+                    label: entry.label.clone(),
+                    key,
+                })
+            })
+            .collect()
+    }
+}
+
+/// The whole-document rules on `merchant_clients[].cose_keys`: each entry reads
+/// as an Ed25519 key, and no thumbprint is registered twice.
+///
+/// Uniqueness is over the *thumbprint*, not the written string, so two
+/// spellings of one key (a base64url value with a non-canonical final
+/// character, say) cannot be registered as two. It spans every merchant and
+/// each merchant's own list: the registry resolves a verified thumbprint to
+/// exactly one merchant, and a key present twice would resolve to whichever
+/// came first by iteration order.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedCoseKey`] for the first unreadable entry in file
+/// order, then [`ConfigError::DuplicateCoseKey`] for the first collision. Each
+/// merchant is read and checked before the next, unlike
+/// [`ConfigError::DuplicatePublishableKey`]'s walk, which compares strings
+/// before it looks at their shape: a thumbprint cannot be taken from a value
+/// that does not parse.
+pub(crate) fn validate_cose_keys(merchants: &[MerchantClient]) -> Result<(), ConfigError> {
+    let mut seen: BTreeMap<[u8; 32], &str> = BTreeMap::new();
+    for merchant in merchants {
+        for registered in merchant.cose_verify_keys()? {
+            let thumbprint = registered.key.thumbprint();
+            if let Some(first) = seen.insert(thumbprint, merchant.client_id.as_str()) {
+                return Err(ConfigError::DuplicateCoseKey {
+                    thumbprint: thumbprint
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect(),
+                    first: first.to_owned(),
+                    second: merchant.client_id.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// True if `jwks` is present and contains at least one key — the only shape
 /// [`ConfigError::EmptyMerchantJwks`](crate::ConfigError::EmptyMerchantJwks)
 /// does not fire for. Anything else (missing entirely, not a JSON object,
@@ -669,6 +878,7 @@ mod tests {
             client_id: "acme".to_owned(),
             merchant_id: "acme".to_owned(),
             display_name: Some("Acme Cameroun".to_owned()),
+            cose_keys: Vec::new(),
             jwks: Some(serde_json::json!({"keys": [{"kid": "k1"}]})),
             grant_types: vec![GrantType::ClientCredentials],
             scopes: vec!["payments:write".to_owned()],

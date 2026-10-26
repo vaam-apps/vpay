@@ -10,7 +10,7 @@ and for the shortest statement of the rules that always apply — start with
 
 ```bash
 just verify    # the self-checks the justfile's `verify` recipe lists —
-               # fifteen on 2026-09-20, and the recipe echoes its own count
+               # sixteen on 2026-10-26, and the recipe echoes its own count
                # on success
                # — all of which must pass before AND after your change, plus
                # the `verify-docs` report, which never fails
@@ -27,8 +27,9 @@ _(This said "three" until 2026-09-06 and had been wrong since 2026-09-03; it
 said "ten" until `verify-migrations` landed on 2026-09-07, and "thirteen"
 until `verify-versions` (#201) and `verify-privacy-inventory` (#187) both
 landed on 2026-09-17. It said "fourteen" until `verify-doc-counts` landed on
-2026-09-20 — the gate that ends this particular sequence, because the count is
-**15** <!-- count:verify-gates --> and a `just verify` whose recipe disagreed
+2026-09-20, and `verify-security-inventory` on 2026-10-26 — gates that keep this
+particular sequence honest, because the count is
+**16** <!-- count:verify-gates --> and a `just verify` whose recipe disagreed
 with that figure would now fail on it.
 [AGENTS.md](AGENTS.md) carries the count and the history of every gate that
 moved it; that is the copy to trust, and this one now agrees with it.)_
@@ -132,7 +133,9 @@ check-schema` began verifying the syntax on 2026-09-05, and `vpay-db`'s
   private `mod schema` began _compiling_ the file on 2026-09-06. A syntax
   error in it is now a `cargo build` failure. Two things follow. The CLI and
   the library must stay on one version — `justfile`'s `cratestack_version`
-  and `Cargo.toml`'s `cratestack = "=0.15.0"` — so bump them together. And
+  and `Cargo.toml`'s `cratestack = "=0.16.0"` (with its siblings `cratestack-cose`
+  and `cratestack-core`, and `vpay-db`'s `cratestack-codec-json`) — so bump them
+  together. And
   the generated module is private to `vpay-db` on purpose: `cargo xtask
 verify-repositories` fails if `mod schema` is made `pub` or re-exported,
   because the module the macro creates exists in no source file and nothing

@@ -489,7 +489,7 @@ hand-written transport. `callDashProcedure`, `postJson` and the hand-written
 `ProcedurePage<T>` are gone. In their place:
 
 - **`@vpay/dash-client`** (`frontends/packages/dash-client`), generated from
-  `schemas/vpay.cstack` by `cratestack generate-typescript` 0.15.0 and
+  `schemas/vpay.cstack` by `cratestack generate-typescript` 0.16.0 and
   drift-checked by `just check-schema`. Its generated `*Summary` types replace
   the four hand-written row types.
 - **`src/dash/cratestack-client.ts`**, the only module allowed to import that

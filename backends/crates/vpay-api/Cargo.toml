@@ -38,6 +38,17 @@ vpay-ledger.workspace = true
 # building or testing this crate alone now pulls clap, figment, garde and
 # serde_yaml_ng in through `vpay-config`.
 vpay-config.workspace = true
+# The `/v1` contract table (`V1_CONTRACTS`) and, in this crate,
+# `v1::contracts`, which holds it to `V1_ROUTES`. No `vpay-*` dependency of its
+# own, so this adds an edge and no cycle; `docs/reference/vpay-wire.md`.
+vpay-wire.workspace = true
+# `merchant_keys`: the `CoseVerifierResolver` the signed transport verifies a
+# merchant's request against (VP-2), over `CoseVerifyKey` and the RFC 9679
+# thumbprint. Both are `=0.16.0` workspace pins, in the lock since VP-1 (the
+# facade pulls them), so no new package. `cratestack-core` is only for the
+# `CratestackError` the resolver trait's signature returns.
+cratestack-cose.workspace = true
+cratestack-core.workspace = true
 axum.workspace = true
 tokio.workspace = true
 # `ServiceBuilder`, so `router()`'s middleware order is written top-down in

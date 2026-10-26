@@ -305,8 +305,8 @@ importers:
   frontends/apps/dashboard:
     dependencies:
       '@cratestack/refine':
-        specifier: 0.15.4
-        version: 0.15.4(@refinedev/core@5.0.12(@tanstack/react-query@5.102.8(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))
+        specifier: 0.16.0
+        version: 0.16.0(@refinedev/core@5.0.12(@tanstack/react-query@5.102.8(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))
       '@fontsource-variable/jetbrains-mono':
         specifier: ^5.3.0
         version: 5.3.0
@@ -711,8 +711,8 @@ packages:
   '@chevrotain/utils@12.0.0':
     resolution: {integrity: sha512-lB59uJoaGIfOOL9knQqQRfhl9g7x8/wqFkp13zTdkRu1huG9kg6IJs1O8hqj9rs6h7orGxHJUKb+mX3rPbWGhA==}
 
-  '@cratestack/refine@0.15.4':
-    resolution: {integrity: sha512-KAw+p9sHMyBtRVzVQaIbIYC7RlcRjap50YI1cUprgOJBOcTIuJW8uwL8c3kff2MB3ylpVDSikBnCF88Tx3LWyQ==}
+  '@cratestack/refine@0.16.0':
+    resolution: {integrity: sha512-5PAhGUsTMW6twcmJJMrTUhORL+QdIoS8MsjkvcucXDC9YVs3eSmefmYCb+5zYsB5ZSGGRPUYlfhwc1KVe8Z0OQ==}
     engines: {node: '>=24'}
     peerDependencies:
       '@refinedev/core': ^5.0.0
@@ -5259,7 +5259,7 @@ snapshots:
 
   '@chevrotain/utils@12.0.0': {}
 
-  '@cratestack/refine@0.15.4(@refinedev/core@5.0.12(@tanstack/react-query@5.102.8(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))':
+  '@cratestack/refine@0.16.0(@refinedev/core@5.0.12(@tanstack/react-query@5.102.8(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))':
     dependencies:
       '@refinedev/core': 5.0.12(@tanstack/react-query@5.102.8(react@19.2.8))(@types/react-dom@19.2.4(@types/react@19.2.18))(@types/react@19.2.18)(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
 

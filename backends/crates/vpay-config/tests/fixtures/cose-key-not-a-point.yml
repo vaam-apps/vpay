@@ -1,0 +1,27 @@
+# Fixture for `a_cose_key_that_is_not_an_ed25519_point_is_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# The value is well-formed in every way but one: unpadded base64url, exactly 32
+# bytes, the little-endian encoding of y = 2 — and no point of the curve has
+# that y (its x^2 is a non-residue), so decompression fails. Everything else in
+# the file is valid, so the refusal can only be this key's.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+      - public_key: AgAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

@@ -299,6 +299,7 @@ pub(crate) fn merchant_client_with(
     MerchantClient {
         client_id: client_id.to_owned(),
         merchant_id: merchant_id.to_owned(),
+        cose_keys: Vec::new(),
         jwks: Some(jwks),
         grant_types: vec![GrantType::ClientCredentials],
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),

@@ -1418,3 +1418,50 @@ Found by the `rust` job of the v0.14.1 release PR (vaam-apps/vpay#368, run
 
 No route moved and no `NotImplemented` token moved.
 [verification/2026-10-25-callback-lock-release.md](verification/2026-10-25-callback-lock-release.md).
+
+## Merchant Ed25519 keys are registered, and `/v1` has a contract table; neither is verified on a request yet (2026-10-26, VP-2)
+
+First step of the move from merchant OAuth to signed transport
+([ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) is not superseded
+yet: VP-4 writes that). Everything below is **registered and tested, and read by
+no request path.**
+
+- **`merchant_clients[].cose_keys`** (`vpay_config::oauth::CoseKey`): a list of
+  Ed25519 public keys, unpadded base64url, each with an optional `label`. YAML
+  stays authoritative for identity and `disabled_clients` still only subtracts.
+  Boot refuses (`ConfigError::MalformedCoseKey`, the usual exit code) an entry
+  that is not unpadded base64url, not 32 bytes, not an Ed25519 point, or whose
+  label is blank or over 64 characters; and refuses a thumbprint registered
+  twice (`ConfigError::DuplicateCoseKey`), across merchants and within one.
+  **An empty list is legal**: `jwks` is still required and the OAuth path is
+  unchanged, so every existing config boots; "a merchant with no key is
+  refused" arrives with VP-4, when `jwks` goes. A small-order point is a valid
+  encoding and is accepted, but cratestack's verifier is strict and never
+  accepts a signature under one, so such a key is inert.
+- **`vpay_api::merchant_keys`**: `MerchantKeyRegistry::from_config` and
+  `MerchantKeyResolver`, which implements cratestack-cose's
+  `CoseVerifierResolver` for Ed25519 (by `kid`) and answers
+  `merchant_for_thumbprint` with the merchant, its tenant and its YAML scopes.
+  A client with a `disabled_clients` row resolves to nothing, an unknown `kid`
+  resolves to nothing without reaching Postgres, and a failed kill-switch
+  lookup is `CratestackError::Internal` (a `500`), never a key and never a miss.
+- **`vpay-wire`** (new crate, `backends/crates/vpay-wire`): `V1_OPERATIONS`
+  (every `(method, path)` under `/v1`), `contract_digest`, and
+  `V1_CONTRACTS: LazyLock<AcceptedContracts>`, one digest per operation, keyed
+  `"<METHOD> <path>"`. **The digest is the operation's identity, not a hash of
+  its body's shape**: cratestack's own op digest is computed from a parsed
+  schema and has no entry point for a hand-written route, and vpay has no
+  machine-readable description of its form bodies to hash. So it moves when a
+  route is added, removed, renamed or changes verb, and not when a field is
+  added to a body. [../reference/vpay-wire.md](../reference/vpay-wire.md).
+- **`vpay_api::v1::contracts::contract_gaps`** holds `V1_ROUTES` and the table
+  to each other in both directions; its tests fail on a route with no contract,
+  on a contract with no route, on a verb added to a mounted path, and on a row
+  with no digest.
+
+**Not done:** no `EnvelopeLayer`, no server signing key, no nonce table, no
+change to `require_merchant_token` (VP-3); `jwks`, the OP and the SDKs' token
+path are untouched (VP-4/VP-6); the Rust SDK does not depend on `vpay-wire`
+(`sdks/rust` is meant to be publishable without this workspace, so whether
+`vpay-wire` is published or its table vendored is VP-6's decision). No route
+moved and no `NotImplemented` token moved.
