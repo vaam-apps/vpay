@@ -54,6 +54,7 @@ const headers = {
 - `client.invoiceItems`
 - `client.manualPayments`
 - `client.rateLimitWindows`
+- `client.envelopeNonces`
 
 ### List
 
