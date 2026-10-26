@@ -7,8 +7,8 @@
 //! recipe rather than an xtask command because it shells out to the
 //! CrateStack CLI, a binary this workspace does not build — see the
 //! `justfile` for it, and for `verify-ui` (2026-09-07), a `git grep` gate on
-//! daisyUI 4 classes daisyUI 5 removed. The recipe lists **fifteen**,
-//! thirteen of them commands here.
+//! daisyUI 4 classes daisyUI 5 removed. The recipe lists **sixteen**,
+//! fourteen of them commands here.
 //!
 //! _(This said "All but one" while naming two, and "On 2026-09-07 the recipe
 //! lists twelve", until 2026-09-18. The count was two behind by then —
@@ -83,12 +83,21 @@
 //!   changed a number it is itself responsible for checking: adding it is what
 //!   made the recipe's tally fifteen.
 //!
-//! A **seventeenth** gate needs the network, so it is opt-in
+//! * `verify-security-inventory` — every security asset, trust tier, live
+//!   table, secret class, control evidence path and tracked gap in
+//!   `schemas/security-inventory.yaml` still matches the tree. The table set is
+//!   checked in both directions, `deny_unknown_fields` refuses a misspelt key,
+//!   config keys are a closed set, cited test names must exist, and a gap
+//!   issue number must be cited by a document under `docs/`. New 2026-10-26
+//!   (issue #150, ADR-0034).
+//!
+//! An **eighteenth** gate needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`.
-//! Seventeenth and not eleventh: fifteen gates, then the advisory
+//! Eighteenth and not eleventh: sixteen gates, then the advisory
 //! `verify-docs` report, then this. _(It said "eleventh" — true when the
-//! recipe listed ten — until 2026-09-18, and "sixteenth" until 2026-09-20.
-//! The `justfile`'s own header block already counted it this way.)_:
+//! recipe listed ten — until 2026-09-18, "sixteenth" until 2026-09-20 and
+//! "seventeenth" until 2026-10-26. The `justfile`'s own header block already
+//! counted it this way.)_:
 //!
 //! * `verify-citations` — every workflow-run id, pull request and issue a
 //!   document cites as evidence exists. It fails rather than skips when `gh`
@@ -155,6 +164,7 @@ fn main() -> ExitCode {
         "verify-migrations" => verify_migrations(&root),
         "verify-versions" => verify_versions(&root),
         "verify-privacy-inventory" => verify_privacy_inventory(&root),
+        "verify-security-inventory" => verify_security_inventory(&root),
         "verify-doc-counts" => verify_doc_counts(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
@@ -172,6 +182,7 @@ fn main() -> ExitCode {
             .and_then(|()| verify_migrations(&root))
             .and_then(|()| verify_versions(&root))
             .and_then(|()| verify_privacy_inventory(&root))
+            .and_then(|()| verify_security_inventory(&root))
             .and_then(|()| verify_doc_counts(&root)),
         // Not `Result`-shaped like the gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
@@ -187,7 +198,7 @@ fn main() -> ExitCode {
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
                  |verify-toolchain|verify-migrations|verify-versions\
-                 |verify-privacy-inventory|verify-doc-counts|verify-all>\n\
+                 |verify-privacy-inventory|verify-security-inventory|verify-doc-counts|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -7843,6 +7854,1218 @@ pub struct CustomerRow {
     }
 }
 
+/// The security asset, data-flow, and control-evidence inventory (issue #150, EPIC #155, ADR-0034).
+const SECURITY_INVENTORY: &str = "schemas/security-inventory.yaml";
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecurityInventory {
+    version: u32,
+    metadata: SecurityMetadata,
+    trust_boundaries: Vec<TrustBoundary>,
+    deployable_services: Vec<DeployableService>,
+    state_stores: Vec<StateStore>,
+    secrets_and_credentials: Vec<SecretClass>,
+    external_integrations: Vec<ExternalIntegration>,
+    ci_cd_and_release: CiCdAndRelease,
+    material_controls: Vec<MaterialControl>,
+    known_security_gaps: Vec<SecurityGap>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecurityMetadata {
+    standard: String,
+    issue: u32,
+    epic: u32,
+    adr: String,
+    reference: String,
+    updated: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TrustBoundary {
+    id: String,
+    name: String,
+    description: String,
+    crossing_controls: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DeployableService {
+    id: String,
+    name: String,
+    path: String,
+    #[serde(rename = "crate")]
+    crate_name: Option<String>,
+    kind: String,
+    runtime: String,
+    trust_tier: String,
+    #[serde(default)]
+    interfaces: Vec<ServiceInterface>,
+    #[serde(default)]
+    responsibilities: Vec<String>,
+    #[serde(default)]
+    upstream_apis: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ServiceInterface {
+    name: String,
+    surface: String,
+    protocol: String,
+    auth: String,
+    purpose: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StateStore {
+    id: String,
+    name: String,
+    #[serde(default)]
+    engine: Option<String>,
+    #[serde(default)]
+    migrations_dir: Option<String>,
+    #[serde(default)]
+    driver: Option<String>,
+    #[serde(default)]
+    backing_store: Option<String>,
+    #[serde(default)]
+    table: Option<String>,
+    #[serde(default)]
+    tables: Option<Vec<String>>,
+    #[serde(default)]
+    implementation: Option<String>,
+    #[serde(default)]
+    adr: Option<String>,
+    #[serde(default)]
+    backup_runbook: Option<String>,
+    #[serde(default)]
+    backup_adr: Option<String>,
+    #[serde(default)]
+    encryption_at_rest: Option<String>,
+    #[serde(default)]
+    transport_encryption: Option<String>,
+    #[serde(default)]
+    invariants: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecretClass {
+    class: String,
+    description: String,
+    managed_in: String,
+    #[serde(default)]
+    config_keys: Vec<String>,
+    #[serde(default)]
+    cli_flags: Vec<String>,
+    #[serde(default)]
+    env_vars: Vec<String>,
+    storage: String,
+    #[serde(default)]
+    algorithm: Option<String>,
+    #[serde(default)]
+    rotation_runbook: Option<String>,
+    #[serde(default)]
+    adr: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ExternalIntegration {
+    id: String,
+    name: String,
+    party: String,
+    direction: String,
+    protocol: String,
+    #[serde(default)]
+    inbound_routes: Vec<String>,
+    #[serde(default)]
+    outbound_destinations: Vec<String>,
+    #[serde(default)]
+    security_controls: Vec<String>,
+    #[serde(default)]
+    data_elements: Vec<String>,
+    #[serde(default)]
+    threat_model: Option<String>,
+    #[serde(default)]
+    privacy_inventory_ref: Option<String>,
+    #[serde(default)]
+    adr: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CiCdAndRelease {
+    pipeline_workflows: Vec<PipelineWorkflow>,
+    container_artifacts: Vec<ContainerArtifact>,
+    published_packages: Vec<PublishedPackage>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PipelineWorkflow {
+    name: String,
+    file: String,
+    #[serde(default)]
+    checks: Vec<String>,
+    purpose: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContainerArtifact {
+    target: String,
+    dockerfile: String,
+    #[serde(default)]
+    stage: Option<String>,
+    #[serde(default)]
+    security_attributes: Vec<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PublishedPackage {
+    name: String,
+    manifest: String,
+    scope: String,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct MaterialControl {
+    id: String,
+    theme: String,
+    name: String,
+    implementation: String,
+    #[serde(default)]
+    implementation_paths: Vec<String>,
+    evidence: String,
+    #[serde(default)]
+    evidence_paths: Vec<String>,
+    #[serde(default)]
+    evidence_tests: Vec<String>,
+    status: String,
+    #[serde(default)]
+    related_gap: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SecurityGap {
+    id: String,
+    title: String,
+    #[serde(default)]
+    tracking_issue: Option<String>,
+    #[serde(default)]
+    tracking_document: Option<String>,
+    description: String,
+    status: String,
+    #[serde(default)]
+    related_control: Option<String>,
+}
+
+/// The configuration paths this gate accepts, mirroring the closed sets in
+/// `vpay-config` (`Config`, `ProviderHost::credentials`, `MerchantClient`,
+/// `StaffAuth`, `DashboardClient`). A rail or a deployment secret added there
+/// must be added here in the same change; a misspelled key the inventory
+/// invents is refused rather than silently believed.
+const SECURITY_CONFIG_KEYS: [&str; 13] = [
+    "providers.mtn_momo.credentials.subscription_key",
+    "providers.mtn_momo.credentials.api_key",
+    "providers.mtn_momo.credentials.disbursement_subscription_key",
+    "providers.mtn_momo.credentials.disbursement_api_key",
+    "providers.orange_money.credentials.client_id",
+    "providers.orange_money.credentials.client_secret",
+    "providers.orange_money.credentials.merchant_key",
+    "providers.notchpay.credentials.public_key",
+    "providers.notchpay.credentials.private_key",
+    "merchant_clients[].webhooks[].secrets",
+    "staff_auth.password_pepper",
+    "staff_auth.totp_encryption_key",
+    "staff_auth.sso.client_secret",
+];
+
+const SECURITY_THEMES: [&str; 4] = ["Organizational", "People", "Physical", "Technological"];
+const SECURITY_CONTROL_STATUSES: [&str; 3] = ["implemented", "partial", "gap"];
+const SECURITY_GAP_STATUSES: [&str; 3] = ["open", "accepted", "closed"];
+const SECURITY_DIRECTIONS: [&str; 3] = ["outbound_and_inbound", "inbound", "outbound"];
+
+fn security_path_problem(root: &Path, label: &str, path: &str, problems: &mut Vec<String>) {
+    if path.trim().is_empty() {
+        problems.push(format!("{SECURITY_INVENTORY}: {label} is empty"));
+    } else if !root.join(path).exists() {
+        problems.push(format!(
+            "{SECURITY_INVENTORY}: {label} `{path}` does not exist"
+        ));
+    }
+}
+
+fn security_package_name(manifest: &Path) -> Option<String> {
+    let text = fs::read_to_string(manifest).ok()?;
+    text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix("name = \"")
+            .and_then(|rest| rest.strip_suffix('"'))
+            .map(str::to_owned)
+    })
+}
+
+fn security_control_id_is_valid(id: &str) -> bool {
+    let Some(rest) = id.strip_prefix("A.") else {
+        return false;
+    };
+    let mut parts = rest.split('.');
+    let (Some(theme), Some(control), None) = (parts.next(), parts.next(), parts.next()) else {
+        return false;
+    };
+    !theme.is_empty()
+        && theme.chars().all(|c| c.is_ascii_digit())
+        && !control.is_empty()
+        && control.chars().all(|c| c.is_ascii_digit())
+}
+
+fn security_test_name_exists(root: &Path, name: &str) -> bool {
+    let needle = format!("fn {name}(");
+    rust_sources(&root.join("backends"))
+        .into_iter()
+        .any(|path| {
+            fs::read_to_string(path)
+                .map(|text| text.contains(&needle))
+                .unwrap_or(false)
+        })
+}
+
+fn security_text_cites_issue(text: &str, needle: &str) -> bool {
+    text.match_indices(needle).any(|(at, _)| {
+        text.get(at + needle.len()..)
+            .and_then(|rest| rest.chars().next())
+            .is_none_or(|next| !next.is_ascii_digit())
+    })
+}
+
+fn security_issue_number_referenced(root: &Path, number: u64) -> bool {
+    let needle = format!("issues/{number}");
+    fn walk(dir: &Path, needle: &str) -> bool {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return false;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                if walk(&path, needle) {
+                    return true;
+                }
+            } else if path.extension().is_some_and(|e| e == "md")
+                && fs::read_to_string(&path)
+                    .is_ok_and(|text| security_text_cites_issue(&text, needle))
+            {
+                return true;
+            }
+        }
+        false
+    }
+    walk(&root.join("docs"), &needle)
+}
+
+fn verify_security_inventory(root: &Path) -> Result<(), String> {
+    let inv_path = root.join(SECURITY_INVENTORY);
+    let inv_text = fs::read_to_string(&inv_path)
+        .map_err(|e| format!("{SECURITY_INVENTORY}: {e} (the inventory is mandatory)"))?;
+    let inventory: SecurityInventory =
+        serde_yaml_ng::from_str(&inv_text).map_err(|e| format!("{SECURITY_INVENTORY}: {e}"))?;
+    if inventory.version != 1 {
+        return Err(format!(
+            "{SECURITY_INVENTORY}: unsupported version {} (this gate reads version 1)",
+            inventory.version
+        ));
+    }
+
+    let mut problems = Vec::new();
+
+    // 1. Metadata and trust boundaries.
+    let metadata = &inventory.metadata;
+    if metadata.standard.trim().is_empty()
+        || metadata.issue == 0
+        || metadata.epic == 0
+        || metadata.updated.len() != 10
+        || !metadata.updated.chars().enumerate().all(|(i, c)| {
+            if i == 4 || i == 7 {
+                c == '-'
+            } else {
+                c.is_ascii_digit()
+            }
+        })
+    {
+        problems.push(format!(
+            "{SECURITY_INVENTORY}: metadata needs a non-empty standard, positive issue/epic and \
+             an updated date in YYYY-MM-DD form"
+        ));
+    }
+    security_path_problem(root, "metadata.adr", &metadata.adr, &mut problems);
+    security_path_problem(
+        root,
+        "metadata.reference",
+        &metadata.reference,
+        &mut problems,
+    );
+
+    let mut trust_tiers = BTreeSet::new();
+    for boundary in &inventory.trust_boundaries {
+        if !trust_tiers.insert(boundary.id.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate trust boundary id `{}`",
+                boundary.id
+            ));
+        }
+        if boundary.name.trim().is_empty()
+            || boundary.description.trim().is_empty()
+            || boundary.crossing_controls.is_empty()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: trust boundary `{}` needs a name, a description and at \
+                 least one crossing control",
+                boundary.id
+            ));
+        }
+    }
+    if trust_tiers.is_empty() {
+        problems.push(format!(
+            "{SECURITY_INVENTORY}: no trust boundaries are declared"
+        ));
+    }
+
+    // 2. Deployable services: paths, crate names, tier references, interfaces.
+    let mut service_ids = BTreeSet::new();
+    for service in &inventory.deployable_services {
+        if !service_ids.insert(service.id.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate service id `{}`",
+                service.id
+            ));
+        }
+        security_path_problem(
+            root,
+            &format!("service `{}` path", service.id),
+            &service.path,
+            &mut problems,
+        );
+        if !trust_tiers.contains(&service.trust_tier) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: service `{}` names unknown trust tier `{}`",
+                service.id, service.trust_tier
+            ));
+        }
+        if service.name.trim().is_empty()
+            || service.kind.trim().is_empty()
+            || service.runtime.trim().is_empty()
+            || service.responsibilities.iter().any(|r| r.trim().is_empty())
+            || service
+                .upstream_apis
+                .iter()
+                .any(|api| api.trim().is_empty())
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: service `{}` has an empty name, kind, runtime, \
+                 responsibility or upstream API",
+                service.id
+            ));
+        }
+        if let Some(crate_name) = &service.crate_name {
+            let manifest = root.join(&service.path).join("Cargo.toml");
+            if security_package_name(&manifest).as_deref() != Some(crate_name.as_str()) {
+                problems.push(format!(
+                    "{SECURITY_INVENTORY}: service `{}` names crate `{crate_name}`, but `{}` \
+                     declares no such package",
+                    service.id,
+                    relative(root, &manifest)
+                ));
+            }
+        }
+        for interface in &service.interfaces {
+            if interface.name.trim().is_empty()
+                || interface.surface.trim().is_empty()
+                || interface.protocol.trim().is_empty()
+                || interface.auth.trim().is_empty()
+                || interface.purpose.trim().is_empty()
+            {
+                problems.push(format!(
+                    "{SECURITY_INVENTORY}: service `{}` has an interface with an empty field",
+                    service.id
+                ));
+            }
+        }
+    }
+
+    // 3. State stores: every table exists, and every live table is named.
+    let db_columns = migrations_db_columns(root)?;
+    let live_tables: BTreeSet<String> = db_columns.into_iter().map(|(t, _)| t).collect();
+    let mut declared_tables: BTreeSet<String> = BTreeSet::new();
+    let mut store_ids = BTreeSet::new();
+    for store in &inventory.state_stores {
+        if !store_ids.insert(store.id.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate state store id `{}`",
+                store.id
+            ));
+        }
+        if store.name.trim().is_empty()
+            || store.engine.as_deref().is_some_and(str::is_empty)
+            || store.driver.as_deref().is_some_and(str::is_empty)
+            || store.backing_store.as_deref().is_some_and(str::is_empty)
+            || store
+                .encryption_at_rest
+                .as_deref()
+                .is_some_and(str::is_empty)
+            || store
+                .transport_encryption
+                .as_deref()
+                .is_some_and(str::is_empty)
+            || store.invariants.iter().any(|i| i.trim().is_empty())
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: state store `{}` has an empty descriptive field",
+                store.id
+            ));
+        }
+        if let Some(dir) = &store.migrations_dir
+            && !root.join(dir).is_dir()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: store `{}` names migrations directory `{dir}` which does \
+                 not exist",
+                store.id
+            ));
+        }
+        if let Some(tables) = &store.tables {
+            for table in tables {
+                declared_tables.insert(table.clone());
+                if !live_tables.contains(table) {
+                    problems.push(format!(
+                        "{SECURITY_INVENTORY}: store `{}` lists table `{table}` which no \
+                         migration creates",
+                        store.id
+                    ));
+                }
+            }
+        }
+        if let Some(table) = &store.table {
+            declared_tables.insert(table.clone());
+            if !live_tables.contains(table) {
+                problems.push(format!(
+                    "{SECURITY_INVENTORY}: store `{}` references table `{table}` which no \
+                     migration creates",
+                    store.id
+                ));
+            }
+        }
+        for (label, path) in [
+            ("implementation", store.implementation.as_deref()),
+            ("adr", store.adr.as_deref()),
+            ("backup runbook", store.backup_runbook.as_deref()),
+            ("backup adr", store.backup_adr.as_deref()),
+        ] {
+            if let Some(path) = path {
+                security_path_problem(
+                    root,
+                    &format!("store `{}` {label}", store.id),
+                    path,
+                    &mut problems,
+                );
+            }
+        }
+    }
+    let unlisted: Vec<&String> = live_tables
+        .iter()
+        .filter(|table| !declared_tables.contains(*table))
+        .collect();
+    if !unlisted.is_empty() {
+        problems.push(format!(
+            "{SECURITY_INVENTORY}: these migrated tables are in no state store: {}",
+            unlisted
+                .iter()
+                .map(|t| t.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+
+    // 4. Secrets: recognised config paths, real runbooks, non-empty sources.
+    let mut secret_classes = BTreeSet::new();
+    for secret in &inventory.secrets_and_credentials {
+        if !secret_classes.insert(secret.class.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate secret class `{}`",
+                secret.class
+            ));
+        }
+        if secret.description.trim().is_empty()
+            || secret.managed_in.trim().is_empty()
+            || secret.storage.trim().is_empty()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: secret class `{}` needs a description, managed_in and \
+                 storage",
+                secret.class
+            ));
+        }
+        if secret.config_keys.is_empty()
+            && secret.cli_flags.is_empty()
+            && secret.env_vars.is_empty()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: secret class `{}` names no config key, CLI flag or \
+                 environment variable",
+                secret.class
+            ));
+        }
+        if secret.algorithm.as_deref().is_some_and(str::is_empty) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: secret class `{}` has an empty algorithm",
+                secret.class
+            ));
+        }
+        for key in &secret.config_keys {
+            if !SECURITY_CONFIG_KEYS.contains(&key.as_str()) {
+                problems.push(format!(
+                    "{SECURITY_INVENTORY}: secret class `{}` names config key `{key}`, which is \
+                     not a path this gate recognizes in vpay-config",
+                    secret.class
+                ));
+            }
+        }
+        for (label, path) in [
+            ("rotation runbook", secret.rotation_runbook.as_deref()),
+            ("adr", secret.adr.as_deref()),
+        ] {
+            if let Some(path) = path {
+                security_path_problem(
+                    root,
+                    &format!("secret class `{}` {label}", secret.class),
+                    path,
+                    &mut problems,
+                );
+            }
+        }
+    }
+
+    // 5. External integrations.
+    let mut integration_ids = BTreeSet::new();
+    for integration in &inventory.external_integrations {
+        if !integration_ids.insert(integration.id.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate integration id `{}`",
+                integration.id
+            ));
+        }
+        if !SECURITY_DIRECTIONS.contains(&integration.direction.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` has invalid direction `{}`",
+                integration.id, integration.direction
+            ));
+        }
+        if integration.name.trim().is_empty()
+            || integration.party.trim().is_empty()
+            || integration.protocol.trim().is_empty()
+            || integration.security_controls.is_empty()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` needs a name, party, protocol and at \
+                 least one security control",
+                integration.id
+            ));
+        }
+        if integration
+            .inbound_routes
+            .iter()
+            .any(|r| !r.starts_with('/'))
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` has an inbound route that is not a path",
+                integration.id
+            ));
+        }
+        if integration
+            .outbound_destinations
+            .iter()
+            .chain(integration.data_elements.iter())
+            .any(|value| value.trim().is_empty())
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: integration `{}` has an empty destination or data element",
+                integration.id
+            ));
+        }
+        for (label, path) in [
+            ("threat model", integration.threat_model.as_deref()),
+            (
+                "privacy inventory",
+                integration.privacy_inventory_ref.as_deref(),
+            ),
+            ("adr", integration.adr.as_deref()),
+        ] {
+            if let Some(path) = path {
+                security_path_problem(
+                    root,
+                    &format!("integration `{}` {label}", integration.id),
+                    path,
+                    &mut problems,
+                );
+            }
+        }
+    }
+
+    // 6. CI/CD, containers and published packages.
+    let release = &inventory.ci_cd_and_release;
+    for workflow in &release.pipeline_workflows {
+        if workflow.name.trim().is_empty()
+            || workflow.purpose.trim().is_empty()
+            || workflow.checks.is_empty()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: workflow `{}` needs a name, purpose and checks",
+                workflow.file
+            ));
+        }
+        security_path_problem(root, "pipeline workflow", &workflow.file, &mut problems);
+        if !workflow.file.starts_with(".github/workflows/") {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: workflow `{}` is not under .github/workflows/",
+                workflow.file
+            ));
+        }
+    }
+    for artifact in &release.container_artifacts {
+        if artifact.target.trim().is_empty() || artifact.security_attributes.is_empty() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: container artifact `{}` needs a target and security \
+                 attributes",
+                artifact.target
+            ));
+        }
+        security_path_problem(
+            root,
+            &format!("container artifact `{}` dockerfile", artifact.target),
+            &artifact.dockerfile,
+            &mut problems,
+        );
+        if let Some(stage) = &artifact.stage {
+            let text = fs::read_to_string(root.join(&artifact.dockerfile)).unwrap_or_default();
+            if !text.contains(&format!("AS {stage}")) {
+                problems.push(format!(
+                    "{SECURITY_INVENTORY}: container artifact `{}` names stage `{stage}`, which \
+                     `{}` does not declare",
+                    artifact.target, artifact.dockerfile
+                ));
+            }
+        }
+    }
+    for pkg in &release.published_packages {
+        security_path_problem(
+            root,
+            &format!("published package `{}` manifest", pkg.name),
+            &pkg.manifest,
+            &mut problems,
+        );
+        if pkg.scope.trim().is_empty() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: published package `{}` has an empty scope",
+                pkg.name
+            ));
+        }
+        let manifest = root.join(&pkg.manifest);
+        let Ok(text) = fs::read_to_string(&manifest) else {
+            continue;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: published package `{}` manifest `{}` is not JSON",
+                pkg.name, pkg.manifest
+            ));
+            continue;
+        };
+        if json.get("name").and_then(serde_json::Value::as_str) != Some(pkg.name.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: published package `{}` manifest names `{}`",
+                pkg.name,
+                json.get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("<none>")
+            ));
+        }
+        if json.get("private").and_then(serde_json::Value::as_bool) == Some(true) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: published package `{}` declares private: true",
+                pkg.name
+            ));
+        }
+    }
+
+    // 7. Material controls: paths, cited tests, statuses and gap links.
+    let gap_ids: BTreeSet<String> = inventory
+        .known_security_gaps
+        .iter()
+        .map(|gap| gap.id.clone())
+        .collect();
+    let control_ids: BTreeSet<String> = inventory
+        .material_controls
+        .iter()
+        .map(|control| control.id.clone())
+        .collect();
+    let mut seen_controls = BTreeSet::new();
+    for control in &inventory.material_controls {
+        if !security_control_id_is_valid(&control.id) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control id `{}` is not an Annex A identifier such as \
+                 A.8.24",
+                control.id
+            ));
+        }
+        if !seen_controls.insert(control.id.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate control id `{}`",
+                control.id
+            ));
+        }
+        if !SECURITY_THEMES.contains(&control.theme.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` has invalid theme `{}`",
+                control.id, control.theme
+            ));
+        }
+        if !SECURITY_CONTROL_STATUSES.contains(&control.status.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` has invalid status `{}`",
+                control.id, control.status
+            ));
+        }
+        if control.name.trim().is_empty()
+            || control.implementation.trim().is_empty()
+            || control.evidence.trim().is_empty()
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` needs a name, implementation and evidence",
+                control.id
+            ));
+        }
+        if control.implementation_paths.is_empty() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` cites no implementation path",
+                control.id
+            ));
+        }
+        for path in &control.implementation_paths {
+            security_path_problem(
+                root,
+                &format!("control `{}` implementation path", control.id),
+                path,
+                &mut problems,
+            );
+        }
+        if control.evidence_paths.is_empty() && control.evidence_tests.is_empty() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` cites no evidence path or test",
+                control.id
+            ));
+        }
+        for path in &control.evidence_paths {
+            security_path_problem(
+                root,
+                &format!("control `{}` evidence path", control.id),
+                path,
+                &mut problems,
+            );
+        }
+        for test in &control.evidence_tests {
+            if !security_test_name_exists(root, test) {
+                problems.push(format!(
+                    "{SECURITY_INVENTORY}: control `{}` cites test `{test}`, which no Rust source \
+                     declares",
+                    control.id
+                ));
+            }
+        }
+        match &control.related_gap {
+            Some(gap) if !gap_ids.contains(gap) => problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` names unknown gap `{gap}`",
+                control.id
+            )),
+            None if control.status == "gap" => problems.push(format!(
+                "{SECURITY_INVENTORY}: control `{}` is a gap but names no related_gap",
+                control.id
+            )),
+            _ => {}
+        }
+    }
+
+    // 8. Known gaps: one live tracker, a known status, no dangling control link.
+    let mut seen_gaps = BTreeSet::new();
+    for gap in &inventory.known_security_gaps {
+        if !seen_gaps.insert(gap.id.clone()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: duplicate gap id `{}`",
+                gap.id
+            ));
+        }
+        if !SECURITY_GAP_STATUSES.contains(&gap.status.as_str()) {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: gap `{}` has invalid status `{}`",
+                gap.id, gap.status
+            ));
+        }
+        if gap.title.trim().is_empty() || gap.description.trim().is_empty() {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: gap `{}` needs a title and a description",
+                gap.id
+            ));
+        }
+        match (&gap.tracking_issue, &gap.tracking_document) {
+            (Some(url), None) => {
+                let prefix = "https://github.com/vaam-apps/vpay/issues/";
+                match url.strip_prefix(prefix).and_then(|n| n.parse::<u64>().ok()) {
+                    Some(number)
+                        if number > 0 && security_issue_number_referenced(root, number) => {}
+                    Some(number) => problems.push(format!(
+                        "{SECURITY_INVENTORY}: gap `{}` cites issue #{number}, which no document \
+                         under docs/ references",
+                        gap.id
+                    )),
+                    None => problems.push(format!(
+                        "{SECURITY_INVENTORY}: gap `{}` tracking issue `{url}` is not a vpay issue \
+                         URL",
+                        gap.id
+                    )),
+                }
+            }
+            (None, Some(path)) => {
+                security_path_problem(
+                    root,
+                    &format!("gap `{}` tracking document", gap.id),
+                    path,
+                    &mut problems,
+                );
+            }
+            _ => problems.push(format!(
+                "{SECURITY_INVENTORY}: gap `{}` must name exactly one of tracking_issue or \
+                 tracking_document",
+                gap.id
+            )),
+        }
+        if let Some(control) = &gap.related_control
+            && !control_ids.contains(control)
+        {
+            problems.push(format!(
+                "{SECURITY_INVENTORY}: gap `{}` names unknown control `{control}`",
+                gap.id
+            ));
+        }
+    }
+
+    if !problems.is_empty() {
+        return Err(format!(
+            "verify-security-inventory: {} problem(s):\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+
+    let services = inventory.deployable_services.len();
+    let stores = inventory.state_stores.len();
+    let secrets = inventory.secrets_and_credentials.len();
+    let controls = inventory.material_controls.len();
+    let gaps = inventory.known_security_gaps.len();
+    let tables = declared_tables.len();
+
+    println!(
+        "verify-security-inventory: ok — {services} service(s), {stores} state store(s), \
+         {tables} table(s), {secrets} secret class(es), {controls} material control(s) and {gaps} \
+         tracked gap(s) verified in {SECURITY_INVENTORY}"
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+mod test_security_inventory {
+    use super::*;
+
+    const MIGRATION: &str = "CREATE TABLE charges (id text PRIMARY KEY);\n\
+                             CREATE TABLE jobs (id text PRIMARY KEY);\n";
+
+    const INVENTORY: &str = r#"version: 1
+metadata:
+  standard: "ISO/IEC 27001:2022"
+  issue: 150
+  epic: 155
+  adr: "docs/adr/0034.md"
+  reference: "docs/reference/security.md"
+  updated: "2026-10-26"
+trust_boundaries:
+  - id: tier_2_application
+    name: "Application"
+    description: "vpay-server"
+    crossing_controls: ["authentication"]
+deployable_services:
+  - id: vpay_server
+    name: "vpay API Server"
+    path: "backends/apps/vpay-server"
+    crate: "vpay-server"
+    kind: "service_binary"
+    runtime: "Rust"
+    trust_tier: "tier_2_application"
+    interfaces:
+      - name: "merchant_api"
+        surface: "/v1"
+        protocol: "HTTP"
+        auth: "Bearer"
+        purpose: "API"
+state_stores:
+  - id: postgres_primary
+    name: "PostgreSQL"
+    migrations_dir: "backends/migrations"
+    tables: [charges, jobs]
+secrets_and_credentials:
+  - class: mtn_momo_collection_credentials
+    description: "MTN keys"
+    managed_in: "vpay-config"
+    config_keys: ["providers.mtn_momo.credentials.api_key"]
+    storage: "environment"
+    rotation_runbook: "docs/runbooks/rotate-rail-credentials.md"
+external_integrations:
+  - id: mtn_momo_rail
+    name: "MTN MoMo"
+    party: "MTN"
+    direction: "outbound_and_inbound"
+    protocol: "HTTPS"
+    inbound_routes: ["/provider/mtn_momo/callback"]
+    outbound_destinations: ["sandbox.momodeveloper.mtn.com"]
+    security_controls: ["rustls"]
+    data_elements: ["payer_phone_number"]
+ci_cd_and_release:
+  pipeline_workflows:
+    - name: "CI"
+      file: ".github/workflows/ci.yml"
+      checks: ["cargo nextest"]
+      purpose: "build"
+  container_artifacts:
+    - target: "vpay-server"
+      dockerfile: "backends/Dockerfile"
+      stage: "server"
+      security_attributes: ["scratch"]
+  published_packages:
+    - name: "@vaam-apps/vpay-sdk"
+      manifest: "sdks/nodejs/package.json"
+      scope: "node"
+material_controls:
+  - id: "A.8.28"
+    theme: "Technological"
+    name: "Secure Coding"
+    implementation: "clippy"
+    implementation_paths: ["clippy.toml"]
+    evidence: "a test"
+    evidence_paths: ["docs/adr/0007.md"]
+    evidence_tests: ["a_test_that_exists"]
+    status: "implemented"
+known_security_gaps:
+  - id: "GAP-56"
+    title: "lookup audit"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/56"
+    description: "not built"
+    status: "open"
+    related_control: "A.8.28"
+"#;
+
+    fn write_fixture(root: &Path, inventory: &str) {
+        let _ = fs::remove_dir_all(root);
+        fs::create_dir_all(root.join("backends/migrations")).unwrap();
+        fs::write(root.join("backends/migrations/0001_init.sql"), MIGRATION).unwrap();
+        fs::create_dir_all(root.join("backends/apps/vpay-server")).unwrap();
+        fs::write(
+            root.join("backends/apps/vpay-server/Cargo.toml"),
+            "[package]\nname = \"vpay-server\"\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join("backends/crates/vpay-api/src")).unwrap();
+        fs::write(
+            root.join("backends/crates/vpay-api/src/lib.rs"),
+            "fn a_test_that_exists() {}\n",
+        )
+        .unwrap();
+        fs::create_dir_all(root.join(".github/workflows")).unwrap();
+        fs::write(root.join(".github/workflows/ci.yml"), "name: ci\n").unwrap();
+        fs::write(root.join("backends/Dockerfile"), "FROM scratch AS server\n").unwrap();
+        fs::create_dir_all(root.join("sdks/nodejs")).unwrap();
+        fs::write(
+            root.join("sdks/nodejs/package.json"),
+            "{\"name\":\"@vaam-apps/vpay-sdk\"}\n",
+        )
+        .unwrap();
+        for path in [
+            "docs/adr/0034.md",
+            "docs/adr/0007.md",
+            "docs/reference/security.md",
+            "docs/runbooks/rotate-rail-credentials.md",
+            "docs/status/gates.md",
+        ] {
+            let path = root.join(path);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, "see https://github.com/vaam-apps/vpay/issues/56\n").unwrap();
+        }
+        fs::write(root.join("clippy.toml"), "").unwrap();
+        fs::create_dir_all(root.join("schemas")).unwrap();
+        fs::write(root.join(SECURITY_INVENTORY), inventory).unwrap();
+    }
+
+    fn temp_root(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!("vpay-sec-inv-{name}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn the_repository_security_inventory_passes() {
+        let root = repo_root();
+        verify_security_inventory(&root).expect("real security inventory must pass");
+    }
+
+    #[test]
+    fn a_missing_inventory_fails() {
+        let root = temp_root("missing");
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::create_dir_all(&root);
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("the inventory is mandatory"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_misspelt_field_is_refused_rather_than_ignored() {
+        let root = temp_root("unknown-field");
+        write_fixture(
+            &root,
+            &INVENTORY.replace("tables: [charges, jobs]", "tablez: [bogus]"),
+        );
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(
+            err.contains("tablez") || err.contains("unknown field"),
+            "err: {err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_table_no_migration_creates_is_refused() {
+        let root = temp_root("stale-table");
+        write_fixture(
+            &root,
+            &INVENTORY.replace("tables: [charges, jobs]", "tables: [charges, jobs, ghost]"),
+        );
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("ghost"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_live_table_in_no_store_is_refused() {
+        let root = temp_root("unlisted-table");
+        write_fixture(
+            &root,
+            &INVENTORY.replace("tables: [charges, jobs]", "tables: [charges]"),
+        );
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("jobs"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_invented_config_key_is_refused() {
+        let root = temp_root("bad-config-key");
+        write_fixture(
+            &root,
+            &INVENTORY.replace(
+                "providers.mtn_momo.credentials.api_key",
+                "rails.mtn_momo.api_key",
+            ),
+        );
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("rails.mtn_momo.api_key"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_implementation_path_is_refused() {
+        let root = temp_root("bad-implementation");
+        write_fixture(
+            &root,
+            &INVENTORY.replace(
+                "implementation_paths: [\"clippy.toml\"]",
+                "implementation_paths: [\"nope.rs\"]",
+            ),
+        );
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("nope.rs"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_missing_test_name_is_refused() {
+        let root = temp_root("bad-test");
+        write_fixture(
+            &root,
+            &INVENTORY.replace("a_test_that_exists", "a_test_that_does_not"),
+        );
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("a_test_that_does_not"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_gap_issue_no_document_cites_is_refused() {
+        let root = temp_root("fabricated-gap");
+        write_fixture(&root, &INVENTORY.replace("issues/56", "issues/999999"));
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("999999"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_issue_number_that_is_only_a_prefix_of_a_cited_one_is_refused() {
+        let root = temp_root("issue-prefix");
+        write_fixture(&root, &INVENTORY.replace("issues/56", "issues/5"));
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("#5"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_gap_without_a_related_gap_is_refused() {
+        let root = temp_root("gap-control");
+        let broken = INVENTORY.replace(
+            "    status: \"implemented\"\nknown_security_gaps:",
+            "    status: \"gap\"\nknown_security_gaps:",
+        );
+        write_fixture(&root, &broken);
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("related_gap"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_manifest_that_is_private_or_misnamed_is_refused() {
+        let root = temp_root("bad-manifest");
+        write_fixture(&root, INVENTORY);
+        fs::write(
+            root.join("sdks/nodejs/package.json"),
+            "{\"name\":\"@vaam-apps/vpay-sdk\",\"private\":true}\n",
+        )
+        .unwrap();
+        let err = verify_security_inventory(&root).unwrap_err();
+        assert!(err.contains("private: true"), "err: {err}");
+        let _ = fs::remove_dir_all(&root);
+    }
+}
 /// The SHA-256 of `data`, lowercase hex — the same digest and spelling
 /// `sha256sum` writes, so a manifest line can be checked by hand with
 /// `sha256sum backends/migrations/*.sql`.

@@ -535,6 +535,17 @@ jobs:
       # like the steps above it, so the recipe and this workflow cannot drift.
       - name: verify-doc-counts (every marked number still measures)
         run: just verify-doc-counts
+      # New 2026-10-26, the sixteenth gate (issue #150, ADR-0034). Like
+      # `verify-privacy-inventory` above, this job is the only place the drift
+      # it catches is visible to CI: nothing in `rust` reads
+      # `schemas/security-inventory.yaml`, so a docs-, workflow- or
+      # Dockerfile-only change that breaks a cited path would merge green.
+      # It checks the table set in both directions and refuses an unknown key,
+      # an invented config path and a fabricated gap issue. Through the
+      # justfile, like the steps above, so the recipe and this workflow cannot
+      # drift.
+      - name: verify-security-inventory (the security map matches the tree)
+        run: just verify-security-inventory
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,
