@@ -103,18 +103,39 @@ are held by `--check`.
 
 `just verify`: `verify: ok — the fifteen gates above passed`.
 
-`just ci` (Node 24.21.0): `fmt-check` (cargo fmt, prettier), `clippy -D
-warnings` and all fifteen `verify` gates passed; it then stopped at
-`test-rust` because `cargo-nextest` was not installed in this session. The
-Rust half (`test-rust`, `test-doc`, `verify-ignored`) and `lint-web`,
-`test-web`, `audit-web`, `deny` are recorded in a follow-up commit once that
-run completes. No Rust file changed in this work.
+`just ci` (Node 24.21.0), recipe by recipe — **not one green run, and this
+says why**:
+
+- `fmt-check` (cargo fmt, prettier), `clippy -D warnings`, and all fifteen
+  `verify` gates: **passed**.
+- `lint-web` and `test-web`: **passed** — every workspace package; the
+  dashboard 40 files / 482 passed / 1 skipped, `@vpay/config` 67/67 (its
+  "every package is linted" gate exempts the generated `dash-client` by name,
+  and a new case fails if that package stops being generator output).
+- `audit-web`: **passed** ("no moderate, high or critical advisory").
+- `test-rust`, `test-doc`, `verify-ignored`: **not run to completion.** The
+  first attempts found no `cargo-nextest`; once it was installed the
+  workspace test build exhausted this session's disk allowance (`ld
+terminated with signal 7 [Bus error]`, then 0 MB free with a 25 GB
+  `target/`). No Rust file changed in this work; CI's Rust jobs are the
+  evidence for these.
+- `deny`: not run (`cargo-deny` not installed); no Cargo dependency changed.
+
+## Images
+
+Built from `frontends/Dockerfile` on `node:24-alpine` (resolved to Node
+v24.22.1 — the Dockerfile pins the major only, as it pinned 22), with a
+scratch copy of the Dockerfile that adds only this session's proxy CA:
+`runner` (dashboard) and `checkout` both build. The dashboard image run as
+`docker run --read-only --tmpfs /tmp --user 1000:1000` answered `/healthz`
+`200`, `id -u` → `1000`, and Docker's own `HEALTHCHECK` reported `healthy`.
+The checkout image was built and not run. `examples/shop`'s image was not
+built.
 
 ## Not run
 
 - **Cypress / any browser.** `dashboard.cy.ts` was not run against these
   screens.
 - **Any real vpay.** Every read in the suites is a stubbed `fetch`.
-- **The Node 24 images.** `docker build` of `frontends/Dockerfile`'s `runner`
-  and `checkout` targets could not pull `node:24-alpine`: Docker Hub answered
-  `429 Too Many Requests` from this session.
+- **`examples/shop`'s Node 24 image**, and the checkout image's runtime
+  behaviour (it was built, not run).
