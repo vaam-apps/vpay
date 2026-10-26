@@ -1,30 +1,35 @@
 //! Merchant SDK for vpay's `/v1` API.
 //!
-//! Implements the wire contract in `docs/flows/merchant-auth.md`:
-//! `client_credentials` + `private_key_jwt` authentication (RFC 7523),
-//! Stripe-shaped form-encoded resources, and outbound-webhook verification.
+//! Implements the wire contract in `docs/flows/merchant-auth.md`: every request
+//! is a COSE_Sign1 message under the merchant's Ed25519 key and every answer is
+//! one under vpay's pinned response key (the signed transport, VP-3/VP-5; there
+//! are no access tokens), carrying the same Stripe-shaped form-encoded requests
+//! and JSON answers the SDK always spoke, plus outbound-webhook verification.
 //!
 //! **Part of the resource half has a server to talk to; part does not.**
-//! `vpay-server` mounts `/v1/oauth` (token, discovery, JWKS), the `/v1`
-//! bearer-token boundary, and — as of Step 2 (payment intents) and Step 5
-//! (events) — [`PaymentIntentsResource`]'s `create`/`retrieve`/`list`/
-//! `confirm`/`cancel` and [`EventsResource`]'s `list`/`retrieve`.
-//! [`RefundsResource`] and [`BalanceResource`] have no route yet and still
-//! reach a 404 there. `backends/tests/integration/tests/merchant_token_flow.rs`
-//! drives this crate against the real server; see `docs/status.md` and this
-//! crate's own `README.md` "Status" section for exactly what is, and is not,
-//! proven by this crate's tests.
+//! [`BalanceResource`] has no route and reaches the honest 404.
+//! `backends/tests/integration/tests/signed_transport.rs` and the `customers`
+//! suite drive this crate against the real server; see `docs/status.md` and
+//! this crate's own `README.md` "Status" section for exactly what is, and is
+//! not, proven by this crate's tests.
 //!
 //! # Quick start
 //!
 //! ```no_run
-//! use vpay_sdk::{Client, Credentials, RequestOptions};
+//! use vpay_sdk::{Client, Credentials, RequestOptions, ServerKeys};
 //! use vpay_sdk::payment_intents::{CreatePaymentIntentParams, PaymentMethodType};
 //!
 //! # async fn run() -> Result<(), vpay_sdk::Error> {
-//! let credentials = Credentials::rsa_pem("merchant_a", "-----BEGIN PRIVATE KEY-----...")?;
+//! // The merchant's Ed25519 seed (32 bytes, unpadded base64url) and the two
+//! // response keys vpay's operator published.
+//! let credentials = Credentials::ed25519_seed_base64url("merchant_a", "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc")?;
+//! let server_keys = ServerKeys::from_base64url(
+//!     "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE",
+//!     "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI",
+//! )?;
 //! let client = Client::builder("https://api.vpay.example")
 //!     .credentials(credentials)
+//!     .server_keys(server_keys)
 //!     .build()?;
 //!
 //! let intent = client
@@ -51,8 +56,10 @@
 // nothing checks it.
 #![deny(missing_docs)]
 
-pub mod auth;
 mod client;
+#[doc(hidden)]
+pub mod contracts;
+mod credentials;
 mod error;
 mod form;
 mod model;
@@ -60,8 +67,8 @@ mod resources;
 mod validate;
 pub mod webhooks;
 
-pub use auth::Credentials;
-pub use client::{Client, ClientBuilder, DEFAULT_AUDIENCE};
+pub use client::{Client, ClientBuilder};
+pub use credentials::{Credentials, ServerKeys};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{
     AccountHolder, Address, Balance, BalanceEntry, CheckoutPaymentStatus, CheckoutSession,

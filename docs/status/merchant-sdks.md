@@ -6,10 +6,14 @@ _It still says "above" and "below" where it once pointed at another part of the 
 
 ## Merchant SDKs
 
-Two client libraries for the merchant API, both implementing the wire
-contract in [docs/flows/merchant-auth.md](../flows/merchant-auth.md): the RFC
-7523 `private_key_jwt` handshake, token caching, every planned `/v1`
-resource, and `Vpay-Signature` webhook verification. They landed on 2026-09-02
+Two client libraries for the merchant API, both implementing the signed
+transport of [docs/flows/signed-transport.md](../flows/signed-transport.md)
+(since VP-5 and VP-7, 2026-10-26: every call a COSE_Sign1 message, every answer
+opened under pinned server keys), every planned `/v1` resource, and
+`Vpay-Signature` webhook verification. _The paragraph below describes the
+token-era SDKs of 2026-09-02, which implemented the RFC 7523 `private_key_jwt`
+handshake and token caching of [docs/flows/merchant-auth.md](../flows/merchant-auth.md);
+that code is deleted._ They landed on 2026-09-02
 ahead of any server route; later the same day the merchant OP landed, so
 the Rust SDK completed the handshake against a real `vpay_api::router`.
 
@@ -303,6 +307,40 @@ this order" can be checked by reading the two files side by side. The job's
 display name is unchanged (`self-checks (no-mocks, status)`) because branch
 protection pins it. **No CI run of this change exists yet** — the evidence is
 `actionlint` clean on the workflow and a local `just verify`.
+
+## Both SDKs seal every call; the Node one does it in Rust, compiled to WebAssembly (2026-10-26, VP-5 and VP-7)
+
+**What changed.** `sdks/rust` signs with an Ed25519 seed or an external signer
+and opens each answer under the response keys it pins (`Client::builder(..)` takes
+`.credentials(..)` and `.server_keys(..)`, and `build()` fails without either); it vendors the
+operation table (`sdks/rust/src/contracts.rs`) because it must stay publishable
+without this workspace, and a workspace test fails if the copy, the digest
+derivation or the way a path finds its row drifts from `vpay-wire`'s.
+`sdks/nodejs` does **not** reimplement the envelope: `sdks/rust/wasm` (the same
+sealing path, `wasm32-unknown-unknown` plus `wasm-bindgen --target nodejs`,
+CLI version equal to the locked crate) is loaded by `src/wasm.ts`, and Node does
+the HTTP (`node:http(s)`, because `fetch` forbids a `GET` body) and holds the
+key (a seed as base64url or bytes, a `KeyObject`, PEM, or a `crypto.sign`
+callback whose signature is checked against the registered public key before it
+is used). `@vaam-apps/vpay-sdk/stripe` is a sealing stripe-node `httpClient`
+(`createStripeHttpClient`), replacing the `authenticator`.
+
+**Deleted, not deprecated:** both SDKs' assertion minting, token cache, 401
+re-authentication and token errors (`auth.rs`, `auth.ts`, `stripe-auth.ts`,
+`op_conformance.rs`, `token_exchange.rs`, `verify_assertion.rs`,
+`mint-assertion.mjs`, `sdk-conformance-node`). New errors: `VpayUnsignedResponseError`
+and `VpayUnverifiedResponseError` (Rust: `Error::Unsigned`, `Error::Unverified`).
+
+**Evidence.** `sdks/rust/tests/signing.rs` drives the SDK against the real
+`EnvelopeLayer` (11 cases); the Node suites are `client.test.ts` (121),
+`sealer.test.ts` (14, what a signature and an answer bind, against a verifier
+built from cratestack's own server envelope), `stripe-http-client.test.ts` (19),
+218 cases in nine files in all; `sdks/rust/wasm` has 13 native tests.
+[../sdks/parity.md](../sdks/parity.md) gained "Signing — the signed transport"
+and lost three token-era sections; the gate reads 733 named tests, 42 dated gaps.
+**Not run where this was written:** `just sdk-live` and the stripe-node
+conformance suite against the compose stack, and `wasm-pack` (the build uses
+`cargo` and `wasm-bindgen` directly). CI's `e2e` job is their evidence.
 
 ## `mtn_wallet` and `orange_wallet` on a create; confirm by type is a dated gap (2026-10-23)
 

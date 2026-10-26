@@ -1,26 +1,23 @@
 //! Create a `PaymentIntent` and confirm it against a push rail — the whole
 //! merchant happy path, end to end.
 //!
-//! **No vpay serves `/v1` yet.** `vpay-server` answers `/healthz` and a
-//! Stripe-shaped 404, and there is no OAuth2 token endpoint either
-//! (`docs/status.md`, `docs/flows/merchant-auth.md`'s Status section). Run
-//! against a real deployment this example will fail at step 1 — the token
-//! exchange — with a transport error or a 404-shaped unexpected response.
-//! It is here to show the API a merchant will write against, and to be the
-//! thing that gets run first the day a token endpoint exists; it is not
-//! evidence that any of this works against a server.
+//! Every call is signed with the merchant's Ed25519 key and every answer is
+//! opened against the server keys the operator published; there is no token.
+//! Run against a deployment whose operator registered your public key
+//! (`merchant_clients[].cose_keys`) — the example prints it first so you can
+//! hand it over.
 //!
 //! ```text
 //! VPAY_BASE_URL=https://api.vpay.example \
 //! VPAY_CLIENT_ID=merchant_acme \
-//! VPAY_PRIVATE_KEY_FILE=./merchant.pem \
-//! VPAY_KID=key-1 \                      # only if several keys are registered
+//! VPAY_SIGNING_SEED_FILE=./merchant.seed \   # 32 bytes, unpadded base64url
+//! VPAY_SERVER_KEY_CURRENT=... VPAY_SERVER_KEY_NEXT=... \
+//! VPAY_AUDIENCE=https://api.vpay.example \    # optional: defaults to the base URL
 //! VPAY_MSISDN=237670000000 \
 //! cargo run -p vpay-sdk --example create_and_confirm
 //! ```
 
-// An example is a CLI: printing is its output. See `verify_assertion.rs` for
-// the same note.
+// An example is a CLI: printing is its output.
 #![allow(clippy::print_stdout, clippy::print_stderr)]
 
 use std::collections::BTreeMap;
@@ -29,7 +26,7 @@ use std::process::ExitCode;
 use vpay_sdk::payment_intents::{
     ConfirmPaymentIntentParams, CreatePaymentIntentParams, PaymentMethodType,
 };
-use vpay_sdk::{Client, Credentials, Error, IntentStatus, RequestOptions};
+use vpay_sdk::{Client, Credentials, Error, IntentStatus, RequestOptions, ServerKeys};
 
 #[tokio::main]
 async fn main() -> ExitCode {
@@ -49,23 +46,34 @@ fn env_var(name: &str) -> Result<String, String> {
 async fn run() -> Result<(), String> {
     let base_url = env_var("VPAY_BASE_URL")?;
     let client_id = env_var("VPAY_CLIENT_ID")?;
-    let key_file = env_var("VPAY_PRIVATE_KEY_FILE")?;
+    let seed_file = env_var("VPAY_SIGNING_SEED_FILE")?;
     let msisdn = env_var("VPAY_MSISDN")?;
 
-    let pem = std::fs::read_to_string(&key_file)
-        .map_err(|e| format!("reading the private key at {key_file}: {e}"))?;
+    let seed = std::fs::read_to_string(&seed_file)
+        .map_err(|e| format!("reading the signing seed at {seed_file}: {e}"))?;
 
-    // The PEM is read into a `Credentials` and never touched again — it is
+    // The seed is read into a `Credentials` and never touched again — it is
     // not logged, and `Credentials`' `Debug` is written to keep it out of
     // `{:?}` (see `tests/debug_redaction.rs`).
-    let mut credentials =
-        Credentials::rsa_pem(&client_id, &pem).map_err(|e| format!("bad private key: {e}"))?;
-    if let Ok(kid) = std::env::var("VPAY_KID") {
-        credentials = credentials.with_kid(kid);
-    }
+    let credentials = Credentials::ed25519_seed_base64url(&client_id, &seed)
+        .map_err(|e| format!("bad signing seed: {e}"))?;
+    println!(
+        "register this public key under cose_keys: {}",
+        credentials.public_key_base64url()
+    );
+    let server_keys = ServerKeys::from_base64url(
+        &env_var("VPAY_SERVER_KEY_CURRENT")?,
+        &env_var("VPAY_SERVER_KEY_NEXT")?,
+    )
+    .map_err(|e| format!("bad server key: {e}"))?;
 
-    let client = Client::builder(&base_url)
+    let mut builder = Client::builder(&base_url)
         .credentials(credentials)
+        .server_keys(server_keys);
+    if let Ok(audience) = std::env::var("VPAY_AUDIENCE") {
+        builder = builder.audience(audience);
+    }
+    let client = builder
         .build()
         .map_err(|e| format!("client configuration: {e}"))?;
 
@@ -135,12 +143,14 @@ async fn run() -> Result<(), String> {
 }
 
 /// Turns an [`Error`] into the sentence a merchant's on-call would want,
-/// naming which of the three failure kinds it is — the distinction that
+/// naming which kind of failure it is — the distinction that
 /// decides whether retrying is correct.
 fn describe(error: Error) -> String {
     match &error {
-        Error::TokenEndpoint { .. } => {
-            format!("authentication was refused (do not retry): {error}")
+        Error::Unsigned { .. } | Error::Unverified => {
+            format!(
+                "the signature exchange failed (do not retry; check the key and the clock): {error}"
+            )
         }
         Error::Api { status, .. } => format!("vpay rejected the request ({status}): {error}"),
         Error::UnexpectedResponse { .. } => {

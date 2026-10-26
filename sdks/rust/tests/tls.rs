@@ -41,19 +41,23 @@
     clippy::indexing_slicing
 )]
 
-use std::sync::LazyLock;
 use std::time::Duration;
 
-use vpay_sdk::{Client, Credentials, Error};
+use vpay_sdk::{Client, Credentials, Error, ServerKeys};
 use wiremock::MockServer;
 
-mod support;
-
-static KEY: LazyLock<support::TestKey> = LazyLock::new(|| support::generate_key(None));
+/// A real curve point: pinned keys are checked when the client is built.
+fn public_of(seed: u8) -> [u8; 32] {
+    cratestack_client_rust::cose::Ed25519Signer::from_seed(&[seed; 32])
+        .verify_key()
+        .ed25519_bytes()
+        .expect("an Ed25519 key")
+}
 
 fn client_for(base_url: String) -> Result<Client, vpay_sdk::ConfigError> {
     Client::builder(base_url)
-        .credentials(Credentials::rsa_pem("merchant_acme", &KEY.pem).unwrap())
+        .credentials(Credentials::ed25519_seed("merchant_acme", &[3; 32]))
+        .server_keys(ServerKeys::new(public_of(1), public_of(2)))
         .timeout(Duration::from_secs(5))
         .build()
 }
@@ -93,7 +97,7 @@ async fn an_https_url_actually_attempts_a_tls_handshake() {
     let https = server.uri().replace("http://", "https://");
 
     let client = client_for(https).expect("the client builds");
-    match client.balance().retrieve().await.unwrap_err() {
+    match client.events().list(Default::default()).await.unwrap_err() {
         Error::Transport(message) => {
             assert!(
                 !message.is_empty(),
