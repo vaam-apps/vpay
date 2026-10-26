@@ -5275,7 +5275,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-sdk-wasm"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "bytes",
