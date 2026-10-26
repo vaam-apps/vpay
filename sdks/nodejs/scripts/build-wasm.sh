@@ -19,33 +19,33 @@ cd "$root"
 features=()
 out="$root/sdks/nodejs/wasm"
 if [ "${1:-}" = "--responder" ]; then
-    features=(--features responder)
-    out="$root/sdks/nodejs/wasm-test"
+	features=(--features responder)
+	out="$root/sdks/nodejs/wasm-test"
 fi
 
 wanted="$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' Cargo.lock)"
 if ! command -v wasm-bindgen >/dev/null 2>&1; then
-    echo "build-wasm: FAIL — wasm-bindgen is not on PATH." >&2
-    echo "build-wasm: install the version Cargo.lock pins: cargo install wasm-bindgen-cli --locked --version $wanted" >&2
-    exit 1
+	echo "build-wasm: FAIL — wasm-bindgen is not on PATH." >&2
+	echo "build-wasm: install the version Cargo.lock pins: cargo install wasm-bindgen-cli --locked --version $wanted" >&2
+	exit 1
 fi
 found="$(wasm-bindgen --version | awk '{print $2}')"
 if [ "$found" != "$wanted" ]; then
-    echo "build-wasm: FAIL — wasm-bindgen $found is installed, Cargo.lock pins the crate at $wanted." >&2
-    echo "build-wasm: cargo install wasm-bindgen-cli --locked --version $wanted --force" >&2
-    exit 1
+	echo "build-wasm: FAIL — wasm-bindgen $found is installed, Cargo.lock pins the crate at $wanted." >&2
+	echo "build-wasm: cargo install wasm-bindgen-cli --locked --version $wanted --force" >&2
+	exit 1
 fi
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
 # Size over speed: this is a signing call, not a hot loop, and the module is
 # read from disk on every `require`.
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
-    cargo build --release --locked --target wasm32-unknown-unknown -p vpay-sdk-wasm "${features[@]}"
+	cargo build --release --locked --target wasm32-unknown-unknown -p vpay-sdk-wasm "${features[@]}"
 
 rm -rf "$out"
 mkdir -p "$out"
 wasm-bindgen --target nodejs --out-dir "$out" --out-name vpay_sdk_wasm \
-    "${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release/vpay_sdk_wasm.wasm"
+	"${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release/vpay_sdk_wasm.wasm"
 # The SDK is ESM ("type": "module"); wasm-bindgen emits CommonJS. A nested
 # package.json is what tells Node which one this directory is.
 printf '{ "type": "commonjs" }\n' >"$out/package.json"
