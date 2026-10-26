@@ -1,0 +1,64 @@
+[package]
+name = "vpay-sdk-wasm"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The signed-transport half of the vpay merchant SDK, compiled to WebAssembly for the Node.js SDK (sealCall / openResponse)"
+# Published inside `@vaam-apps/vpay-sdk`'s npm package, never to crates.io.
+publish = false
+
+# `wasm-bindgen`'s macros expand to `unsafe` (the exported `extern "C"` shims),
+# which the workspace's `unsafe_code = "forbid"` cannot be overridden under.
+# This crate's own source contains none, and `unsafe_code = "deny"` keeps it
+# that way for everything written by hand; the generated shims carry their own
+# `#[allow]`.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+unreachable_pub = "warn"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "warn"
+dbg_macro = "deny"
+print_stdout = "warn"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# The server half of the transport, for the Node SDK's own tests only: it
+# opens a sealed request and seals an answer, which is what a vpay server does,
+# so the SDK's vitest suites can run against a verifier that is not a copy of
+# the SDK's sealing code. Off in the package that ships; `just wasm-build-test`
+# builds it into a directory `files` does not list.
+responder = []
+
+[dependencies]
+cratestack-client-rust.workspace = true
+cratestack-core.workspace = true
+base64 = "0.22"
+http = "1"
+bytes = "1"
+sha2.workspace = true
+
+# What exists only where there is a JavaScript to bind to (`lib.rs` gates `js`
+# and `responder` the same way), so a host build links none of it.
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "=0.2.128"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+# The CSPRNG a `cti` is drawn from, through `crypto.getRandomValues` on Node.
+# The matching `--cfg getrandom_backend="wasm_js"` is in the root
+# `.cargo/config.toml`, where it applies to every wasm32 build in the checkout.
+getrandom = { version = "0.4", features = ["wasm_js"] }
+
+# Host-only: the native tests of `core.rs`, which has no `wasm-bindgen` in it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+tokio.workspace = true

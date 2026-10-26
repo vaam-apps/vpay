@@ -1,23 +1,25 @@
-import { verify } from "node:crypto";
+import { generateKeyPairSync, type KeyObject } from "node:crypto";
 import { readdirSync, readFileSync } from "node:fs";
-import type { ServerResponse } from "node:http";
 import { inspect } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MAX_ASSERTION_LIFETIME_SECONDS } from "./auth.js";
 import { VpayClient } from "./client.js";
 import {
   VpayApiError,
-  VpayAuthError,
   VpayConfigError,
   VpayError,
   VpayInvalidParamsError,
   VpayTransportError,
   VpayUnexpectedResponseError,
+  VpayUnsignedResponseError,
+  VpayUnverifiedResponseError,
 } from "./errors.js";
-import { generateTestRsaKeyPair } from "./testing/keys.js";
+import { newTestIdentity } from "./testing/responder.js";
 import {
+  startSealedServer,
   startTestServer,
   type RecordedRequest,
+  type SealedResponder,
+  type SealedTestServer,
   type TestServer,
 } from "./testing/test-server.js";
 import {
@@ -34,9 +36,6 @@ import type {
 } from "./types.js";
 import { SDK_VERSION } from "./version.js";
 
-const { privateKey, privateKeyPem, publicKey } = generateTestRsaKeyPair();
-const TOKEN_PATH = "/v1/oauth/token";
-
 function parseFormBody(body: string): Record<string, string> {
   const out: Record<string, string> = {};
   if (body.length === 0) return out;
@@ -49,41 +48,8 @@ function parseFormBody(body: string): Record<string, string> {
   return out;
 }
 
-interface AssertionHeader {
-  alg: string;
-  typ: string;
-  kid?: string;
-}
-
-interface AssertionPayload {
-  iss: string;
-  sub: string;
-  aud: string;
-  jti: string;
-  exp: number;
-  iat: number;
-}
-
-function decodeJwtPart<T>(part: string): T {
-  return JSON.parse(Buffer.from(part, "base64url").toString("utf8")) as T;
-}
-
-/** The client assertion the client actually put on the wire, decoded. */
-function sentAssertion(server: TestServer): {
-  header: AssertionHeader;
-  payload: AssertionPayload;
-} {
-  const tokenRequest = server.requests.find((r) => r.url === TOKEN_PATH)!;
-  const jwt = parseFormBody(tokenRequest.body)["client_assertion"]!;
-  const [headerPart, payloadPart] = jwt.split(".");
-  return {
-    header: decodeJwtPart<AssertionHeader>(headerPart!),
-    payload: decodeJwtPart<AssertionPayload>(payloadPart!),
-  };
-}
-
 function jsonResponse(
-  res: ServerResponse,
+  res: SealedResponder,
   status: number,
   body: unknown,
 ): void {
@@ -134,62 +100,52 @@ function makeSampleRefund(overrides: Partial<Refund> = {}): Refund {
   };
 }
 
-interface HandshakeServerConfig {
-  tokenExpiresIn?: number;
-  /** Overrides the default 200 token response for a given 1-indexed token call. Return undefined to fall through to the default. */
-  onToken?: (
-    req: RecordedRequest,
-    callIndex: number,
-  ) => { status: number; body: unknown } | undefined;
-  /** Handles every non-token request. `callIndex` is 1-indexed across all resource calls. */
+interface ResourceServerConfig {
+  /** Handles every request. `callIndex` is 1-indexed across all resource calls. */
   resource: (
     req: RecordedRequest,
     callIndex: number,
   ) => { status: number; body: unknown };
 }
 
-async function startHandshakeServer(
-  config: HandshakeServerConfig,
-): Promise<TestServer> {
-  let tokenCount = 0;
+/**
+ * A server that speaks vpay's signed `/v1`: it opens each sealed request under
+ * the merchant's registered key, hands `config.resource` the plain request, and
+ * seals the answer. A request that does not verify never reaches `resource`.
+ */
+async function startResourceServer(
+  config: ResourceServerConfig,
+): Promise<SealedTestServer> {
   let resourceCount = 0;
-  return startTestServer((req, res) => {
-    const url = new URL(req.url, "http://127.0.0.1");
-    if (req.method === "POST" && url.pathname === TOKEN_PATH) {
-      tokenCount += 1;
-      const override = config.onToken?.(req, tokenCount);
-      if (override) {
-        jsonResponse(res, override.status, override.body);
-        return;
-      }
-      jsonResponse(res, 200, {
-        access_token: `access-token-${tokenCount}`,
-        token_type: "Bearer",
-        expires_in: config.tokenExpiresIn ?? 300,
-      });
-      return;
-    }
+  return startSealedServer((req, res) => {
     resourceCount += 1;
     const { status, body } = config.resource(req, resourceCount);
     jsonResponse(res, status, body);
   });
 }
 
+/** Keys for the cases that talk to a plain (unsealed) server. */
+const plainIdentity = newTestIdentity();
+
 function makeClient(
-  server: TestServer,
+  server: { url: string; identity?: SealedTestServer["identity"] },
   overrides: Partial<ConstructorParameters<typeof VpayClient>[0]> = {},
 ) {
+  const identity = server.identity ?? plainIdentity;
   return new VpayClient({
     baseUrl: server.url,
     clientId: "merchant_a",
-    privateKey,
+    privateKey: identity.merchantSeed,
+    serverKeys: { current: identity.serverPublic },
     ...overrides,
   });
 }
 
-let servers: TestServer[] = [];
-async function withServer(config: HandshakeServerConfig): Promise<TestServer> {
-  const server = await startHandshakeServer(config);
+let servers: (SealedTestServer | TestServer)[] = [];
+async function withServer(
+  config: ResourceServerConfig,
+): Promise<SealedTestServer> {
+  const server = await startResourceServer(config);
   servers.push(server);
   return server;
 }
@@ -198,230 +154,6 @@ afterEach(async () => {
   await Promise.all(servers.map((s) => s.close()));
   servers = [];
   vi.useRealTimers();
-});
-
-describe("token exchange", () => {
-  it("sends the exact form fields and content type, and no client_secret", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const tokenRequest = server.requests.find((r) => r.url === TOKEN_PATH)!;
-    expect(tokenRequest.method).toBe("POST");
-    expect(tokenRequest.headers["content-type"]).toBe(
-      "application/x-www-form-urlencoded",
-    );
-    expect(tokenRequest.headers["accept"]).toBe("application/json");
-
-    const fields = parseFormBody(tokenRequest.body);
-    expect(fields["grant_type"]).toBe("client_credentials");
-    expect(fields["client_id"]).toBe("merchant_a");
-    expect(fields["client_assertion_type"]).toBe(
-      "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
-    );
-    expect(fields["client_assertion"]).toBeTruthy();
-    expect(fields["client_assertion"]!.split(".")).toHaveLength(3);
-    expect(fields["audience"]).toBe("vpay:v1");
-    expect(fields).not.toHaveProperty("client_secret");
-  });
-
-  it("carries the access token as Authorization: Bearer on the following resource call", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const resourceRequest = server.requests.find((r) =>
-      r.url.startsWith("/v1/payment_intents"),
-    )!;
-    expect(resourceRequest.headers["authorization"]).toBe(
-      "Bearer access-token-1",
-    );
-  });
-
-  it("omits scope from the token request when not configured, and includes it when configured", async () => {
-    const configured = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    await makeClient(configured, {
-      scope: "payments:write",
-    }).paymentIntents.retrieve("pi_123");
-    const configuredFields = parseFormBody(
-      configured.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    );
-    expect(configuredFields["scope"]).toBe("payments:write");
-
-    // The omit half: no `scope` option means no `scope` field at all, not an
-    // empty one — the OP treats a present-but-empty scope differently.
-    const unconfigured = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    await makeClient(unconfigured).paymentIntents.retrieve("pi_123");
-    const unconfiguredFields = parseFormBody(
-      unconfigured.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    );
-    expect(unconfiguredFields).not.toHaveProperty("scope");
-    expect(
-      unconfigured.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    ).not.toContain("scope");
-  });
-});
-
-describe("token caching", () => {
-  it("reuses one token across two resource calls", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-    await client.paymentIntents.retrieve("pi_123");
-
-    const tokenRequests = server.requests.filter((r) => r.url === TOKEN_PATH);
-    expect(tokenRequests).toHaveLength(1);
-  });
-
-  it("re-authenticates once the cached token has passed expires_in minus the safety margin", async () => {
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const server = await withServer({
-        tokenExpiresIn: 100, // margin = min(30, 50) = 30 -> cached for 70s
-        resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-      });
-      const client = makeClient(server);
-
-      await client.paymentIntents.retrieve("pi_123");
-      expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(
-        1,
-      );
-
-      vi.setSystemTime(Date.now() + 69_000);
-      await client.paymentIntents.retrieve("pi_123");
-      expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(
-        1,
-      );
-
-      vi.setSystemTime(Date.now() + 2_000); // now 71s past the first call
-      await client.paymentIntents.retrieve("pi_123");
-      expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(
-        2,
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("halves the margin instead of using 30s when expires_in is short", async () => {
-    // docs/flows/merchant-auth.md §3: margin is 30 s "or half of expires_in
-    // for very short TTLs". With expires_in = 20 the margin must be 10, so
-    // the token is reused at 9 s and refreshed at 11 s — a fixed 30 s margin
-    // would refresh on every call.
-    vi.useFakeTimers({ toFake: ["Date"] });
-    try {
-      const server = await withServer({
-        tokenExpiresIn: 20,
-        resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-      });
-      const client = makeClient(server);
-
-      await client.paymentIntents.retrieve("pi_123");
-      vi.setSystemTime(Date.now() + 9_000);
-      await client.paymentIntents.retrieve("pi_123");
-      expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(
-        1,
-      );
-
-      vi.setSystemTime(Date.now() + 2_000); // 11 s past the first call
-      await client.paymentIntents.retrieve("pi_123");
-      expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(
-        2,
-      );
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it("shares one in-flight token request across concurrent callers", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await Promise.all([
-      client.paymentIntents.retrieve("pi_1"),
-      client.paymentIntents.retrieve("pi_2"),
-      client.paymentIntents.retrieve("pi_3"),
-      client.paymentIntents.retrieve("pi_4"),
-      client.paymentIntents.retrieve("pi_5"),
-    ]);
-
-    expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(1);
-  });
-});
-
-describe("401 re-authentication", () => {
-  it("discards the token, re-authenticates, and retries once on a single 401", async () => {
-    const server = await withServer({
-      resource: (_req, callIndex) =>
-        callIndex === 1
-          ? {
-              status: 401,
-              body: {
-                error: {
-                  type: "invalid_request_error",
-                  code: "invalid_token",
-                  message: "expired",
-                },
-              },
-            }
-          : { status: 200, body: makeSamplePaymentIntent() },
-    });
-    const client = makeClient(server);
-
-    const result = await client.paymentIntents.retrieve("pi_123");
-
-    expect(result.id).toBe("pi_123");
-    expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(2);
-    const resourceRequests = server.requests.filter((r) =>
-      r.url.startsWith("/v1/payment_intents"),
-    );
-    expect(resourceRequests).toHaveLength(2);
-    expect(resourceRequests[0]!.headers["authorization"]).toBe(
-      "Bearer access-token-1",
-    );
-    expect(resourceRequests[1]!.headers["authorization"]).toBe(
-      "Bearer access-token-2",
-    );
-  });
-
-  it("throws VpayApiError after two consecutive 401s, having hit the token endpoint exactly twice", async () => {
-    const server = await withServer({
-      resource: () => ({
-        status: 401,
-        body: {
-          error: {
-            type: "invalid_request_error",
-            code: "invalid_token",
-            message: "expired",
-          },
-        },
-      }),
-    });
-    const client = makeClient(server);
-
-    await expect(client.paymentIntents.retrieve("pi_123")).rejects.toThrow(
-      VpayApiError,
-    );
-    expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(2);
-    expect(
-      server.requests.filter((r) => r.url.startsWith("/v1/payment_intents")),
-    ).toHaveLength(2);
-  });
 });
 
 describe("resource methods", () => {
@@ -610,9 +342,7 @@ describe("resource methods", () => {
     await client.paymentIntents.retrieve("../../admin");
     await client.paymentIntents.cancel("pi_1?injected=1#frag");
 
-    const urls = server.requests
-      .filter((r) => r.url !== TOKEN_PATH)
-      .map((r) => r.url);
+    const urls = server.requests.map((r) => r.url);
     expect(urls).toEqual([
       "/v1/payment_intents/..%2F..%2Fadmin",
       "/v1/payment_intents/pi_1%3Finjected%3D1%23frag/cancel",
@@ -632,9 +362,7 @@ describe("resource methods", () => {
       },
     });
 
-    const urls = server.requests
-      .filter((r) => r.url !== TOKEN_PATH)
-      .map((r) => r.url);
+    const urls = server.requests.map((r) => r.url);
     expect(urls).toEqual(["/v1/payment_intents/pi_1%23frag/confirm"]);
   });
 
@@ -1173,9 +901,7 @@ describe("resource methods", () => {
     await client.refunds.update("../../admin", {});
     await client.refunds.cancel("../../admin");
 
-    const urls = server.requests
-      .filter((r) => r.url !== TOKEN_PATH)
-      .map((r) => r.url);
+    const urls = server.requests.map((r) => r.url);
     expect(urls).toEqual([
       "/v1/refunds/..%2F..%2Fadmin",
       "/v1/refunds/..%2F..%2Fadmin/cancel",
@@ -1203,9 +929,7 @@ describe("resource methods", () => {
 
     await client.refunds.retrieve("../../admin");
 
-    const urls = server.requests
-      .filter((r) => r.url !== TOKEN_PATH)
-      .map((r) => r.url);
+    const urls = server.requests.map((r) => r.url);
     expect(urls).toEqual(["/v1/refunds/..%2F..%2Fadmin"]);
   });
 
@@ -1224,24 +948,23 @@ describe("resource methods", () => {
     expect(req.url).toBe("/v1/events?type=payment_intent.succeeded&limit=5");
   });
 
-  it("balance.retrieve: exact path, no body", async () => {
+  // `GET /v1/balance` is in this SDK's surface and in no operation table: the
+  // server mounts no such route (`docs/status/api.md`), so a signature over it
+  // would bind a digest `vpay_wire::V1_CONTRACTS` does not hold. It is refused
+  // locally, before anything is signed, exactly as `sdks/rust` refuses it
+  // (`retrieve_balance_is_refused_before_anything_is_signed_because_no_route_serves_it`).
+  it("balance.retrieve: refused before anything is signed, because no route serves it", async () => {
     const server = await withServer({
-      resource: () => ({
-        status: 200,
-        body: {
-          object: "balance",
-          available: [{ amount: 10_000, currency: "xaf" }],
-          pending: [],
-        },
-      }),
+      resource: () => ({ status: 200, body: {} }),
     });
-    const client = makeClient(server);
 
-    const result = await client.balance.retrieve();
+    const error = await makeClient(server)
+      .balance.retrieve()
+      .catch((e: unknown) => e);
 
-    const req = server.requests.find((r) => r.url === "/v1/balance")!;
-    expect(req.method).toBe("GET");
-    expect(result.available[0]!.amount).toBe(10_000);
+    expect(error).toBeInstanceOf(VpayInvalidParamsError);
+    expect((error as VpayInvalidParamsError).message).toContain("GET /balance");
+    expect(server.wire).toHaveLength(0);
   });
 });
 
@@ -1390,6 +1113,424 @@ describe("account holders", () => {
   });
 });
 
+describe("signing", () => {
+  it("seals a read: the server verifies it and sees the path and the canonical query", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+
+    await makeClient(server).paymentIntents.retrieve("pi_123");
+
+    expect(server.opened).toHaveLength(1);
+    const req = server.opened[0]!;
+    expect(req.method).toBe("GET");
+    expect(req.url).toBe("/v1/payment_intents/pi_123");
+    // A read carries no `Idempotency-Key` and no payload type.
+    expect(req.headers["idempotency-key"]).toBeUndefined();
+    expect(req.headers["content-type"]).toBeUndefined();
+    expect(req.headers["user-agent"]).toBe(`vpay-sdk-node/${SDK_VERSION}`);
+  });
+
+  it("sends the signature as the request body, with no Authorization header", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+
+    await makeClient(server).paymentIntents.retrieve("pi_123");
+
+    const wire = server.wire[0]!;
+    expect(wire.headers["authorization"]).toBeUndefined();
+    expect(wire.headers["content-type"]).toMatch(/^application\/cose/);
+    // The sealed message is the body of even a GET: COSE_Sign1 is not text.
+    expect(Number(wire.headers["content-length"])).toBeGreaterThan(60);
+  });
+
+  it("seals a write: the form body arrives as sent and the Idempotency-Key is bound", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+
+    await makeClient(server).paymentIntents.create(
+      { amount: 5000, currency: "xaf", payment_method_types: ["mtn_momo"] },
+      { idempotencyKey: "order-42" },
+    );
+
+    const req = server.opened[0]!;
+    expect(req.method).toBe("POST");
+    expect(req.url).toBe("/v1/payment_intents");
+    expect(req.headers["content-type"]).toBe(
+      "application/x-www-form-urlencoded",
+    );
+    expect(req.headers["idempotency-key"]).toBe("order-42");
+    expect(parseFormBody(req.body)).toEqual({
+      amount: "5000",
+      currency: "xaf",
+      "payment_method_types[0]": "mtn_momo",
+    });
+  });
+
+  it("draws a fresh Idempotency-Key per write when none is given", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server);
+    const params = {
+      amount: 5000,
+      currency: "xaf",
+      payment_method_types: ["mtn_momo" as const],
+    };
+
+    await client.paymentIntents.create(params);
+    await client.paymentIntents.create(params);
+
+    const keys = server.opened.map((r) => r.headers["idempotency-key"]);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(keys[1]).not.toBe(keys[0]);
+  });
+
+  it("seals a DELETE bodiless, with an Idempotency-Key", async () => {
+    const server = await withServer({
+      resource: () => ({
+        status: 200,
+        body: { id: "cus_1", object: "customer", deleted: true },
+      }),
+    });
+
+    await makeClient(server).customers.del("cus_1");
+
+    const req = server.opened[0]!;
+    expect(req.method).toBe("DELETE");
+    expect(req.url).toBe("/v1/customers/cus_1");
+    expect(req.body).toBe("");
+    expect(req.headers["idempotency-key"]).toBeDefined();
+  });
+
+  it("makes every call its own message: the same call twice is two accepted requests", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server);
+
+    await client.paymentIntents.retrieve("pi_123");
+    await client.paymentIntents.retrieve("pi_123");
+
+    expect(server.opened).toHaveLength(2);
+    // The two bodies differ (a fresh `cti` and `iat` in each), which is what
+    // makes a replay of either detectable.
+    expect(server.wire[0]!.body).not.toBe(server.wire[1]!.body);
+  });
+
+  it("reaches the server by its public audience when told to, and by nothing else", async () => {
+    // A merchant's server often reaches vpay by an internal name while payers
+    // use the public one. The signature binds the server's *configured*
+    // audience, so the client must be told it.
+    const identity = newTestIdentity();
+    const server = await startSealedServer(
+      (_req, res) => jsonResponse(res, 200, makeSamplePaymentIntent()),
+      { identity, audience: "https://api.vpay.example" },
+    );
+    servers.push(server);
+
+    const bare = makeClient(server);
+    await expect(bare.paymentIntents.retrieve("pi_123")).rejects.toThrow(
+      VpayUnsignedResponseError,
+    );
+
+    const addressed = makeClient(server, {
+      audience: "https://api.vpay.example",
+    });
+    await expect(
+      addressed.paymentIntents.retrieve("pi_123"),
+    ).resolves.toMatchObject({ id: "pi_123" });
+  });
+
+  it("strips a trailing slash from baseUrl and from audience", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const client = makeClient(server, {
+      baseUrl: `${server.url}/`,
+      audience: `${server.url}/`,
+    });
+
+    await client.paymentIntents.retrieve("pi_123");
+
+    expect(server.requests.map((r) => r.url)).toEqual([
+      "/v1/payment_intents/pi_123",
+    ]);
+  });
+});
+
+describe("a refusal", () => {
+  it("is VpayUnsignedResponseError when the server does not know the key", async () => {
+    const server = await startSealedServer(
+      (_req, res) => jsonResponse(res, 200, makeSamplePaymentIntent()),
+      { registerMerchant: false },
+    );
+    servers.push(server);
+
+    const error = await makeClient(server)
+      .paymentIntents.retrieve("pi_123")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(VpayUnsignedResponseError);
+    expect((error as VpayUnsignedResponseError).status).toBe(401);
+    expect(error).toBeInstanceOf(VpayError);
+    expect(server.opened).toHaveLength(0);
+  });
+
+  it("is never retried", async () => {
+    const server = await startSealedServer(
+      (_req, res) => jsonResponse(res, 200, makeSamplePaymentIntent()),
+      { registerMerchant: false },
+    );
+    servers.push(server);
+
+    await makeClient(server)
+      .paymentIntents.retrieve("pi_123")
+      .catch(() => undefined);
+
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("is VpayUnverifiedResponseError when the answer is sealed under another key", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const other = newTestIdentity();
+
+    const error = await makeClient(server, {
+      serverKeys: { current: other.serverPublic },
+    })
+      .paymentIntents.retrieve("pi_123")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(VpayUnverifiedResponseError);
+    // The server did the work: the refusal is the client's, of the answer.
+    expect(server.opened).toHaveLength(1);
+  });
+
+  it("accepts an answer sealed under the pinned next key, so a rotation is not a flag day", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    const other = newTestIdentity();
+
+    const client = makeClient(server, {
+      serverKeys: {
+        current: other.serverPublic,
+        next: server.identity.serverPublic,
+      },
+    });
+
+    await expect(
+      client.paymentIntents.retrieve("pi_123"),
+    ).resolves.toMatchObject({
+      id: "pi_123",
+    });
+  });
+
+  it("is VpayUnsignedResponseError for a proxy's HTML error page, whatever its status", async () => {
+    const server = await startTestServer((_req, res) => {
+      res.writeHead(502, { "Content-Type": "text/html" });
+      res.end("<html><body>Bad Gateway</body></html>");
+    });
+    servers.push(server);
+
+    const error = await makeClient(server)
+      .paymentIntents.retrieve("pi_123")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(VpayUnsignedResponseError);
+    expect((error as VpayUnsignedResponseError).status).toBe(502);
+    // Nothing in the unsigned body is read, let alone quoted.
+    expect((error as Error).message).not.toContain("Bad Gateway");
+  });
+});
+
+describe("keys", () => {
+  const ed25519 = (): KeyObject => generateKeyPairSync("ed25519").privateKey;
+  const rsa = (): KeyObject =>
+    generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+
+  async function reaches(
+    server: SealedTestServer,
+    key: Partial<Parameters<typeof makeClient>[1]>,
+  ) {
+    const client = new VpayClient({
+      baseUrl: server.url,
+      clientId: "merchant_a",
+      serverKeys: { current: server.identity.serverPublic },
+      ...key,
+    });
+    return client.paymentIntents.retrieve("pi_123");
+  }
+
+  it("signs with a seed given as unpadded base64url text", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    await expect(
+      reaches(server, { privateKey: `${server.identity.merchantSeed}\n` }),
+    ).resolves.toMatchObject({ id: "pi_123" });
+  });
+
+  it("signs with a seed given as bytes", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
+    });
+    await expect(
+      reaches(server, {
+        privateKey: Buffer.from(server.identity.merchantSeed, "base64url"),
+      }),
+    ).resolves.toMatchObject({ id: "pi_123" });
+  });
+
+  it("signs with a crypto.KeyObject, which never leaves Node", async () => {
+    const key = ed25519();
+    const publicKey = (await import("node:crypto"))
+      .createPublicKey(key)
+      .export({ format: "jwk" }).x!;
+    const identity = newTestIdentity();
+    const server = await startSealedServer(
+      (_req, res) => jsonResponse(res, 200, makeSamplePaymentIntent()),
+      { identity: { ...identity, merchantPublic: publicKey } },
+    );
+    servers.push(server);
+
+    await expect(reaches(server, { privateKey: key })).resolves.toMatchObject({
+      id: "pi_123",
+    });
+  });
+
+  it("signs with PKCS#8 PEM text", async () => {
+    const key = ed25519();
+    const pem = key.export({ type: "pkcs8", format: "pem" }).toString();
+    const publicKey = (await import("node:crypto"))
+      .createPublicKey(key)
+      .export({ format: "jwk" }).x!;
+    const server = await startSealedServer(
+      (_req, res) => jsonResponse(res, 200, makeSamplePaymentIntent()),
+      { identity: { ...newTestIdentity(), merchantPublic: publicKey } },
+    );
+    servers.push(server);
+
+    await expect(reaches(server, { privateKey: pem })).resolves.toMatchObject({
+      id: "pi_123",
+    });
+  });
+
+  it("signs through a callback for a key it cannot read, and checks the signature first", async () => {
+    const key = ed25519();
+    const crypto = await import("node:crypto");
+    const publicKey = crypto.createPublicKey(key).export({ format: "jwk" }).x!;
+    const server = await startSealedServer(
+      (_req, res) => jsonResponse(res, 200, makeSamplePaymentIntent()),
+      { identity: { ...newTestIdentity(), merchantPublic: publicKey } },
+    );
+    servers.push(server);
+    let asked = 0;
+
+    await expect(
+      reaches(server, {
+        signer: {
+          publicKey,
+          sign: (tbs) => {
+            asked += 1;
+            return Promise.resolve(crypto.sign(null, tbs, key));
+          },
+        },
+      }),
+    ).resolves.toMatchObject({ id: "pi_123" });
+    expect(asked).toBe(1);
+
+    // A callback that returns a signature the registered key does not verify
+    // is refused here, with the cause, instead of becoming the coarse 401.
+    const wrong = reaches(server, {
+      signer: {
+        publicKey,
+        sign: () => crypto.sign(null, Buffer.from("x"), key),
+      },
+    });
+    await expect(wrong).rejects.toThrow(VpayConfigError);
+    expect(server.requests).toHaveLength(1);
+  });
+
+  it("refuses an RSA key, which the signed transport has no path for", () => {
+    expect(
+      () =>
+        new VpayClient({
+          baseUrl: "https://x",
+          clientId: "m",
+          privateKey: rsa(),
+          serverKeys: { current: plainIdentity.serverPublic },
+        }),
+    ).toThrow(/Ed25519/);
+  });
+
+  it("refuses a missing, doubled or malformed key at construction, without quoting it", () => {
+    const base = {
+      baseUrl: "https://x",
+      clientId: "m",
+      serverKeys: { current: plainIdentity.serverPublic },
+    };
+    expect(() => new VpayClient({ ...base })).toThrow(VpayConfigError);
+    expect(
+      () =>
+        new VpayClient({
+          ...base,
+          privateKey: plainIdentity.merchantSeed,
+          signer: {
+            publicKey: plainIdentity.merchantPublic,
+            sign: () => new Uint8Array(),
+          },
+        }),
+    ).toThrow(/not both/);
+    const secret = "AAAA-definitely-not-a-32-byte-seed";
+    let message = "";
+    try {
+      new VpayClient({ ...base, privateKey: secret });
+    } catch (err) {
+      message = (err as Error).message;
+    }
+    expect(message).toMatch(/32 bytes/);
+    expect(message).not.toContain(secret);
+    expect(
+      () => new VpayClient({ ...base, privateKey: Buffer.alloc(31) }),
+    ).toThrow(VpayConfigError);
+    expect(
+      () =>
+        new VpayClient({
+          ...base,
+          privateKey:
+            "-----BEGIN PRIVATE KEY-----\nbm9wZQ==\n-----END PRIVATE KEY-----\n",
+        }),
+    ).toThrow(/could not be read/);
+  });
+
+  it("refuses to run without a server key to trust", () => {
+    expect(
+      () =>
+        new VpayClient({
+          baseUrl: "https://x",
+          clientId: "m",
+          privateKey: plainIdentity.merchantSeed,
+          serverKeys: undefined as unknown as { current: string },
+        }),
+    ).toThrow(/serverKeys is required/);
+    expect(
+      () =>
+        new VpayClient({
+          baseUrl: "https://x",
+          clientId: "m",
+          privateKey: plainIdentity.merchantSeed,
+          serverKeys: { current: "short" },
+        }),
+    ).toThrow(/serverKeys.current/);
+  });
+});
+
 describe("error mapping", () => {
   it("maps a 400 with the Stripe envelope to VpayApiError with all fields", async () => {
     const server = await withServer({
@@ -1419,22 +1560,20 @@ describe("error mapping", () => {
     expect(apiError.param).toBe("amount");
   });
 
-  it("maps a 502 HTML body to VpayUnexpectedResponseError carrying a bounded prefix", async () => {
-    const server = await startTestServer((_req, res) => {
-      res.writeHead(502, { "Content-Type": "text/html" });
-      res.end("<html><body>Bad Gateway</body></html>");
+  it("maps a sealed answer that is not the error envelope to VpayUnexpectedResponseError with a bounded prefix", async () => {
+    const server = await withServer({
+      resource: () => ({ status: 502, body: { oops: "x".repeat(2000) } }),
     });
-    servers.push(server);
-    const client = makeClient(server);
 
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
+    const error = await makeClient(server)
+      .paymentIntents.retrieve("pi_123")
       .catch((e: unknown) => e);
+
     expect(error).toBeInstanceOf(VpayUnexpectedResponseError);
     expect((error as VpayUnexpectedResponseError).status).toBe(502);
-    expect((error as VpayUnexpectedResponseError).bodyPrefix).toContain(
-      "Bad Gateway",
-    );
+    expect(
+      Buffer.byteLength((error as VpayUnexpectedResponseError).bodyPrefix),
+    ).toBeLessThanOrEqual(500);
   });
 
   it("maps a connection failure to VpayTransportError", async () => {
@@ -1442,477 +1581,59 @@ describe("error mapping", () => {
     const deadUrl = server.url;
     await server.close();
 
-    const client = makeClient({
-      url: deadUrl,
-      requests: [],
-      close: async () => {},
-    });
+    const client = makeClient({ url: deadUrl });
 
     await expect(client.paymentIntents.retrieve("pi_123")).rejects.toThrow(
       VpayTransportError,
     );
   });
-
-  it("maps a token-endpoint 401 to VpayAuthError and never retries it", async () => {
-    const server = await withServer({
-      onToken: () => ({
-        status: 401,
-        body: {
-          error: "invalid_client",
-          error_description: "unknown client_id",
-        },
-      }),
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(VpayAuthError);
-    expect((error as VpayAuthError).error).toBe("invalid_client");
-    expect((error as VpayAuthError).errorDescription).toBe("unknown client_id");
-    expect(server.requests.filter((r) => r.url === TOKEN_PATH)).toHaveLength(1);
-    expect(
-      server.requests.filter((r) => r.url.startsWith("/v1/payment_intents")),
-    ).toHaveLength(0);
-  });
 });
 
 describe("configuration", () => {
-  it("rejects an assertionLifetimeSeconds outside 1..=300 at construction", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    expect(() => makeClient(server, { assertionLifetimeSeconds: 301 })).toThrow(
+  it("rejects a timeoutMs that is not a positive integer at construction", () => {
+    expect(() => makeClient({ url: "https://x" }, { timeoutMs: 0 })).toThrow(
       VpayConfigError,
     );
-    expect(() => makeClient(server, { assertionLifetimeSeconds: 0 })).toThrow(
+    expect(() => makeClient({ url: "https://x" }, { timeoutMs: 1.5 })).toThrow(
       VpayConfigError,
     );
   });
 
-  it("requires baseUrl, clientId and privateKey", () => {
+  it("requires baseUrl and clientId", () => {
+    const keys = {
+      privateKey: plainIdentity.merchantSeed,
+      serverKeys: { current: plainIdentity.serverPublic },
+    };
     expect(
-      () => new VpayClient({ baseUrl: "", clientId: "x", privateKey }),
+      () => new VpayClient({ baseUrl: "", clientId: "x", ...keys }),
     ).toThrow(VpayConfigError);
     expect(
-      () => new VpayClient({ baseUrl: "https://x", clientId: "", privateKey }),
-    ).toThrow(VpayConfigError);
-    // The privateKey half, which a JavaScript consumer (or a `?? undefined`
-    // in a config layer) reaches without any type error at all.
-    expect(
-      () =>
-        new VpayClient({
-          baseUrl: "https://x",
-          clientId: "merchant_a",
-          privateKey: undefined as unknown as string,
-        }),
-    ).toThrow(VpayConfigError);
-    expect(
-      () =>
-        new VpayClient({
-          baseUrl: "https://x",
-          clientId: "merchant_a",
-          privateKey: null as unknown as string,
-        }),
+      () => new VpayClient({ baseUrl: "https://x", clientId: "", ...keys }),
     ).toThrow(VpayConfigError);
   });
 });
 
 describe("privacy", () => {
-  it("never includes the PEM in util.inspect output", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, { privateKey: privateKeyPem });
-    const inspected = inspect(client, { depth: 10 });
-    expect(inspected).not.toContain("PRIVATE KEY");
-    expect(inspected).not.toContain(privateKeyPem);
-  });
-
-  it("never includes the PEM in JSON.stringify output", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, { privateKey: privateKeyPem });
-    const json = JSON.stringify(client);
-    expect(json).not.toContain("PRIVATE KEY");
-    expect(json).not.toContain(privateKeyPem);
-  });
-});
-
-describe("baseUrl normalisation", () => {
-  it("strips one trailing slash so paths and the assertion aud never double a slash", async () => {
-    // Without this every request goes to `//v1/...` (a router matching `/v1`
-    // 404s it — the double slash is NOT normalised on the wire) and the
-    // assertion's `aud` becomes `http://host//v1/oauth/token`, which the OP
-    // refuses as a wrong audience. Loud failure, but a failure nothing here
-    // would otherwise catch.
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, { baseUrl: `${server.url}/` });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    expect(server.requests.map((r) => r.url)).toEqual([
-      TOKEN_PATH,
-      "/v1/payment_intents/pi_123",
-    ]);
-    const { payload } = sentAssertion(server);
-    expect(payload.aud).toBe(`${server.url}${TOKEN_PATH}`);
-  });
-});
-
-describe("the client assertion the client actually sends", () => {
-  // Regression: the assertion's `aud` is the **token endpoint URL**; the
-  // `audience` form field is `vpay:v1`. They are two different values with
-  // two different jobs (RFC 7523 §3 vs the OP's `allowed_audiences`), and
-  // swapping one for the other still produces a well-formed request that no
-  // test noticed.
-  it("sets aud to the token endpoint URL, never to the audience parameter", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const { payload } = sentAssertion(server);
-    expect(payload.aud).toBe(`${server.url}${TOKEN_PATH}`);
-    expect(payload.aud).not.toBe("vpay:v1");
-
-    const fields = parseFormBody(
-      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    );
-    expect(fields["audience"]).toBe("vpay:v1");
-    expect(payload.aud).not.toBe(fields["audience"]);
-  });
-
-  it("keeps aud on the token endpoint even when audience is overridden", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, { audience: "vpay:some-other-surface" });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const { payload } = sentAssertion(server);
-    expect(payload.aud).toBe(`${server.url}${TOKEN_PATH}`);
-    expect(payload.aud).not.toBe("vpay:some-other-surface");
-    const fields = parseFormBody(
-      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    );
-    expect(fields["audience"]).toBe("vpay:some-other-surface");
-  });
-
-  it("follows a custom tokenEndpoint into aud", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    // The path this points at does not have to exist for the assertion to be
-    // inspectable: the token request is recorded either way.
-    const tokenEndpoint = `${server.url}${TOKEN_PATH}`;
-    const client = makeClient(server, {
-      issuer: "https://issuer.example/ignored",
-      tokenEndpoint,
-    });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    expect(sentAssertion(server).payload.aud).toBe(tokenEndpoint);
-  });
-
-  it("leaves aud on the token endpoint when assertionAudience is not set", async () => {
-    // The default is unchanged by the option's existence: a merchant that
-    // reaches vpay at the URL vpay publishes as its own configures nothing.
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    expect(sentAssertion(server).payload.aud).toBe(
-      `${server.url}${TOKEN_PATH}`,
-    );
-  });
-
-  it("signs aud as the configured assertionAudience while still POSTing to the token endpoint", async () => {
-    // The defect this option fixes: the URL reachable from the merchant's
-    // server and the string the OP calls itself are two different facts.
-    // `assertionAudience` moves the `aud` claim without moving the request.
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const publicTokenEndpoint = "https://api.vpay.example/v1/oauth/token";
-    const client = makeClient(server, {
-      assertionAudience: publicTokenEndpoint,
-    });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const { payload } = sentAssertion(server);
-    expect(payload.aud).toBe(publicTokenEndpoint);
-    // The request still went to the reachable server, not to the audience.
-    expect(server.requests.map((r) => r.url)).toEqual([
-      TOKEN_PATH,
-      "/v1/payment_intents/pi_123",
-    ]);
-    // And it is still not the `audience` form field, which stays `vpay:v1`.
-    const fields = parseFormBody(
-      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    );
-    expect(fields["audience"]).toBe("vpay:v1");
-  });
-
-  it("accepts the issuer as an assertionAudience, which the OP also allows", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, {
-      assertionAudience: "https://api.vpay.example/v1/oauth",
-    });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    expect(sentAssertion(server).payload.aud).toBe(
-      "https://api.vpay.example/v1/oauth",
-    );
-  });
-
-  it("sets iss and sub to the configured client_id", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    await makeClient(server, {
-      clientId: "merchant_b",
-    }).paymentIntents.retrieve("pi_123");
-
-    const { payload } = sentAssertion(server);
-    expect(payload.iss).toBe("merchant_b");
-    expect(payload.sub).toBe("merchant_b");
-  });
-
-  // Regression: `kid` was only ever asserted against `mintClientAssertion`
-  // directly. Dropping it on the way through the client — the only path a
-  // merchant with more than one registered JWK ever takes — was invisible.
-  it("forwards a configured kid into the assertion header", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, { kid: "key-1" });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const { header } = sentAssertion(server);
-    expect(header.kid).toBe("key-1");
-    expect(header.alg).toBe("RS256");
-    expect(header.typ).toBe("JWT");
-  });
-
-  it("omits kid from the assertion header when none is configured", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    await makeClient(server).paymentIntents.retrieve("pi_123");
-
-    expect(sentAssertion(server).header.kid).toBeUndefined();
-  });
-
-  it("honours a configured assertionLifetimeSeconds", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    await makeClient(server, {
-      assertionLifetimeSeconds: 120,
-    }).paymentIntents.retrieve("pi_123");
-
-    const { payload } = sentAssertion(server);
-    expect(payload.exp - payload.iat).toBe(120);
-  });
-});
-
-describe("headers on resource calls", () => {
-  // Regression: Accept and User-Agent were asserted only on the token
-  // request, but docs/flows/merchant-auth.md's "Headers" table says "always".
-  it("sends Accept and User-Agent on a GET resource call", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    await makeClient(server).paymentIntents.retrieve("pi_123");
-
-    const req = server.requests.find((r) =>
-      r.url.startsWith("/v1/payment_intents"),
-    )!;
-    expect(req.headers["accept"]).toBe("application/json");
-    expect(req.headers["user-agent"]).toBe(`vpay-sdk-node/${SDK_VERSION}`);
-  });
-
-  it("sends Accept and User-Agent on a POST resource call", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    await makeClient(server).paymentIntents.create({
-      amount: 5000,
-      currency: "xaf",
-      payment_method_types: ["mtn_momo"],
-    });
-
-    const req = server.requests.find((r) => r.url === "/v1/payment_intents")!;
-    expect(req.headers["accept"]).toBe("application/json");
-    expect(req.headers["user-agent"]).toBe(`vpay-sdk-node/${SDK_VERSION}`);
-  });
-
-  it("sends the same User-Agent on the token call and the resource call", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    await makeClient(server).paymentIntents.retrieve("pi_123");
-
-    const tokenRequest = server.requests.find((r) => r.url === TOKEN_PATH)!;
-    const resourceRequest = server.requests.find((r) =>
-      r.url.startsWith("/v1/payment_intents"),
-    )!;
-    expect(resourceRequest.headers["user-agent"]).toBe(
-      tokenRequest.headers["user-agent"],
-    );
-    expect(tokenRequest.headers["user-agent"]).toBe(
-      `vpay-sdk-node/${SDK_VERSION}`,
-    );
-  });
-});
-
-describe("the 401 retry replays the identical POST", () => {
-  // A retry that regenerates the Idempotency-Key is a retry that can
-  // double-create: two payment intents for one order, which is exactly what
-  // the header exists to prevent (docs/flows/merchant-auth.md, "Headers").
-  it("resends the caller-supplied Idempotency-Key and an identical body", async () => {
-    const server = await withServer({
-      resource: (_req, callIndex) =>
-        callIndex === 1
-          ? {
-              status: 401,
-              body: {
-                error: {
-                  type: "invalid_request_error",
-                  code: "invalid_token",
-                  message: "expired",
-                },
-              },
-            }
-          : { status: 200, body: makeSamplePaymentIntent() },
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.create(
-      {
-        amount: 5000,
-        currency: "XAF",
-        payment_method_types: ["mtn_momo"],
-        metadata: { order_id: "1234" },
-      },
-      { idempotencyKey: "order_1234_attempt_1" },
-    );
-
-    const posts = server.requests.filter(
-      (r) => r.url === "/v1/payment_intents",
-    );
-    expect(posts).toHaveLength(2);
-    expect(posts[0]!.headers["idempotency-key"]).toBe("order_1234_attempt_1");
-    expect(posts[1]!.headers["idempotency-key"]).toBe("order_1234_attempt_1");
-    expect(posts[1]!.body).toBe(posts[0]!.body);
-    expect(posts[1]!.body).toBe(
-      "amount=5000&currency=xaf&payment_method_types[0]=mtn_momo&metadata[order_id]=1234",
-    );
-    // …and the retry did carry the *new* token, so this is a real re-auth.
-    expect(posts[0]!.headers["authorization"]).toBe("Bearer access-token-1");
-    expect(posts[1]!.headers["authorization"]).toBe("Bearer access-token-2");
-  });
-
-  it("resends the same generated Idempotency-Key when the caller supplied none", async () => {
-    const server = await withServer({
-      resource: (_req, callIndex) =>
-        callIndex === 1
-          ? {
-              status: 401,
-              body: {
-                error: {
-                  type: "invalid_request_error",
-                  code: "invalid_token",
-                  message: "expired",
-                },
-              },
-            }
-          : { status: 200, body: makeSamplePaymentIntent() },
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.create({
-      amount: 5000,
-      currency: "xaf",
-      payment_method_types: ["mtn_momo"],
-    });
-
-    const posts = server.requests.filter(
-      (r) => r.url === "/v1/payment_intents",
-    );
-    expect(posts).toHaveLength(2);
-    const first = posts[0]!.headers["idempotency-key"] as string;
-    expect(first).toMatch(/^[0-9a-f-]{36}$/i);
-    expect(posts[1]!.headers["idempotency-key"]).toBe(first);
-    expect(posts[1]!.body).toBe(posts[0]!.body);
-  });
-
-  it("resends an identical body for a confirm, whose body is nested", async () => {
-    const server = await withServer({
-      resource: (_req, callIndex) =>
-        callIndex === 1
-          ? {
-              status: 401,
-              body: {
-                error: {
-                  type: "invalid_request_error",
-                  code: "invalid_token",
-                  message: "expired",
-                },
-              },
-            }
-          : {
-              status: 200,
-              body: makeSamplePaymentIntent({ status: "processing" }),
-            },
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.confirm("pi_123", {
-      payment_method_data: {
-        type: "mtn_momo",
-        mtn_momo: { msisdn: "237670000000" },
-      },
-    });
-
-    const posts = server.requests.filter(
-      (r) => r.url === "/v1/payment_intents/pi_123/confirm",
-    );
-    expect(posts).toHaveLength(2);
-    expect(posts[1]!.body).toBe(posts[0]!.body);
-    expect(posts[1]!.headers["idempotency-key"]).toBe(
-      posts[0]!.headers["idempotency-key"],
-    );
+  it("never includes the seed, a PEM or a KeyObject's material in util.inspect or JSON.stringify output", () => {
+    const pem = generateKeyPairSync("ed25519")
+      .privateKey.export({ type: "pkcs8", format: "pem" })
+      .toString();
+    for (const privateKey of [plainIdentity.merchantSeed, pem]) {
+      const client = makeClient({ url: "https://x" }, { privateKey });
+      const inspected = inspect(client, { depth: 10 });
+      const json = JSON.stringify(client);
+      for (const text of [inspected, json]) {
+        expect(text).not.toContain("PRIVATE KEY");
+        expect(text).not.toContain(plainIdentity.merchantSeed);
+      }
+    }
   });
 });
 
 describe("timeouts surface as VpayTransportError", () => {
   it("maps a server that accepts the connection and never answers to VpayTransportError", async () => {
     // No `writeHead`, no `end`: the request is received and then nothing
-    // happens, so `AbortSignal.timeout` fires before any response headers.
+    // happens, so the timeout fires before any response headers.
     const server = await startTestServer(() => {});
     servers.push(server);
     const client = makeClient(server, { timeoutMs: 150 });
@@ -1924,21 +1645,12 @@ describe("timeouts surface as VpayTransportError", () => {
     expect((error as VpayTransportError).cause).toBeDefined();
   });
 
-  // Regression: `await response.text()` sat outside the try that maps
-  // transport failures. `fetch` resolves on headers, so a body that stalls
-  // rejected *after* the mapping and escaped as a raw
-  // `DOMException: TimeoutError` — an error type this SDK does not document
-  // and a caller's `instanceof VpayError` catch-all would miss entirely.
+  // Regression: the response body was read outside the try that maps transport
+  // failures, so a body that stalled rejected *after* the mapping and escaped
+  // as a raw `DOMException: TimeoutError` — an error type this SDK does not
+  // document and a caller's `instanceof VpayError` catch-all would miss.
   it("maps a stall part-way through the response body to VpayTransportError", async () => {
-    const server = await startTestServer((req, res) => {
-      if (req.url === TOKEN_PATH) {
-        jsonResponse(res, 200, {
-          access_token: "access-token-1",
-          token_type: "Bearer",
-          expires_in: 300,
-        });
-        return;
-      }
+    const server = await startTestServer((_req, res) => {
       res.writeHead(200, { "Content-Type": "application/json" });
       res.write('{"id":"pi_1');
     });
@@ -1953,166 +1665,6 @@ describe("timeouts surface as VpayTransportError", () => {
     const cause = (error as VpayTransportError).cause as Error;
     expect(cause).toBeInstanceOf(Error);
     expect(cause.name).toBe("TimeoutError");
-  });
-
-  it("maps a stall part-way through the token response body to VpayTransportError", async () => {
-    const server = await startTestServer((_req, res) => {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.write('{"access_token":"secret-token-never-returned"');
-    });
-    servers.push(server);
-    const client = makeClient(server, { timeoutMs: 150 });
-
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(VpayTransportError);
-    expect((error as VpayTransportError).message).toBe("token request failed");
-    const cause = (error as VpayTransportError).cause as Error;
-    expect(cause.name).toBe("TimeoutError");
-  });
-});
-
-describe("token response validation", () => {
-  it("rejects a 200 whose token_type is not Bearer", async () => {
-    const server = await withServer({
-      onToken: () => ({
-        status: 200,
-        body: {
-          access_token: "mac-token",
-          token_type: "MAC",
-          expires_in: 300,
-        },
-      }),
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(VpayUnexpectedResponseError);
-    expect((error as VpayUnexpectedResponseError).status).toBe(200);
-    // No resource call was attempted with a token this SDK cannot present.
-    expect(
-      server.requests.filter((r) => r.url.startsWith("/v1/payment_intents")),
-    ).toHaveLength(0);
-  });
-
-  it("rejects a 200 with no token_type at all", async () => {
-    const server = await withServer({
-      onToken: () => ({
-        status: 200,
-        body: { access_token: "t", expires_in: 300 },
-      }),
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    await expect(
-      makeClient(server).paymentIntents.retrieve("pi_123"),
-    ).rejects.toThrow(VpayUnexpectedResponseError);
-  });
-
-  it("accepts a lowercase bearer, which RFC 6749 §7.1 makes case-insensitive", async () => {
-    const server = await withServer({
-      onToken: () => ({
-        status: 200,
-        body: {
-          access_token: "access-token-1",
-          token_type: "bearer",
-          expires_in: 300,
-        },
-      }),
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-
-    const result = await makeClient(server).paymentIntents.retrieve("pi_123");
-
-    expect(result.id).toBe("pi_123");
-    const req = server.requests.find((r) =>
-      r.url.startsWith("/v1/payment_intents"),
-    )!;
-    expect(req.headers["authorization"]).toBe("Bearer access-token-1");
-  });
-});
-
-describe("the access token stays out of diagnostics", () => {
-  it("never appears in util.inspect of the client, even after a successful exchange", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const inspected = inspect(client, { depth: 10, showHidden: true });
-    expect(inspected).not.toContain("access-token-1");
-    expect(JSON.stringify(client)).not.toContain("access-token-1");
-  });
-
-  it("never appears in util.inspect of a thrown VpayApiError", async () => {
-    const server = await withServer({
-      resource: () => ({
-        status: 400,
-        body: {
-          error: {
-            type: "invalid_request_error",
-            code: "parameter_missing",
-            message: "Missing required param: amount.",
-            param: "amount",
-          },
-        },
-      }),
-    });
-    const client = makeClient(server);
-
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(VpayApiError);
-    expect(inspect(error, { depth: 10, showHidden: true })).not.toContain(
-      "access-token-1",
-    );
-  });
-
-  it("never appears in util.inspect of a thrown VpayTransportError, cause chain included", async () => {
-    const server = await startTestServer((req, res) => {
-      if (req.url === TOKEN_PATH) {
-        jsonResponse(res, 200, {
-          access_token: "access-token-1",
-          token_type: "Bearer",
-          expires_in: 300,
-        });
-        return;
-      }
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.write("{");
-    });
-    servers.push(server);
-    const client = makeClient(server, { timeoutMs: 150 });
-
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(VpayTransportError);
-    expect(inspect(error, { depth: 10, showHidden: true })).not.toContain(
-      "access-token-1",
-    );
-  });
-
-  it("never appears in util.inspect of a thrown VpayUnexpectedResponseError", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 502, body: { nope: true } }),
-    });
-    const client = makeClient(server);
-
-    const error = await client.paymentIntents
-      .retrieve("pi_123")
-      .catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(VpayUnexpectedResponseError);
-    expect(inspect(error, { depth: 10, showHidden: true })).not.toContain(
-      "access-token-1",
-    );
   });
 });
 
@@ -2392,47 +1944,10 @@ describe("an id that is empty or only dots", () => {
       await client.customers.retrieve(id);
     }
 
-    const urls = server.requests
-      .filter((r) => r.url !== TOKEN_PATH)
-      .map((r) => r.url);
+    const urls = server.requests.map((r) => r.url);
     expect(urls).toEqual(
       cases.map(([, encoded]) => `/v1/customers/${encoded}`),
     );
-  });
-});
-
-describe("an unreadable private key is refused at construction", () => {
-  /**
-   * The core client's half of the parse `stripe-auth.test.ts` pins for the
-   * authenticator.
-   *
-   * `resolveMerchantAuth` is where `createPrivateKey` now runs, and both
-   * entry points call it — so this is one shared line, and until this case
-   * existed only one of the two callers proved it fires. A regression that
-   * moved the parse back to first-mint would leave `VpayClient` throwing an
-   * OpenSSL `Error` from the middle of a token exchange instead of a
-   * `VpayConfigError` from the line the merchant wrote, and every test in
-   * this file would still pass.
-   */
-  it("throws VpayConfigError from the constructor, before any request", () => {
-    expect(
-      () =>
-        new VpayClient({
-          baseUrl: "https://api.vpay.example",
-          clientId: "merchant_a",
-          privateKey: "not a pem",
-        }),
-    ).toThrow(VpayConfigError);
-    // The message, so this cannot pass for some unrelated reason: every
-    // other option above is valid, and only the key can be the complaint.
-    expect(
-      () =>
-        new VpayClient({
-          baseUrl: "https://api.vpay.example",
-          clientId: "merchant_a",
-          privateKey: "not a pem",
-        }),
-    ).toThrow(/privateKey could not be read as a private key/);
   });
 });
 
@@ -2445,6 +1960,7 @@ describe("an unreadable private key is refused at construction", () => {
  * but encode `ui_mode` differently are not at parity, and only a
  * byte-level assertion on both sides catches that.
  */
+
 describe("checkout.sessions", () => {
   const sampleSession = (
     overrides: Record<string, unknown> = {},
@@ -2593,9 +2109,7 @@ describe("checkout.sessions", () => {
     await client.checkout.sessions.retrieve("../../admin");
     await client.checkout.sessions.expire("cs_1?injected=1#frag");
 
-    const urls = server.requests
-      .filter((r) => r.url !== TOKEN_PATH)
-      .map((r) => r.url);
+    const urls = server.requests.map((r) => r.url);
     expect(urls).toEqual([
       "/v1/checkout/sessions/..%2F..%2Fadmin",
       "/v1/checkout/sessions/cs_1%3Finjected%3D1%23frag/expire",
@@ -2830,117 +2344,6 @@ describe("checkout.sessions", () => {
 });
 
 /**
- * The audience check the OP actually performs, reproduced from the two places
- * that perform it.
- *
- * `authkestra_op::client_assertion::verify_client_assertion` is handed an
- * `expected_audiences` list by `authenticate_client`, and that list is the
- * OP's **own** two names for itself:
- * `{deployment.public_base_url}/v1/oauth/token` and
- * `{deployment.public_base_url}/v1/oauth` (`vpay_api::op::issuer_for`). The
- * URL the merchant's process happened to POST to is not consulted, and is not
- * in the list unless it coincides with one of them.
- *
- * This is a *shaped* stand-in, not the real verifier: Node cannot link the
- * Rust crate, and `docs/sdks/parity.md` records that gap for this package as
- * a whole. `sdks/rust/tests/op_conformance.rs` runs the same case through the
- * real pinned verifier.
- */
-function verifyAsTheOpWould(
-  jwt: string,
-  expected: {
-    clientId: string;
-    publicKey: Parameters<typeof verify>[2];
-    /** `[token endpoint, issuer]`, as the OP names itself. */
-    audiences: string[];
-  },
-): { ok: true } | { ok: false; reason: string } {
-  const [headerPart, payloadPart, signaturePart] = jwt.split(".");
-  if (!headerPart || !payloadPart || !signaturePart) {
-    return { ok: false, reason: "MalformedAssertion" };
-  }
-  const signingInput = Buffer.from(`${headerPart}.${payloadPart}`, "utf8");
-  const signature = Buffer.from(signaturePart, "base64url");
-  if (!verify("sha256", signingInput, expected.publicKey, signature)) {
-    return { ok: false, reason: "InvalidSignature" };
-  }
-  const payload = decodeJwtPart<AssertionPayload>(payloadPart);
-  if (payload.iss !== expected.clientId || payload.sub !== expected.clientId) {
-    return { ok: false, reason: "InvalidIssuer" };
-  }
-  const now = Math.floor(Date.now() / 1000);
-  if (payload.exp <= now) {
-    return { ok: false, reason: "Expired" };
-  }
-  if (payload.exp - now > MAX_ASSERTION_LIFETIME_SECONDS) {
-    return { ok: false, reason: "LifetimeTooLong" };
-  }
-  if (!expected.audiences.includes(payload.aud)) {
-    return { ok: false, reason: "InvalidAudience" };
-  }
-  return { ok: true };
-}
-
-describe("a merchant server that reaches vpay by an internal URL", () => {
-  // vpay publishes itself at these two names — this is what the OP puts in
-  // `expected_audiences`. The merchant's own `baseUrl` is the test server's
-  // 127.0.0.1 address, standing in for `http://vpay-server:8080`.
-  const PUBLIC_TOKEN_ENDPOINT = "http://localhost:8080/v1/oauth/token";
-  const PUBLIC_ISSUER = "http://localhost:8080/v1/oauth";
-  const OP_AUDIENCES = [PUBLIC_TOKEN_ENDPOINT, PUBLIC_ISSUER];
-
-  it("is refused by the OP audience check when assertionAudience is left unset", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server);
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const jwt = parseFormBody(
-      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    )["client_assertion"]!;
-    const verdict = verifyAsTheOpWould(jwt, {
-      clientId: "merchant_a",
-      publicKey,
-      audiences: OP_AUDIENCES,
-    });
-
-    // Everything else about the assertion is correct — the signature
-    // verifies, `iss`/`sub` are the client id, the lifetime is in range. The
-    // one wrong claim is `aud`, and the OP answers `invalid_client` for it.
-    expect(verdict).toEqual({ ok: false, reason: "InvalidAudience" });
-  });
-
-  it("authenticates once assertionAudience names the OP's own token endpoint", async () => {
-    const server = await withServer({
-      resource: () => ({ status: 200, body: makeSamplePaymentIntent() }),
-    });
-    const client = makeClient(server, {
-      assertionAudience: PUBLIC_TOKEN_ENDPOINT,
-    });
-
-    await client.paymentIntents.retrieve("pi_123");
-
-    const jwt = parseFormBody(
-      server.requests.find((r) => r.url === TOKEN_PATH)!.body,
-    )["client_assertion"]!;
-    expect(
-      verifyAsTheOpWould(jwt, {
-        clientId: "merchant_a",
-        publicKey,
-        audiences: OP_AUDIENCES,
-      }),
-    ).toEqual({ ok: true });
-
-    // The token request still went to the internal address, which is the
-    // point: reachability and audience are now separate settings.
-    expect(server.requests[0]!.url).toBe(TOKEN_PATH);
-    expect(server.url).not.toBe("http://localhost:8080");
-  });
-});
-
-/**
  * `/v1/customers` — S4a's five merchant operations.
  *
  * These mirror `sdks/rust/tests/resources.rs`'s customer cases one for one,
@@ -2949,6 +2352,7 @@ describe("a merchant server that reaches vpay by an internal URL", () => {
  * "support customers" while encoding a cleared field differently are not at
  * parity.
  */
+
 describe("customers", () => {
   const sampleCustomer = (
     overrides: Record<string, unknown> = {},
@@ -3326,6 +2730,7 @@ describe("customers", () => {
  * the wire and decodes the documented shape, never that a real vpay answers
  * them.
  */
+
 describe("invoices", () => {
   const sampleLine = (
     overrides: Record<string, unknown> = {},

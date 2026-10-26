@@ -1,16 +1,19 @@
 /**
  * `@vaam-apps/vpay-sdk` — the Node.js merchant SDK for vpay.
  *
- * See README.md for the handshake, a usage example, and this package's own
- * Status section (the server serves `/v1/oauth` and the `/v1` auth boundary;
- * no `/v1` resource route exists yet).
+ * Every `/v1` call is sealed as a COSE_Sign1 message under the merchant's
+ * Ed25519 key and every answer is opened under the pinned server keys — see
+ * README.md for the configuration, a usage example, and the errors a refusal
+ * becomes. The sealing is `sdks/rust/wasm`, compiled to WebAssembly.
  */
 export { VpayClient, type VpayClientOptions } from "./client.js";
 
 export {
-  mintClientAssertion,
-  type MintClientAssertionOptions,
-} from "./auth.js";
+  type ExternalSigner,
+  type KeyBytes,
+  type MerchantAuthOptions,
+  type ServerKeysOption,
+} from "./sealer.js";
 
 export { verifyWebhook, type VerifyWebhookOptions } from "./webhooks.js";
 
@@ -20,7 +23,8 @@ export { SDK_VERSION } from "./version.js";
 export {
   VpayError,
   VpayApiError,
-  VpayAuthError,
+  VpayUnsignedResponseError,
+  VpayUnverifiedResponseError,
   VpayUnexpectedResponseError,
   VpayTransportError,
   VpayConfigError,

@@ -51,7 +51,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 
 import { VpayClient } from "./client.js";
 import { VpayApiError, VpayInvalidParamsError } from "./errors.js";
-import { readLiveEnv } from "./testing/live-env.js";
+import { liveClientOptions, readLiveEnv } from "./testing/live-env.js";
 
 /**
  * The payer the demo MTN stub settles for —
@@ -85,11 +85,7 @@ let client: VpayClient;
 
 beforeAll(() => {
   const env = readLiveEnv();
-  client = new VpayClient({
-    baseUrl: env.baseUrl,
-    clientId: env.clientId,
-    privateKey: env.privateKey,
-  });
+  client = new VpayClient(liveClientOptions(env));
 });
 
 /**

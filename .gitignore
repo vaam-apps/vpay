@@ -45,3 +45,8 @@ examples/shop/zenstack/schema.ts
 examples/shop/zenstack/models.ts
 examples/shop/zenstack/input.ts
 examples/shop/zenstack/~schema*.prisma
+
+# The Node SDK's sealing module, built from sdks/rust/wasm (`pnpm run build:wasm`),
+# and its test-only server half. Build outputs, like dist/.
+/sdks/nodejs/wasm/
+/sdks/nodejs/wasm-test/

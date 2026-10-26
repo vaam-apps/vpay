@@ -1,7 +1,7 @@
 {
   "name": "@vaam-apps/vpay-sdk",
   "version": "0.14.2",
-  "description": "The Node.js merchant SDK for vpay's /v1 API: OAuth2 private_key_jwt, payment intents, checkout sessions, refunds, events and webhook verification.",
+  "description": "The Node.js merchant SDK for vpay's /v1 API: Ed25519-signed requests, payment intents, checkout sessions, refunds, events and webhook verification.",
   "license": "Apache-2.0",
   "publishConfig": {
     "access": "public"
@@ -27,20 +27,24 @@
       "default": "./dist/index.js"
     },
     "./stripe": {
-      "types": "./dist/stripe-auth.d.ts",
-      "default": "./dist/stripe-auth.js"
+      "types": "./dist/stripe-http-client.d.ts",
+      "default": "./dist/stripe-http-client.js"
     }
   },
   "sideEffects": false,
   "files": [
     "dist",
+    "wasm",
     "scripts",
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build:wasm": "bash scripts/build-wasm.sh",
+    "build:wasm-test": "bash scripts/build-wasm.sh --responder",
+    "build": "pnpm run build:wasm && tsc -p tsconfig.build.json",
     "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "pretest": "pnpm run build:wasm && pnpm run build:wasm-test",
     "test": "vitest run",
     "test:live": "vitest run -c vitest.live.config.ts",
     "lint": "eslint . --max-warnings 0"

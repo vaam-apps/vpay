@@ -17,7 +17,6 @@
  */
 import { describe, expect, it } from "vitest";
 import type { VpayClientOptions } from "./client.js";
-import { generateTestRsaKeyPair } from "./testing/keys.js";
 import {
   isCheckoutSessionEvent,
   isPaymentIntentEvent,
@@ -37,7 +36,7 @@ import type {
   RequestOptions,
 } from "./types.js";
 
-const { privateKey } = generateTestRsaKeyPair();
+const privateKey = Buffer.alloc(32, 7).toString("base64url");
 
 /**
  * Stands in for a value a consumer read from configuration or the
@@ -50,21 +49,20 @@ function configured<T>(value: T | undefined): T | undefined {
 
 const maybeString = configured<string>(undefined);
 const maybeNumber = configured<number>(undefined);
-const maybeFetch = configured<typeof fetch>(undefined);
+const maybeAgent = configured<import("node:http").Agent>(undefined);
 const maybeMetadata = configured<Record<string, string>>(undefined);
 
 const clientOptions: VpayClientOptions = {
   baseUrl: "https://api.vpay.example",
   clientId: "merchant_a",
   privateKey,
-  kid: maybeString,
-  issuer: maybeString,
-  tokenEndpoint: maybeString,
+  serverKeys: {
+    current: Buffer.alloc(32, 9).toString("base64url"),
+    next: maybeString,
+  },
   audience: maybeString,
-  scope: maybeString,
-  assertionLifetimeSeconds: maybeNumber,
   timeoutMs: maybeNumber,
-  fetch: maybeFetch,
+  agent: maybeAgent,
 };
 
 const requestOptions: RequestOptions = { idempotencyKey: maybeString };
