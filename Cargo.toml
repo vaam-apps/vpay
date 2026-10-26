@@ -238,15 +238,21 @@ rust_decimal = "1"
 # otherwise (`cratestack-pg-0.12.0/src/lib.rs`, unchanged in shape at 0.15.0), so the crate has to be
 # nameable under that word or nothing the macro expands to resolves.
 #
-# `=0.15.0`, exactly, and for a stronger reason than the authkestra pins'
+# `=0.16.0`, exactly, and for a stronger reason than the authkestra pins'
 # "pre-1.0 and fast-moving": this version is *already* written down in three
 # other places that a floating pin would silently outrun — `justfile`'s
 # `cratestack_version` (which `just check-schema` and CI's `self-checks` job
 # install), the `cratestack migrate baseline` measurement in
 # `postgres_smoke.rs`, and `rust-toolchain.toml`'s 1.98.0 pin, which exists
-# *because* every 0.15.0 crate declares `rust-version = "1.98.0"`. The CLI
+# *because* every 0.16.0 crate declares `rust-version = "1.98.0"`. The CLI
 # that checks `schemas/vpay.cstack` and the library that compiles it must be
 # the same grammar; a caret pin would let them diverge with nothing failing.
+#
+# **`=0.15.0` -> `=0.16.0` on 2026-10-26**, and `envelope` + `cose` switched on
+# (see "WHY THIS FEATURE SET" below). A version bump that stays
+# behaviour-neutral: nothing mounts an `EnvelopeLayer` yet, so the two features
+# only compile `cratestack-axum`'s and `cratestack-client-rust`'s signed-transport
+# modules in. See `docs/status/cratestack.md`, "CrateStack 0.15.0 -> 0.16.0".
 #
 # **`=0.12.0` -> `=0.15.0` on 2026-09-29** (a version bump, not a feature:
 # COSE signed transport and every auth path are untouched; the one behaviour
@@ -283,6 +289,13 @@ rust_decimal = "1"
 #     `aws-lc-rs` outright (ADR-0005/ADR-0007), and the feature is a
 #     `compile_error!` at 0.12.0 rather than a working mode anyway
 #     (`cratestack-pg-0.12.0/src/lib.rs:215`).
+#   * `envelope` and `cose` are taken (0.16.0, 2026-10-26) for the signed
+#     transport (`docs/status/cratestack.md`, "CrateStack 0.15.0 -> 0.16.0"):
+#     `envelope` is `cratestack-axum/envelope` (the `EnvelopeLayer` a router
+#     is wrapped in), and `cose` implies it and adds `cratestack-axum/cose`
+#     and `cratestack-client-rust/cose` (the COSE_Sign1 seal and verifier).
+#     Taken ahead of the layer so the compile cost and the lockfile move land
+#     on their own; no router mounts the layer yet.
 #   * `pgvector`, `postgis`, `rate_limit`, `decimal-bigdecimal`: not taken,
 #     nothing here uses them.
 #
@@ -292,7 +305,7 @@ rust_decimal = "1"
 # of `cratestack-pg` with no feature gating them, and both depend on
 # `minicbor` unconditionally. There is no feature combination that yields a
 # data layer without them — see `docs/reference/vpay-db.md` § CrateStack.
-cratestack = { package = "cratestack-pg", version = "=0.15.0", default-features = false, features = ["postgres"] }
+cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features = false, features = ["postgres", "envelope", "cose"] }
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
 # pulled in because `authkestra-op`'s own API is chrono-typed: every
 # `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that

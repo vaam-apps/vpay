@@ -430,7 +430,7 @@ jobs:
       # checksum-verified prebuilt binary is seconds against compiling the
       # CLI and its graph on every `self-checks` run, not because the
       # compiler cannot do it.
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@da143158cd4621a0268ff5ee4ec9a99833d45daf # v0.15.0 tag commit (a lightweight tag, checked with git ls-remote). It contains the CLI-download retry fix, cratestack#982, that the previous post-v0.12.0 ref was chosen for. The installed CLI version is the justfile's cratestack_version (read above), independent of this ref.
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@f90ddbfcf94f5c64d0074d8babf6c9030e9b3d6a # v0.16.0 tag commit (a lightweight tag, checked with git ls-remote). It contains the CLI-download retry fix, cratestack#982, that the previous post-v0.12.0 ref was chosen for. The installed CLI version is the justfile's cratestack_version (read above), independent of this ref.
         with:
           version: ${{ steps.cratestack.outputs.version }}
       # `just check-schema`, not a copy of the command it runs: the recipe is
@@ -600,9 +600,9 @@ jobs:
       # without the binary, not a skip (added 2026-09-05; the first CI run of
       # that test failed here for exactly that reason — run 33980091252).
       # Same two steps as `self-checks`: the version comes from the justfile,
-      # the action is pinned to the commit the v0.15.0 tag points at
-      # (`da14315`; v0.12.0's `0823bab` until 2026-09-29, v0.11.1's `6b3053f`
-      # until 2026-09-07) and verifies the checksum. The evidence
+      # the action is pinned to the commit the v0.16.0 tag points at
+      # (`f90ddbf`; v0.15.0's `da14315` until 2026-10-26, v0.12.0's `0823bab`
+      # until 2026-09-29, v0.11.1's `6b3053f` until 2026-09-07) and verifies the checksum. The evidence
       # for both halves of that sentence is in `self-checks` above rather
       # than repeated here.
       - name: resolve the pinned CrateStack version from the justfile
@@ -614,7 +614,7 @@ jobs:
             exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
-      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@da143158cd4621a0268ff5ee4ec9a99833d45daf # v0.15.0 tag commit (a lightweight tag, checked with git ls-remote). It contains the CLI-download retry fix, cratestack#982, that the previous post-v0.12.0 ref was chosen for. The installed CLI version is the justfile's cratestack_version (read above), independent of this ref.
+      - uses: cratestack/cratestack/.github/actions/install-cratestack-cli@f90ddbfcf94f5c64d0074d8babf6c9030e9b3d6a # v0.16.0 tag commit (a lightweight tag, checked with git ls-remote). It contains the CLI-download retry fix, cratestack#982, that the previous post-v0.12.0 ref was chosen for. The installed CLI version is the justfile's cratestack_version (read above), independent of this ref.
         with:
           version: ${{ steps.cratestack.outputs.version }}
       - run: cargo fmt --all -- --check
