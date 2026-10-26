@@ -37,6 +37,9 @@ COPY frontends ./frontends
 # disk, only that the lockfile is internally consistent with whatever *does*
 # exist. `@vpay/dashboard` depends on no package under either directory.
 RUN pnpm install --frozen-lockfile --filter @vpay/dashboard...
+# A separate layer from the install on purpose (hadolint DL3059): a source
+# edit then rebuilds without re-resolving every dependency.
+# hadolint ignore=DL3059
 RUN pnpm --filter @vpay/dashboard build
 
 FROM node:24-alpine AS runner
@@ -101,6 +104,9 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc .
 COPY sdks ./sdks
 COPY frontends ./frontends
 RUN pnpm install --frozen-lockfile --filter @vpay/checkout...
+# A separate layer from the install on purpose (hadolint DL3059): a source
+# edit then rebuilds without re-resolving every dependency.
+# hadolint ignore=DL3059
 RUN pnpm --filter @vpay/checkout build
 
 FROM node:24-alpine AS checkout

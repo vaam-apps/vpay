@@ -916,7 +916,7 @@ Three smaller things noticed in passing, recorded so they are not rediscovered:
 
 Nothing below exists yet.
 
-```
+```text
 frontends/apps/dashboard/
   app/api/dash/payment_intents/route.ts          Lane 2 (BFF list)
   app/api/dash/payment_intents/[id]/route.ts     Lane 2 (BFF detail)
