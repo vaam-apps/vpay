@@ -162,6 +162,19 @@ went 17 of 18 red on `master` the same day until the script moved to the
 start of `<body>`:
 [../status/verification/2026-10-21-dashboard-hydration.md](../status/verification/2026-10-21-dashboard-hydration.md).
 
+**The procedure-backed lists moved onto `@cratestack/refine`, 2026-10-26** —
+refunds, deliveries, customers and checkouts, plus the Overview's counts, now
+read through the **procedures** of `@vpay/dash-client`, a TypeScript client
+generated from `schemas/vpay.cstack`, with `@cratestack/refine` as their
+Refine data provider. The reads are still made server side with the
+session's token; the browser-side provider is bound to the existing `GET`
+BFF routes, so no new surface was added. Payments did not move — its list is
+cursor-paged and its detail a four-table composite. No browser and no real
+vpay has run these screens since; the evidence is unit tests against a
+stubbed network and a green `next build`. Details on
+[dashboard/status-read-seam-and-bff.md](dashboard/status-read-seam-and-bff.md)
+and [../status/verification/2026-10-26-dashboard-cratestack-refine.md](../status/verification/2026-10-26-dashboard-cratestack-refine.md).
+
 **The one thing a reader must not conclude from this document is that the
 dashboard is finished.** A staff member can sign in and read this merchant's
 payments. What the dashboard still cannot do is anything at all to them.

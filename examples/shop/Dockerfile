@@ -10,7 +10,7 @@
 # matches to zero packages and carries on (the same property
 # `frontends/Dockerfile` relies on for `examples/*`).
 
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 # Prisma's engines are dynamically linked against OpenSSL 3 on musl. Prisma
 # left the request path at the ZenStack 3 upgrade but not the image: v3's
 # migration engine still drives Prisma Migrate.
@@ -36,7 +36,7 @@ ENV CYPRESS_INSTALL_BINARY=0 \
 RUN pnpm install --frozen-lockfile --filter @vpay-examples/shop...
 RUN pnpm --filter @vpay-examples/shop build
 
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 RUN apk add --no-cache openssl
 WORKDIR /app
 

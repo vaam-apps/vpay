@@ -6,25 +6,28 @@ import {
   type PaymentStatus,
 } from "@vpay/tokens";
 
+import type { Page, PaymentIntentSummary } from "@vpay/dash-client";
+
 import type { ApiFailure, ApiResult } from "../server/api";
-import { callDashProcedure, type ProcedurePage } from "../server/dash-read";
 import type { StaffContext } from "../server/session";
+import { callProcedure, listProcedurePage } from "./cratestack-client";
 import {
   CHECKOUT_SESSIONS,
   CUSTOMERS,
   REFUNDS,
   WEBHOOK_DELIVERIES,
+  type ProcedureResource,
 } from "./resource-name";
-import { readProcedurePage } from "./procedure-list";
 
-/** One row of `searchPaymentIntents`, exactly the fields this screen reads. */
-export interface PaymentSummaryRow {
-  readonly id: string;
-  readonly amount: number;
-  readonly currency_code: string;
-  readonly status: string;
-  readonly created_at: string;
-}
+/**
+ * One row of `searchPaymentIntents`, exactly the fields this screen reads —
+ * picked from the **generated** `PaymentIntentSummary`, so a field the
+ * schema drops is a compile error here rather than a blank cell.
+ */
+export type PaymentSummaryRow = Pick<
+  PaymentIntentSummary,
+  "id" | "amount" | "currency_code" | "status" | "created_at"
+>;
 
 /** A count, or the refusal that stopped it being read. Never a guess. */
 export type Count = ApiResult<number>;
@@ -81,29 +84,31 @@ export const LATEST = 6;
  *
  * `requireStaff` re-mints the access token at 80 % of its TTL before this
  * runs, so these calls start on a fresh token. If one still met a `401`, it
- * re-mints once and retries (`callDashProcedure`), and each re-mint writes
+ * re-mints once and retries (`callProcedure`), and each re-mint writes
  * the same session row; none of them is ever answered with another's token.
  */
 export async function readOverview(staff: StaffContext): Promise<Overview> {
   const readAt = new Date().toISOString();
   const searchPayments = (filter: Record<string, string>, limit: number) =>
-    callDashProcedure<ProcedurePage<PaymentSummaryRow>>(
-      staff.config,
-      "searchPaymentIntents",
-      { page: { limit, offset: 0 }, filter },
-      staff.accessToken,
-      staff.sessionToken,
+    callProcedure(staff, (procedures) =>
+      procedures.searchPaymentIntents({
+        page: { limit, offset: 0 },
+        filter,
+      }),
     );
   const count = async (
-    read: Promise<ApiResult<ProcedurePage<unknown>>>,
+    read: Promise<ApiResult<Page<unknown>>>,
   ): Promise<Count> => {
     const result = await read;
     return result.ok
       ? { ok: true, value: result.value.totalCount ?? 0 }
       : { ok: false, failure: result.failure };
   };
-  const procedureCount = (resource: string, filter: Record<string, string>) =>
-    count(readProcedurePage<unknown>(staff, resource, 0, filter, 1));
+  const procedureCount = (
+    resource: ProcedureResource,
+    filter: Record<string, string>,
+  ) =>
+    count(listProcedurePage(staff, resource, { limit: 1, offset: 0 }, filter));
 
   const [all, statusCounts, rest] = await Promise.all([
     searchPayments({}, LATEST),

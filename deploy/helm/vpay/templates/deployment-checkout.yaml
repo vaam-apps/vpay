@@ -7,7 +7,7 @@
 # the differences all follow from that:
 #
 #   * `runAsNonRoot: true` with NO explicit `runAsUser`. The image declares
-#     the NUMERIC `USER 1000:1000` (the `node` user of `node:22-alpine`), which
+#     the NUMERIC `USER 1000:1000` (the `node` user of `node:24-alpine`), which
 #     is what lets the kubelet verify non-root; the image is the single source
 #     of truth for the UID, and naming it here too is how the two drift. The
 #     `FROM scratch` images solve the same problem the other way, with a pod

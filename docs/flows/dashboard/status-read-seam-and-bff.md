@@ -478,3 +478,63 @@ that it now would; that follows from the table above, which is evidence about
 `pageCursors` and not about Cypress, and it is not the same thing as having
 watched it. Whoever next has a `compose.e2e.yml` stack up for another reason
 should still spend five minutes on it.
+
+## 2026-10-26: the procedure-backed lists on `@cratestack/refine`
+
+_Added after the split, not part of the verbatim original above._
+
+**What moved.** The four procedure-backed lists — refunds, deliveries,
+customers, checkouts — and the Overview's twelve counts no longer go through a
+hand-written transport. `callDashProcedure`, `postJson` and the hand-written
+`ProcedurePage<T>` are gone. In their place:
+
+- **`@vpay/dash-client`** (`frontends/packages/dash-client`), generated from
+  `schemas/vpay.cstack` by `cratestack generate-typescript` 0.15.0 and
+  drift-checked by `just check-schema`. Its generated `*Summary` types replace
+  the four hand-written row types.
+- **`src/dash/cratestack-client.ts`**, the only module allowed to import that
+  package at runtime (an ESLint `no-restricted-imports` rule with
+  `allowTypeImports`). It builds the client with the session's bearer, hands
+  out `procedures` and nothing of the model classes, and runs every call
+  through `withOneRemint` — the eight lines `readDash` uses, now one copy
+  instead of two, so a `401` re-mints once and a `403` is never retried on
+  either path.
+- **`src/dash/procedure-resources.ts`**, a `@cratestack/refine` resource
+  manifest over the procedures rather than over models: `limit`/`offset`
+  become the procedure's `page`, refine's filter keys become its named
+  `filter`, and any key the procedure does not declare — `getMany`'s `id__in`
+  included — is a `400` naming the key, refused before anything is sent.
+
+**The read is still the server's.** `readProcedureList` runs
+`@cratestack/refine`'s `getList` server side over the generated client, and
+each list's body (`app/(dash)/<list>/<list>-list.tsx`, a client component
+because its columns carry render functions) hands that read to `useList` as
+`initialData` — the shape `/payments` has had since 2026-09-12. In the
+browser the same manifest is bound to the existing `GET /api/dash/<list>`
+routes (`src/dash/procedure-provider.ts`), registered as Refine's
+`procedures` data provider and picked by each resource's
+`meta.dataProviderName`. **No route was added, and none accepts anything but
+`GET`/`HEAD`**: `middleware.ts` is unchanged, the BFF still forwards no
+filter, and its procedure handler now makes its server-side `POST` through
+the generated client. `src/server/bff-procedures.test.ts` re-asserts on that
+handler the three properties Lane 2 asserted on payments: no cookie → no
+upstream call; only `limit` and `offset` forwarded (`merchant_id`, `status`,
+`audience`, `scope` on the request are not); the bearer in no header and no
+body of the serialised response — and the last goes red if the handler
+serves the procedure page unprojected.
+
+**What did not move.** `payment_intents` stays on the hand-written
+`dashDataProvider`: its list is cursor-paged (`/v1`'s paging, shared on
+purpose) and its detail is a four-table composite no procedure serves.
+Moving the list to `searchPaymentIntents`' offset paging is reserved decision
+RD2 and was not taken.
+
+**One gap is `@cratestack/refine`'s.** Past the end of the set a procedure
+answers `totalCount: null`, and the provider reports `items.length` (`0`)
+for it. The pager therefore reads the count and `hasNextPage` from the
+procedure's page, which the server read carries beside refine's result
+(`ProcedureListPage`).
+
+**Not run:** Cypress, and any real vpay. The suites stub `fetch` at the
+network boundary. Evidence and counts:
+[../../status/verification/2026-10-26-dashboard-cratestack-refine.md](../../status/verification/2026-10-26-dashboard-cratestack-refine.md).

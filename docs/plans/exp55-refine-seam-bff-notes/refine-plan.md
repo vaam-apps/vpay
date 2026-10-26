@@ -599,6 +599,23 @@ forecloses the whole surface, not a corner of it. The same blocker holds
 `charges` (`provider_ref_extra`) and `refunds` (`metadata`), which are two of
 the four tables the detail page composes.
 
+> **Addendum, 2026-10-26 — the finding above still stands; the conclusion
+> drawn from it did not.** §3.3 is about generated **model** routes, and it
+> is still true: `Value::from_plain_json` demotes non-`i64` JSON numbers in
+> `cratestack-core` 0.15.0 and 0.16.0 alike (`src/value.rs:95-102`), no
+> model route is mounted, and `payment_intents` is still served by the
+> hand-written provider. What this plan did not foresee is that `/dash/v1`
+> would grow **procedures** (`searchRefunds`, `searchWebhookDeliveries`,
+> `searchCustomers`, `searchCheckoutSessions`, from 2026-09-13), each
+> answering CrateStack's own `Page<T>` — exactly the shape
+> `@cratestack/refine` duck-types a resource's `list()` against. So the four
+> procedure-backed lists now run on `@cratestack/refine` over a generated
+> client's procedures, with a hand-written manifest instead of the
+> generator's `--refine` one (which binds models). §4's hand-written provider
+> survives for payments only. See
+> [`docs/flows/dashboard/status-read-seam-and-bff.md`](../../flows/dashboard/status-read-seam-and-bff.md)
+> § 2026-10-26.
+
 ### 3.4 Four further obstacles, which matter after the blocker lifts
 
 Even granting the `jsonb` fix, these do not go away, and each is worth knowing
