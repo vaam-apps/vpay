@@ -3118,7 +3118,14 @@ expected_ignored := "0"
 # `f25930e5`, which failed here with the new name in its listing: **54**
 # binaries, **2382** total, **0** ignored. Not run locally first: `just` is not
 # installed where this was written, and this recipe is not one `verify` names.
-expected_suites := "54"
+#
+# **54 -> 55 on 2026-10-26 (VP-2, merchant keys and the `/v1` contract
+# table)**: one new binary, the unit tests of the new crate
+# `backends/crates/vpay-wire` (`V1_OPERATIONS`, `contract_digest` and its golden
+# test, `V1_CONTRACTS`). Every other VP-2 test went into binaries that already
+# existed. Measured by CI's `rust` job on `3d2152b0`, which failed here with
+# `vpay-wire` in its listing: **55** binaries, **2516** total, **0** ignored.
+expected_suites := "55"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

@@ -335,6 +335,14 @@ set is `default-features = false, features = ["postgres"]`, which drops
 `decimal-rust-decimal` (this schema declares no `Decimal`; vpay's money is
 integer minor units) and `codec-json` (vpay generates no client).
 
+**Since 0.16.0 (2026-10-26) the feature set is `["postgres", "envelope", "cose"]`.**
+The two added features compile the signed-transport modules of `cratestack-axum`
+and `cratestack-client-rust` into `vpay-server` and add `cratestack-cose` and
+its RustCrypto dependencies to the graph (`Cargo.lock` 523 to 543 packages, no
+new licence or ban in `cargo deny check`); no router mounts an `EnvelopeLayer`
+yet. [../../status/cratestack.md](../../status/cratestack.md), "CrateStack 0.15.0 →
+0.16.0", has the list and the measurements.
+
 Two of the twenty-eight are **BlueOak-1.0.0** — `minicbor` and
 `minicbor-serde` — and they are not optional. `cratestack-pg` declares
 `cratestack-axum` and `cratestack-client-rust` as non-optional dependencies

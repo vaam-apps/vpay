@@ -325,6 +325,39 @@ just vanish into "unknown YAML key" territory, which is not the fail-fast story
 ADR-0003 promises. Never populate it in a real config; it is a trap, not a
 feature.
 
+### `merchant_clients[].cose_keys` — Ed25519 keys for the signed transport (VP-2)
+
+```yaml
+merchant_clients:
+  - client_id: acme-cameroon
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo # 43 characters
+        label: ci-2026-10
+```
+
+Public keys a merchant signs `/v1` requests with. **They coexist with `jwks` and
+nothing reads them on a request yet**: `jwks` stays required, the OAuth path is
+unchanged, and the registry the signed transport will verify against
+(`vpay_api::merchant_keys`) has no router in front of it until VP-3. An empty or
+absent list is legal today.
+
+- **`public_key`**: the 32-byte Ed25519 key as **unpadded base64url**, the
+  encoding of a JWK's `x`. Padded, standard-alphabet, hex and PEM values are
+  refused rather than guessed. Ed25519 is the only algorithm, so there is no
+  `alg`: cratestack's verifier also takes ESP256 and HMAC, and a shared HMAC
+  secret is what "no shared secret" rules out.
+- **`label`**: optional, non-blank, at most 64 characters, read by humans only.
+- **Identity is the RFC 9679 thumbprint**, derived, never written.
+- **Boot refuses** (`ConfigError::MalformedCoseKey`, naming the client and the
+  entry's position from 0) a value that is not base64url, not 32 bytes, or not
+  a curve point; and (`ConfigError::DuplicateCoseKey`, naming the thumbprint
+  and both clients) a key registered twice, across merchants or within one. A
+  shared key would make one signature authenticate as either tenant. Uniqueness
+  is over the thumbprint, so two spellings of one key do not slip through.
+- A small-order point is accepted at boot and can never verify: cratestack's
+  verifier is strict (`verify_strict`'s checks).
+- YAML adds, `disabled_clients` subtracts, exactly as for `jwks`.
+
 ---
 
 ## The `checkout:` block, and `checkout_origins`

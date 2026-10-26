@@ -261,6 +261,7 @@ mod tests {
             // Absent, like most registrations: nothing the OP does renders a
             // name to anyone.
             display_name: None,
+            cose_keys: Vec::new(),
             jwks: Some(jwks),
             grant_types: vec![ConfigGrantType::ClientCredentials],
             scopes: vec!["payments:write".to_owned()],
