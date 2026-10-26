@@ -112,13 +112,13 @@ share one endpoint.
 
 ### D2. Two audiences, two endpoints, two surfaces, opt-in only
 
-| | Merchant | Staff |
-| --- | --- | --- |
-| `deployment.surfaces` value | `mcp` | `mcp_staff` |
-| Endpoint | `POST /mcp/v1` | `POST /dash/mcp/v1` |
-| Tier (ADR-0022 §2) | autoscaled, like `-server` | fixed 2 replicas, like `-management` |
-| Tools | every `/v1` merchant operation, reads and writes | every read (D6) |
-| Resources | every merchant-facing model, scoped to the token's merchant | the same, scoped to the dashboard's merchant |
+|                             | Merchant                                                    | Staff                                        |
+| --------------------------- | ----------------------------------------------------------- | -------------------------------------------- |
+| `deployment.surfaces` value | `mcp`                                                       | `mcp_staff`                                  |
+| Endpoint                    | `POST /mcp/v1`                                              | `POST /dash/mcp/v1`                          |
+| Tier (ADR-0022 §2)          | autoscaled, like `-server`                                  | fixed 2 replicas, like `-management`         |
+| Tools                       | every `/v1` merchant operation, reads and writes            | every read (D6)                              |
+| Resources                   | every merchant-facing model, scoped to the token's merchant | the same, scoped to the dashboard's merchant |
 
 **Neither value is part of `EnabledSurfaces::ALL`.** An absent
 `deployment.surfaces` keeps meaning what it has meant since ADR-0022:
@@ -207,6 +207,7 @@ Reads that need no rail are implemented directly in vpay-db, as the
     `type MetadataEntry { key String value String }[]`. That mapping is
     lossless for every value `/v1` accepts. The `u64` precision problem above
     concerns the stored `jsonb`, not this input.
+
 - **The two pinned tests.**
   `the_three_money_models_answer_no_rows_to_every_action` and
   `no_generated_read_on_a_money_table_can_carry_its_jsonb_column` change
@@ -239,7 +240,7 @@ an agent would not know to send one.
   server is built without an `OpExecutor`, so CrateStack reserves nothing.
   The key is claimed in vpay's own per-merchant store (`vpay_db::Idempotency`).
 - **The fingerprint.** It is `("MCP", "tool/<name>", sha256(canonical
-  arguments))`.
+arguments))`.
 - **Replay and mismatch.** A replay returns the stored result. The same key
   with different arguments is the same mismatch refusal REST gives. A key
   reused across REST and MCP for different requests is refused for the
