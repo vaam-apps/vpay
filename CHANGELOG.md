@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.15.0](https://github.com/vaam-apps/vpay/compare/v0.14.2...v0.15.0) (2026-10-26)
+
+
+### Features
+
+* **auth:** merchant Ed25519 key registry, its resolver, and the /v1 contract table (VP-2) ([#379](https://github.com/vaam-apps/vpay/issues/379)) ([a28aea1](https://github.com/vaam-apps/vpay/commit/a28aea102e9e862cfdebc3d7653a4356ff9f77e9))
+* **dashboard:** the procedure-backed lists read through @cratestack/refine over a generated client ([#371](https://github.com/vaam-apps/vpay/issues/371)) ([8a72dee](https://github.com/vaam-apps/vpay/commit/8a72dee1c1ed2538c6eacf06aea15834f78ee933))
+* **security:** maintain vpay security asset, data-flow and control-evidence map ([#150](https://github.com/vaam-apps/vpay/issues/150)) ([#356](https://github.com/vaam-apps/vpay/issues/356)) ([e16cca7](https://github.com/vaam-apps/vpay/commit/e16cca7c82bb70d77de038c7f2afd249ca6fd32f))
+
+
+### Bug Fixes
+
+* **deps:** staff password hashing on argon2 0.6, one argon2 in the lock ([#373](https://github.com/vaam-apps/vpay/issues/373)) ([e9947d3](https://github.com/vaam-apps/vpay/commit/e9947d37911036aa906e95ca959a9a6c02bde4dd))
+
+
+### Chores
+
+* **deps:** cratestack 0.16.0 (from 0.15.0), with the envelope and cose features on (VP-1) ([#376](https://github.com/vaam-apps/vpay/issues/376)) ([ff0c67b](https://github.com/vaam-apps/vpay/commit/ff0c67be2d21be988c4793a102b0411acc72e9b9))
+
 ## [0.14.2](https://github.com/vaam-apps/vpay/compare/v0.14.1...v0.14.2) (2026-10-26)
 
 
