@@ -5399,7 +5399,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         OutDir(std::env::temp_dir().join(format!("vpay-cstack-baseline-{}", Uuid::new_v4())));
     std::fs::create_dir_all(&out_dir.0).context("creating the out-dir for migrate baseline")?;
 
+    // `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE` are removed because the CLI's
+    // error is `anyhow`'s, which appends "Stack backtrace: …" to the refusal
+    // when either is set, and the assertion below compares that refusal
+    // byte for byte. A shell that exports `RUST_BACKTRACE=1` failed this test
+    // with every count right (measured 2026-10-26); CI sets neither.
     let output = std::process::Command::new("cratestack")
+        .env_remove("RUST_BACKTRACE")
+        .env_remove("RUST_LIB_BACKTRACE")
         .current_dir(&root)
         .args(["migrate", "baseline"])
         .arg("--schema")

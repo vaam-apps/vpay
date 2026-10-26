@@ -8,6 +8,7 @@ carry (for example vaam-apps/vpay#291 § 10).
 | Boundary                       | Threat model                                           | Written    |
 | ------------------------------ | ------------------------------------------------------ | ---------- |
 | The `notchpay` rail, both ways | [threat-models/notchpay.md](threat-models/notchpay.md) | 2026-10-20 |
+| The MCP surface (ADR-0033)     | [threat-models/mcp.md](threat-models/mcp.md)           | 2026-10-26 |
 
 This directory is new on 2026-10-20. Until then the repository kept no threat
 model anywhere. Security analysis lived in ADRs (for example
