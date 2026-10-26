@@ -16,7 +16,7 @@
 # would put the dashboard's dependency tree inside the checkout image and the
 # other way round.
 
-FROM node:22-alpine AS base
+FROM node:24-alpine AS base
 RUN corepack enable
 WORKDIR /build
 # No Cypress binary in an image that never runs it, and no telemetry call out
@@ -37,9 +37,12 @@ COPY frontends ./frontends
 # disk, only that the lockfile is internally consistent with whatever *does*
 # exist. `@vpay/dashboard` depends on no package under either directory.
 RUN pnpm install --frozen-lockfile --filter @vpay/dashboard...
+# A separate layer from the install on purpose (hadolint DL3059): a source
+# edit then rebuilds without re-resolving every dependency.
+# hadolint ignore=DL3059
 RUN pnpm --filter @vpay/dashboard build
 
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
 WORKDIR /app
 
 # `HOME` and `XDG_CACHE_HOME` point at /tmp for the `checkout` stage's own
@@ -69,7 +72,7 @@ ENV NODE_ENV=production \
 COPY --from=dashboard-builder /build/frontends/apps/dashboard/.next/standalone ./
 COPY --from=dashboard-builder /build/frontends/apps/dashboard/.next/static ./frontends/apps/dashboard/.next/static
 
-# `1000:1000` is the `node` user of `node:22-alpine`, written as numbers on
+# `1000:1000` is the `node` user of `node:24-alpine`, written as numbers on
 # purpose — see the `checkout` stage's own comment on this line. A named
 # `USER node` makes the kubelet refuse the pod under `runAsNonRoot: true`.
 USER 1000:1000
@@ -81,7 +84,7 @@ EXPOSE 3000
 # `HEALTHCHECK` with nothing to poll would be exactly the "looks more
 # finished than it is" this repository forbids. Same shape as the `checkout`
 # stage's below — `node -e` because neither curl nor wget is in
-# `node:22-alpine`, and Node 22's global `fetch` already is.
+# `node:24-alpine`, and Node 24's global `fetch` already is.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=12 \
     CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
@@ -101,9 +104,12 @@ COPY package.json pnpm-workspace.yaml pnpm-lock.yaml tsconfig.base.json .npmrc .
 COPY sdks ./sdks
 COPY frontends ./frontends
 RUN pnpm install --frozen-lockfile --filter @vpay/checkout...
+# A separate layer from the install on purpose (hadolint DL3059): a source
+# edit then rebuilds without re-resolving every dependency.
+# hadolint ignore=DL3059
 RUN pnpm --filter @vpay/checkout build
 
-FROM node:22-alpine AS checkout
+FROM node:24-alpine AS checkout
 WORKDIR /app
 
 # `HOME` and `XDG_CACHE_HOME` point at /tmp because this image is run with a
@@ -132,7 +138,7 @@ ENV NODE_ENV=production \
 COPY --from=checkout-builder /build/frontends/apps/checkout/.next/standalone ./
 COPY --from=checkout-builder /build/frontends/apps/checkout/.next/static ./frontends/apps/checkout/.next/static
 
-# `1000:1000` is the `node` user of `node:22-alpine` (its /etc/passwd has
+# `1000:1000` is the `node` user of `node:24-alpine` (its /etc/passwd has
 # `node:x:1000:1000`), and it MUST be numeric. The kubelet can only verify
 # `runAsNonRoot: true` against a numeric image USER (or a pod `runAsUser`); a
 # named `USER node` fails with `CreateContainerConfigError: container has
@@ -148,9 +154,9 @@ EXPOSE 3000
 # no dependency: it answers "Next is serving", never "vpay is reachable". Used
 # by the compose healthcheck and by the chart's probes.
 #
-# `node -e` rather than curl or wget: neither is in `node:22-alpine`, and
+# `node -e` rather than curl or wget: neither is in `node:24-alpine`, and
 # adding one to answer a healthcheck is a package in the image for the sake of
-# a probe. Node 22's global `fetch` is already there.
+# a probe. Node 24's global `fetch` is already there.
 HEALTHCHECK --interval=10s --timeout=3s --start-period=20s --retries=12 \
     CMD node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 

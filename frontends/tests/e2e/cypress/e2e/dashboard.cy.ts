@@ -495,6 +495,72 @@ describe("the dashboard", { testIsolation: false }, () => {
     });
   });
 
+  it("reads the Overview and the four procedure-backed lists, none of them refused", () => {
+    // The screens vaam-apps/vpay#371 moved onto `@cratestack/refine`: each
+    // one's server read is `@cratestack/refine`'s `getList` over the
+    // generated `@vpay/dash-client` procedure, handed to Refine's `useList`.
+    // Nothing else in this file visits them.
+    //
+    // What each visit holds: the screen rendered its own heading, NO
+    // `[role="alert"]` — a refused read renders `ReadFailure`, which is the
+    // one outcome that must not pass for "no rows" — and either a table or
+    // that screen's own empty-state sentence, so a blank page fails too.
+    //
+    // Still signed in; the shop payment two tests up gave this tenant a
+    // checkout session and at least one webhook delivery.
+    const lists: readonly {
+      path: string;
+      title: string;
+      empty: string;
+      shot: string;
+    }[] = [
+      {
+        path: "/refunds",
+        title: "Refunds",
+        empty: "No refunds. This merchant has no refunds yet.",
+        shot: "07-refunds",
+      },
+      {
+        path: "/deliveries",
+        title: "Deliveries",
+        empty:
+          "No deliveries. Nothing has been delivered for this merchant yet.",
+        shot: "08-deliveries",
+      },
+      {
+        path: "/customers",
+        title: "Customers",
+        empty: "No customers. This merchant has no customers yet.",
+        shot: "09-customers",
+      },
+      {
+        path: "/checkouts",
+        title: "Checkouts",
+        empty: "No checkouts. This merchant has no checkout sessions yet.",
+        shot: "10-checkouts",
+      },
+    ];
+
+    cy.visit("/overview");
+    cy.contains("h2", "Overview").should("be.visible");
+    cy.get('[role="alert"]').should("not.exist");
+    cy.screenshot("06-overview", { capture: "fullPage" });
+
+    for (const list of lists) {
+      cy.visit(list.path);
+      cy.contains("h2", list.title).should("be.visible");
+      cy.get('[role="alert"]').should("not.exist");
+      cy.get("body").then(($body) => {
+        if ($body.find("table").length > 0) {
+          cy.get("table tbody tr").should("have.length.at.least", 1);
+        } else {
+          cy.contains(list.empty).should("be.visible");
+        }
+      });
+      cy.screenshot(list.shot, { capture: "fullPage" });
+    }
+  });
+
   it("renders the masked payer as a dash, because nothing writes that column", () => {
     // `charges.payer_ref_masked` is NULL on every row this deployment has
     // ever written (docs/status.md). The value is rendered FROM the column,
