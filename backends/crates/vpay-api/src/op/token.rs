@@ -178,6 +178,13 @@ fn default_scope_client_id(request: &TokenRequest) -> Option<String> {
 /// (`client_assertion`), never with `WWW-Authenticate`-negotiated HTTP auth,
 /// so no challenge header is emitted — matching `axum_token_handler`, and
 /// matching what both SDKs expect.
+fn token_error_status(code: &str) -> StatusCode {
+    match code {
+        "invalid_client" => StatusCode::UNAUTHORIZED,
+        _ => StatusCode::BAD_REQUEST,
+    }
+}
+
 /// RFC 8707's `resource` parameter, as the audience `handle_token` reads.
 ///
 /// `authkestra_op`'s `TokenRequest` has an `audience` field and no
@@ -225,13 +232,6 @@ fn apply_resource_indicator(
         _ => Err(invalid_target(
             "a token request may name one `resource`; this one names several",
         )),
-    }
-}
-
-fn token_error_status(code: &str) -> StatusCode {
-    match code {
-        "invalid_client" => StatusCode::UNAUTHORIZED,
-        _ => StatusCode::BAD_REQUEST,
     }
 }
 

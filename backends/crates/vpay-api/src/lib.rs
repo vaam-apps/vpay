@@ -1324,41 +1324,6 @@ where
 /// there; see `vpay_db`'s `dashboard_transport` module for why it is a
 /// closure over a tenant id rather than this crate constructing a
 /// `cratestack::CratestackContext` itself.
-/// The procedures `/dash/v1/$procs` serves: the dashboard's five reads.
-///
-/// `vpay-db`'s `dashboard_procedure_router` wraps CrateStack's generated
-/// `procedure_router`, which mounts **every** procedure in
-/// `schemas/vpay.cstack`. Since ADR-0033 that includes the merchant MCP
-/// writes (`openPaymentIntent`, `confirmPaymentIntent`, …), and CrateStack
-/// 0.16 has no attribute that keeps a procedure off REST. Two things keep
-/// them unreachable here, and this list is the first: their own `@allow`
-/// also refuses a dashboard context, which carries no `audience` claim, and
-/// the registry behind this router has no port to run them with.
-const DASHBOARD_PROCEDURES: [&str; 5] = [
-    "searchPaymentIntents",
-    "searchRefunds",
-    "searchWebhookDeliveries",
-    "searchCustomers",
-    "searchCheckoutSessions",
-];
-
-/// Answers the honest 404 for a `$procs/<name>` the dashboard does not
-/// serve. Every other path passes, so an unknown `/dash/v1/...` path still
-/// reaches the nest's own fallback.
-async fn only_dashboard_procedures(request: Request<Body>, next: Next) -> Response {
-    let refused = request
-        .uri()
-        .path()
-        .strip_prefix("/$procs/")
-        .is_some_and(|name| !DASHBOARD_PROCEDURES.contains(&name));
-    if refused {
-        return not_found(request.method().clone(), request.uri().clone())
-            .await
-            .into_response();
-    }
-    next.run(request).await
-}
-
 pub(crate) async fn require_dashboard_procedure_token<S>(
     State(state): State<S>,
     request: Request<Body>,
@@ -1418,6 +1383,41 @@ where
     parts.extensions.insert(claims);
 
     next.run(Request::from_parts(parts, body)).await
+}
+
+/// The procedures `/dash/v1/$procs` serves: the dashboard's five reads.
+///
+/// `vpay-db`'s `dashboard_procedure_router` wraps CrateStack's generated
+/// `procedure_router`, which mounts **every** procedure in
+/// `schemas/vpay.cstack`. Since ADR-0033 that includes the merchant MCP
+/// writes (`openPaymentIntent`, `confirmPaymentIntent`, …), and CrateStack
+/// 0.16 has no attribute that keeps a procedure off REST. Two things keep
+/// them unreachable here, and this list is the first: their own `@allow`
+/// also refuses a dashboard context, which carries no `audience` claim, and
+/// the registry behind this router has no port to run them with.
+const DASHBOARD_PROCEDURES: [&str; 5] = [
+    "searchPaymentIntents",
+    "searchRefunds",
+    "searchWebhookDeliveries",
+    "searchCustomers",
+    "searchCheckoutSessions",
+];
+
+/// Answers the honest 404 for a `$procs/<name>` the dashboard does not
+/// serve. Every other path passes, so an unknown `/dash/v1/...` path still
+/// reaches the nest's own fallback.
+async fn only_dashboard_procedures(request: Request<Body>, next: Next) -> Response {
+    let refused = request
+        .uri()
+        .path()
+        .strip_prefix("/$procs/")
+        .is_some_and(|name| !DASHBOARD_PROCEDURES.contains(&name));
+    if refused {
+        return not_found(request.method().clone(), request.uri().clone())
+            .await
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// The largest `/v1` request body this router will read, in bytes.
