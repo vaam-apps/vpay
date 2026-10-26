@@ -41,7 +41,8 @@
   "scripts": {
     "build:wasm": "bash scripts/build-wasm.sh",
     "build:wasm-test": "bash scripts/build-wasm.sh --responder",
-    "build": "pnpm run build:wasm && tsc -p tsconfig.build.json",
+    "build:ts": "tsc -p tsconfig.build.json",
+    "build": "pnpm run build:wasm && pnpm run build:ts",
     "prepack": "pnpm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "pnpm run build:wasm && pnpm run build:wasm-test",

@@ -5369,6 +5369,11 @@ const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 /// build context exists.
 const TOOLCHAIN_IMAGE_FILE: &str = "backends/Dockerfile";
 
+/// The other Dockerfiles that compile Rust, held to the same pin. The shop's
+/// `sealer` stage builds `sdks/rust/wasm` (the Node SDK's signing module), and a
+/// second compiler for the same bytes is the drift this gate exists for.
+const TOOLCHAIN_OTHER_IMAGE_FILES: [&str; 1] = ["examples/shop/Dockerfile"];
+
 /// The directory where migration files are stored.
 const MIGRATIONS_DIR: &str = "backends/migrations";
 
@@ -5437,25 +5442,26 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
         )
     })?;
 
-    let dockerfile = fs::read_to_string(root.join(TOOLCHAIN_IMAGE_FILE))
-        .map_err(|e| format!("{TOOLCHAIN_IMAGE_FILE}: {e}"))?;
-    let images = rust_from_instructions(&dockerfile);
-    if images.is_empty() {
-        return Err(format!(
-            "{TOOLCHAIN_IMAGE_FILE}: no `FROM rust:<version>-...` instruction. This check exists to keep that line and {TOOLCHAIN_FILE}'s `channel` identical; with no such line it checks nothing, which is worse than not existing. If the builder image is no longer a `rust:` image, rewrite this check for whatever names the compiler now"
-        ));
-    }
-
     let mut problems = Vec::new();
     let mut agreed = Vec::new();
-    for (line_no, tag) in &images {
-        let version = tag.split('-').next().unwrap_or(tag);
-        if version == channel {
-            agreed.push(format!("rust:{tag}"));
-        } else {
-            problems.push(format!(
-                "{TOOLCHAIN_IMAGE_FILE}:{line_no}: `FROM rust:{tag}` builds with {version}, but {TOOLCHAIN_FILE} pins `channel = \"{channel}\"` — every Rust job in CI reads that file, so this image would be the one thing in the repository compiled by a different compiler"
+    let files = std::iter::once(TOOLCHAIN_IMAGE_FILE).chain(TOOLCHAIN_OTHER_IMAGE_FILES);
+    for file in files {
+        let dockerfile = fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+        let images = rust_from_instructions(&dockerfile);
+        if images.is_empty() {
+            return Err(format!(
+                "{file}: no `FROM rust:<version>-...` instruction. This check exists to keep that line and {TOOLCHAIN_FILE}'s `channel` identical; with no such line it checks nothing, which is worse than not existing. If the builder image is no longer a `rust:` image, rewrite this check for whatever names the compiler now"
             ));
+        }
+        for (line_no, tag) in &images {
+            let version = tag.split('-').next().unwrap_or(tag);
+            if version == channel {
+                agreed.push(format!("{file}: rust:{tag}"));
+            } else {
+                problems.push(format!(
+                    "{file}:{line_no}: `FROM rust:{tag}` builds with {version}, but {TOOLCHAIN_FILE} pins `channel = \"{channel}\"` — every Rust job in CI reads that file, so this image would be the one thing in the repository compiled by a different compiler"
+                ));
+            }
         }
     }
     if !problems.is_empty() {
@@ -5467,8 +5473,9 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
     }
 
     println!(
-        "verify-toolchain: ok — {TOOLCHAIN_FILE} pins {channel} and all {} `FROM rust:` instruction(s) in {TOOLCHAIN_IMAGE_FILE} name it ({})",
+        "verify-toolchain: ok — {TOOLCHAIN_FILE} pins {channel} and all {} `FROM rust:` instruction(s) in {} Dockerfile(s) name it ({})",
         agreed.len(),
+        1 + TOOLCHAIN_OTHER_IMAGE_FILES.len(),
         agreed.join(", ")
     );
     Ok(())
@@ -15430,6 +15437,14 @@ mod toolchain_tests {
         .expect("the toolchain file is writable");
         fs::write(dir.path().join(TOOLCHAIN_IMAGE_FILE), dockerfile)
             .expect("the Dockerfile is writable");
+        for other in TOOLCHAIN_OTHER_IMAGE_FILES {
+            let path = dir.path().join(other);
+            fs::create_dir_all(path.parent().expect("a file has a parent"))
+                .expect("its directory is creatable");
+            // The same text, so a case about `backends/Dockerfile` is not
+            // also a case about the shop's.
+            fs::write(path, dockerfile).expect("the other Dockerfile is writable");
+        }
         dir
     }
 
@@ -15442,6 +15457,22 @@ FROM chef AS planner
 FROM chef AS builder
 FROM scratch AS server
 ";
+
+    /// The shop's `sealer` stage is held to the pin too: `backends/Dockerfile`
+    /// agreeing is not enough.
+    #[test]
+    fn a_second_dockerfile_on_another_compiler_fails_naming_it() {
+        let dir = tree("channel = \"1.98.0\"", FOUR_STAGES);
+        fs::write(
+            dir.path().join(TOOLCHAIN_OTHER_IMAGE_FILES[0]),
+            "FROM rust:1.97.0-alpine3.22 AS sealer\n",
+        )
+        .expect("the other Dockerfile is writable");
+        let error =
+            verify_toolchain(dir.path()).expect_err("the shop image is a different compiler");
+        assert!(error.contains(TOOLCHAIN_OTHER_IMAGE_FILES[0]), "{error}");
+        assert!(error.contains("1.97.0"), "{error}");
+    }
 
     #[test]
     fn a_dockerfile_naming_the_pinned_compiler_passes() {

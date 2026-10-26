@@ -29,13 +29,6 @@ rustflags = ["-C", "target-feature=+crt-static"]
 [target.aarch64-unknown-linux-musl]
 rustflags = ["-C", "target-feature=+crt-static"]
 
-# `sdks/rust/wasm` (the Node SDK's sealing half). `getrandom` 0.4, which
-# `cratestack-cose` draws a request's `cti` from, has no entropy source on
-# `wasm32-unknown-unknown` until it is told to read `crypto.getRandomValues`,
-# and it takes that choice as a `cfg`, not as a Cargo feature alone.
-[target.wasm32-unknown-unknown]
-rustflags = ["--cfg", "getrandom_backend=\"wasm_js\""]
-
 [env]
 # rustls only; a native-tls backend must never be linked (docs/adr/0005).
 RUSTFLAGS_NOTE = "see docs/adr/0005-rustls-only.md"
