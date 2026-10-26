@@ -1438,3 +1438,9 @@ and every mitigation in it is **not built**.
 schema declares `mcp`, and no tool or resource exists. The CrateStack bump
 the surface needs (0.15.0 to 0.16.0) is recorded on
 [cratestack.md](cratestack.md). That bump declares no MCP.
+
+**Step 2, narrowed (2026-10-26).** The six payment-intent and refund writes
+are split into an axum handler and an `*_with` operation that a non-HTTP
+caller can run. No behaviour moved, and still nothing calls the operations
+except `/v1`.
+[verification/2026-10-26-mcp-step-2-write-split.md](verification/2026-10-26-mcp-step-2-write-split.md).
