@@ -1,23 +1,7 @@
 import { CUSTOMERS_SCREEN } from "../../../src/dash/list-screens";
 import { ProcedureListScreen } from "../../../src/components/procedure-list-screen";
-import {
-  IdCell,
-  type ProcedureColumn,
-} from "../../../src/components/procedure-table";
-import { IsoInstant } from "../../../src/components/values";
 import { CUSTOMERS } from "../../../src/dash/resource-name";
-import { ABSENT } from "../../../src/format";
-
-/** Exactly the fields `type CustomerSummary` declares. */
-interface CustomerRow {
-  readonly id: string;
-  readonly livemode: boolean;
-  readonly name: string | null;
-  readonly email: string | null;
-  readonly phone: string | null;
-  readonly last_used_at: string;
-  readonly created_at: string;
-}
+import { CustomersList } from "./customers-list";
 
 /**
  * `/customers` — this merchant's customers.
@@ -53,60 +37,18 @@ interface CustomerRow {
  */
 export const dynamic = "force-dynamic";
 
-const COLUMNS: readonly ProcedureColumn<CustomerRow>[] = [
-  {
-    key: "id",
-    secondary: true,
-    header: "Customer",
-    render: (r) => <IdCell value={r.id} />,
-  },
-  {
-    key: "name",
-    header: "Name",
-    render: (r) => (
-      <span className="font-medium text-foreground">{r.name ?? ABSENT}</span>
-    ),
-  },
-  { key: "email", header: "Email", render: (r) => r.email ?? ABSENT },
-  {
-    key: "phone",
-    secondary: true,
-    header: "Phone",
-    render: (r) => <span className="font-mono">{r.phone ?? ABSENT}</span>,
-  },
-  {
-    key: "livemode",
-    secondary: true,
-    header: "Mode",
-    render: (r) => (r.livemode ? "live" : "test"),
-  },
-  {
-    key: "last_used_at",
-    secondary: true,
-    header: "Last used (UTC)",
-    render: (r) => <IsoInstant value={r.last_used_at} />,
-  },
-  {
-    key: "created_at",
-    secondary: true,
-    header: "Created (UTC)",
-    render: (r) => <IsoInstant value={r.created_at} />,
-  },
-];
-
 export default async function CustomersPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   return (
-    <ProcedureListScreen<CustomerRow>
+    <ProcedureListScreen
       {...CUSTOMERS_SCREEN}
       resource={CUSTOMERS}
       basePath="/customers"
       params={await searchParams}
-      columns={COLUMNS}
-      idOf={(r) => r.id}
+      List={CustomersList}
       emptyMessage="No customers. This merchant has no customers yet."
     />
   );

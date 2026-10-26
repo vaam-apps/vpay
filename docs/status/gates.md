@@ -399,6 +399,25 @@ correction.
   guess, and a wrong guess fails correct documents), `http(s)` URLs, and
   reference _usages_ with no definition (which render as literal text, so a
   reader sees them).
+- **`check-schema` grew a second direction on 2026-10-26: the generated
+  dashboard client.** `frontends/packages/dash-client` (`@vpay/dash-client`)
+  is `cratestack generate-typescript` output from `schemas/vpay.cstack`,
+  committed, and the recipe now regenerates it in memory with `--check` and
+  fails if the committed tree differs — a modified file or a stale extra one.
+  Both arms were mutated and measured: appending a line to `src/models.ts`
+  printed `modified: src/models.ts` and exit 1; adding `src/stale.ts` printed
+  `unexpected: src/stale.ts` and exit 1. A schema edit nobody regenerated is
+  the case it exists for: adding `probe Int?` to `type RefundSummary` failed
+  it with `src/models.ts` **and** `src/runtime.ts` modified — the second
+  because `runtime.ts` embeds the schema file's SHA-256, so **any** schema
+  edit, a comment included, needs `just gen-dash-client`. The check runs
+  against a copy of the package without `node_modules/`, because cratestack
+  0.15.0's drift walker (0.16.0's too, re-measured the same day) follows pnpm's `node_modules/decimal.js` symlink,
+  `git check-ignore` refuses those paths ("beyond a symbolic link", exit
+  128), and the CLI reads that as "nothing is ignored" — six `decimal.js`
+  files reported as drift on a clean checkout, measured. That is an upstream
+  bug, not filed from here. The gate count did not move (15): this is a
+  direction of an existing gate, not a new one.
 - **`check-schema` — a gate, in `just verify`, `just ci` and CI's
   `self-checks` job.** `cratestack check --schema schemas/vpay.cstack` at the
   version this repository pins. It is the first gate here that shells out to

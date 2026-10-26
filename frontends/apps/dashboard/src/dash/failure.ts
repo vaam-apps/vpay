@@ -8,6 +8,18 @@
 import type { ApiFailure } from "../server/api";
 
 export function failureFromError(error: unknown): ApiFailure {
+  // A procedure refusal (`procedure-resources.ts`) carries the failure it was
+  // made from, request id included; `@cratestack/refine` annotates such an
+  // error in place rather than replacing it, so the field survives.
+  const carried = (error as { failure?: unknown } | null)?.failure;
+  if (
+    typeof carried === "object" &&
+    carried !== null &&
+    typeof (carried as { status?: unknown }).status === "number" &&
+    typeof (carried as { message?: unknown }).message === "string"
+  ) {
+    return carried as ApiFailure;
+  }
   const status =
     typeof error === "object" &&
     error !== null &&

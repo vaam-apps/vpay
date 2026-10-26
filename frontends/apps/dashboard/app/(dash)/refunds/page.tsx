@@ -1,26 +1,7 @@
 import { REFUNDS_SCREEN } from "../../../src/dash/list-screens";
 import { ProcedureListScreen } from "../../../src/components/procedure-list-screen";
-import {
-  IdCell,
-  PaymentLinkCell,
-  type ProcedureColumn,
-} from "../../../src/components/procedure-table";
-import { Amount, IsoInstant } from "../../../src/components/values";
 import { REFUNDS } from "../../../src/dash/resource-name";
-import { ABSENT } from "../../../src/format";
-import { asRefundStatus, RefundStatusPill } from "../../../src/status-systems";
-
-/** Exactly the fields `type RefundSummary` declares. */
-interface RefundRow {
-  readonly id: string;
-  readonly payment_intent_id: string;
-  readonly amount: number;
-  readonly currency_code: string;
-  readonly status: string;
-  readonly reason: string | null;
-  readonly failure_code: string | null;
-  readonly created_at: string;
-}
+import { RefundsList } from "./refunds-list";
 
 /**
  * `/refunds` — one page of this merchant's refunds.
@@ -38,65 +19,18 @@ interface RefundRow {
  */
 export const dynamic = "force-dynamic";
 
-const COLUMNS: readonly ProcedureColumn<RefundRow>[] = [
-  { key: "id", header: "Refund", render: (r) => <IdCell value={r.id} /> },
-  {
-    key: "payment_intent_id",
-    secondary: true,
-    header: "Payment",
-    render: (r) => <PaymentLinkCell id={r.payment_intent_id} compact />,
-  },
-  {
-    key: "amount",
-    header: "Amount",
-    align: "end",
-    render: (r) => <Amount minor={r.amount} currency={r.currency_code} />,
-  },
-  {
-    key: "status",
-    header: "Status",
-    render: (r) => {
-      const status = asRefundStatus(r.status);
-      return status === null ? (
-        r.status
-      ) : (
-        <RefundStatusPill state={status} size="sm" />
-      );
-    },
-  },
-  {
-    key: "failure_code",
-    secondary: true,
-    header: "Failure",
-    render: (r) => r.failure_code ?? ABSENT,
-  },
-  {
-    key: "reason",
-    secondary: true,
-    header: "Reason",
-    render: (r) => r.reason ?? ABSENT,
-  },
-  {
-    key: "created_at",
-    secondary: true,
-    header: "Created (UTC)",
-    render: (r) => <IsoInstant value={r.created_at} />,
-  },
-];
-
 export default async function RefundsPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   return (
-    <ProcedureListScreen<RefundRow>
+    <ProcedureListScreen
       {...REFUNDS_SCREEN}
       resource={REFUNDS}
       basePath="/refunds"
       params={await searchParams}
-      columns={COLUMNS}
-      idOf={(r) => r.id}
+      List={RefundsList}
       emptyMessage="No refunds. This merchant has no refunds yet."
     />
   );

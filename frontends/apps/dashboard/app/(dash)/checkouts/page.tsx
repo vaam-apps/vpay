@@ -1,30 +1,7 @@
 import { CHECKOUTS_SCREEN } from "../../../src/dash/list-screens";
 import { ProcedureListScreen } from "../../../src/components/procedure-list-screen";
-import {
-  IdCell,
-  PaymentLinkCell,
-  type ProcedureColumn,
-} from "../../../src/components/procedure-table";
-import { IsoInstant } from "../../../src/components/values";
 import { CHECKOUT_SESSIONS } from "../../../src/dash/resource-name";
-import { ABSENT } from "../../../src/format";
-import {
-  asCheckoutStatus,
-  CheckoutStatusPill,
-} from "../../../src/status-systems";
-
-/** Exactly the fields `type CheckoutSessionSummary` declares. */
-interface CheckoutRow {
-  readonly id: string;
-  readonly payment_intent_id: string;
-  readonly livemode: boolean;
-  readonly ui_mode: string;
-  readonly status: string;
-  readonly payment_status: string;
-  readonly customer_id: string | null;
-  readonly expires_at: string;
-  readonly created_at: string;
-}
+import { CheckoutsList } from "./checkouts-list";
 
 /**
  * `/checkouts` — what happened to this merchant's checkouts.
@@ -52,67 +29,18 @@ interface CheckoutRow {
  */
 export const dynamic = "force-dynamic";
 
-const COLUMNS: readonly ProcedureColumn<CheckoutRow>[] = [
-  { key: "id", header: "Checkout", render: (r) => <IdCell value={r.id} /> },
-  {
-    key: "status",
-    header: "Status",
-    render: (r) => {
-      const status = asCheckoutStatus(r.status);
-      return status === null ? (
-        r.status
-      ) : (
-        <CheckoutStatusPill state={status} size="sm" />
-      );
-    },
-  },
-  { key: "payment_status", header: "Payment", render: (r) => r.payment_status },
-  {
-    key: "payment_intent_id",
-    secondary: true,
-    header: "Intent",
-    render: (r) => <PaymentLinkCell id={r.payment_intent_id} compact />,
-  },
-  {
-    key: "ui_mode",
-    secondary: true,
-    header: "Mode",
-    render: (r) => r.ui_mode,
-  },
-  {
-    key: "customer_id",
-    secondary: true,
-    header: "Customer",
-    render: (r) =>
-      r.customer_id === null ? ABSENT : <IdCell value={r.customer_id} />,
-  },
-  {
-    key: "expires_at",
-    secondary: true,
-    header: "Expires (UTC)",
-    render: (r) => <IsoInstant value={r.expires_at} />,
-  },
-  {
-    key: "created_at",
-    secondary: true,
-    header: "Created (UTC)",
-    render: (r) => <IsoInstant value={r.created_at} />,
-  },
-];
-
 export default async function CheckoutsPage({
   searchParams,
 }: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
   return (
-    <ProcedureListScreen<CheckoutRow>
+    <ProcedureListScreen
       {...CHECKOUTS_SCREEN}
       resource={CHECKOUT_SESSIONS}
       basePath="/checkouts"
       params={await searchParams}
-      columns={COLUMNS}
-      idOf={(r) => r.id}
+      List={CheckoutsList}
       emptyMessage="No checkouts. This merchant has no checkout sessions yet."
     />
   );

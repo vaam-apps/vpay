@@ -6,6 +6,10 @@ import { Suspense } from "react";
 
 import { dashAuthProvider } from "./auth-provider";
 import { dashDataProvider } from "./data-provider";
+import {
+  PROCEDURES_PROVIDER,
+  procedureDataProvider,
+} from "./procedure-provider";
 import { REFINE_RESOURCES } from "./resources";
 import { signOut } from "../server/actions";
 
@@ -40,7 +44,15 @@ export function DashProviders({ children }: { children: React.ReactNode }) {
     <Suspense fallback={null}>
       <Refine
         routerProvider={routerProvider}
-        dataProvider={dashDataProvider("/api/dash")}
+        dataProvider={{
+          // `payment_intents`: cursor-paged, hand-written, and staying so —
+          // see `data-provider.ts`.
+          default: dashDataProvider("/api/dash"),
+          // The four procedure-backed lists, on `@cratestack/refine`. Each
+          // names this provider in its `meta.dataProviderName`
+          // (`resources.ts`).
+          [PROCEDURES_PROVIDER]: procedureDataProvider("/api/dash"),
+        }}
         authProvider={dashAuthProvider({ signOut })}
         resources={[...REFINE_RESOURCES]}
         options={{

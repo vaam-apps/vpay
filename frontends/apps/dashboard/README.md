@@ -156,7 +156,15 @@ Their first render is still read on the server and handed to Refine as
 handlers, not two: `refunds`, `deliveries`, `customers` and `checkouts` were
 added on 2026-09-14. _(Narrowed later on 2026-09-23: the first three on
 2026-09-13, `f9c7d2c`, and `checkouts` on 2026-09-14, `8be7850`.)_ Those four are still called by no page, because those
-four screens render on the server and use no client data layer. They
+four screens render on the server and use no client data layer.
+_(**Since 2026-10-26 they do have one**, and it still does not call them on
+a normal render. Each of the four lists hands its server read to Refine's
+`useList` as `initialData`, and the provider behind that hook — Refine's
+`procedures` data provider, `@cratestack/refine` over these four handlers
+(`src/dash/procedure-provider.ts`) — is reached only on a client refetch,
+which `staleTime: Infinity` does not make. The server read itself goes
+through the generated `@vpay/dash-client`'s procedures; see "The data layer"
+below.)_ They
 exist so that a client-side data layer has a transport, and
 **whether this app should have such a surface at all is the maintainer's
 decision, not this code's** — it is RD5 in
@@ -281,6 +289,34 @@ about the contract this surface publishes, not about the token staying in.
 Named because two red cases read as more corroboration than one, and here they
 are two different claims.
 
+## The data layer
+
+Two providers, registered together in `src/dash/providers.tsx`:
+
+| Resource                                                          | Refine data provider                                         | Server read                                                                               |
+| ----------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
+| `payment_intents`                                                 | `default` — `dashDataProvider`, hand-written, cursor-paged   | `src/dash/provider.ts` over `readDash`, `GET /dash/v1/payment_intents[/{id}]`             |
+| `refunds`, `webhook_deliveries`, `customers`, `checkout_sessions` | `procedures` — `@cratestack/refine` over the four BFF routes | `src/dash/procedure-list.ts`: `@cratestack/refine` over the generated client's procedures |
+
+**`@vpay/dash-client` is generated, never edited.** `just gen-dash-client`
+writes it from `schemas/vpay.cstack`; `just check-schema` fails if it is stale,
+and any schema edit — a comment included — makes it stale, because
+`runtime.ts` carries the schema's SHA-256. Only `src/dash/cratestack-client.ts`
+may import it at runtime (ESLint enforces this; type imports are fine
+anywhere): the package carries a class for every model, vpay mounts none of
+those routes, and `PaymentIntentApi.list()` would reach the hand-written
+`GET /dash/v1/payment_intents` and misread its envelope.
+
+**The `@cratestack/refine` manifest is hand-written** (`src/dash/procedure-resources.ts`),
+not the generator's `--refine` output, for the same reason: that manifest
+binds models, and here the resources are procedures. It refuses — with a
+`400`, before sending anything — any filter key the procedure does not
+declare, any sort, and `getMany`; `getOne` is a `404` and every write a `403`.
+
+`next.config.ts` maps a `.js` import onto a `.ts` source for webpack, because
+the generated package's relative imports carry the `.js` suffix and its bytes
+are held by `--check`.
+
 ## How the code is laid out
 
 | Directory               | What lives there                                                                                             |
@@ -290,7 +326,7 @@ are two different claims.
 | `middleware.ts`         | The one file that is neither — Next reads a middleware only from the project root                            |
 | `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`                           |
 | `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself                           |
-| `src/dash/`             | The `/dash/v1` read seam — `getList` / `getOne`, over `readDash`. No framework                               |
+| `src/dash/`             | The data layer: Refine's providers, the payments seam over `readDash`, and the generated client's wrapper    |
 | `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once                    |
 | `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right                                 |
 | `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                                            |
