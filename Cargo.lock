@@ -5125,6 +5125,8 @@ dependencies = [
  "axum",
  "base64 0.22.1",
  "chrono",
+ "cratestack-core",
+ "cratestack-cose",
  "hmac 0.12.1",
  "jsonwebtoken",
  "metrics",
@@ -5155,6 +5157,7 @@ dependencies = [
  "vpay-ledger",
  "vpay-provider",
  "vpay-sdk",
+ "vpay-wire",
  "wiremock",
 ]
 
@@ -5162,7 +5165,9 @@ dependencies = [
 name = "vpay-config"
 version = "0.14.2"
 dependencies = [
+ "base64 0.22.1",
  "clap",
+ "cratestack-cose",
  "figment",
  "garde",
  "serde",
@@ -5406,6 +5411,14 @@ dependencies = [
  "vpay-testkit",
  "vpay-worker",
  "wiremock",
+]
+
+[[package]]
+name = "vpay-wire"
+version = "0.14.2"
+dependencies = [
+ "cratestack-core",
+ "sha2 0.10.9",
 ]
 
 [[package]]

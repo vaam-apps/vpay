@@ -132,7 +132,9 @@ check-schema` began verifying the syntax on 2026-09-05, and `vpay-db`'s
   private `mod schema` began _compiling_ the file on 2026-09-06. A syntax
   error in it is now a `cargo build` failure. Two things follow. The CLI and
   the library must stay on one version — `justfile`'s `cratestack_version`
-  and `Cargo.toml`'s `cratestack = "=0.16.0"` — so bump them together. And
+  and `Cargo.toml`'s `cratestack = "=0.16.0"` (with its siblings `cratestack-cose`
+  and `cratestack-core`, and `vpay-db`'s `cratestack-codec-json`) — so bump them
+  together. And
   the generated module is private to `vpay-db` on purpose: `cargo xtask
 verify-repositories` fails if `mod schema` is made `pub` or re-exported,
   because the module the macro creates exists in no source file and nothing

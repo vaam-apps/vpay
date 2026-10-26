@@ -11,6 +11,7 @@ members = [
     "backends/crates/vpay-notchpay",
     "backends/crates/vpay-adapter-notchpay",
     "backends/crates/vpay-api",
+    "backends/crates/vpay-wire",
     "backends/crates/vpay-worker",
     "backends/crates/vpay-testkit",
     "backends/apps/vpay-server",
@@ -306,6 +307,26 @@ rust_decimal = "1"
 # `minicbor` unconditionally. There is no feature combination that yields a
 # data layer without them — see `docs/reference/vpay-db.md` § CrateStack.
 cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features = false, features = ["postgres", "envelope", "cose"] }
+# The two `cratestack-*` crates a signed-transport caller names directly rather
+# than through the `cratestack` facade above (VP-2, 2026-10-26), at the same
+# `=0.16.0` and in the same bump as it. Both are already in the lock through
+# `cratestack-pg` (`cratestack-cose` since VP-1), so these are direct edges and
+# no new package; they are workspace pins, not per-member lines, because two
+# members each take one and a version that has to move with the facade should
+# move in one place.
+#
+# * `cratestack-cose` is what `vpay-config` reads an Ed25519 key with
+#   (`CoseVerifyKey`, `thumbprint`) and what `vpay-api` implements the
+#   `CoseVerifierResolver` of. Taken directly because `vpay-config` must not
+#   link `cratestack-sqlx` (which the facade drags in) just to check 32 bytes.
+#   Its `auth` feature (`cratestack-auth`, `coset`, `minicbor-serde`) is NOT
+#   taken: nothing here uses `CoseAuthProvider`, and the registry maps a key to
+#   a merchant from YAML.
+# * `cratestack-core` is `AcceptedContracts`, the type the `EnvelopeLayer` takes
+#   its contract table as, which `vpay-wire` declares `V1_CONTRACTS` in.
+#   `default-features = false` drops `decimal-rust-decimal`, as on the facade.
+cratestack-cose = { version = "=0.16.0", default-features = false }
+cratestack-core = { version = "=0.16.0", default-features = false }
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
 # pulled in because `authkestra-op`'s own API is chrono-typed: every
 # `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that
@@ -488,6 +509,7 @@ vpay-adapter-notchpay = { path = "backends/crates/vpay-adapter-notchpay", versio
 vpay-api = { path = "backends/crates/vpay-api", version = "0.14.2" } # x-release-please-version
 vpay-worker = { path = "backends/crates/vpay-worker", version = "0.14.2" } # x-release-please-version
 vpay-testkit = { path = "backends/crates/vpay-testkit", version = "0.14.2" } # x-release-please-version
+vpay-wire = { path = "backends/crates/vpay-wire", version = "0.14.2" } # x-release-please-version
 # The merchant SDK is a workspace member like the rest, but it is not a vpay
 # *component*: it is what a merchant depends on. Only `examples/merchant-demo`
 # takes it, and only so the demo drives the shipping artefact rather than a

@@ -231,6 +231,19 @@ before you treat anything above as safe with money.
 
 ## Status
 
+**Updated 2026-10-26 (VP-2): COSE keys registered; not yet verified on
+requests.** `merchant_clients[].cose_keys` takes a merchant's Ed25519 public keys
+(unpadded base64url, optional label) and boot refuses a malformed one or a
+thumbprint registered twice. A resolver over them
+(`vpay_api::merchant_keys`) maps a key to its merchant and scopes and treats a
+`disabled_clients` row as no key at all; `vpay-wire` holds the per-operation
+contract table a signed request will bind. **Nothing above this paragraph has
+changed and nothing reads any of it on a request**: `/v1` still takes a bearer
+token, `jwks` is still required, and the `EnvelopeLayer` is VP-3. The handshake
+on this page is the contract until VP-4 supersedes it.
+[../status/backend.md](../status/backend.md), "Merchant Ed25519 keys are
+registered".
+
 **Updated 2026-10-08 ([ADR-0028](../adr/0028-a-spent-jti-outlives-the-validators-leeway.md)):
 a spent assertion's `jti` now outlives the validator's leeway.** The
 paragraph on single use above is true only while the `jti` row exists, and the

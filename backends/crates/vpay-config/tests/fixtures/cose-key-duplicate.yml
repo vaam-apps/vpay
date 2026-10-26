@@ -1,0 +1,42 @@
+# Fixture for `two_merchants_registering_one_cose_key_are_rejected`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# Both clients are individually valid — different `client_id`s, different
+# tenants, and each key is a well-formed Ed25519 public key (RFC 8032's first
+# test vector) — so every other rule passes. The only defect is that one key
+# is registered by both. The signed transport resolves a verified key's
+# thumbprint to exactly one merchant, so booting this would let one signature
+# authenticate as either tenant, which of the two depending on iteration order.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+  - client_id: beta-douala
+    merchant_id: beta-douala-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: beta-ci

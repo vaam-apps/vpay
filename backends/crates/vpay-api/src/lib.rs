@@ -108,6 +108,10 @@ pub mod error;
 pub mod form;
 pub mod idempotency;
 mod jwks_cache;
+// The merchants' Ed25519 keys and the resolver over them (VP-2). Mounted by
+// nothing yet: the `EnvelopeLayer` that verifies against it is VP-3, and until
+// then `/v1` still authenticates with the bearer token below.
+pub mod merchant_keys;
 pub mod model;
 // The second listener: `/livez` and `/metrics`, on `--observability-bind`,
 // mounted by BOTH binaries and by neither's traffic router. It lives in this

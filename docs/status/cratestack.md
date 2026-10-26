@@ -685,3 +685,18 @@ doctests passed. `verify-ignored` did not run: it builds every test binary,
 including the two excluded crates', and the session's disk filled first.
 `just fmt-check`, `clippy -D warnings`, `just verify` (fifteen gates), `just
 deny`, `just lint-web`, `just test-web` and `just audit-web` passed.
+
+## Two more direct `cratestack-*` pins: `cratestack-cose` and `cratestack-core` (2026-10-26, VP-2)
+
+`vpay-config` reads a merchant's Ed25519 key and its RFC 9679 thumbprint
+(`CoseVerifyKey`, `cratestack_cose::thumbprint`), `vpay-api` implements
+`CoseVerifierResolver`, and `vpay-wire` declares its table as
+`AcceptedContracts`. Each is a workspace pin at `=0.16.0`
+(`cratestack-cose`, `cratestack-core`, both `default-features = false`), beside
+`cratestack` in the root `Cargo.toml`, so they bump **with it** — the list in
+`CLAUDE.md` is now four lines long: `cratestack`, `cratestack-cose`,
+`cratestack-core` and `vpay-db`'s `cratestack-codec-json`, plus `justfile` and
+the two CLI installs in `ci.yml`. Taken directly, not through the facade, so
+the crate that reads YAML does not link `cratestack-sqlx`; `cratestack-cose`'s
+`auth` feature is not taken. No new package in the lock beyond `vpay-wire`
+itself: both crates were already there through `cratestack-pg`.

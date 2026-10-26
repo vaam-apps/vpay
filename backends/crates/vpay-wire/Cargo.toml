@@ -1,0 +1,27 @@
+[package]
+name = "vpay-wire"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lints]
+workspace = true
+
+# Deliberately NO `vpay-*` dependency, and no axum, sqlx or tokio. This crate is
+# the one thing the `/v1` server and a merchant-side client both have to agree
+# on byte for byte (the contract table a signed request binds), so it has to be
+# something a merchant SDK can depend on without inheriting the backend. The
+# arrow `sdks/rust -> backends/` that would create is VP-6's to decide (publish
+# this crate, or vendor the table behind a parity test); the shape here is what
+# keeps both open. `docs/reference/vpay-wire.md`.
+[dependencies]
+# `AcceptedContracts`, the type `EnvelopeLayer::builder` takes its contract
+# table as, and `find_contract`, the lookup the layer runs on it. Both
+# `=0.16.0` with the rest of the `cratestack-*` family (root `Cargo.toml`).
+cratestack-core.workspace = true
+# SHA-256 for `contract_digest`. The workspace pin (0.10); `cratestack-core`
+# brings 0.11 for its own digests, and the two never meet: a digest is bytes.
+sha2.workspace = true
