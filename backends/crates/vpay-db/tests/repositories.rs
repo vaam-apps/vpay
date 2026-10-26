@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::ops::Not as _;
 
 use anyhow::Context;
+use authkestra_engine::store::StoreError;
 use authkestra_op::client_assertion::ClientAssertionStore;
-use authkestra_op::error::OpError;
 use chrono::Utc;
 use serde_json::json;
 use sqlx::PgPool;
@@ -258,7 +258,7 @@ mod one_tx {
 #[tokio::test]
 async fn a_client_assertion_jti_is_fresh_once_then_replayed() -> anyhow::Result<()> {
     let (_container, repositories, _pool) = migrated_postgres().await?;
-    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
+    let mut store = vpay_db::client_assertion_store(repositories.op_store_pool());
     let expires_at = Utc::now() + chrono::Duration::seconds(60);
 
     let first = store
@@ -292,15 +292,16 @@ async fn a_client_assertion_jti_is_fresh_once_then_replayed() -> anyhow::Result<
 async fn concurrent_record_jti_calls_for_the_same_jti_yield_exactly_one_fresh_result()
 -> anyhow::Result<()> {
     let (_container, repositories, _pool) = migrated_postgres().await?;
-    let store = Arc::new(vpay_db::client_assertion_store(
-        repositories.op_store_pool(),
-    ));
+    // One clone per task, as authkestra 0.8+'s `&mut self` store methods
+    // require: every clone shares the one pool, so the race is decided by the
+    // `INSERT`, exactly as between two replicas.
+    let store = vpay_db::client_assertion_store(repositories.op_store_pool());
     let expires_at = Utc::now() + chrono::Duration::seconds(60);
 
     const ATTEMPTS: usize = 10;
     let mut handles = Vec::with_capacity(ATTEMPTS);
     for _ in 0..ATTEMPTS {
-        let store = Arc::clone(&store);
+        let mut store = store.clone();
         handles.push(tokio::spawn(async move {
             store.record_jti("jti-concurrent-race", expires_at).await
         }));
@@ -309,7 +310,7 @@ async fn concurrent_record_jti_calls_for_the_same_jti_yield_exactly_one_fresh_re
     let mut fresh = 0;
     let mut replayed = 0;
     for handle in handles {
-        let result: Result<bool, OpError> =
+        let result: Result<bool, StoreError> =
             handle.await.context("a spawned record_jti task panicked")?;
         match result.context("record_jti must not error under concurrent contention")? {
             true => fresh += 1,

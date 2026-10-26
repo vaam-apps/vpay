@@ -64,8 +64,14 @@ tracing.workspace = true
 # would pull sqlx's "chrono" feature into the whole workspace graph, which
 # the chrono/time boundary decision below exists specifically to avoid.
 authkestra-op.workspace = true
+# `ClientAssertionStore::record_jti` answers `authkestra_engine::store::
+# StoreError` since authkestra 0.8's storage rework, and `authkestra-op` does
+# not re-export it. Already in this crate's graph through `authkestra-op`, at
+# the same workspace pin and features, so this is an edge, not a package.
+authkestra-engine.workspace = true
 # `ClientAssertionStore::record_jti`'s signature is `chrono::DateTime<Utc>`
-# (authkestra-op-0.7.1/src/client_assertion.rs, unchanged since 0.3.4), not vpay's own `time`-crate
+# (authkestra-engine-0.13.1/src/store/traits.rs; it was authkestra-op's own
+# trait until 0.8, unchanged since 0.3.4), not vpay's own `time`-crate
 # convention. Named in TWO places now, both boundaries with someone else's
 # calendar and neither a change of convention: `src/client_assertion.rs`
 # receives/returns that one authkestra-op type, and

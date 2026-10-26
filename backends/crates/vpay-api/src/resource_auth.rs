@@ -112,7 +112,7 @@ const UNKNOWN_KID_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 /// The dashboard half could not survive a login. `authkestra_op`'s
 /// `default_handle_authorization_code` mints the access token with
 /// `aud = <client_id>` and has **no requested-audience path at all**
-/// (`authkestra-op-0.7.1/src/handlers/token.rs`, step 7), so no token from
+/// (`authkestra-op-0.13.1/src/handlers/token.rs`, step 7), so no token from
 /// the only grant that can ever produce a dashboard credential would have
 /// carried the constant. ADR-0017 changed the validator to expect what the
 /// grant produces: the audience is the dashboard client's own `client_id`,
@@ -387,8 +387,9 @@ impl From<ValidationError> for AuthRejection {
     /// Every claim, signature and key-resolution failure still collapses to
     /// [`AuthRejection::InvalidToken`] — that is the oracle argument on the
     /// type's own doc comment and it is unchanged. Naming the variants that
-    /// reach this `From` from [`JwtValidator::validate`], as of the `0.7.1`
-    /// pin (`authkestra-resource-0.7.1/src/jwt.rs`):
+    /// reach this `From` from [`JwtValidator::validate`], as of the `0.13.1`
+    /// pin (`authkestra-resource-0.13.1/src/jwt.rs`; the enum is unchanged
+    /// since 0.7.1):
     ///
     /// | Variant | Maps to | Why |
     /// |---|---|---|
@@ -891,20 +892,17 @@ mod tests {
         let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes())
             .expect("jsonwebtoken accepts a pkcs1 rsa private-key pem");
 
-        let jwk = Jwk {
-            kid: Some(kid.to_string()),
-            kty: "RSA".to_string(),
-            alg: Some("RS256".to_string()),
-            n: Some(URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be())),
-            e: Some(URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be())),
-            // `authkestra-engine` 0.4.0 (PR #190) widened `Jwk` with two more
-            // fields to also represent the OKP/Ed25519 JWK shape (RFC 8037)
-            // alongside the existing RSA one. Both are `None` for every RSA
-            // key this test module generates — see the struct's own doc
-            // comment on `authkestra_engine::token::jwk::Jwk`.
-            crv: None,
-            x: None,
-        };
+        // `Jwk` is `#[non_exhaustive]` since authkestra 0.6, so a test builds
+        // it through the constructor rather than a struct literal. `use` and
+        // `key_ops` stay unset: since 0.10 a key carrying either must allow
+        // signature verification, and a key carrying neither is accepted,
+        // which is the shape vpay's own JWKS publishes.
+        let jwk = Jwk::rsa(
+            URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be()),
+            URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be()),
+        )
+        .with_kid(kid)
+        .with_alg("RS256");
 
         (encoding_key, jwk)
     }
@@ -1773,7 +1771,7 @@ mod tests {
     /// The shape `authkestra_op` actually produces when a merchant's token
     /// request carries no `audience` parameter: `aud` defaults to the
     /// client's own `client_id`
-    /// (`authkestra-op-0.7.1/src/handlers/token.rs`, "No audience requested;
+    /// (`authkestra-op-0.13.1/src/handlers/token.rs`, "No audience requested;
     /// defaulting client_credentials token audience to client_id"). Such a
     /// token is signed by this deployment's own key and is valid in every
     /// other respect — it simply is not addressed to `/v1`.

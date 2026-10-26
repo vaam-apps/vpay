@@ -128,9 +128,12 @@ base64 = "0.22"
 # `password-hash/std` and the `rand` default brings `password_hash::rand_core`,
 # which is the OS CSPRNG every random value in `staff_auth` is drawn from — so
 # `rand` itself stays a dev-dependency and no second CSPRNG enters the
-# shipping graph). Already resolved at exactly 0.5.3 in `Cargo.lock` via
-# `authkestra-engine`, so this adds no package: it makes an already-compiled
-# one directly importable here.
+# shipping graph). When this was added, `authkestra-engine` already resolved
+# 0.5.3, so it added no package. Since authkestra 0.13.1 (2026-10-26) the
+# engine uses argon2 0.6.0, so the lock carries both: 0.5.3 is vpay's own
+# staff hashing, a second copy that `cargo deny`'s `multiple-versions` only
+# warns about. Moving staff hashing to 0.6 is its own change, with its own
+# test that the stored hashes still verify; it was not part of that bump.
 argon2 = { version = "0.5", features = ["std"] }
 # `staff.totp_secret` is sealed with AES-256-GCM (`staff_auth::secret_box`).
 # Workspace pin, and `docs/flows/dashboard-auth.md` has listed it as an unused
@@ -150,7 +153,8 @@ hmac.workspace = true
 # exactly one RFC in this codebase.
 sha1 = "0.10"
 # `authkestra_op::AuthorizationCode::expires_at` is `chrono::DateTime<Utc>`
-# (`authkestra-op-0.7.1/src/code.rs`), so the code store has to speak it at
+# (`authkestra-engine-0.13.1/src/oauth2/code.rs`; it was
+# `authkestra-op-0.7.1/src/code.rs` until 0.8), so the code store has to speak it at
 # that one boundary and converts to `time::OffsetDateTime` immediately, the
 # way `vpay-db`'s `client_assertion` already does. It was a dev-dependency of
 # this crate for exactly the same types; it is production now because the

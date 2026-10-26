@@ -45,13 +45,14 @@
 //! `client.allows_grant_type(..)` *before* it touches a store
 //! (`default_handle_authorization_code`'s first statement,
 //! `default_handle_refresh_token`'s first statement, `handle_device_code`'s
-//! first statement — all at `authkestra-op-0.7.1`). A merchant registration
+//! first statement — at `authkestra-op-0.7.1`, and still at 0.13.1). A
+//! merchant registration
 //! can only ever declare `client_credentials`, so all three return
 //! `unauthorized_client` before any store is consulted.
 //!
 //! The one grant `/v1` does serve cannot reach a store at all:
 //! `handle_client_credentials` does not take an `op_store` argument
-//! (`authkestra-op-0.7.1/src/handlers/token.rs`, the `"client_credentials"`
+//! (`authkestra-op-0.13.1/src/handlers/token.rs`, the `"client_credentials"`
 //! dispatch arm), so no change to a registration or a config file can route
 //! it here. `backends/tests/integration/tests/merchant_token_flow.rs` case
 //! (i) proves the first half against a real server on a real socket: all
@@ -86,9 +87,9 @@
 //! version-mismatch failure. The correction lives in `docs/status.md`.
 
 use async_trait::async_trait;
+use authkestra_engine::store::StoreError;
 use authkestra_op::code::{AuthorizationCode, AuthorizationCodeStore};
 use authkestra_op::device::{DeviceCodeSession, DeviceCodeStore};
-use authkestra_op::error::OpError;
 use authkestra_op::refresh::{RefreshToken, RefreshTokenStore};
 use vpay_core::{Category, Classify};
 
@@ -211,26 +212,30 @@ impl Classify for UnservedGrantError {
     }
 }
 
-/// The `OpError` handed back to `authkestra_op`, after logging the vpay-side
-/// error that explains it.
+/// The `StoreError` handed back to `authkestra_op`, after logging the
+/// vpay-side error that explains it.
 ///
-/// `OpError::GrantTypeNotPermitted` rather than `OpError::Storage`: nothing
-/// is wrong with any storage, and a log reader who sees "storage error"
-/// starts checking Postgres. It makes no difference to the caller — every one
+/// A `StoreError` since authkestra 0.8, whose store traits answer
+/// `authkestra_engine`'s error and not `OpError`. Until then this returned
+/// `OpError::GrantTypeNotPermitted`, chosen so a log reader would not start
+/// checking Postgres. `StoreError` has no such variant, so the payload
+/// carries [`UnservedGrantError`]'s `Display` instead, and the grant
+/// handlers' own `error = ?e` log line repeats it
+/// (`authkestra-op-0.13.1/src/handlers/token.rs`, e.g. "Error consuming
+/// authorization code"). It makes no difference to the caller — every one
 /// of the three grant handlers maps *any* `Err` from a store to
-/// `server_error` without inspecting it — so the variant is chosen for the
-/// operator, and the operator's real information is the `tracing::error!`
-/// below, which carries [`UnservedGrantError`]'s whole `Display`.
+/// `server_error` without inspecting it — and the operator's real
+/// information is the `tracing::error!` below.
 ///
 /// `error!` and not `warn!`: [`Category::NotImplemented`]'s default severity
 /// is what the classification says, and this line is only ever emitted on a
 /// path the module doc argues is unreachable. If it appears in a log, an
 /// invariant of the OP assembly has been broken and somebody should be woken
 /// up.
-fn refuse(grant: UnservedGrant, method: &'static str) -> OpError {
+fn refuse(grant: UnservedGrant, method: &'static str) -> StoreError {
     let error = UnservedGrantError::new(grant, method);
     tracing::error!(grant_type = grant.grant_type(), method, "{error}");
-    OpError::GrantTypeNotPermitted
+    StoreError::Internal(error.to_string())
 }
 
 /// The `AuthorizationCodeStore` slot: refuses to issue or spend a code.
@@ -251,11 +256,11 @@ pub struct RefusingAuthorizationCodeStore;
 
 #[async_trait]
 impl AuthorizationCodeStore for RefusingAuthorizationCodeStore {
-    async fn store_code(&self, _code: AuthorizationCode) -> Result<(), OpError> {
+    async fn store_code(&mut self, _code: AuthorizationCode) -> Result<(), StoreError> {
         Err(refuse(UnservedGrant::AuthorizationCode, "store_code"))
     }
 
-    async fn consume_code(&self, _code: &str) -> Result<Option<AuthorizationCode>, OpError> {
+    async fn consume_code(&mut self, _code: &str) -> Result<Option<AuthorizationCode>, StoreError> {
         Err(refuse(UnservedGrant::AuthorizationCode, "consume_code"))
     }
 }
@@ -281,19 +286,19 @@ pub struct RefusingRefreshTokenStore;
 
 #[async_trait]
 impl RefreshTokenStore for RefusingRefreshTokenStore {
-    async fn store_token(&self, _token: RefreshToken) -> Result<(), OpError> {
+    async fn store_token(&mut self, _token: RefreshToken) -> Result<(), StoreError> {
         Err(refuse(UnservedGrant::RefreshToken, "store_token"))
     }
 
-    async fn get_token(&self, _token: &str) -> Result<Option<RefreshToken>, OpError> {
+    async fn get_token(&mut self, _token: &str) -> Result<Option<RefreshToken>, StoreError> {
         Err(refuse(UnservedGrant::RefreshToken, "get_token"))
     }
 
-    async fn revoke_token(&self, _token: &str) -> Result<(), OpError> {
+    async fn revoke_token(&mut self, _token: &str) -> Result<(), StoreError> {
         Err(refuse(UnservedGrant::RefreshToken, "revoke_token"))
     }
 
-    async fn consume_token(&self, _token: &str) -> Result<Option<RefreshToken>, OpError> {
+    async fn consume_token(&mut self, _token: &str) -> Result<Option<RefreshToken>, StoreError> {
         Err(refuse(UnservedGrant::RefreshToken, "consume_token"))
     }
 }
@@ -313,36 +318,36 @@ pub struct RefusingDeviceCodeStore;
 
 #[async_trait]
 impl DeviceCodeStore for RefusingDeviceCodeStore {
-    async fn store_device_code(&self, _session: DeviceCodeSession) -> Result<(), OpError> {
+    async fn store_device_code(&mut self, _session: DeviceCodeSession) -> Result<(), StoreError> {
         Err(refuse(UnservedGrant::DeviceCode, "store_device_code"))
     }
 
     async fn get_device_code(
-        &self,
+        &mut self,
         _device_code: &str,
-    ) -> Result<Option<DeviceCodeSession>, OpError> {
+    ) -> Result<Option<DeviceCodeSession>, StoreError> {
         Err(refuse(UnservedGrant::DeviceCode, "get_device_code"))
     }
 
     async fn get_by_user_code(
-        &self,
+        &mut self,
         _user_code: &str,
-    ) -> Result<Option<DeviceCodeSession>, OpError> {
+    ) -> Result<Option<DeviceCodeSession>, StoreError> {
         Err(refuse(UnservedGrant::DeviceCode, "get_by_user_code"))
     }
 
-    async fn update_device_code(&self, _session: DeviceCodeSession) -> Result<(), OpError> {
+    async fn update_device_code(&mut self, _session: DeviceCodeSession) -> Result<(), StoreError> {
         Err(refuse(UnservedGrant::DeviceCode, "update_device_code"))
     }
 
-    async fn delete_device_code(&self, _device_code: &str) -> Result<(), OpError> {
+    async fn delete_device_code(&mut self, _device_code: &str) -> Result<(), StoreError> {
         Err(refuse(UnservedGrant::DeviceCode, "delete_device_code"))
     }
 
     async fn consume_device_code(
-        &self,
+        &mut self,
         _device_code: &str,
-    ) -> Result<Option<DeviceCodeSession>, OpError> {
+    ) -> Result<Option<DeviceCodeSession>, StoreError> {
         Err(refuse(UnservedGrant::DeviceCode, "consume_device_code"))
     }
 }
@@ -467,7 +472,7 @@ mod tests {
     /// The three wire spellings, pinned as literals.
     ///
     /// These are the strings `handle_token` matches on
-    /// (`authkestra-op-0.7.1/src/handlers/token.rs`'s
+    /// (`authkestra-op-0.13.1/src/handlers/token.rs`'s
     /// `match req.grant_type.as_str()`), and the ones
     /// `merchant_token_flow.rs` case (i) posts. A drift here would make that
     /// integration test exercise a grant nothing dispatches — it would still

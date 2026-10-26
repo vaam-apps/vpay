@@ -84,7 +84,16 @@ pub async fn token_handler(
         request.scope = Some(default.to_owned());
     }
 
-    match handle_token(request, auth_header, op.config(), op.store(), op.tokens()).await {
+    let mut store = op.store();
+    match handle_token(
+        request,
+        auth_header,
+        op.config(),
+        store.as_mut(),
+        op.tokens(),
+    )
+    .await
+    {
         Ok(response) => (StatusCode::OK, Json(response)).into_response(),
         Err(error) => (token_error_status(&error.error), Json(error)).into_response(),
     }
@@ -179,8 +188,9 @@ pub async fn discovery_handler(State(op): State<Arc<MerchantOp>>) -> impl IntoRe
 /// Builds the metadata document by hand rather than through
 /// `authkestra_op::handlers::discovery::OidcDiscovery::from_config`.
 ///
-/// `from_config` was read (`authkestra-op-0.7.1/src/handlers/discovery.rs`)
-/// and rejected: for a provider whose only grant is `client_credentials` it
+/// `from_config` was read (`authkestra-op-0.7.1/src/handlers/discovery.rs`,
+/// identical at 0.13.1) and rejected: for a provider whose only grant is
+/// `client_credentials` it
 /// still emits four things vpay does not serve, and a metadata document that
 /// promises a route which 404s is worse than one that stays quiet — the same
 /// principle authkestra applies to its own `with_private_key_jwt` and
