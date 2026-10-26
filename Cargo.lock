@@ -768,9 +768,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-axum"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc966df9250bc4e3a240ed69d84cd3cba5ba0e9b12cfc9c11ee92359cff734e0"
+checksum = "83950f07dfcfe430e0589b94e71479f11dc233bdce9a6e6b06b516cf1920d0ca"
 dependencies = [
  "async-trait",
  "axum",
@@ -797,9 +797,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-client-rust"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "af89b64aa55820b79d007dfd45bf622e0e28a9e93a5ac15fe8d14ab10326153a"
+checksum = "23be6f27869c6bbfcae35d65aa3d262063bc496436e313f1368cfdd418eed920"
 dependencies = [
  "async-trait",
  "bytes",
@@ -823,31 +823,33 @@ dependencies = [
 
 [[package]]
 name = "cratestack-codec-cbor"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3999997919e1889697d26019f28d0821749e3b135bd1340437b034e61a2407ae"
+checksum = "c4e062b107b14e98bcb6ef9dcda802bfd3b2ef604c4f90856bfc2e38439721a8"
 dependencies = [
  "cratestack-core",
  "minicbor-serde",
  "serde",
+ "serde_path_to_error",
 ]
 
 [[package]]
 name = "cratestack-codec-json"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "56150621618d8ae73ff76dfc186712f51b6c3d4d4f6215df0e70d01a55eedd39"
+checksum = "cb143ff7cb2807823ac8c997e2c37eb272a9a267cdf5dca4075b256dfa139248"
 dependencies = [
  "cratestack-core",
  "serde",
  "serde_json",
+ "serde_path_to_error",
 ]
 
 [[package]]
 name = "cratestack-core"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e83951b76773a010fbea2aca7d058cf8b85da5f0532b915107b2ea43f51cbf30"
+checksum = "31cf4024779955650438773771903a17bd7395ef08f81566da2329be3fd721f0"
 dependencies = [
  "async-trait",
  "base64 0.23.1",
@@ -858,6 +860,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.0",
+ "sqlx-core",
+ "sqlx-postgres",
  "subtle",
  "thiserror",
  "url",
@@ -866,9 +870,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-exec"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f8ecf687e90b65c0956733cb60ce325eeacfb69b2d8307abf90c9b09f1edb55"
+checksum = "7de8cc73169994b3763132b81ebd0ccc9161469e99a218c4704bced58d86cd03"
 dependencies = [
  "cratestack-core",
  "uuid",
@@ -876,9 +880,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-macros"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5578df690ea46c0d134847beb857033175f442b27cd5987d8b3ba9eccbc40980"
+checksum = "1adcf279eec4986e8082e7e18c8f66cb7607ff2f6ffef5e6eeab3de775826d27"
 dependencies = [
  "cratestack-core",
  "cratestack-parser",
@@ -891,9 +895,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-parser"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6aaee3c989b767e75d83e4556e4cc3197ceb94be33bd5f040a8a2e669ed66c1"
+checksum = "bde36fec30e4451fb45c299434ff938bcbd24821ad0368fd24870e2904a32ded"
 dependencies = [
  "ariadne",
  "chumsky",
@@ -904,9 +908,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-pg"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a94fe07b865aa66fdf1835c48439395597b3ba29eb05d1cfc58bcb6b2210231c"
+checksum = "1edef214dbc4ff151e394128a40960c3ffd6376b4d29c286776b09ac4711d0eb"
 dependencies = [
  "async-stream",
  "chrono",
@@ -928,9 +932,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-policy"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "953a7660dcd747d13b01494d794cb5d52569c958404e98b56382efce47f8df46"
+checksum = "6f778dc95cedef0f04cafec9efa293f1739abbe14ffdb7a29e00cee5c2d49ba6"
 dependencies = [
  "cratestack-core",
  "serde",
@@ -938,9 +942,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-sql"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adf2809c12c0f9154ab5868825d13556cf4b53ec259ea10a540a3687e8db8eb9"
+checksum = "37285fa15bab707fd3775e021cef5ddcbec022f22741d05d2a853f87ba59ca38"
 dependencies = [
  "chrono",
  "cratestack-core",
@@ -952,9 +956,9 @@ dependencies = [
 
 [[package]]
 name = "cratestack-sqlx"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3cc866465ffbfee88507d7c22b237d0ec5d61180fcc24b6544593ce819b9257f"
+checksum = "e91eca47861c2c53abb5bc5acec32a3d579ab926615dbcde6ec73467988336ae"
 dependencies = [
  "async-trait",
  "chrono",
@@ -1337,7 +1341,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2520,7 +2524,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3386,7 +3390,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3443,7 +3447,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4209,7 +4213,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5311,7 +5315,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
