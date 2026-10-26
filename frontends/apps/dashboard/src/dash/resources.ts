@@ -44,6 +44,7 @@ import {
   REFUNDS,
   WEBHOOK_DELIVERIES,
 } from "./resource-name";
+import { PROCEDURES_PROVIDER } from "./procedure-provider";
 
 /** A resource, plus the two things the nav needs that Refine does not model. */
 export interface DashResourceEntry {
@@ -78,16 +79,22 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
     group: "Money",
     icon: CreditCard,
   },
-  // The three Lane D slices. Each is a CrateStack procedure behind
-  // `/api/dash/<name>`; `create`/`edit` are omitted for the reason the
-  // comment above gives, and `canDelete` stays false — `/dash/v1` answers
-  // `403` to every non-`GET` at its boundary and ADR-0008 gates writes
-  // behind an `audit_log` that does not exist.
+  // The four procedure-backed slices. Each is a CrateStack procedure behind
+  // `/api/dash/<name>`, read through `@cratestack/refine` — the `procedures`
+  // data provider (`procedure-provider.ts`), which `dataProviderName` picks.
+  // `create`/`edit` are omitted for the reason the comment above gives, and
+  // `canDelete` stays false — `/dash/v1` answers `403` to every non-`GET` at
+  // its boundary and ADR-0008 gates writes behind an `audit_log` that does
+  // not exist.
   {
     resource: {
       name: REFUNDS,
       list: "/refunds",
-      meta: { label: "Refunds", canDelete: false },
+      meta: {
+        label: "Refunds",
+        canDelete: false,
+        dataProviderName: PROCEDURES_PROVIDER,
+      },
     },
     label: "Refunds",
     group: "Money",
@@ -97,7 +104,11 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
     resource: {
       name: WEBHOOK_DELIVERIES,
       list: "/deliveries",
-      meta: { label: "Deliveries", canDelete: false },
+      meta: {
+        label: "Deliveries",
+        canDelete: false,
+        dataProviderName: PROCEDURES_PROVIDER,
+      },
     },
     label: "Deliveries",
     group: "Integrations",
@@ -107,7 +118,11 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
     resource: {
       name: CHECKOUT_SESSIONS,
       list: "/checkouts",
-      meta: { label: "Checkouts", canDelete: false },
+      meta: {
+        label: "Checkouts",
+        canDelete: false,
+        dataProviderName: PROCEDURES_PROVIDER,
+      },
     },
     label: "Checkouts",
     group: "Money",
@@ -117,7 +132,11 @@ export const DASH_RESOURCES: readonly DashResourceEntry[] = [
     resource: {
       name: CUSTOMERS,
       list: "/customers",
-      meta: { label: "Customers", canDelete: false },
+      meta: {
+        label: "Customers",
+        canDelete: false,
+        dataProviderName: PROCEDURES_PROVIDER,
+      },
     },
     label: "Customers",
     group: "Customers",
