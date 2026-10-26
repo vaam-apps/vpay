@@ -1,15 +1,15 @@
-import { Card, InlineEmptyState } from "@vaam-apps/ui";
+import type { ReactNode } from "react";
 
 import {
   offsetFrom,
-  readProcedurePage,
+  readProcedureList,
   singleParam,
 } from "../dash/procedure-list";
+import type { ProcedureResource } from "../dash/resource-name";
 import { requireStaff } from "../server/session";
 import { FilterChips } from "./filter-chips";
 import { PageHeader } from "./layout";
-import { ProcedurePager } from "./procedure-pager";
-import { ProcedureTable, type ProcedureColumn } from "./procedure-table";
+import type { ProcedureListBodyProps } from "./procedure-list-view";
 import { ReadFailure } from "./read-failure";
 
 /**
@@ -31,20 +31,24 @@ export interface ProcedureFilter {
   }[];
 }
 
-export interface ProcedureListScreenProps<Row> {
+export interface ProcedureListScreenProps {
   readonly title: string;
   readonly description: string;
-  /** The `DashResource` this list reads, e.g. `REFUNDS`. */
-  readonly resource: string;
+  /** The `ProcedureResource` this list reads, e.g. `REFUNDS`. */
+  readonly resource: ProcedureResource;
   /** This screen's own route, e.g. `/refunds`. */
   readonly basePath: string;
   /** The page's `searchParams`, already awaited. */
   readonly params: Record<string, string | string[] | undefined>;
-  readonly columns: readonly ProcedureColumn<Row>[];
-  readonly idOf: (row: Row) => string;
   readonly filter?: ProcedureFilter;
   /** What an unfiltered empty list means, e.g. "No refunds. …". */
   readonly emptyMessage: string;
+  /**
+   * The list's client body — `app/(dash)/<list>/<list>-list.tsx`, which owns
+   * the columns. A function between two Server Components, so nothing with
+   * a render function in it ever crosses to the browser as a prop.
+   */
+  readonly List: (props: ProcedureListBodyProps) => ReactNode;
 }
 
 /**
@@ -68,22 +72,30 @@ export interface ProcedureListScreenProps<Row> {
  * Overview's counts link here with these parameters, so a number on the
  * Overview always opens the rows it counted.
  *
+ * # The read goes through `@cratestack/refine`, the body through Refine
+ *
+ * Since 2026-10-26 the page is read by `readProcedureList` — the generated
+ * client's procedure, behind `@cratestack/refine`'s data provider — and the
+ * table, empty state and pager render in `ProcedureListView`, a client
+ * component that hands that read to Refine's `useList` as `initialData`.
+ * The header and the filter chips stay here: they are links, and work
+ * before hydration.
+ *
  * # A refused read is never an empty list
  *
  * `ReadFailure` with the request id, the session untouched — the same rule
  * `/payments` follows, and the reason the outage branch exists at all.
  */
-export async function ProcedureListScreen<Row>({
+export async function ProcedureListScreen({
   title,
   description,
   resource,
   basePath,
   params,
-  columns,
-  idOf,
   filter,
   emptyMessage,
-}: ProcedureListScreenProps<Row>) {
+  List,
+}: ProcedureListScreenProps) {
   const header = <PageHeader title={title} description={description} />;
   const gate = await requireStaff();
   if (gate.kind === "outage") {
@@ -97,7 +109,7 @@ export async function ProcedureListScreen<Row>({
 
   const offset = offsetFrom(params);
   const chosen = filter === undefined ? "" : singleParam(params, filter.param);
-  const result = await readProcedurePage<Row>(
+  const initial = await readProcedureList(
     gate.staff,
     resource,
     offset,
@@ -124,39 +136,17 @@ export async function ProcedureListScreen<Row>({
           ]}
         />
       )}
-      {!result.ok ? (
-        <ReadFailure failure={result.failure} />
-      ) : result.value.items.length === 0 ? (
-        <Card>
-          <InlineEmptyState
-            variant="standalone"
-            message={
-              chosen === ""
-                ? emptyMessage
-                : `Nothing matches this filter. Choose "All" to see every row.`
-            }
-          />
-        </Card>
-      ) : (
-        <Card className="overflow-hidden">
-          <ProcedureTable
-            rows={result.value.items}
-            columns={columns}
-            idOf={idOf}
-            caption={title}
-          />
-          <div className="border-t border-edge px-4 py-3">
-            <ProcedurePager
-              basePath={basePath}
-              offset={offset}
-              returned={result.value.items.length}
-              totalCount={result.value.totalCount}
-              hasNext={result.value.pageInfo.hasNextPage}
-              query={query}
-            />
-          </div>
-        </Card>
-      )}
+      <List
+        resource={resource}
+        title={title}
+        basePath={basePath}
+        filterField={filter?.field ?? null}
+        chosen={chosen}
+        query={query}
+        offset={offset}
+        emptyMessage={emptyMessage}
+        initial={initial}
+      />
     </>
   );
 }

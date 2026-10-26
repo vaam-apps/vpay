@@ -102,8 +102,8 @@ import { originIsAllowed, HOST_HEADER, ORIGIN_HEADER } from "./csrf";
 import { gateFor, refusalFor } from "./gate";
 import { completeAuthorizationCode } from "./oauth";
 import { readSession } from "./session";
-import { callDashProcedure, type ProcedurePage } from "./dash-read";
-import { PROCEDURE_OF } from "../dash/resource-name";
+import { listProcedurePage } from "../dash/cratestack-client";
+import { isProcedureResource } from "../dash/resource-name";
 
 /**
  * The header that says what kind of context issued a request.
@@ -576,9 +576,10 @@ function boundedNumber(
 /**
  * `GET /api/dash/<resource>` for a resource served by a **procedure**.
  *
- * The three Lane D slices are CrateStack procedures, so this is a `POST` to
- * `/dash/v1/$procs/<name>` made *by this process*, on behalf of the browser's
- * `GET`. The browser can never `POST` here: `middleware.ts` answers `405` to
+ * The four procedure-backed slices are CrateStack procedures, so this is a
+ * `POST` to `/dash/v1/$procs/<name>` made *by this process* — through the
+ * generated client since 2026-10-26 (`src/dash/cratestack-client.ts`) — on
+ * behalf of the browser's `GET`. The browser can never `POST` here: `middleware.ts` answers `405` to
  * every method but `GET`/`HEAD` on `/api/dash/:path*`.
  *
  * **Offset paging, and the answer says so.** A procedure answers
@@ -606,8 +607,7 @@ export async function procedureListResponse(
     return reader.response;
   }
 
-  const procedure = PROCEDURE_OF[resource];
-  if (procedure === undefined) {
+  if (!isProcedureResource(resource)) {
     // Not reachable through a route this app declares; answered the way a
     // path nothing serves is answered rather than with a sentence naming
     // the resource.
@@ -626,12 +626,11 @@ export async function procedureListResponse(
     Number.MAX_SAFE_INTEGER,
   );
 
-  const result = await callDashProcedure<ProcedurePage<unknown>>(
-    reader.session.config,
-    procedure,
-    { page: { limit, offset }, filter: {} },
-    reader.session.accessToken,
-    reader.session.sessionToken,
+  const result = await listProcedurePage(
+    reader.session,
+    resource,
+    { limit, offset },
+    {},
   );
 
   return serve(result, (page) => ({

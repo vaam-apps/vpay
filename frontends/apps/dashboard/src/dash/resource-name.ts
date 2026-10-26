@@ -14,13 +14,11 @@
 export const PAYMENT_INTENTS = "payment_intents";
 
 /**
- * The three Lane D read slices.
+ * The four procedure-backed read slices.
  *
  * Each is a CrateStack **procedure** rather than a REST route, so the name
- * here is the resource Refine routes on and `PROCEDURE_OF` below maps it to
- * the procedure the transport actually mounts. Keeping both spellings in one
- * file is deliberate: a resource whose procedure name is guessed at the call
- * site is a 404 nobody notices until a screen is empty.
+ * here is the resource Refine routes on, and `PROCEDURE_RESOURCES` below
+ * says which they are.
  */
 export const REFUNDS = "refunds";
 export const WEBHOOK_DELIVERIES = "webhook_deliveries";
@@ -36,17 +34,42 @@ export type DashResource =
   | typeof CHECKOUT_SESSIONS;
 
 /**
- * Which procedure serves which resource.
+ * The resources a CrateStack **procedure** serves — every one but
+ * `payment_intents`, which is `GET /dash/v1/payment_intents`, a cursor-paged
+ * REST route shared with the merchant API, and stays on its own provider.
  *
- * `payment_intents` is absent on purpose: it is served by
- * `GET /dash/v1/payment_intents`, a cursor-paged REST route shared with the
- * merchant API, not by a procedure. A lookup that misses here means "this
- * resource is not a procedure", which is a different thing from "unknown
- * resource" and is why this is a partial map rather than a total one.
+ * Which procedure serves which is no longer a string map here. Until
+ * 2026-10-26 `PROCEDURE_OF` held `"searchRefunds"` and its siblings as text,
+ * and a misspelling was a `404` nobody noticed until a screen was empty. The
+ * mapping is now a call into the generated client
+ * (`src/dash/cratestack-client.ts`'s `LIST_OF`), so a procedure renamed in
+ * `schemas/vpay.cstack` is a compile error after `just gen-dash-client`.
  */
-export const PROCEDURE_OF: Readonly<Record<string, string>> = {
-  [REFUNDS]: "searchRefunds",
-  [WEBHOOK_DELIVERIES]: "searchWebhookDeliveries",
-  [CUSTOMERS]: "searchCustomers",
-  [CHECKOUT_SESSIONS]: "searchCheckoutSessions",
+export const PROCEDURE_RESOURCES = [
+  REFUNDS,
+  WEBHOOK_DELIVERIES,
+  CUSTOMERS,
+  CHECKOUT_SESSIONS,
+] as const;
+
+export type ProcedureResource = (typeof PROCEDURE_RESOURCES)[number];
+
+export function isProcedureResource(
+  resource: string,
+): resource is ProcedureResource {
+  return (PROCEDURE_RESOURCES as readonly string[]).includes(resource);
+}
+
+/**
+ * Where the browser reads each one: `app/api/dash/<path>/route.ts`.
+ *
+ * Two names differ from the resource — `deliveries` and `checkouts` are the
+ * screens' own words — which is why this is a map and not the resource name
+ * spliced into a URL.
+ */
+export const BFF_PATH_OF: Readonly<Record<ProcedureResource, string>> = {
+  [REFUNDS]: "refunds",
+  [WEBHOOK_DELIVERIES]: "deliveries",
+  [CUSTOMERS]: "customers",
+  [CHECKOUT_SESSIONS]: "checkouts",
 };

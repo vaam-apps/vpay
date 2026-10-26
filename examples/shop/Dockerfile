@@ -53,10 +53,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/build/target \
     bash sdks/nodejs/scripts/build-wasm.sh
 
-FROM node:22-alpine AS builder
+FROM node:24-alpine AS builder
 # Prisma's engines are dynamically linked against OpenSSL 3 on musl. Prisma
 # left the request path at the ZenStack 3 upgrade but not the image: v3's
 # migration engine still drives Prisma Migrate.
+#
+# `openssl` is not version-pinned (hadolint DL3018) on purpose: Alpine drops
+# superseded package revisions from its index, so a pin fails the build at
+# the next point release. The `node:24-alpine` base is the pin.
 # hadolint ignore=DL3018
 RUN apk add --no-cache openssl && corepack enable
 WORKDIR /build
@@ -89,7 +93,8 @@ RUN pnpm --filter @vaam-apps/vpay-sdk run build:ts \
     && pnpm --filter @vaam-apps/vpay-stripe-js build \
     && pnpm --filter @vpay-examples/shop exec next build
 
-FROM node:22-alpine AS runner
+FROM node:24-alpine AS runner
+# Not version-pinned, for the reason the builder stage gives.
 # hadolint ignore=DL3018
 RUN apk add --no-cache openssl
 WORKDIR /app

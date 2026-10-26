@@ -3,10 +3,10 @@
 # vpay's admin frontend — `frontends/apps/dashboard`, published as
 # `ghcr.io/vaam-apps/vpay-dashboard` (ADR-0022). Modelled on
 # `deployment-checkout.yaml`, which is this chart's precedent for a
-# `node:22-alpine` Next standalone server, including verbatim:
+# `node:24-alpine` Next standalone server, including verbatim:
 #
 #   * `runAsNonRoot: true` with NO explicit `runAsUser` — the image declares
-#     the NUMERIC `USER 1000:1000` (the `node` user of `node:22-alpine`), which
+#     the NUMERIC `USER 1000:1000` (the `node` user of `node:24-alpine`), which
 #     is what lets the kubelet verify non-root. The image is the single source
 #     of truth for the UID; naming it here too is how the two drift. A named
 #     `USER node` is NOT enough: the kubelet refuses it with "container has

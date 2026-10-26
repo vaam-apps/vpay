@@ -294,7 +294,9 @@ just up               # Postgres + a WireMock host per rail
 `!reset`), the Rust toolchain `rust-toolchain.toml` pins, `just`, `jq`, `curl`
 and `openssl`. `pnpm` is needed only to work on the web packages; `just demo`
 builds every image it needs in Docker. The Node baseline is `.nvmrc` —
-`22.23.2` — and `.npmrc` sets `engine-strict=true`, so `pnpm install` **fails**
+`24.21.0` since 2026-10-26, when `@cratestack/refine` (which declares
+`engines.node >= 24` in every release) joined the dashboard; it was `22.23.2`
+before — and `.npmrc` sets `engine-strict=true`, so `pnpm install` **fails**
 rather than warns on an older Node.
 
 ```bash

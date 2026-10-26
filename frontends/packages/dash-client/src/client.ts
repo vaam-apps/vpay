@@ -1,0 +1,1476 @@
+import { CratestackRuntime, type CratestackClientOptions, type CratestackResponseEnvelope } from "./runtime.js";
+import { reviveWireFields, revivePagedWireFields, reviveWireScalar } from "./models.js";
+import type {
+  PaymentIntentSummary,
+  PaymentIntentListFilter,
+  RefundSummary,
+  RefundListFilter,
+  WebhookDeliverySummary,
+  WebhookDeliveryListFilter,
+  CustomerSummary,
+  CustomerListFilter,
+  CheckoutSessionSummary,
+  CheckoutSessionListFilter,
+  Currency,
+  CreateCurrencyInput,
+  UpdateCurrencyInput,
+  CurrencyWhere,
+  CurrencyOrderByClause,
+  CurrencyFindMany,
+  Provider,
+  CreateProviderInput,
+  UpdateProviderInput,
+  ProviderWhere,
+  ProviderOrderByClause,
+  ProviderFindMany,
+  PaymentIntent,
+  UpdatePaymentIntentInput,
+  PaymentIntentWhere,
+  PaymentIntentOrderByClause,
+  PaymentIntentFindMany,
+  Charge,
+  UpdateChargeInput,
+  ChargeWhere,
+  ChargeOrderByClause,
+  ChargeFindMany,
+  Refund,
+  UpdateRefundInput,
+  RefundWhere,
+  RefundOrderByClause,
+  RefundFindMany,
+  CheckoutSession,
+  UpdateCheckoutSessionInput,
+  CheckoutSessionWhere,
+  CheckoutSessionOrderByClause,
+  CheckoutSessionFindMany,
+  LedgerTransaction,
+  UpdateLedgerTransactionInput,
+  LedgerTransactionWhere,
+  LedgerTransactionOrderByClause,
+  LedgerTransactionFindMany,
+  LedgerEntry,
+  UpdateLedgerEntryInput,
+  LedgerEntryWhere,
+  LedgerEntryOrderByClause,
+  LedgerEntryFindMany,
+  DisabledClient,
+  CreateDisabledClientInput,
+  UpdateDisabledClientInput,
+  DisabledClientWhere,
+  DisabledClientOrderByClause,
+  DisabledClientFindMany,
+  Event,
+  UpdateEventInput,
+  EventWhere,
+  EventOrderByClause,
+  EventFindMany,
+  WebhookDelivery,
+  CreateWebhookDeliveryInput,
+  UpdateWebhookDeliveryInput,
+  WebhookDeliveryWhere,
+  WebhookDeliveryOrderByClause,
+  WebhookDeliveryFindMany,
+  Customer,
+  UpdateCustomerInput,
+  CustomerWhere,
+  CustomerOrderByClause,
+  CustomerFindMany,
+  StaffMember,
+  CreateStaffMemberInput,
+  UpdateStaffMemberInput,
+  StaffMemberWhere,
+  StaffMemberOrderByClause,
+  StaffMemberFindMany,
+  StaffSession,
+  CreateStaffSessionInput,
+  UpdateStaffSessionInput,
+  StaffSessionWhere,
+  StaffSessionOrderByClause,
+  StaffSessionFindMany,
+  StaffSsoAttempt,
+  CreateStaffSsoAttemptInput,
+  UpdateStaffSsoAttemptInput,
+  StaffSsoAttemptWhere,
+  StaffSsoAttemptOrderByClause,
+  StaffSsoAttemptFindMany,
+  OauthAuthorizationCode,
+  CreateOauthAuthorizationCodeInput,
+  UpdateOauthAuthorizationCodeInput,
+  OauthAuthorizationCodeWhere,
+  OauthAuthorizationCodeOrderByClause,
+  OauthAuthorizationCodeFindMany,
+  Credential,
+  CreateCredentialInput,
+  UpdateCredentialInput,
+  CredentialWhere,
+  CredentialOrderByClause,
+  CredentialFindMany,
+  Invoice,
+  UpdateInvoiceInput,
+  InvoiceWhere,
+  InvoiceOrderByClause,
+  InvoiceFindMany,
+  InvoiceItem,
+  UpdateInvoiceItemInput,
+  InvoiceItemWhere,
+  InvoiceItemOrderByClause,
+  InvoiceItemFindMany,
+  ManualPayment,
+  UpdateManualPaymentInput,
+  ManualPaymentWhere,
+  ManualPaymentOrderByClause,
+  ManualPaymentFindMany,
+  RateLimitWindow,
+  UpdateRateLimitWindowInput,
+  RateLimitWindowWhere,
+  RateLimitWindowOrderByClause,
+  RateLimitWindowFindMany,
+  SearchPaymentIntentsArgs,
+  SearchRefundsArgs,
+  SearchWebhookDeliveriesArgs,
+  SearchCustomersArgs,
+  SearchCheckoutSessionsArgs,
+  ProviderFlow,
+  IntentStatus,
+  ChargeState,
+  FailureCode,
+  RefundStatus,
+  AccountKind,
+  Direction,
+  InvoiceStatus,
+  ManualPaymentMethod,
+  CurrencySortField,
+  ProviderSortField,
+  PaymentIntentSortField,
+  ChargeSortField,
+  RefundSortField,
+  CheckoutSessionSortField,
+  LedgerTransactionSortField,
+  LedgerEntrySortField,
+  DisabledClientSortField,
+  EventSortField,
+  WebhookDeliverySortField,
+  CustomerSortField,
+  StaffMemberSortField,
+  StaffSessionSortField,
+  StaffSsoAttemptSortField,
+  OauthAuthorizationCodeSortField,
+  CredentialSortField,
+  InvoiceSortField,
+  InvoiceItemSortField,
+  ManualPaymentSortField,
+  RateLimitWindowSortField,
+  Page,
+} from "./models.js";
+import {
+  toSearchQuery,
+  withIfMatchHeader,
+  type CratestackQueryRequestConfig,
+  type CratestackRequestConfig,
+  type CratestackWriteRequestConfig,
+} from "./queries.js";
+
+export class VpayDashClientClient {
+  readonly runtime: CratestackRuntime;
+  readonly procedures: ProceduresApi;
+  readonly currencies: CurrencyApi;
+  readonly providers: ProviderApi;
+  readonly paymentIntents: PaymentIntentApi;
+  readonly charges: ChargeApi;
+  readonly refunds: RefundApi;
+  readonly checkoutSessions: CheckoutSessionApi;
+  readonly ledgerTransactions: LedgerTransactionApi;
+  readonly ledgerEntries: LedgerEntryApi;
+  readonly disabledClients: DisabledClientApi;
+  readonly events: EventApi;
+  readonly webhookDeliveries: WebhookDeliveryApi;
+  readonly customers: CustomerApi;
+  readonly staffMembers: StaffMemberApi;
+  readonly staffSessions: StaffSessionApi;
+  readonly staffSsoAttempts: StaffSsoAttemptApi;
+  readonly oauthAuthorizationCodes: OauthAuthorizationCodeApi;
+  readonly credentials: CredentialApi;
+  readonly invoices: InvoiceApi;
+  readonly invoiceItems: InvoiceItemApi;
+  readonly manualPayments: ManualPaymentApi;
+  readonly rateLimitWindows: RateLimitWindowApi;
+
+  constructor(originOrRuntime: string | CratestackRuntime, options: CratestackClientOptions = {}) {
+    this.runtime = typeof originOrRuntime === "string"
+      ? new CratestackRuntime(originOrRuntime, options)
+      : originOrRuntime;
+    this.procedures = new ProceduresApi(this.runtime);
+    this.currencies = new CurrencyApi(this.runtime);
+    this.providers = new ProviderApi(this.runtime);
+    this.paymentIntents = new PaymentIntentApi(this.runtime);
+    this.charges = new ChargeApi(this.runtime);
+    this.refunds = new RefundApi(this.runtime);
+    this.checkoutSessions = new CheckoutSessionApi(this.runtime);
+    this.ledgerTransactions = new LedgerTransactionApi(this.runtime);
+    this.ledgerEntries = new LedgerEntryApi(this.runtime);
+    this.disabledClients = new DisabledClientApi(this.runtime);
+    this.events = new EventApi(this.runtime);
+    this.webhookDeliveries = new WebhookDeliveryApi(this.runtime);
+    this.customers = new CustomerApi(this.runtime);
+    this.staffMembers = new StaffMemberApi(this.runtime);
+    this.staffSessions = new StaffSessionApi(this.runtime);
+    this.staffSsoAttempts = new StaffSsoAttemptApi(this.runtime);
+    this.oauthAuthorizationCodes = new OauthAuthorizationCodeApi(this.runtime);
+    this.credentials = new CredentialApi(this.runtime);
+    this.invoices = new InvoiceApi(this.runtime);
+    this.invoiceItems = new InvoiceItemApi(this.runtime);
+    this.manualPayments = new ManualPaymentApi(this.runtime);
+    this.rateLimitWindows = new RateLimitWindowApi(this.runtime);
+  }
+}
+
+export class CurrencyApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Currency[]> {
+    return this.runtime.get<unknown>("/currencies", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Currency') as Currency[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Currency> {
+    return this.runtime.get<unknown>(`/currencies/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Currency') as Currency);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Currency>> {
+    return this.runtime.getWithResponse<unknown>(`/currencies/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Currency') as Currency,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateCurrencyInput, options: CratestackRequestConfig = {}): Promise<Currency> {
+    return this.runtime.post<unknown>("/currencies", input, options)
+      .then((value) => reviveWireFields(value, 'Currency') as Currency);
+  }
+
+  update(
+    id: string,
+    input: UpdateCurrencyInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Currency> {
+    return this.runtime.patch<unknown>(`/currencies/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Currency') as Currency);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/currencies/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class ProviderApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Provider[]> {
+    return this.runtime.get<unknown>("/providers", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Provider') as Provider[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Provider> {
+    return this.runtime.get<unknown>(`/providers/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Provider') as Provider);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Provider>> {
+    return this.runtime.getWithResponse<unknown>(`/providers/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Provider') as Provider,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateProviderInput, options: CratestackRequestConfig = {}): Promise<Provider> {
+    return this.runtime.post<unknown>("/providers", input, options)
+      .then((value) => reviveWireFields(value, 'Provider') as Provider);
+  }
+
+  update(
+    id: string,
+    input: UpdateProviderInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Provider> {
+    return this.runtime.patch<unknown>(`/providers/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Provider') as Provider);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/providers/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class PaymentIntentApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<PaymentIntent[]> {
+    return this.runtime.get<unknown>("/payment_intents", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'PaymentIntent') as PaymentIntent[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<PaymentIntent> {
+    return this.runtime.get<unknown>(`/payment_intents/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'PaymentIntent') as PaymentIntent);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<PaymentIntent>> {
+    return this.runtime.getWithResponse<unknown>(`/payment_intents/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'PaymentIntent') as PaymentIntent,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdatePaymentIntentInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<PaymentIntent> {
+    return this.runtime.patch<unknown>(`/payment_intents/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'PaymentIntent') as PaymentIntent);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/payment_intents/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class ChargeApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Charge[]> {
+    return this.runtime.get<unknown>("/charges", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Charge') as Charge[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Charge> {
+    return this.runtime.get<unknown>(`/charges/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Charge') as Charge);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Charge>> {
+    return this.runtime.getWithResponse<unknown>(`/charges/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Charge') as Charge,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateChargeInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Charge> {
+    return this.runtime.patch<unknown>(`/charges/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Charge') as Charge);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/charges/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class RefundApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Refund[]> {
+    return this.runtime.get<unknown>("/refunds", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Refund') as Refund[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Refund> {
+    return this.runtime.get<unknown>(`/refunds/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Refund') as Refund);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Refund>> {
+    return this.runtime.getWithResponse<unknown>(`/refunds/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Refund') as Refund,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateRefundInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Refund> {
+    return this.runtime.patch<unknown>(`/refunds/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Refund') as Refund);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/refunds/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class CheckoutSessionApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<CheckoutSession[]> {
+    return this.runtime.get<unknown>("/checkout_sessions", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'CheckoutSession') as CheckoutSession[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<CheckoutSession> {
+    return this.runtime.get<unknown>(`/checkout_sessions/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'CheckoutSession') as CheckoutSession);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<CheckoutSession>> {
+    return this.runtime.getWithResponse<unknown>(`/checkout_sessions/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'CheckoutSession') as CheckoutSession,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateCheckoutSessionInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<CheckoutSession> {
+    return this.runtime.patch<unknown>(`/checkout_sessions/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'CheckoutSession') as CheckoutSession);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/checkout_sessions/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class LedgerTransactionApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<LedgerTransaction[]> {
+    return this.runtime.get<unknown>("/ledger_transactions", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'LedgerTransaction') as LedgerTransaction[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<LedgerTransaction> {
+    return this.runtime.get<unknown>(`/ledger_transactions/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'LedgerTransaction') as LedgerTransaction);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<LedgerTransaction>> {
+    return this.runtime.getWithResponse<unknown>(`/ledger_transactions/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'LedgerTransaction') as LedgerTransaction,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateLedgerTransactionInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<LedgerTransaction> {
+    return this.runtime.patch<unknown>(`/ledger_transactions/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'LedgerTransaction') as LedgerTransaction);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/ledger_transactions/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class LedgerEntryApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<LedgerEntry[]> {
+    return this.runtime.get<unknown>("/ledger_entries", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'LedgerEntry') as LedgerEntry[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<LedgerEntry> {
+    return this.runtime.get<unknown>(`/ledger_entries/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'LedgerEntry') as LedgerEntry);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<LedgerEntry>> {
+    return this.runtime.getWithResponse<unknown>(`/ledger_entries/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'LedgerEntry') as LedgerEntry,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateLedgerEntryInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<LedgerEntry> {
+    return this.runtime.patch<unknown>(`/ledger_entries/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'LedgerEntry') as LedgerEntry);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/ledger_entries/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class DisabledClientApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<DisabledClient[]> {
+    return this.runtime.get<unknown>("/disabled_clients", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'DisabledClient') as DisabledClient[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<DisabledClient> {
+    return this.runtime.get<unknown>(`/disabled_clients/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'DisabledClient') as DisabledClient);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<DisabledClient>> {
+    return this.runtime.getWithResponse<unknown>(`/disabled_clients/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'DisabledClient') as DisabledClient,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateDisabledClientInput, options: CratestackRequestConfig = {}): Promise<DisabledClient> {
+    return this.runtime.post<unknown>("/disabled_clients", input, options)
+      .then((value) => reviveWireFields(value, 'DisabledClient') as DisabledClient);
+  }
+
+  update(
+    id: string,
+    input: UpdateDisabledClientInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<DisabledClient> {
+    return this.runtime.patch<unknown>(`/disabled_clients/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'DisabledClient') as DisabledClient);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/disabled_clients/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class EventApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Event[]> {
+    return this.runtime.get<unknown>("/events", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Event') as Event[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Event> {
+    return this.runtime.get<unknown>(`/events/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Event') as Event);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Event>> {
+    return this.runtime.getWithResponse<unknown>(`/events/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Event') as Event,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateEventInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Event> {
+    return this.runtime.patch<unknown>(`/events/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Event') as Event);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/events/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class WebhookDeliveryApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<WebhookDelivery[]> {
+    return this.runtime.get<unknown>("/webhook_deliveries", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'WebhookDelivery') as WebhookDelivery[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<WebhookDelivery> {
+    return this.runtime.get<unknown>(`/webhook_deliveries/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'WebhookDelivery') as WebhookDelivery);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<WebhookDelivery>> {
+    return this.runtime.getWithResponse<unknown>(`/webhook_deliveries/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'WebhookDelivery') as WebhookDelivery,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateWebhookDeliveryInput, options: CratestackRequestConfig = {}): Promise<WebhookDelivery> {
+    return this.runtime.post<unknown>("/webhook_deliveries", input, options)
+      .then((value) => reviveWireFields(value, 'WebhookDelivery') as WebhookDelivery);
+  }
+
+  update(
+    id: string,
+    input: UpdateWebhookDeliveryInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<WebhookDelivery> {
+    return this.runtime.patch<unknown>(`/webhook_deliveries/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'WebhookDelivery') as WebhookDelivery);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/webhook_deliveries/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class CustomerApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Customer[]> {
+    return this.runtime.get<unknown>("/customers", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Customer') as Customer[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Customer> {
+    return this.runtime.get<unknown>(`/customers/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Customer') as Customer);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Customer>> {
+    return this.runtime.getWithResponse<unknown>(`/customers/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Customer') as Customer,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateCustomerInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Customer> {
+    return this.runtime.patch<unknown>(`/customers/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Customer') as Customer);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/customers/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class StaffMemberApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<StaffMember[]> {
+    return this.runtime.get<unknown>("/staff_members", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'StaffMember') as StaffMember[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<StaffMember> {
+    return this.runtime.get<unknown>(`/staff_members/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'StaffMember') as StaffMember);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<StaffMember>> {
+    return this.runtime.getWithResponse<unknown>(`/staff_members/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'StaffMember') as StaffMember,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateStaffMemberInput, options: CratestackRequestConfig = {}): Promise<StaffMember> {
+    return this.runtime.post<unknown>("/staff_members", input, options)
+      .then((value) => reviveWireFields(value, 'StaffMember') as StaffMember);
+  }
+
+  update(
+    id: string,
+    input: UpdateStaffMemberInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<StaffMember> {
+    return this.runtime.patch<unknown>(`/staff_members/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'StaffMember') as StaffMember);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/staff_members/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class StaffSessionApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<StaffSession[]> {
+    return this.runtime.get<unknown>("/staff_sessions", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'StaffSession') as StaffSession[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<StaffSession> {
+    return this.runtime.get<unknown>(`/staff_sessions/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'StaffSession') as StaffSession);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<StaffSession>> {
+    return this.runtime.getWithResponse<unknown>(`/staff_sessions/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'StaffSession') as StaffSession,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateStaffSessionInput, options: CratestackRequestConfig = {}): Promise<StaffSession> {
+    return this.runtime.post<unknown>("/staff_sessions", input, options)
+      .then((value) => reviveWireFields(value, 'StaffSession') as StaffSession);
+  }
+
+  update(
+    id: string,
+    input: UpdateStaffSessionInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<StaffSession> {
+    return this.runtime.patch<unknown>(`/staff_sessions/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'StaffSession') as StaffSession);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/staff_sessions/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class StaffSsoAttemptApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<StaffSsoAttempt[]> {
+    return this.runtime.get<unknown>("/staff_sso_attempts", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'StaffSsoAttempt') as StaffSsoAttempt[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<StaffSsoAttempt> {
+    return this.runtime.get<unknown>(`/staff_sso_attempts/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'StaffSsoAttempt') as StaffSsoAttempt);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<StaffSsoAttempt>> {
+    return this.runtime.getWithResponse<unknown>(`/staff_sso_attempts/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'StaffSsoAttempt') as StaffSsoAttempt,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateStaffSsoAttemptInput, options: CratestackRequestConfig = {}): Promise<StaffSsoAttempt> {
+    return this.runtime.post<unknown>("/staff_sso_attempts", input, options)
+      .then((value) => reviveWireFields(value, 'StaffSsoAttempt') as StaffSsoAttempt);
+  }
+
+  update(
+    id: string,
+    input: UpdateStaffSsoAttemptInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<StaffSsoAttempt> {
+    return this.runtime.patch<unknown>(`/staff_sso_attempts/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'StaffSsoAttempt') as StaffSsoAttempt);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/staff_sso_attempts/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class OauthAuthorizationCodeApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<OauthAuthorizationCode[]> {
+    return this.runtime.get<unknown>("/oauth_authorization_codes", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'OauthAuthorizationCode') as OauthAuthorizationCode[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<OauthAuthorizationCode> {
+    return this.runtime.get<unknown>(`/oauth_authorization_codes/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'OauthAuthorizationCode') as OauthAuthorizationCode);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<OauthAuthorizationCode>> {
+    return this.runtime.getWithResponse<unknown>(`/oauth_authorization_codes/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'OauthAuthorizationCode') as OauthAuthorizationCode,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateOauthAuthorizationCodeInput, options: CratestackRequestConfig = {}): Promise<OauthAuthorizationCode> {
+    return this.runtime.post<unknown>("/oauth_authorization_codes", input, options)
+      .then((value) => reviveWireFields(value, 'OauthAuthorizationCode') as OauthAuthorizationCode);
+  }
+
+  update(
+    id: string,
+    input: UpdateOauthAuthorizationCodeInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<OauthAuthorizationCode> {
+    return this.runtime.patch<unknown>(`/oauth_authorization_codes/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'OauthAuthorizationCode') as OauthAuthorizationCode);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/oauth_authorization_codes/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class CredentialApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Credential[]> {
+    return this.runtime.get<unknown>("/credentials", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Credential') as Credential[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Credential> {
+    return this.runtime.get<unknown>(`/credentials/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Credential') as Credential);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Credential>> {
+    return this.runtime.getWithResponse<unknown>(`/credentials/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Credential') as Credential,
+      response: result.response,
+    }));
+  }
+
+  create(input: CreateCredentialInput, options: CratestackRequestConfig = {}): Promise<Credential> {
+    return this.runtime.post<unknown>("/credentials", input, options)
+      .then((value) => reviveWireFields(value, 'Credential') as Credential);
+  }
+
+  update(
+    id: string,
+    input: UpdateCredentialInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Credential> {
+    return this.runtime.patch<unknown>(`/credentials/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Credential') as Credential);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/credentials/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class InvoiceApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<Invoice[]> {
+    return this.runtime.get<unknown>("/invoices", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Invoice') as Invoice[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<Invoice> {
+    return this.runtime.get<unknown>(`/invoices/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'Invoice') as Invoice);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<Invoice>> {
+    return this.runtime.getWithResponse<unknown>(`/invoices/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'Invoice') as Invoice,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateInvoiceInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<Invoice> {
+    return this.runtime.patch<unknown>(`/invoices/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'Invoice') as Invoice);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/invoices/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class InvoiceItemApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<InvoiceItem[]> {
+    return this.runtime.get<unknown>("/invoice_items", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'InvoiceItem') as InvoiceItem[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<InvoiceItem> {
+    return this.runtime.get<unknown>(`/invoice_items/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'InvoiceItem') as InvoiceItem);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<InvoiceItem>> {
+    return this.runtime.getWithResponse<unknown>(`/invoice_items/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'InvoiceItem') as InvoiceItem,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateInvoiceItemInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<InvoiceItem> {
+    return this.runtime.patch<unknown>(`/invoice_items/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'InvoiceItem') as InvoiceItem);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/invoice_items/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class ManualPaymentApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<ManualPayment[]> {
+    return this.runtime.get<unknown>("/manual_payments", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'ManualPayment') as ManualPayment[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<ManualPayment> {
+    return this.runtime.get<unknown>(`/manual_payments/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'ManualPayment') as ManualPayment);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<ManualPayment>> {
+    return this.runtime.getWithResponse<unknown>(`/manual_payments/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'ManualPayment') as ManualPayment,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateManualPaymentInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<ManualPayment> {
+    return this.runtime.patch<unknown>(`/manual_payments/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'ManualPayment') as ManualPayment);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/manual_payments/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class RateLimitWindowApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<RateLimitWindow[]> {
+    return this.runtime.get<unknown>("/rate_limit_windows", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'RateLimitWindow') as RateLimitWindow[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<RateLimitWindow> {
+    return this.runtime.get<unknown>(`/rate_limit_windows/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'RateLimitWindow') as RateLimitWindow);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<RateLimitWindow>> {
+    return this.runtime.getWithResponse<unknown>(`/rate_limit_windows/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'RateLimitWindow') as RateLimitWindow,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateRateLimitWindowInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<RateLimitWindow> {
+    return this.runtime.patch<unknown>(`/rate_limit_windows/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'RateLimitWindow') as RateLimitWindow);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/rate_limit_windows/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class ProceduresApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  searchPaymentIntents(args: SearchPaymentIntentsArgs, options: CratestackRequestConfig = {}): Promise<Page<PaymentIntentSummary>> {
+    return this.runtime.post<unknown>("/$procs/searchPaymentIntents", args, options)
+      .then((value) => revivePagedWireFields(value, 'PaymentIntentSummary') as Page<PaymentIntentSummary>);
+  }
+
+  searchRefunds(args: SearchRefundsArgs, options: CratestackRequestConfig = {}): Promise<Page<RefundSummary>> {
+    return this.runtime.post<unknown>("/$procs/searchRefunds", args, options)
+      .then((value) => revivePagedWireFields(value, 'RefundSummary') as Page<RefundSummary>);
+  }
+
+  searchWebhookDeliveries(args: SearchWebhookDeliveriesArgs, options: CratestackRequestConfig = {}): Promise<Page<WebhookDeliverySummary>> {
+    return this.runtime.post<unknown>("/$procs/searchWebhookDeliveries", args, options)
+      .then((value) => revivePagedWireFields(value, 'WebhookDeliverySummary') as Page<WebhookDeliverySummary>);
+  }
+
+  searchCustomers(args: SearchCustomersArgs, options: CratestackRequestConfig = {}): Promise<Page<CustomerSummary>> {
+    return this.runtime.post<unknown>("/$procs/searchCustomers", args, options)
+      .then((value) => revivePagedWireFields(value, 'CustomerSummary') as Page<CustomerSummary>);
+  }
+
+  searchCheckoutSessions(args: SearchCheckoutSessionsArgs, options: CratestackRequestConfig = {}): Promise<Page<CheckoutSessionSummary>> {
+    return this.runtime.post<unknown>("/$procs/searchCheckoutSessions", args, options)
+      .then((value) => revivePagedWireFields(value, 'CheckoutSessionSummary') as Page<CheckoutSessionSummary>);
+  }
+
+}
