@@ -139,17 +139,24 @@ sha2.workspace = true
 # dependency simply moved from test-only to production, because the JWKS a
 # merchant verifies against is production output.
 base64 = "0.22"
-# ADR-0017's staff credentials. `argon2` is the password hash (`std` brings
-# `password-hash/std` and the `rand` default brings `password_hash::rand_core`,
-# which is the OS CSPRNG every random value in `staff_auth` is drawn from — so
-# `rand` itself stays a dev-dependency and no second CSPRNG enters the
-# shipping graph). When this was added, `authkestra-engine` already resolved
-# 0.5.3, so it added no package. Since authkestra 0.13.1 (2026-10-26) the
-# engine uses argon2 0.6.0, so the lock carries both: 0.5.3 is vpay's own
-# staff hashing, a second copy that `cargo deny`'s `multiple-versions` only
-# warns about. Moving staff hashing to 0.6 is its own change, with its own
-# test that the stored hashes still verify; it was not part of that bump.
-argon2 = { version = "0.5", features = ["std"] }
+# ADR-0017's staff credentials. `argon2` is the password hash, on the same
+# 0.6 `authkestra-engine` 0.13.1 resolves, so there is one copy in the lock.
+# Its default features are the three `staff_auth::password` uses: `alloc`
+# and `password-hash` for the PHC-string API, and `getrandom`, which is
+# where `hash_password` draws each salt (the OS CSPRNG, through
+# `getrandom` 0.4). It was 0.5.3 until 2026-10-26; a PHC string 0.5 wrote
+# verifies under 0.6 unchanged, and `password.rs` pins one to prove it.
+argon2 = "0.6"
+# The OS CSPRNG every other random value in `staff_auth` is drawn from: a
+# session token, an authorization code, a TOTP secret, an AES-GCM nonce, a
+# one-time password. `OsRng` is infallible-or-panics, which is what those
+# `#[must_use]` minting functions are written against. It used to arrive as
+# `argon2::password_hash::rand_core`; argon2 0.6 re-exports rand_core 0.10,
+# which has no `OsRng`, so this names the 0.6 copy the lock already carries
+# (`rsa` and `rand` 0.8 both resolve it) rather than adding one. `rand`
+# itself stays a dev-dependency, so no userspace CSPRNG enters the shipping
+# graph.
+rand_core = { version = "0.6", features = ["getrandom"] }
 # `staff.totp_secret` is sealed with AES-256-GCM (`staff_auth::secret_box`).
 # Workspace pin, and `docs/flows/dashboard-auth.md` has listed it as an unused
 # one since Step 2 — this is its first consumer.
@@ -242,7 +249,7 @@ metrics-exporter-prometheus.workspace = true
 # `version` is required alongside `path`: `deny.toml` sets `wildcards =
 # "deny"`, and a path-only dependency is a wildcard requirement as far as
 # `cargo deny check bans` is concerned — it fails the supply-chain gate.
-vpay-sdk = { path = "../../../sdks/rust", version = "0.14.2" } # x-release-please-version
+vpay-sdk = { path = "../../../sdks/rust", version = "0.15.0" } # x-release-please-version
 # Test-only: captures `tracing` output into a buffer so the log/body split
 # above is asserted on what an operator would actually see, rather than on the
 # arguments this crate passed to a macro.

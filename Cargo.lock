@@ -128,26 +128,14 @@ dependencies = [
 
 [[package]]
 name = "argon2"
-version = "0.5.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c3610892ee6e0cbce8ae2700349fcf8f98adb0dbfbee85aec3c9179d29cc072"
-dependencies = [
- "base64ct",
- "blake2 0.10.6",
- "cpufeatures 0.2.17",
- "password-hash 0.5.0",
-]
-
-[[package]]
-name = "argon2"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "134c52ddac6d63c576bef8168db10c83c49c26444ecbc68060fef078925a901c"
 dependencies = [
  "base64ct",
- "blake2 0.11.0",
+ "blake2",
  "cpufeatures 0.3.0",
- "password-hash 0.6.1",
+ "password-hash",
 ]
 
 [[package]]
@@ -271,7 +259,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d39a9ea059acca060ffda4a799095d1bb3a6fcd20b9c69c7739f164f5a5a918"
 dependencies = [
  "aes-gcm",
- "argon2 0.6.0",
+ "argon2",
  "async-trait",
  "authkestra-crypto-util",
  "base64 0.22.1",
@@ -432,15 +420,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 dependencies = [
  "serde_core",
-]
-
-[[package]]
-name = "blake2"
-version = "0.10.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46502ad458c9a52b69d4d4d32775c788b7a1b85e8bc9d482d92250fc0e3f8efe"
-dependencies = [
- "digest 0.10.7",
 ]
 
 [[package]]
@@ -2594,7 +2573,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "merchant-demo"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -2946,17 +2925,6 @@ dependencies = [
  "regex-syntax 0.8.11",
  "structmeta",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "password-hash"
-version = "0.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "346f04948ba92c43e8469c1ee6736c7563d71012b17d40745260fe106aac2166"
-dependencies = [
- "base64ct",
- "rand_core 0.6.4",
- "subtle",
 ]
 
 [[package]]
@@ -5066,7 +5034,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vpay-adapter-mtn-momo"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -5081,7 +5049,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-adapter-notchpay"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "hex",
@@ -5098,7 +5066,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-adapter-orange-money"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "reqwest",
@@ -5113,10 +5081,10 @@ dependencies = [
 
 [[package]]
 name = "vpay-api"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "aes-gcm",
- "argon2 0.5.3",
+ "argon2",
  "async-trait",
  "authkestra-engine",
  "authkestra-op",
@@ -5134,6 +5102,7 @@ dependencies = [
  "p256 0.13.2",
  "phonenumber",
  "rand 0.8.7",
+ "rand_core 0.6.4",
  "reqwest",
  "rsa",
  "serde",
@@ -5163,7 +5132,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-config"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "clap",
@@ -5183,7 +5152,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-core"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "hex",
  "hmac 0.12.1",
@@ -5200,7 +5169,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-db"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5230,7 +5199,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-ledger"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "serde",
  "thiserror",
@@ -5241,7 +5210,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-notchpay"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "hex",
  "hmac 0.12.1",
@@ -5259,7 +5228,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-provider"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "async-trait",
  "hex",
@@ -5280,7 +5249,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-sdk"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "axum",
  "base64 0.22.1",
@@ -5323,7 +5292,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-server"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -5358,7 +5327,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-testkit"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "serde_json",
  "testcontainers",
@@ -5371,7 +5340,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-tests-conformance"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "rstest",
  "serde_json",
@@ -5390,7 +5359,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-tests-integration"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -5440,7 +5409,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-wire"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "cratestack-core",
  "sha2 0.10.9",
@@ -5448,7 +5417,7 @@ dependencies = [
 
 [[package]]
 name = "vpay-worker"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "axum",
  "hex",
@@ -5879,7 +5848,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.14.2"
+version = "0.15.0"
 dependencies = [
  "base64 0.22.1",
  "cratestack-cose",

@@ -240,7 +240,11 @@ What is built, in the order a request meets it:
 - argon2id at OWASP's first parameter set with a deployment pepper; RFC 6238
   TOTP (HMAC-SHA1, 30 s, ±1 step) whose codes are pinned against Appendix B's
   own vectors; AES-256-GCM for the stored secret; the PKCE check pinned
-  against RFC 7636 Appendix B's own vector.
+  against RFC 7636 Appendix B's own vector. The argon2 crate is 0.6 since
+  2026-10-26 (0.5.3 before). Hashes 0.5.3 wrote verify unchanged, and a unit
+  test pins one; a hash 0.6 writes verifies under 0.5.3, so rolling back loses
+  no sign-in
+  ([verification](../status/verification/2026-10-26-argon2-0-6.md)).
 - `Surface::Dashboard.audience()` is **gone**. The audience is the registered
   `dashboard_client.client_id`, because that is what
   `default_handle_authorization_code` mints; `vpay:dash/v1` is retired and
