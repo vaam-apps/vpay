@@ -26,6 +26,10 @@
 # second time: the CLI and the crate agree on a private interface, and
 # `build-wasm.sh` refuses a mismatch.
 FROM rust:1.98.0-alpine3.22 AS sealer
+# Alpine package versions are not pinned: the base image's tag pins the
+# Alpine release, and an exact apk version disappears from the mirror at the
+# next security update, which would break the build rather than secure it.
+# hadolint ignore=DL3018
 RUN apk add --no-cache bash musl-dev pkgconfig
 WORKDIR /build
 COPY Cargo.lock ./
@@ -53,6 +57,7 @@ FROM node:22-alpine AS builder
 # Prisma's engines are dynamically linked against OpenSSL 3 on musl. Prisma
 # left the request path at the ZenStack 3 upgrade but not the image: v3's
 # migration engine still drives Prisma Migrate.
+# hadolint ignore=DL3018
 RUN apk add --no-cache openssl && corepack enable
 WORKDIR /build
 
@@ -85,6 +90,7 @@ RUN pnpm --filter @vaam-apps/vpay-sdk run build:ts \
     && pnpm --filter @vpay-examples/shop exec next build
 
 FROM node:22-alpine AS runner
+# hadolint ignore=DL3018
 RUN apk add --no-cache openssl
 WORKDIR /app
 
