@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.2](https://github.com/vaam-apps/vpay/compare/v0.14.1...v0.14.2) (2026-10-26)
+
+
+### Bug Fixes
+
+* **deps:** authkestra 0.13.1 (from 0.7.1); RUSTSEC-2026-0387 stays accepted ([#370](https://github.com/vaam-apps/vpay/issues/370)) ([fc8035a](https://github.com/vaam-apps/vpay/commit/fc8035abbc588126945b42db99822bda35958804))
+
 ## [0.14.1](https://github.com/vaam-apps/vpay/compare/v0.14.0...v0.14.1) (2026-10-25)
 
 

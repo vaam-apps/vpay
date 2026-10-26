@@ -15,8 +15,8 @@
 //! index store.
 
 use async_trait::async_trait;
+use authkestra_engine::store::StoreError;
 use authkestra_op::client_assertion::ClientAssertionStore;
-use authkestra_op::error::OpError;
 use chrono::{DateTime, Utc};
 use sqlx::PgPool;
 use std::time::Duration;
@@ -43,8 +43,13 @@ use crate::error::DbError;
 ///
 /// `PgPool` is a cheap `Arc`-backed handle (per `sqlx`'s own docs), so this
 /// opens no connection; it clones the handle in.
+///
+/// `+ Clone` since authkestra 0.8, whose store methods take `&mut self`: a
+/// caller that needs the store in several places (each request, each task)
+/// clones it, and every clone shares the one pool, so the replay guard is
+/// still the `INSERT`'s, not any in-process state's.
 #[must_use]
-pub fn client_assertion_store(pool: PgPool) -> impl ClientAssertionStore {
+pub fn client_assertion_store(pool: PgPool) -> impl ClientAssertionStore + Clone {
     SqlClientAssertionStore { pool }
 }
 
@@ -80,13 +85,13 @@ pub(crate) struct SqlClientAssertionStore {
 ///   clamp below maps that to the last representable nanosecond of the same
 ///   second rather than failing replay protection over a leap second, which
 ///   changes nothing about whether the jti has been spent.
-fn chrono_to_offset_date_time(dt: DateTime<Utc>) -> Result<OffsetDateTime, OpError> {
+fn chrono_to_offset_date_time(dt: DateTime<Utc>) -> Result<OffsetDateTime, StoreError> {
     let without_nanos = OffsetDateTime::from_unix_timestamp(dt.timestamp()).map_err(|error| {
         tracing::error!(
             %error,
             "client assertion expires_at is out of range for time::OffsetDateTime"
         );
-        OpError::Storage
+        store_unavailable()
     })?;
 
     let nanos = dt.timestamp_subsec_nanos().min(999_999_999);
@@ -95,8 +100,21 @@ fn chrono_to_offset_date_time(dt: DateTime<Utc>) -> Result<OffsetDateTime, OpErr
             %error,
             "client assertion expires_at nanosecond component is invalid"
         );
-        OpError::Storage
+        store_unavailable()
     })
+}
+
+/// The one error this store hands back to `authkestra-op`.
+///
+/// Since authkestra 0.8 a store answers `authkestra_engine`'s `StoreError`,
+/// and `authkestra_op::OpError`'s `From<StoreError>` turns any `Internal`
+/// payload into the opaque `OpError::Storage`, except the literal
+/// `CLIENT_ASSERTION_REPLAY_PROTECTION_UNAVAILABLE`, which it reserves for a
+/// deployment with no store wired at all. This payload is deliberately not
+/// that literal, and carries no SQL text: the cause is logged here, before
+/// it is discarded, and the OAuth response says only that storage failed.
+fn store_unavailable() -> StoreError {
+    StoreError::Internal("vpay client assertion store unavailable".to_owned())
 }
 
 #[async_trait]
@@ -114,12 +132,16 @@ impl ClientAssertionStore for SqlClientAssertionStore {
     ///
     /// # Errors
     ///
-    /// Returns `OpError::Storage` — opaque by the trait's own design, so a
-    /// SQL failure never leaks into an OAuth error response — if the
-    /// `expires_at` conversion or the query itself fails. The real cause is
-    /// logged via `tracing::error!` before being discarded into the opaque
-    /// variant.
-    async fn record_jti(&self, jti: &str, expires_at: DateTime<Utc>) -> Result<bool, OpError> {
+    /// Returns a `StoreError::Internal`, which `authkestra-op` turns into the
+    /// opaque `OpError::Storage` — so a SQL failure never leaks into an OAuth
+    /// error response — if the `expires_at` conversion or the query itself
+    /// fails. The real cause is logged via `tracing::error!` before being
+    /// discarded ([`store_unavailable`]).
+    async fn record_jti(
+        &mut self,
+        jti: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<bool, StoreError> {
         let expires_at = chrono_to_offset_date_time(expires_at)?;
 
         let result = sqlx::query(
@@ -132,7 +154,7 @@ impl ClientAssertionStore for SqlClientAssertionStore {
         .await
         .map_err(|error| {
             tracing::error!(%error, jti, "failed to record client assertion jti");
-            OpError::Storage
+            store_unavailable()
         })?;
 
         Ok(result.rows_affected() == 1)
@@ -160,7 +182,7 @@ pub trait ClientAssertions: Send + Sync {
     /// ([`ClientAssertionStore::record_jti`] is handed it by
     /// `authkestra-op`, and this crate keeps it a *fact*: ADR-0026 D6). It is
     /// **not** the last instant the API will accept the assertion. The
-    /// validator (`authkestra-op` 0.7.1, `verify_client_assertion`) leaves
+    /// validator (`authkestra-op` 0.13.1, `verify_client_assertion`) leaves
     /// `jsonwebtoken`'s `Validation::leeway` at its 60-second default, which
     /// vpay cannot configure, so an assertion is still accepted while
     /// `api_now_secs <= exp + 60` — `now` truncated to whole seconds, hence

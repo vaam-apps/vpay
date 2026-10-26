@@ -12,7 +12,8 @@
 //!
 //! `authkestra_op::store::OpStore` has a grant seam that a deployment can hook
 //! — but `client_credentials` does not go through it. Reading the pinned
-//! `authkestra-op-0.7.1/src/handlers/token.rs`: `handle_client_credentials`
+//! `authkestra-op-0.13.1/src/handlers/token.rs` (unchanged from 0.7.1 in
+//! everything below but a log level): `handle_client_credentials`
 //! takes the already-resolved `ClientRegistration`, checks
 //! `allows_grant_type`, the requested scopes and the requested audience, and
 //! then mints straight through `TokenManager` — it consults no store of any
@@ -34,10 +35,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use async_trait::async_trait;
+use authkestra_engine::store::StoreError;
 use authkestra_op::client::{
     ClientRegistration, ClientStore, GrantType as OpGrantType, TokenEndpointAuthMethod,
 };
-use authkestra_op::error::OpError;
 use vpay_config::oauth::{GrantType as ConfigGrantType, MerchantClient};
 use vpay_db::Repositories;
 
@@ -145,10 +146,11 @@ impl ClientStore for YamlClientStore {
     ///
     /// # Errors
     ///
-    /// Returns [`OpError::Storage`] if the `disabled_clients` lookup itself
-    /// fails. This fails the token request **closed**: `handle_token_request`
-    /// maps any `Err` from `find_client` to a `server_error`
-    /// (`authkestra-op-0.7.1/src/handlers/token.rs`, step 1), so a database
+    /// Returns a `StoreError::Internal` if the `disabled_clients` lookup
+    /// itself fails, which `authkestra_op` reads as `OpError::Storage`. This
+    /// fails the token request **closed**: `handle_token` maps any `Err` from
+    /// `find_client` to a `server_error`
+    /// (`authkestra-op-0.13.1/src/handlers/token.rs`, step 1), so a database
     /// outage produces no token rather than a token for a client that may
     /// have been revoked. Mapping the failure to `Ok(None)` would render as
     /// `invalid_client` — indistinguishable from a real revocation, and it
@@ -158,8 +160,12 @@ impl ClientStore for YamlClientStore {
     /// client to be reported as (its own doc comment: return `Ok(None)`,
     /// "not an error"). `Storage` is the crate's own variant for exactly
     /// this — opaque by design, so a SQL error can never leak into an OAuth
-    /// error response.
-    async fn find_client(&self, client_id: &str) -> Result<Option<ClientRegistration>, OpError> {
+    /// error response; the payload here names the lookup and carries no SQL
+    /// text, which is logged above instead.
+    async fn find_client(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<ClientRegistration>, StoreError> {
         let Some(registration) = self.registrations.get(client_id) else {
             return Ok(None);
         };
@@ -181,7 +187,9 @@ impl ClientStore for YamlClientStore {
                     "disabled_clients lookup failed; refusing client resolution rather than \
                      assuming the client is enabled"
                 );
-                Err(OpError::Storage)
+                Err(StoreError::Internal(
+                    "disabled_clients lookup failed".to_owned(),
+                ))
             }
         }
     }
@@ -404,7 +412,7 @@ mod tests {
     #[tokio::test]
     async fn an_unknown_client_id_is_refused_without_touching_the_database() {
         let (_pem, jwks) = generate_key(None);
-        let store = YamlClientStore::new(&[merchant(jwks)], lazy_repositories());
+        let mut store = YamlClientStore::new(&[merchant(jwks)], lazy_repositories());
 
         let found = store
             .find_client("someone-else")
@@ -416,24 +424,27 @@ mod tests {
 
     /// The other half of the same ordering, and the more important one: a
     /// *known* client does reach the database, and when the database cannot
-    /// answer, this fails closed with [`OpError::Storage`] rather than
-    /// returning the registration anyway.
+    /// answer, this fails closed with a `StoreError` (`OpError::Storage` by
+    /// the time `authkestra_op` reads it) rather than returning the
+    /// registration anyway.
     ///
     /// The unreachable pool is the whole mechanism — nothing listens on
     /// 127.0.0.1:1, so the kill-switch query genuinely fails. If
     /// `find_client` were ever changed to treat a lookup error as "not
     /// disabled", this test would see `Ok(Some(_))` and fail. `matches!`
-    /// rather than `assert_eq!` because `OpError` does not implement
+    /// rather than `assert_eq!` because `StoreError` does not implement
     /// `PartialEq`.
     #[tokio::test]
     async fn a_failed_kill_switch_lookup_refuses_a_known_client_rather_than_admitting_it() {
         let (_pem, jwks) = generate_key(None);
-        let store = YamlClientStore::new(&[merchant(jwks)], lazy_repositories());
+        let mut store = YamlClientStore::new(&[merchant(jwks)], lazy_repositories());
 
         let outcome = store.find_client(CLIENT_ID).await;
 
+        // A `StoreError::Internal`, which `authkestra_op` turns into
+        // `OpError::Storage` and then `server_error` (authkestra 0.8+).
         assert!(
-            matches!(outcome, Err(OpError::Storage)),
+            matches!(outcome, Err(StoreError::Internal(_))),
             "a disabled_clients lookup failure must fail the token request closed, got {outcome:?}"
         );
     }

@@ -1,7 +1,7 @@
 //! The decisive test for this crate's authentication half: assertions minted
 //! by [`vpay_sdk::auth::mint_client_assertion`] are handed to the **real**
 //! verifier vpay will run — `authkestra_op::client_assertion::
-//! verify_client_assertion` at the pinned `=0.7.1` — against a
+//! verify_client_assertion` at the pinned `=0.13.1` — against a
 //! `ClientRegistration` holding the matching public JWK.
 //!
 //! Why this rather than asserting the claim set against a table: a claim-set

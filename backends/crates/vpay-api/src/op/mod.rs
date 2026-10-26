@@ -19,9 +19,9 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use authkestra_engine::token::TokenManager;
-use authkestra_op::OpStore;
 use authkestra_op::config::OpConfig;
 use authkestra_op::store::CompositeOpStore;
+use authkestra_op::{CloneableOpStore, OpStore};
 use vpay_config::Config;
 use vpay_db::Repositories;
 
@@ -77,7 +77,7 @@ pub const ACCESS_TOKEN_TTL_SECS: u64 = 900;
 /// enforces the restriction at runtime — `authkestra_op`'s `handle_token`
 /// dispatches on `grant_type` without consulting
 /// `OpConfig::grant_types_supported` at all (read
-/// `authkestra-op-0.7.1/src/handlers/token.rs`, the `match
+/// `authkestra-op-0.13.1/src/handlers/token.rs`, the `match
 /// req.grant_type.as_str()` block). What actually refuses every other grant
 /// is each grant handler's own `client.allows_grant_type(..)` check against
 /// the registration [`clients::registration_for`] built from YAML, which
@@ -100,7 +100,8 @@ pub const OP_TOKEN_ENDPOINT_AUTH_METHOD: &str = "private_key_jwt";
 /// The JWS algorithms a `client_assertion` may be signed with.
 ///
 /// Transcribed from `authkestra-op-0.7.1/src/client_assertion.rs`'s private
-/// `assertion_algorithms`, which derives the accepted set **from the
+/// `assertion_algorithms` (byte-identical at 0.13.1, re-read 2026-10-26),
+/// which derives the accepted set **from the
 /// registered JWK's key type**, not from any configuration vpay controls:
 /// an RSA key admits `RS*`/`PS*`, a P-256 key `ES256`, a P-384 key `ES384`,
 /// an OKP key `EdDSA`. So this is the union across key types — the honest
@@ -129,7 +130,7 @@ pub const OP_ASSERTION_SIGNING_ALGS: [&str; 9] = [
 /// Callers share it as `Arc<MerchantOp>`.
 pub struct MerchantOp {
     config: OpConfig,
-    store: Arc<dyn OpStore>,
+    store: Arc<dyn CloneableOpStore>,
     tokens: Arc<TokenManager>,
     default_scopes: BTreeMap<String, String>,
 }
@@ -316,10 +317,19 @@ impl MerchantOp {
         &self.config
     }
 
-    /// The store `handle_token` resolves clients and spends `jti`s through.
-    /// `pub(crate)` for the reason given on [`Self::config`].
-    pub(crate) fn store(&self) -> &dyn OpStore {
-        self.store.as_ref()
+    /// A store for one `handle_token` call to resolve the client and spend
+    /// the `jti` through. `pub(crate)` for the reason given on
+    /// [`Self::config`].
+    ///
+    /// A clone per call since authkestra 0.8, whose handlers take
+    /// `&mut dyn OpStore` (`CloneableOpStore::clone_op_store`, the pattern
+    /// authkestra documents). Every part of this store's `Clone` shares
+    /// state: the client index is read-only, the kill switch and the `jti`
+    /// guard go through `Arc`'d pool handles, and the three refusing slots
+    /// hold nothing. So the replay guard is still one `INSERT` against one
+    /// table, not a per-clone map.
+    pub(crate) fn store(&self) -> Box<dyn OpStore> {
+        self.store.clone_op_store()
     }
 
     /// The scope a token request from `client_id` is granted when it asks

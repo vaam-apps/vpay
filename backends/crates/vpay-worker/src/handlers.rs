@@ -112,7 +112,7 @@ const SWEEP_INTERVAL: Duration = Duration::from_secs(60 * 60);
 /// instant the API would still accept the assertion. That instant is later
 /// than `exp`, and the number is the sum of three things:
 ///
-/// - **60 s** of `jsonwebtoken` clock leeway. `authkestra-op` 0.7.1's
+/// - **60 s** of `jsonwebtoken` clock leeway. `authkestra-op` 0.13.1's
 ///   `verify_client_assertion` leaves `Validation::leeway` at the default and
 ///   says so in a comment; vpay cannot configure it, so this is a fact about
 ///   a pinned dependency, not a vpay setting. An assertion is accepted while

@@ -9,10 +9,14 @@ A time-bounded JWKS cache that takes its HTTP client as an argument.
 ### This is a deliberate port, and why it had to be one
 
 Source: `authkestra_resource::jwt::JwksCache` and the free function
-`validate_jwt_generic`, at the workspace's `=0.7.1` pin —
+`validate_jwt_generic`, ported at the workspace's `=0.7.1` pin —
 `authkestra-resource-0.7.1/src/jwt.rs`, lines 110–201 and 1299–1319. The caching
 policy is theirs; the deviations — including the one place it now behaves
 differently from upstream at runtime (5) — are listed below and nowhere else.
+Re-read at `=0.13.1` on 2026-10-26: the caching policy is unchanged, and
+`JwksCache::new` still builds its `reqwest::Client` eagerly, so the reason for
+the port stands. `Jwks::find_key` now skips a key published with a `use`
+other than `sig`; this port calls `find_key`, so it inherits that.
 
 The reason for the port is a single line of the original:
 
@@ -35,8 +39,8 @@ constructed, so `JwksCache::new(..).with_client(..)` still runs the panicking
 line first. That was verified against the real binary, not inferred — with
 `vpay_provider::http::client` wired in through `with_client`, `vpay-server`
 still died with `Client::new(): reqwest::Error { kind: Builder, source:
-General("No CA certificates were loaded from the system") }`. At 0.7.1 there is
-no other constructor and the struct is `#[non_exhaustive]`, so no amount of
+General("No CA certificates were loaded from the system") }`. At 0.7.1, and
+still at 0.13.1, there is no other constructor and the struct is `#[non_exhaustive]`, so no amount of
 calling avoids that line. The upstream fix — making `new` lazy, or adding a
 `JwksCache::with_client(uri, ttl, client)` constructor — is not something this
 repository can apply to a pinned published crate.
