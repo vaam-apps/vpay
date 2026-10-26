@@ -151,6 +151,25 @@ export class VpayTransportError extends VpayError {
 }
 
 /**
+ * An answer's body exceeded {@link MAX_RESPONSE_BYTES}. Reading stopped at the
+ * bound and the connection was destroyed; nothing of the body was kept or
+ * opened. The honest server never sends one this large (a page of 100 objects
+ * is a few hundred kilobytes), so this is a misbehaving peer or proxy, and an
+ * unbounded read would let it make this process hold whatever it liked.
+ *
+ * A {@link VpayTransportError}, so a caller that handles transport failures
+ * already handles this one.
+ */
+export class VpayResponseTooLargeError extends VpayTransportError {
+  /** The bound that was exceeded, in bytes. */
+  readonly limit: number;
+  constructor(limit: number) {
+    super(`the response body exceeded ${limit} bytes and was not read further`);
+    this.limit = limit;
+  }
+}
+
+/**
  * The SDK was configured incorrectly — caught before any request is sent.
  *
  * Almost always at construction (a missing `clientId`, an unreadable or

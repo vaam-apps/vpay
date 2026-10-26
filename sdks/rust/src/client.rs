@@ -51,6 +51,12 @@ const RESPONSE_PAYLOAD_TYPE: &str = "application/json";
 /// hold in an error value.
 const BODY_PREFIX_LIMIT: usize = 500;
 
+/// The most of an answer's body this client will read, in bytes. A signed
+/// answer is a COSE message around JSON, and the largest honest one (a list of
+/// 100 objects) is a few hundred kilobytes; eight mebibytes is far above that
+/// and far below what a hostile peer could otherwise make this process hold.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
+
 /// Mozilla's CA bundle as a rustls root store — see
 /// [`rustls_client_config`] for why the roots are vendored rather than read
 /// from the platform.
@@ -366,12 +372,9 @@ impl Client {
 
         let status = response.status().as_u16();
         let headers = response.headers().clone();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
+        let bytes = read_bounded(response).await?;
 
-        match sealed.pending.open(status, &headers, bytes).await {
+        match sealed.pending.open(status, &headers, bytes.into()).await {
             Ok(opened) => Self::decode(status, &opened.body),
             Err(ClientError::Envelope(EnvelopeError::Unsigned { status })) => {
                 Err(Error::Unsigned { status })
@@ -422,6 +425,35 @@ impl Client {
         self.send_signed(Method::DELETE, path, None, None, Some(idempotency_key))
             .await
     }
+}
+
+/// Reads a response body, stopping at [`MAX_RESPONSE_BYTES`].
+///
+/// Refuses on the declared `Content-Length` first (nothing is read), then
+/// counts what actually arrives, because the declaration can be absent
+/// (chunked) or false.
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
+    let too_large = Error::ResponseTooLarge {
+        limit: MAX_RESPONSE_BYTES,
+    };
+    if response
+        .content_length()
+        .is_some_and(|declared| declared > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| Error::Transport(e.to_string()))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(too_large);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Builds a [`Client`].
@@ -542,6 +574,13 @@ impl ClientBuilder {
 
         let http = reqwest::Client::builder()
             .timeout(self.timeout)
+            // **Never follow a redirect.** A sealed request is a body that is
+            // valid, once, for whoever receives it within the clock skew: a
+            // `307` to another origin would re-send the COSE message, its
+            // `Idempotency-Key` and its unspent `cti` there, and that origin
+            // could replay it to vpay. A redirect is an unsigned answer and
+            // surfaces as `Error::Unsigned { status }`; nothing is sent twice.
+            .redirect(reqwest::redirect::Policy::none())
             // The bare config, not `Some(config)`: `tls_backend_preconfigured`
             // wraps its argument in an `Option` itself before downcasting, so
             // an already-`Option` argument silently becomes
@@ -567,7 +606,7 @@ mod tests {
     use super::*;
 
     fn creds() -> Credentials {
-        Credentials::ed25519_seed("svc-1", &[7; 32])
+        Credentials::ed25519_seed("svc-1", &[7; 32]).unwrap()
     }
 
     /// A real curve point: pinned keys are checked when the client is built.

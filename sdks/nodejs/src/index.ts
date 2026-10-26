@@ -27,6 +27,7 @@ export {
   VpayUnverifiedResponseError,
   VpayUnexpectedResponseError,
   VpayTransportError,
+  VpayResponseTooLargeError,
   VpayConfigError,
   VpayInvalidParamsError,
   WebhookSignatureError,

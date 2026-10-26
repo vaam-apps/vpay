@@ -12,11 +12,7 @@ import { generateKeyPairSync } from "node:crypto";
 import { inspect } from "node:util";
 import Stripe from "stripe";
 import { afterEach, describe, expect, it } from "vitest";
-import {
-  VpayConfigError,
-  VpayUnsignedResponseError,
-  VpayUnverifiedResponseError,
-} from "./errors.js";
+import { VpayConfigError } from "./errors.js";
 import { createStripeHttpClient } from "./stripe-http-client.js";
 import { newTestIdentity } from "./testing/responder.js";
 import {
@@ -84,6 +80,7 @@ async function withServer(
 function stripeFor(
   server: { url: string; identity: SealedTestServer["identity"] },
   overrides: Partial<Parameters<typeof createStripeHttpClient>[0]> = {},
+  stripeConfig: { maxNetworkRetries?: number } = {},
 ): Stripe {
   const url = new URL(server.url);
   return new Stripe("unused-placeholder", {
@@ -99,6 +96,7 @@ function stripeFor(
     protocol: "http",
     maxNetworkRetries: 0,
     telemetry: false,
+    ...stripeConfig,
   });
 }
 
@@ -247,47 +245,69 @@ describe("createStripeHttpClient — a real stripe-node client", () => {
 });
 
 describe("createStripeHttpClient — refusals reach the caller", () => {
-  it("rejects with a StripeConnectionError that carries VpayUnsignedResponseError when vpay refuses the key", async () => {
-    // **Measured against `stripe@22.6.1`**, because the authenticator this
-    // replaces failed the other way: its rejection was thrown inside a
-    // detached promise chain that never called stripe-node's callback, so the
-    // caller's `await` never settled. An `httpClient` failure is reported
-    // through the normal path.
+  // **Measured against `stripe@22.6.1`, with its default of two network
+  // retries (`maxNetworkRetries: 2`) switched ON**, because that is what a
+  // merchant who did nothing gets, and because rejecting `makeRequest` would
+  // have sent a refused call out three times (stripe-node retries every
+  // rejection, and its public API cannot exempt one). A refusal is therefore a
+  // resolved, non-retryable Stripe-shaped response, and the server is asked once.
+  it("surfaces a refused key once, as StripeAuthenticationError, even with stripe-node's default retries on", async () => {
     const server = await startSealedServer(
       (_req, res) => jsonResponse(res, 200, SAMPLE_INTENT),
       { registerMerchant: false },
     );
     servers.push(server);
 
-    const error = await stripeFor(server)
+    const error = await stripeFor(server, {}, { maxNetworkRetries: 2 })
       .paymentIntents.retrieve("pi_1")
       .catch((e: unknown) => e);
 
-    expect(error).toBeInstanceOf(Stripe.errors.StripeConnectionError);
-    const raw = error as { detail?: unknown; raw?: { exception?: unknown } };
-    const cause = raw.detail ?? raw.raw?.exception;
-    expect(cause).toBeInstanceOf(VpayUnsignedResponseError);
+    expect(error).toBeInstanceOf(Stripe.errors.StripeAuthenticationError);
+    expect((error as Stripe.errors.StripeError).code).toBe("unsigned_response");
+    expect((error as Error).message).toContain("without a signature");
     expect(server.opened).toHaveLength(0);
+    expect(server.wire).toHaveLength(1);
   });
 
-  it("rejects with VpayUnverifiedResponseError underneath when the answer is sealed under another key", async () => {
+  it("surfaces an answer sealed under another key once, as StripeAPIError, with retries on", async () => {
     const server = await withServer(() => ({
       status: 200,
       body: SAMPLE_INTENT,
     }));
     const other = newTestIdentity();
 
-    const error = await stripeFor(server, {
-      serverKeys: { current: other.serverPublic },
-    })
+    const error = await stripeFor(
+      server,
+      { serverKeys: { current: other.serverPublic } },
+      { maxNetworkRetries: 2 },
+    )
+      .paymentIntents.retrieve("pi_1")
+      .catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(Stripe.errors.StripeAPIError);
+    expect((error as Stripe.errors.StripeError).code).toBe(
+      "unverified_response",
+    );
+    expect(server.wire).toHaveLength(1);
+  });
+
+  it("still retries a genuine transport failure, which is what maxNetworkRetries is for", async () => {
+    const server = await withServer(() => ({
+      status: 200,
+      body: SAMPLE_INTENT,
+    }));
+    await server.close();
+    servers = servers.filter((candidate) => candidate !== server);
+
+    const error = await stripeFor(
+      { url: server.url, identity: server.identity },
+      {},
+      { maxNetworkRetries: 1 },
+    )
       .paymentIntents.retrieve("pi_1")
       .catch((e: unknown) => e);
 
     expect(error).toBeInstanceOf(Stripe.errors.StripeConnectionError);
-    const raw = error as { detail?: unknown; raw?: { exception?: unknown } };
-    expect(raw.detail ?? raw.raw?.exception).toBeInstanceOf(
-      VpayUnverifiedResponseError,
-    );
   });
 
   it("re-seals a retried write with the same Idempotency-Key and a new message", async () => {
@@ -493,7 +513,7 @@ describe("createStripeHttpClient — construction", () => {
 });
 
 describe("createStripeHttpClient — plain-server cases", () => {
-  it("is VpayUnsignedResponseError for a proxy's HTML page", async () => {
+  it("presents a proxy's HTML 502 as a retryable unsigned_response, not a rejection", async () => {
     const server = await startTestServer((_req, res) => {
       res.writeHead(502, { "Content-Type": "text/html" });
       res.end("<html>Bad Gateway</html>");
@@ -508,17 +528,25 @@ describe("createStripeHttpClient — plain-server cases", () => {
       serverKeys: { current: identity.serverPublic },
     });
 
-    await expect(
-      client.makeRequest(
-        url.hostname,
-        url.port,
-        "/v1/payment_intents/pi_1",
-        "GET",
-        {},
-        "",
-        "http",
-        2000,
-      ),
-    ).rejects.toThrow(VpayUnsignedResponseError);
+    const response = await client.makeRequest(
+      url.hostname,
+      url.port,
+      "/v1/payment_intents/pi_1",
+      "GET",
+      {},
+      "",
+      "http",
+      2000,
+    );
+    expect(response.getStatusCode()).toBe(502);
+    // A gateway's 5xx is the one refusal left retryable: no `stripe-should-retry`.
+    expect(response.getHeaders()["stripe-should-retry"]).toBeUndefined();
+    const body = (await response.toJSON()) as {
+      error: { code: string; type: string };
+    };
+    expect(body.error).toMatchObject({
+      code: "unsigned_response",
+      type: "api_error",
+    });
   });
 });

@@ -83,7 +83,7 @@ hex = "0.4"
 # module doc says why byte-parity with `sdks/nodejs` is the requirement.
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio = { workspace = true, features = ["test-util", "macros", "net", "io-util"] }
 # Dev-only, for `tests/tls.rs`: asserts that no process-wide `CryptoProvider`
 # is installed — the precondition under which reqwest 0.13's own client
 # builder would panic, and the one this crate's preconfigured `ClientConfig`

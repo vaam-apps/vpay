@@ -8,7 +8,6 @@
  * written to make this file pass.
  */
 import Stripe from "stripe";
-import { VpayUnsignedResponseError } from "@vaam-apps/vpay-sdk";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -42,22 +41,25 @@ describe("error mapping", () => {
     expect(stripeError.requestId).toMatch(UUID);
   });
 
-  it("turns a refused signature into a StripeConnectionError carrying vpay's unsigned 401", async () => {
+  it("turns a refused signature into a StripeAuthenticationError", async () => {
     // A signature from a key vpay does not know is refused before any handler
     // runs, with the layer's coarse 401 — unsigned, and identical for every
     // cause (no signature, a replay, the wrong audience, a disabled client).
-    // That is not the Stripe error envelope, so stripe-node cannot map it to
-    // `StripeAuthenticationError`: its HTTP client rejected, which stripe-node
-    // reports as a connection error. The original error is on `detail`.
+    // That is not the Stripe error envelope, so the sealing httpClient presents
+    // it as one: a 401 `authentication_error` (`code: unsigned_response`) with
+    // `stripe-should-retry: false`, so it holds under stripe-node's default
+    // two retries too (`stripe-http-client.test.ts` measures that; this suite's
+    // client sets `maxNetworkRetries: 0`). Rejecting instead would have been a
+    // StripeConnectionError that stripe-node retries, sending a refused,
+    // freshly signed message three times.
     const error = await caught(() =>
       stripeClientWithUnregisteredKey().paymentIntents.retrieve("pi_anything"),
     );
 
-    expect(error).toBeInstanceOf(Stripe.errors.StripeConnectionError);
-    const detail = error as { detail?: unknown; raw?: { exception?: unknown } };
-    const cause = detail.detail ?? detail.raw?.exception;
-    expect(cause).toBeInstanceOf(VpayUnsignedResponseError);
-    expect((cause as VpayUnsignedResponseError).status).toBe(401);
+    expect(error).toBeInstanceOf(Stripe.errors.StripeAuthenticationError);
+    const stripeError = error as Stripe.errors.StripeAuthenticationError;
+    expect(stripeError.statusCode).toBe(401);
+    expect(stripeError.code).toBe("unsigned_response");
   });
 
   it("refuses `confirm: true` on create, naming the parameter", async () => {

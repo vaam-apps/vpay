@@ -56,7 +56,7 @@ fn public_of(seed: u8) -> [u8; 32] {
 
 fn client_for(base_url: String) -> Result<Client, vpay_sdk::ConfigError> {
     Client::builder(base_url)
-        .credentials(Credentials::ed25519_seed("merchant_acme", &[3; 32]))
+        .credentials(Credentials::ed25519_seed("merchant_acme", &[3; 32]).unwrap())
         .server_keys(ServerKeys::new(public_of(1), public_of(2)))
         .timeout(Duration::from_secs(5))
         .build()

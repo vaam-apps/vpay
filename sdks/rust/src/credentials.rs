@@ -47,19 +47,31 @@ impl Credentials {
     /// ```
     /// use vpay_sdk::Credentials;
     ///
-    /// let credentials = Credentials::ed25519_seed("merchant_acme", &[7; 32]);
+    /// let credentials = Credentials::ed25519_seed("merchant_acme", &[7; 32]).unwrap();
     /// // The public half is what the operator registers under `cose_keys`.
     /// assert_eq!(credentials.public_key().len(), 32);
     /// ```
-    #[must_use]
-    pub fn ed25519_seed(client_id: impl Into<String>, seed: &[u8; 32]) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::InvalidSeed`] if the signer reports no Ed25519 public
+    /// key for the seed. It cannot for an `Ed25519Signer`, which is exactly why
+    /// it is an error and not a zeroed key: a credential whose public half is
+    /// `[0; 32]` would register nothing and fail at vpay as the coarse `401`.
+    pub fn ed25519_seed(
+        client_id: impl Into<String>,
+        seed: &[u8; 32],
+    ) -> Result<Self, ConfigError> {
         let signer = Ed25519Signer::from_seed(seed);
-        let public_key = signer.verify_key().ed25519_bytes().unwrap_or([0; 32]);
-        Self {
+        let public_key = signer
+            .verify_key()
+            .ed25519_bytes()
+            .ok_or(ConfigError::InvalidSeed)?;
+        Ok(Self {
             client_id: client_id.into(),
             signer: Arc::new(signer),
             public_key,
-        }
+        })
     }
 
     /// [`Self::ed25519_seed`] from the text a seed file holds: 32 bytes as
@@ -77,7 +89,7 @@ impl Credentials {
     ///
     /// let seed = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"; // [7; 32]
     /// let a = Credentials::ed25519_seed_base64url("m", &format!("{seed}\n")).unwrap();
-    /// assert_eq!(a.public_key(), Credentials::ed25519_seed("m", &[7; 32]).public_key());
+    /// assert_eq!(a.public_key(), Credentials::ed25519_seed("m", &[7; 32]).unwrap().public_key());
     /// assert!(Credentials::ed25519_seed_base64url("m", "not a seed").is_err());
     /// ```
     pub fn ed25519_seed_base64url(
@@ -88,7 +100,7 @@ impl Credentials {
             .decode(seed.trim())
             .map_err(|_| ConfigError::InvalidSeed)?;
         let seed = <[u8; 32]>::try_from(bytes.as_slice()).map_err(|_| ConfigError::InvalidSeed)?;
-        Ok(Self::ed25519_seed(client_id, &seed))
+        Self::ed25519_seed(client_id, &seed)
     }
 
     /// Signs with a key this process cannot read: `sign` receives the exact

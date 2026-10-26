@@ -58,15 +58,24 @@ Transport is `node:http(s)`, not `fetch`, because a sealed `GET` carries its
 signature as a body and `fetch` forbids one. Sealing is the Rust code compiled
 to WebAssembly (`sdks/rust/wasm`), so the bytes signed are the Rust SDK's.
 
-**A refusal reaches you as `StripeConnectionError`.** vpay's coarse unsigned
+**A refusal reaches you as a Stripe error, once.** vpay's coarse unsigned
 `401` is not the Stripe envelope, and an answer sealed under a key you did not
-pin is not an answer at all; the client rejects, and stripe-node reports a
-rejection from its HTTP client as a connection error. The original is at
-`err.detail` / `err.raw.exception` (`VpayUnsignedResponseError`,
-`VpayUnverifiedResponseError`). stripe-node will retry such a rejection if
-`maxNetworkRetries` is set; a retry re-seals the call (a new message, the same
-`Idempotency-Key`), which is safe for a write and pointless for a refusal, so
-leave it at 0 unless a flaky network is the problem you have.
+pin is not an answer at all. If the client rejected, stripe-node would report a
+connection error and **retry it** (`maxNetworkRetries` defaults to 2 on Node,
+and a rejection cannot be exempted), sending a refused, freshly signed message
+three times. So a refusal is returned as a Stripe-shaped response with
+`stripe-should-retry: false`: `StripeAuthenticationError` with `code:
+"unsigned_response"` for the `401`, `StripeAPIError` with `code:
+"unverified_response"` for an answer that does not verify under the pinned
+keys (or `"response_too_large"` for a body over 8 MiB), the cause in `message`.
+A gateway's own unsigned `5xx` stays retryable.
+
+What still rejects, and is a `StripeConnectionError` retried up to
+`maxNetworkRetries`, is a real transport failure. Each retry re-seals the call
+(a new message). A `POST` keeps the `Idempotency-Key` stripe-node chose, so the
+retry is the same operation. A `DELETE` has none from stripe-node and gets a
+new one per attempt, so a repeat of a `DELETE` that had landed answers `404`:
+set `maxNetworkRetries: 0` if that is not acceptable.
 
 ## What carries over unchanged
 
@@ -87,16 +96,16 @@ classification ([ADR-0011](../adr/0011-error-modelling.md)), so the mapping
 below is a property of the two designs meeting rather than of anything written
 to make it line up.
 
-| vpay answer                | What you catch                                                                                                           |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `404` `resource_missing`   | `StripeInvalidRequestError`, `err.code === "resource_missing"`                                                           |
-| `400` `invalid_request`    | `StripeInvalidRequestError`, with `err.param` naming the field                                                           |
-| `400` `idempotency_error`  | `StripeIdempotencyError`                                                                                                 |
-| the coarse unsigned `401`  | `StripeConnectionError`, original at `err.detail` — it is not the envelope, and vpay does not say why it refused         |
-| `403` (missing scope)      | `StripePermissionError` — **despite** carrying `type: invalid_request_error`, because stripe-node branches on the status |
-| `409` (lifecycle conflict) | `StripeAPIError` — 409 falls through every branch of `generateV1Error`                                                   |
-| `502` (rail transport)     | `StripeAPIError`, **and stripe-node retries it** — see below                                                             |
-| `429`                      | never emitted: nothing in `backends/crates` constructs `Category::RateLimited`                                           |
+| vpay answer                | What you catch                                                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `404` `resource_missing`   | `StripeInvalidRequestError`, `err.code === "resource_missing"`                                                                |
+| `400` `invalid_request`    | `StripeInvalidRequestError`, with `err.param` naming the field                                                                |
+| `400` `idempotency_error`  | `StripeIdempotencyError`                                                                                                      |
+| the coarse unsigned `401`  | `StripeAuthenticationError`, `code: "unsigned_response"`, once — it is not the envelope, and vpay does not say why it refused |
+| `403` (missing scope)      | `StripePermissionError` — **despite** carrying `type: invalid_request_error`, because stripe-node branches on the status      |
+| `409` (lifecycle conflict) | `StripeAPIError` — 409 falls through every branch of `generateV1Error`                                                        |
+| `502` (rail transport)     | `StripeAPIError`, **and stripe-node retries it** — see below                                                                  |
+| `429`                      | never emitted: nothing in `backends/crates` constructs `Category::RateLimited`                                                |
 
 `err.requestId` is populated from a `request-id` response header — stripe-node
 never reads `x-request-id`. vpay emits **both names with one value**, so

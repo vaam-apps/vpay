@@ -210,7 +210,7 @@ async fn a_key_the_server_has_not_registered_gets_the_bare_unsigned_401_and_is_n
     let server = upstream_with_event().await;
     let front = front::start(&server.uri(), Seal::Current).await;
     let stranger = Client::builder(&front.base_url)
-        .credentials(Credentials::ed25519_seed("stranger", &[9; 32]))
+        .credentials(Credentials::ed25519_seed("stranger", &[9; 32]).unwrap())
         .server_keys(front::server_keys())
         .build()
         .unwrap();
@@ -297,4 +297,113 @@ async fn an_external_signer_whose_signature_does_not_verify_is_refused_before_se
         other => panic!("expected Seal, got {other:?}"),
     }
     assert!(server.received_requests().await.unwrap().is_empty());
+}
+
+/// A redirect is an unsigned answer, never a hop. The request is a sealed body
+/// that is valid once for whoever receives it within the skew, so following a
+/// `307` would hand the COSE message, its `Idempotency-Key` and its unspent
+/// `cti` to another origin, which could replay it to vpay. The second origin
+/// below must receive nothing at all.
+#[tokio::test]
+async fn a_redirect_to_another_origin_is_refused_and_that_origin_receives_nothing() {
+    let elsewhere = MockServer::start().await;
+    Mock::given(wiremock::matchers::any())
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&elsewhere)
+        .await;
+
+    let redirecting = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/events"))
+        .respond_with(
+            ResponseTemplate::new(307)
+                .insert_header("location", format!("{}/v1/events", elsewhere.uri())),
+        )
+        .mount(&redirecting)
+        .await;
+
+    let client = Client::builder(redirecting.uri())
+        .credentials(front::merchant_credentials())
+        .server_keys(front::server_keys())
+        .build()
+        .unwrap();
+    match client.events().list(Default::default()).await.unwrap_err() {
+        Error::Unsigned { status: 307 } => {}
+        other => panic!("expected Unsigned {{ status: 307 }}, got {other:?}"),
+    }
+
+    assert_eq!(
+        redirecting.received_requests().await.unwrap().len(),
+        1,
+        "the original origin is asked once, never retried"
+    );
+    assert!(
+        elsewhere.received_requests().await.unwrap().is_empty(),
+        "the sealed request must not have been re-sent to the redirect target"
+    );
+}
+
+/// An answer larger than [`vpay_sdk::MAX_RESPONSE_BYTES`] is a typed error and
+/// is not read further, whether it declares its length or not.
+#[tokio::test]
+async fn an_oversized_answer_is_a_typed_error_declared_or_chunked() {
+    // Declared: `wiremock` sets `Content-Length`, so nothing is read at all.
+    let declared = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/v1/events"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(vec![
+            0_u8;
+            vpay_sdk::MAX_RESPONSE_BYTES
+                + 1
+        ]))
+        .mount(&declared)
+        .await;
+    let client = Client::builder(declared.uri())
+        .credentials(front::merchant_credentials())
+        .server_keys(front::server_keys())
+        .build()
+        .unwrap();
+    match client.events().list(Default::default()).await.unwrap_err() {
+        Error::ResponseTooLarge { limit } => assert_eq!(limit, vpay_sdk::MAX_RESPONSE_BYTES),
+        other => panic!("expected ResponseTooLarge, got {other:?}"),
+    }
+
+    // Chunked, with no length to refuse on: the count is what stops it.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut scratch = [0_u8; 8192];
+        let _ = socket.read(&mut scratch).await;
+        socket
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n",
+            )
+            .await
+            .unwrap();
+        let chunk = vec![b'x'; 1024 * 1024];
+        for _ in 0..(vpay_sdk::MAX_RESPONSE_BYTES / chunk.len() + 2) {
+            let framed = [
+                format!("{:x}\r\n", chunk.len()).into_bytes(),
+                chunk.clone(),
+                b"\r\n".to_vec(),
+            ]
+            .concat();
+            if socket.write_all(&framed).await.is_err() {
+                return;
+            }
+        }
+        let _ = socket.write_all(b"0\r\n\r\n").await;
+    });
+    let client = Client::builder(format!("http://{address}"))
+        .credentials(front::merchant_credentials())
+        .server_keys(front::server_keys())
+        .build()
+        .unwrap();
+    match client.events().list(Default::default()).await.unwrap_err() {
+        Error::ResponseTooLarge { .. } => {}
+        other => panic!("expected ResponseTooLarge, got {other:?}"),
+    }
+    server.abort();
 }

@@ -8,12 +8,14 @@ import {
   VpayConfigError,
   VpayError,
   VpayInvalidParamsError,
+  VpayResponseTooLargeError,
   VpayTransportError,
   VpayUnexpectedResponseError,
   VpayUnsignedResponseError,
   VpayUnverifiedResponseError,
 } from "./errors.js";
 import { newTestIdentity } from "./testing/responder.js";
+import { MAX_RESPONSE_BYTES } from "./transport.js";
 import {
   startSealedServer,
   startTestServer,
@@ -1665,6 +1667,65 @@ describe("timeouts surface as VpayTransportError", () => {
     const cause = (error as VpayTransportError).cause as Error;
     expect(cause).toBeInstanceOf(Error);
     expect(cause.name).toBe("TimeoutError");
+  });
+});
+
+describe("what the transport will not do", () => {
+  // A sealed request is a body that is valid once, for whoever receives it
+  // within the skew. Following a 307 would hand the COSE message, its
+  // Idempotency-Key and its unspent cti to another origin.
+  it("does not follow a redirect: the second origin receives nothing and the call is an unsigned answer", async () => {
+    let elsewhereHits = 0;
+    const elsewhere = await startTestServer((_req, res) => {
+      elsewhereHits += 1;
+      res.writeHead(200);
+      res.end();
+    });
+    servers.push(elsewhere);
+    const redirecting = await startTestServer((_req, res) => {
+      res.writeHead(307, {
+        location: `${elsewhere.url}/v1/payment_intents/pi_123`,
+      });
+      res.end();
+    });
+    servers.push(redirecting);
+    const client = makeClient(redirecting);
+
+    const error = await client.paymentIntents
+      .retrieve("pi_123")
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(VpayUnsignedResponseError);
+    expect((error as VpayUnsignedResponseError).status).toBe(307);
+    expect(elsewhereHits).toBe(0);
+  });
+
+  it("refuses a body over the bound, declared or chunked, without reading it", async () => {
+    const declared = await startTestServer((_req, res) => {
+      res.writeHead(200, { "content-length": String(MAX_RESPONSE_BYTES + 1) });
+      res.write(Buffer.alloc(1024));
+      // never ends: the declaration alone must be enough to refuse
+    });
+    servers.push(declared);
+    await expect(
+      makeClient(declared).paymentIntents.retrieve("pi_123"),
+    ).rejects.toBeInstanceOf(VpayResponseTooLargeError);
+
+    const chunked = await startTestServer((_req, res) => {
+      res.writeHead(200, { "transfer-encoding": "chunked" });
+      const chunk = Buffer.alloc(1024 * 1024);
+      const timer = setInterval(() => {
+        if (!res.write(chunk)) return;
+      }, 0);
+      res.on("close", () => clearInterval(timer));
+    });
+    servers.push(chunked);
+    const error = await makeClient(chunked)
+      .paymentIntents.retrieve("pi_123")
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(VpayResponseTooLargeError);
+    expect((error as VpayResponseTooLargeError).limit).toBe(MAX_RESPONSE_BYTES);
+    // A transport error, so a caller that handles those already handles this.
+    expect(error).toBeInstanceOf(VpayTransportError);
   });
 });
 

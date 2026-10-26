@@ -14,8 +14,17 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import type { Agent as HttpAgent } from "node:http";
 import type { Agent as HttpsAgent } from "node:https";
-import { VpayTransportError } from "./errors.js";
+import { VpayResponseTooLargeError, VpayTransportError } from "./errors.js";
 import type { HeaderPairs } from "./wasm.js";
+
+/**
+ * The most of an answer's body this client reads, in bytes. A signed answer is
+ * a COSE message around JSON, and the largest honest one (a list of 100
+ * objects) is a few hundred kilobytes; eight mebibytes is far above that and
+ * far below what a hostile peer could otherwise make this process hold. The
+ * same number as the Rust SDK's `MAX_RESPONSE_BYTES`.
+ */
+export const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 
 export interface TransportRequest {
   method: string;
@@ -90,8 +99,31 @@ export function sendSealed(
         signal,
       },
       (res) => {
+        const tooLarge = (): void => {
+          // Reject first: destroying the response emits `aborted`
+          // synchronously, and that handler would otherwise settle the promise
+          // with a generic transport failure before the typed one.
+          reject(new VpayResponseTooLargeError(MAX_RESPONSE_BYTES));
+          res.destroy();
+        };
+        // A declared length over the bound is refused before a byte is read;
+        // the count below is for a body that declares none (chunked) or lies.
+        const declared = Number(res.headers["content-length"]);
+        if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+          tooLarge();
+          return;
+        }
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let received = 0;
+        res.on("data", (chunk: Buffer) => {
+          received += chunk.byteLength;
+          if (received > MAX_RESPONSE_BYTES) {
+            chunks.length = 0;
+            tooLarge();
+            return;
+          }
+          chunks.push(chunk);
+        });
         res.on("error", fail);
         // `aborted` fires when the peer severs a response mid-body; `end`
         // would then never come, and the caller would wait for the timeout.

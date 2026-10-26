@@ -59,7 +59,7 @@ fn keys() -> ServerKeys {
 
 #[test]
 fn credentials_debug_shows_the_client_id_and_the_public_key_but_no_key_material() {
-    let credentials = Credentials::ed25519_seed("merchant_acme", &SEED);
+    let credentials = Credentials::ed25519_seed("merchant_acme", &SEED).unwrap();
 
     for rendered in [format!("{credentials:?}"), format!("{credentials:#?}")] {
         assert_no_key_material(&rendered);
@@ -74,7 +74,7 @@ fn credentials_debug_shows_the_client_id_and_the_public_key_but_no_key_material(
 #[test]
 fn client_and_builder_debug_carry_no_key_material() {
     let builder = Client::builder("https://api.vpay.test")
-        .credentials(Credentials::ed25519_seed("merchant_acme", &SEED))
+        .credentials(Credentials::ed25519_seed("merchant_acme", &SEED).unwrap())
         .server_keys(keys());
     assert_no_key_material(&format!("{builder:?}"));
 

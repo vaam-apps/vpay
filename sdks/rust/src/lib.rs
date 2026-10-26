@@ -67,7 +67,7 @@ mod resources;
 mod validate;
 pub mod webhooks;
 
-pub use client::{Client, ClientBuilder};
+pub use client::{Client, ClientBuilder, MAX_RESPONSE_BYTES};
 pub use credentials::{Credentials, ServerKeys};
 pub use error::{ConfigError, Error, WebhookError};
 pub use model::{

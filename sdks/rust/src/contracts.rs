@@ -7,7 +7,7 @@
 //! This crate is what a merchant depends on, and it must stay publishable
 //! without the vpay workspace, so it does not depend on `vpay-wire`. It carries
 //! its own copy of the table instead, and `backends/crates/vpay-api`'s
-//! `sdk_contracts` test (in the workspace, where both crates are visible) fails
+//! `v1::contracts::tests` (in the workspace, where both crates are visible) fails
 //! when the two disagree — in the table, in the digest derivation, or in the
 //! way a concrete path is matched to a row. A copy that the build checks is a
 //! vendored file; a copy nothing checks is a second source of truth.

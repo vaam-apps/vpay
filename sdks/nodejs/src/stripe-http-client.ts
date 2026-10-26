@@ -44,7 +44,12 @@
  * does not carry over from real Stripe.
  */
 import { randomUUID } from "node:crypto";
-import { VpayConfigError } from "./errors.js";
+import {
+  VpayConfigError,
+  VpayResponseTooLargeError,
+  VpayUnsignedResponseError,
+  VpayUnverifiedResponseError,
+} from "./errors.js";
 import { performSealedCall } from "./sealed-call.js";
 import {
   resolveMerchantAuth,
@@ -243,6 +248,41 @@ class SealedResponse implements VpayStripeHttpResponse {
   }
 }
 
+/**
+ * A refusal, presented to stripe-node as the response it is.
+ *
+ * stripe-node retries **every** rejection from an `httpClient` as a connection
+ * error: `maxNetworkRetries` defaults to 2 on Node, so a refused call would go
+ * out three times, each a fresh signed message, and the public hook that would
+ * exempt a rejection (`HttpClientRuntimeError`) is not exported. A response is
+ * different: stripe-node honours `stripe-should-retry: false` before it looks
+ * at the status. So a refusal that retrying cannot fix (a `4xx` unsigned
+ * answer, an answer that does not verify, a body over the bound) is returned
+ * as a Stripe-shaped error response carrying that header, and surfaces as the
+ * ordinary `StripeAuthenticationError` / `StripeAPIError` with the cause in
+ * `message`, once. A gateway's own `5xx` is left retryable: that is what
+ * `maxNetworkRetries` is for, and a keyed write is safe to repeat.
+ */
+function refusal(
+  status: number,
+  code: string,
+  message: string,
+  retryable: boolean,
+): SealedResponse {
+  const body = JSON.stringify({
+    error: {
+      type: status === 401 ? "authentication_error" : "api_error",
+      code,
+      message,
+    },
+  });
+  return new SealedResponse(
+    status,
+    body,
+    retryable ? {} : { "stripe-should-retry": "false" },
+  );
+}
+
 class SealingStripeHttpClient implements VpayStripeHttpClient {
   readonly #auth: ResolvedMerchantAuth;
   readonly #bound: BoundOrigin;
@@ -280,29 +320,55 @@ class SealingStripeHttpClient implements VpayStripeHttpClient {
     }
     const underV1 = pathname.slice("/v1".length);
 
-    const {
-      status,
-      text,
-      headers: responseHeaders,
-    } = await performSealedCall(
-      this.#auth,
-      {
-        method: verb,
-        path: underV1,
-        body: verb === "POST" ? requestData : undefined,
-        query: verb === "GET" ? query : undefined,
-        // stripe-node keys POSTs and nothing else; vpay requires a key on
-        // every write, `DELETE` included, so a write that arrives without
-        // one is given one here (a retry of the same attempt re-seals with
-        // the key stripe-node chose, which is what makes it safe).
-        idempotencyKey:
-          verb === "GET"
-            ? undefined
-            : (idempotencyKeyOf(headers) ?? randomUUID()),
-      },
-      Number.isFinite(timeout) && timeout > 0 ? timeout : this.#auth.timeoutMs,
-    );
-    return new SealedResponse(status, text, responseHeaders);
+    try {
+      const {
+        status,
+        text,
+        headers: responseHeaders,
+      } = await performSealedCall(
+        this.#auth,
+        {
+          method: verb,
+          path: underV1,
+          body: verb === "POST" ? requestData : undefined,
+          query: verb === "GET" ? query : undefined,
+          // stripe-node keys POSTs and nothing else; vpay requires a key on
+          // every write, `DELETE` included, so a `DELETE` is given one here.
+          // **A retry of a `POST` re-seals with the key stripe-node chose,
+          // which is what makes it safe. A retry of a `DELETE` does not:**
+          // stripe-node sets no key for it, `makeRequest` runs again with no
+          // memory of the first attempt, and this draws a new one. That is
+          // acceptable because a `DELETE` is naturally idempotent (the
+          // repeat of one that landed is a `404`), and it is why the
+          // README tells a caller who cannot tolerate that to set
+          // `maxNetworkRetries: 0`.
+          idempotencyKey:
+            verb === "GET"
+              ? undefined
+              : (idempotencyKeyOf(headers) ?? randomUUID()),
+        },
+        Number.isFinite(timeout) && timeout > 0
+          ? timeout
+          : this.#auth.timeoutMs,
+      );
+      return new SealedResponse(status, text, responseHeaders);
+    } catch (err) {
+      if (err instanceof VpayUnsignedResponseError) {
+        return refusal(
+          err.status,
+          "unsigned_response",
+          err.message,
+          err.status >= 500,
+        );
+      }
+      if (err instanceof VpayUnverifiedResponseError) {
+        return refusal(502, "unverified_response", err.message, false);
+      }
+      if (err instanceof VpayResponseTooLargeError) {
+        return refusal(502, "response_too_large", err.message, false);
+      }
+      throw err;
+    }
   }
 }
 
@@ -339,14 +405,24 @@ class SealingStripeHttpClient implements VpayStripeHttpClient {
  *
  * # Failures
  *
- * A refused call (the coarse unsigned `401`) or an answer that does not verify
- * rejects `makeRequest` with `VpayUnsignedResponseError` /
- * `VpayUnverifiedResponseError`. stripe-node reports a rejection from its HTTP
- * client as a `StripeConnectionError` and retries it if `maxNetworkRetries` is
- * set; the original error is at `err.detail` / `err.raw.exception`. A retry
- * re-seals the call (a new message, the same `Idempotency-Key`), which is safe
- * for a write and pointless for a refusal, so leave `maxNetworkRetries` at 0
- * unless a flaky network is the problem you have.
+ * stripe-node retries any *rejection* from an `httpClient` as a connection
+ * error (`maxNetworkRetries` defaults to **2** on Node, not 0), and cannot be
+ * told not to, so a refusal is not a rejection. A refused call (the coarse
+ * unsigned `401`), an answer that does not verify, or a body over the bound
+ * resolves as a Stripe-shaped error response with `stripe-should-retry:
+ * false`, and surfaces once: `StripeAuthenticationError` (`code:
+ * "unsigned_response"`) for a `401`, `StripeAPIError` (`unverified_response`,
+ * `response_too_large`) otherwise, with the cause in `message`. A gateway's
+ * unsigned `5xx` stays retryable.
+ *
+ * What does reject is a real transport failure (DNS, TLS, a reset, a timeout)
+ * and a {@link VpayConfigError}, reported as `StripeConnectionError` with the
+ * original at `err.detail` / `err.raw.exception`, and retried up to
+ * `maxNetworkRetries` times. Each retry re-seals the call (a new message). A
+ * `POST` keeps the `Idempotency-Key` stripe-node chose, so the retry is the
+ * same operation; a `DELETE` has none from stripe-node and gets a new one per
+ * attempt (see the comment at the call), so set `maxNetworkRetries: 0` if a
+ * repeated `DELETE` answering `404` is not acceptable to you.
  *
  * @throws `VpayConfigError` at construction if `baseUrl` or `clientId` is
  * missing, if `baseUrl` is not an absolute URL, if the key is not an Ed25519

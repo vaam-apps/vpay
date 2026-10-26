@@ -255,12 +255,12 @@ Runnable versions live in [`examples/`](examples):
 `Client::builder(base_url)` plus these setters; `build()` validates and
 returns `ConfigError` before anything touches the network.
 
-| Setter             | Default  | Notes                                                                                                                                                                                                                                                          |
-| ------------------ | -------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `.credentials(..)` | —        | Required. `Credentials::ed25519_seed(client_id, &seed)`, `ed25519_seed_base64url(client_id, text)`, or `ed25519_external(client_id, &public_key, sign)` for a key in a KMS. The `client_id` is **not sent**: vpay finds the merchant by the key that verified. |
-| `.server_keys(..)` | —        | Required. `ServerKeys::new(current, next)` or `from_base64url(..)`: the response keys to trust. An answer under any other key is `Error::Unverified`. There is no default and no trust-on-first-use.                                                           |
-| `.audience(..)`    | base URL | The name every request is addressed to: vpay's `deployment.public_base_url` without a trailing slash (`vpay_api::envelope::audience_for`). Set it when this process reaches vpay by another URL than payers do.                                                |
-| `.timeout(..)`     | 30 s     | Applies to every call.                                                                                                                                                                                                                                         |
+| Setter             | Default  | Notes                                                                                                                                                                                                                                                           |
+| ------------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `.credentials(..)` | —        | Required. `Credentials::ed25519_seed(client_id, &seed)?`, `ed25519_seed_base64url(client_id, text)`, or `ed25519_external(client_id, &public_key, sign)` for a key in a KMS. The `client_id` is **not sent**: vpay finds the merchant by the key that verified. |
+| `.server_keys(..)` | —        | Required. `ServerKeys::new(current, next)` or `from_base64url(..)`: the response keys to trust. An answer under any other key is `Error::Unverified`. There is no default and no trust-on-first-use.                                                            |
+| `.audience(..)`    | base URL | The name every request is addressed to: vpay's `deployment.public_base_url` without a trailing slash (`vpay_api::envelope::audience_for`). Set it when this process reaches vpay by another URL than payers do.                                                 |
+| `.timeout(..)`     | 30 s     | Applies to every call.                                                                                                                                                                                                                                          |
 
 ### Reaching vpay by an internal URL
 

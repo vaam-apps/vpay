@@ -165,6 +165,17 @@ pub enum Error {
     #[error("transport error: {0}")]
     Transport(String),
 
+    /// The answer's body exceeded [`crate::MAX_RESPONSE_BYTES`]. Reading stopped
+    /// at the bound; nothing of the body was kept or opened. The honest server
+    /// never sends one this large (a page of 100 objects is a few hundred
+    /// kilobytes), so this is a misbehaving peer or proxy, and an unbounded
+    /// read would let it make this process hold whatever it liked.
+    #[error("the response body exceeded {limit} bytes and was not read further")]
+    ResponseTooLarge {
+        /// The bound, in bytes.
+        limit: usize,
+    },
+
     /// A request parameter this SDK refuses to put on the wire, caught
     /// before the request was built: an amount outside `0..=2^53-1` (see
     /// [`crate::CreatePaymentIntentParams::amount`]), a URL a combination of

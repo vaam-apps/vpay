@@ -22,9 +22,11 @@
 //! What this front does **not** prove is that the *operation table* the SDK
 //! vendors agrees with `vpay-api`'s router. Its resolver reads that same table
 //! (`vpay_sdk::contracts`), so the check is circular here. It is closed from the
-//! other side, in the workspace: `vpay-api`'s `sdk_contracts` test compares the
-//! SDK's table to `vpay-wire`, and `backends/tests/integration/tests/
-//! signed_transport.rs` drives this crate against the real router.
+//! other side, in the workspace: `vpay-api`'s `v1::contracts::tests` compare the
+//! SDK's table to `vpay-wire` and to the router's own routes, and
+//! `backends/tests/integration/tests/support/sealed.rs` seals the integration
+//! suites' requests from an independent implementation over `vpay-wire`'s table;
+//! `signed_transport.rs` there runs against the real router.
 
 use std::sync::{Arc, LazyLock};
 
@@ -69,7 +71,7 @@ fn public_of(seed: &[u8; 32]) -> [u8; 32] {
 
 /// The merchant's credentials for every test in this process.
 pub(crate) fn merchant_credentials() -> Credentials {
-    Credentials::ed25519_seed("merchant_acme", &SEEDS.merchant)
+    Credentials::ed25519_seed("merchant_acme", &SEEDS.merchant).expect("a seed signs")
 }
 
 /// The merchant's seed, for a test that signs through an external callback.

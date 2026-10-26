@@ -384,15 +384,21 @@ never imports it.
 
 ### When vpay refuses
 
-A refused call (the unsigned `401`) or an answer that does not verify rejects
-`makeRequest`, which stripe-node reports as a **`StripeConnectionError`**; the
-original `VpayUnsignedResponseError` / `VpayUnverifiedResponseError` is at
-`err.detail` (or `err.raw.exception`). It is not a
-`StripeAuthenticationError`: the refusal is not the Stripe error envelope, so
-stripe-node has nothing to map it from. A retried write is re-sealed with the
-same `Idempotency-Key` and a fresh message, which is safe; a refusal is
-refused for the same reason the second time, so leave `maxNetworkRetries` at
-`0` unless a flaky network is the problem you have.
+stripe-node retries every _rejection_ from an `httpClient` (`maxNetworkRetries`
+defaults to **2** on Node) and its public API cannot exempt one, so a refusal is
+not a rejection. A refused call (the unsigned `401`), an answer that does not
+verify and a body over 8 MiB are returned as Stripe-shaped error responses with
+`stripe-should-retry: false` and surface **once**: `StripeAuthenticationError`
+(`code: "unsigned_response"`) for the `401`, `StripeAPIError`
+(`"unverified_response"`, `"response_too_large"`) otherwise, the cause in
+`message`. A gateway's unsigned `5xx` stays retryable.
+
+A real transport failure (DNS, TLS, a reset, a timeout) still rejects, is a
+`StripeConnectionError` with the original at `err.detail`, and is retried up to
+`maxNetworkRetries` times, re-sealed each time. A `POST` keeps the
+`Idempotency-Key` stripe-node chose; a `DELETE` has none from stripe-node and
+gets a new one per attempt, so set `maxNetworkRetries: 0` if a repeated `DELETE`
+answering `404` is not acceptable.
 
 ### Where vpay diverges from Stripe
 
