@@ -44,11 +44,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use authkestra_engine::auth::state::Identity;
+use authkestra_engine::store::StoreError;
 use authkestra_engine::token::TokenManager;
 use authkestra_op::client::{ClientRegistration, ClientStore, GrantType};
 use authkestra_op::code::{AuthorizationCode, AuthorizationCodeStore};
 use authkestra_op::config::OpConfig;
-use authkestra_op::error::OpError;
 use authkestra_op::store::CompositeOpStore;
 use time::OffsetDateTime;
 use vpay_config::{Config, DashboardClient};
@@ -195,10 +195,16 @@ impl DashboardOp {
         self.config.access_token_ttl_secs
     }
 
-    /// The store `handle_authorize` resolves the client and stores the code
-    /// through.
-    pub(crate) fn store(&self) -> &dyn authkestra_op::OpStore {
-        &self.store
+    /// A store for one `handle_authorize` call to resolve the client and store
+    /// the code through.
+    ///
+    /// A clone per call since authkestra 0.8, whose handlers take
+    /// `&mut dyn OpStore`: every part of this store's `Clone` shares state
+    /// (the registration is read-only, the code store an `Arc`'d repository
+    /// handle, the other two hold nothing), so the clone writes where the
+    /// original would.
+    pub(crate) fn store(&self) -> Box<dyn authkestra_op::OpStore> {
+        Box::new(self.store.clone())
     }
 
     /// The signer the token handler mints with. `pub(crate)` for
@@ -275,13 +281,17 @@ fn registration_for(dashboard: &DashboardClient) -> ClientRegistration {
 /// restarting. What can be disabled per person is a `staff_members` row
 /// (`staff_members.status`), which is the granularity that matters here. Recorded in
 /// `docs/status.md`.
+#[derive(Clone)]
 struct DashboardClientStore {
     registration: ClientRegistration,
 }
 
 #[async_trait]
 impl ClientStore for DashboardClientStore {
-    async fn find_client(&self, client_id: &str) -> Result<Option<ClientRegistration>, OpError> {
+    async fn find_client(
+        &mut self,
+        client_id: &str,
+    ) -> Result<Option<ClientRegistration>, StoreError> {
         Ok((client_id == self.registration.client_id).then(|| self.registration.clone()))
     }
 }
@@ -296,6 +306,11 @@ impl ClientStore for DashboardClientStore {
 /// the same compare-and-swap, because a trait method that refused would be a
 /// half-implementation waiting to be reached by an upstream change — and it
 /// is exercised by this module's own tests.
+///
+/// `Clone` shares the one `Arc`'d repository handle, which is what
+/// `authkestra_op::CloneableOpStore` requires of a clone (a new handle to the
+/// same state, never a copy of it).
+#[derive(Clone)]
 struct PgAuthorizationCodeStore {
     repositories: Arc<dyn Repositories>,
 }
@@ -311,7 +326,7 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
     /// tenant: it can only mean `/authorize` was reached by a path that did
     /// not establish a session, and a code with no tenant is a token with no
     /// tenant.
-    async fn store_code(&self, code: AuthorizationCode) -> Result<(), OpError> {
+    async fn store_code(&mut self, code: AuthorizationCode) -> Result<(), StoreError> {
         let (Some(session_id), Some(merchant_id)) = (
             code.identity.attributes.get(ATTRIBUTE_SESSION),
             code.identity.attributes.get(ATTRIBUTE_MERCHANT),
@@ -321,7 +336,9 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
                 "an authorization code reached the store with no session or tenant attribute; \
                  refusing to persist a code that could only mint a token naming no merchant"
             );
-            return Err(OpError::Storage);
+            return Err(StoreError::Internal(
+                "authorization code carries no session or tenant".to_owned(),
+            ));
         };
 
         let expires_at = OffsetDateTime::from_unix_timestamp(code.expires_at.timestamp())
@@ -353,21 +370,21 @@ impl AuthorizationCodeStore for PgAuthorizationCodeStore {
             .await
             .map_err(|error| {
                 tracing::error!(%error, "storing a dashboard authorization code");
-                OpError::Storage
+                StoreError::Internal("storing an authorization code failed".to_owned())
             })
     }
 
     /// Spends a code, atomically. See
     /// `vpay_db::AuthorizationCodes::consume_code` for why the read that
     /// precedes the swap is not a TOCTOU.
-    async fn consume_code(&self, code: &str) -> Result<Option<AuthorizationCode>, OpError> {
+    async fn consume_code(&mut self, code: &str) -> Result<Option<AuthorizationCode>, StoreError> {
         let row = self
             .repositories
             .consume_code(&tokens::digest(code), OffsetDateTime::now_utc())
             .await
             .map_err(|error| {
                 tracing::error!(%error, "consuming a dashboard authorization code");
-                OpError::Storage
+                StoreError::Internal("consuming an authorization code failed".to_owned())
             })?;
 
         Ok(row.map(|row| authorization_code_from_row(code, &row)))
@@ -497,7 +514,7 @@ mod tests {
     /// for a merchant client id, which is the case that matters.
     #[tokio::test]
     async fn the_client_store_knows_exactly_one_client() {
-        let store = DashboardClientStore {
+        let mut store = DashboardClientStore {
             registration: registration_for(&dashboard()),
         };
 

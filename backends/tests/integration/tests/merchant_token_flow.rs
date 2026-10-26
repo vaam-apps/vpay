@@ -41,7 +41,7 @@
 //!   hold is `invalid_scope`, and one naming none gets the registration.
 //! - **(j)** a spent `jti` outlives the validator's leeway: an assertion
 //!   whose `exp` is 30 s in the past is still accepted (`jsonwebtoken`'s 60 s
-//!   default leeway, which `authkestra-op` 0.7.1 leaves alone), and its
+//!   default leeway, which `authkestra-op` 0.13.1 leaves alone), and its
 //!   replay is still refused after the worker's housekeeping sweep has run
 //!   ([ADR-0028](../../../../docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md)).
 //! - **(k)** the other half of that bargain: an assertion older than the
@@ -711,7 +711,7 @@ async fn a_dashboard_audience_token_is_refused_on_v1() -> anyhow::Result<()> {
 /// is a token nothing in this deployment produces by accident. This case is
 /// the one an integrator produces by accident: leave `audience` off the
 /// token request and `authkestra_op` mints a token whose `aud` is the
-/// client's own `client_id` (`authkestra-op-0.7.1/src/handlers/token.rs`:
+/// client's own `client_id` (`authkestra-op-0.13.1/src/handlers/token.rs`:
 /// "No audience requested; defaulting client_credentials token audience to
 /// client_id"). It is signed by this server's active key, carries the right
 /// issuer and is inside its lifetime — everything about it is valid except
@@ -1384,7 +1384,7 @@ async fn run_the_housekeeping_sweep(repositories: &dyn Repositories) -> anyhow::
 /// Case (j): the replay of an assertion that is past its `exp` but inside the
 /// validator's leeway is refused, **after** the housekeeping sweep has run.
 ///
-/// `authkestra-op` 0.7.1 leaves `jsonwebtoken`'s `leeway` at 60 s, so an
+/// `authkestra-op` 0.13.1 leaves `jsonwebtoken`'s `leeway` at 60 s, so an
 /// assertion with `exp` 30 s ago verifies. It is spent once. Until ADR-0028
 /// the hourly sweep deleted `expires_at < now()`, so a sweep landing between
 /// `exp` and `exp + 61 s` deleted the row for an assertion the API still
@@ -1481,7 +1481,7 @@ async fn a_spent_assertion_past_its_exp_but_inside_the_leeway_cannot_be_replayed
 /// The sweep may delete a row once `expires_at < now() - horizon`. That is
 /// safe only if no assertion with such an `exp` can verify any more — i.e. the
 /// validator's leeway is no larger than the horizon. The leeway is
-/// `authkestra-op`'s, pinned at `=0.7.1`, and not vpay's to set. If a bump
+/// `authkestra-op`'s, pinned at `=0.13.1`, and not vpay's to set. If a bump
 /// widens it (or `jsonwebtoken` changes its default), the first assertion
 /// below is accepted, this case fails, and the horizon in
 /// `vpay_worker::CLIENT_ASSERTION_JTI_RETENTION` has to grow with it before

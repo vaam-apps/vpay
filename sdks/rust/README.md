@@ -495,7 +495,7 @@ customers or invoices), run by `just test-sdk-rust`:
   `tests/op_conformance.rs` generates RSA keypairs, derives their public JWKs,
   and hands each minted assertion to
   `authkestra_op::client_assertion::verify_client_assertion` at the pinned
-  `authkestra-op = "=0.7.1"` — the same code vpay will run — against a
+  `authkestra-op = "=0.13.1"` — the same code vpay will run — against a
   `ClientRegistration` holding the matching JWK, with `expected_audiences =
 [token_endpoint, issuer]`. Both the single-key (no `kid`) and multi-key
   (`kid` selects the right one) cases. The negative controls matter as much:

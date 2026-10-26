@@ -184,11 +184,12 @@ pub(crate) async fn authorize(
     let identity = dashboard::identity_for(&staff.id, &session.id, &staff.merchant_id);
 
     let request = authorize_request(query);
+    let mut store = login.dashboard_op.store();
     let outcome = handle_authorize(
         request,
         identity,
         login.dashboard_op.config(),
-        login.dashboard_op.store(),
+        store.as_mut(),
     )
     .await;
 
@@ -226,6 +227,25 @@ pub(crate) async fn authorize(
                 message: "The client_id and redirect_uri must match this deployment's \
                           registered dashboard client."
                     .to_owned(),
+            })
+        }
+        // `ReauthenticationRequired` (authkestra-op 0.11+), and whatever a
+        // later release adds to this `#[non_exhaustive]` enum. That variant
+        // fires only for a request carrying `max_age` or `prompt=login`, and
+        // `authorize_request` forwards neither — `AuthorizeQuery` has no such
+        // field — so it cannot be reached today. If it ever is, refuse
+        // without redirecting: the staff session is already the fresh proof
+        // this deployment requires, and a redirect to an unvalidated outcome
+        // is the one thing this endpoint must never do.
+        _ => {
+            tracing::error!(
+                staff_id = %staff.id,
+                "authkestra-op answered a dashboard authorization request with an outcome \
+                 this deployment does not handle; refusing without redirecting"
+            );
+            Err(ApiError::InvalidParam {
+                param: "client_id".to_owned(),
+                message: "This authorization request cannot be completed.".to_owned(),
             })
         }
     }
