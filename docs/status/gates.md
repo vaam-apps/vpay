@@ -1146,3 +1146,26 @@ must not match. **Measured 2026-10-09:** 307 columns, 26 elements, 10 surfaces,
 **24** `debug_protections`. _(The first version of the PR registered 17; the
 review fixes added seven. Evidence:
 [verification/2026-10-01-protected-diagnostics.md](verification/2026-10-01-protected-diagnostics.md).)_
+
+## 2026-10-26 — `verify-mcp-parity`, the sixteenth gate (ADR-0033 D8)
+
+**What it refuses.** It reads three files: `V1_ROUTES` in
+`backends/crates/vpay-api/src/v1/mod.rs`, the `@mcp(tool: …)` lines in
+`schemas/vpay.cstack`, and the table in
+[../api/mcp-parity.md](../api/mcp-parity.md). It fails on:
+
+- a mounted `/v1` route with no row;
+- a row naming a route `V1_ROUTES` does not mount;
+- two rows for one route;
+- a row naming a tool the schema does not declare;
+- a gap with no `YYYY-MM-DD` date or no reason, or an exclusion with no
+  reason;
+- a declared tool no row names.
+
+**What it does not check:** that a tool behaves like its route. That is
+`backends/tests/integration/tests/mcp_merchant.rs`'s job.
+
+**Measured on this tree:** "37 /v1 route(s), each with one row: 9 served by a
+tool, 28 dated gap(s), 0 excluded; all 9 declared tool(s) named". Its three
+unit tests (`mcp_parity_tests`) drive each direction against a table that
+breaks it.

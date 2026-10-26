@@ -238,3 +238,36 @@ pub trait MerchantOperations: Send + Sync {
     /// including a replayed one.
     async fn perform(&self, call: MerchantCall) -> Result<OperationOutcome, OperationRefusal>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The canary `schemas/privacy-inventory.yaml`'s `debug_protections`
+    /// asks of every registered type: the number never reaches a `{:?}`.
+    #[test]
+    fn a_payers_number_never_reaches_a_debug_line() {
+        let msisdn = "237670000000";
+        let confirm = ConfirmRequest {
+            payment_method_type: "mtn_momo".to_owned(),
+            payer_fields: vec![("msisdn".to_owned(), msisdn.to_owned())],
+            return_url: Some("https://shop.example/return?u=1".to_owned()),
+        };
+        let refund = NewRefundRequest {
+            payment_intent: "pi_1".to_owned(),
+            amount: Some(100),
+            reason: None,
+            destination_type: Some("mtn_momo".to_owned()),
+            destination_fields: vec![("msisdn".to_owned(), msisdn.to_owned())],
+            metadata: vec![("order".to_owned(), "42".to_owned())],
+        };
+        for rendered in [format!("{confirm:?}"), format!("{refund:?}")] {
+            assert!(!rendered.contains(msisdn), "{rendered}");
+            assert!(
+                rendered.contains("msisdn"),
+                "the field name stays: {rendered}"
+            );
+        }
+        assert!(!format!("{confirm:?}").contains("shop.example"));
+    }
+}

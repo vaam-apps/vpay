@@ -1444,3 +1444,37 @@ are split into an axum handler and an `*_with` operation that a non-HTTP
 caller can run. No behaviour moved, and still nothing calls the operations
 except `/v1`.
 [verification/2026-10-26-mcp-step-2-write-split.md](verification/2026-10-26-mcp-step-2-write-split.md).
+
+## The merchant MCP endpoint, first slice (2026-10-26, ADR-0033 step 3)
+
+**Built:** `POST /mcp/v1` serves nine tools when `deployment.surfaces` names
+`mcp`.
+
+- **Payment intents:** `create_payment_intent`, `retrieve_payment_intent`,
+  `confirm_payment_intent` and `cancel_payment_intent`.
+- **Refunds:** `create_refund`, `retrieve_refund` and `cancel_refund`.
+- **Searches:** the existing `search_payment_intents` and `search_refunds`.
+
+Every write runs the `/v1` route's own operation, with a required
+`idempotency_key` claimed in vpay's own store. The tokens come from vpay's
+own OP, with the MCP resource as audience; the OP now honours RFC 8707
+`resource`. `/dash/v1/$procs` serves only the dashboard's five procedures.
+
+**Proven:** `mcp_merchant.rs`, 12 cases, against a real Postgres, the real
+router and the real OP. They cover tenancy, scope, both audience directions,
+`Origin`, idempotency, `/v1`'s refusals, an absent `surfaces` key, and
+reshaped-object equality with `/v1`. `dashboard_procedure_transport.rs` adds a
+case; [the flow page](../flows/mcp.md) has the list.
+
+**Not built or not proven:**
+
+- 28 `/v1` routes are dated gaps ([api/mcp-parity.md](../api/mcp-parity.md)).
+- **No resources.** ADR-0033 D5's `jsonb` measurement has not been made.
+- **No staff endpoint.** It waits on the upstream CrateStack audience feature.
+- **No chart workload.**
+- No MCP case drives a confirm to `succeeded`.
+- No real MCP client has called it.
+- No pod has run it.
+
+A new gate, `verify-mcp-parity`, makes `just verify` sixteen gates.
+[verification/2026-10-26-mcp-step-3.md](verification/2026-10-26-mcp-step-3.md).

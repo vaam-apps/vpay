@@ -82,6 +82,10 @@
 //!   not one of them in a claim any gate reads. It is the only gate here that
 //!   changed a number it is itself responsible for checking: adding it is what
 //!   made the recipe's tally fifteen.
+//! * `verify-mcp-parity` — every `/v1` route has a row in
+//!   `docs/api/mcp-parity.md` naming the MCP tool that serves it or a dated
+//!   gap, and every `@mcp(tool: …)` in `schemas/vpay.cstack` is named by one
+//!   (ADR-0033 D8, 2026-10-26). The sixteenth.
 //!
 //! A **seventeenth** gate needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`.
@@ -156,6 +160,7 @@ fn main() -> ExitCode {
         "verify-versions" => verify_versions(&root),
         "verify-privacy-inventory" => verify_privacy_inventory(&root),
         "verify-doc-counts" => verify_doc_counts(&root),
+        "verify-mcp-parity" => verify_mcp_parity(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -172,7 +177,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_migrations(&root))
             .and_then(|()| verify_versions(&root))
             .and_then(|()| verify_privacy_inventory(&root))
-            .and_then(|()| verify_doc_counts(&root)),
+            .and_then(|()| verify_doc_counts(&root))
+            .and_then(|()| verify_mcp_parity(&root)),
         // Not `Result`-shaped like the gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -187,7 +193,7 @@ fn main() -> ExitCode {
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
                  |verify-toolchain|verify-migrations|verify-versions\
-                 |verify-privacy-inventory|verify-doc-counts|verify-all>\n\
+                 |verify-privacy-inventory|verify-doc-counts|verify-mcp-parity|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>"
@@ -16055,5 +16061,315 @@ verify: verify-a verify-b verify-c verify-docs
             verify_recipe_gates(&justfile).expect("the verify recipe parses") >= COUNT_KINDS.len(),
             "a sanity floor: this repository has more gates than this gate has measurers"
         );
+    }
+}
+
+// ------------------------------------------------------- verify-mcp-parity --
+
+/// The table `verify-mcp-parity` reads (ADR-0033 D8).
+const MCP_PARITY_DOC: &str = "docs/api/mcp-parity.md";
+/// Where the MCP tools are declared.
+const MCP_SCHEMA: &str = "schemas/vpay.cstack";
+/// Where `/v1`'s route table is.
+const V1_ROUTES_FILE: &str = "backends/crates/vpay-api/src/v1/mod.rs";
+
+/// What a parity row says a `/v1` route is on MCP.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum McpAnswer {
+    /// Served by this tool.
+    Tool(String),
+    /// Not served yet: a dated gap with a reason.
+    Gap,
+    /// Never to be served, with a reason.
+    Excluded,
+}
+
+/// ADR-0033 D8: completeness is a gate, not a promise.
+///
+/// Two-directional, like `verify-status` and `verify-sdk-parity`:
+///
+/// - every `/v1` route `V1_ROUTES` mounts has exactly one row in
+///   [`MCP_PARITY_DOC`], and every row names a route that is mounted;
+/// - every row's answer is a tool the schema declares (`tool \`name\``), a
+///   dated gap (`gap YYYY-MM-DD: reason`) or an exclusion
+///   (`excluded: reason`), never an empty cell;
+/// - every `@mcp(tool: "…")` in the schema is named by some row, so a tool
+///   with no `/v1` counterpart cannot exist without the table saying so.
+///
+/// What it does **not** check: that a tool behaves like its route. That is
+/// the integration suite's job (`backends/tests/integration/tests/mcp_merchant.rs`);
+/// this gate makes a route nobody mapped, or a tool nobody listed, a red
+/// build.
+fn verify_mcp_parity(root: &Path) -> Result<(), String> {
+    let read = |path: &str| {
+        fs::read_to_string(root.join(path)).map_err(|e| format!("{path}: cannot read: {e}"))
+    };
+    let routes = v1_route_keys(&read(V1_ROUTES_FILE)?)?;
+    let tools = mcp_tool_names(&read(MCP_SCHEMA)?);
+    let rows = mcp_parity_rows(&read(MCP_PARITY_DOC)?)?;
+    let problems = mcp_parity_problems(&routes, &tools, &rows);
+    if !problems.is_empty() {
+        return Err(format!(
+            "verify-mcp-parity: {} problem(s) between {V1_ROUTES_FILE}, {MCP_SCHEMA} and \
+             {MCP_PARITY_DOC}:\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        ));
+    }
+    let served = rows
+        .iter()
+        .filter(|(_, answer)| matches!(answer, McpAnswer::Tool(_)))
+        .count();
+    let gaps = rows
+        .iter()
+        .filter(|(_, answer)| *answer == McpAnswer::Gap)
+        .count();
+    println!(
+        "verify-mcp-parity: ok — {} /v1 route(s), each with one row in {MCP_PARITY_DOC}: {served} \
+         served by a tool, {gaps} dated gap(s), {} excluded; all {} declared tool(s) named",
+        routes.len(),
+        rows.len() - served - gaps,
+        tools.len()
+    );
+    Ok(())
+}
+
+/// `"METHOD /v1<path>"` for every method of every `V1Route` in the file's
+/// `V1_ROUTES` table.
+fn v1_route_keys(source: &str) -> Result<BTreeSet<String>, String> {
+    let start = source
+        .find("pub const V1_ROUTES: &[V1Route] = &[")
+        .ok_or_else(|| format!("{V1_ROUTES_FILE}: no `pub const V1_ROUTES` table found"))?;
+    let body = &source[start..];
+    let end = body
+        .find("\n];")
+        .ok_or_else(|| format!("{V1_ROUTES_FILE}: `V1_ROUTES` has no closing `];`"))?;
+    let body = &body[..end];
+    let mut keys = BTreeSet::new();
+    let mut path: Option<String> = None;
+    for line in body.lines() {
+        let line = line.trim();
+        if let Some(rest) = line.strip_prefix("path: \"") {
+            path = rest.split('"').next().map(str::to_owned);
+        } else if let Some(rest) = line.strip_prefix("methods: &[") {
+            let Some(current) = path.take() else {
+                return Err(format!(
+                    "{V1_ROUTES_FILE}: a `methods:` line with no `path:` before it"
+                ));
+            };
+            for method in rest.trim_end_matches("],").split(',') {
+                let method = method.trim().trim_matches('"');
+                if !method.is_empty() {
+                    keys.insert(format!("{method} /v1{current}"));
+                }
+            }
+        }
+    }
+    if keys.is_empty() {
+        return Err(format!("{V1_ROUTES_FILE}: `V1_ROUTES` parsed to no routes"));
+    }
+    Ok(keys)
+}
+
+/// Every `@mcp(tool: "<name>"` in the schema.
+fn mcp_tool_names(schema: &str) -> BTreeSet<String> {
+    schema
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("@mcp(tool: \""))
+        .filter_map(|rest| rest.split('"').next())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The parity table's rows: a first cell that is a backticked
+/// `METHOD /v1/...`, and the answer in the second.
+fn mcp_parity_rows(doc: &str) -> Result<Vec<(String, McpAnswer)>, String> {
+    let mut rows = Vec::new();
+    for (number, line) in doc.lines().enumerate() {
+        let cells: Vec<&str> = line.split('|').map(str::trim).collect();
+        let [_, route, answer, ..] = cells.as_slice() else {
+            continue;
+        };
+        let Some(route) = route
+            .strip_prefix('`')
+            .and_then(|route| route.strip_suffix('`'))
+            .filter(|route| route.contains(" /v1"))
+        else {
+            continue;
+        };
+        let answer = parse_mcp_answer(answer)
+            .map_err(|why| format!("{MCP_PARITY_DOC}:{}: `{route}`: {why}", number + 1))?;
+        rows.push((route.to_owned(), answer));
+    }
+    Ok(rows)
+}
+
+fn parse_mcp_answer(cell: &str) -> Result<McpAnswer, String> {
+    if let Some(rest) = cell.strip_prefix("tool `") {
+        let name = rest.split('`').next().unwrap_or_default();
+        if name.is_empty() {
+            return Err("`tool` names no tool".to_owned());
+        }
+        return Ok(McpAnswer::Tool(name.to_owned()));
+    }
+    if let Some(rest) = cell.strip_prefix("gap ") {
+        let (date, reason) = rest
+            .split_once(':')
+            .ok_or("a gap is `gap YYYY-MM-DD: reason`")?;
+        let date = date.trim();
+        let dated = date.len() == 10
+            && date.char_indices().all(|(i, c)| {
+                if i == 4 || i == 7 {
+                    c == '-'
+                } else {
+                    c.is_ascii_digit()
+                }
+            });
+        if !dated {
+            return Err(format!("a gap's date `{date}` is not YYYY-MM-DD"));
+        }
+        if reason.trim().is_empty() {
+            return Err("a gap gives no reason".to_owned());
+        }
+        return Ok(McpAnswer::Gap);
+    }
+    if let Some(reason) = cell.strip_prefix("excluded:") {
+        if reason.trim().is_empty() {
+            return Err("an exclusion gives no reason".to_owned());
+        }
+        return Ok(McpAnswer::Excluded);
+    }
+    Err(format!(
+        "`{cell}` is not `tool \\`name\\``, `gap YYYY-MM-DD: reason` or `excluded: reason`"
+    ))
+}
+
+fn mcp_parity_problems(
+    routes: &BTreeSet<String>,
+    tools: &BTreeSet<String>,
+    rows: &[(String, McpAnswer)],
+) -> Vec<String> {
+    let mut problems = Vec::new();
+    let mut seen = BTreeSet::new();
+    let mut named = BTreeSet::new();
+    for (route, answer) in rows {
+        if !seen.insert(route.clone()) {
+            problems.push(format!("`{route}` has more than one row"));
+        }
+        if !routes.contains(route) {
+            problems.push(format!(
+                "`{route}` has a row but V1_ROUTES mounts no such route (stale or misspelled)"
+            ));
+        }
+        if let McpAnswer::Tool(tool) = answer {
+            if !tools.contains(tool) {
+                problems.push(format!(
+                    "`{route}` names tool `{tool}`, which {MCP_SCHEMA} does not declare"
+                ));
+            }
+            named.insert(tool.clone());
+        }
+    }
+    for route in routes.difference(&seen) {
+        problems.push(format!(
+            "`{route}` is mounted and has no row: map it to a tool, or date it as a gap"
+        ));
+    }
+    for tool in tools.difference(&named) {
+        problems.push(format!(
+            "tool `{tool}` is declared and no row names it: add the route it serves"
+        ));
+    }
+    problems
+}
+
+#[cfg(test)]
+mod mcp_parity_tests {
+    use super::*;
+
+    const ROUTES: &str = r#"
+pub const V1_ROUTES: &[V1Route] = &[
+    V1Route {
+        path: "/payment_intents",
+        methods: &["POST", "GET"],
+        mount: || post(x).get(y),
+    },
+    V1Route {
+        path: "/payment_intents/{id}",
+        methods: &["GET"],
+        mount: || get(z),
+    },
+];
+"#;
+
+    fn set(items: &[&str]) -> BTreeSet<String> {
+        items.iter().map(|item| (*item).to_owned()).collect()
+    }
+
+    #[test]
+    fn the_route_table_parses_to_one_key_per_method() {
+        assert_eq!(
+            v1_route_keys(ROUTES).expect("parses"),
+            set(&[
+                "GET /v1/payment_intents",
+                "GET /v1/payment_intents/{id}",
+                "POST /v1/payment_intents",
+            ])
+        );
+    }
+
+    #[test]
+    fn a_complete_table_passes_and_each_direction_fails_on_its_own() {
+        let routes = v1_route_keys(ROUTES).expect("parses");
+        let tools = mcp_tool_names(
+            "procedure a()\n  @mcp(tool: \"create_payment_intent\", description: \"x\")\n",
+        );
+        let doc = "| Route | MCP |\n| --- | --- |\n\
+                   | `POST /v1/payment_intents` | tool `create_payment_intent` |\n\
+                   | `GET /v1/payment_intents` | gap 2026-10-26: step 4 |\n\
+                   | `GET /v1/payment_intents/{id}` | excluded: no reason needed? yes |\n";
+        let rows = mcp_parity_rows(doc).expect("parses");
+        assert!(mcp_parity_problems(&routes, &tools, &rows).is_empty());
+
+        // A mounted route with no row.
+        let short = mcp_parity_rows(&doc.replace(
+            "| `GET /v1/payment_intents` | gap 2026-10-26: step 4 |\n",
+            "",
+        ))
+        .expect("parses");
+        let problems = mcp_parity_problems(&routes, &tools, &short);
+        assert!(
+            problems.iter().any(|p| p.contains("has no row")),
+            "{problems:?}"
+        );
+
+        // A declared tool no row names.
+        let more_tools =
+            mcp_tool_names("  @mcp(tool: \"create_payment_intent\")\n  @mcp(tool: \"orphan\")\n");
+        let problems = mcp_parity_problems(&routes, &more_tools, &rows);
+        assert!(
+            problems.iter().any(|p| p.contains("`orphan`")),
+            "{problems:?}"
+        );
+
+        // A row naming an undeclared tool, and a row for an unmounted route.
+        let bad = mcp_parity_rows(
+            "| `POST /v1/payment_intents` | tool `nope` |\n| `GET /v1/gone` | excluded: x |\n",
+        )
+        .expect("parses");
+        let problems = mcp_parity_problems(&routes, &tools, &bad);
+        assert!(
+            problems.iter().any(|p| p.contains("does not declare")),
+            "{problems:?}"
+        );
+        assert!(problems.iter().any(|p| p.contains("stale")), "{problems:?}");
+    }
+
+    #[test]
+    fn an_undated_or_empty_answer_is_refused() {
+        assert!(mcp_parity_rows("| `GET /v1/x` | gap soon: later |\n").is_err());
+        assert!(mcp_parity_rows("| `GET /v1/x` | gap 2026-10-26: |\n").is_err());
+        assert!(mcp_parity_rows("| `GET /v1/x` | excluded: |\n").is_err());
+        assert!(mcp_parity_rows("| `GET /v1/x` | |\n").is_err());
     }
 }

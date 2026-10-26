@@ -233,3 +233,4 @@ Nothing was summarised away and no dated measurement or correction was dropped.
 | The account-holder route, and Customers             | [vpay-api/account-holders-and-customers.md](vpay-api/account-holders-and-customers.md) |
 | The rail callback route (`provider_callback.rs`)    | [vpay-api/provider-callback.md](vpay-api/provider-callback.md)                         |
 | Boot (`boot.rs`)                                    | [vpay-api/boot.md](vpay-api/boot.md)                                                   |
+| The merchant MCP endpoint (`mcp.rs`)                | [vpay-api/mcp.md](vpay-api/mcp.md)                                                     |

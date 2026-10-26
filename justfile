@@ -66,6 +66,9 @@
 # every "fourteen" below became a "fifteen" in the same change, and the gate
 # would have failed the build if one had been missed.
 #
+# `verify-mcp-parity` makes it **sixteen** on 2026-10-26 (ADR-0033 D8): every
+# `/v1` route is mapped to an MCP tool or a dated gap, in both directions.
+#
 # `just verify` prints a sixteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
@@ -1739,9 +1742,22 @@ audit-web:
 # gate above it is where it is: the list is chronological, so every ordinal
 # already written down elsewhere stays true when a gate is added.
 #
-# The fifteen self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-docs
-    @echo "verify: ok — the fifteen gates above passed; the verify-docs report is advisory"
+# `verify-mcp-parity` joined on 2026-10-26 as the sixteenth (ADR-0033 D8):
+# every `/v1` route has a row in docs/api/mcp-parity.md saying which MCP tool
+# serves it, or a dated gap, and every declared tool is named. Last, for the
+# chronological reason above.
+#
+# The sixteen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-mcp-parity verify-docs
+    @echo "verify: ok — the sixteen gates above passed; the verify-docs report is advisory"
+
+# ADR-0033 D8: the merchant MCP endpoint's parity with `/v1` is a gate, not a
+# promise. Two-directional: a mounted `/v1` route with no row in
+# docs/api/mcp-parity.md fails, and so does a row naming an unmounted route,
+# a tool the schema does not declare, an undated gap, or a declared tool no
+# row names. See `verify_mcp_parity` in `.xtask/src/main.rs`.
+verify-mcp-parity:
+    cargo xtask verify-mcp-parity
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -3118,7 +3134,13 @@ expected_ignored := "0"
 # `f25930e5`, which failed here with the new name in its listing: **54**
 # binaries, **2382** total, **0** ignored. Not run locally first: `just` is not
 # installed where this was written, and this recipe is not one `verify` names.
-expected_suites := "54"
+#
+# **54 -> 55 on 2026-10-26 (ADR-0033 step 3)**: one new binary,
+# `backends/tests/integration/tests/mcp_merchant.rs` (the merchant MCP
+# endpoint against a real Postgres and the real OP; its own file because
+# every case boots a server with `surfaces: [business, mcp]`). Measured by
+# running this recipe on the change's tree.
+expected_suites := "55"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

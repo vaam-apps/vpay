@@ -16,6 +16,26 @@
   - _What acceptance would rest on:_ D9's verification list, run against
     real Postgres and a real MCP client, on a dated page under
     [status/verification/](../status/verification/).
+  - _Amended 2026-10-26, by step 3 (the first code)._ What building it
+    found, recorded here rather than by editing the decisions below:
+    - **No `mcp:` config block.** D9's block is not needed. The resource
+      identifier is `{deployment.public_base_url}/mcp/v1`, the one allowed
+      browser origin is that URL's own, and the authorization server is the
+      OP's issuer. All three are derived from what the deployment already
+      says about itself (`vpay_api::mcp::merchant_resource`).
+    - **RFC 8707 `resource` is honoured.** D9 called this unverified. It was
+      measured: the OP dropped `resource` and minted a token with the default
+      audience, which `/mcp/v1` then refused. `vpay_api::op::token` now treats
+      one `resource` as the audience it names, through the same
+      `allowed_audiences` gate, and answers `invalid_target` for two targets.
+    - **No resources in step 3.** D5's `jsonb` measurement has not been made,
+      so no model carries `@@mcp(resource)` and the money models' pinned
+      tests are unchanged.
+    - **`/dash/v1/$procs` needed an allowlist** (D6). CrateStack's generated
+      procedure router mounts every procedure, and 0.16 has no attribute to
+      keep one off REST.
+    - **Step 2 was narrowed** to the six payment-intent and refund writes, and
+      the port arrived in step 3 with its first caller.
 - **Date:** 2026-10-26
 - **Deciders:** the vpay maintainer (the direction above) and the
   implementing agent (D1–D10 as written).

@@ -11,6 +11,8 @@
 //! `confirm_rails.rs`'s subject, over `/v1`, and the confirm path an MCP
 //! call runs is the same function (`confirm_with`).
 
+#![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
+
 mod support;
 
 use std::collections::{BTreeMap, HashMap};
@@ -90,11 +92,16 @@ impl Harness {
         params: Value,
     ) -> anyhow::Result<(u16, Value)> {
         let mut params = params;
-        params["_meta"] = json!({
-            "io.modelcontextprotocol/protocolVersion": PROTOCOL,
-            "io.modelcontextprotocol/clientCapabilities": {},
-            "io.modelcontextprotocol/clientInfo": { "name": "vpay-tests", "version": "0" },
-        });
+        if let Some(object) = params.as_object_mut() {
+            object.insert(
+                "_meta".to_owned(),
+                json!({
+                "io.modelcontextprotocol/protocolVersion": PROTOCOL,
+                "io.modelcontextprotocol/clientCapabilities": {},
+                "io.modelcontextprotocol/clientInfo": { "name": "vpay-tests", "version": "0" },
+                }),
+            );
+        }
         let body = json!({ "jsonrpc": "2.0", "id": 1, "method": method, "params": params });
         let mut request = raw_client()
             .post(format!(
@@ -157,23 +164,38 @@ impl Harness {
 /// The REST envelope an `isError` result carries as its text.
 fn envelope(result: &Value) -> Value {
     assert_eq!(
-        result["isError"],
+        at(result, "/isError"),
         json!(true),
         "expected an isError result: {result}"
     );
-    let text = result["content"][0]["text"]
-        .as_str()
-        .expect("an isError result carries a text block");
-    serde_json::from_str(text).expect("the text is the REST error envelope")
+    let text = text_at(result, "/content/0/text");
+    serde_json::from_str(&text).expect("the text is the REST error envelope")
 }
 
 fn ok_object(result: &Value) -> Value {
     assert_eq!(
-        result["isError"],
+        at(result, "/isError"),
         json!(false),
         "expected a successful result: {result}"
     );
-    result["structuredContent"].clone()
+    at(result, "/structuredContent")
+}
+
+/// `value`'s member at the JSON pointer `pointer`, or `null`.
+///
+/// Not `value["a"]["b"]`: `clippy::indexing_slicing` is denied in these
+/// suites, and a pointer says the whole path at once.
+fn at(value: &Value, pointer: &str) -> Value {
+    value.pointer(pointer).cloned().unwrap_or(Value::Null)
+}
+
+/// The string at `pointer`, or empty.
+fn text_at(value: &Value, pointer: &str) -> String {
+    value
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_owned()
 }
 
 fn raw_client() -> reqwest::Client {
@@ -299,11 +321,12 @@ async fn the_endpoint_lists_exactly_the_step_3_tools() -> anyhow::Result<()> {
         .rpc(Some(&token), None, "tools/list", None, json!({}))
         .await?;
     assert_eq!(status, 200, "{body}");
-    let mut names: Vec<&str> = body["result"]["tools"]
+    let tools = at(&body, "/result/tools");
+    let mut names: Vec<&str> = tools
         .as_array()
         .expect("a tools array")
         .iter()
-        .filter_map(|tool| tool["name"].as_str())
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str))
         .collect();
     names.sort_unstable();
     assert_eq!(
@@ -321,6 +344,28 @@ async fn the_endpoint_lists_exactly_the_step_3_tools() -> anyhow::Result<()> {
         ],
         "{body}"
     );
+
+    // Threat model § 3: a refund tool tells an agent what `docs/status.md`
+    // says about refunds, so its success is not read as money returned.
+    let description = |name: &str| {
+        at(&body, "/result/tools")
+            .as_array()
+            .and_then(|tools| {
+                tools
+                    .iter()
+                    .find(|tool| tool.get("name") == Some(&json!(name)))
+            })
+            .and_then(|tool| tool.get("description"))
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned()
+    };
+    let refund = description("create_refund");
+    assert!(
+        refund.contains("NotImplemented") && refund.contains("pending"),
+        "create_refund's description must say what is not built: {refund}"
+    );
+    assert!(description("create_payment_intent").contains("idempotency_key"));
     harness.shutdown().await;
     Ok(())
 }
@@ -342,11 +387,11 @@ async fn an_intent_created_over_mcp_is_the_one_v1_serves() -> anyhow::Result<()>
             )
             .await?,
     );
-    let id = created["id"].as_str().expect("an id").to_owned();
-    assert_eq!(created["amount"], json!(1500), "{created}");
-    assert_eq!(created["status"], json!("requires_payment_method"));
+    let id = at(&created, "/id").as_str().expect("an id").to_owned();
+    assert_eq!(at(&created, "/amount"), json!(1500), "{created}");
+    assert_eq!(at(&created, "/status"), json!("requires_payment_method"));
     assert_eq!(
-        created["metadata"],
+        at(&created, "/metadata"),
         json!([ { "key": "order_id", "value": "1234" } ])
     );
 
@@ -371,6 +416,10 @@ async fn an_intent_created_over_mcp_is_the_one_v1_serves() -> anyhow::Result<()>
         object.remove("client_secret");
     }
     assert_eq!(retrieved, expected, "the /v1 object was {v1}");
+    // Threat model § 4: `/v1`'s retrieve carries the payer credential, and
+    // the MCP output type does not, so it never reaches an agent.
+    assert!(v1.get("client_secret").is_some(), "{v1}");
+    assert!(retrieved.get("client_secret").is_none(), "{retrieved}");
     harness.shutdown().await;
     Ok(())
 }
@@ -388,7 +437,7 @@ async fn merchant_b_cannot_read_or_cancel_merchant_as_intent() -> anyhow::Result
             .call(&a, "create_payment_intent", create_args("k-tenancy", 100))
             .await?,
     );
-    let id = created["id"].as_str().expect("an id");
+    let id = text_at(&created, "/id");
 
     let foreign = envelope(
         &harness
@@ -404,8 +453,8 @@ async fn merchant_b_cannot_read_or_cancel_merchant_as_intent() -> anyhow::Result
             )
             .await?,
     );
-    assert_eq!(foreign["code"], json!("NOT_FOUND"), "{foreign}");
-    assert_eq!(foreign["code"], missing["code"]);
+    assert_eq!(at(&foreign, "/code"), json!("NOT_FOUND"), "{foreign}");
+    assert_eq!(at(&foreign, "/code"), at(&missing, "/code"));
 
     let cancel = envelope(
         &harness
@@ -416,7 +465,7 @@ async fn merchant_b_cannot_read_or_cancel_merchant_as_intent() -> anyhow::Result
             )
             .await?,
     );
-    assert_eq!(cancel["code"], json!("NOT_FOUND"), "{cancel}");
+    assert_eq!(at(&cancel, "/code"), json!("NOT_FOUND"), "{cancel}");
 
     // And A's intent is untouched.
     let still = ok_object(
@@ -424,7 +473,7 @@ async fn merchant_b_cannot_read_or_cancel_merchant_as_intent() -> anyhow::Result
             .call(&a, "retrieve_payment_intent", json!({ "id": id }))
             .await?,
     );
-    assert_eq!(still["status"], json!("requires_payment_method"));
+    assert_eq!(at(&still, "/status"), json!("requires_payment_method"));
 
     // B's search sees none of A's rows.
     let page = ok_object(
@@ -436,7 +485,7 @@ async fn merchant_b_cannot_read_or_cancel_merchant_as_intent() -> anyhow::Result
             )
             .await?,
     );
-    assert_eq!(page["items"], json!([]), "{page}");
+    assert_eq!(at(&page, "/items"), json!([]), "{page}");
     harness.shutdown().await;
     Ok(())
 }
@@ -456,7 +505,7 @@ async fn a_read_scoped_token_cannot_call_a_mutation() -> anyhow::Result<()> {
             )
             .await?,
     );
-    assert_eq!(refused["code"], json!("FORBIDDEN"), "{refused}");
+    assert_eq!(at(&refused, "/code"), json!("FORBIDDEN"), "{refused}");
     assert_eq!(harness.intents_of(MERCHANT_R).await?, 0);
 
     // The same token reads.
@@ -469,7 +518,7 @@ async fn a_read_scoped_token_cannot_call_a_mutation() -> anyhow::Result<()> {
             )
             .await?,
     );
-    assert_eq!(page["items"], json!([]));
+    assert_eq!(at(&page, "/items"), json!([]));
     harness.shutdown().await;
     Ok(())
 }
@@ -527,7 +576,7 @@ async fn each_surface_accepts_only_its_own_audience() -> anyhow::Result<()> {
         .json::<Value>()
         .await?;
     assert_eq!(
-        metadata["resource"],
+        at(&metadata, "/resource"),
         json!(harness.resource()),
         "{metadata}"
     );
@@ -568,11 +617,10 @@ async fn the_op_mints_an_mcp_token_only_for_a_client_that_opted_in() -> anyhow::
     let granted = request(CLIENT_A, &harness.pem_a).send().await?;
     assert_eq!(granted.status().as_u16(), 200, "an opted-in client");
     let granted: Value = granted.json().await?;
-    let token = granted["access_token"]
-        .as_str()
-        .context("the OP answered an access token")?;
+    let token = text_at(&granted, "/access_token");
+    anyhow::ensure!(!token.is_empty(), "the OP answered an access token");
     let (status, body) = harness
-        .rpc(Some(token), None, "tools/list", None, json!({}))
+        .rpc(Some(&token), None, "tools/list", None, json!({}))
         .await?;
     assert_eq!(status, 200, "the OP's own MCP token on /mcp/v1: {body}");
 
@@ -621,11 +669,10 @@ async fn an_rfc_8707_resource_is_the_audience_it_names() -> anyhow::Result<()> {
     let granted = request(CLIENT_A, &harness.pem_a).send().await?;
     assert_eq!(granted.status().as_u16(), 200);
     let granted: Value = granted.json().await?;
-    let token = granted["access_token"]
-        .as_str()
-        .context("an access token")?;
+    let token = text_at(&granted, "/access_token");
+    anyhow::ensure!(!token.is_empty(), "an access token");
     let (status, body) = harness
-        .rpc(Some(token), None, "tools/list", None, json!({}))
+        .rpc(Some(&token), None, "tools/list", None, json!({}))
         .await?;
     assert_eq!(
         status, 200,
@@ -636,7 +683,7 @@ async fn an_rfc_8707_resource_is_the_audience_it_names() -> anyhow::Result<()> {
     let refused = request(CLIENT_V1, &harness.pem_v1).send().await?;
     assert_eq!(refused.status().as_u16(), 400);
     let refused: Value = refused.json().await?;
-    assert_eq!(refused["error"], json!("invalid_target"), "{refused}");
+    assert_eq!(at(&refused, "/error"), json!("invalid_target"), "{refused}");
     harness.shutdown().await;
     Ok(())
 }
@@ -686,7 +733,11 @@ async fn idempotency_is_vpays_own_and_mandatory() -> anyhow::Result<()> {
             )
             .await?,
     );
-    assert_eq!(first["id"], again["id"], "a replay is the first answer");
+    assert_eq!(
+        at(&first, "/id"),
+        at(&again, "/id"),
+        "a replay is the first answer"
+    );
     assert_eq!(harness.intents_of(MERCHANT_A).await?, 1);
 
     let mismatch = envelope(
@@ -698,7 +749,7 @@ async fn idempotency_is_vpays_own_and_mandatory() -> anyhow::Result<()> {
             )
             .await?,
     );
-    let message = mismatch["message"].as_str().unwrap_or_default();
+    let message = text_at(&mismatch, "/message");
     assert!(
         message.starts_with("idempotency_key_in_use"),
         "the same key for another call is /v1's mismatch refusal: {mismatch}"
@@ -709,7 +760,7 @@ async fn idempotency_is_vpays_own_and_mandatory() -> anyhow::Result<()> {
             .call(&token, "create_payment_intent", create_args("", 700))
             .await?,
     );
-    assert_eq!(empty["code"], json!("BAD_REQUEST"), "{empty}");
+    assert_eq!(at(&empty, "/code"), json!("BAD_REQUEST"), "{empty}");
     assert_eq!(harness.intents_of(MERCHANT_A).await?, 1);
     harness.shutdown().await;
     Ok(())
@@ -738,15 +789,15 @@ async fn a_confirm_is_refused_for_exactly_what_v1_refuses() -> anyhow::Result<()
                 "confirm_payment_intent",
                 json!({ "args": {
                     "idempotency_key": "k-confirm-1",
-                    "id": created["id"],
+                    "id": at(&created, "/id"),
                     "payment_method_type": "no_such_rail",
                     "payer_fields": [],
                 } }),
             )
             .await?,
     );
-    assert_eq!(refused["code"], json!("BAD_REQUEST"), "{refused}");
-    let message = refused["message"].as_str().unwrap_or_default();
+    assert_eq!(at(&refused, "/code"), json!("BAD_REQUEST"), "{refused}");
+    let message = text_at(&refused, "/message");
     assert!(
         message.contains("payment_method_data[type]"),
         "the refusal names /v1's own parameter: {refused}"
@@ -775,7 +826,7 @@ async fn the_refund_tools_reach_v1s_refund_code() -> anyhow::Result<()> {
             )
             .await?,
     );
-    let intent_id = intent["id"].as_str().expect("an id").to_owned();
+    let intent_id = at(&intent, "/id").as_str().expect("an id").to_owned();
 
     // A stored refund row, written directly: the only way to have one for an
     // intent no rail has paid.
@@ -814,7 +865,7 @@ async fn the_refund_tools_reach_v1s_refund_code() -> anyhow::Result<()> {
             .call(&b, "retrieve_refund", json!({ "id": refund_id }))
             .await?,
     );
-    assert_eq!(foreign["code"], json!("NOT_FOUND"), "{foreign}");
+    assert_eq!(at(&foreign, "/code"), json!("NOT_FOUND"), "{foreign}");
 
     let before: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
         .fetch_one(&harness.pool)
@@ -834,7 +885,10 @@ async fn the_refund_tools_reach_v1s_refund_code() -> anyhow::Result<()> {
             .await?,
     );
     assert!(
-        matches!(refused["code"].as_str(), Some("CONFLICT" | "BAD_REQUEST")),
+        matches!(
+            at(&refused, "/code").as_str(),
+            Some("CONFLICT" | "BAD_REQUEST")
+        ),
         "a refund of an intent that took no money is the caller's refusal: {refused}"
     );
     let after: i64 = sqlx::query_scalar("SELECT count(*) FROM refunds")
