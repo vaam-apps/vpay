@@ -1,50 +1,72 @@
 # Using the official Stripe SDKs against vpay
 
 vpay's `/v1` object model, form encoding, error envelope and idempotency
-semantics are Stripe's. Its **authentication is not**: there is no API key,
-and every call carries a short-lived bearer token minted from an RFC 7523
-`private_key_jwt` client assertion ([ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md),
-[merchant-auth.md](merchant-auth.md)).
+semantics are Stripe's. Its **authentication is not**: there is no API key and
+no token. Every call is a signed message and every answer is a signed message
+([signed-transport.md](signed-transport.md),
+[ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md)).
 
-`stripe-node` accepts an arbitrary async `config.authenticator`, invoked once
-per request attempt with the whole outbound request. That is the one seam the
-handshake needs. This document is what does and does not carry over once it
-is filled.
+`stripe-node` accepts an arbitrary `config.httpClient`: the object that turns
+one outbound request into one response. That is the one seam a signed
+transport needs, because **the signature is the request body** and the answer
+is a signed body to be opened before stripe-node reads it. An `authenticator`
+(the seam this page used when authentication was a bearer token) can only add a
+header, so it can no longer carry vpay's authentication. This document is what
+does and does not carry over once the `httpClient` is filled.
 
 ## The client
 
 ```js
 import { readFileSync } from "node:fs";
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
+import { createStripeHttpClient } from "@vaam-apps/vpay-sdk/stripe";
 
-const authenticator = createStripeAuthenticator({
+const httpClient = createStripeHttpClient({
   baseUrl: "https://api.vpay.example",
   clientId: "acme-cameroon",
-  privateKey: readFileSync("./merchant-key.pem", "utf8"),
-  kid: "acme-cameroon-2026-08", // only if you registered more than one JWK
+  privateKey: readFileSync("./merchant.seed", "utf8"), // an Ed25519 seed
+  serverKeys: {
+    current: process.env.VPAY_SERVER_KEY_CURRENT, // vpay's response keys,
+    next: process.env.VPAY_SERVER_KEY_NEXT, // pinned
+  },
 });
 
-const stripe = new Stripe("", {
-  authenticator,
+const stripe = new Stripe("unused", {
+  httpClient,
   host: "api.vpay.example",
   port: "443",
   protocol: "https",
-  maxNetworkRetries: 2,
+  maxNetworkRetries: 0,
   timeout: 30_000,
   telemetry: false,
 });
 ```
 
-`new Stripe("", { authenticator })` is supported: stripe-node refuses only
-when _both_ a key and an authenticator are given, or neither.
-`host`/`port`/`protocol` move every request off `api.stripe.com`. `basePath`
-is fixed at `/v1/` and is not configurable — which is moot, because the
-generated resources use absolute paths (`/v1/payment_intents`,
-`/v1/payment_intents/{id}/confirm`) and those are exactly vpay's.
+The key string is **never sent**: stripe-node requires a non-empty one when an
+`httpClient` is given, and the client ignores the `Authorization` header it
+would have built. `host`/`port`/`protocol` move every request off
+`api.stripe.com`, and they are not optional garnish: the client seals only for
+the origin in `baseUrl` and refuses (signing nothing) a request addressed
+anywhere else, so a mis-pointed `Stripe` object cannot put a message signed for
+vpay into Stripe's logs. `basePath` is fixed at `/v1/` and is not configurable
+— which is moot, because the generated resources use absolute paths
+(`/v1/payment_intents`, `/v1/payment_intents/{id}/confirm`) and those are
+exactly vpay's, and the operation table refuses a path or a verb `/v1` does not
+serve before it is signed.
 
-The authenticator writes **one** thing: `headers.Authorization`. It must not
-rewrite the body — `Content-Length` is computed before it runs.
+Transport is `node:http(s)`, not `fetch`, because a sealed `GET` carries its
+signature as a body and `fetch` forbids one. Sealing is the Rust code compiled
+to WebAssembly (`sdks/rust/wasm`), so the bytes signed are the Rust SDK's.
+
+**A refusal reaches you as `StripeConnectionError`.** vpay's coarse unsigned
+`401` is not the Stripe envelope, and an answer sealed under a key you did not
+pin is not an answer at all; the client rejects, and stripe-node reports a
+rejection from its HTTP client as a connection error. The original is at
+`err.detail` / `err.raw.exception` (`VpayUnsignedResponseError`,
+`VpayUnverifiedResponseError`). stripe-node will retry such a rejection if
+`maxNetworkRetries` is set; a retry re-seals the call (a new message, the same
+`Idempotency-Key`), which is safe for a write and pointless for a refusal, so
+leave it at 0 unless a flaky network is the problem you have.
 
 ## What carries over unchanged
 
@@ -65,16 +87,16 @@ classification ([ADR-0011](../adr/0011-error-modelling.md)), so the mapping
 below is a property of the two designs meeting rather than of anything written
 to make it line up.
 
-| vpay answer                  | What you catch                                                                                                           |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `404` `resource_missing`     | `StripeInvalidRequestError`, `err.code === "resource_missing"`                                                           |
-| `400` `invalid_request`      | `StripeInvalidRequestError`, with `err.param` naming the field                                                           |
-| `400` `idempotency_error`    | `StripeIdempotencyError`                                                                                                 |
-| `401` `authentication_error` | `StripeAuthenticationError`                                                                                              |
-| `403` (missing scope)        | `StripePermissionError` — **despite** carrying `type: invalid_request_error`, because stripe-node branches on the status |
-| `409` (lifecycle conflict)   | `StripeAPIError` — 409 falls through every branch of `generateV1Error`                                                   |
-| `502` (rail transport)       | `StripeAPIError`, **and stripe-node retries it** — see below                                                             |
-| `429`                        | never emitted: nothing in `backends/crates` constructs `Category::RateLimited`                                           |
+| vpay answer                | What you catch                                                                                                           |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `404` `resource_missing`   | `StripeInvalidRequestError`, `err.code === "resource_missing"`                                                           |
+| `400` `invalid_request`    | `StripeInvalidRequestError`, with `err.param` naming the field                                                           |
+| `400` `idempotency_error`  | `StripeIdempotencyError`                                                                                                 |
+| the coarse unsigned `401`  | `StripeConnectionError`, original at `err.detail` — it is not the envelope, and vpay does not say why it refused         |
+| `403` (missing scope)      | `StripePermissionError` — **despite** carrying `type: invalid_request_error`, because stripe-node branches on the status |
+| `409` (lifecycle conflict) | `StripeAPIError` — 409 falls through every branch of `generateV1Error`                                                   |
+| `502` (rail transport)     | `StripeAPIError`, **and stripe-node retries it** — see below                                                             |
+| `429`                      | never emitted: nothing in `backends/crates` constructs `Category::RateLimited`                                           |
 
 `err.requestId` is populated from a `request-id` response header — stripe-node
 never reads `x-request-id`. vpay emits **both names with one value**, so
@@ -310,17 +332,31 @@ accepted everything would have accepted the delivery as well.
 ## Rust
 
 There is no Rust twin. `async-stripe` builds its client around a
-headers/secret pair and has no per-request async hook equivalent to
-stripe-node's `RequestAuthenticator`; reaching the same result means wrapping
-its transport in custom middleware, which is a larger surface than this and
-was scoped as a follow-up. Rust merchants use [`sdks/rust`](../../sdks/rust/).
+headers/secret pair and has no seam through which one request becomes a sealed
+one; reaching the same result means wrapping its transport in custom
+middleware, which is a larger surface than this and was scoped as a follow-up
+(a dated gap in [../sdks/parity.md](../sdks/parity.md)). Rust merchants use
+[`sdks/rust`](../../sdks/rust/).
 
 ## Status
+
+**Moved onto a sealing `httpClient`, 2026-10-26 (VP-3 + VP-5 + VP-7).** The
+`authenticator` this page described is deleted (`createStripeAuthenticator`, the
+token cache and the RS256 assertion went with it), `createStripeHttpClient`
+replaces it, and `sdks/stripe-compat` drives the real `stripe` package through
+it. What was run for this change: the client's own suite
+(`sdks/nodejs/src/stripe-http-client.test.ts`, 19 cases, against a verifier
+built from cratestack's own server envelope, not from the SDK's sealing code)
+and `stripe-node`'s types against it. What was **not** run: the 25 cases below
+against a live compose stack, which needs the full `e2e` job; the paragraph that
+follows is the record of the 2026-09-03 run that proved them with the
+authenticator, and the case that exercised a rejected bearer is now the one that
+exercises a refused signature (`errors.compat.test.ts`).
 
 **Built and proven against a real stack, 2026-09-03.**
 
 The evidence is [`sdks/stripe-compat`](../../sdks/stripe-compat/): the real
-`stripe@22.6.1` package driven through `createStripeAuthenticator` against a
+`stripe@22.6.1` package driven through the authenticator then, and a sealing `httpClient` now, against a
 real `vpay-server` + Postgres + WireMock rails + worker + WireMock webhook
 receiver, out of process over TCP. **25 cases, 0 skipped**, measured passing
 on the authoring machine on 2026-09-03 via `just demo_port=18080

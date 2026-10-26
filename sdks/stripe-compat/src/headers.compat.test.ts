@@ -40,15 +40,17 @@ describe("headers", () => {
     expect(created.lastResponse.apiVersion).toBeUndefined();
   });
 
-  it("accepts and ignores Stripe-Version and Stripe-Account", async () => {
+  it("works when stripe-node is told to send Stripe-Version and Stripe-Account", async () => {
     const created = await createIntent(stripe, {
       metadata: { case: "ignored-headers" },
     });
 
-    // Both are sent as real request headers by stripe-node when these options
-    // are set. vpay knows neither: there is no API-version pinning and no
-    // Connect. The assertion is that the request still *works* — a 400 here
-    // would be a worse diagnostic than a documented "Connect is not a thing".
+    // stripe-node builds both as request headers when these options are set.
+    // vpay knows neither (no API-version pinning, no Connect), and the sealing
+    // HTTP client does not forward them at all — a signed request carries only
+    // the headers its signature binds. The assertion is that the call still
+    // *works*, which is what a merchant whose code sets them needs; it no
+    // longer proves vpay's tolerance of the headers, because none arrive.
     // The empty `params` argument is load-bearing: with two arguments
     // TypeScript resolves the second as *query parameters*, and the two
     // options below would go out on the query string instead of as the

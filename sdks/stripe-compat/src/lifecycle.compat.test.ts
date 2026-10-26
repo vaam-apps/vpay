@@ -271,8 +271,8 @@ describe("payment intent lifecycle through stripe-node", () => {
 
   it("accepts a Stripe client built exactly as the docs tell merchants to build one", () => {
     // Not a network assertion — a construction one. `new Stripe("", {...})`
-    // with an authenticator and no key is the supported combination, and
-    // stripe-node throws at construction for both of the other two.
+    // with an httpClient and a placeholder key is the supported combination;
+    // stripe-node still throws at construction for no key at all.
     expect(stripe).toBeInstanceOf(Stripe);
     expect(() => new Stripe("")).toThrow();
   });

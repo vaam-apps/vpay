@@ -8,6 +8,7 @@
  * written to make this file pass.
  */
 import Stripe from "stripe";
+import { VpayUnsignedResponseError } from "@vaam-apps/vpay-sdk";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -16,7 +17,7 @@ import {
   createIntent,
   invalidRequest,
   stripeClient,
-  stripeClientWithBadCredential,
+  stripeClientWithUnregisteredKey,
 } from "./client.js";
 
 const stripe = stripeClient();
@@ -41,17 +42,22 @@ describe("error mapping", () => {
     expect(stripeError.requestId).toMatch(UUID);
   });
 
-  it("turns a rejected bearer token into StripeAuthenticationError", async () => {
+  it("turns a refused signature into a StripeConnectionError carrying vpay's unsigned 401", async () => {
+    // A signature from a key vpay does not know is refused before any handler
+    // runs, with the layer's coarse 401 — unsigned, and identical for every
+    // cause (no signature, a replay, the wrong audience, a disabled client).
+    // That is not the Stripe error envelope, so stripe-node cannot map it to
+    // `StripeAuthenticationError`: its HTTP client rejected, which stripe-node
+    // reports as a connection error. The original error is on `detail`.
     const error = await caught(() =>
-      stripeClientWithBadCredential().paymentIntents.retrieve("pi_anything"),
+      stripeClientWithUnregisteredKey().paymentIntents.retrieve("pi_anything"),
     );
 
-    expect(error).toBeInstanceOf(Stripe.errors.StripeAuthenticationError);
-    const stripeError = error as Stripe.errors.StripeAuthenticationError;
-    expect(stripeError.statusCode).toBe(401);
-    expect(stripeError.rawType).toBe("authentication_error");
-    expect(stripeError.code).toBe("invalid_token");
-    expect(stripeError.requestId).toMatch(UUID);
+    expect(error).toBeInstanceOf(Stripe.errors.StripeConnectionError);
+    const detail = error as { detail?: unknown; raw?: { exception?: unknown } };
+    const cause = detail.detail ?? detail.raw?.exception;
+    expect(cause).toBeInstanceOf(VpayUnsignedResponseError);
+    expect((cause as VpayUnsignedResponseError).status).toBe(401);
   });
 
   it("refuses `confirm: true` on create, naming the parameter", async () => {
