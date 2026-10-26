@@ -3,7 +3,12 @@
 Branch `claude/dazzling-curie-g8sxn2`, from `master` at `172a13a`. It moves
 every CrateStack pin to 0.16.0 and declares no MCP. It also carries ADR-0033
 and the MCP threat model, which are docs only. The area record is
-[../cratestack.md](../cratestack.md) § "CrateStack 0.15.0 → 0.16.0".
+[../cratestack.md](../cratestack.md) § "The 0.16.0 bump, re-measured with Docker".
+
+**[#376](https://github.com/vaam-apps/vpay/pull/376) landed the same bump on
+`master` first**, with `envelope` and `cose` on as well. When this branch merged
+`master`, it took #376's pins, lockfile and prose. This page stays as the record
+of the run with Docker, which #376's session could not make.
 
 ## Environment
 
