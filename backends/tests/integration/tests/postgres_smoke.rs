@@ -5411,6 +5411,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
 
     let output = std::process::Command::new("cratestack")
         .current_dir(&root)
+        // The test compares this process's stderr *exactly* (the strict
+        // refusal must name the count the report did). An inherited
+        // `RUST_BACKTRACE=1` makes `anyhow` append a backtrace to the same
+        // stream, and the comparison then fails for a reason that has nothing
+        // to do with drift. Nothing in CI sets it, so the test passed only
+        // because the variable was unset; it is pinned off here instead.
+        .env("RUST_BACKTRACE", "0")
+        .env_remove("RUST_LIB_BACKTRACE")
         .args(["migrate", "baseline"])
         .arg("--schema")
         .arg(&schema)

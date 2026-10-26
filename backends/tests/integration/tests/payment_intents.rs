@@ -1399,9 +1399,9 @@ async fn a_5xx_releases_its_idempotency_key_so_the_retry_re_executes() -> anyhow
 /// merchant C is *registered* — it resolves to a tenant — so this cannot be
 /// satisfied by the unregistered-client `403` that was already there.
 ///
-/// The token itself is obtained through the OP by the real SDK: a client
-/// registered for no scopes still authenticates, which is the point. What it
-/// cannot do is act.
+/// The request is signed by the real SDK: a client registered for no scopes
+/// still authenticates (its key verifies), which is the point. What it cannot
+/// do is act.
 #[tokio::test]
 async fn a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not()
 -> anyhow::Result<()> {

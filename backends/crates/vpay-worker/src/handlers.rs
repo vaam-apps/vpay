@@ -1258,9 +1258,24 @@ async fn sweep_expired(
     // therefore the reaping — unclaimable forever. Reaping here as well costs
     // one statement an hour and keeps the sweep's own description honest.
     let leases = repositories.reap_expired_leases(policy.lease).await?;
-    let nonces = repositories
+    // Not `?`: this delete only bounds a table, and correctness never depends
+    // on it (an elapsed row is taken over by the next claim that names it, see
+    // `ENVELOPE_NONCE_RETENTION`). Failing the whole sweep for it would skip
+    // `expire_due_sessions` below, which a merchant waits on, so a failure is
+    // logged at `error` and the sweep carries on; the job runs again in an hour.
+    let nonces = match repositories
         .delete_expired_envelope_nonces(ENVELOPE_NONCE_RETENTION)
-        .await?;
+        .await
+    {
+        Ok(deleted) => deleted,
+        Err(error) => {
+            tracing::error!(
+                %error,
+                "the envelope nonce sweep failed; continuing with the rest of the housekeeping"
+            );
+            0
+        }
+    };
     let sessions = expire_due_sessions(repositories, job).await?;
 
     tracing::info!(

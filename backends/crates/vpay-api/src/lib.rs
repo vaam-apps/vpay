@@ -1756,6 +1756,27 @@ mod tests {
     /// request-id stack. The boundary has its own tests, further down.
     const UNROUTED_PATH: &str = "/not_a_vpay_route";
 
+    /// The layer's refusal and nothing else: the one coarse unsigned body,
+    /// `{"code":"UNAUTHORIZED"}`, and not the Stripe envelope a bearer-token
+    /// middleware (`missing_bearer_token`) or a tidied `merchant_scope` would
+    /// give. A bare status check passes for both, which is how a re-added
+    /// bearer layer, or mode `Optional` plus a handler that happens to answer
+    /// 401, would have gone unnoticed.
+    async fn assert_coarse_unsigned_401(response: Response, what: &str) {
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("the refusal is small");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("UNAUTHORIZED"),
+            "{what}: the unsigned 401 must be the layer's coarse body, got {text:?}"
+        );
+        assert!(
+            !text.contains("\"error\"") && !text.contains("bearer"),
+            "{what}: a Stripe-shaped or bearer-shaped refusal is not the layer's: {text:?}"
+        );
+    }
+
     async fn get(uri: &str) -> Response {
         request("GET", uri, &[]).await
     }
@@ -2068,7 +2089,55 @@ mod tests {
                     StatusCode::UNAUTHORIZED,
                     "{method} {path} must be behind the signed transport"
                 );
+                assert_coarse_unsigned_401(response, &format!("{method} {path}")).await;
             }
+        }
+    }
+
+    /// An anonymous `OPTIONS` to any `/v1` route is a `405`, not a page.
+    ///
+    /// cratestack 0.16.0's `EnvelopeLayer` passes a bodiless `OPTIONS` through
+    /// unsigned (a CORS preflight), and `route_layer` wraps a method router's
+    /// own `405` fallback, so the request reached `merchant_scope` with no
+    /// `VerifiedSigner` and was answered `Internal` — a `500` that fires
+    /// `VpayPageableErrorEvents` for anybody who asks. Walks the table, so a
+    /// route added tomorrow is covered; the scrape proves nothing was counted as
+    /// an error at all, which is what would have paged, and the `Allow` header
+    /// and empty body prove the answer is the router's and not a handler's.
+    #[test]
+    fn an_anonymous_options_to_any_v1_route_is_a_405_and_pages_nobody() {
+        let scrape = scrape_of(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a current-thread runtime builds");
+            for route in V1_ROUTES {
+                let path = format!("/v1{}", route.path.replace("{id}", "pi_x"));
+                let response = runtime.block_on(request("OPTIONS", &path, &[]));
+                assert_eq!(
+                    response.status(),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "OPTIONS {path}: a method no /v1 operation serves"
+                );
+                assert!(
+                    response.headers().contains_key("allow"),
+                    "OPTIONS {path}: a 405 names what the path does serve"
+                );
+                let body = runtime
+                    .block_on(axum::body::to_bytes(response.into_body(), 64 * 1024))
+                    .expect("the answer is small");
+                assert!(
+                    body.is_empty(),
+                    "OPTIONS {path}: the router's bare 405, not an error envelope: {body:?}"
+                );
+            }
+        });
+        for line in scrape.lines() {
+            assert!(
+                !line.starts_with("vpay_alert_events_total{")
+                    && !line.starts_with("vpay_error_events_total{"),
+                "an anonymous OPTIONS raised an error event: {line}\n{scrape}"
+            );
         }
     }
 
@@ -2082,6 +2151,7 @@ mod tests {
             let response =
                 request("GET", "/v1/payment_intents", &[("authorization", header)]).await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{header}");
+            assert_coarse_unsigned_401(response, header).await;
         }
     }
 

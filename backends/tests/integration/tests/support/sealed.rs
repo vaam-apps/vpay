@@ -443,6 +443,7 @@ pub(crate) fn describe(client_ids: &[&str]) -> BTreeMap<String, String> {
 /// payment-intent happy paths). The same derived seed [`SealedHttp`] signs with.
 pub(crate) fn sdk_credentials(client_id: &str) -> vpay_sdk::Credentials {
     vpay_sdk::Credentials::ed25519_seed(client_id, &merchant_seed(client_id))
+        .expect("a derived test seed signs")
 }
 
 /// The test server's two response keys, pinned the way a merchant pins them.

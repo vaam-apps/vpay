@@ -18,7 +18,8 @@
 //!
 //! | Situation | Answer |
 //! |---|---|
-//! | no [`VerifiedSigner`] on the request | `500` — the layer is not in front of this route |
+//! | no [`VerifiedSigner`], method `OPTIONS` | axum's own `405` with `Allow`: the one request the layer lets through unsigned (a CORS preflight), and no `/v1` handler answers it |
+//! | no [`VerifiedSigner`], any other method | `500` — the layer is not in front of this route |
 //! | the key resolves to no enabled merchant | `403` `forbidden`, sealed |
 //! | the merchant's YAML scopes carry none the method needs | `403` `forbidden`, sealed |
 //! | the `disabled_clients` lookup failed | the database's own error, sealed |
@@ -42,6 +43,7 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
+use axum::http::Method;
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use cratestack_core::VerifiedSigner;
@@ -61,6 +63,18 @@ pub(crate) async fn merchant_scope(
     let (mut parts, body) = request.into_parts();
 
     let Some(signer) = parts.extensions.get::<VerifiedSigner>() else {
+        // The one request the layer lets through with no signature is a
+        // bodiless `OPTIONS` (cratestack 0.16.0 passes it for a CORS
+        // preflight). `route_layer` wraps a method router's own `405`
+        // fallback, so it arrives here; no `/v1` handler answers `OPTIONS`,
+        // so what it reaches is axum's `405` with `Allow`, which is the honest
+        // answer to a method the surface does not serve and which no browser
+        // caller is expected to need (`/v1` is a merchant's backend; a payer's
+        // page uses `/v1/browser`). It is NOT the misconfiguration below: an
+        // anonymous caller must not be able to raise a page by asking.
+        if parts.method == Method::OPTIONS {
+            return next.run(Request::from_parts(parts, body)).await;
+        }
         return ApiError::Internal(
             "a /v1 request reached the merchant scope step with no VerifiedSigner: the \
              envelope layer is not mounted in front of this route"

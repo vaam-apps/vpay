@@ -1518,3 +1518,27 @@ reasoning. No optional or compatibility mode exists, and no token fallback.
   run** where this was written (no Docker daemon with the stack's images, no
   `helm`/`kubeconform`); CI's `e2e` and `helm` jobs are the evidence for those
   halves.
+
+### Review follow-ups to the signed `/v1` (2026-10-26, same PR)
+
+- **An anonymous `OPTIONS` on `/v1` is a `405`, not a page.** cratestack 0.16.0
+  passes a bodiless `OPTIONS` through the layer unsigned (CORS preflight), axum's
+  `route_layer` wraps a method router's own `405` fallback, and `merchant_scope`
+  then found no signer and answered `Internal` (`Severity::Page`:
+  `VpayPageableErrorEvents` for anyone who asks; it was a `401` on master). It now
+  lets the router answer its own `405` with `Allow`. No browser caller of `/v1`
+  is expected (`/v1/browser` is the payer's surface), so no preflight is
+  answered. `an_anonymous_options_to_any_v1_route_is_a_405_and_pages_nobody`
+  walks `V1_ROUTES` and asserts the `405`, `Allow`, an empty body and no
+  `vpay_error_events_total` / `vpay_alert_events_total` series.
+- **The unsigned-401 tests now check the body**, not only the status
+  (`every_v1_route_answers_the_unsigned_401_to_a_plain_request`,
+  `a_bearer_token_buys_nothing_on_v1`): a re-added bearer middleware, or mode
+  `Optional` plus a tidied `merchant_scope`, answers a Stripe-shaped `401` and
+  now fails them.
+- **Both SDKs refuse redirects and bound the body they read** (8 MiB, typed
+  error). See [../sdks/parity.md](../sdks/parity.md), "Signing".
+- **The worker's nonce sweep no longer takes the checkout-session expiry down
+  with it**: a failed delete is logged at `error` and the sweep carries on.
+- **Left as they were, on purpose:** the key-id probe's database lookup is not
+  cached, seeds are not zeroized, and the env-var naming stands.
