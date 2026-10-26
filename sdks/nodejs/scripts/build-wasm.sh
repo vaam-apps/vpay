@@ -38,7 +38,7 @@ fi
 rustup target add wasm32-unknown-unknown >/dev/null 2>&1 || true
 
 # Size over speed: this is a signing call, not a hot loop, and the module is
-# read from disk on every `require`.
+# embedded in the glue and parsed on every `require`.
 CARGO_PROFILE_RELEASE_OPT_LEVEL=s \
 	cargo build --release --locked --target wasm32-unknown-unknown -p vpay-sdk-wasm "${features[@]}"
 
@@ -46,6 +46,33 @@ rm -rf "$out"
 mkdir -p "$out"
 wasm-bindgen --target nodejs --out-dir "$out" --out-name vpay_sdk_wasm \
 	"${CARGO_TARGET_DIR:-$root/target}/wasm32-unknown-unknown/release/vpay_sdk_wasm.wasm"
+# wasm-bindgen's Node glue reads its `.wasm` from `${__dirname}` at load time.
+# A bundler that inlines the glue (Next's Turbopack does, for a workspace
+# package) rewrites `__dirname` to a build-time path that does not exist where
+# the bundle runs, and every call to vpay then fails with ENOENT. So the module
+# carries its own bytes: the read becomes a base64 literal, and the glue needs
+# no file, no path and no `fs` wherever it ends up. Each of the two lines must
+# be found exactly once, so a wasm-bindgen that words them differently fails
+# this build rather than shipping a module that still reads from disk.
+glue="$out/vpay_sdk_wasm.js"
+b64="$out/.wasm.b64"
+base64 <"$out/vpay_sdk_wasm_bg.wasm" | tr -d '\n' >"$b64"
+awk -v b64file="$b64" '
+	$0 == "const wasmPath = `${__dirname}/vpay_sdk_wasm_bg.wasm`;" { path++; next }
+	$0 == "const wasmBytes = require('"'"'fs'"'"').readFileSync(wasmPath);" {
+		bytes++
+		getline literal <b64file
+		print "const wasmBytes = Buffer.from(\"" literal "\", \"base64\");"
+		next
+	}
+	{ print }
+	END { if (path != 1 || bytes != 1) exit 1 }
+' "$glue" >"$glue.embedded" || {
+	echo "build-wasm: FAIL — wasm-bindgen's glue no longer reads its module the way this script rewrites." >&2
+	exit 1
+}
+mv "$glue.embedded" "$glue"
+rm -f "$b64"
 # The SDK is ESM ("type": "module"); wasm-bindgen emits CommonJS. A nested
 # package.json is what tells Node which one this directory is.
 printf '{ "type": "commonjs" }\n' >"$out/package.json"
