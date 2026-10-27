@@ -64,7 +64,7 @@ where the surface provides them; where it does not, the document says so.
 - **Authentication:** every request is a COSE_Sign1 envelope from a merchant
   Ed25519 key registered in `merchant_clients[].cose_keys`, and every answer is
   sealed by vpay's own key
-  ([ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md)). An envelope
+  ([ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md)). An envelope
   needs a valid signature from an enabled client's key, an `iat` inside the
   freshness window, and a nonce not recorded in `envelope_nonces`. Bearer
   tokens are refused on `/v1`; the OAuth OP at `/v1/oauth` still mints them

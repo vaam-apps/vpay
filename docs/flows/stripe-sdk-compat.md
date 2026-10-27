@@ -4,7 +4,7 @@ vpay's `/v1` object model, form encoding, error envelope and idempotency
 semantics are Stripe's. Its **authentication is not**: there is no API key and
 no token. Every call is a signed message and every answer is a signed message
 ([signed-transport.md](signed-transport.md),
-[ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md)).
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md)).
 
 `stripe-node` accepts an arbitrary `config.httpClient`: the object that turns
 one outbound request into one response. That is the one seam a signed

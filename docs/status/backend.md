@@ -1419,6 +1419,26 @@ Found by the `rust` job of the v0.14.1 release PR (vaam-apps/vpay#368, run
 No route moved and no `NotImplemented` token moved.
 [verification/2026-10-25-callback-lock-release.md](verification/2026-10-25-callback-lock-release.md).
 
+## An MCP surface, decided and not built (2026-10-26, ADR-0033)
+
+[ADR-0033](../adr/0033-mcp-is-the-primary-agent-surface.md) (Proposed)
+decides that vpay's agent surface is MCP:
+
+- **Endpoints:** two, `POST /mcp/v1` for merchants and `POST /dash/mcp/v1`
+  for staff.
+- **Surfaces:** two new `deployment.surfaces` values, `mcp` and
+  `mcp_staff`. Neither is in `EnabledSurfaces::ALL`.
+- **Schema:** served from `schemas/vpay.cstack` through CrateStack's `mcp`
+  feature. Merchants get reads and money writes; staff get reads only.
+
+Its threat model is [security/threat-models/mcp.md](../security/threat-models/mcp.md),
+and every mitigation in it is **not built**.
+
+**⛔ None of it exists.** No route is mounted, no surface value parses, no
+schema declares `mcp`, and no tool or resource exists. The CrateStack bump
+the surface needs (0.15.0 to 0.16.0) is recorded on
+[cratestack.md](cratestack.md). That bump declares no MCP.
+
 ## Merchant Ed25519 keys are registered, and `/v1` has a contract table; neither is verified on a request yet (2026-10-26, VP-2) — _verified since VP-3, the next section_
 
 First step of the move from merchant OAuth to signed transport
@@ -1472,7 +1492,7 @@ cratestack's `EnvelopeLayer` is mounted on `/v1` in mode `Required`
 (`mount_prefix("/v1")`, applied to the `/v1` router before it is nested), so the
 registered keys and the contract table of the section above are read on every
 request. [signed-transport.md](../flows/signed-transport.md) is the mechanism,
-[ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md) the decision,
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md) the decision,
 [../reference/vpay-api/envelope.md](../reference/vpay-api/envelope.md) the module
 reasoning. No optional or compatibility mode exists, and no token fallback.
 

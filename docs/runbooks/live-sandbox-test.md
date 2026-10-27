@@ -88,7 +88,7 @@ cargo xtask gen-signing-key --out .e2e/live-merchant # -> .e2e/live-merchant/oau
 `cargo xtask gen-envelope-key --out <dir> --name <stem>` writes `<stem>.seed`
 (the private half, mode 0600) and `<stem>.pub`, and prints the public key.
 `config/application-live.yml` references **public** halves only — vpay never
-holds a merchant's private half (ADR-0033) — through `${VAR}` placeholders.
+holds a merchant's private half (ADR-0035) — through `${VAR}` placeholders.
 Put the merchant's **public key** into `.env.live` as `LIVE_MERCHANT_COSE_KEY`;
 that is what authenticates every `/v1` request. The RS256 `kid` and modulus `n`
 that `gen-signing-key` prints go in as `LIVE_MERCHANT_JWK_KID` and

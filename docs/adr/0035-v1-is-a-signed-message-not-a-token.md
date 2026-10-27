@@ -1,4 +1,4 @@
-# ADR-0033: `/v1` is a signed message, not a token
+# ADR-0035: `/v1` is a signed message, not a token
 
 - **Status:** Accepted. Supersedes
   [ADR-0010](0010-merchant-auth-private-key-jwt.md) for `/v1`; the OP it

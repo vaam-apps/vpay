@@ -85,7 +85,7 @@ providers:
 # live-merchant signs every `/v1` request with an Ed25519 key generated with:
 #     cargo xtask gen-envelope-key --out .e2e/live-merchant --name signing
 # (private seed at .e2e/live-merchant/signing.seed). vpay holds only the public
-# half, `cose_keys` below (ADR-0033, docs/flows/signed-transport.md). Put the
+# half, `cose_keys` below (ADR-0035, docs/flows/signed-transport.md). Put the
 # printed public key in `.env.live` as LIVE_MERCHANT_COSE_KEY: it is a ${VAR}
 # placeholder resolved from the environment, not a literal.
 #

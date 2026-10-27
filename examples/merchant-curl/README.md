@@ -23,7 +23,7 @@
 > `GET /v1/payment_intents/{id}` or take the webhook; see
 > [the reconciler flow](../../docs/flows/reconciler.md).)_ See
 > ../../docs/status.md and
-> [ADR-0033](../../docs/adr/0033-v1-is-a-signed-message-not-a-token.md).
+> [ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md).
 >
 > `GET /v1/balance` is not routed at all and answers the honest
 > `404 unknown_route`. _(This line also named `POST /v1/refunds` until

@@ -12,7 +12,7 @@ There is no access token, no refresh token, no `client_credentials` grant and
 no API key on `/v1`. A merchant's identity on the wire is an Ed25519 key
 (`merchant_clients[].cose_keys`), and vpay's is one of two Ed25519 response keys
 (`VPAY_ENVELOPE_SIGNING_KEY_FILE`, `..._NEXT_FILE`) that every client pins.
-[ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md) records the
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md) records the
 decision and what it supersedes; this page is the mechanism.
 
 It is cratestack's signed transport (`cratestack-axum`'s `EnvelopeLayer`,

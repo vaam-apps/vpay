@@ -70,7 +70,7 @@ token either. Every request is a **signed message** (COSE_Sign1, Ed25519) and
 every answer is one signed by vpay: each merchant is a statically registered
 client, holding its own signing key, configured directly in vpay's YAML — vpay
 stores only the public half — and every merchant pins vpay's response keys
-([ADR-0033](docs/adr/0033-v1-is-a-signed-message-not-a-token.md),
+([ADR-0035](docs/adr/0035-v1-is-a-signed-message-not-a-token.md),
 [`docs/flows/signed-transport.md`](docs/flows/signed-transport.md)). An
 unsigned request, a bearer token, a replay and an unknown key are the same
 coarse `401`.

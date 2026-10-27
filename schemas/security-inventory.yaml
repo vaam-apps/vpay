@@ -23,7 +23,7 @@ trust_boundaries:
     description: "Merchants, payers, rails and identity providers. Nothing here is trusted."
     crossing_controls:
       - "TLS at the ingress; the server itself binds plain TCP"
-      - "Every /v1 request is a COSE_Sign1 envelope from a registered merchant Ed25519 key, and every answer is sealed (ADR-0033); bearer tokens are refused on /v1"
+      - "Every /v1 request is a COSE_Sign1 envelope from a registered merchant Ed25519 key, and every answer is sealed (ADR-0035); bearer tokens are refused on /v1"
       - "Rail callbacks are unauthenticated hints, not authenticated status reads"
   - id: tier_1_edge
     name: "Edge and ingress"
@@ -62,7 +62,7 @@ deployable_services:
       - name: "merchant_api"
         surface: "/v1"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "COSE_Sign1 signed request from a registered merchant Ed25519 key, sealed answer (ADR-0033)"
+        auth: "COSE_Sign1 signed request from a registered merchant Ed25519 key, sealed answer (ADR-0035)"
         purpose: "Payment intents, refunds, customers, invoices"
       - name: "merchant_oauth"
         surface: "/v1/oauth"
@@ -247,7 +247,7 @@ state_stores:
     backing_store: "postgres_primary"
     table: "envelope_nonces"
     implementation: "backends/crates/vpay-db/src/envelope_nonces.rs"
-    adr: "docs/adr/0033-v1-is-a-signed-message-not-a-token.md"
+    adr: "docs/adr/0035-v1-is-a-signed-message-not-a-token.md"
     invariants:
       - "A verified envelope's nonce is claimed once, atomically, and a replay inside the freshness window is refused"
       - "A nonce is recorded only after the signature and freshness checks pass, and is swept only once expired"
@@ -344,7 +344,7 @@ secrets_and_credentials:
       - "VPAY_ENVELOPE_SIGNING_KEY_FILE"
       - "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE"
     storage: "Mounted Secret files; both are required at boot, must differ, and only their public halves are logged"
-    adr: "docs/adr/0033-v1-is-a-signed-message-not-a-token.md"
+    adr: "docs/adr/0035-v1-is-a-signed-message-not-a-token.md"
 
   - class: database_credentials
     description: "PostgreSQL connection URI credentials"
@@ -496,9 +496,9 @@ material_controls:
       - "backends/crates/vpay-api/src/v1/mod.rs"
       - "backends/crates/vpay-api/src/resource_auth.rs"
       - "backends/crates/vpay-api/src/envelope/scope.rs"
-    evidence: "Signed /v1 requests from registered merchant keys, resolved to a tenant-bound merchant with per-route scopes (ADR-0033)."
+    evidence: "Signed /v1 requests from registered merchant keys, resolved to a tenant-bound merchant with per-route scopes (ADR-0035)."
     evidence_paths:
-      - "docs/adr/0033-v1-is-a-signed-message-not-a-token.md"
+      - "docs/adr/0035-v1-is-a-signed-message-not-a-token.md"
     evidence_tests:
       - "every_route_refuses_an_unsigned_request_with_the_coarse_401"
       - "a_foreign_tenant_gets_the_uniform_sealed_404"

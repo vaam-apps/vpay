@@ -729,6 +729,32 @@ that `schema_migrates_cleanly_on_an_empty_database` pins is 55. The model has
 no policy arm on purpose: the claim is one raw statement made by the layer's
 own store (`vpay-db/src/envelope_nonces.rs`), as `rate_limit_windows`' is.
 
+## The 0.16.0 bump, re-measured with Docker (2026-10-26, ADR-0033 step 1)
+
+[#376](https://github.com/vaam-apps/vpay/pull/376) landed the bump above
+first. ADR-0033's step 1 had made the same bump independently, with the same
+pins and the same action SHA, but without `envelope` and `cose`. Once it was
+merged onto #376 only two things remained, and they are recorded here:
+
+- **The suites #376 could not run.** A session with a Docker daemon ran the
+  full `just ci`: nextest 2489 / 2489 passed with 0 skipped, doctests 138
+  passed with 1 ignored, and `verify-ignored` passed. That covers every
+  WireMock and receiver suite, `postgres_smoke` and `vpay-server`'s `cli`.
+  The drift measurement there was also
+  `drift detected in 28 table(s)/view(s) (212 change(s) total)`.
+- **One fix in the test, not the product.**
+  `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`
+  compares the CLI's refusal byte for byte. In a shell that exports
+  `RUST_BACKTRACE=1`, `anyhow` appends a stack trace to it, so the test
+  failed with every count right. CI sets neither variable. The test now
+  removes `RUST_BACKTRACE` and `RUST_LIB_BACKTRACE` from the subprocess, and
+  passes with `RUST_BACKTRACE=1` set.
+
+The schema still declares no `mcp`.
+[ADR-0033](../adr/0033-mcp-is-the-primary-agent-surface.md) (Proposed) decides
+what will use it.
+[verification/2026-10-26-cratestack-0.16.md](verification/2026-10-26-cratestack-0.16.md).
+
 ## 2026-10-26: a generated TypeScript client and `@cratestack/refine`
 
 **What moved.** The schema now produces a second thing:

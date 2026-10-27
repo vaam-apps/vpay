@@ -7,7 +7,7 @@
 > credential on `/v1`.**
 
 **This page's handshake no longer authenticates `/v1`** (2026-10-26, VP-3,
-[ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md)). `/v1` is the
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md)). `/v1` is the
 signed transport of [signed-transport.md](signed-transport.md): a merchant's
 backend seals each call with an Ed25519 key registered as
 `merchant_clients[].cose_keys`, and nothing on the wire is a token. What

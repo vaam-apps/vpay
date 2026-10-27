@@ -19,7 +19,7 @@ refresh token, and no other way to authenticate **this** surface —
 caller, with its own credential model; it is not a second way in through this
 one. The mechanism, what a signature binds and how the SDKs seal is
 [../flows/signed-transport.md](../flows/signed-transport.md); the decision is
-[ADR-0033](../adr/0033-v1-is-a-signed-message-not-a-token.md), which supersedes
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md), which supersedes
 [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) for `/v1` (ADR-0010
 had superseded the scope-boundary paragraph of
 [ADR-0009](../adr/0009-dashboard-oidc-provider.md) that had kept `/v1` on

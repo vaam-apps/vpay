@@ -3,7 +3,7 @@
 Why `vpay_api::envelope` is shaped the way it is (VP-3). The mechanism, the
 sequence of one call and what a refusal looks like are the flow,
 [signed-transport.md](../../flows/signed-transport.md); the decision is
-[ADR-0033](../../adr/0033-v1-is-a-signed-message-not-a-token.md). This page is
+[ADR-0035](../../adr/0035-v1-is-a-signed-message-not-a-token.md). This page is
 the module by module reasoning.
 
 ## The five files

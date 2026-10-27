@@ -38,7 +38,7 @@ Requires Node.js `>=22.11.0`.
 
 ## How a call is signed
 
-`/v1` accepts no API key and no token ([ADR-0033](../../docs/adr/0033-v1-is-a-signed-message-not-a-token.md)).
+`/v1` accepts no API key and no token ([ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md)).
 A merchant is a registered **Ed25519 public key** (`merchant_clients[].cose_keys`
 in vpay's configuration); vpay finds you by the key that signed. Concretely:
 
@@ -413,7 +413,7 @@ answering `404` is not acceptable.
 
 - **No API keys, ever.** `sk_live_…` means nothing here; authentication is a signed
   message under your Ed25519 key
-  ([ADR-0033](../../docs/adr/0033-v1-is-a-signed-message-not-a-token.md)). There is
+  ([ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md)). There is
   no publishable key and no Connect equivalent.
 - **`Idempotency-Key` is mandatory on every `/v1` POST**, not optional as at
   Stripe. This costs you nothing: stripe-node puts a
