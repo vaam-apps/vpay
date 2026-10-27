@@ -843,10 +843,10 @@ because `just migrations-manifest` only appends and the PR had already pushed
 
 - `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`: one more
   `[safe]` line (`index console_keys_thumbprint_prefix_idx exists in the live
-  database but is not declared in the schema`; `@@index` has no
+database but is not declared in the schema`; `@@index` has no
   `text_pattern_ops` or partial spelling): **208 → 209**,
   `EXPECTED_DRIFTED_RELATIONS` unchanged at 27. Measured with `cratestack migrate
-  baseline --strict` on Postgres 16 migrated through `0056` and then `0057`
+baseline --strict` on Postgres 16 migrated through `0056` and then `0057`
   (207 → 208 without the bookkeeping table the test's own database carries).
 - `schema_migrates_cleanly_on_an_empty_database` pins **57** migrations.
 - `the_signed_transports_kid_lookup_is_served_by_a_pattern_index` pins the

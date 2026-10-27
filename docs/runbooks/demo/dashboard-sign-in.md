@@ -50,7 +50,14 @@ docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml run --rm --
 ```
 
 It prints `<staff id> <key id> <thumbprint> <expires_at>` and the key is good
-for 30 days. A client that holds the private half signs each request as
+for 30 days. To end it sooner, with the thumbprint it printed:
+
+```bash
+docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml run --rm --no-deps -T vpay-server \
+  staff revoke-key --thumbprint <the 64 hex characters>
+```
+
+It takes effect on the key's next request and is idempotent. A client that holds the private half signs each request as
 [dashboard-auth.md](../../flows/dashboard-auth.md) describes. There is no
 browser that does this yet; that is VP-6b.
 
@@ -60,4 +67,5 @@ The `demo_staff_token_ttl` override, the OAuth redirect URI the overlay used to
 register on `demo_dashboard_port`, the pepper and TOTP key `gen-demo-keys`
 generated, `staff-password.txt` and the Cypress `dashboard.cy.ts` spec that
 signed in with all of them. The dashboard container still starts with the rest
-of the stack and still renders its sign-in screen, which cannot complete.
+of the stack and renders one notice page saying the console signs in with a
+paired key, which is not available until VP-6b.
