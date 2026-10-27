@@ -1693,14 +1693,22 @@ token round trips against the real tables are CI's `merchant_token_flow.rs` and
   `cose_keys` or a `jwks`; the three of `jwks`, `grant_types` and
   `allowed_audiences` are required only together with a `jwks`, so a
   `cose_keys`-only merchant boots under the default. A null `methods:` is
-  refused (it is not the absent key), as are `auth_methods:`-style near misses.
+  refused (it is not the absent key), as are `auth_methods:`-style near misses
+  in any letter case (`Auth:`) and an `auth:` written under `deployment:`
+  (`deployment` denies unknown fields). `grant_types` or `allowed_audiences`
+  without a `jwks` is refused as a dormant OAuth half
+  (`MerchantOauthWithoutJwks`). Every `vpay-server` mode logs the resolved
+  methods at `info` at boot.
 - **`/v1` mode follows the methods**: `[keypair]` is `Required` (as before),
   `[keypair, machine_tokens]` is `Optional` with the unresolved mode pinned to
   `Required`, `[machine_tokens]` is `Off`. In `merchant_scope` a verified
   signer resolves through the key registry; otherwise a bearer token
-  (audience `vpay:v1`) resolves through `merchant_id_for` and the same
-  `required_scopes`; both together is `400`. Span field
-  `auth.method = keypair | machine_token`.
+  (audience `vpay:v1`) resolves through `merchant_id_for` (from memory, before
+  the kill switch is asked) and the same `required_scopes`, held to the
+  registration's **current** YAML `scopes` as well as the token's own claim;
+  both together is `400`. `disable_client` reaches a bearer token on `/v1` and
+  on the merchant MCP endpoint (`MerchantMcpAuth` asks the same
+  `DisabledClients` port). Span field `auth.method = keypair | machine_token`.
 - **`/v1/oauth/token` is mounted only with `machine_tokens`**; otherwise the
   honest `404`. `GET /.well-known/vpay-auth` lists the permitted and served
   methods.
