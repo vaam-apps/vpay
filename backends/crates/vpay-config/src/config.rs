@@ -3110,6 +3110,45 @@ merchant_clients:
         }
     }
 
+    /// The dormant-OAuth-half rule and `AuthMethodDisabled` never compete for a
+    /// file, and neither relies on the other running first: the merchant check
+    /// is told whether `machine_tokens` is permitted and has no verdict when it
+    /// is not. The fixture is read without validation so each rule is asked
+    /// alone, then the whole load shows which variant the operator sees.
+    #[test]
+    fn the_dormant_oauth_half_rule_does_not_depend_on_the_method_rules_running_first() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/auth-methods-grant-types-without-tokens.yml");
+        let text = std::fs::read_to_string(path).expect("fixture");
+        let config: Config = serde_yaml_ng::from_str(&text).expect("a shape that parses");
+        let merchant = config.merchant_clients.first().expect("one merchant");
+        assert_eq!(
+            merchant.jwks, None,
+            "the fixture is the half without a jwks"
+        );
+        assert!(!merchant.grant_types.is_empty());
+
+        assert_eq!(
+            validate_merchant_client(merchant, false),
+            Ok(()),
+            "tokens off: no verdict from the merchant rule, whatever ran before it"
+        );
+        assert!(
+            matches!(
+                validate_merchant_client(merchant, true),
+                Err(ConfigError::MerchantOauthWithoutJwks { .. })
+            ),
+            "tokens on: the same registration is the dormant half"
+        );
+        assert!(
+            matches!(
+                load_fixture("auth-methods-grant-types-without-tokens.yml"),
+                Err(ConfigError::AuthMethodDisabled { .. })
+            ),
+            "the whole load names the method rule, not the dormant half"
+        );
+    }
+
     /// `Config` ignores unknown top-level keys, so `auth_methods:` or
     /// `authentication:` would be dropped and the deployment would permit all
     /// four while its operator believed it had narrowed them.

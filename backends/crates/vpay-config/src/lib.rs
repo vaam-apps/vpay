@@ -1566,6 +1566,12 @@ pub enum ConfigError {
     /// of a method that is off is (ADR-0037 decision 4): dormant configuration
     /// is how an operator comes to believe a door is open or shut. Add the
     /// `jwks` or delete the key.
+    ///
+    /// The merchant check is handed whether `machine_tokens` is permitted and
+    /// returns without a verdict when it is not, so it does not depend on
+    /// running after the method-level rules. With `machine_tokens` off the same
+    /// keys are [`ConfigError::AuthMethodDisabled`], raised by those rules, so
+    /// the two variants never compete for one file.
     #[error(
         "merchant_clients[{client_id}] declares `{key}` but no `jwks`; the OAuth half of a \
          registration is all three of `jwks`, `grant_types` and `allowed_audiences` or none. Add \
