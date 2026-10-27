@@ -824,19 +824,19 @@ router.
 Each is a boot refusal with its own `ConfigError` variant and a fixture
 (`tests/fixtures/auth-methods-*.yml`), and each exits `78`.
 
-| Rule                                                                                              | Variant                     |
-| ------------------------------------------------------------------------------------------------- | --------------------------- |
-| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)       | `NoAuthMethods`             |
-| a name that is not a method                                                                       | `UnknownAuthMethod`         |
-| a method listed twice                                                                             | `DuplicateAuthMethod`       |
-| `human_login` named explicitly                                                                    | `AuthMethodUnavailable`     |
-| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                          | `NoWayIn`                   |
-| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                     | `McpNeedsMachineTokens`     |
-| `machine_tokens` named explicitly and no merchant has a `jwks`                                    | `AuthMethodNotConfigured`   |
-| a block from the table above, present while its method is off                                     | `AuthMethodDisabled`        |
-| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`              | `MerchantGrantTypesMissing` |
-| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                  | `MerchantNoCredential`      |
-| a top-level `auth_methods:`, `auth-methods:`, `authmethods:` or `authentication:`                  | `NearMissKey`               |
+| Rule                                                                                        | Variant                     |
+| ------------------------------------------------------------------------------------------- | --------------------------- |
+| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key) | `NoAuthMethods`             |
+| a name that is not a method                                                                 | `UnknownAuthMethod`         |
+| a method listed twice                                                                       | `DuplicateAuthMethod`       |
+| `human_login` named explicitly                                                              | `AuthMethodUnavailable`     |
+| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                    | `NoWayIn`                   |
+| `deployment.surfaces` names `mcp` and `machine_tokens` is off                               | `McpNeedsMachineTokens`     |
+| `machine_tokens` named explicitly and no merchant has a `jwks`                              | `AuthMethodNotConfigured`   |
+| a block from the table above, present while its method is off                               | `AuthMethodDisabled`        |
+| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`        | `MerchantGrantTypesMissing` |
+| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it            | `MerchantNoCredential`      |
+| a top-level `auth_methods:`, `auth-methods:`, `authmethods:` or `authentication:`           | `NearMissKey`               |
 
 - **Permitted is not served.** A method with a block runs where the block is. An
   absent `auth.methods` permits `machine_tokens` and still boots a file whose
@@ -857,7 +857,7 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
   `[client_credentials]` and nothing else.
 - **A top-level key near `auth` is refused, not ignored.** `Config` ignores
   unknown top-level keys, which for this one is a fail-open: `auth_methods:
-  [keypair]` would be dropped and the deployment would permit all four.
+[keypair]` would be dropped and the deployment would permit all four.
   `NearMissKey` names the spelling and the real key.
 - **`hmac_webhooks` off means no merchant webhooks** until VP-8 adds sealed
   delivery: any `webhooks[]` entry is refused, not only one with `secrets`,

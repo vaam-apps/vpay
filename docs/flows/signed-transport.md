@@ -212,11 +212,19 @@ sequenceDiagram
   when the JWKS cannot be read, `403` for a genuine token naming no registered
   client or lacking the scope the method needs).
 - **A token caller is not protected the way a sealed one is**: answers are not
-  sealed, requests are not bound to a contract (the `426` for an operation whose
-  shape is gone does not reach them), the rate-limit and idempotency keys use the
-  token rather than the key, and a token minted before a client is disabled lives
-  until it expires. The span of every `/v1` request carries
-  `auth.method = keypair | machine_token`.
+  sealed (not even when the request asks for a sealed one with
+  `Cratestack-Nonce` and `Accept: application/cose`: the response seal policy is
+  "never" under `Optional`) and requests are not bound to a contract (the `426`
+  for an operation whose shape is gone does not reach them). It is **not** a
+  separate tenant of the replay protections: idempotency is keyed on
+  `(merchant_id, Idempotency-Key)`, so the same key from a signed and from a token
+  request of one merchant is one key, and no `/v1` handler keys a rate limit on
+  the credential. `disable_client` reaches a token caller on its next request, as
+  it reaches a signer (`401` `invalid_token`). The span of every `/v1` request
+  carries `auth.method = keypair | machine_token`.
+- **A signed request that also carries `Authorization` is `400` on every
+  deployment, `[keypair]` included.** It used to be ignored; see the upgrade note
+  in [ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md).
 - `GET /.well-known/vpay-auth` tells a client which methods the deployment
   permits and serves, without a credential.
 

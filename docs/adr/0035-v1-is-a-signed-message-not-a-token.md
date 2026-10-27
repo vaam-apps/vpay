@@ -1,8 +1,11 @@
 # ADR-0035: `/v1` is a signed message, not a token
 
-- **Status:** Accepted. Supersedes
-  [ADR-0010](0010-merchant-auth-private-key-jwt.md) for `/v1`; the OP it
-  describes stays for `/v1/oauth/*` until VP-4 removes it.
+- **Status:** Accepted; superseded in part by
+  [ADR-0037](0037-authentication-methods-are-deployment-configuration.md)
+  (decision 1's "no optional or compatibility mode, no token fallback" and
+  decision 6's flag day now hold only for a deployment that permits `keypair`
+  alone). Supersedes [ADR-0010](0010-merchant-auth-private-key-jwt.md) for
+  `/v1`; the OP it describes stays for `/v1/oauth/*` until VP-4 removes it.
 - **Date:** 2026-10-26
 - **Deciders:** vpay maintainers; the key-only ruling is the owner's.
 

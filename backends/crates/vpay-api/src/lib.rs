@@ -471,7 +471,11 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
 pub const AUTH_DISCOVERY_PATH: &str = "/.well-known/vpay-auth";
 
 /// `GET /.well-known/vpay-auth`: `{"methods": ["keypair", ...]}`, the methods
-/// this deployment permits **and serves** (`AuthMethods::served`).
+/// this deployment permits **and serves** (`AuthMethods::served`: permitted
+/// minus `human_login`, which no release serves yet). It lists what the
+/// deployment offers, not what any one merchant can use: a merchant registered
+/// with `cose_keys` alone cannot use a token on a deployment that lists
+/// `machine_tokens`.
 ///
 /// Nothing secret and nothing per-caller: it is the YAML's `auth.methods`
 /// resolved, so a console reads it instead of a second switch that could
