@@ -1,0 +1,19 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037 decision 4, VPA-1).
+#
+# `machine_tokens` is permitted (the default) and the merchant declares
+# `allowed_audiences` but no `jwks`: an OAuth half with nothing to authenticate
+# it. Refused, as dormant configuration.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+    allowed_audiences: [vpay:v1]

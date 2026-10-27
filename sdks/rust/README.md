@@ -49,7 +49,8 @@ trusted by this client. There is no setting for that today.
 
 `/v1` never accepts an API key
 ([ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md)) and, since
-the signed-transport flag day (VP-3/VP-5), no bearer token either. A merchant
+the signed-transport flag day (VP-3/VP-5), no bearer token from this SDK either
+(a deployment may accept one from other callers, ADR-0037). A merchant
 is a registered **Ed25519 public key** (`merchant_clients[].cose_keys` in
 vpay's YAML); its server holds the matching seed. Concretely:
 

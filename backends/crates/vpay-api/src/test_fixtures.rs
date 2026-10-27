@@ -32,6 +32,7 @@ use vpay_db::Repositories;
 
 use crate::RouterDeps;
 use crate::envelope::{EnvelopeKeys, ManagementEnvelope, V1Envelope};
+use crate::merchant_keys::{MerchantKeyRegistry, MerchantKeyResolver};
 use crate::op::MerchantOp;
 use crate::op::keys::LoadedSigningKey;
 
@@ -199,6 +200,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 
@@ -229,12 +231,103 @@ pub(crate) fn merchant_op() -> Arc<MerchantOp> {
 /// failure, rather than a quiet pass. Proving the whole sealed round trip needs
 /// a real server and a real Postgres, which is
 /// `backends/tests/integration/tests/signed_transport.rs`.
+///
+/// When `config` permits `machine_tokens` it carries a bearer-token validator
+/// pointed at a dead loopback port, as `vpay-server`'s carries one pointed at
+/// its own listener: every token it is shown fails to validate (the JWKS cannot
+/// be fetched), which is what a test that never presents one wants. The ones
+/// that present a real token build their own with [`v1_envelope_with_tokens`].
 pub(crate) fn v1_envelope(config: &Config) -> V1Envelope {
-    V1Envelope::new(config, &fixture_keys(), lazy_repositories())
-        .expect("the fixture's merchants project onto a key registry")
+    let envelope = V1Envelope::new(config, &fixture_keys(), lazy_repositories())
+        .expect("the fixture's merchants project onto a key registry");
+    match config
+        .auth_methods()
+        .expect("the fixture's auth.methods is valid")
+        .permits(vpay_config::AuthMethod::MachineTokens)
+    {
+        true => envelope.with_machine_tokens(token_validator("http://127.0.0.1:1/jwks.json")),
+        false => envelope,
+    }
 }
 
-fn fixture_keys() -> EnvelopeKeys {
+/// [`v1_envelope`] whose bearer-token validator fetches `jwks_url`, over a
+/// kill switch that switches nobody off.
+///
+/// The kill switch is in memory because a token caller is checked against
+/// `disabled_clients` (ADR-0037), and over the lazy pool every such lookup
+/// would be a refused connection instead of an answer.
+pub(crate) fn v1_envelope_with_tokens(config: &Config, jwks_url: &str) -> V1Envelope {
+    let merchants = Arc::new(MerchantKeyResolver::new(
+        Arc::new(
+            MerchantKeyRegistry::from_config(config)
+                .expect("the fixture's merchants project onto a key registry"),
+        ),
+        Arc::new(MemoryKillSwitch::disabling(&[])),
+    ));
+    V1Envelope::with_resolver(config, &fixture_keys(), lazy_repositories(), merchants)
+        .expect("the fixture's merchants project onto a key registry")
+        .with_machine_tokens(token_validator(jwks_url))
+}
+
+/// The `disabled_clients` kill switch held in memory: a fake of the *port*
+/// ([`vpay_db::DisabledClients`]), in a `#[cfg(test)]` module, reachable from no
+/// shipping graph (`verify-no-mocks`). The real table's behaviour is proven
+/// against Postgres in `vpay-db`'s suite and `merchant_token_flow.rs`.
+pub(crate) struct MemoryKillSwitch(
+    std::sync::Mutex<std::collections::HashSet<String>>,
+    std::sync::atomic::AtomicUsize,
+);
+
+impl MemoryKillSwitch {
+    pub(crate) fn disabling(client_ids: &[&str]) -> Self {
+        Self(
+            std::sync::Mutex::new(client_ids.iter().map(|id| (*id).to_owned()).collect()),
+            std::sync::atomic::AtomicUsize::new(0),
+        )
+    }
+
+    /// How many times the switch has been asked, so a test can show that a
+    /// refusal reached its verdict without a query.
+    pub(crate) fn lookups(&self) -> usize {
+        self.1.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+#[async_trait::async_trait]
+impl vpay_db::DisabledClients for MemoryKillSwitch {
+    async fn is_client_disabled(&self, client_id: &str) -> Result<bool, vpay_db::DbError> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(self.0.lock().is_ok_and(|set| set.contains(client_id)))
+    }
+    async fn disable_client(
+        &self,
+        client_id: &str,
+        _: Option<&str>,
+    ) -> Result<(), vpay_db::DbError> {
+        if let Ok(mut set) = self.0.lock() {
+            set.insert(client_id.to_owned());
+        }
+        Ok(())
+    }
+    async fn enable_client(&self, client_id: &str) -> Result<(), vpay_db::DbError> {
+        if let Ok(mut set) = self.0.lock() {
+            set.remove(client_id);
+        }
+        Ok(())
+    }
+}
+
+/// The issuer every fixture token carries (`iss`) and the validator requires.
+pub(crate) const TOKEN_ISSUER: &str = "https://op.vpay.test";
+
+/// A `/v1` bearer-token validator over `jwks_url`: issuer [`TOKEN_ISSUER`],
+/// audience `vpay:v1`, built by the same function `vpay-server` calls.
+pub(crate) fn token_validator(jwks_url: &str) -> crate::resource_auth::JwtValidator {
+    crate::resource_auth::merchant_token_validator(jwks_url, Duration::from_secs(300), TOKEN_ISSUER)
+        .expect("the vendored-roots JWKS client builds")
+}
+
+pub(crate) fn fixture_keys() -> EnvelopeKeys {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let seed = |byte: u8| URL_SAFE_NO_PAD.encode([byte; 32]);
@@ -249,9 +342,38 @@ pub(crate) fn management_envelope(config: &Config) -> ManagementEnvelope {
         .expect("the fixture's registrations project onto key registries")
 }
 
+/// [`config_with_auth`] whose one merchant registration grants exactly `scopes`
+/// in its YAML.
+pub(crate) fn config_with_scopes(methods: Option<&[&str]>, scopes: &[&str]) -> Config {
+    let mut config = config_with_auth(methods);
+    for merchant in &mut config.merchant_clients {
+        merchant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+    }
+    config
+}
+
+/// [`config`] with `auth.methods` set to `methods` (`None` is the absent key:
+/// all four).
+pub(crate) fn config_with_auth(methods: Option<&[&str]>) -> Config {
+    let mut config = config();
+    config.auth.methods =
+        methods.map(|names| names.iter().map(|name| (*name).to_owned()).collect());
+    config
+}
+
 /// The same [`RouterDeps`] `vpay-server`'s `main` builds, with generated keys
-/// instead of Secret mounts.
+/// instead of Secret mounts, over the default `auth.methods` (all four).
 pub(crate) fn deps() -> RouterDeps {
+    deps_over(&config_with_auth(None), None)
+}
+
+/// [`deps`] for a deployment whose `auth.methods` is exactly `methods`.
+pub(crate) fn deps_with_auth(methods: &[&str]) -> RouterDeps {
+    deps_over(&config_with_auth(Some(methods)), None)
+}
+
+/// [`deps`] over `config`, with `/v1` built from `v1_envelope` when given.
+pub(crate) fn deps_over(config: &Config, v1_envelope_override: Option<V1Envelope>) -> RouterDeps {
     RouterDeps {
         repositories: lazy_repositories(),
         merchant_op: merchant_op(),
@@ -261,10 +383,10 @@ pub(crate) fn deps() -> RouterDeps {
         // test that belongs in `backends/tests/integration`.
         adapters: Arc::new(std::collections::BTreeMap::new()),
         resource_config: Arc::new(
-            crate::ResourceConfig::from_config(&config())
+            crate::ResourceConfig::from_config(config)
                 .expect("the fixture's rails project onto the port"),
         ),
-        v1_envelope: Some(v1_envelope(&config())),
+        v1_envelope: Some(v1_envelope_override.unwrap_or_else(|| v1_envelope(config))),
         // `None`, matching `config()`'s `dashboard: None`: this crate's own
         // tests are about `/v1`, and a fixture that mounted the console nests
         // would make every `/dash/v1` path in them answer `401` instead of the
@@ -333,5 +455,84 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
         management_envelope: Some(management_envelope(&config)),
         merchant_mcp: None,
         surfaces: resolved,
+    }
+}
+
+// ------------------------------------------------------------ bearer tokens --
+
+/// Real RSA material and a real JWKS server for the tests that present a
+/// bearer token: signing and verification are never stubbed, and the JWKS is
+/// fetched over HTTP from a local server, as in production.
+pub(crate) mod tokens {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use authkestra_resource::jwt::Jwk;
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use jsonwebtoken::{Algorithm, EncodingKey, Header};
+    use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
+    use rsa::traits::PublicKeyParts;
+    use serde_json::{Value, json};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    pub(crate) fn now_secs() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock is after the unix epoch")
+            .as_secs()
+    }
+
+    /// Generates a real 2048-bit RSA keypair and the JWK describing its public
+    /// half.
+    pub(crate) fn generate_keypair(kid: &str) -> (EncodingKey, Jwk) {
+        let mut rng = rand::rngs::OsRng;
+        let private_key =
+            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("rsa key generation succeeds");
+        let public_key = private_key.to_public_key();
+        let pem = private_key
+            .to_pkcs1_pem(LineEnding::LF)
+            .expect("pkcs1 pem encoding succeeds");
+        let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes())
+            .expect("jsonwebtoken accepts a pkcs1 rsa private-key pem");
+        // `Jwk` is `#[non_exhaustive]`, so it is built through its
+        // constructor; neither `use` nor `key_ops` is set, which is the shape
+        // vpay's own JWKS publishes.
+        let jwk = Jwk::rsa(
+            URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be()),
+            URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be()),
+        )
+        .with_kid(kid)
+        .with_alg("RS256");
+        (encoding_key, jwk)
+    }
+
+    /// Signs `claims` with `encoding_key`, stamping `kid` onto the header.
+    pub(crate) fn mint_token(encoding_key: &EncodingKey, kid: &str, claims: &Value) -> String {
+        let mut header = Header::new(Algorithm::RS256);
+        header.kid = Some(kid.to_string());
+        jsonwebtoken::encode(&header, claims, encoding_key).expect("signing succeeds")
+    }
+
+    /// The claims of a `/v1` token for `sub` carrying `scope`.
+    pub(crate) fn v1_claims(sub: &str, scope: &str) -> Value {
+        json!({
+            "iss": super::TOKEN_ISSUER,
+            "aud": vpay_config::MERCHANT_AUDIENCE,
+            "sub": sub,
+            "scope": scope,
+            "exp": now_secs() + 300,
+        })
+    }
+
+    /// Serves `{"keys": [jwk]}` at `/jwks.json` from a real local HTTP server.
+    pub(crate) async fn jwks_server(jwk: &Jwk) -> MockServer {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [jwk] })))
+            .mount(&server)
+            .await;
+        server
     }
 }

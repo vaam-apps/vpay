@@ -1,5 +1,12 @@
 # The signed `/v1` transport
 
+> **Since ADR-0037 (VPA-1) the invariant below holds for a deployment that
+> permits `keypair` alone, which is how vaam runs.** `auth.methods` chooses
+> which ways in `/v1` has; see ["Both ways, when the deployment permits it"](#both-ways-when-the-deployment-permits-it).
+> A config that does not name the key permits every method, so a bearer token
+> is accepted beside a signature unless the operator turns `machine_tokens`
+> off.
+
 ## The invariant
 
 > **No `/v1` request is handled unless it is a COSE_Sign1 message signed by a
@@ -153,13 +160,82 @@ none. The comparison reads the database's clock (ADR-0026). The sweep
 (the worker's `SweepExpired` job) deletes rows expired for more than five
 minutes (`ENVELOPE_NONCE_RETENTION`).
 
+## Both ways, when the deployment permits it
+
+[ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)
+makes the mode of `/v1`'s envelope a function of `auth.methods`
+([vpay-config.md](../reference/vpay-config.md#auth--which-ways-of-authenticating-a-deployment-permits-adr-0037)):
+
+```mermaid
+stateDiagram-v2
+    [*] --> Required: methods = keypair
+    [*] --> Optional: methods = keypair + machine_tokens
+    [*] --> Off: methods = machine_tokens
+    Required --> [*]: an unsigned request is the layer's coarse 401
+    Optional --> [*]: signed → opened, sealed answer · unsigned → bearer path, plain answer
+    Off --> [*]: a COSE body is 415 · unsigned → bearer path
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Caller
+    participant L as EnvelopeLayer
+    participant S as merchant_scope
+    participant H as /v1 handler
+    C->>L: signed request (COSE) or plain request
+    alt signed and verified
+        L->>S: VerifiedSigner recorded
+        alt Authorization header present too
+            S-->>C: 400, sealed (one caller, one credential)
+        else
+            S->>H: MerchantScope from the key's merchant
+            H-->>C: sealed answer
+        end
+    else unsigned, machine_tokens permitted
+        L->>S: no signer
+        S->>S: validate bearer (aud vpay:v1), client_id to tenant, scope
+        S->>H: MerchantScope from the token
+        H-->>C: plain JSON answer
+    else unsigned, machine_tokens not permitted
+        L-->>C: coarse 401 (Required)
+    end
+```
+
+- Under `Optional` the policy is a closure with the unresolved mode pinned to
+  `Required`, so a route the resolver cannot bind still fails closed and a
+  method the table does not serve is still the layer's own `405`.
+- **A signed request that fails to verify is the `401`, never downgraded** to the
+  bearer path, whatever it also carries.
+- A token caller's refusals are the Stripe-shaped plain ones the bearer
+  middleware gave before VP-3 (`missing_bearer_token`, `invalid_token`, `503`
+  when the JWKS cannot be read, `403` for a genuine token naming no registered
+  client or lacking the scope the method needs).
+- **A token caller is not protected the way a sealed one is**: answers are not
+  sealed (not even when the request asks for a sealed one with
+  `Cratestack-Nonce` and `Accept: application/cose`: the response seal policy is
+  "never" under `Optional`) and requests are not bound to a contract (the `426`
+  for an operation whose shape is gone does not reach them). It is **not** a
+  separate tenant of the replay protections: idempotency is keyed on
+  `(merchant_id, Idempotency-Key)`, so the same key from a signed and from a token
+  request of one merchant is one key, and no `/v1` handler keys a rate limit on
+  the credential. `disable_client` reaches a token caller on its next request, as
+  it reaches a signer (`401` `invalid_token`). The span of every `/v1` request
+  carries `auth.method = keypair | machine_token`.
+- **A signed request that also carries `Authorization` is `400` on every
+  deployment, `[keypair]` included.** It used to be ignored; see the upgrade note
+  in [ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md).
+- `GET /.well-known/vpay-auth` tells a client which methods the deployment
+  permits and serves, without a credential.
+
 ## Not in this page
 
 - **Refund destination confirmation's second signature.** `confirmRefundDestination`
   and money intents elsewhere carry an Authorization-key signature on top of the
   envelope; that is not built here.
-- **Removing the OP.** `/v1/oauth/*`, `jwks:` in a merchant registration and
-  `oauth_client_assertion_jtis` stay until VP-4. Nothing on `/v1` consults them.
+- **Removing the OP.** VP-4 would have deleted `/v1/oauth/*`; ADR-0037 keeps it
+  for a deployment that permits `machine_tokens`. With the method off it is not
+  mounted and `jwks:` in a merchant registration is refused.
 - **`curl`.** A request is a COSE message, not a header on an ordinary one, so
   `curl` cannot make one. `sdks/nodejs/scripts/vpay-call.mjs` makes one signed
   call from a shell, and [`examples/merchant-curl`](../../examples/merchant-curl/)

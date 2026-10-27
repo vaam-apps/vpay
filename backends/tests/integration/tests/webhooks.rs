@@ -1714,6 +1714,7 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 
@@ -1986,6 +1987,7 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

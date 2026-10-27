@@ -1,0 +1,20 @@
+# Fixture for `a_merchant_client_with_no_grant_types_is_rejected_while_tokens_are_permitted`
+# (backends/crates/vpay-config/src/config.rs). `grant_types` was a required
+# field until ADR-0037 let a keypair-only registration omit the OAuth half;
+# with `machine_tokens` permitted (the default) it is still required.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    allowed_audiences: ["vpay:v1"]

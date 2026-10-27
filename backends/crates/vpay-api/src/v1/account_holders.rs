@@ -665,6 +665,7 @@ mod tests {
             dashboard: None,
             service_clients: Vec::new(),
             routing: Default::default(),
+            auth: Default::default(),
         };
         Arc::new(
             ResourceConfig::from_config(&config).expect("the fixture rail projects onto the port"),

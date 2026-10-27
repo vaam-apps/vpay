@@ -42,7 +42,6 @@ use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::envelope::{EnvelopeKeys, ManagementEnvelope, V1Envelope};
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::JwtValidator;
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::oauth::{CoseKey, GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
@@ -443,6 +442,25 @@ pub(crate) fn router_deps_with(
     adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> RouterDeps {
     let v1_envelope = v1_envelope_for(config, &repositories);
+    // `vpay-server`'s `main` hands `/v1` a bearer-token validator over this
+    // process's own JWKS when `auth.methods` permits `machine_tokens`; the
+    // suites bind the issuer to the base URL they serve on, so the same URL
+    // is the one the validator fetches.
+    let v1_envelope = match config
+        .auth_methods()
+        .expect("the suite's auth.methods is valid")
+        .permits(vpay_config::AuthMethod::MachineTokens)
+    {
+        true => v1_envelope.with_machine_tokens(
+            vpay_api::resource_auth::merchant_token_validator(
+                format!("{}/jwks.json", merchant_op.issuer()),
+                Duration::from_secs(300),
+                merchant_op.issuer(),
+            )
+            .expect("the vendored-roots JWKS client builds"),
+        ),
+        false => v1_envelope,
+    };
     let management_envelope = management_envelope_for(config, &repositories);
     RouterDeps {
         repositories,
@@ -952,11 +970,11 @@ pub(crate) async fn serve_with_adapters(
     // a validator whose audience is the MCP resource and whose JWKS is this
     // server's own.
     if deps.surfaces.mcp {
-        let validator = JwtValidator::new(
+        let validator = vpay_api::resource_auth::mcp_token_validator(
             format!("{base_url}/v1/oauth/jwks.json"),
             Duration::from_secs(300),
             issuer.clone(),
-            vpay_api::mcp::merchant_resource(&base_url),
+            &base_url,
         )
         .expect("the vendored-roots JWKS client builds");
         let parts = vpay_api::mcp::MerchantMcpParts {

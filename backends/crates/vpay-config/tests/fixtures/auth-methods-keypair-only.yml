@@ -1,0 +1,29 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-1).
+#
+# The shape vaam runs: `keypair` alone, no OAuth half on the registration, no
+# webhooks. Must load.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+dashboard:
+  merchant_id: acme-cameroon-tenant
+
+service_clients:
+  - client_id: vaam
+    capabilities: [console_pairing]
+    cose_keys:
+      - public_key: PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw

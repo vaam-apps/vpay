@@ -1,0 +1,23 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-1).
+#
+# `methods:` with every list item commented out is a YAML null, not an absent
+# key. Absent permits all four; a null must not: an operator who meant to
+# narrow the list and emptied it would otherwise open every door (NoAuthMethods).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods:
+    # - keypair
+    # - hmac_webhooks
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci

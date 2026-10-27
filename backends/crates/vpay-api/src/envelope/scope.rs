@@ -14,12 +14,42 @@
 //! for [`MerchantScope`] and runs without this step gets a `500`
 //! (`MerchantScope`'s extractor), never another tenant.
 //!
-//! # The two answers, and why neither is a 401
+//! # Two credentials, one per request (ADR-0037)
+//!
+//! `auth.methods` decides which ways in exist. A request that verified under a
+//! registered key is a **signer** and resolves through the merchant key
+//! registry. One that did not may be a **token caller** when `machine_tokens`
+//! is permitted: its bearer token is validated (audience `vpay:v1`, this
+//! deployment's issuer) and its `client_id` resolves to a tenant through the
+//! YAML, exactly as the bearer middleware did before VP-3. A request that is
+//! both is refused `400`: one caller, one credential.
+//!
+//! | Situation | Answer |
+//! |---|---|
+//! | a [`VerifiedSigner`] **and** an `Authorization` header | `400`, sealed |
+//! | no [`VerifiedSigner`], no `Authorization`, `machine_tokens` permitted | `401` `missing_bearer_token`, plain |
+//! | no [`VerifiedSigner`], a token that does not validate | `401` `invalid_token`, plain; `503` when the JWKS cannot be read |
+//! | no [`VerifiedSigner`], a valid token naming no registered client | `403` `forbidden`, plain; asked first, from memory, so it costs no query |
+//! | no [`VerifiedSigner`], a valid token whose client is switched off in `disabled_clients` | `401` `invalid_token`, plain; the database's own error if the lookup fails |
+//! | a valid token none of whose scopes, held to the registration's current YAML `scopes`, the method needs | `403` `forbidden`, plain |
+//!
+//! A token's scopes are the intersection of its own `scope` claim and the
+//! registration's `scopes` in the YAML this process loaded
+//! ([`ResourceConfig::token_holds`]), the same source the signed path reads: a
+//! scope removed from the YAML and applied by a restart takes effect for tokens
+//! minted before it.
+//!
+//! A token caller's answers are plain JSON, as they were before VP-3; they are
+//! unsealed and not bound to a contract (the `426` for an operation whose
+//! shape is gone is a sealed caller's protection), which is the trade a
+//! deployment makes by permitting the method.
+//!
+//! # The other answers, and why none is a 401
 //!
 //! | Situation | Answer |
 //! |---|---|
 //! | no [`VerifiedSigner`], method `OPTIONS` | axum's own `405` with `Allow`: the one request the layer lets through unsigned (a CORS preflight), and no `/v1` handler answers it |
-//! | no [`VerifiedSigner`], any other method | `500` — the layer is not in front of this route |
+//! | no [`VerifiedSigner`], any other method, `machine_tokens` not permitted | `500` — the layer is not in front of this route |
 //! | the key resolves to no enabled merchant | `403` `forbidden`, sealed |
 //! | the merchant's YAML scopes carry none the method needs | `403` `forbidden`, sealed |
 //! | the `disabled_clients` lookup failed | the database's own error, sealed |
@@ -43,29 +73,49 @@ use std::sync::Arc;
 
 use axum::body::Body;
 use axum::extract::{Request, State};
-use axum::http::Method;
+use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use cratestack_core::VerifiedSigner;
 
 use crate::ApiError;
 use crate::merchant_keys::MerchantKeyResolver;
-use crate::v1::{MerchantScope, required_scopes};
+use crate::resource_auth::{AuthRejection, JwtValidator, extract_bearer_token};
+use crate::v1::{MerchantScope, ResourceConfig, required_scopes};
 
-/// The middleware. Mounted with
-/// `from_fn_with_state(Arc<MerchantKeyResolver>, merchant_scope)` directly
-/// around the `/v1` routes, inside the envelope.
+/// The `auth.method` span field's two values on `/v1` (ADR-0037, tracing
+/// only: no policy reads it).
+const AUTH_METHOD_FIELD: &str = "auth.method";
+const AUTH_METHOD_KEYPAIR: &str = "keypair";
+const AUTH_METHOD_MACHINE_TOKEN: &str = "machine_token";
+
+/// What the scope step reads: the signer registry, and — when `auth.methods`
+/// permits `machine_tokens` — the bearer-token validator and the YAML map from
+/// a token's `client_id` to its tenant.
+#[derive(Clone)]
+pub(crate) struct ScopeState {
+    pub(crate) merchants: Arc<MerchantKeyResolver>,
+    pub(crate) machine_tokens: bool,
+    pub(crate) validator: Option<JwtValidator>,
+    pub(crate) resource_config: Arc<ResourceConfig>,
+}
+
+/// The middleware. Mounted with `from_fn_with_state(ScopeState, merchant_scope)`
+/// directly around the `/v1` routes, inside the envelope.
 pub(crate) async fn merchant_scope(
-    State(merchants): State<Arc<MerchantKeyResolver>>,
+    State(state): State<ScopeState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
     let (mut parts, body) = request.into_parts();
 
-    let Some(signer) = parts.extensions.get::<VerifiedSigner>() else {
-        // The one request the layer lets through with no signature is a
-        // bodiless `OPTIONS` (cratestack 0.16.0 passes it for a CORS
-        // preflight). `route_layer` wraps a method router's own `405`
+    let signer = parts.extensions.get::<VerifiedSigner>().cloned();
+    let has_authorization = parts.headers.contains_key(header::AUTHORIZATION);
+
+    let Some(signer) = signer else {
+        // The one request the layer lets through with no signature, under
+        // `Required`, is a bodiless `OPTIONS` (cratestack 0.16.0 passes it for
+        // a CORS preflight). `route_layer` wraps a method router's own `405`
         // fallback, so it arrives here; no `/v1` handler answers `OPTIONS`,
         // so what it reaches is axum's `405` with `Allow`, which is the honest
         // answer to a method the surface does not serve and which no browser
@@ -75,15 +125,34 @@ pub(crate) async fn merchant_scope(
         if parts.method == Method::OPTIONS {
             return next.run(Request::from_parts(parts, body)).await;
         }
-        return ApiError::Internal(
-            "a /v1 request reached the merchant scope step with no VerifiedSigner: the \
-             envelope layer is not mounted in front of this route"
-                .to_owned(),
-        )
-        .into_response();
+        if !state.machine_tokens {
+            return ApiError::Internal(
+                "a /v1 request reached the merchant scope step with no VerifiedSigner: the \
+                 envelope layer is not mounted in front of this route"
+                    .to_owned(),
+            )
+            .into_response();
+        }
+        return token_scope(&state, parts, body, next).await;
     };
 
-    let merchant = match merchants.merchant_for_thumbprint(signer.thumbprint()).await {
+    // One caller, one credential: a request that proved a key and also
+    // presents a bearer token is ambiguous about who is asking, and the
+    // answer to ambiguity is to refuse, not to pick.
+    if has_authorization {
+        return ApiError::invalid_param(
+            "authorization",
+            "A request is authenticated by its signature or by a bearer token, never both. \
+             Remove the Authorization header from a signed request.",
+        )
+        .into_response();
+    }
+
+    let merchant = match state
+        .merchants
+        .merchant_for_thumbprint(signer.thumbprint())
+        .await
+    {
         Ok(Some(merchant)) => merchant,
         Ok(None) => {
             tracing::warn!(
@@ -112,8 +181,87 @@ pub(crate) async fn merchant_scope(
         return ApiError::Forbidden.into_response();
     }
 
+    tracing::Span::current().record(AUTH_METHOD_FIELD, AUTH_METHOD_KEYPAIR);
     parts
         .extensions
         .insert(MerchantScope::for_signed(merchant.merchant_id));
+    next.run(Request::from_parts(parts, body)).await
+}
+
+/// The bearer-token half: an unsigned request on a deployment that permits
+/// `machine_tokens`. It is what `require_merchant_token` was for `/v1` until
+/// VP-3 — validate once, map the `client_id` to a tenant, check the scope the
+/// method needs — with a `403` rather than a `401` for a genuine token that
+/// names no registered client, for the reason that middleware gave: the
+/// credential is real, and there is no tenant it may act on.
+async fn token_scope(
+    state: &ScopeState,
+    mut parts: axum::http::request::Parts,
+    body: Body,
+    next: Next,
+) -> Response {
+    let Some(validator) = &state.validator else {
+        return ApiError::Internal(
+            "auth.methods permits machine_tokens but this router was assembled with no bearer \
+             token validator for /v1; refusing every unsigned request"
+                .to_owned(),
+        )
+        .into_response();
+    };
+    let claims = match extract_bearer_token(&parts) {
+        Ok(token) => match validator.validate(token).await {
+            Ok(claims) => claims,
+            Err(rejection) => return ApiError::from(rejection).into_response(),
+        },
+        Err(rejection) => return ApiError::from(rejection).into_response(),
+    };
+
+    // The registration first, from memory, so a token naming a client this
+    // deployment never registered costs no query (and the answer for it is the
+    // `403` it always was, whatever the kill switch holds).
+    let Some(merchant_id) = state.resource_config.merchant_id_for(&claims.subject) else {
+        tracing::warn!(
+            client_id = %claims.subject,
+            "a validly signed /v1 token names a client this deployment has no registration for; \
+             refusing rather than guessing a tenant"
+        );
+        return ApiError::Forbidden.into_response();
+    };
+
+    // The kill switch, on the same footing as the signed path's: a token minted
+    // before `disable_client` is otherwise good until it expires. A lookup that
+    // fails is an error, not a miss. The refusal is the signed path's
+    // too, a credential that is no longer anyone's (`401`, not `403`: the
+    // registration is switched off, not absent).
+    match state.merchants.is_disabled(&claims.subject).await {
+        Ok(false) => {}
+        Ok(true) => return ApiError::from(AuthRejection::InvalidToken).into_response(),
+        Err(error) => return ApiError::from(error).into_response(),
+    }
+    let scope = MerchantScope::for_token(merchant_id.to_owned());
+
+    // The scopes are the registration's as the YAML reads now, intersected with
+    // the token's own: the signed path above reads the YAML alone, so a scope
+    // removed there reaches a token minted before the change on the next
+    // restart.
+    let required = required_scopes(&parts.method);
+    if !required
+        .iter()
+        .any(|needed| state.resource_config.token_holds(&claims, needed))
+    {
+        tracing::warn!(
+            client_id = %claims.subject,
+            method = %parts.method,
+            granted = ?claims.scope,
+            required = ?required,
+            "a /v1 token, held to its registration's current scopes, carries none this request \
+             needs; refusing"
+        );
+        return ApiError::Forbidden.into_response();
+    }
+
+    tracing::Span::current().record(AUTH_METHOD_FIELD, AUTH_METHOD_MACHINE_TOKEN);
+    parts.extensions.insert(claims);
+    parts.extensions.insert(scope);
     next.run(Request::from_parts(parts, body)).await
 }

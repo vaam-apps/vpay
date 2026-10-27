@@ -87,6 +87,13 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        // `keypair` alone: this suite is about `Required`, where an unsigned
+        // request, a bearer token and a replay are one coarse `401`. The default
+        // (every method) accepts a bearer token beside a signature, which
+        // `merchant_token_flow.rs` holds to its own account.
+        auth: vpay_config::AuthConfig {
+            methods: Some(vec!["keypair".to_owned()]),
+        },
     }
 }
 

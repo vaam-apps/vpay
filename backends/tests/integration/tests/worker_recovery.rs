@@ -273,6 +273,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

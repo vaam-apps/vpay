@@ -140,6 +140,8 @@ pub mod provider_callback;
 // Bearer-token validation, for the merchant MCP endpoint alone (ADR-0033).
 pub mod resource_auth;
 // The routes a registered service calls (VP-6a): pair and revoke a console key.
+#[cfg(test)]
+mod auth_methods_tests;
 pub mod svc;
 #[cfg(test)]
 mod test_fixtures;
@@ -304,8 +306,9 @@ pub struct RouterDeps {
     /// turns the key a request verified under into a tenant and its scopes.
     ///
     /// Replaces what was here until VP-3, a bearer-token validator pointed at
-    /// this process's own JWKS: `/v1` no longer reads an `Authorization`
-    /// header at all.
+    /// this process's own JWKS: `/v1` reads an `Authorization` header only when
+    /// `auth.methods` permits `machine_tokens` (ADR-0037), and then through the
+    /// validator [`envelope::V1Envelope::with_machine_tokens`] carries.
     ///
     /// `Option` because a process that does not mount `/v1`
     /// (`deployment.surfaces` without `business`) has no use for the
@@ -463,6 +466,30 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
+/// Where a client learns which ways of authenticating this deployment
+/// permits (ADR-0037).
+pub const AUTH_DISCOVERY_PATH: &str = "/.well-known/vpay-auth";
+
+/// `GET /.well-known/vpay-auth`: `{"methods": ["keypair", ...]}`, the methods
+/// this deployment permits **and serves** (`AuthMethods::served`: permitted
+/// minus `human_login`, which no release serves yet). It lists what the
+/// deployment offers, not what any one merchant can use: a merchant registered
+/// with `cose_keys` alone cannot use a token on a deployment that lists
+/// `machine_tokens`.
+///
+/// Nothing secret and nothing per-caller: it is the YAML's `auth.methods`
+/// resolved, so a console reads it instead of a second switch that could
+/// disagree with the server's.
+async fn auth_discovery(State(state): State<AppState>) -> impl IntoResponse {
+    let methods: Vec<&'static str> = state
+        .resource_config
+        .auth_methods()
+        .served()
+        .map(vpay_config::AuthMethod::as_str)
+        .collect();
+    axum::Json(json!({ "methods": methods }))
+}
+
 /// Honest 404 for every unimplemented route, naming vpay rather than pretending
 /// to be Stripe.
 ///
@@ -522,6 +549,9 @@ fn make_request_span(request: &Request<Body>) -> Span {
         method = %request.method(),
         path = request.uri().path(),
         request_id = %request_id,
+        // Filled by the `/v1` scope step once it knows how the caller proved
+        // who it is: `keypair` or `machine_token` (ADR-0037). Tracing only.
+        auth.method = tracing::field::Empty,
     )
 }
 
@@ -1018,7 +1048,20 @@ pub fn router(deps: RouterDeps) -> Router {
             get(op::token::discovery_handler),
         )
         .route("/jwks.json", get(op::jwks::jwks_handler));
-    let oauth = match surfaces.business {
+    // **`auth.methods` decides it too (ADR-0037, VPA-1).** `/token` is how a
+    // machine token is minted, so a deployment that does not permit
+    // `machine_tokens` mounts no `/token`, and `/v1/oauth/token` is the honest
+    // 404 below. The discovery pair is mounted only where something reads it:
+    // a deployment that mints tokens, or the MCP endpoint's validator
+    // (`validates_tokens`). MCP implies `machine_tokens` at boot
+    // (`ConfigError::McpNeedsMachineTokens`).
+    let machine_tokens = state
+        .resource_config
+        .auth_methods()
+        .permits(vpay_config::AuthMethod::MachineTokens);
+    let mints_tokens = surfaces.business && machine_tokens;
+    let validates_tokens = surfaces.mcp && machine_tokens;
+    let oauth = match mints_tokens {
         true => oauth.route("/token", post(op::token::token_handler)),
         // Not mounted at all, so the nest's own `.fallback` answers the honest
         // 404 rather than a refusal — the same fail-closed answer `/v1` and
@@ -1065,7 +1108,7 @@ pub fn router(deps: RouterDeps) -> Router {
             // with no signer is still the `MerchantScope` extractor's 500, so
             // the boundary has not moved.
             .route_layer(from_fn_with_state(
-                envelope.merchants(),
+                envelope.scope_state(Arc::clone(&state.resource_config)),
                 envelope::scope::merchant_scope,
             ))
             // Inside the envelope, on purpose, and with the same constant as
@@ -1202,6 +1245,10 @@ pub fn router(deps: RouterDeps) -> Router {
 
     let router = Router::new()
         .route("/healthz", get(healthz))
+        // Unauthenticated and outside every envelope: a console or an SDK
+        // asks which ways in this deployment offers before it has a
+        // credential to present (ADR-0037).
+        .route(AUTH_DISCOVERY_PATH, get(auth_discovery))
         .fallback(not_found)
         // **Before every nest below, and that ordering is the whole reason
         // a `/v1` request is not counted twice**: `Router::layer` wraps the
@@ -1219,7 +1266,7 @@ pub fn router(deps: RouterDeps) -> Router {
     // the chain is not an `Option`-shaped expression, and writing it as one
     // would need a `Router` identity to merge against, which is exactly the
     // thing a reader would then have to check does nothing.
-    let router = match (surfaces.business || surfaces.mcp).then_some(oauth) {
+    let router = match (mints_tokens || validates_tokens).then_some(oauth) {
         Some(oauth) => router.nest("/v1/oauth", oauth),
         None => router,
     };
@@ -1346,12 +1393,34 @@ mod tests {
     }
 
     async fn request(method: &str, uri: &str, headers: &[(&str, &str)]) -> Response {
+        request_on(router(deps()), method, uri, headers).await
+    }
+
+    /// [`request`] against a deployment whose `auth.methods` is `[keypair]`:
+    /// `/v1` is `Required`, which is what the tests about the layer's own
+    /// refusals describe. The default (all four) accepts a bearer token beside
+    /// a signature, and answers an unsigned request from the token path.
+    async fn request_keypair_only(method: &str, uri: &str, headers: &[(&str, &str)]) -> Response {
+        request_on(
+            router(crate::test_fixtures::deps_with_auth(&["keypair"])),
+            method,
+            uri,
+            headers,
+        )
+        .await
+    }
+
+    async fn request_on(
+        app: Router,
+        method: &str,
+        uri: &str,
+        headers: &[(&str, &str)],
+    ) -> Response {
         let mut builder = Request::builder().method(method).uri(uri);
         for (name, value) in headers {
             builder = builder.header(*name, *value);
         }
-        router(deps())
-            .oneshot(builder.body(Body::empty()).expect("valid request"))
+        app.oneshot(builder.body(Body::empty()).expect("valid request"))
             .await
             .expect("router does not fail to serve")
     }
@@ -1678,7 +1747,7 @@ mod tests {
         for route in V1_ROUTES {
             for method in route.methods {
                 let path = format!("/v1{}", route.path.replace("{id}", "pi_x"));
-                let response = request(method, &path, &[]).await;
+                let response = request_keypair_only(method, &path, &[]).await;
                 assert_eq!(
                     response.status(),
                     StatusCode::UNAUTHORIZED,
@@ -1744,7 +1813,8 @@ mod tests {
     async fn a_bearer_token_buys_nothing_on_v1() {
         for header in ["Bearer abc.def.ghi", "Basic dXNlcjpwdw==", "garbage"] {
             let response =
-                request("GET", "/v1/payment_intents", &[("authorization", header)]).await;
+                request_keypair_only("GET", "/v1/payment_intents", &[("authorization", header)])
+                    .await;
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{header}");
             assert_coarse_unsigned_401(response, header).await;
         }
@@ -1826,7 +1896,7 @@ mod tests {
         // Asked for JSON, which is what a curl user would ask for; the layer's
         // refusal otherwise follows its own default (CBOR), another way it is
         // not the Stripe envelope.
-        let response = request(
+        let response = request_keypair_only(
             "GET",
             "/v1/payment_intents",
             &[("accept", "application/json")],

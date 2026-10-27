@@ -1,13 +1,19 @@
-//! Resource-server JWT validation for the one bearer-token surface vpay still
-//! has: the merchant MCP endpoint, `POST /mcp/v1` (ADR-0033).
+//! Resource-server JWT validation for the two bearer-token surfaces vpay has:
+//! the merchant MCP endpoint, `POST /mcp/v1` (ADR-0033), and, on a deployment
+//! whose `auth.methods` permits `machine_tokens`, `/v1` beside a signed request
+//! (ADR-0037).
 //!
-//! `/v1` is a signed transport (`crate::envelope`, VP-3) and the console's
-//! `/dash/v1` and `/svc/v1` are signed too (VP-6a), so this module no longer
-//! guards either: `Surface`, the dashboard validator and the dashboard
-//! extractor are deleted with the staff sessions. What remains is
+//! The console's `/dash/v1` and `/svc/v1` are signed only (VP-6a), so this
+//! module no longer guards either: `Surface`, the dashboard validator and the
+//! dashboard extractor are deleted with the staff sessions. What remains is
 //! [`JwtValidator`] and the [`ResourceClaims`] it returns, which
-//! [`crate::mcp`] builds its `McpAuthenticator` from. The token comes from
-//! vpay's own OP (`/v1/oauth/token`) with the MCP resource as audience.
+//! [`crate::mcp`] builds its `McpAuthenticator` from and
+//! [`crate::envelope`]'s scope step checks a `/v1` token with. The token comes
+//! from vpay's own OP (`/v1/oauth/token`), and **which audience it carries
+//! decides which door it opens**: [`merchant_token_validator`] and
+//! [`mcp_token_validator`] are the two ways a binary builds a validator, so the
+//! audience a deployment ships with is a value these tests hold and not one
+//! `vpay-server` types a second time.
 //!
 //! Validation is local: `crate::jwks_cache` (private) caches the JWKS and every
 //! check after the first verifies the signature from memory. The one input that
@@ -25,6 +31,8 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use authkestra_resource::jwt::ValidationError;
+use axum::http::header;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use jsonwebtoken::{Algorithm, Validation, decode_header};
 use serde::Deserialize;
@@ -296,6 +304,92 @@ impl IntoResponse for AuthRejection {
     fn into_response(self) -> Response {
         ApiError::from(self).into_response()
     }
+}
+
+/// The bearer token of a request, or the reason there is none.
+///
+/// Header parsing and the rejection vocabulary belong together, so this stays
+/// in the crate: nothing outside it has business turning an `Authorization`
+/// header into anything but a rejection or a validated [`ResourceClaims`].
+/// The `/v1` scope step ([`crate::envelope::scope`]) calls it once per
+/// request, for a caller that did not sign.
+pub(crate) fn extract_bearer_token(parts: &Parts) -> Result<&str, AuthRejection> {
+    let value = parts
+        .headers
+        .get(header::AUTHORIZATION)
+        .ok_or(AuthRejection::MissingHeader)?
+        .to_str()
+        .map_err(|_error| AuthRejection::MalformedHeader)?;
+
+    let token = value
+        .strip_prefix("Bearer ")
+        .ok_or(AuthRejection::MalformedHeader)?
+        .trim();
+
+    if token.is_empty() {
+        return Err(AuthRejection::MalformedHeader);
+    }
+
+    Ok(token)
+}
+
+/// The `/v1` bearer-token validator (ADR-0037): the JWKS at `jwks_url`, tokens
+/// issued by `issuer`, and [`vpay_config::MERCHANT_AUDIENCE`] (`vpay:v1`) as the
+/// **only** audience.
+///
+/// A token minted for the MCP resource is refused here, and a `vpay:v1` token is
+/// refused by [`mcp_token_validator`]. `vpay-server`, the integration suites and
+/// the unit fixtures all build their `/v1` validator through this function, so
+/// a wrong audience or issuer cannot ship while a test passes against a copy.
+///
+/// # Errors
+///
+/// [`HttpClientError`] if the JWKS client cannot be built, as
+/// [`JwtValidator::new`].
+///
+/// ```
+/// use std::time::Duration;
+///
+/// let validator = vpay_api::resource_auth::merchant_token_validator(
+///     "http://127.0.0.1:8080/v1/oauth/jwks.json",
+///     Duration::from_secs(300),
+///     "https://api.example.test/v1/oauth",
+/// );
+/// assert!(validator.is_ok());
+/// ```
+pub fn merchant_token_validator(
+    jwks_url: impl Into<String>,
+    jwks_refresh_interval: Duration,
+    issuer: impl Into<String>,
+) -> Result<JwtValidator, HttpClientError> {
+    JwtValidator::new(
+        jwks_url,
+        jwks_refresh_interval,
+        issuer,
+        vpay_config::MERCHANT_AUDIENCE,
+    )
+}
+
+/// The merchant MCP endpoint's validator (ADR-0033 D9): as
+/// [`merchant_token_validator`], with [`crate::mcp::merchant_resource`] of
+/// `public_base_url` as the only audience. A merchant client lists that
+/// identifier in its `allowed_audiences` to opt in.
+///
+/// # Errors
+///
+/// [`HttpClientError`] as [`JwtValidator::new`].
+pub fn mcp_token_validator(
+    jwks_url: impl Into<String>,
+    jwks_refresh_interval: Duration,
+    issuer: impl Into<String>,
+    public_base_url: &str,
+) -> Result<JwtValidator, HttpClientError> {
+    JwtValidator::new(
+        jwks_url,
+        jwks_refresh_interval,
+        issuer,
+        crate::mcp::merchant_resource(public_base_url),
+    )
 }
 
 /// Validates bearer tokens for exactly one audience: one JWKS cache, one
@@ -580,19 +674,14 @@ impl JwtValidator {
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use authkestra_resource::jwt::Jwk;
-    use base64::Engine as _;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{EncodingKey, Header};
-    use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
-    use rsa::traits::PublicKeyParts;
     use serde_json::{Value, json};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::MockServer;
 
     use super::*;
+    use crate::test_fixtures::tokens::{generate_keypair, jwks_server, mint_token, now_secs};
 
     const ISSUER: &str = "https://op.vpay.test";
 
@@ -602,51 +691,6 @@ mod tests {
     /// generation is the slow part of this test module; sharing keeps the
     /// suite fast without making any test's signature verification fake.
     static KEYPAIR: LazyLock<(EncodingKey, Jwk)> = LazyLock::new(|| generate_keypair("test-key-1"));
-
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the unix epoch")
-            .as_secs()
-    }
-
-    /// Generates a real 2048-bit RSA keypair and the JWK describing its
-    /// public half, so every test in this module signs and verifies against
-    /// actual cryptographic material — never a stubbed decoder.
-    fn generate_keypair(kid: &str) -> (EncodingKey, Jwk) {
-        let mut rng = rand::rngs::OsRng;
-        let private_key =
-            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("rsa key generation succeeds");
-        let public_key = private_key.to_public_key();
-
-        let pem = private_key
-            .to_pkcs1_pem(LineEnding::LF)
-            .expect("pkcs1 pem encoding succeeds");
-        let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes())
-            .expect("jsonwebtoken accepts a pkcs1 rsa private-key pem");
-
-        // `Jwk` is `#[non_exhaustive]` since authkestra 0.6, so a test builds
-        // it through the constructor rather than a struct literal. `use` and
-        // `key_ops` stay unset: since 0.10 a key carrying either must allow
-        // signature verification, and a key carrying neither is accepted,
-        // which is the shape vpay's own JWKS publishes.
-        let jwk = Jwk::rsa(
-            URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be()),
-            URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be()),
-        )
-        .with_kid(kid)
-        .with_alg("RS256");
-
-        (encoding_key, jwk)
-    }
-
-    /// Signs `claims` with `encoding_key`, stamping `kid` onto the header —
-    /// exactly what the JWKS cache and `validate_with_jwks` key their lookup on.
-    fn mint_token(encoding_key: &EncodingKey, kid: &str, claims: &Value) -> String {
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(kid.to_string());
-        jsonwebtoken::encode(&header, claims, encoding_key).expect("signing succeeds")
-    }
 
     fn valid_claims(aud: &str, sub: &str, scope: &str) -> Value {
         json!({
@@ -658,33 +702,70 @@ mod tests {
         })
     }
 
-    /// Serves `{"keys": [jwk]}` at `/jwks.json` from a real local HTTP
-    /// server (wiremock), so `JwksCache` performs a real fetch — never an
-    /// injected/faked `Jwks` value. Per ADR-0006 (blessed by this crate's
-    /// own AGENTS.md as the pattern for a stubbed dependency in tests).
-    async fn jwks_server(jwk: &Jwk) -> MockServer {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/jwks.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [jwk] })))
-            .mount(&server)
-            .await;
-        server
-    }
-
     /// An audience that is not the MCP resource's: the registered client's own
     /// id, which is what a token request that names no `resource` comes back
     /// with.
     const OTHER_AUDIENCE: &str = "vpay-other-client";
 
+    const PUBLIC_BASE_URL: &str = "https://api.vpay.test";
+
     fn merchant_validator(jwks_url: String) -> JwtValidator {
-        JwtValidator::new(
-            jwks_url,
-            Duration::from_secs(300),
-            ISSUER,
-            vpay_config::MERCHANT_AUDIENCE,
-        )
-        .expect("the vendored-roots JWKS client builds")
+        merchant_token_validator(jwks_url, Duration::from_secs(300), ISSUER)
+            .expect("the vendored-roots JWKS client builds")
+    }
+
+    fn mcp_validator(jwks_url: String) -> JwtValidator {
+        mcp_token_validator(jwks_url, Duration::from_secs(300), ISSUER, PUBLIC_BASE_URL)
+            .expect("the vendored-roots JWKS client builds")
+    }
+
+    /// The two doors are told apart by audience alone, and both constructors are
+    /// the ones the binary ships: a `vpay:v1` token opens `/v1` and not the MCP
+    /// endpoint, an MCP-resource token the reverse, and each validator also
+    /// pins its issuer.
+    #[tokio::test]
+    async fn a_v1_token_is_refused_by_mcp_and_an_mcp_token_by_v1() {
+        let (encoding_key, jwk) = &*KEYPAIR;
+        let server = jwks_server(jwk).await;
+        let url = format!("{}/jwks.json", server.uri());
+        let v1 = merchant_validator(url.clone());
+        let mcp = mcp_validator(url);
+        let mint = |aud: &str| {
+            mint_token(
+                encoding_key,
+                "test-key-1",
+                &valid_claims(aud, "merchant-123", "payments:write"),
+            )
+        };
+        let v1_token = mint(vpay_config::MERCHANT_AUDIENCE);
+        let mcp_token = mint(&crate::mcp::merchant_resource(PUBLIC_BASE_URL));
+
+        v1.validate(&v1_token).await.expect("/v1 takes its own");
+        mcp.validate(&mcp_token).await.expect("MCP takes its own");
+        assert!(matches!(
+            v1.validate(&mcp_token).await,
+            Err(AuthRejection::InvalidToken)
+        ));
+        assert!(matches!(
+            mcp.validate(&v1_token).await,
+            Err(AuthRejection::InvalidToken)
+        ));
+
+        let foreign_issuer = mint_token(
+            encoding_key,
+            "test-key-1",
+            &json!({
+                "iss": "https://elsewhere.test",
+                "aud": vpay_config::MERCHANT_AUDIENCE,
+                "sub": "merchant-123",
+                "scope": "payments:write",
+                "exp": now_secs() + 300,
+            }),
+        );
+        assert!(matches!(
+            v1.validate(&foreign_issuer).await,
+            Err(AuthRejection::InvalidToken)
+        ));
     }
 
     #[tokio::test]

@@ -49,10 +49,14 @@ not.
 Bearer` header and no signature is refused.
 3. **the `401`** — the same `/v1` path with no signature at all, vpay's coarse
    unsigned `401`, so the authentication boundary is visibly real.
-4. **the outcome table** — below.
-5. **one hosted and one embedded Checkout Session**, read back and printed as a
-   merchant would use them. It stops there: this program has no browser.
-6. **`GET /v1/account_holders`** — the three-way answer a name lookup has.
+
+Steps 2 and 3 depend on `auth.methods` ([ADR-0037](../../docs/adr/0037-authentication-methods-are-deployment-configuration.md)):
+**the demo stack runs keypair-only** (`[keypair, hmac_webhooks]`, written into
+`.e2e/application-demo.yml` by `just gen-demo-keys`), and there a bearer token
+is not a credential. A deployment that also permits `machine_tokens` — which is
+what an absent `auth.methods` means — accepts a token beside a signature, answers
+both requests from the token path, and these two steps fail saying so. 4. **the outcome table** — below. 5. **one hosted and one embedded Checkout Session**, read back and printed as a
+merchant would use them. It stops there: this program has no browser. 6. **`GET /v1/account_holders`** — the three-way answer a name lookup has.
 
 ## The outcome table
 
@@ -178,8 +182,8 @@ The private key the demo reads is a throwaway generated per checkout by `just
 gen-demo-keys` into git-ignored `.e2e/`. Its public half is registered in
 `.e2e/application-demo.yml`, which `compose.demo.yml` mounts into the server as
 the `demo` profile overlay. Nothing here is reusable as a credential anywhere
-else, and neither the access token nor the webhook secret is ever printed.
+else, and the webhook secret is never printed.
 
 See the module documentation in [`src/main.rs`](src/main.rs) for what each step
-proves, and why step 2 performs its own token exchange instead of going through
-`vpay_sdk::Client`.
+proves, and why steps 2 and 3 use a plain HTTP client instead of
+`vpay_sdk::Client` (the SDK always signs).
