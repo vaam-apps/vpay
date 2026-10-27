@@ -270,6 +270,17 @@ fn verify_possession(
         .map_err(|_| ConsoleKeyError::ProofRejected)
 }
 
+/// Whether `issued_at` is further than [`PROOF_MAX_SKEW_SECS`] from `now`.
+///
+/// `abs_diff`, not `(now - issued_at).abs()`: `issued_at` is the caller's
+/// number, and a subtraction of two `i64`s overflows for a chosen one (it
+/// panics in a debug build; in release `now - 2^63` wraps to `i64::MIN`, whose
+/// `abs()` is itself, negative, and so never exceeds the window). The unsigned
+/// distance between two `i64`s always fits a `u64`.
+fn is_stale(now: i64, issued_at: i64) -> bool {
+    now.abs_diff(issued_at) > PROOF_MAX_SKEW_SECS.unsigned_abs()
+}
+
 /// Everything about a pairing request that can be decided without the
 /// database: the key is a P-256 point, `issued_at` is within
 /// [`PROOF_MAX_SKEW_SECS`] of `now`, and the signature over
@@ -286,7 +297,7 @@ pub fn check_proof(
     now: OffsetDateTime,
 ) -> Result<ParsedConsoleKey, ConsoleKeyError> {
     let key = parse_public_key(public_key)?;
-    if (now.unix_timestamp() - issued_at).abs() > PROOF_MAX_SKEW_SECS {
+    if is_stale(now.unix_timestamp(), issued_at) {
         return Err(ConsoleKeyError::Stale);
     }
     verify_possession(&key, issued_at, proof)?;
@@ -677,6 +688,43 @@ mod tests {
                 "{offset}"
             );
         }
+    }
+
+    /// `issued_at` is the caller's number. Whatever it is, it is stale or fresh
+    /// by an unsigned distance, never by a subtraction that can overflow:
+    /// `now - 2^63` is the value for which `(now - issued_at).abs()` wrapped to
+    /// `i64::MIN` and the window never closed.
+    #[test]
+    fn an_issued_at_chosen_to_overflow_the_subtraction_is_stale_not_fresh() {
+        let now = OffsetDateTime::now_utc();
+        let at = now.unix_timestamp();
+        let key = signing_key(8);
+        let public = public_text(&key);
+
+        for issued_at in [
+            i64::MIN,
+            i64::MAX,
+            // `now - 2^63`: representable, and the one the old code wrapped on.
+            at + i64::MIN,
+            at - i64::MAX,
+            i64::MAX - 1,
+        ] {
+            // The proof is not even valid: staleness is decided first.
+            assert_eq!(
+                check_proof(&public, issued_at, "AAAA", now),
+                Err(ConsoleKeyError::Stale),
+                "{issued_at}"
+            );
+        }
+        assert!(is_stale(at, at - PROOF_MAX_SKEW_SECS - 1));
+        assert!(is_stale(at, at + PROOF_MAX_SKEW_SECS + 1));
+        assert!(!is_stale(at, at - PROOF_MAX_SKEW_SECS));
+        assert!(!is_stale(at, at + PROOF_MAX_SKEW_SECS));
+        assert!(!is_stale(at, at));
+        // The extremes of the clock itself, against the extremes of the claim.
+        assert!(is_stale(i64::MIN, i64::MAX));
+        assert!(is_stale(i64::MAX, i64::MIN));
+        assert!(!is_stale(i64::MAX, i64::MAX));
     }
 
     /// Each guard, one mutation each in the proof of this change: widen the
