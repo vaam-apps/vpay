@@ -88,9 +88,11 @@ vaam, taken in a repository that serves others.
 
 ## Consequences
 
-- vaam's behaviour is unchanged once it sets `methods: [keypair]` and deletes
-  the OAuth half (`jwks`, `grant_types`, `allowed_audiences`) of its merchant
-  registrations, which the new rule refuses to leave dormant. Until it does,
+- vaam's behaviour is unchanged once it sets `methods: [keypair, hmac_webhooks]`
+  (decision 1: `hmac_webhooks` stays until sealed webhooks, VP-8, since its
+  merchants' endpoints carry `secrets`) and deletes the OAuth half (`jwks`,
+  `grant_types`, `allowed_audiences`) of its merchant registrations, which the
+  new rule refuses to leave dormant. Until it does,
   the default permits tokens it never uses.
 - A token caller gets no contract-lock protection (the `426` for an operation
   whose shape is gone applies to sealed callers) and no sealed answers. It does
