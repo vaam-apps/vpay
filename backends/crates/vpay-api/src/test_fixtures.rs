@@ -273,19 +273,30 @@ pub(crate) fn v1_envelope_with_tokens(config: &Config, jwks_url: &str) -> V1Enve
 /// ([`vpay_db::DisabledClients`]), in a `#[cfg(test)]` module, reachable from no
 /// shipping graph (`verify-no-mocks`). The real table's behaviour is proven
 /// against Postgres in `vpay-db`'s suite and `merchant_token_flow.rs`.
-pub(crate) struct MemoryKillSwitch(std::sync::Mutex<std::collections::HashSet<String>>);
+pub(crate) struct MemoryKillSwitch(
+    std::sync::Mutex<std::collections::HashSet<String>>,
+    std::sync::atomic::AtomicUsize,
+);
 
 impl MemoryKillSwitch {
     pub(crate) fn disabling(client_ids: &[&str]) -> Self {
-        Self(std::sync::Mutex::new(
-            client_ids.iter().map(|id| (*id).to_owned()).collect(),
-        ))
+        Self(
+            std::sync::Mutex::new(client_ids.iter().map(|id| (*id).to_owned()).collect()),
+            std::sync::atomic::AtomicUsize::new(0),
+        )
+    }
+
+    /// How many times the switch has been asked, so a test can show that a
+    /// refusal reached its verdict without a query.
+    pub(crate) fn lookups(&self) -> usize {
+        self.1.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
 #[async_trait::async_trait]
 impl vpay_db::DisabledClients for MemoryKillSwitch {
     async fn is_client_disabled(&self, client_id: &str) -> Result<bool, vpay_db::DbError> {
+        self.1.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(self.0.lock().is_ok_and(|set| set.contains(client_id)))
     }
     async fn disable_client(
@@ -329,6 +340,16 @@ pub(crate) fn fixture_keys() -> EnvelopeKeys {
 pub(crate) fn management_envelope(config: &Config) -> ManagementEnvelope {
     ManagementEnvelope::new(config, &fixture_keys(), lazy_repositories())
         .expect("the fixture's registrations project onto key registries")
+}
+
+/// [`config_with_auth`] whose one merchant registration grants exactly `scopes`
+/// in its YAML.
+pub(crate) fn config_with_scopes(methods: Option<&[&str]>, scopes: &[&str]) -> Config {
+    let mut config = config_with_auth(methods);
+    for merchant in &mut config.merchant_clients {
+        merchant.scopes = scopes.iter().map(|scope| (*scope).to_owned()).collect();
+    }
+    config
 }
 
 /// [`config`] with `auth.methods` set to `methods` (`None` is the absent key:

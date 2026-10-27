@@ -562,6 +562,10 @@ async fn under_keypair_a_v1_request_that_is_not_signed_is_the_layers_coarse_401(
 /// - the sealed `/v1` call gets the unsigned `401` — the same coarse answer
 ///   as a key nobody registered, so a disabled client is indistinguishable
 ///   from an unknown one.
+///
+/// The merchant MCP endpoint is the fourth door a bearer token opens, and its
+/// authenticator asks the same switch (`MerchantMcpAuth`); that door is proved
+/// in `mcp_merchant.rs`, `a_token_minted_before_disable_client_is_refused_after_it`.
 #[tokio::test]
 async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::Result<()> {
     let harness = harness().await?;
@@ -794,7 +798,9 @@ async fn only_a_token_addressed_to_v1_is_accepted_on_v1() -> anyhow::Result<()> 
         (
             "merchant",
             MERCHANT_AUDIENCE.to_owned(),
-            Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
+            // The registration's own grant: a token is held to the YAML's
+            // `scopes`, and this case is about the audience alone.
+            Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
             404,
         ),
     ] {

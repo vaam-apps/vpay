@@ -32,8 +32,8 @@ use crate::merchant_keys::{MerchantKeyRegistry, MerchantKeyResolver};
 use crate::router;
 use crate::test_fixtures::tokens::{generate_keypair, jwks_server, mint_token, v1_claims};
 use crate::test_fixtures::{
-    MemoryKillSwitch, PUBLIC_BASE_URL, config_with_auth, deps_over, deps_with_auth, fixture_keys,
-    lazy_repositories, token_validator, v1_envelope_with_tokens,
+    MemoryKillSwitch, PUBLIC_BASE_URL, config_with_auth, config_with_scopes, deps_over,
+    deps_with_auth, fixture_keys, lazy_repositories, token_validator, v1_envelope_with_tokens,
 };
 use crate::test_log::{CapturedLog, captured_log_subscriber};
 
@@ -86,9 +86,11 @@ fn app_with_auth(methods: &[&str]) -> Router {
 }
 
 /// A router whose `/v1` accepts tokens signed by the key a local JWKS server
-/// publishes, over `methods`.
+/// publishes, over `methods`. The registration grants both scopes in its YAML:
+/// a token is held to that (`ResourceConfig::token_holds`), so these cases are
+/// about what the *token* carries.
 fn app_with_tokens(methods: &[&str], jwks_url: &str) -> Router {
-    let config = config_with_auth(Some(methods));
+    let config = config_with_scopes(Some(methods), &["payments:read", "payments:write"]);
     router(deps_over(
         &config,
         Some(v1_envelope_with_tokens(&config, jwks_url)),
@@ -678,6 +680,102 @@ async fn a_token_for_a_disabled_client_is_refused_and_an_unanswerable_switch_is_
         StatusCode::OK,
         "a database outage must not be a revocation bypass"
     );
+}
+
+/// A token naming a client no registration holds is `403` from memory: the
+/// kill switch is never asked, so an unregistered client costs no query, and
+/// the answer is the same whatever the switch holds for that name.
+#[tokio::test]
+async fn an_unregistered_clients_token_is_forbidden_without_a_kill_switch_query() {
+    let (encoding_key, jwk) = generate_keypair("tok-1");
+    let jwks = jwks_server(&jwk).await;
+    let url = format!("{}/jwks.json", jwks.uri());
+    let config = config_with_auth(Some(BOTH));
+
+    let switch = Arc::new(MemoryKillSwitch::disabling(&["someone-else"]));
+    let token = mint_token(
+        &encoding_key,
+        "tok-1",
+        &v1_claims("someone-else", "payments:write"),
+    );
+    let response = send(
+        token_scope_app(&config, &url, Some(Arc::clone(&switch))),
+        "GET",
+        "/probe",
+        &[("authorization", &bearer(&token))],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    assert_eq!(switch.lookups(), 0, "no registration, no query");
+
+    // The control: a registered client is asked exactly once.
+    let registered = mint_token(
+        &encoding_key,
+        "tok-1",
+        &v1_claims(CLIENT_ID, "payments:write"),
+    );
+    let response = send(
+        token_scope_app(&config, &url, Some(Arc::clone(&switch))),
+        "GET",
+        "/probe",
+        &[("authorization", &bearer(&registered))],
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(switch.lookups(), 1);
+}
+
+/// A token is held to the registration's current YAML `scopes`, the source the
+/// signed path reads: a scope removed from the YAML (and applied by a restart)
+/// stops working for tokens minted before it. The token cannot widen its own
+/// grant either.
+#[tokio::test]
+async fn a_tokens_scopes_are_held_to_the_registrations_current_yaml() {
+    let (encoding_key, jwk) = generate_keypair("tok-1");
+    let jwks = jwks_server(&jwk).await;
+    let url = format!("{}/jwks.json", jwks.uri());
+    let both_scopes = mint_token(
+        &encoding_key,
+        "tok-1",
+        &v1_claims(CLIENT_ID, "payments:read payments:write"),
+    );
+    let header = bearer(&both_scopes);
+    let headers = [("authorization", header.as_str())];
+    let kill_switch = || Some(Arc::new(MemoryKillSwitch::disabling(&[])));
+
+    let run = |yaml_scopes: &'static [&'static str], method: &'static str| {
+        let config = config_with_scopes(Some(BOTH), yaml_scopes);
+        let app = token_scope_app(&config, &url, kill_switch());
+        let headers = headers;
+        async move {
+            let request = Request::builder()
+                .method(method)
+                .uri("/probe")
+                .header("authorization", headers[0].1)
+                .body(Body::empty())
+                .expect("a request");
+            app.oneshot(request).await.expect("the router answers")
+        }
+    };
+
+    // The control: the YAML still grants both, and the token's read+write works.
+    assert_eq!(
+        run(&["payments:read", "payments:write"], "GET")
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    // Write was removed from the YAML: the same token still reads...
+    assert_eq!(
+        run(&["payments:read"], "GET").await.status(),
+        StatusCode::OK
+    );
+    // ...and a method that needs write is now `403` (see `required_scopes`; the
+    // probe route answers GET only, so the refusal arrives before routing).
+    let post = run(&["payments:read"], "POST").await;
+    assert_eq!(post.status(), StatusCode::FORBIDDEN);
+    // Every scope removed: a token with both is held to nothing.
+    assert_eq!(run(&[], "GET").await.status(), StatusCode::FORBIDDEN);
 }
 
 /// A signer whose key no merchant holds is `403`, as before.

@@ -29,9 +29,15 @@
 //! | a [`VerifiedSigner`] **and** an `Authorization` header | `400`, sealed |
 //! | no [`VerifiedSigner`], no `Authorization`, `machine_tokens` permitted | `401` `missing_bearer_token`, plain |
 //! | no [`VerifiedSigner`], a token that does not validate | `401` `invalid_token`, plain; `503` when the JWKS cannot be read |
+//! | no [`VerifiedSigner`], a valid token naming no registered client | `403` `forbidden`, plain; asked first, from memory, so it costs no query |
 //! | no [`VerifiedSigner`], a valid token whose client is switched off in `disabled_clients` | `401` `invalid_token`, plain; the database's own error if the lookup fails |
-//! | no [`VerifiedSigner`], a valid token naming no registered client | `403` `forbidden`, plain |
-//! | a valid token whose scopes carry none the method needs | `403` `forbidden`, plain |
+//! | a valid token none of whose scopes, held to the registration's current YAML `scopes`, the method needs | `403` `forbidden`, plain |
+//!
+//! A token's scopes are the intersection of its own `scope` claim and the
+//! registration's `scopes` in the YAML this process loaded
+//! ([`ResourceConfig::token_holds`]), the same source the signed path reads: a
+//! scope removed from the YAML and applied by a restart takes effect for tokens
+//! minted before it.
 //!
 //! A token caller's answers are plain JSON, as they were before VP-3; they are
 //! unsealed and not bound to a contract (the `426` for an operation whose
@@ -210,6 +216,18 @@ async fn token_scope(
         Err(rejection) => return ApiError::from(rejection).into_response(),
     };
 
+    // The registration first, from memory, so a token naming a client this
+    // deployment never registered costs no query (and the answer for it is the
+    // `403` it always was, whatever the kill switch holds).
+    let Some(merchant_id) = state.resource_config.merchant_id_for(&claims.subject) else {
+        tracing::warn!(
+            client_id = %claims.subject,
+            "a validly signed /v1 token names a client this deployment has no registration for; \
+             refusing rather than guessing a tenant"
+        );
+        return ApiError::Forbidden.into_response();
+    };
+
     // The kill switch, on the same footing as the signed path's: a token minted
     // before `disable_client` is otherwise good until it expires. A lookup that
     // fails is an error, not a miss. The refusal is the signed path's
@@ -220,25 +238,24 @@ async fn token_scope(
         Ok(true) => return ApiError::from(AuthRejection::InvalidToken).into_response(),
         Err(error) => return ApiError::from(error).into_response(),
     }
-
-    let Some(merchant_id) = state.resource_config.merchant_id_for(&claims.subject) else {
-        tracing::warn!(
-            client_id = %claims.subject,
-            "a validly signed /v1 token names a client this deployment has no registration for; \
-             refusing rather than guessing a tenant"
-        );
-        return ApiError::Forbidden.into_response();
-    };
     let scope = MerchantScope::for_token(merchant_id.to_owned());
 
+    // The scopes are the registration's as the YAML reads now, intersected with
+    // the token's own: the signed path above reads the YAML alone, so a scope
+    // removed there reaches a token minted before the change on the next
+    // restart.
     let required = required_scopes(&parts.method);
-    if !required.iter().any(|scope| claims.has_scope(scope)) {
+    if !required
+        .iter()
+        .any(|needed| state.resource_config.token_holds(&claims, needed))
+    {
         tracing::warn!(
             client_id = %claims.subject,
             method = %parts.method,
             granted = ?claims.scope,
             required = ?required,
-            "a /v1 token carries none of the scopes this request needs; refusing"
+            "a /v1 token, held to its registration's current scopes, carries none this request \
+             needs; refusing"
         );
         return ApiError::Forbidden.into_response();
     }
