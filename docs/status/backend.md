@@ -1439,7 +1439,13 @@ schema declares `mcp`, and no tool or resource exists. The CrateStack bump
 the surface needs (0.15.0 to 0.16.0) is recorded on
 [cratestack.md](cratestack.md). That bump declares no MCP.
 
-## Merchant Ed25519 keys are registered, and `/v1` has a contract table; neither is verified on a request yet (2026-10-26, VP-2) — _verified since VP-3, the next section_
+**Step 2, narrowed (2026-10-26).** The six payment-intent and refund writes
+are split into an axum handler and an `*_with` operation that a non-HTTP
+caller can run. No behaviour moved, and still nothing calls the operations
+except `/v1`.
+[verification/2026-10-26-mcp-step-2-write-split.md](verification/2026-10-26-mcp-step-2-write-split.md).
+
+## Merchant Ed25519 keys are registered, and `/v1` has a contract table; neither is verified on a request yet (2026-10-26, VP-2)
 
 First step of the move from merchant OAuth to signed transport
 ([ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) is not superseded

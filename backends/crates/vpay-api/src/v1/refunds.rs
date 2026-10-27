@@ -252,6 +252,19 @@ pub(crate) async fn create(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
+    create_with(repositories.as_ref(), &config, &adapters, &scope, post).await
+}
+
+/// [`create`] once its request has been read into a [`PostRequest`]: every
+/// step after the body is in hand, so a caller that did not arrive over
+/// HTTP runs exactly the same claim, rules and write.
+pub(crate) async fn create_with(
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    scope: &MerchantScope,
+    post: PostRequest,
+) -> Result<Response, ApiError> {
     let params: CreateParams = post.form().await?;
 
     // The claim runs **first, before any rule** — `crate::v1::customers::create`'s
@@ -275,7 +288,7 @@ pub(crate) async fn create(
     // `a_replayed_key_answers_the_stored_refund_even_when_the_intent_has_moved_on`
     // fails and every other case in this repository passes — including the
     // other replay case, which replays against an intent nothing changed.
-    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
+    let claim_id = match post.claim_or_answer(repositories, scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
@@ -288,23 +301,22 @@ pub(crate) async fn create(
     // and it is why the release is here rather than left to
     // [`PostRequest::finish`], which would store the refusal and replay it at
     // a merchant who has since corrected their request.
-    let target =
-        match resolve_target(repositories.as_ref(), &config, &adapters, &scope, &params).await {
-            Ok(target) => target,
-            Err(error) => {
-                post.release(repositories.as_ref(), &scope, claim_id).await;
-                return Err(error);
-            }
-        };
+    let target = match resolve_target(repositories, config, adapters, scope, &params).await {
+        Ok(target) => target,
+        Err(error) => {
+            post.release(repositories, scope, claim_id).await;
+            return Err(error);
+        }
+    };
 
-    let outcome = create_once(repositories.as_ref(), &scope, target).await;
+    let outcome = create_once(repositories, scope, target).await;
 
     // `Verbatim`: a refund object carries no payer identifier at all — ten
     // keys, none of them a person — so there is nothing here for an erasure
     // to overtake, unlike `/v1/customers`' stored responses (issue #111).
     post.finish(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         claim_id,
         outcome,
         ResponseSubject::Verbatim,
@@ -1265,6 +1277,18 @@ pub(crate) async fn update(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
+    update_with(repositories.as_ref(), &scope, &id, post).await
+}
+
+/// [`update`] once its request has been read into a [`PostRequest`]: every
+/// step after the body is in hand, so a caller that did not arrive over
+/// HTTP runs exactly the same claim, rules and write.
+pub(crate) async fn update_with(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+    post: PostRequest,
+) -> Result<Response, ApiError> {
     let params: UpdateParams = post.form().await?;
     // Before the claim, where the body is decoded — `crate::v1::payment_intents::confirm`'s
     // ordering and its reason: a refused update stores nothing and leaves the
@@ -1272,16 +1296,16 @@ pub(crate) async fn update(
     // than a replay of the refusal.
     params.reject_unsupported()?;
 
-    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
+    let claim_id = match post.claim_or_answer(repositories, scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = update_once(repositories.as_ref(), &scope, &id, params.metadata).await;
+    let outcome = update_once(repositories, scope, id, params.metadata).await;
 
     post.finish(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         claim_id,
         outcome,
         ResponseSubject::Verbatim,
@@ -1410,17 +1434,28 @@ pub(crate) async fn cancel(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
+    cancel_with(repositories.as_ref(), &scope, &id, post).await
+}
 
-    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
+/// [`cancel`] once its request has been read into a [`PostRequest`]: every
+/// step after the body is in hand, so a caller that did not arrive over
+/// HTTP runs exactly the same claim, rules and write.
+pub(crate) async fn cancel_with(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+    post: PostRequest,
+) -> Result<Response, ApiError> {
+    let claim_id = match post.claim_or_answer(repositories, scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = cancel_once(repositories.as_ref(), &scope, &id).await;
+    let outcome = cancel_once(repositories, scope, id).await;
 
     post.finish(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         claim_id,
         outcome,
         ResponseSubject::Verbatim,
