@@ -2389,11 +2389,13 @@ const RETIRED_KEYS: [(&str, &str); 2] = [
 /// fail-open: a deployment that wrote `auth_methods: [keypair]` believes it
 /// narrowed the list and permitted all four. Add a spelling here only when it
 /// was or plausibly will be written by someone who meant the real key.
-const NEAR_MISS_KEYS: [(&str, &str); 4] = [
+const NEAR_MISS_KEYS: [(&str, &str); 5] = [
     ("auth_methods", AUTH_KEY_MEANT),
     ("auth-methods", AUTH_KEY_MEANT),
     ("authentication", AUTH_KEY_MEANT),
     ("authmethods", AUTH_KEY_MEANT),
+    // `auth:`'s own child, written with the parent forgotten.
+    ("methods", AUTH_KEY_MEANT),
 ];
 
 /// What every near miss of `auth` was meant to be.
@@ -2436,7 +2438,40 @@ fn reject_retired_keys(raw: &figment::value::Value) -> Result<(), ConfigError> {
             });
         }
     }
+    // Below the top level `auth` is read nowhere, and only `deployment` denies
+    // unknown fields, so one mis-indented under any other section is dropped
+    // with the same fail-open. Names the first, in the document's key order.
+    if let Some(path) = misplaced_auth_path(raw, "") {
+        return Err(ConfigError::MisplacedAuthKey { path });
+    }
     Ok(())
+}
+
+/// The path of the first key spelt `auth` (in any case) below the top level of
+/// `value`, or `None`. `prefix` is the path of `value` itself, empty for the
+/// document, so that the document's own `auth` (the one real key) is depth 1
+/// and never matched; every mapping inside it, and every array item on the way
+/// (`merchant_clients[0].auth`), is one level deeper.
+fn misplaced_auth_path(value: &figment::value::Value, prefix: &str) -> Option<String> {
+    use figment::value::Value;
+    match value {
+        Value::Dict(_, dict) => dict.iter().find_map(|(key, child)| {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if !prefix.is_empty() && key.eq_ignore_ascii_case("auth") {
+                return Some(path);
+            }
+            misplaced_auth_path(child, &path)
+        }),
+        Value::Array(_, items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(index, child)| misplaced_auth_path(child, &format!("{prefix}[{index}]"))),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -3083,6 +3118,7 @@ merchant_clients:
         for (fixture, key) in [
             ("near-miss-key-auth-methods.yml", "auth_methods"),
             ("near-miss-key-authentication.yml", "authentication"),
+            ("near-miss-key-methods.yml", "methods"),
         ] {
             let err = load_fixture(fixture).expect_err(fixture);
             assert!(
@@ -3113,6 +3149,8 @@ merchant_clients:
             "AUTH-METHODS",
             "Authentication",
             "AuthMethods",
+            "Methods",
+            "METHODS",
         ] {
             let raw: figment::value::Value = figment::Figment::from(
                 figment::providers::Yaml::string(&format!("{key}:\n  methods: [keypair]\n")),
@@ -3140,15 +3178,116 @@ merchant_clients:
     }
 
     /// `auth` is a top-level key. Under `deployment:` it would be dropped and
-    /// the deployment would permit all four methods, so `deployment` denies
-    /// unknown fields and the shape error names the key.
+    /// the deployment would permit all four methods. The walk over the raw
+    /// document names it before `deployment`'s `deny_unknown_fields` is asked,
+    /// which stays as the second line of defence for every other stray key.
     #[test]
     fn an_auth_block_under_deployment_is_refused_not_ignored() {
         let err = load_fixture("deployment-auth-nested.yml").expect_err("auth under deployment");
-        assert!(
-            matches!(&err, ConfigError::Shape(m) if m.contains("unknown field `auth`")),
+        assert_eq!(
+            err,
+            ConfigError::MisplacedAuthKey {
+                path: "deployment.auth".to_owned()
+            },
             "{err:?}"
         );
+    }
+
+    /// `Config` does not deny unknown fields below the top level (an overlay may
+    /// carry a key a later release reads), so an `auth:` mis-indented under
+    /// `checkout`, `webhooks[]`, `dashboard`, `providers[]` or
+    /// `merchant_clients[]` would be dropped and the deployment would permit
+    /// all four methods. Refused at any depth, arrays counting as a level, and
+    /// the error names the path.
+    #[test]
+    fn a_misplaced_auth_key_is_refused_at_any_depth() {
+        for (fixture, path) in [
+            ("misplaced-auth-checkout.yml", "checkout.auth"),
+            (
+                "misplaced-auth-merchant-client.yml",
+                "merchant_clients[0].auth",
+            ),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert_eq!(
+                err,
+                ConfigError::MisplacedAuthKey {
+                    path: path.to_owned()
+                },
+                "{fixture}"
+            );
+            assert!(err.to_string().contains(path), "{err}");
+            assert_eq!(vpay_core::Classify::category(&err).exit_code(), 78);
+        }
+    }
+
+    /// The same walk over documents built in place: every section the review
+    /// named, a case variant, a key two levels down and an array inside an
+    /// array, each naming its own path; and what must keep loading past it.
+    #[test]
+    fn the_misplaced_auth_walk_names_the_path_and_spares_what_is_not_a_key() {
+        let raw = |yaml: &str| -> figment::value::Value {
+            figment::Figment::from(figment::providers::Yaml::string(yaml))
+                .extract()
+                .expect("a document")
+        };
+        for (yaml, path) in [
+            ("webhooks:\n  - id: a\n    auth: {}\n", "webhooks[0].auth"),
+            (
+                "dashboard:\n  auth: {methods: [keypair]}\n",
+                "dashboard.auth",
+            ),
+            (
+                "providers:\n  - code: x\n  - code: y\n    auth: ~\n",
+                "providers[1].auth",
+            ),
+            ("checkout:\n  AUTH: {}\n", "checkout.AUTH"),
+            ("checkout:\n  Auth: ~\n", "checkout.Auth"),
+            ("a:\n  b:\n    auth: 1\n", "a.b.auth"),
+            ("a:\n  - - auth: 1\n", "a[0][0].auth"),
+            ("auth:\n  auth: {}\n", "auth.auth"),
+        ] {
+            assert_eq!(
+                reject_retired_keys(&raw(yaml)),
+                Err(ConfigError::MisplacedAuthKey {
+                    path: path.to_owned()
+                }),
+                "{yaml}"
+            );
+        }
+        for yaml in [
+            "auth:\n  methods: [keypair]\n",
+            "checkout:\n  name: auth\n  authorization: x\n  oauth: {}\n",
+            "merchant_clients:\n  - client_id: auth\n    labels: [auth]\n",
+        ] {
+            assert!(
+                reject_retired_keys(&raw(yaml)).is_ok(),
+                "a value, a longer word or the exact top-level key is not a misplaced key: {yaml}"
+            );
+        }
+    }
+
+    /// Every configuration the repository ships, and the one vaam deploys from
+    /// beside it, still loads past the walk: none carries a legitimate nested
+    /// `auth` key. The shipped files are read from their paths so a new one
+    /// cannot rot unseen.
+    #[test]
+    fn no_shipped_configuration_carries_a_nested_auth_key() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+        for relative in [
+            "config/application.yml",
+            "config/application-live.yml",
+            "config/application-sandbox.yml",
+            "config/application-notchpay-sandbox.yml",
+            ".e2e/application-demo.yml",
+        ] {
+            let text = std::fs::read_to_string(root.join(relative)).expect(relative);
+            let raw: figment::value::Value =
+                figment::Figment::from(figment::providers::Yaml::string(&text))
+                    .extract()
+                    .expect(relative);
+            assert_eq!(reject_retired_keys(&raw), Ok(()), "{relative}");
+        }
     }
 
     /// A misspelt key under `auth:` must not be dropped: a deployment that

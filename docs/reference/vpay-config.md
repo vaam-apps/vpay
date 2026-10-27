@@ -824,21 +824,21 @@ router.
 Each is a boot refusal with its own `ConfigError` variant and a fixture
 (`tests/fixtures/auth-methods-*.yml`), and each exits `78`.
 
-| Rule                                                                                                                                | Variant                     |
-| ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
-| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)                                         | `NoAuthMethods`             |
-| a name that is not a method                                                                                                         | `UnknownAuthMethod`         |
-| a method listed twice                                                                                                               | `DuplicateAuthMethod`       |
-| `human_login` named explicitly                                                                                                      | `AuthMethodUnavailable`     |
-| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                                                            | `NoWayIn`                   |
-| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                                                       | `McpNeedsMachineTokens`     |
-| `machine_tokens` named explicitly and no merchant has a `jwks`                                                                      | `AuthMethodNotConfigured`   |
-| a block from the table above, present while its method is off                                                                       | `AuthMethodDisabled`        |
-| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`                                                | `MerchantGrantTypesMissing` |
-| `machine_tokens` permitted and a registration with `grant_types` or `allowed_audiences` but **no `jwks`** (a dormant OAuth half)    | `MerchantOauthWithoutJwks`  |
-| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                                                    | `MerchantNoCredential`      |
-| a top-level `auth_methods:`, `auth-methods:`, `authmethods:`, `authentication:` or any case variant of those or of `auth` (`Auth:`) | `NearMissKey`               |
-| an `auth:` block (or any other key `deployment` does not read) under `deployment:`                                                  | `Shape` (`unknown field`)   |
+| Rule                                                                                                                                            | Variant                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)                                                     | `NoAuthMethods`             |
+| a name that is not a method                                                                                                                     | `UnknownAuthMethod`         |
+| a method listed twice                                                                                                                           | `DuplicateAuthMethod`       |
+| `human_login` named explicitly                                                                                                                  | `AuthMethodUnavailable`     |
+| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                                                                        | `NoWayIn`                   |
+| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                                                                   | `McpNeedsMachineTokens`     |
+| `machine_tokens` named explicitly and no merchant has a `jwks`                                                                                  | `AuthMethodNotConfigured`   |
+| a block from the table above, present while its method is off                                                                                   | `AuthMethodDisabled`        |
+| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`                                                            | `MerchantGrantTypesMissing` |
+| `machine_tokens` permitted and a registration with `grant_types` or `allowed_audiences` but **no `jwks`** (a dormant OAuth half)                | `MerchantOauthWithoutJwks`  |
+| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                                                                | `MerchantNoCredential`      |
+| a top-level `auth_methods:`, `auth-methods:`, `authmethods:`, `authentication:`, `methods:` or any case variant of those or of `auth` (`Auth:`) | `NearMissKey`               |
+| an `auth` key, in any case, below the top level: `checkout.auth`, `merchant_clients[0].auth`, `deployment.auth`                                 | `MisplacedAuthKey`          |
 
 - **Permitted is not served.** A method with a block runs where the block is. An
   absent `auth.methods` permits `machine_tokens` and still boots a file whose
@@ -865,8 +865,18 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
 [keypair]` would be dropped and the deployment would permit all four. The match
   is case-insensitive, so `Auth:` and `AUTH:` are refused as well (only the exact
   lowercase `auth` is the key). `NearMissKey` names the spelling and the real key.
-  The same fail-open under `deployment:` is closed by `deny_unknown_fields`: an
-  `auth:` written there is a shape error naming it, not a block that is dropped.
+  A bare `methods:` is on the list too: it is `auth:`'s own child with the parent
+  forgotten.
+- **An `auth` key below the top level is refused, at any depth.** `auth:` is read
+  only at the top of the document, and only `deployment` denies unknown fields, so
+  one mis-indented under `checkout`, `webhooks[]`, `dashboard`, `providers[]` or
+  `merchant_clients[]` would be dropped with the same fail-open (the boot line would
+  read `explicit=false`, which nothing refuses). `reject_retired_keys` walks the
+  merged document before any placeholder is resolved; arrays count as a level, the
+  match is case-insensitive, and `MisplacedAuthKey` names the path as written
+  (`checkout.auth`, `merchant_clients[0].auth`). The exact top-level `auth` is the
+  one place the key is read, and a value or a longer word (`authorization`) is not
+  a key named `auth`.
 - **Boot says what it resolved.** Every `vpay-server` mode logs one `info` line,
   `authentication methods`, with `permitted`, `served` and `explicit` (names only,
   never a key or a secret), so an operator sees an absent key permitting all four.

@@ -1541,6 +1541,24 @@ pub enum ConfigError {
         meant: &'static str,
     },
 
+    /// An `auth` key below the top level, at any depth and in any case
+    /// (`checkout.auth`, `merchant_clients[0].auth`). `auth:` is read only at
+    /// the top of the document; nothing below it is, and only `deployment`
+    /// denies unknown fields, so an `auth:` mis-indented under any other
+    /// section would be dropped and the deployment would permit every method
+    /// its operator tried to narrow (ADR-0037). Arrays count as a level, and
+    /// `path` names the key as written.
+    #[error(
+        "the configuration names `{path}`, but `auth:` is read only at the top level of the \
+         document and this one would be dropped, leaving every authentication method \
+         permitted. Move it to the top level (`auth: {{methods: [...]}}`) or delete it, in \
+         the base file and in every profile overlay"
+    )]
+    MisplacedAuthKey {
+        /// Where it sits, as `section.key` with `[n]` for an array item.
+        path: String,
+    },
+
     /// A merchant registration declares `grant_types` or `allowed_audiences`
     /// but no `jwks`, while `machine_tokens` is permitted. That is half of an
     /// OAuth client with nothing to authenticate it: it can mint nothing, and
