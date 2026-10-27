@@ -313,8 +313,20 @@ pub(crate) async fn create(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
+    create_with(repositories.as_ref(), &config, &adapters, &scope, post).await
+}
 
-    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
+/// [`create`] once its request has been read into a [`PostRequest`]: every
+/// step after the body is in hand, so a caller that did not arrive over
+/// HTTP runs exactly the same claim, rules and write.
+pub(crate) async fn create_with(
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    scope: &MerchantScope,
+    post: PostRequest,
+) -> Result<Response, ApiError> {
+    let claim_id = match post.claim_or_answer(repositories, scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
@@ -322,10 +334,10 @@ pub(crate) async fn create(
     // From here the key is claimed, so every path out of this function has
     // to end it: `finish` stores or releases, and the `?`-free `match`
     // below releases before returning the caller's mistake.
-    let validated = match validate_create(&post, &config, &adapters).await {
+    let validated = match validate_create(&post, config, adapters).await {
         Ok(validated) => validated,
         Err(error) => {
-            post.release(repositories.as_ref(), &scope, claim_id).await;
+            post.release(repositories, scope, claim_id).await;
             return Err(error);
         }
     };
@@ -347,15 +359,15 @@ pub(crate) async fn create(
     // what stops the twelve-month sweep from deleting a customer a merchant
     // takes payments from every week.
     let customer_id = match crate::v1::customers::resolve_for_attachment(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         customer.as_deref(),
     )
     .await
     {
         Ok(customer_id) => customer_id,
         Err(error) => {
-            post.release(repositories.as_ref(), &scope, claim_id).await;
+            post.release(repositories, scope, claim_id).await;
             return Err(error);
         }
     };
@@ -400,8 +412,8 @@ pub(crate) async fn create(
         .and_then(|row| object_response(&row, SecretRendering::Include));
 
     post.finish(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         claim_id,
         outcome,
         ResponseSubject::Verbatim,
@@ -656,15 +668,27 @@ pub(crate) async fn cancel(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
-    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
+    cancel_with(repositories.as_ref(), &scope, &id, post).await
+}
+
+/// [`cancel`] once its request has been read into a [`PostRequest`]: every
+/// step after the body is in hand, so a caller that did not arrive over
+/// HTTP runs exactly the same claim, rules and write.
+pub(crate) async fn cancel_with(
+    repositories: &dyn Repositories,
+    scope: &MerchantScope,
+    id: &str,
+    post: PostRequest,
+) -> Result<Response, ApiError> {
+    let claim_id = match post.claim_or_answer(repositories, scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
 
-    let outcome = cancel_once(repositories.as_ref(), &scope, &id).await;
+    let outcome = cancel_once(repositories, scope, id).await;
     post.finish(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         claim_id,
         outcome,
         ResponseSubject::Verbatim,
@@ -889,6 +913,20 @@ pub(crate) async fn confirm(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
+    confirm_with(repositories.as_ref(), &config, &adapters, &scope, &id, post).await
+}
+
+/// [`confirm`] once its request has been read into a [`PostRequest`]: every
+/// step after the body is in hand, so a caller that did not arrive over
+/// HTTP runs exactly the same claim, rules and write.
+pub(crate) async fn confirm_with(
+    repositories: &dyn Repositories,
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    scope: &MerchantScope,
+    id: &str,
+    post: PostRequest,
+) -> Result<Response, ApiError> {
     let params: ConfirmParams = post.form().await?;
     // Before the claim, where the body is decoded — so a refused confirm
     // stores nothing and leaves the key unspent, exactly as a body that fails
@@ -904,7 +942,7 @@ pub(crate) async fn confirm(
     // the wire), because the field is refused before the key is looked at.
     params.unsupported.reject_unsupported()?;
 
-    let claim_id = match post.claim_or_answer(repositories.as_ref(), &scope).await? {
+    let claim_id = match post.claim_or_answer(repositories, scope).await? {
         ClaimOutcome::Owned(claim_id) => claim_id,
         ClaimOutcome::Answered(response) => return Ok(response),
     };
@@ -913,18 +951,18 @@ pub(crate) async fn confirm(
     // merchant already holds the credential from `create`. Rendering it again
     // here would put it on a response no browser reads (D2).
     let outcome = confirm_once(
-        repositories.as_ref(),
-        &config,
-        &adapters,
-        &scope,
-        &id,
+        repositories,
+        config,
+        adapters,
+        scope,
+        id,
         params,
         SecretRendering::Omit,
     )
     .await;
     post.finish(
-        repositories.as_ref(),
-        &scope,
+        repositories,
+        scope,
         claim_id,
         outcome,
         ResponseSubject::Verbatim,
