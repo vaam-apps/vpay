@@ -546,8 +546,8 @@ async fn under_keypair_a_v1_request_that_is_not_signed_is_the_layers_coarse_401(
 
 // --------------------------------------------------------------- case (b)
 
-/// The kill switch, end to end and with no restart in between — on both
-/// doors a disabled client could still use.
+/// The kill switch, end to end and with no restart in between — on every door a
+/// disabled client could still use.
 ///
 /// The same merchant that just had a sealed call answered and a token minted
 /// is refused the moment a row lands in `disabled_clients` — ADR-0010's "an
@@ -555,7 +555,10 @@ async fn under_keypair_a_v1_request_that_is_not_signed_is_the_layers_coarse_401(
 /// deploy required":
 ///
 /// - the token endpoint answers `invalid_client`/401 (the OP, which stays
-///   until VP-4), and
+///   until VP-4),
+/// - a bearer token minted before the flip is `invalid_token`/401 on `/v1`
+///   (ADR-0037: the scope step asks `disabled_clients` for a token caller as
+///   it does for a signer), and
 /// - the sealed `/v1` call gets the unsigned `401` — the same coarse answer
 ///   as a key nobody registered, so a disabled client is indistinguishable
 ///   from an unknown one.
@@ -574,11 +577,44 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
     assert!(before.is_sealed());
     assert_eq!(before.status().as_u16(), 404, "the honest 404 — case (a)");
 
+    // The token door too: a token minted now, while the client is enabled,
+    // must stop working the moment the switch flips, not when it expires.
+    let (status, token_body) =
+        post_token(&harness, &token_request_form(&mint_assertion(&harness)?)).await?;
+    let token = access_token(status, &token_body)?;
+    let with_token = || async {
+        raw_client()
+            .get(&url)
+            .header("accept", "application/json")
+            .bearer_auth(&token)
+            .send()
+            .await
+            .context("the server answers a bearer request")
+    };
+    assert_eq!(
+        with_token().await?.status().as_u16(),
+        404,
+        "before the switch"
+    );
+
     harness
         .repositories
         .disable_client(CLIENT_ID, Some("integration test"))
         .await
         .context("flipping the kill switch")?;
+
+    let revoked = with_token().await?;
+    assert_eq!(
+        revoked.status().as_u16(),
+        401,
+        "a token minted before the switch is refused the moment it flips"
+    );
+    let revoked_body: Value = revoked.json().await.context("the 401 body is JSON")?;
+    assert_eq!(
+        revoked_body.pointer("/error/code").and_then(Value::as_str),
+        Some("invalid_token"),
+        "got {revoked_body:#}"
+    );
 
     let after = SealedHttp::new()
         .get(&url)
@@ -613,25 +649,151 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
     Ok(())
 }
 
+// --------------------------------------------------------------- case (m)
+
+/// One merchant, one idempotency namespace, whichever credential carried the
+/// request (ADR-0037).
+///
+/// `Idempotency::claim` is keyed `(merchant_id, key)` and never sees the
+/// credential, so a retry that switches from a signature to a bearer token
+/// **does** deduplicate: the same key with the same body replays the first
+/// answer, and the same key with another body is the `400`
+/// `idempotency_key_in_use` a signed retry would get.
+#[tokio::test]
+async fn one_idempotency_key_is_one_key_whichever_credential_carried_it() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let url = format!("{}/v1/customers", harness.base_url);
+    let form = "application/x-www-form-urlencoded";
+    let key = "one-key-two-credentials";
+
+    let signed = SealedHttp::new()
+        .post(&url)
+        .signed_by(CLIENT_ID)
+        .header("Idempotency-Key", key)
+        .header("Content-Type", form)
+        .body("phone=237600000200")
+        .send()
+        .await?;
+    assert!(signed.is_sealed());
+    assert_eq!(signed.status().as_u16(), 201, "the first request creates");
+    let created: Value = signed.json().await.context("the sealed body is JSON")?;
+    let id = created
+        .get("id")
+        .and_then(Value::as_str)
+        .context("the created customer has an id")?
+        .to_owned();
+
+    let (status, token_body) =
+        post_token(&harness, &token_request_form(&mint_assertion(&harness)?)).await?;
+    let token = access_token(status, &token_body)?;
+    let as_token = |body: &'static str| {
+        raw_client()
+            .post(&url)
+            .header("accept", "application/json")
+            .header("Idempotency-Key", key)
+            .header("Content-Type", form)
+            .bearer_auth(&token)
+            .body(body)
+            .send()
+    };
+
+    let replay = as_token("phone=237600000200")
+        .await
+        .context("the token retry answers")?;
+    assert_eq!(
+        replay.status().as_u16(),
+        201,
+        "the same body replays the stored answer"
+    );
+    let replayed: Value = replay.json().await.context("the replay is JSON")?;
+    assert_eq!(
+        replayed.get("id").and_then(Value::as_str),
+        Some(id.as_str()),
+        "a retry that switches credential is the same request, not a second customer"
+    );
+
+    let other = as_token("phone=237600000201")
+        .await
+        .context("the token request answers")?;
+    assert_eq!(other.status().as_u16(), 400);
+    let other_body: Value = other.json().await.context("the refusal is JSON")?;
+    assert_eq!(
+        other_body.pointer("/error/code").and_then(Value::as_str),
+        Some("idempotency_key_in_use"),
+        "the key is spent for this merchant, not for this credential: {other_body:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// --------------------------------------------------------------- case (n)
+
+/// An unsigned request is never answered sealed on `/v1`, even when it asks to
+/// be (`Cratestack-Nonce`, `Accept: application/cose` and
+/// `Cratestack-Payload-Accept: application/json`): cratestack's default
+/// `ResponseSealPolicy` would, and the seal would bind a nonce and a payload but
+/// not the caller (ADR-0037).
+#[tokio::test]
+async fn a_bearer_caller_is_never_handed_a_sealed_answer() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let url = format!("{}/v1/payment_intents/pi_x", harness.base_url);
+    let (status, token_body) =
+        post_token(&harness, &token_request_form(&mint_assertion(&harness)?)).await?;
+    let token = access_token(status, &token_body)?;
+
+    let nonce = cratestack_core::RequestNonce::from_bytes([3; 16]).to_header_value();
+    let response = raw_client()
+        .get(&url)
+        .header("accept", "application/cose")
+        .header(cratestack_core::NONCE_HEADER, nonce)
+        .header(cratestack_core::PAYLOAD_ACCEPT_HEADER, "application/json")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .context("the server answers")?;
+    let content_type = response
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        !content_type.starts_with("application/cose"),
+        "a bearer caller must not get a sealed answer: {content_type}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 // --------------------------------------------------------------- case (c)
 
 /// Only a bearer addressed to `/v1` is accepted there.
 ///
-/// Both tokens are minted directly through the server's own `TokenManager`,
+/// The tokens are minted directly through the server's own `TokenManager`,
 /// so their signatures verify and their `kid` is in the JWKS — everything
 /// about them is right but the audience. One is addressed to the dashboard
-/// surface and is `invalid_token`; the other to `vpay:v1`, and reaches the
-/// handler (the honest `404`, the merchant having no such intent). The
-/// audience is the whole difference, as it was before the signed transport.
+/// surface and one to the MCP resource, and each is `invalid_token`; the other
+/// to `vpay:v1`, and reaches the handler (the honest `404`, the merchant having
+/// no such intent). The audience is the whole difference, as it was before the
+/// signed transport, and the validator that holds it is the one `vpay-server`
+/// builds (`vpay_api::resource_auth::merchant_token_validator`).
 #[tokio::test]
 async fn only_a_token_addressed_to_v1_is_accepted_on_v1() -> anyhow::Result<()> {
     let harness = harness().await?;
 
     for (label, audience, scope, expected) in [
-        ("dashboard", DASHBOARD_AUDIENCE, None, 401),
+        ("dashboard", DASHBOARD_AUDIENCE.to_owned(), None, 401),
+        (
+            "mcp resource",
+            vpay_api::mcp::merchant_resource(&harness.base_url),
+            Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
+            401,
+        ),
         (
             "merchant",
-            MERCHANT_AUDIENCE,
+            MERCHANT_AUDIENCE.to_owned(),
             Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
             404,
         ),
@@ -639,13 +801,7 @@ async fn only_a_token_addressed_to_v1_is_accepted_on_v1() -> anyhow::Result<()> 
         let token = harness
             .signing_key
             .token_manager()
-            .issue_client_token_with_extra(
-                CLIENT_ID,
-                900,
-                scope,
-                Some(audience.to_owned()),
-                HashMap::new(),
-            )
+            .issue_client_token_with_extra(CLIENT_ID, 900, scope, Some(audience), HashMap::new())
             .context("minting a token with the server's own signer")?;
 
         let response = raw_client()
