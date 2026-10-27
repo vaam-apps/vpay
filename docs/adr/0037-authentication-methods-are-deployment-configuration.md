@@ -103,10 +103,14 @@ vaam, taken in a repository that serves others.
   way. No `/v1` handler keys a rate limit on the credential either.
 - `disable_client` is instant on both doors. A signed caller's key resolves to
   nothing the next request; a token caller's `client_id` is checked against
-  `disabled_clients` in the scope step (`401` `invalid_token`), so a token minted
-  before the switch flipped does not outlive it. A kill switch that cannot
-  answer is an error, never "not disabled". (The `403` for a genuine token naming
-  a client with no registration is unchanged.)
+  `disabled_clients` (`401` `invalid_token`) in `/v1`'s scope step and in the
+  merchant MCP endpoint's authenticator, so a token minted before the switch
+  flipped does not outlive it on either. A kill switch that cannot answer is an
+  error, never "not disabled". (The `403` for a genuine token naming a client
+  with no registration is unchanged, and is answered from memory before the
+  switch is asked.) A token is also held to its registration's **current** YAML
+  `scopes`, the source a signer is held to: a scope removed from the YAML and
+  applied by a restart stops working for tokens minted before it.
 - **Upgrade note: a signed request that also carries `Authorization` is `400`.**
   Before this ADR `/v1` never read the header on a signed request, so a client or
   proxy that added a bearer header to one was ignored. It is now refused on every

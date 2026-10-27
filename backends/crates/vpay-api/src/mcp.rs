@@ -29,6 +29,7 @@ use async_trait::async_trait;
 use axum::extract::{Path, State};
 use axum::response::Response;
 use serde_json::{Map, Value, json};
+use vpay_db::DisabledClients;
 use vpay_db::{
     ConfirmRequest, McpAuthRefusal, McpAuthenticator, McpCaller, MerchantCall, MerchantOperation,
     MerchantOperations, NewIntentRequest, NewRefundRequest, OperationOutcome, OperationRefusal,
@@ -351,14 +352,19 @@ pub fn reshape_refund(body: Value) -> Value {
 /// [`vpay_db::McpAuthenticator`] over a [`JwtValidator`] whose audience is
 /// the merchant MCP resource identifier (ADR-0033 D9).
 ///
-/// Three checks: the token validates against the merchant MCP audience, its
-/// client is registered to a merchant, and it holds a scope this surface
-/// serves. `/v1` no longer takes a bearer token at all (VP-3 signs every
-/// request), so an MCP token cannot reach `/v1`, and a token for any other
-/// audience fails the first check here.
+/// Five checks, in this order: the token validates against the merchant MCP
+/// audience; its client is registered to a merchant (from memory, so an
+/// unregistered client costs no query); that client is not switched off in
+/// `disabled_clients` (ADR-0037: a token minted before `disable_client` must not
+/// outlive it, here as on `/v1`); and it holds a scope this surface serves, held
+/// to the registration's current YAML `scopes` ([`ResourceConfig::token_holds`]).
+/// `/v1` no longer takes a bearer token at all (VP-3 signs every request), so an
+/// MCP token cannot reach `/v1`, and a token for any other audience fails the
+/// first check here.
 pub struct MerchantMcpAuth {
     validator: JwtValidator,
     config: Arc<ResourceConfig>,
+    disabled: Arc<dyn DisabledClients>,
 }
 
 impl std::fmt::Debug for MerchantMcpAuth {
@@ -369,10 +375,19 @@ impl std::fmt::Debug for MerchantMcpAuth {
 
 impl MerchantMcpAuth {
     /// `validator` must be built with the MCP resource identifier as its
-    /// audience.
+    /// audience; `disabled` is the kill-switch port `/v1`'s `MerchantKeyResolver`
+    /// asks (the server hands both the same repositories).
     #[must_use]
-    pub fn new(validator: JwtValidator, config: Arc<ResourceConfig>) -> Self {
-        Self { validator, config }
+    pub fn new(
+        validator: JwtValidator,
+        config: Arc<ResourceConfig>,
+        disabled: Arc<dyn DisabledClients>,
+    ) -> Self {
+        Self {
+            validator,
+            config,
+            disabled,
+        }
     }
 }
 
@@ -399,8 +414,35 @@ impl McpAuthenticator for MerchantMcpAuth {
                 "the token's client is not registered".to_owned(),
             ));
         };
-        let can_write = claims.has_scope(v1::SCOPE_PAYMENTS_WRITE);
-        if !can_write && !claims.has_scope(v1::SCOPE_PAYMENTS_READ) {
+        // `/v1`'s kill switch, for the same reason: a lookup that fails is an
+        // error, never "not disabled", or a database outage is a revocation
+        // bypass.
+        match self.disabled.is_client_disabled(&claims.subject).await {
+            Ok(false) => {}
+            Ok(true) => {
+                tracing::warn!(
+                    client_id = %claims.subject,
+                    "refusing an MCP token: the client is disabled via the disabled_clients \
+                     kill switch"
+                );
+                return Err(McpAuthRefusal::InvalidToken(
+                    "the token's client is disabled".to_owned(),
+                ));
+            }
+            Err(error) => {
+                tracing::error!(
+                    %error,
+                    client_id = %claims.subject,
+                    "disabled_clients lookup failed; refusing an MCP token rather than assuming \
+                     the client is enabled"
+                );
+                return Err(McpAuthRefusal::Unavailable(
+                    "the kill switch could not be read".to_owned(),
+                ));
+            }
+        }
+        let can_write = self.config.token_holds(&claims, v1::SCOPE_PAYMENTS_WRITE);
+        if !can_write && !self.config.token_holds(&claims, v1::SCOPE_PAYMENTS_READ) {
             return Err(McpAuthRefusal::InsufficientScope(
                 "the token holds neither payments:read nor payments:write".to_owned(),
             ));
@@ -478,7 +520,11 @@ pub fn merchant_router(parts: MerchantMcpParts) -> Result<axum::Router, vpay_db:
         Arc::clone(&parts.config),
         parts.adapters,
     ));
-    let auth = Arc::new(MerchantMcpAuth::new(parts.validator, parts.config));
+    let auth = Arc::new(MerchantMcpAuth::new(
+        parts.validator,
+        parts.config,
+        Arc::clone(&parts.repositories) as Arc<dyn DisabledClients>,
+    ));
     let endpoint = vpay_db::McpEndpoint {
         allowed_origins: vec![origin_of(&parts.public_base_url)],
         authorization_servers: vec![parts.issuer],
@@ -575,6 +621,172 @@ mod tests {
                 metadata: vec![("order".to_owned(), "42".to_owned())],
             }),
             json!({ "amount": "1000", "currency": "XAF", "metadata": { "order": "42" } })
+        );
+    }
+
+    /// The merchant MCP authenticator over a real validator, a real JWKS served
+    /// from a local HTTP server and a kill switch the test controls. Only the
+    /// database is replaced, as in `auth_methods_tests`.
+    struct Harness {
+        auth: MerchantMcpAuth,
+        encoding_key: jsonwebtoken::EncodingKey,
+        _jwks: wiremock::MockServer,
+    }
+
+    impl Harness {
+        /// `yaml_scopes` is what the one fixture registration grants in the YAML.
+        async fn new(yaml_scopes: &[&str], disabled: Arc<dyn DisabledClients>) -> Self {
+            use crate::test_fixtures::tokens::{generate_keypair, jwks_server};
+            use crate::test_fixtures::{PUBLIC_BASE_URL, TOKEN_ISSUER, config_with_scopes};
+
+            let (encoding_key, jwk) = generate_keypair("tok-1");
+            let jwks = jwks_server(&jwk).await;
+            let validator = crate::resource_auth::mcp_token_validator(
+                format!("{}/jwks.json", jwks.uri()),
+                std::time::Duration::from_secs(300),
+                TOKEN_ISSUER,
+                PUBLIC_BASE_URL,
+            )
+            .expect("the vendored-roots JWKS client builds");
+            let config = Arc::new(
+                ResourceConfig::from_config(&config_with_scopes(None, yaml_scopes))
+                    .expect("the fixture projects"),
+            );
+            Self {
+                auth: MerchantMcpAuth::new(validator, config, disabled),
+                encoding_key,
+                _jwks: jwks,
+            }
+        }
+
+        /// A token for the MCP resource, `sub` and `scope` as given.
+        fn token(&self, sub: &str, scope: &str) -> String {
+            use crate::test_fixtures::tokens::{mint_token, now_secs};
+            use crate::test_fixtures::{PUBLIC_BASE_URL, TOKEN_ISSUER};
+            mint_token(
+                &self.encoding_key,
+                "tok-1",
+                &json!({
+                    "iss": TOKEN_ISSUER,
+                    "aud": merchant_resource(PUBLIC_BASE_URL),
+                    "sub": sub,
+                    "scope": scope,
+                    "exp": now_secs() + 300,
+                }),
+            )
+        }
+    }
+
+    const BOTH: &[&str] = &["payments:read", "payments:write"];
+
+    /// `disable_client` reaches an MCP token as it reaches a signer and a `/v1`
+    /// token: one minted before the switch flipped is otherwise good until it
+    /// expires. The control row is the same token admitted while the client is
+    /// enabled, and a kill switch that cannot answer is `Unavailable`, never
+    /// "not disabled".
+    #[tokio::test]
+    async fn an_mcp_token_for_a_disabled_client_is_refused_and_an_unanswerable_switch_is_unavailable()
+     {
+        use crate::test_fixtures::MemoryKillSwitch;
+
+        let enabled = Harness::new(BOTH, Arc::new(MemoryKillSwitch::disabling(&[]))).await;
+        let token = enabled.token("acme-cameroon", "payments:write");
+        assert_eq!(
+            enabled.auth.authenticate(&token).await,
+            Ok(McpCaller {
+                merchant_id: "acme-cameroon-tenant".to_owned(),
+                can_write: true,
+            }),
+            "the control"
+        );
+
+        let disabled = Harness::new(
+            BOTH,
+            Arc::new(MemoryKillSwitch::disabling(&["acme-cameroon"])),
+        )
+        .await;
+        let token = disabled.token("acme-cameroon", "payments:write");
+        assert!(
+            matches!(
+                disabled.auth.authenticate(&token).await,
+                Err(McpAuthRefusal::InvalidToken(_))
+            ),
+            "a disabled client's token is a 401"
+        );
+
+        let unanswerable = Harness::new(BOTH, crate::test_fixtures::lazy_repositories()).await;
+        let token = unanswerable.token("acme-cameroon", "payments:write");
+        assert!(
+            matches!(
+                unanswerable.auth.authenticate(&token).await,
+                Err(McpAuthRefusal::Unavailable(_))
+            ),
+            "a database outage must not be a revocation bypass"
+        );
+    }
+
+    /// A client no registration names costs no query: the in-memory lookup
+    /// comes first, so the kill switch is never asked, whatever it holds for it.
+    #[tokio::test]
+    async fn an_unregistered_mcp_client_is_refused_without_asking_the_kill_switch() {
+        let switch = Arc::new(crate::test_fixtures::MemoryKillSwitch::disabling(&[
+            "someone-else",
+        ]));
+        let harness = Harness::new(BOTH, Arc::clone(&switch) as Arc<dyn DisabledClients>).await;
+        let token = harness.token("someone-else", "payments:write");
+        assert!(matches!(
+            harness.auth.authenticate(&token).await,
+            Err(McpAuthRefusal::InvalidToken(m)) if m.contains("not registered")
+        ));
+        assert_eq!(switch.lookups(), 0, "an unregistered client costs no query");
+
+        let token = harness.token("acme-cameroon", "payments:write");
+        harness.auth.authenticate(&token).await.expect("registered");
+        assert_eq!(switch.lookups(), 1, "a registered one asks exactly once");
+    }
+
+    /// The scopes are the token's held to the registration's current YAML
+    /// `scopes`, the source the signed path reads: a scope removed from the YAML
+    /// and applied by a restart reaches a token minted before it.
+    #[tokio::test]
+    async fn an_mcp_tokens_scopes_are_held_to_the_registrations_current_yaml() {
+        use crate::test_fixtures::MemoryKillSwitch;
+        let none_disabled = || Arc::new(MemoryKillSwitch::disabling(&[]));
+
+        // The token was minted with both; the YAML now grants only read.
+        let read_only = Harness::new(&["payments:read"], none_disabled()).await;
+        let token = read_only.token("acme-cameroon", "payments:read payments:write");
+        assert_eq!(
+            read_only.auth.authenticate(&token).await,
+            Ok(McpCaller {
+                merchant_id: "acme-cameroon-tenant".to_owned(),
+                can_write: false,
+            }),
+            "write was removed from the YAML, so the token no longer writes"
+        );
+
+        // Nothing in common: neither scope survives the intersection.
+        let write_only_token = read_only.token("acme-cameroon", "payments:write");
+        assert!(matches!(
+            read_only.auth.authenticate(&write_only_token).await,
+            Err(McpAuthRefusal::InsufficientScope(_))
+        ));
+
+        // The YAML grants nothing at all.
+        let nothing = Harness::new(&[], none_disabled()).await;
+        let token = nothing.token("acme-cameroon", "payments:read payments:write");
+        assert!(matches!(
+            nothing.auth.authenticate(&token).await,
+            Err(McpAuthRefusal::InsufficientScope(_))
+        ));
+
+        // The control: the YAML grants both and the token asks for read only.
+        let both = Harness::new(BOTH, none_disabled()).await;
+        let token = both.token("acme-cameroon", "payments:read");
+        assert_eq!(
+            both.auth.authenticate(&token).await.map(|c| c.can_write),
+            Ok(false),
+            "a token cannot widen its own grant"
         );
     }
 

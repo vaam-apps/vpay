@@ -299,10 +299,12 @@ impl<G> KeyResolver<G> {
 
     /// Whether `client_id` is switched off in `disabled_clients`.
     ///
-    /// The one question both doors ask: a signature's key resolves through it
-    /// here, and a bearer token's `client_id` through `crate::envelope`'s scope
-    /// step, so `disable_client` is instant for a signer and a token caller
-    /// alike (a token minted earlier is otherwise good until it expires).
+    /// The one question every door asks: a signature's key resolves through it
+    /// here, a `/v1` bearer token's `client_id` through `crate::envelope`'s scope
+    /// step, and an MCP bearer token's through `crate::mcp::MerchantMcpAuth` (which
+    /// asks the same `DisabledClients` port), so `disable_client` is instant for a
+    /// signer and a token caller alike (a token minted earlier is otherwise good
+    /// until it expires).
     ///
     /// # Errors
     ///

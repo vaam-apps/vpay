@@ -56,6 +56,9 @@ struct Harness {
     _container: ContainerAsync<PostgresImage>,
     server: tokio::task::JoinHandle<()>,
     pool: PgPool,
+    /// The same repositories the server holds, so a test can flip the kill
+    /// switch (`disable_client`) the way an operator does.
+    repositories: Arc<dyn Repositories>,
     base_url: String,
     pem_a: String,
     pem_v1: String,
@@ -320,6 +323,7 @@ async fn harness_with(surfaces: Option<Vec<String>>) -> anyhow::Result<Harness> 
         _container: container,
         server: served.server,
         pool,
+        repositories,
         base_url: served.base_url,
         pem_a,
         pem_v1,
@@ -551,6 +555,87 @@ async fn a_read_scoped_token_cannot_call_a_mutation() -> anyhow::Result<()> {
             .await?,
     );
     assert_eq!(at(&page, "/items"), json!([]));
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// ADR-0037: `disable_client` reaches an MCP token on its next request, as it
+/// reaches a signer and a `/v1` token. A token minted before the switch flipped
+/// is otherwise good until it expires (900 s here). The switch is per client:
+/// another merchant's token is untouched.
+#[tokio::test]
+async fn a_token_minted_before_disable_client_is_refused_after_it() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token_a = harness.mcp_token(CLIENT_A, vpay_api::SCOPE_PAYMENTS_WRITE);
+    let token_b = harness.mcp_token(CLIENT_B, vpay_api::SCOPE_PAYMENTS_WRITE);
+    let search = json!({ "page": {}, "filter": {} });
+
+    // The control: both tokens work while the clients are enabled.
+    for token in [&token_a, &token_b] {
+        harness
+            .call(token, "search_payment_intents", search.clone())
+            .await?;
+    }
+
+    harness
+        .repositories
+        .disable_client(CLIENT_A, Some("mcp_merchant test"))
+        .await
+        .context("flipping the kill switch")?;
+
+    let (status, body) = harness
+        .rpc(
+            Some(&token_a),
+            None,
+            "tools/call",
+            Some("search_payment_intents"),
+            json!({ "name": "search_payment_intents", "arguments": search }),
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a token minted before the switch is refused the moment it flips: {body}"
+    );
+    harness
+        .call(&token_b, "search_payment_intents", search)
+        .await
+        .context("another client's token is untouched")?;
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// ADR-0037: a token's scopes are held to the registration's YAML. This token
+/// claims `payments:write`; its registration (`CLIENT_R`) grants `payments:read`
+/// alone, so it reads and cannot write, whatever the token says.
+#[tokio::test]
+async fn a_token_claiming_more_than_its_registration_grants_cannot_write() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.mcp_token(
+        CLIENT_R,
+        &format!(
+            "{} {}",
+            vpay_api::SCOPE_PAYMENTS_READ,
+            vpay_api::SCOPE_PAYMENTS_WRITE
+        ),
+    );
+    let refused = envelope(
+        &harness
+            .call(
+                &token,
+                "create_payment_intent",
+                create_args("k-widened", 100),
+            )
+            .await?,
+    );
+    assert_eq!(at(&refused, "/code"), json!("FORBIDDEN"), "{refused}");
+    assert_eq!(harness.intents_of(MERCHANT_R).await?, 0);
+    harness
+        .call(
+            &token,
+            "search_payment_intents",
+            json!({ "page": {}, "filter": {} }),
+        )
+        .await?;
     harness.shutdown().await;
     Ok(())
 }
