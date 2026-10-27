@@ -222,23 +222,50 @@ fn micros(at: OffsetDateTime) -> OffsetDateTime {
         .unwrap_or(at)
 }
 
+/// The generated create input for a key paired at `new.now`: live for
+/// [`CONSOLE_KEY_LIFETIME`], never revoked. The one place the 30-day life is
+/// computed, shared by the pool path and the in-transaction one.
+fn create_input(new: NewConsoleKey) -> cratestack_schema::CreateConsoleKeyInput {
+    let paired_at = micros(new.now);
+    cratestack_schema::CreateConsoleKeyInput {
+        id: new.id,
+        staff_member_id: new.staff_member_id,
+        alg: ALG_ESP256.to_owned(),
+        public_key: new.public_key,
+        thumbprint: new.thumbprint,
+        label: new.label,
+        paired_at: to_chrono(paired_at),
+        expires_at: to_chrono(paired_at + CONSOLE_KEY_LIFETIME),
+        revoked_at: None,
+    }
+}
+
+/// [`ConsoleKeys::pair_console_key`] inside a caller's transaction: the insert
+/// that has to commit or roll back with the member it belongs to (a first
+/// pairing provisions the member, their link and their key together).
+///
+/// # Errors
+///
+/// [`ConsoleKeys::pair_console_key`]'s.
+pub(crate) async fn pair_in_tx(
+    cs: &cratestack_schema::Cratestack,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    new: NewConsoleKey,
+) -> Result<(), DbError> {
+    cs.console_key()
+        .create(create_input(new))
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack(MODEL, "create", error)))?;
+    Ok(())
+}
+
 #[async_trait]
 impl ConsoleKeys for crate::repository::PgRepositories {
     async fn pair_console_key(&self, new: NewConsoleKey) -> Result<(), DbError> {
-        let paired_at = micros(new.now);
         self.cs
             .console_key()
-            .create(cratestack_schema::CreateConsoleKeyInput {
-                id: new.id,
-                staff_member_id: new.staff_member_id,
-                alg: ALG_ESP256.to_owned(),
-                public_key: new.public_key,
-                thumbprint: new.thumbprint,
-                label: new.label,
-                paired_at: to_chrono(paired_at),
-                expires_at: to_chrono(paired_at + CONSOLE_KEY_LIFETIME),
-                revoked_at: None,
-            })
+            .create(create_input(new))
             .run(&system_context())
             .await
             .map_err(|error| DbError::from(classify_cratestack(MODEL, "create", error)))?;

@@ -596,6 +596,17 @@ pub trait TxRepositories: Send {
         credential: crate::NewCredential,
     ) -> Result<(), DbError>;
 
+    /// `console_keys`: [`crate::ConsoleKeys::pair_console_key`] inside this
+    /// transaction, so a first pairing's member, link and key commit together
+    /// or not at all (VP-6a).
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`] — [`crate::PersistenceError::Unique`] when the
+    /// thumbprint is taken; the caller's transaction is rolled back by dropping
+    /// it, and with it the member and link provisioned beside this call.
+    async fn pair_console_key_in_tx(&mut self, new: crate::NewConsoleKey) -> Result<(), DbError>;
+
     /// `payment_intents`: stamps `last_payment_error` without moving the
     /// status the intent never left.
     ///
@@ -897,6 +908,11 @@ impl TxRepositories for PendingTransaction {
     ) -> Result<(), DbError> {
         let (cs, tx) = self.cratestack_tx();
         crate::staff::provision_federated_in_tx(cs, tx, staff, credential).await
+    }
+
+    async fn pair_console_key_in_tx(&mut self, new: crate::NewConsoleKey) -> Result<(), DbError> {
+        let (cs, tx) = self.cratestack_tx();
+        crate::console_keys::pair_in_tx(cs, tx, new).await
     }
 
     async fn record_payment_error(

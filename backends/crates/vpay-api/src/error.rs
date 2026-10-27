@@ -1052,7 +1052,7 @@ impl Classify for ApiError {
 /// | `Stale` | `400` naming `issued_at` |
 /// | `ProofRejected` | `400` naming `possession_proof` |
 /// | `Administrator`, `NotPermitted` | `403`: one answer, the credential's, not the object's |
-/// | `KeyTaken` | `409` |
+/// | `KeyTaken`, `IdentityTaken` | `409` |
 /// | `Inconsistent` | `500` |
 impl From<crate::console_keys::ConsoleKeyError> for ApiError {
     fn from(error: crate::console_keys::ConsoleKeyError) -> Self {
@@ -1066,7 +1066,7 @@ impl From<crate::console_keys::ConsoleKeyError> for ApiError {
                 Self::invalid_param("possession_proof", error.public_message())
             }
             ConsoleKeyError::Administrator | ConsoleKeyError::NotPermitted => Self::Forbidden,
-            ConsoleKeyError::KeyTaken => Self::Conflict {
+            ConsoleKeyError::KeyTaken | ConsoleKeyError::IdentityTaken => Self::Conflict {
                 message: error.public_message(),
             },
             ConsoleKeyError::Inconsistent => Self::Internal(error.to_string()),

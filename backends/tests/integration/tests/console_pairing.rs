@@ -647,8 +647,49 @@ async fn pairing_never_creates_or_upgrades_an_administrator() -> anyhow::Result<
         .pair(&body_for("dave-browser", "dave-at-vaam"))
         .await?;
     assert_eq!(status, 409, "{answer}");
+    // Not the key's fault, and the answer does not say it is.
+    assert!(
+        at(&answer, "/error/message")
+            .as_str()
+            .is_some_and(|message| message.contains("cannot be provisioned")
+                && !message.contains("public key")),
+        "{answer}"
+    );
     assert_eq!(harness.count("staff_members").await?, staff_before);
     assert_eq!(harness.count("console_keys").await?, 1);
+    Ok(())
+}
+
+/// Two vaam user ids that differ only in letter case map to one synthetic
+/// address (the column is lower-case and unique). The second person is refused
+/// with an answer about the *identity* ("cannot be provisioned"), not the key's
+/// ("already registered"), and the refusal leaves no member, link or key behind
+/// even though the key itself was fresh.
+///
+/// The decisive mutation: provision outside the key's transaction, and the
+/// orphan member shows in the counts; map the collision to `KeyTaken`, and the
+/// message assertion fails.
+#[tokio::test]
+async fn an_identity_collision_is_not_a_taken_key_and_writes_nothing() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let (status, first) = harness.pair(&body_for("erin-browser", "Erin")).await?;
+    assert_eq!(status, 201, "{first}");
+    let (members, links, keys) = (
+        harness.count("staff_members").await?,
+        harness.count("credentials").await?,
+        harness.count("console_keys").await?,
+    );
+
+    let (status, answer) = harness.pair(&body_for("erin-phone", "erin")).await?;
+    assert_eq!(status, 409, "{answer}");
+    let message = at(&answer, "/error/message").as_str().unwrap();
+    assert!(
+        message.contains("cannot be provisioned") && !message.contains("public key"),
+        "{answer}"
+    );
+    assert_eq!(harness.count("staff_members").await?, members);
+    assert_eq!(harness.count("credentials").await?, links);
+    assert_eq!(harness.count("console_keys").await?, keys);
     Ok(())
 }
 
@@ -748,6 +789,10 @@ async fn a_key_is_not_moved_to_another_person_and_a_revoked_one_is_not_reinstate
     let (status, first) = harness.pair(&body_for("shared-browser", "gina")).await?;
     assert_eq!(status, 201, "{first}");
 
+    let (members, links) = (
+        harness.count("staff_members").await?,
+        harness.count("credentials").await?,
+    );
     let (status, answer) = harness.pair(&body_for("shared-browser", "hank")).await?;
     assert_eq!(status, 409, "{answer}");
     assert!(
@@ -756,6 +801,14 @@ async fn a_key_is_not_moved_to_another_person_and_a_revoked_one_is_not_reinstate
             .is_some_and(|message| message.contains("already registered")),
         "{answer}"
     );
+    // A refused first pairing writes nothing: hank was to be provisioned
+    // together with the key, so the refusal leaves no orphan member or link.
+    assert_eq!(
+        harness.count("staff_members").await?,
+        members,
+        "no orphan member"
+    );
+    assert_eq!(harness.count("credentials").await?, links, "no orphan link");
 
     let thumbprint = at(&first, "/thumbprint").as_str().unwrap().to_owned();
     let (status, revoked) = harness.revoke(&thumbprint).await?;

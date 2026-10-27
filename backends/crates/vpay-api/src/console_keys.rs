@@ -30,10 +30,21 @@
 //! not normalise it) and a proof may be replayed inside its window, which is
 //! harmless: registration is idempotent on the thumbprint.
 //!
+//! **It does not bind an audience either, and that is a stated trade-off, not an
+//! oversight.** The console signs the key and the instant, not "to vpay at this
+//! origin" or "for this vaam user": the proof reaches vpay *relayed by the
+//! trusted service*, which is the only party able to present it, and a proof
+//! lifted from that hop could only register the same key the signer already
+//! chose, for the person the service already names. What it must not do is move
+//! a key to another person, and it cannot: the thumbprint is unique, so a key
+//! already registered to someone else is [`ConsoleKeyError::KeyTaken`].
+//!
 //! The order inside [`pair_through_vaam`] is the order an attacker learns
 //! least in: the shape of every field, then a stale request before the
-//! signature is looked at, then a bad signature before the database is touched,
-//! so a refused pairing writes nothing (no member, no link, no key).
+//! signature is looked at, then a bad signature before the database is touched.
+//! Past those, a first pairing provisions the member, their link and their key in
+//! **one transaction**, so a refusal at any step (a key already registered, an
+//! address already held) writes nothing: no member, no link, no key.
 //!
 //! # What pairing may never do (owner rulings R2 and 2026-10-09)
 //!
@@ -45,6 +56,12 @@
 //! `console_pairing` can name any linked person, so this route must not be a way
 //! to a key that speaks as an administrator. Administrators pair through
 //! `vpay-server staff pair-key`, run by an operator.
+//!
+//! # Revoking
+//!
+//! [`revoke`] is the one function behind `DELETE /svc/v1/console_keys/{thumbprint}`
+//! and `vpay-server staff revoke-key`, so the break-glass door that can pair can
+//! also revoke. It revokes any member's key, an administrator's included.
 
 use std::sync::Arc;
 
@@ -130,6 +147,17 @@ pub enum ConsoleKeyError {
     #[error("this public key is already registered and cannot be paired again")]
     KeyTaken,
 
+    /// The person could not be provisioned because their synthetic address is
+    /// already another account's: two vaam user ids that differ only in letter
+    /// case map to one `staff_members.email` (the column is lower-case and
+    /// unique). The key is not the problem, and registering it again would not
+    /// help. Nothing was written.
+    #[error(
+        "this person cannot be provisioned: another account already holds the address derived \
+         from this vaam_user_id (ids that differ only in letter case collide)"
+    )]
+    IdentityTaken,
+
     /// A concurrent first pairing of one person could not be reconciled, or a
     /// stored link points at no member. Both are the deployment's to look at.
     #[error("the pairing could not be completed; the link for this person is inconsistent")]
@@ -141,7 +169,7 @@ impl Classify for ConsoleKeyError {
         match self {
             Self::Malformed { .. } | Self::Stale | Self::ProofRejected => Category::InvalidRequest,
             Self::Administrator | Self::NotPermitted => Category::Forbidden,
-            Self::KeyTaken => Category::Conflict,
+            Self::KeyTaken | Self::IdentityTaken => Category::Conflict,
             Self::Inconsistent => Category::Internal,
         }
     }
@@ -154,6 +182,7 @@ impl Classify for ConsoleKeyError {
             Self::Administrator => "console_key_administrator",
             Self::NotPermitted => "console_key_not_permitted",
             Self::KeyTaken => "console_key_taken",
+            Self::IdentityTaken => "console_key_identity_taken",
             Self::Inconsistent => "console_key_inconsistent",
         }
     }
@@ -384,12 +413,13 @@ fn display_name_for(
 /// `console_pairing`, into the dashboard's tenant `tenant`.
 ///
 /// 1. every field is checked, then the proof (no database yet);
-/// 2. the person is found by their link `(vaam, vaam_user_id)`, or provisioned
-///    just in time as a **plain member** of `tenant` with the link, in one
-///    transaction;
-/// 3. a member who is an administrator, disabled, or of another merchant is
-///    refused — nothing about them is changed;
-/// 4. the key is stored, or found to be this member's live key already.
+/// 2. a person already linked `(vaam, vaam_user_id)` is refused if they are an
+///    administrator, disabled, or of another merchant — nothing about them is
+///    changed — and otherwise gets the key stored (or found: an idempotent
+///    repeat);
+/// 3. a person not yet linked is provisioned just in time as a **plain member**
+///    of `tenant`, with their link **and their key, in one transaction**: a
+///    refusal at any step leaves no member and no link behind.
 ///
 /// # Errors
 ///
@@ -411,9 +441,20 @@ pub async fn pair_through_vaam(
         now,
     )?;
 
-    let member = link_member(repositories, tenant, vaam_user_id, &display_name, now).await?;
-    require_pairable(&member, tenant)?;
-    store_key(repositories.as_ref(), &member, &key, label, now).await
+    if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
+        require_pairable(&member, tenant)?;
+        return store_key(repositories.as_ref(), &member, &key, label, now).await;
+    }
+    provision_and_pair(
+        repositories,
+        tenant,
+        vaam_user_id,
+        &display_name,
+        &key,
+        label,
+        now,
+    )
+    .await
 }
 
 /// Refuses a member a service route may not attach a key to.
@@ -443,18 +484,27 @@ fn require_pairable(member: &StaffRow, tenant: &str) -> Result<(), ConsoleKeyErr
     Ok(())
 }
 
-/// The member a vaam user id names: found through the link, or provisioned.
-async fn link_member(
+/// Provisions a person who has no link yet, and pairs their first key, in **one
+/// transaction**: the member, the `(vaam, vaam_user_id)` link and the key commit
+/// together or not at all.
+///
+/// Three unique constraints can refuse it, and each is told apart after the
+/// rollback (nothing has been written, so the reads see the world as it was):
+///
+/// - a link now exists: a concurrent first pairing of this person won the race.
+///   Carry on as for any linked person, which is also what makes the repeat
+///   idempotent;
+/// - no link, but the key's thumbprint is registered: [`ConsoleKeyError::KeyTaken`];
+/// - neither: the synthetic address collided, [`ConsoleKeyError::IdentityTaken`].
+async fn provision_and_pair(
     repositories: &Arc<dyn Repositories>,
     tenant: &str,
     vaam_user_id: &str,
     display_name: &str,
+    key: &ParsedConsoleKey,
+    label: Option<String>,
     now: OffsetDateTime,
-) -> Result<StaffRow, crate::ApiError> {
-    if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
-        return Ok(member);
-    }
-
+) -> Result<Paired, crate::ApiError> {
     let staff_id = vpay_core::ids::staff_id();
     let new_staff = NewStaff {
         id: staff_id.clone(),
@@ -471,7 +521,7 @@ async fn link_member(
     };
     let link = NewCredential {
         id: vpay_core::ids::credential_id(),
-        staff_member_id: Some(staff_id),
+        staff_member_id: Some(staff_id.clone()),
         kind: CredentialKind::Oidc,
         material: None,
         issuer: Some(VAAM_ISSUER.to_owned()),
@@ -480,27 +530,51 @@ async fn link_member(
         expires_at: None,
         now,
     };
+    let new_key = NewConsoleKey {
+        id: vpay_core::ids::console_key_id(),
+        staff_member_id: staff_id,
+        public_key: key.public_key.clone(),
+        thumbprint: key.thumbprint.clone(),
+        label: label.clone(),
+        now,
+    };
     let outcome = repositories
         .transaction(|tx| {
             Box::pin(async move {
                 tx.provision_federated_staff_in_tx(&new_staff, link).await?;
+                tx.pair_console_key_in_tx(new_key).await?;
                 Ok::<_, DbError>(TxOutcome::Commit(()))
             })
         })
         .await;
     match outcome {
-        Ok(_) => {}
-        // The person was provisioned a moment ago by a concurrent request (the
-        // link's unique index), or the synthetic address collides (a case-only
-        // difference of two vaam ids). Ask again: a link now means the former.
-        Err(DbError::Persistence(PersistenceError::Unique { .. })) => {}
-        Err(error) => return Err(error.into()),
+        Ok(_) => {
+            let row = repositories
+                .find_console_key(&key.thumbprint)
+                .await?
+                .ok_or(ConsoleKeyError::Inconsistent)?;
+            Ok(Paired {
+                key: row,
+                created: true,
+            })
+        }
+        Err(DbError::Persistence(PersistenceError::Unique { .. })) => {
+            if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
+                require_pairable(&member, tenant)?;
+                return store_key(repositories.as_ref(), &member, key, label, now).await;
+            }
+            if repositories
+                .find_console_key(&key.thumbprint)
+                .await?
+                .is_some()
+            {
+                Err(ConsoleKeyError::KeyTaken.into())
+            } else {
+                Err(ConsoleKeyError::IdentityTaken.into())
+            }
+        }
+        Err(error) => Err(error.into()),
     }
-    // Re-read through the link rather than trusting either branch: whichever
-    // request won, this is the member the identity names.
-    linked(repositories.as_ref(), vaam_user_id)
-        .await?
-        .ok_or_else(|| ConsoleKeyError::KeyTaken.into())
 }
 
 /// The member linked to `(vaam, vaam_user_id)`, if any.
@@ -576,9 +650,43 @@ pub async fn store_key(
     }
 }
 
+/// Whether `thumbprint` has the shape of one: 64 lower-case hex characters.
+///
+/// The check `revoke` makes first, exposed so `vpay-server staff revoke-key` can
+/// refuse a typo before it reads a configuration or opens a connection.
+///
+/// ```
+/// use vpay_api::console_keys::check_thumbprint;
+///
+/// assert!(check_thumbprint(&"ab".repeat(32)).is_ok());
+/// assert!(check_thumbprint(&"AB".repeat(32)).is_err(), "upper case is refused");
+/// assert!(check_thumbprint("abc").is_err());
+/// ```
+///
+/// # Errors
+///
+/// [`ConsoleKeyError::Malformed`] for `thumbprint`.
+pub fn check_thumbprint(thumbprint: &str) -> Result<(), ConsoleKeyError> {
+    if thumbprint.len() != 64
+        || !thumbprint
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(ConsoleKeyError::Malformed {
+            field: "thumbprint",
+            reason: "must be 64 lower-case hex characters",
+        });
+    }
+    Ok(())
+}
+
 /// Revokes the key with this thumbprint, and answers the row as it stands.
 ///
-/// Idempotent: a key already revoked is answered with its first `revoked_at`.
+/// The one function `DELETE /svc/v1/console_keys/{thumbprint}` and `vpay-server
+/// staff revoke-key` share. Idempotent: a key already revoked is answered with
+/// its first `revoked_at`. It revokes **any** member's key, an administrator's
+/// included: revocation is the incident-response power, and refusing it for the
+/// most privileged keys would be backwards (ADR-0036).
 ///
 /// # Errors
 ///
@@ -589,17 +697,7 @@ pub async fn revoke(
     thumbprint: &str,
     now: OffsetDateTime,
 ) -> Result<ConsoleKeyRow, crate::ApiError> {
-    if thumbprint.len() != 64
-        || !thumbprint
-            .bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-    {
-        return Err(ConsoleKeyError::Malformed {
-            field: "thumbprint",
-            reason: "must be 64 lower-case hex characters",
-        }
-        .into());
-    }
+    check_thumbprint(thumbprint)?;
     repositories.revoke_console_key(thumbprint, now).await?;
     repositories
         .find_console_key(thumbprint)
@@ -776,6 +874,28 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    /// An address collision is not a taken key: its own code, its own message
+    /// (which says nothing of a public key), and the same `409` on the wire.
+    #[test]
+    fn an_identity_collision_is_told_apart_from_a_taken_key() {
+        assert_eq!(
+            ConsoleKeyError::IdentityTaken.category(),
+            Category::Conflict
+        );
+        assert_ne!(
+            ConsoleKeyError::IdentityTaken.code(),
+            ConsoleKeyError::KeyTaken.code()
+        );
+        let message = ConsoleKeyError::IdentityTaken.public_message();
+        assert!(message.contains("cannot be provisioned"), "{message}");
+        assert!(!message.contains("public key"), "{message}");
+
+        match crate::ApiError::from(ConsoleKeyError::IdentityTaken) {
+            crate::ApiError::Conflict { message: wire } => assert_eq!(wire, message),
+            other => panic!("expected a 409, got {other:?}"),
+        }
     }
 
     #[test]
