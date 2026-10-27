@@ -824,3 +824,32 @@ migration count `schema_migrates_cleanly_on_an_empty_database` pins is 56, and
 the model count in `vpay-db`'s `MODEL_TABLES` is 20. `StaffMember` lost its
 `delete` arm in the same change: nothing deletes a staff row, and a delete
 would cascade a person's console keys.
+
+## 2026-10-27 — migration `0057` (a pattern index for the console's key lookup), and drift goes 208 → 209, measured
+
+`/dash/v1` resolves a request's key by the COSE `kid` before it checks the
+signature, with `thumbprint LIKE '<16 hex>%'`
+(`vpay_db::ConsoleKeys::live_console_keys_for_kid`). `console_keys_thumbprint_key`
+is a plain btree, which answers a left-anchored `LIKE` only under the C
+collation; measured on 50 000 rows in a database created with an ICU `en-US`
+locale it was a `Seq Scan`, so any well-formed `kid` an unauthenticated caller
+sent cost a scan of the table. `0057_console-keys-thumbprint-prefix-index.sql`
+adds `console_keys_thumbprint_prefix_idx`, `text_pattern_ops` and partial on
+`revoked_at IS NULL`; the same query is an `Index Scan` with
+`~>=~`/`~<~` bounds, on the first execution of the prepared statement and past
+the custom-plan threshold. It is a new migration rather than an edit of `0056`
+because `just migrations-manifest` only appends and the PR had already pushed
+`0056`'s hash.
+
+- `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`: one more
+  `[safe]` line (`index console_keys_thumbprint_prefix_idx exists in the live
+  database but is not declared in the schema`; `@@index` has no
+  `text_pattern_ops` or partial spelling): **208 → 209**,
+  `EXPECTED_DRIFTED_RELATIONS` unchanged at 27. Measured with `cratestack migrate
+  baseline --strict` on Postgres 16 migrated through `0056` and then `0057`
+  (207 → 208 without the bookkeeping table the test's own database carries).
+- `schema_migrates_cleanly_on_an_empty_database` pins **57** migrations.
+- `the_signed_transports_kid_lookup_is_served_by_a_pattern_index` pins the
+  index's shape and, with the unique index dropped in a rolled-back transaction
+  and `enable_seqscan = off`, that the planner reaches the lookup through it.
+  Delete `0057` and the plan is a `Seq Scan`.

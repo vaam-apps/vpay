@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 56,
-        "all fifty-six migration files under backends/migrations should be recorded as applied \
+        applied, 57,
+        "all fifty-seven migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -395,7 +395,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          decision for each routed charge, written in the transaction that \
          opens it (D10), and 0054, which copies the charge's rail and type \
          onto payment_intents.charge_rail and charge_method_type -- what /v1 \
-         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
+         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -2624,6 +2624,79 @@ async fn the_confirm_paths_session_lookup_is_served_by_an_index() -> anyhow::Res
          filter, which is the defect this migration exists for: {plan}"
     );
 
+    Ok(())
+}
+
+// ------------------- migration 0057 (console_keys_thumbprint_prefix_idx) ----
+
+/// The signed transport's per-request key lookup is served by an index, whatever
+/// the database's collation.
+///
+/// `ConsoleKeys::live_console_keys_for_kid` asks `thumbprint LIKE '<16 hex>%'`
+/// before a signature is verified, so any well-formed `kid` costs one such read.
+/// `console_keys_thumbprint_key` is a plain btree, which answers a left-anchored
+/// `LIKE` only under the C collation: under any other (a database created
+/// `en_US.UTF-8`, or with an ICU locale) the planner scans the table. 0057 adds a
+/// `text_pattern_ops` index, partial on `revoked_at IS NULL`, that answers it
+/// under all of them.
+///
+/// # Why the unique index is dropped inside the test
+///
+/// This container's collation is whatever the image shipped, and under `C` the
+/// unique index would serve the query too, so a plan that names *an* index would
+/// pass without 0057. The unique index is therefore dropped in a transaction
+/// that is rolled back, which leaves 0057's the only index able to answer, and
+/// `enable_seqscan = off` makes the planner prefer it to a scan on an empty
+/// table. Delete 0057 and the plan is a `Seq Scan` and this fails.
+#[tokio::test]
+async fn the_signed_transports_kid_lookup_is_served_by_a_pattern_index() -> anyhow::Result<()> {
+    let (_container, pool) = migrated_postgres().await?;
+
+    let definition: String = sqlx::query_scalar(
+        "SELECT indexdef FROM pg_indexes WHERE indexname = 'console_keys_thumbprint_prefix_idx'",
+    )
+    .fetch_optional(&pool)
+    .await
+    .context("reading console_keys_thumbprint_prefix_idx must succeed")?
+    .context("0057 must create console_keys_thumbprint_prefix_idx")?;
+    assert!(
+        definition.contains("(thumbprint text_pattern_ops)")
+            && definition.contains("WHERE (revoked_at IS NULL)"),
+        "the index must be text_pattern_ops on thumbprint, partial on revoked_at IS NULL: \
+         {definition}"
+    );
+
+    let mut tx = pool
+        .begin()
+        .await
+        .context("opening the throwaway transaction")?;
+    sqlx::query("DROP INDEX console_keys_thumbprint_key")
+        .execute(&mut *tx)
+        .await
+        .context("dropping the unique index inside a transaction that is rolled back")?;
+    sqlx::query("SET LOCAL enable_seqscan = off")
+        .execute(&mut *tx)
+        .await
+        .context("disabling sequential scans for this transaction")?;
+    // The query `live_console_keys_for_kid` builds, in shape.
+    let plan: Vec<String> = sqlx::query_scalar(
+        "EXPLAIN SELECT id FROM console_keys \
+         WHERE thumbprint LIKE '0123456789abcdef%' \
+         AND revoked_at IS NULL AND expires_at > now() LIMIT 16",
+    )
+    .fetch_all(&mut *tx)
+    .await
+    .context("explaining the kid lookup must succeed")?;
+    tx.rollback()
+        .await
+        .context("rolling the throwaway transaction back")?;
+    let plan = plan.join("\n");
+    assert!(
+        plan.contains("console_keys_thumbprint_prefix_idx"),
+        "the kid lookup must be servable by 0057's index under any collation; without it the \
+         planner scans console_keys for every well-formed kid an unauthenticated caller sends: \
+         {plan}"
+    );
     Ok(())
 }
 
@@ -4863,7 +4936,13 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// native enum, `int4` or writer-named DEFAULT), so every column is compared
 /// and `EXPECTED_UNMAPPABLE_COLUMNS` does not move; `EXPECTED_DRIFTED_RELATIONS`
 /// moves 29 -> 27 (-3 +1).
-const EXPECTED_DRIFT_CHANGES: u32 = 208;
+/// **208 -> 209 on 2026-10-27 (migration 0057, `console_keys_thumbprint_prefix_idx`,
+/// VP-6a review), measured** with `cratestack migrate baseline --strict` on a
+/// Postgres 16 migrated through 0056 and then 0057: one more `[safe]` line,
+/// `index console_keys_thumbprint_prefix_idx exists in the live database but is
+/// not declared in the schema` (`text_pattern_ops` and a partial predicate are
+/// not spellings `@@index` has). `EXPECTED_DRIFTED_RELATIONS` does not move.
+const EXPECTED_DRIFT_CHANGES: u32 = 209;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
