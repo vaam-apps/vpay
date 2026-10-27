@@ -408,18 +408,19 @@ exist; the event store is one already-classified column; browser storage is one
 file; the observability listener is two routes), **not** evidence that anything
 re-checks it. Nothing fails if OTLP tracing is added tomorrow.
 
-| Surface           | Enumerable | Status                                                                                                            |
-| ----------------- | ---------- | ----------------------------------------------------------------------------------------------------------------- |
-| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule is the only guard                           |
-| `metrics`         | no         | metric-label derivation is not centrally registered                                                               |
-| `traces`          | yes        | OTLP traces deliberately absent (`docs/status.md`: deferred)                                                      |
-| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                      |
-| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                              |
-| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                              |
-| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                         |
-| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                |
-| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                 |
-| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13) |
+| Surface           | Enumerable | Status                                                                                                                                  |
+| ----------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule is the only guard                                                 |
+| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                     |
+| `traces`          | yes        | OTLP traces deliberately absent (`docs/status.md`: deferred)                                                                            |
+| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                            |
+| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                    |
+| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                    |
+| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                               |
+| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                      |
+| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies |
+| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                       |
+| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                       |
 
 A surface with `enumerable: false` is an **unmet criterion**: the gate records it
 and keeps #144 open on it rather than manufacturing a self-check (RFC-0002 PR 2).
@@ -492,7 +493,9 @@ registered — the gate's own output on 2026-09-23, after migration `0049`
 added twelve columns (`invoices.paid_out_of_band` and the eleven of
 `manual_payments`, the last its always-`true` `paid_out_of_band`, classified
 `sys_status`) and the `payment_reference` element; it said 295 across 25 (16)
-until then, and 306 for the few hours `0049` had eleven.
+until then, and 306 for the few hours `0049` had eleven. _(The surfaces are
+11 since 2026-10-26, when `merchant_mcp` was registered for ADR-0033's
+`/mcp/v1`.)_
 
 **RFC-0002 PR 3, 2026-10-01:** the four shared protected diagnostic
 representations landed in `vpay-core` (`Secret`, `Masked`, `Pseudonymous`,

@@ -1196,3 +1196,26 @@ controls and 7 tracked gaps — and the live table set derived from
 `self-checks` job, and both `count:verify-gates` tallies moved to sixteen in
 the same change. The full `just ci` evidence is in
 [verification/2026-10-26-security-inventory-gate.md](verification/2026-10-26-security-inventory-gate.md).
+
+## 2026-10-26 — `verify-mcp-parity`, the seventeenth gate (ADR-0033 D8)
+
+**What it refuses.** It reads three files: `V1_ROUTES` in
+`backends/crates/vpay-api/src/v1/mod.rs`, the `@mcp(tool: …)` lines in
+`schemas/vpay.cstack`, and the table in
+[../api/mcp-parity.md](../api/mcp-parity.md). It fails on:
+
+- a mounted `/v1` route with no row;
+- a row naming a route `V1_ROUTES` does not mount;
+- two rows for one route;
+- a row naming a tool the schema does not declare;
+- a gap with no `YYYY-MM-DD` date or no reason, or an exclusion with no
+  reason;
+- a declared tool no row names.
+
+**What it does not check:** that a tool behaves like its route. That is
+`backends/tests/integration/tests/mcp_merchant.rs`'s job.
+
+**Measured on this tree:** "37 /v1 route(s), each with one row: 9 served by a
+tool, 28 dated gap(s), 0 excluded; all 9 declared tool(s) named". Its three
+unit tests (`mcp_parity_tests`) drive each direction against a table that
+breaks it.

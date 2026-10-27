@@ -712,7 +712,7 @@ mod tests {
             let args = procedures::search_customers::Args { page, filter };
             let authorized =
                 procedures::search_customers::authorize_with_db(cs, &args, ctx).await?;
-            crate::schema::search_payment_intents::Payments
+            crate::schema::search_payment_intents::Payments::default()
                 .search_customers(cs, ctx, args, authorized)
                 .await
         }

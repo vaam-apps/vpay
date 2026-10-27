@@ -1304,6 +1304,11 @@ non_db_surfaces:
     description: what /v1 renders to the merchant
     enumerable: false
     unmet: wire object projections are per-resource, not centrally registered
+  - id: merchant_mcp
+    surface: merchant
+    description: "what /mcp/v1 hands a merchant's agent (ADR-0033): the /v1 objects reshaped, entering a model's context and the agent host's logs"
+    enumerable: false
+    unmet: "tool outputs are the /v1 projections reshaped, so they inherit merchant_api's gap; erasure in vpay cannot reach copies an agent host kept"
   - id: observability
     surface: observability
     description: /livez and /metrics on --observability-bind
@@ -1340,6 +1345,14 @@ non_db_surfaces:
 # visible ones stay a documented decision in the impl, not something this list
 # endorses.
 debug_protections:
+  # The merchant MCP port's requests (ADR-0033): a confirm's payer fields and
+  # a refund's destination fields are a payer's number. Field names only.
+  - type: ConfirmRequest
+    file: backends/crates/vpay-db/src/merchant_operations.rs
+    elements: [payer_msisdn]
+  - type: NewRefundRequest
+    file: backends/crates/vpay-db/src/merchant_operations.rs
+    elements: [payer_msisdn]
   # vpay-db rows and inputs.
   - type: ChargeRow
     file: backends/crates/vpay-db/src/charges.rs

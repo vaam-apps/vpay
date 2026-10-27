@@ -89,6 +89,10 @@ pub struct Deployment {
 pub const SURFACE_BUSINESS: &str = "business";
 /// The legal values of `deployment.surfaces` (ADR-0022).
 pub const SURFACE_MANAGEMENT: &str = "management";
+/// The legal values of `deployment.surfaces`: the merchant MCP endpoint
+/// (ADR-0033). **Never** part of an absent key's meaning; see
+/// [`EnabledSurfaces::ALL`].
+pub const SURFACE_MCP: &str = "mcp";
 
 /// Which of the two HTTP surfaces (ADR-0022) a deployment mounts, resolved
 /// from [`Deployment::surfaces`]. Both fields `true` is what an absent
@@ -100,15 +104,25 @@ pub struct EnabledSurfaces {
     pub business: bool,
     /// `/dash/v1` and the `staff` sign-in routes.
     pub management: bool,
+    /// `/mcp/v1`, the merchant MCP endpoint (ADR-0033), and its RFC 9728
+    /// metadata document.
+    pub mcp: bool,
 }
 
 impl EnabledSurfaces {
-    /// What an absent `deployment.surfaces` means: every surface, so an
-    /// upgrade of a deployment that never wrote this key does not lose
-    /// `/v1`.
+    /// What an absent `deployment.surfaces` means: every surface that
+    /// existed before the key did, so an upgrade of a deployment that never
+    /// wrote it does not lose `/v1`.
+    ///
+    /// **Not `mcp`.** "Serve what you always served" cannot include a surface
+    /// that did not exist, and a new internet-facing interface must be
+    /// chosen, never gained by upgrading (ADR-0033 D2). The name says "all"
+    /// and keeps it, because ADR-0022 and every caller name it so; this
+    /// paragraph is the exception it carries.
     pub const ALL: Self = Self {
         business: true,
         management: true,
+        mcp: false,
     };
 }
 
@@ -120,7 +134,8 @@ impl Deployment {
     /// [`ConfigError::NoSurfacesConfigured`] if the key is
     /// present and empty, and
     /// [`ConfigError::UnknownSurface`] if it names anything
-    /// other than [`SURFACE_BUSINESS`] or [`SURFACE_MANAGEMENT`].
+    /// other than [`SURFACE_BUSINESS`], [`SURFACE_MANAGEMENT`] or
+    /// [`SURFACE_MCP`].
     pub fn enabled_surfaces(&self) -> Result<EnabledSurfaces, ConfigError> {
         let Some(surfaces) = &self.surfaces else {
             return Ok(EnabledSurfaces::ALL);
@@ -131,11 +146,13 @@ impl Deployment {
         let mut enabled = EnabledSurfaces {
             business: false,
             management: false,
+            mcp: false,
         };
         for surface in surfaces {
             match surface.as_str() {
                 SURFACE_BUSINESS => enabled.business = true,
                 SURFACE_MANAGEMENT => enabled.management = true,
+                SURFACE_MCP => enabled.mcp = true,
                 other => {
                     return Err(ConfigError::UnknownSurface(other.to_owned()));
                 }
@@ -1550,7 +1567,7 @@ pub enum ConfigError {
     /// message, not a generic deserialization failure.
     #[error(
         "deployment.surfaces contains an unknown value {0:?}; the legal set is: \
-         {SURFACE_BUSINESS}, {SURFACE_MANAGEMENT}"
+         {SURFACE_BUSINESS}, {SURFACE_MANAGEMENT}, {SURFACE_MCP}"
     )]
     UnknownSurface(String),
 }
@@ -1788,6 +1805,37 @@ mod tests {
             .expect("a legal single value");
         assert!(!management_only.business);
         assert!(management_only.management);
+    }
+
+    /// ADR-0033 D2: the MCP endpoint is opt-in only. An absent key, and the
+    /// two pre-existing values named explicitly, never mount it; naming it
+    /// alone mounts it and nothing else, which is what an MCP-only pod is.
+    #[test]
+    fn mcp_is_mounted_only_when_named() {
+        const { assert!(!EnabledSurfaces::ALL.mcp) };
+        assert!(
+            !deployment_with_surfaces(None)
+                .enabled_surfaces()
+                .expect("absent is legal")
+                .mcp
+        );
+        assert!(
+            !deployment_with_surfaces(Some(vec!["business", "management"]))
+                .enabled_surfaces()
+                .expect("legal")
+                .mcp
+        );
+        let mcp_only = deployment_with_surfaces(Some(vec!["mcp"]))
+            .enabled_surfaces()
+            .expect("a legal single value");
+        assert_eq!(
+            mcp_only,
+            EnabledSurfaces {
+                business: false,
+                management: false,
+                mcp: true,
+            }
+        );
     }
 
     #[test]

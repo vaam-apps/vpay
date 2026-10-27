@@ -98,6 +98,13 @@ await client.currencies.delete(updated.id, { headers });
 - `client.procedures.searchWebhookDeliveries`
 - `client.procedures.searchCustomers`
 - `client.procedures.searchCheckoutSessions`
+- `client.procedures.retrievePaymentIntent`
+- `client.procedures.openPaymentIntent`
+- `client.procedures.confirmPaymentIntent`
+- `client.procedures.cancelPaymentIntent`
+- `client.procedures.retrieveRefund`
+- `client.procedures.issueRefund`
+- `client.procedures.cancelRefund`
 
 ```ts
 const result = await client.procedures.searchPaymentIntents(args, {

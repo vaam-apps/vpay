@@ -270,6 +270,7 @@ pub(crate) fn deps() -> RouterDeps {
         // `/dash/v1/staff/...` path in this crate's tests would answer a
         // refusal instead of the `404` an undashboarded deployment gives.
         staff_login: None,
+        merchant_mcp: None,
         // Both surfaces, matching every deployment that never wrote
         // `deployment.surfaces` — this crate's non-surface-specific tests
         // (everything but `lib.rs`'s own `surfaces` module) exercise the
@@ -344,6 +345,7 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
             .expect("the vendored-roots JWKS client builds"),
         )),
         staff_login: None,
+        merchant_mcp: None,
         surfaces: resolved,
     }
 }

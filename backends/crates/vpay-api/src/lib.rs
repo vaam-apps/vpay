@@ -109,6 +109,8 @@ pub mod error;
 pub mod form;
 pub mod idempotency;
 mod jwks_cache;
+// The merchant MCP endpoint's implementations (ADR-0033).
+pub mod mcp;
 // The merchants' Ed25519 keys and the resolver over them (VP-2). Mounted by
 // nothing yet: the `EnvelopeLayer` that verifies against it is VP-3, and until
 // then `/v1` still authenticates with the bearer token below.
@@ -379,6 +381,11 @@ pub struct RouterDeps {
     /// requires it), so an empty merchant list is not a legal proxy for "no
     /// business surface." See ADR-0022 § "Why it cannot be inferred."
     pub surfaces: vpay_config::EnabledSurfaces,
+    /// The merchant MCP endpoint (ADR-0033), built by
+    /// [`mcp::merchant_router`], or `None`. Merged at the root, because its
+    /// RFC 9728 metadata document must be at the host root. The boot builds
+    /// it only when `surfaces.mcp`; the router mounts whatever it is given.
+    pub merchant_mcp: Option<Router>,
 }
 
 /// Shared state for every route in this router.
@@ -1283,6 +1290,41 @@ where
     next.run(Request::from_parts(parts, body)).await
 }
 
+/// The procedures `/dash/v1/$procs` serves: the dashboard's five reads.
+///
+/// `vpay-db`'s `dashboard_procedure_router` wraps CrateStack's generated
+/// `procedure_router`, which mounts **every** procedure in
+/// `schemas/vpay.cstack`. Since ADR-0033 that includes the merchant MCP
+/// writes (`openPaymentIntent`, `confirmPaymentIntent`, …), and CrateStack
+/// 0.16 has no attribute that keeps a procedure off REST. Two things keep
+/// them unreachable here, and this list is the first: their own `@allow`
+/// also refuses a dashboard context, which carries no `audience` claim, and
+/// the registry behind this router has no port to run them with.
+const DASHBOARD_PROCEDURES: [&str; 5] = [
+    "searchPaymentIntents",
+    "searchRefunds",
+    "searchWebhookDeliveries",
+    "searchCustomers",
+    "searchCheckoutSessions",
+];
+
+/// Answers the honest 404 for a `$procs/<name>` the dashboard does not
+/// serve. Every other path passes, so an unknown `/dash/v1/...` path still
+/// reaches the nest's own fallback.
+async fn only_dashboard_procedures(request: Request<Body>, next: Next) -> Response {
+    let refused = request
+        .uri()
+        .path()
+        .strip_prefix("/$procs/")
+        .is_some_and(|name| !DASHBOARD_PROCEDURES.contains(&name));
+    if refused {
+        return not_found(request.method().clone(), request.uri().clone())
+            .await
+            .into_response();
+    }
+    next.run(request).await
+}
+
 /// The largest `/v1` request body this router will read, in bytes.
 ///
 /// 64 KiB. Every documented `/v1` body is a handful of form fields
@@ -1327,6 +1369,7 @@ pub fn router(deps: RouterDeps) -> Router {
     // against these two booleans, and none of them is re-derived from
     // `state` — see [`RouterDeps::surfaces`] for why it cannot be.
     let surfaces = deps.surfaces;
+    let merchant_mcp = deps.merchant_mcp;
 
     let state = AppState {
         repositories: deps.repositories,
@@ -1651,6 +1694,11 @@ pub fn router(deps: RouterDeps) -> Router {
             // and answering one as though it were tells a prober which
             // prefixes are live.
             .fallback(not_found)
+            // Outside the token layer, so a procedure this transport does not
+            // serve is the honest 404 before any token is looked at. See
+            // [`only_dashboard_procedures`] for why the generated router
+            // cannot be trusted to mount only the dashboard's own.
+            .layer(from_fn(only_dashboard_procedures))
             // Same ceiling `/dash/v1`'s other routes carry, for the same
             // reason: an anonymous caller must not be able to make this
             // process buffer a body before the token check refuses it.
@@ -1678,7 +1726,12 @@ pub fn router(deps: RouterDeps) -> Router {
     // `Option`-shaped expression, and writing it as one would need a
     // `Router` identity to merge against, which is exactly the thing a
     // reader would then have to check does nothing.
-    let router = match (surfaces.business || surfaces.management).then_some(oauth) {
+    //
+    // An MCP-only pod mounts it too, for the management tier's reason: its
+    // token validator fetches this process's own JWKS over loopback
+    // (ADR-0033 D9). It still mints nothing there, because `/token` is
+    // `surfaces.business` alone.
+    let router = match (surfaces.business || surfaces.management || surfaces.mcp).then_some(oauth) {
         Some(oauth) => router.nest("/v1/oauth", oauth),
         None => router,
     };
@@ -1712,7 +1765,15 @@ pub fn router(deps: RouterDeps) -> Router {
         None => router,
     };
 
-    router.with_state(state).layer(
+    // After `with_state`: the MCP router is `Router<()>`, built in `vpay-db`
+    // around the generated tool table, and shares no state with this one.
+    let router = router.with_state(state);
+    let router = match merchant_mcp {
+        Some(merchant_mcp) => router.merge(merchant_mcp),
+        None => router,
+    };
+
+    router.layer(
         ServiceBuilder::new()
             .layer(from_fn(discard_unusable_request_id))
             .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

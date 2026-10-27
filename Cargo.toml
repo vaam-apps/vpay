@@ -298,6 +298,10 @@ rust_decimal = "1"
 #     and `cratestack-client-rust/cose` (the COSE_Sign1 seal and verifier).
 #     Taken ahead of the layer so the compile cost and the lockfile move land
 #     on their own; no router mounts the layer yet.
+#   * `mcp` is taken (2026-10-26, ADR-0033 step 3) for `cratestack-mcp`: the
+#     `@mcp(tool: ...)` procedures in `schemas/vpay.cstack` and the Streamable
+#     HTTP server `vpay-db`'s `merchant_mcp_router` builds. It is mounted only
+#     when `deployment.surfaces` names `mcp`. See `docs/flows/mcp.md`.
 #   * `pgvector`, `postgis`, `rate_limit`, `decimal-bigdecimal`: not taken,
 #     nothing here uses them.
 #
@@ -307,7 +311,7 @@ rust_decimal = "1"
 # of `cratestack-pg` with no feature gating them, and both depend on
 # `minicbor` unconditionally. There is no feature combination that yields a
 # data layer without them — see `docs/reference/vpay-db.md` § CrateStack.
-cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features = false, features = ["postgres", "envelope", "cose"] }
+cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features = false, features = ["postgres", "envelope", "cose", "mcp"] }
 # The two `cratestack-*` crates a signed-transport caller names directly rather
 # than through the `cratestack` facade above (VP-2, 2026-10-26), at the same
 # `=0.16.0` and in the same bump as it. Both are already in the lock through

@@ -14,7 +14,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 // `tracing::warn!`, never a rejection. Empty when the CLI wasn't given a
 // schema fingerprint (e.g. this crate used as a library directly, or a
 // test) — the header is simply omitted in that case.
-export const SCHEMA_SHA256: string = "7c3d8b7415ab579095f3daa250c7c7d67215abd37762752ca8a9625a5a2281e4";
+export const SCHEMA_SHA256: string = "f5a51a810419543099278efca5440c6072945280660027651cff53269b1d5efe";
 const SCHEMA_SHA_HEADER = "x-cratestack-schema-sha";
 
 // Per-op contract digests (binding version 2, cratestack#1123): what a signed
@@ -112,6 +112,13 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "PATCH /staff_sessions/{id}": "8966f3d246071c32c2e5ae9b25762a006713ac948653b1fe2e7017b7b2539415",
   "PATCH /staff_sso_attempts/{id}": "dc001e530f59765ed9c88e64c84fc91feea8e45d8dfbc79d20be607cf11e1451",
   "PATCH /webhook_deliveries/{id}": "4a966ed237b8442fb573de1c184851d34ed54acea66b071c197281550042fc45",
+  "POST /$procs/cancelPaymentIntent": "7dec3afff1cf9a49bf135dbbe58089e84fe64ca8653738fe47b8c4f20be81418",
+  "POST /$procs/cancelRefund": "401399d5ec73e662f9289510d3f10fa2614aa18321c6e5894623b52645d72d06",
+  "POST /$procs/confirmPaymentIntent": "0cba3ee16f89d5dc9d2be49a17b841b9d4af5889e46d6bd19b6d8d8026af3b90",
+  "POST /$procs/issueRefund": "30d0fb9e9f56f8a39640b9d06aa4f35b5240e46c23024d3e615370726a360967",
+  "POST /$procs/openPaymentIntent": "52fedf0701980bed924a080f6383be7ba3314bbd1b5da8d33182a50c4b42b870",
+  "POST /$procs/retrievePaymentIntent": "289fa50eeb06cb3d086efa078d175ac336b05be8176ac6282fd14be5350062aa",
+  "POST /$procs/retrieveRefund": "57af31818ccbbd1cd3c68c56901ec50e5fce80e5bc3755859b465bbf87f4229c",
   "POST /$procs/searchCheckoutSessions": "1abb3f94d2e59eb32b7d63c6ff100ce24eae2e879c9129fbf6f90812c5094df2",
   "POST /$procs/searchCustomers": "85388306bff8f657c3ef9f6a8d3b0ca2dac3223cd71f93731a78e208d33131e0",
   "POST /$procs/searchPaymentIntents": "2f918f5b87a52f5db1db458f1ca96aa56534f6599b72cfce10320d69152122c9",
@@ -141,7 +148,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "POST /webhook_deliveries": "313534735f7d8114795740a6a144bf641e1f055f7ccdc9407c946c0c60a35ba6",
 };
 // Hex of the whole-contract digest: moves when any op's contract does.
-export const CLIENT_CONTRACT_SHA256: string = "74b446cb8908c455408f8e1150f0d7abee1c5a509bf4dc5615eefd75d96cc0ac";
+export const CLIENT_CONTRACT_SHA256: string = "42e1d06a10e70ccd070f64cafc527f91a0285d8f012f7a17c862fc8bd5fbe281";
 
 export interface CratestackClientOptions {
   basePath?: string;

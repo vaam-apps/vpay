@@ -1445,6 +1445,47 @@ caller can run. No behaviour moved, and still nothing calls the operations
 except `/v1`.
 [verification/2026-10-26-mcp-step-2-write-split.md](verification/2026-10-26-mcp-step-2-write-split.md).
 
+## The merchant MCP endpoint, first slice (2026-10-26, ADR-0033 step 3)
+
+**Built:** `POST /mcp/v1` serves nine tools when `deployment.surfaces` names
+`mcp`.
+
+- **Payment intents:** `create_payment_intent`, `retrieve_payment_intent`,
+  `confirm_payment_intent` and `cancel_payment_intent`.
+- **Refunds:** `create_refund`, `retrieve_refund` and `cancel_refund`.
+- **Searches:** the existing `search_payment_intents` and `search_refunds`.
+
+Every write runs the `/v1` route's own operation, with a required
+`idempotency_key` claimed in vpay's own store. The tokens come from vpay's
+own OP, with the MCP resource as audience; the OP now honours RFC 8707
+`resource`. Since VP-3 (#380) `/v1` is signed and takes no bearer token, so
+the OP's `client_credentials` grant serves this endpoint alone.
+`/dash/v1/$procs` serves only the dashboard's five procedures, and the
+dashboard's wrapper over the generated client hands out only those five.
+
+**Proven:** `mcp_merchant.rs`, 12 cases, against a real Postgres, the real
+router and the real OP. They cover tenancy, scope, both audience directions,
+`Origin`, idempotency, `/v1`'s refusals, an absent `surfaces` key, and
+reshaped-object equality with `/v1`. `dashboard_procedure_transport.rs` adds a
+case; [the flow page](../flows/mcp.md) has the list.
+
+**Not built or not proven:**
+
+- 28 `/v1` routes are dated gaps ([api/mcp-parity.md](../api/mcp-parity.md)).
+- **No resources.** ADR-0033 D5's `jsonb` measurement has not been made.
+- **No staff endpoint.** It waits on the upstream CrateStack audience feature.
+- **No chart workload.**
+- No MCP case drives a confirm to `succeeded`.
+- No real MCP client has called it.
+- No pod has run it.
+- **What issues its tokens after VP-4 is undecided.** VP-4 plans to retire the
+  OP's token path, which this endpoint is the last user of (ADR-0033, "Left to
+  the maintainer" item 4).
+
+A new gate, `verify-mcp-parity`, makes `just verify` seventeen gates, after
+#356's `verify-security-inventory`. CI's `self-checks` job runs it too.
+[verification/2026-10-26-mcp-step-3.md](verification/2026-10-26-mcp-step-3.md).
+
 ## Merchant Ed25519 keys are registered, and `/v1` has a contract table; neither is verified on a request yet (2026-10-26, VP-2)
 
 First step of the move from merchant OAuth to signed transport

@@ -1167,6 +1167,25 @@ pub trait Repositories:
     /// See `docs/plans/2026-09-13-dashboard-nav-notes/transport.md` for why
     /// a closure is the whole of what this seam costs.
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router;
+
+    /// The merchant MCP endpoint (ADR-0033), ready to merge into the root
+    /// router: the endpoint itself at `endpoint.resource`'s path, and its
+    /// RFC 9728 metadata at the host root.
+    ///
+    /// `ops` is how the write tools reach the rails and `auth` how a bearer
+    /// token becomes a merchant; both are `vpay-api`'s, behind traits this
+    /// crate owns, for [`Self::dashboard_procedure_router`]'s reason.
+    ///
+    /// # Errors
+    ///
+    /// [`crate::McpEndpointError`] when CrateStack refuses `endpoint` (an empty
+    /// origin list, a resource identifier that is not an absolute URL).
+    fn merchant_mcp_router(
+        &self,
+        ops: Arc<dyn crate::MerchantOperations>,
+        auth: Arc<dyn crate::McpAuthenticator>,
+        endpoint: &crate::McpEndpoint,
+    ) -> Result<cratestack::axum::Router, crate::McpEndpointError>;
 }
 
 /// The only [`Repositories`].
@@ -1232,6 +1251,16 @@ impl Repositories for PgRepositories {
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router {
         let provider = crate::dashboard_transport::ExtensionAuthProvider(auth);
         crate::schema::dashboard_procedure_router(self.cs.clone(), provider)
+    }
+
+    fn merchant_mcp_router(
+        &self,
+        ops: Arc<dyn crate::MerchantOperations>,
+        auth: Arc<dyn crate::McpAuthenticator>,
+        endpoint: &crate::McpEndpoint,
+    ) -> Result<cratestack::axum::Router, crate::McpEndpointError> {
+        let provider = crate::mcp_transport::MerchantMcpProvider(auth);
+        crate::schema::merchant_mcp_router(self.cs.clone(), ops, provider, endpoint)
     }
 }
 

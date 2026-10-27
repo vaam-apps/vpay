@@ -11,6 +11,18 @@ import type {
   CustomerListFilter,
   CheckoutSessionSummary,
   CheckoutSessionListFilter,
+  MetadataEntry,
+  NamedValue,
+  McpRedirect,
+  McpNextAction,
+  McpLastPaymentError,
+  McpPaymentMethodDetails,
+  McpPaymentIntent,
+  McpRefund,
+  OpenPaymentIntentInput,
+  ConfirmPaymentIntentInput,
+  CancelInput,
+  IssueRefundInput,
   Currency,
   CreateCurrencyInput,
   UpdateCurrencyInput,
@@ -135,6 +147,13 @@ import type {
   SearchWebhookDeliveriesArgs,
   SearchCustomersArgs,
   SearchCheckoutSessionsArgs,
+  RetrievePaymentIntentArgs,
+  OpenPaymentIntentArgs,
+  ConfirmPaymentIntentArgs,
+  CancelPaymentIntentArgs,
+  RetrieveRefundArgs,
+  IssueRefundArgs,
+  CancelRefundArgs,
   ProviderFlow,
   IntentStatus,
   ChargeState,
@@ -1535,6 +1554,41 @@ export class ProceduresApi {
   searchCheckoutSessions(args: SearchCheckoutSessionsArgs, options: CratestackRequestConfig = {}): Promise<Page<CheckoutSessionSummary>> {
     return this.runtime.post<unknown>("/$procs/searchCheckoutSessions", args, options)
       .then((value) => revivePagedWireFields(value, 'CheckoutSessionSummary') as Page<CheckoutSessionSummary>);
+  }
+
+  retrievePaymentIntent(args: RetrievePaymentIntentArgs, options: CratestackRequestConfig = {}): Promise<McpPaymentIntent> {
+    return this.runtime.post<unknown>("/$procs/retrievePaymentIntent", args, options)
+      .then((value) => reviveWireFields(value, 'McpPaymentIntent') as McpPaymentIntent);
+  }
+
+  openPaymentIntent(args: OpenPaymentIntentArgs, options: CratestackRequestConfig = {}): Promise<McpPaymentIntent> {
+    return this.runtime.post<unknown>("/$procs/openPaymentIntent", args, options)
+      .then((value) => reviveWireFields(value, 'McpPaymentIntent') as McpPaymentIntent);
+  }
+
+  confirmPaymentIntent(args: ConfirmPaymentIntentArgs, options: CratestackRequestConfig = {}): Promise<McpPaymentIntent> {
+    return this.runtime.post<unknown>("/$procs/confirmPaymentIntent", args, options)
+      .then((value) => reviveWireFields(value, 'McpPaymentIntent') as McpPaymentIntent);
+  }
+
+  cancelPaymentIntent(args: CancelPaymentIntentArgs, options: CratestackRequestConfig = {}): Promise<McpPaymentIntent> {
+    return this.runtime.post<unknown>("/$procs/cancelPaymentIntent", args, options)
+      .then((value) => reviveWireFields(value, 'McpPaymentIntent') as McpPaymentIntent);
+  }
+
+  retrieveRefund(args: RetrieveRefundArgs, options: CratestackRequestConfig = {}): Promise<McpRefund> {
+    return this.runtime.post<unknown>("/$procs/retrieveRefund", args, options)
+      .then((value) => reviveWireFields(value, 'McpRefund') as McpRefund);
+  }
+
+  issueRefund(args: IssueRefundArgs, options: CratestackRequestConfig = {}): Promise<McpRefund> {
+    return this.runtime.post<unknown>("/$procs/issueRefund", args, options)
+      .then((value) => reviveWireFields(value, 'McpRefund') as McpRefund);
+  }
+
+  cancelRefund(args: CancelRefundArgs, options: CratestackRequestConfig = {}): Promise<McpRefund> {
+    return this.runtime.post<unknown>("/$procs/cancelRefund", args, options)
+      .then((value) => reviveWireFields(value, 'McpRefund') as McpRefund);
   }
 
 }

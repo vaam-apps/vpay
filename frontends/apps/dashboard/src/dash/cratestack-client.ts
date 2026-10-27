@@ -50,8 +50,59 @@ import {
   type ProcedureResource,
 } from "./resource-name";
 
-/** The generated client's procedures, and nothing else of it. */
-export type DashProcedures = VpayDashClientClient["procedures"];
+type GeneratedProcedures = VpayDashClientClient["procedures"];
+
+/**
+ * The generated client's five searches, and nothing else of it.
+ *
+ * Since ADR-0033 the schema also declares the merchant MCP procedures
+ * (`openPaymentIntent`, `issueRefund`, …), and the generator emits every
+ * procedure, so the generated `procedures` object carries them too.
+ * `/dash/v1/$procs` answers each of them with 404, and nothing here should
+ * be able to name one. This class delegates exactly the five searches the
+ * dashboard reads, so the others are absent from its type and from the
+ * object this module hands out.
+ */
+class DashboardProcedures {
+  readonly #generated: GeneratedProcedures;
+
+  constructor(generated: GeneratedProcedures) {
+    this.#generated = generated;
+  }
+
+  searchPaymentIntents(
+    ...args: Parameters<GeneratedProcedures["searchPaymentIntents"]>
+  ): ReturnType<GeneratedProcedures["searchPaymentIntents"]> {
+    return this.#generated.searchPaymentIntents(...args);
+  }
+
+  searchRefunds(
+    ...args: Parameters<GeneratedProcedures["searchRefunds"]>
+  ): ReturnType<GeneratedProcedures["searchRefunds"]> {
+    return this.#generated.searchRefunds(...args);
+  }
+
+  searchWebhookDeliveries(
+    ...args: Parameters<GeneratedProcedures["searchWebhookDeliveries"]>
+  ): ReturnType<GeneratedProcedures["searchWebhookDeliveries"]> {
+    return this.#generated.searchWebhookDeliveries(...args);
+  }
+
+  searchCustomers(
+    ...args: Parameters<GeneratedProcedures["searchCustomers"]>
+  ): ReturnType<GeneratedProcedures["searchCustomers"]> {
+    return this.#generated.searchCustomers(...args);
+  }
+
+  searchCheckoutSessions(
+    ...args: Parameters<GeneratedProcedures["searchCheckoutSessions"]>
+  ): ReturnType<GeneratedProcedures["searchCheckoutSessions"]> {
+    return this.#generated.searchCheckoutSessions(...args);
+  }
+}
+
+/** The procedures this app may call: the five searches, see above. */
+export type DashProcedures = DashboardProcedures;
 
 /** What a procedure call needs to know about the session it reads for. */
 export interface ProcedureReader {
@@ -76,12 +127,14 @@ export function dashProcedures(
   config: DashboardConfig,
   bearer: string,
 ): DashProcedures {
-  return new VpayDashClientClient(config.apiBaseUrl, {
-    basePath: "/dash/v1",
-    headers: { authorization: `Bearer ${bearer}` },
-    fetch: (input, init) =>
-      fetch(input, { ...init, cache: "no-store", redirect: "error" }),
-  }).procedures;
+  return new DashboardProcedures(
+    new VpayDashClientClient(config.apiBaseUrl, {
+      basePath: "/dash/v1",
+      headers: { authorization: `Bearer ${bearer}` },
+      fetch: (input, init) =>
+        fetch(input, { ...init, cache: "no-store", redirect: "error" }),
+    }).procedures,
+  );
 }
 
 /**
