@@ -124,7 +124,11 @@ Not deviations, and worth stating because they look like ones:
 
 ## A second cache, for a federated issuer (2026-10-20, ADR-0030)
 
-`jwks_cache.rs` now holds two caches. `JwksCache` is the port described above
+> **Deleted in VP-6a (2026-10-27).** Staff SSO is gone, and `KeySetCache` and
+> its tests went with it; `jwks_cache.rs` holds only `JwksCache`, which serves
+> the merchant MCP validator. What follows is the record of what it was.
+
+`jwks_cache.rs` held two caches. `JwksCache` is the port described above
 and serves this deployment's **own** `/v1/oauth/jwks.json` to the two bearer
 validators. `KeySetCache` serves the **identity provider's** key set to the SSO
 callback, and differs in four ways, each deliberate:

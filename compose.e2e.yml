@@ -309,13 +309,9 @@ services:
       # boot-order guarantee only — the dashboard can still start before the
       # server has finished binding its listener.
       #
-      # Since 2026-09-07 the dashboard DOES call `/dash/v1` on render, so that
-      # race is no longer harmless in principle. What makes it survivable is
-      # that every such call is made per request rather than at boot, and a
-      # `fetch` that cannot connect is rendered as a failure with its request
-      # id rather than thrown (`src/server/api.ts`). `just test-e2e` and CI's
-      # e2e job both poll `/healthz` from outside before running Cypress,
-      # which is the actual readiness gate.
+      # Until VP-6b the dashboard renders a notice and calls nothing, so the
+      # race is harmless. `just test-e2e` and CI's e2e job both poll
+      # `/healthz` from outside, which is the actual readiness gate.
       vpay-server: { condition: service_started }
     ports: ["3000:3000"]
     restart: unless-stopped

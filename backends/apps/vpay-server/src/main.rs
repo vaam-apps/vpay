@@ -1222,7 +1222,7 @@ const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 /// — an unspecified bind address is mapped to the matching loopback address of
 /// the same family rather than used as a destination. Why, and what the
 /// in-process alternative would cost:
-/// [docs/reference/vpay-config.md § why the /v1 validator fetches its JWKS over loopback](../../../../docs/reference/vpay-config.md#why-the-v1-validator-fetches-its-jwks-over-loopback).
+/// [docs/reference/vpay-config.md § why the MCP validator fetches its JWKS over loopback](../../../../docs/reference/vpay-config.md#why-the-mcp-validator-fetches-its-jwks-over-loopback).
 fn loopback_jwks_url(bound: SocketAddr) -> String {
     let host = match bound.ip() {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
@@ -1464,7 +1464,9 @@ fn env_filter(directive: &str) -> tracing_subscriber::EnvFilter {
 mod tests {
     use std::time::{Duration, Instant};
 
-    use super::{grace_clock, install_crypto_provider};
+    use std::net::SocketAddr;
+
+    use super::{grace_clock, install_crypto_provider, loopback_jwks_url};
 
     #[tokio::test]
     async fn grace_clock_waits_at_least_the_full_grace_period_once_the_signal_fires() {
@@ -1502,6 +1504,54 @@ mod tests {
         assert!(
             result.is_err(),
             "grace_clock should never resolve when its sender is dropped without sending"
+        );
+    }
+
+    /// The decisive property of `loopback_jwks_url`: the host is always a
+    /// loopback address and the port is always the one that was *bound*.
+    ///
+    /// Each case is a bind address an operator actually writes.
+    /// `--bind 0.0.0.0:8080` is `vpay_config::cli::ServerArgs`'s own default
+    /// and is the case that matters most: a URL of
+    /// `http://0.0.0.0:8080/...` is not a destination, and this process
+    /// would be dialling it on every JWKS refresh. The `:0` cases are what
+    /// every subprocess test in `tests/cli.rs` binds, which is why the port
+    /// has to come from `TcpListener::local_addr` rather than from `--bind`.
+    #[test]
+    fn the_validators_jwks_url_is_always_loopback_on_the_bound_port() {
+        for (bound, expected) in [
+            ("0.0.0.0:8080", "http://127.0.0.1:8080/v1/oauth/jwks.json"),
+            (
+                "127.0.0.1:34567",
+                "http://127.0.0.1:34567/v1/oauth/jwks.json",
+            ),
+            // A specific, non-loopback interface an operator bound on
+            // purpose is used verbatim — this function does not second-guess
+            // an explicit choice, it only refuses to treat "every interface"
+            // as an address.
+            ("10.1.2.3:8080", "http://10.1.2.3:8080/v1/oauth/jwks.json"),
+            // IPv6: the family is preserved (an IPv6-only pod cannot dial
+            // 127.0.0.1) and the literal is bracketed, which a URL authority
+            // requires.
+            ("[::]:8080", "http://[::1]:8080/v1/oauth/jwks.json"),
+            ("[::1]:9090", "http://[::1]:9090/v1/oauth/jwks.json"),
+        ] {
+            let bound: SocketAddr = bound.parse().expect("a valid socket address");
+            assert_eq!(loopback_jwks_url(bound), expected);
+        }
+    }
+
+    /// The path half, pinned separately against the route `vpay_api::router`
+    /// actually mounts. If the OP were ever remounted somewhere else, this
+    /// URL would 404 and every `/v1` request would fail authentication with
+    /// no clue why — so the two are asserted to agree rather than left to a
+    /// reader to notice.
+    #[test]
+    fn the_validators_jwks_url_ends_at_the_route_the_router_mounts() {
+        let url = loopback_jwks_url("127.0.0.1:8080".parse().expect("a valid socket address"));
+        assert!(
+            url.ends_with("/v1/oauth/jwks.json"),
+            "the loopback URL must point at the route vpay_api::router mounts; got {url}"
         );
     }
 

@@ -728,7 +728,10 @@ proves the recorder is installed on the worker path too.
 
 ---
 
-## Why the `/v1` validator fetches its JWKS over loopback
+## Why the MCP validator fetches its JWKS over loopback
+
+> Until VP-3 this was the `/v1` bearer validator; `/v1` is now signed per request,
+> and the one validator left is the merchant MCP endpoint's (ADR-0033 D9).
 
 The public URL is what a _merchant_ uses and what the discovery document
 advertises, but a pod is not guaranteed to be able to reach its own public

@@ -351,11 +351,11 @@ pub fn reshape_refund(body: Value) -> Value {
 /// [`vpay_db::McpAuthenticator`] over a [`JwtValidator`] whose audience is
 /// the merchant MCP resource identifier (ADR-0033 D9).
 ///
-/// The same three checks [`crate::require_merchant_token`] makes, against a
-/// different audience: the token validates, its client is registered to a
-/// merchant, and it holds a scope this surface serves. A `/v1` token
-/// (`aud = vpay:v1`) fails the first, and an MCP token fails the first on
-/// `/v1`, because each validator is built for one audience.
+/// Three checks: the token validates against the merchant MCP audience, its
+/// client is registered to a merchant, and it holds a scope this surface
+/// serves. `/v1` no longer takes a bearer token at all (VP-3 signs every
+/// request), so an MCP token cannot reach `/v1`, and a token for any other
+/// audience fails the first check here.
 pub struct MerchantMcpAuth {
     validator: JwtValidator,
     config: Arc<ResourceConfig>,
