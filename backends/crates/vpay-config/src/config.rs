@@ -997,7 +997,7 @@ impl Config {
             // deployment whose `public_base_url` is `http://` would otherwise
             // hand a live rail an unencrypted callback host that nothing
             // checked. Reuses `validate_host` for the same reason
-            // `validate_dashboard_client` does — a callback URL is
+            // `console::validate_dashboard` does — a callback URL is
             // structurally the same kind of destination, and a leftover
             // `localhost`/`wiremock` one in production is exactly as
             // dangerous. The synthetic `label` only feeds the stub-marker
@@ -1517,10 +1517,9 @@ fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError
         });
     }
     // The dashboard-audience rule used to be here, as a fifth check against
-    // a constant. It moved to `Config::validate_all` on 2026-09-07: ADR-0017
-    // made the forbidden value the dashboard client's own `client_id`, which
-    // one registration cannot know. See
-    // `validate_no_merchant_claims_the_dashboard_client`.
+    // a constant. (It moved to `Config::validate_all` on 2026-09-07 for
+    // ADR-0017's dashboard client id; ADR-0036 deleted that client, and the
+    // check with it.)
     Ok(())
 }
 

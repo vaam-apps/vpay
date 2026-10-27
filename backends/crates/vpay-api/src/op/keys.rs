@@ -139,8 +139,7 @@ impl LoadedSigningKey {
     /// everything else from it.
     ///
     /// `issuer` is stamped into every token this key signs, and must be the
-    /// same `iss` the resource-server validator requires
-    /// ([`crate::resource_auth::JwtValidator::new`]).
+    /// same `iss` the OP advertises ([`crate::op::issuer_for`]).
     ///
     /// # Errors
     ///

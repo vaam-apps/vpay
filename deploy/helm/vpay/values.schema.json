@@ -71,7 +71,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["enabled"],
-      "description": "The admin frontend, templated by this chart since ADR-0022 (off by default). `publicOrigin` is required once `enabled` is true (the \"dashboard-public-origin\" guard, which also checks its SHAPE regardless of `enabled` — a trailing slash or a bare hostname there refuses every server action). `clientId`/`redirectUri`/`scope` are deliberately not guarded: the app itself fails closed on a missing value by rendering it on /login rather than crashing, so an empty default is an honest \"not wired up\" pod rather than one a guard needs to keep from crash-looping.",
+      "description": "The admin frontend, templated by this chart since ADR-0022 (off by default). `publicOrigin` is required once `enabled` is true (the \"dashboard-public-origin\" guard, which also checks its SHAPE regardless of `enabled` — a trailing slash or a bare hostname there refuses every server action).",
       "properties": {
         "enabled": { "type": "boolean" },
         "publicOrigin": { "type": "string" },
@@ -87,9 +87,6 @@
           "type": "string",
           "description": "This pod's view of /dash/v1. Empty means this release's own management Service when management.enabled is true, or the single -server Service otherwise."
         },
-        "clientId": { "type": "string" },
-        "redirectUri": { "type": "string" },
-        "scope": { "type": "string" },
         "service": {
           "type": "object",
           "additionalProperties": false,

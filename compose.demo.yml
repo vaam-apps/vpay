@@ -36,14 +36,13 @@
 # the demo profile's single `demo-merchant` entry is the entire registry while
 # this stack is up — `acme-cameroon` from the base file is gone, which is
 # correct: nobody holds its private key. Everything the overlay does not
-# mention (`providers`, `currencies`, `deployment.public_base_url`,
-# `dashboard_client`) still comes from the base file.
+# mention (`providers`, `currencies`, `deployment.public_base_url`) still
+# comes from the base file. The base file serves no console (R4), so the
+# overlay writes its own `dashboard:` block, naming the demo tenant.
 #
 # Note this stack loads `application-demo.yml` *instead of*
 # `application-sandbox.yml`, not in addition to it — vpay-config loads one
-# overlay, the one named by the profile. The only thing sandbox changed that
-# this does not is the dashboard's redirect URI, which nothing in the demo
-# exercises.
+# overlay, the one named by the profile.
 
 # # Every publication in THIS file is bound to 127.0.0.1, and that is a
 # # security property, not a tidiness one
@@ -298,16 +297,11 @@ services:
   # and authkestra matches a redirect URI byte for byte. Two demo stacks
   # therefore cannot both serve a dashboard."
   #
-  # The byte-for-byte matching is unchanged — that is authkestra behaving
-  # correctly, and it is still what makes this port different from the shop's
-  # or the checkout page's. What was wrong was the conclusion. A redirect URI
-  # has to be a FIXED string only if nothing writes it, and something does:
-  # `just gen-demo-keys` GENERATES the demo overlay, so exp35 (issue #78)
-  # templated the port into all three places that have to spell it the same —
-  # this publication, `VPAY_DASHBOARD_REDIRECT_URI` on the service in
-  # compose.e2e.yml, and `dashboard_client.redirect_uris` in the overlay — and
-  # keyed the recipe's staleness check on it, so moving the variable
-  # regenerates the registration rather than silently disagreeing with it.
+  # exp35 (issue #78) templated the port because a redirect URI had to spell it
+  # the same in three places. Since VP-6a (ADR-0036) there is no redirect URI,
+  # no OAuth client and no `dashboard_client` to keep in step: the port is this
+  # publication and the app's public origin in compose.e2e.yml, both read from
+  # the same variable.
   # Two demo stacks can now each serve a dashboard.
   #
   # `3000` remains the default, so CI's e2e job and a plain `just demo` are

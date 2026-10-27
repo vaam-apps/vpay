@@ -21,4 +21,3 @@ merchant_clients:
     cose_keys:
       - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
         label: acme-ci
-

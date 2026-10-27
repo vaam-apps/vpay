@@ -437,7 +437,7 @@ pub enum ConfigError {
     /// - The client omits `audience` (the SDKs make it configurable): the
     ///   same handler falls back to `aud = client_id`, so the token endpoint
     ///   returns `200` and every subsequent `/v1` call is rejected by
-    ///   `vpay_api::resource_auth`'s audience check as a bare `401` with no
+    ///   the OP's audience check as a bare `401` with no
     ///   diagnostic — the worse of the two, because it looks like a
     ///   credential problem and is not.
     ///

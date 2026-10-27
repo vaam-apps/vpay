@@ -923,8 +923,9 @@ pub(crate) const OUT_OF_BAND_REFERENCE_MAX_CHARS: usize = 500;
 
 /// How far into the future `out_of_band[received_at]` may be, in seconds.
 ///
-/// Thirty: one TOTP step (`crate::staff_auth::totp`), the only tolerance this
-/// codebase grants a caller's clock. A merchant cannot have received money
+/// Thirty: half a minute, the only tolerance this codebase grants a caller's
+/// clock on a merchant-supplied instant (the console's pairing proof has its
+/// own, `console_keys::PROOF_MAX_SKEW_SECS`). A merchant cannot have received money
 /// later than vpay recorded that they had; a merchant whose clock runs a few
 /// seconds fast must not be refused for it. Migration `0049`'s
 /// `received_before_recorded` is the same bound in the database.

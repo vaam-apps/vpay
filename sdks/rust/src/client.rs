@@ -167,8 +167,7 @@ fn trim_truncated_tail(bytes: &[u8]) -> &[u8] {
 /// Written with `.get(..)` rather than `&bytes[..limit]` even though `limit`
 /// is provably in range: `clippy::indexing_slicing` is on workspace-wide and
 /// this repository's house style answers it by not indexing at all rather
-/// than by allowing the lint locally (see `vpay_api::resource_auth`'s test
-/// helper, which says so).
+/// than by allowing the lint locally.
 fn bounded_prefix(bytes: &[u8]) -> String {
     let limit = bytes.len().min(BODY_PREFIX_LIMIT);
     let cut = bytes.get(..limit).unwrap_or(bytes);

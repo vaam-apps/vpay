@@ -138,28 +138,15 @@ dashboard:
     port: 3000
     annotations: {}
 
-  # This pod's view of `/dash/v1`, for the BFF's server-side calls
-  # (`app/api/dash/*`). Empty means this release's own management Service —
+  # This pod's view of `/dash/v1`. The application reads it only from VP-6b
+  # (its signed reader; today it is a notice page that calls nothing,
+  # ADR-0036). Empty means this release's own management Service —
   # the right answer whenever `management.enabled` is true, and the only
   # answer this chart could pick for an in-cluster deployment. If
   # `management.enabled` is false there is no management Service to default
   # to and an operator must set this explicitly (or run `-server` with every
   # surface, today's default, and point it there).
   apiUrl: ""
-
-  # The three OAuth values ADR-0017's authorization-code grant needed
-  # (`VPAY_DASHBOARD_CLIENT_ID`, `VPAY_DASHBOARD_REDIRECT_URI`,
-  # `VPAY_DASHBOARD_SCOPE`). vpay has no `dashboard_client` registration for
-  # them to mean anything since VP-6a (ADR-0036); the application still reads
-  # them until VP-6b replaces its sign-in. **Deliberately not guarded empty**, unlike
-  # `checkout.publicApiUrl`: `frontends/apps/dashboard/src/config/settings.ts`
-  # fails closed on a missing value by rendering "not configured" on
-  # `/login` rather than throwing, so an empty default here is an honest
-  # "not wired up yet" pod that still passes its own readiness probe —
-  # not a crash loop a guard needs to prevent.
-  clientId: ""
-  redirectUri: ""
-  scope: ""
 
   # The origin a browser reaches the dashboard on (`https://dash.example`).
   #

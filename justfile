@@ -3024,10 +3024,11 @@ expected_ignored := "0"
 # `backends/tests/integration/tests/dashboard_procedure_transport.rs`, the end
 # of CrateStack's read-only procedure transport over HTTP. Its own file rather
 # than cases in `dashboard_read_surface.rs` because that suite is about
-# `/dash/v1`'s hand-written `GET` routes behind `require_dashboard_token`, and
-# this one is about the transport mounted beside them — a different middleware
-# (`require_dashboard_procedure_token`), a `POST` carrying a JSON body, and a
-# router assembled a different way.
+# `/dash/v1`'s hand-written `GET` routes, and this one is about the transport
+# mounted beside them — a different envelope layer, a `POST` carrying a JSON
+# body, and a router assembled a different way. (When it was added the two sat
+# behind `require_dashboard_token` and `require_dashboard_procedure_token`;
+# VP-6a replaced both with the signed envelope and `dash_scope`.)
 #
 # **This bump is the whole reason to run the gate rather than reason about
 # it.** The binary was added by the commit that mounted the transport
@@ -4035,14 +4036,12 @@ demo_compose := "-f compose.yml -f compose.e2e.yml -f compose.demo.yml"
 # matched byte for byte. So two demo stacks cannot both serve a dashboard, and
 # the second `demo-up` fails on the port bind."
 #
-# The byte-for-byte matching is still true and is still the reason this was
-# hard. What changed is that the redirect URI is no longer a fixed string:
-# `gen-demo-keys` WRITES it from `demo_dashboard_port`, `compose.e2e.yml` sets
-# the app's `VPAY_DASHBOARD_REDIRECT_URI` from the same variable, and
-# `compose.demo.yml` publishes the container on it — so all three bytes agree
-# at any port, and the overlay is regenerated when the variable moves. Two
-# stacks can now each serve a dashboard; see `demo_dashboard_port` below and
-# `docs/runbooks/demo.md` §7.
+# The byte-for-byte matching was true and was the reason this was hard. What
+# changed is that the redirect URI stopped being a fixed string, and since VP-6a
+# (ADR-0036) there is no redirect URI at all: `compose.demo.yml` publishes the
+# container on `demo_dashboard_port` and `compose.e2e.yml` builds the app's
+# public origin from the same variable. Two stacks can each serve a dashboard;
+# see `demo_dashboard_port` below and `docs/runbooks/demo.md` §7.
 #
 # `vpay-checkout` and `vpay-shop` joined the list in Step 9 and had to: a
 # service that is in the file set but not in this list does not start, and the
@@ -5224,10 +5223,9 @@ demo-checkout:
     @echo "http://localhost:{{demo_checkout_port}}"
 
 # Print the demo dashboard's origin, for the CURRENT `demo_dashboard_port` —
-# the same origin `VPAY_DASHBOARD_REDIRECT_URI` and the overlay's registered
-# `redirect_uris` are built from. `localhost` rather than the host's LAN
-# address on purpose: `compose.demo.yml` binds this publication to `127.0.0.1`
-# and a staff sign-in form is what is behind it.
+# the same origin `VPAY_DASHBOARD_PUBLIC_ORIGIN` is built from. `localhost`
+# rather than the host's LAN address on purpose: `compose.demo.yml` binds this
+# publication to `127.0.0.1`.
 demo-dashboard:
     @echo "http://localhost:{{demo_dashboard_port}}"
 

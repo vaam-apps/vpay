@@ -2739,10 +2739,9 @@ mod tests {
         /// module exists to pin, and the one the route tables cannot see.
         ///
         /// `/v1/oauth/token` mints the **merchant** private-key-JWT
-        /// credential. ADR-0017's staff grant terminates at
-        /// `/dash/v1/oauth/token` (see `staff::oauth`), inside the `dash`
-        /// nest, so the management surface has no use for this route and
-        /// must not serve it: a `surfaces: [management]` pod that did would
+        /// credential. The management surface has no use for this route (the
+        /// staff grant that once terminated at `/dash/v1/oauth/token` is
+        /// deleted, ADR-0036) and must not serve it: a `surfaces: [management]` pod that did would
         /// mint merchant credentials on the staff tier, and ADR-0009's rate
         /// limit sits only in front of the business tier's copy.
         ///

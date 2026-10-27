@@ -238,11 +238,11 @@ fn valid_config_path() -> &'static str {
 }
 
 /// The configuration `vpay-server staff add` needs: a merchant to validate
-/// `--merchant` against, a dashboard client, and both `staff_auth` secrets.
+/// `--merchant` against, and a `dashboard:` block.
 ///
 /// A second fixture rather than fields on [`valid_config_path`]'s, because
 /// every other test in this file boots the *server* against that one and a
-/// registered `dashboard_client` would change what those boots mount.
+/// registered `dashboard:` would change what those boots mount.
 fn staff_config_path() -> &'static str {
     concat!(
         env!("CARGO_MANIFEST_DIR"),

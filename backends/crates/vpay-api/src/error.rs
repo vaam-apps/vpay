@@ -1216,9 +1216,8 @@ mod tests {
         serde_json::from_str(&body_string(response).await).expect("the body is valid JSON")
     }
 
-    /// Walks a JSON envelope without `value["key"]` indexing, mirroring
-    /// `resource_auth`'s own helper (the workspace warns on
-    /// `clippy::indexing_slicing`).
+    /// Walks a JSON envelope without `value["key"]` indexing (the workspace
+    /// warns on `clippy::indexing_slicing`).
     fn error_field<'a>(envelope: &'a Value, field: &str) -> Option<&'a str> {
         envelope.get("error")?.get(field)?.as_str()
     }
