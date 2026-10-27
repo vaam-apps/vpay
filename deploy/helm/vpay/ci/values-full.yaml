@@ -14,16 +14,11 @@
 # ADR-0022. `enabled: true` here, unlike before that ADR: this chart
 # templates a real Deployment for it now, and "everything this chart can
 # render" would otherwise skip the one workload that took the longest to
-# become templatable. `clientId`/`redirectUri`/`scope` point at nothing real
-# — this file exercises the SHAPE every value renders into, not a working
-# OAuth registration — and `publicOrigin` is required once `enabled` is
-# true (the "dashboard-public-origin" guard).
+# become templatable. `publicOrigin` is required once `enabled` is true (the
+# "dashboard-public-origin" guard).
 dashboard:
   enabled: true
   publicOrigin: "https://dash.example"
-  clientId: "dashboard"
-  redirectUri: "https://dash.example/api/auth/callback"
-  scope: "dashboard:read"
   podAnnotations:
     example.vpay/rendered-by: ci
 
@@ -135,22 +130,22 @@ networkPolicy:
     podSelector:
       app.kubernetes.io/name: vpay
       app.kubernetes.io/component: dashboard
+  # VP-6a: the service that pairs console keys, vaam, calls `/svc/v1` on the
+  # business tier — `-server`, the `vpay` Service — so the default-deny policy
+  # has to admit it. `helm-check` asserts the peer reaches `-server`'s policy
+  # and that `/svc/v1` is routed to nothing.
+  serviceIngress:
+    peers:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: vaam
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: vaam-api
   database:
     # TEST-NET-3 (RFC 5737), i.e. deliberately not a real address.
     cidrs:
       - 203.0.113.10/32
-  # Staff SSO's IdP, in both shapes `vpay.idpEgressRules` renders, so
-  # kubeconform sees them on the -management policy (management.enabled is on
-  # above). TEST-NET-2 (RFC 5737) and a made-up namespace: an in-cluster
-  # Keycloak and a private-address one are what this value exists for, a
-  # public IdP on 443 needs nothing here (railsEgress covers it).
-  idpEgress:
-    cidrs:
-      - 198.51.100.20/32
-    namespace: keycloak
-    podSelector:
-      app.kubernetes.io/name: keycloak
-    port: 8443
 
 podDisruptionBudget:
   enabled: true

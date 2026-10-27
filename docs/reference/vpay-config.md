@@ -198,7 +198,8 @@ the `.context(..)` calls actually reach an operator.
 `--oauth-signing-key-file`/`VPAY_OAUTH_SIGNING_KEY_FILE`,
 `--envelope-signing-key-file`/`VPAY_ENVELOPE_SIGNING_KEY_FILE` and
 `--envelope-signing-key-next-file`/`VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE` (VP-3;
-wherever `/v1` is mounted) are all
+wherever `/v1` is mounted, and since VP-6a wherever the management surface
+is) are all
 `Option<...>` at the clap level and all required by the binary that reads them.
 
 The split is deliberate. clap's own "required" would make the flag mandatory for
@@ -292,9 +293,17 @@ YAML (ADR-0003) and both, structurally, carrying no client secret:
   merchant's private key. The `jwks` set it also carries serves only the OP's
   `client_credentials` + `private_key_jwt` token endpoint (RFC 7523), which
   opens nothing on `/v1` and is removed by VP-4.
-- `DashboardClient` — the single `/dash/v1` client: authorization-code plus
+- ~~`DashboardClient` — the single `/dash/v1` client: authorization-code plus
   PKCE, a public client with no secret at all, requesting exactly one read-only
-  scope.
+  scope.~~ **Deleted 2026-10-26 (VP-6a,
+  [ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).**
+  `dashboard:` (`Dashboard { merchant_id }`) names the one tenant `/dash/v1` reads
+  and nothing else; a person's credential is a console key in the database, not
+  a registration here. `service_clients:` (`ServiceClient { client_id,
+capabilities, cose_keys }`) registers the services allowed to call `/svc/v1`;
+  see "`service_clients`" below. The table that follows describes the OP's
+  client conversion for merchants; its `DashboardClient` rows are the record of
+  what stood.
 
 ### Why these types, and not `authkestra_op::client::ClientRegistration` directly
 
@@ -719,7 +728,10 @@ proves the recorder is installed on the worker path too.
 
 ---
 
-## Why the `/v1` validator fetches its JWKS over loopback
+## Why the MCP validator fetches its JWKS over loopback
+
+> Until VP-3 this was the `/v1` bearer validator; `/v1` is now signed per request,
+> and the one validator left is the merchant MCP endpoint's (ADR-0033 D9).
 
 The public URL is what a _merchant_ uses and what the discovery document
 advertises, but a pod is not guaranteed to be able to reach its own public
@@ -748,3 +760,36 @@ must carry every key still inside its overlap window, which is a property of the
 database and not of this process's memory. An in-process source would have to read
 the same rows and cache them, which is a real design with its own invalidation
 question, not a simplification.
+
+---
+
+## `dashboard:` and `service_clients:` — the management surface (VP-6a)
+
+```yaml
+dashboard:
+  merchant_id: acme-cameroon-tenant
+
+service_clients:
+  - client_id: vaam
+    capabilities: [console_pairing]
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: vaam-2026-10
+```
+
+- `dashboard.merchant_id` must name a registered merchant
+  (`ConfigError::DashboardUnknownMerchant`); its presence is what mounts
+  `/dash/v1`, the procedure transport and `/svc/v1`. The block is optional: a
+  deployment without it answers a plain `404` under all three.
+- `service_clients[]` is a **separate list** from `merchant_clients[]`, read by
+  the same `read_cose_keys` (Ed25519, 43 characters of unpadded base64url,
+  optionally labelled). `capabilities` is a closed set — today `console_pairing` —
+  and a name this binary does not know fails to parse. A service with no
+  capability, no key, a `client_secret`, a `client_id` shared with a merchant or
+  another service, or a public key present anywhere else (`DuplicateCoseKey`
+  spans merchants and services) is a boot refusal.
+- **A capability is granted here and nowhere else.** No route, database row or
+  environment variable can add one.
+- `staff_auth:` and `dashboard_client:` are gone. A file that still carries
+  either fails to load (`deny_unknown_fields`): the operator is told, at boot,
+  that a sign-in they configured no longer exists.

@@ -98,15 +98,13 @@ export const wireShapes: Readonly<Record<string, WireShape>> = {
   WebhookDelivery: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   Customer: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   StaffMember: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  StaffSession: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  StaffSsoAttempt: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
-  OauthAuthorizationCode: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   Credential: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   Invoice: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   InvoiceItem: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   ManualPayment: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   RateLimitWindow: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   EnvelopeNonce: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  ConsoleKey: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   PaymentIntentSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   PaymentIntentListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   RefundSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
@@ -823,46 +821,6 @@ export const StaffMemberSortFieldValues = [
   "last_sign_in_at",
 ] as const satisfies readonly StaffMemberSortField[];
 
-export type StaffSessionSortField = 'id' | 'staff_id' | 'state' | 'created_at' | 'expires_at' | 'last_seen_at' | 'access_token' | 'access_token_expires_at';
-export const StaffSessionSortFieldValues = [
-  "id",
-  "staff_id",
-  "state",
-  "created_at",
-  "expires_at",
-  "last_seen_at",
-  "access_token",
-  "access_token_expires_at",
-] as const satisfies readonly StaffSessionSortField[];
-
-export type StaffSsoAttemptSortField = 'id' | 'state_hash' | 'nonce_hash' | 'code_verifier' | 'is_retry' | 'created_at' | 'expires_at';
-export const StaffSsoAttemptSortFieldValues = [
-  "id",
-  "state_hash",
-  "nonce_hash",
-  "code_verifier",
-  "is_retry",
-  "created_at",
-  "expires_at",
-] as const satisfies readonly StaffSsoAttemptSortField[];
-
-export type OauthAuthorizationCodeSortField = 'code_hash' | 'client_id' | 'staff_id' | 'session_id' | 'merchant_id' | 'scope' | 'code_challenge' | 'code_challenge_method' | 'redirect_uri' | 'nonce' | 'created_at' | 'expires_at' | 'consumed_at';
-export const OauthAuthorizationCodeSortFieldValues = [
-  "code_hash",
-  "client_id",
-  "staff_id",
-  "session_id",
-  "merchant_id",
-  "scope",
-  "code_challenge",
-  "code_challenge_method",
-  "redirect_uri",
-  "nonce",
-  "created_at",
-  "expires_at",
-  "consumed_at",
-] as const satisfies readonly OauthAuthorizationCodeSortField[];
-
 export type CredentialSortField = 'id' | 'staff_member_id' | 'kind' | 'material' | 'issuer' | 'subject' | 'counter' | 'must_change' | 'expires_at' | 'created_at' | 'updated_at';
 export const CredentialSortFieldValues = [
   "id",
@@ -949,6 +907,19 @@ export const EnvelopeNonceSortFieldValues = [
   "id",
   "expires_at",
 ] as const satisfies readonly EnvelopeNonceSortField[];
+
+export type ConsoleKeySortField = 'id' | 'staff_member_id' | 'alg' | 'public_key' | 'thumbprint' | 'label' | 'paired_at' | 'expires_at' | 'revoked_at';
+export const ConsoleKeySortFieldValues = [
+  "id",
+  "staff_member_id",
+  "alg",
+  "public_key",
+  "thumbprint",
+  "label",
+  "paired_at",
+  "expires_at",
+  "revoked_at",
+] as const satisfies readonly ConsoleKeySortField[];
 
 export interface PaymentIntentSummary {
   id: string;
@@ -1851,181 +1822,6 @@ export interface StaffMemberFindMany {
   orderBy?: StaffMemberOrderByClause[];
 }
 
-export interface StaffSession {
-  id?: string;
-  staff_id?: string;
-  state?: string;
-  created_at?: string;
-  expires_at?: string;
-  last_seen_at?: string;
-  access_token?: string | null;
-  access_token_expires_at?: string | null;
-}
-
-export interface CreateStaffSessionInput {
-  id: string;
-  staff_id: string;
-  state: string;
-  created_at: string;
-  expires_at: string;
-  last_seen_at: string;
-  access_token?: string | null;
-  access_token_expires_at?: string | null;
-}
-
-export interface UpdateStaffSessionInput {
-  staff_id?: string;
-  state?: string;
-  created_at?: string;
-  expires_at?: string;
-  last_seen_at?: string;
-  access_token?: string | null;
-  access_token_expires_at?: string | null;
-}
-
-export interface StaffSessionWhere {
-  id?: StringFilter;
-  staff_id?: StringFilter;
-  state?: StringFilter;
-  created_at?: DateTimeFilter;
-  expires_at?: DateTimeFilter;
-  last_seen_at?: DateTimeFilter;
-  access_token?: StringFilter;
-  access_token_expires_at?: DateTimeFilter;
-}
-
-export interface StaffSessionOrderByClause {
-  field: StaffSessionSortField;
-  direction: SortDirection;
-}
-
-export interface StaffSessionFindMany {
-  where?: StaffSessionWhere;
-  orderBy?: StaffSessionOrderByClause[];
-}
-
-export interface StaffSsoAttempt {
-  id?: string;
-  state_hash?: string;
-  nonce_hash?: string;
-  code_verifier?: string;
-  is_retry?: boolean;
-  created_at?: string;
-  expires_at?: string;
-}
-
-export interface CreateStaffSsoAttemptInput {
-  id: string;
-  state_hash: string;
-  nonce_hash: string;
-  code_verifier: string;
-  is_retry: boolean;
-  created_at: string;
-  expires_at: string;
-}
-
-export interface UpdateStaffSsoAttemptInput {
-  state_hash?: string;
-  nonce_hash?: string;
-  code_verifier?: string;
-  is_retry?: boolean;
-  created_at?: string;
-  expires_at?: string;
-}
-
-export interface StaffSsoAttemptWhere {
-  id?: StringFilter;
-  state_hash?: StringFilter;
-  nonce_hash?: StringFilter;
-  code_verifier?: StringFilter;
-  is_retry?: BooleanFilter;
-  created_at?: DateTimeFilter;
-  expires_at?: DateTimeFilter;
-}
-
-export interface StaffSsoAttemptOrderByClause {
-  field: StaffSsoAttemptSortField;
-  direction: SortDirection;
-}
-
-export interface StaffSsoAttemptFindMany {
-  where?: StaffSsoAttemptWhere;
-  orderBy?: StaffSsoAttemptOrderByClause[];
-}
-
-export interface OauthAuthorizationCode {
-  code_hash?: string;
-  client_id?: string;
-  staff_id?: string;
-  session_id?: string;
-  merchant_id?: string;
-  scope?: string;
-  code_challenge?: string;
-  code_challenge_method?: string;
-  redirect_uri?: string;
-  nonce?: string | null;
-  created_at?: string;
-  expires_at?: string;
-  consumed_at?: string | null;
-}
-
-export interface CreateOauthAuthorizationCodeInput {
-  code_hash: string;
-  client_id: string;
-  staff_id: string;
-  session_id: string;
-  merchant_id: string;
-  scope: string;
-  code_challenge: string;
-  code_challenge_method: string;
-  redirect_uri: string;
-  nonce?: string | null;
-  created_at: string;
-  expires_at: string;
-  consumed_at?: string | null;
-}
-
-export interface UpdateOauthAuthorizationCodeInput {
-  client_id?: string;
-  staff_id?: string;
-  session_id?: string;
-  merchant_id?: string;
-  scope?: string;
-  code_challenge?: string;
-  code_challenge_method?: string;
-  redirect_uri?: string;
-  nonce?: string | null;
-  created_at?: string;
-  expires_at?: string;
-  consumed_at?: string | null;
-}
-
-export interface OauthAuthorizationCodeWhere {
-  code_hash?: StringFilter;
-  client_id?: StringFilter;
-  staff_id?: StringFilter;
-  session_id?: StringFilter;
-  merchant_id?: StringFilter;
-  scope?: StringFilter;
-  code_challenge?: StringFilter;
-  code_challenge_method?: StringFilter;
-  redirect_uri?: StringFilter;
-  nonce?: StringFilter;
-  created_at?: DateTimeFilter;
-  expires_at?: DateTimeFilter;
-  consumed_at?: DateTimeFilter;
-}
-
-export interface OauthAuthorizationCodeOrderByClause {
-  field: OauthAuthorizationCodeSortField;
-  direction: SortDirection;
-}
-
-export interface OauthAuthorizationCodeFindMany {
-  where?: OauthAuthorizationCodeWhere;
-  orderBy?: OauthAuthorizationCodeOrderByClause[];
-}
-
 export interface Credential {
   id?: string;
   staff_member_id?: string | null;
@@ -2335,6 +2131,63 @@ export interface EnvelopeNonceOrderByClause {
 export interface EnvelopeNonceFindMany {
   where?: EnvelopeNonceWhere;
   orderBy?: EnvelopeNonceOrderByClause[];
+}
+
+export interface ConsoleKey {
+  id?: string;
+  staff_member_id?: string;
+  alg?: string;
+  public_key?: string;
+  thumbprint?: string;
+  label?: string | null;
+  paired_at?: string;
+  expires_at?: string;
+  revoked_at?: string | null;
+}
+
+export interface CreateConsoleKeyInput {
+  id: string;
+  staff_member_id: string;
+  alg: string;
+  public_key: string;
+  thumbprint: string;
+  label?: string | null;
+  paired_at: string;
+  expires_at: string;
+  revoked_at?: string | null;
+}
+
+export interface UpdateConsoleKeyInput {
+  staff_member_id?: string;
+  alg?: string;
+  public_key?: string;
+  thumbprint?: string;
+  label?: string | null;
+  paired_at?: string;
+  expires_at?: string;
+  revoked_at?: string | null;
+}
+
+export interface ConsoleKeyWhere {
+  id?: StringFilter;
+  staff_member_id?: StringFilter;
+  alg?: StringFilter;
+  public_key?: StringFilter;
+  thumbprint?: StringFilter;
+  label?: StringFilter;
+  paired_at?: DateTimeFilter;
+  expires_at?: DateTimeFilter;
+  revoked_at?: DateTimeFilter;
+}
+
+export interface ConsoleKeyOrderByClause {
+  field: ConsoleKeySortField;
+  direction: SortDirection;
+}
+
+export interface ConsoleKeyFindMany {
+  where?: ConsoleKeyWhere;
+  orderBy?: ConsoleKeyOrderByClause[];
 }
 
 export interface SearchPaymentIntentsArgs {

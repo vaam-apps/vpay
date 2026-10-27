@@ -16,9 +16,9 @@
 //! mounts `procedure_router` — never `router()`, which would also mount the
 //! generated CRUD for every one of this schema's twenty models (nineteen
 //! until `ManualPayment`, #251) — behind
-//! `vpay-api`'s `require_dashboard_procedure_token`, over a context built by
-//! `crate::dashboard_transport::ExtensionAuthProvider` from the tenant that
-//! middleware already resolved
+//! the signed `/dash/v1` envelope and `vpay-api`'s `dash_scope`, over a context
+//! built by `crate::dashboard_transport::ExtensionAuthProvider` from the tenant
+//! that scope step already resolved
 //! (`docs/plans/2026-09-13-dashboard-nav-notes/transport.md`). That context
 //! is never `vpay_db::persistence::system_context()` — the only context in
 //! this crate for which `is_system()` is true, and a system context carries

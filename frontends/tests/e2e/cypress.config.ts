@@ -9,19 +9,8 @@ import {
   startFrameFixtureServer,
   stopFrameFixtureServer,
 } from "./cypress/tasks/frameFixtureServer.js";
-import {
-  mintCheckoutPaymentIntent,
-  mintPaymentIntentsForPaging,
-} from "./cypress/tasks/checkoutTasks.js";
+import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
 import { logA11yViolations } from "./cypress/tasks/a11yTasks.js";
-import {
-  carriedForward,
-  carryForward,
-  secondsLeftInStep,
-  staffPassword,
-  staffTokenExpiry,
-  totpCode,
-} from "./cypress/tasks/dashboardTasks.js";
 
 /**
  * The compose stack's published ports, as a BROWSER reaches them.
@@ -44,16 +33,6 @@ const orangeStubUrl =
  */
 const shopPublishableKey =
   process.env["VPAY_SHOP_PUBLISHABLE_KEY"] ?? "pk_test_shopmerchantsandbox1";
-
-/**
- * The demo dashboard's one staff member, as `just demo-staff` created them.
- *
- * The default is that recipe's `demo_staff_email`, so a `cypress run` by hand
- * against a stack brought up the ordinary way needs no environment at all.
- * Only the address is here: the password is a credential and reaches the spec
- * through `cy.task`, never through `Cypress.env`.
- */
-const staffEmail = process.env["VPAY_STAFF_EMAIL"] ?? "ada@example.test";
 
 /**
  * `shop-embedded.cy.ts` needs the browser's same-origin policy off to reach
@@ -138,30 +117,11 @@ export default defineConfig({
       // the page under test.
       on("task", {
         mintCheckoutPaymentIntent,
-        mintPaymentIntentsForPaging,
         // `shop-hosted.cy.ts`'s `color-contrast` checks (issue #73) — prints
         // the measured ratio and the element a violation was found on, since
         // headless `cypress run` never surfaces `Cypress.log`'s
         // `consoleProps`. See `a11yTasks.ts`.
         logA11yViolations,
-        // `dashboard.cy.ts`'s three, all of them Node-side for
-        // `dashboardTasks.ts`'s reasons: the staff password is read from a
-        // file so it never enters `Cypress.env`, and the TOTP codes need a
-        // keyed hash the browser has no reason to be able to compute.
-        staffPassword,
-        totpCode,
-        secondsLeftInStep,
-        // The fourth, and the only one that reads vpay rather than a file or
-        // a hash: `access_token_expires_at` is what separates a token
-        // replaced BEFORE it expired from one replaced after a read failed.
-        staffTokenExpiry,
-        // The fifth and sixth, which read nothing at all: they are where one
-        // test in `dashboard.cy.ts` leaves a value for a later one, because
-        // `Cypress.env` does not survive that spec moving its primary origin
-        // to the shop's port and back. `dashboardTasks.ts` carries the
-        // measurement.
-        carryForward,
-        carriedForward,
         dump(payload: { what: string; value: string }) {
           console.log("PROBE " + payload.what + ": " + payload.value);
           return null;
@@ -182,9 +142,6 @@ export default defineConfig({
         CHECKOUT_URL: checkoutUrl,
         ORANGE_STUB_URL: orangeStubUrl,
         SHOP_PUBLISHABLE_KEY: shopPublishableKey,
-        // The address `just demo-staff` created. The PASSWORD is deliberately
-        // absent — `cy.task('staffPassword')` reads it from a file in Node.
-        STAFF_EMAIL: staffEmail,
       };
       return config;
     },

@@ -22,8 +22,8 @@
  * 2. **A `next/navigation` alias that does not exist in the checkout's
  *    config at all**, because the checkout stories never render a component
  *    that calls a Next router hook. Case 3 asserts it stays wired, because
- *    without it `PaymentsFilters` and `AppShell` throw the moment they
- *    render and axe never reaches them.
+ *    without it `PaymentsFilters` throws the moment it renders and axe never
+ *    reaches it.
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -82,8 +82,8 @@ describe("the browser a11y suite is still a gate", () => {
     const main = code(readFileSync(join(APP, ".storybook/main.ts"), "utf8"));
     expect(main).toContain("@storybook/addon-a11y");
     expect(main).toContain("@storybook/addon-vitest");
-    // Without this alias, `PaymentsFilters` (`useRouter`) and `AppShell`
-    // (`usePathname`) throw "invariant expected app router to be mounted"
+    // Without this alias, `PaymentsFilters` (`useRouter`)
+    // throws "invariant expected app router to be mounted"
     // the instant they render outside a mounted Next app router — measured
     // on this exact config with the entry removed.
     expect(main).toContain('"next/navigation"');

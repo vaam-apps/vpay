@@ -71,7 +71,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": ["enabled"],
-      "description": "The admin frontend, templated by this chart since ADR-0022 (off by default). `publicOrigin` is required once `enabled` is true (the \"dashboard-public-origin\" guard, which also checks its SHAPE regardless of `enabled` — a trailing slash or a bare hostname there refuses every server action). `clientId`/`redirectUri`/`scope` are deliberately not guarded: the app itself fails closed on a missing value by rendering it on /login rather than crashing, so an empty default is an honest \"not wired up\" pod rather than one a guard needs to keep from crash-looping.",
+      "description": "The admin frontend, templated by this chart since ADR-0022 (off by default). `publicOrigin` is required once `enabled` is true (the \"dashboard-public-origin\" guard, which also checks its SHAPE regardless of `enabled` — a trailing slash or a bare hostname there refuses every server action).",
       "properties": {
         "enabled": { "type": "boolean" },
         "publicOrigin": { "type": "string" },
@@ -87,9 +87,6 @@
           "type": "string",
           "description": "This pod's view of /dash/v1. Empty means this release's own management Service when management.enabled is true, or the single -server Service otherwise."
         },
-        "clientId": { "type": "string" },
-        "redirectUri": { "type": "string" },
-        "scope": { "type": "string" },
         "service": {
           "type": "object",
           "additionalProperties": false,
@@ -591,32 +588,22 @@
             }
           }
         },
+        "serviceIngress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "peers": {
+              "description": "NetworkPolicy ingress peers admitted to the -server traffic port besides the ingress controller: the services that call /svc/v1 (vaam). Rendered verbatim. See the networkpolicy-service-ingress guard.",
+              "type": "array",
+              "items": { "type": "object" }
+            }
+          }
+        },
         "database": {
           "type": "object",
           "additionalProperties": false,
           "properties": {
             "cidrs": { "type": "array", "items": { "type": "string" } },
-            "namespace": { "type": "string" },
-            "podSelector": {
-              "type": "object",
-              "additionalProperties": { "type": "string" }
-            },
-            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
-          }
-        },
-        "idpEgress": {
-          "type": "object",
-          "additionalProperties": false,
-          "description": "Extra egress peers for the staff SSO identity provider (staff_auth.sso), on the one pod that serves /dash/v1 (-management when management.enabled, otherwise -server; never the worker). Needed only when the IdP is NOT reachable through railsEgress: a private or in-cluster address, a port other than 443, or railsEgress.enabled false. A public IdP on 443 needs nothing here. Named destinations only, the shape of `database`; empty renders nothing. cidrs refuses 0.0.0.0/0, ::/0 and anything starting 169.254. (the metadata block); it cannot judge a merely too-wide block.",
-          "properties": {
-            "cidrs": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1,
-                "not": { "pattern": "^(0\\.0\\.0\\.0/0|::/0|169\\.254\\.)" }
-              }
-            },
             "namespace": { "type": "string" },
             "podSelector": {
               "type": "object",

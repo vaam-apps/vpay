@@ -6,18 +6,26 @@ what it did not.
 Authentication has its own document ([dashboard-auth.md](dashboard-auth.md));
 this one is about the surface and the product. The decision that the
 dashboard _observes and does not administer_ is
-[ADR-0008](../adr/0008-dashboard-scope.md); the decision that vpay runs its
-own OP for it is [ADR-0009](../adr/0009-dashboard-oidc-provider.md).
+[ADR-0008](../adr/0008-dashboard-scope.md); the decision that a request is a
+message signed by a paired console key (replacing the OP
+[ADR-0009](../adr/0009-dashboard-oidc-provider.md) chose, and the sign-in
+[ADR-0017](../adr/0017-staff-authentication.md) built on it) is
+[ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md).
+Everything below that describes a sign-in, a session cookie, a token or an
+`oauth/*` route is the record of what slice 1 built before VP-6a deleted it.
 
 ## The invariant
 
 > **A `/dash/v1` request reads exactly one tenant's rows: the one
-> `dashboard_client.merchant_id` names, fixed in YAML and checked at boot.**
+> `dashboard.merchant_id` names, fixed in YAML and checked at boot — unless the
+> key that signed it belongs to an administrator, who may name another
+> registered merchant ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).**
 
 Not a tenant resolved from the caller's credential, the way `/v1` resolves
-one — the value comes from configuration, and no claim in any token can
-change it. A deployment whose staff must see two merchants registers two
-dashboard clients; the field does not become a list.
+one — the value comes from configuration, and nothing the request says can
+change it for a non-administrator (the `?merchant_id=` parameter is not even
+parsed). A deployment whose staff must see two merchants needs two deployments;
+the field does not become a list.
 
 ## Slices
 

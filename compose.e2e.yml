@@ -290,50 +290,18 @@ services:
       # that had to change.
       target: runner
     environment:
-      # vpay as THIS SERVER reaches it. Every `/dash/v1` call the dashboard
-      # makes is server-side (ADR-0008), so this is the only API URL it needs
-      # — there is deliberately no browser-facing one, unlike `vpay-checkout`
-      # below, because no browser ever calls vpay from a dashboard page.
+      # Nothing below is read by the application today: since VP-6a (ADR-0036)
+      # it is a single notice page that calls vpay for nothing, and it has no
+      # OAuth client registration, redirect URI, scope, session or CSRF check to
+      # configure. The two variables stay because VP-6b's signed reader needs
+      # both, and a stack that already sets them does not have to learn them
+      # again.
+      #
+      # vpay as THIS SERVER reaches it.
       VPAY_DASH_API: http://vpay-server:8080
-      # The dashboard's own OAuth client registration, as `config/application.yml`
-      # spells it and the generated demo overlay leaves untouched. All three
-      # are REQUIRED: the app fails closed without them and `/login` renders
-      # the missing variable names instead of a form (ADR-0017 decision 4 —
-      # this app is the OAuth client, so it is the party that has to know its
-      # own registration).
-      VPAY_DASHBOARD_CLIENT_ID: vpay-dashboard
-      # Byte for byte one of `dashboard_client.redirect_uris`. **No browser
-      # ever visits it** — the app's own server follows the `/authorize` 302
-      # and exchanges the code — so there is no route in the dashboard at this
-      # path and nothing is missing. It is an identifier the two OAuth legs
-      # must spell identically, and `authkestra_op` matches it exactly: no
-      # prefix, no wildcard. `just gen-demo-keys` writes the same string into
-      # the overlay, and a check in that recipe fails a stale one.
-      VPAY_DASHBOARD_REDIRECT_URI: http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}/dash/v1/callback
-      # The single read-only scope the registration grants. Requested
-      # explicitly: an authorization request with no `scope` is granted none,
-      # and a token with no scope is refused by `/dash/v1` with a `403` that
-      # looks nothing like a configuration mistake.
-      VPAY_DASHBOARD_SCOPE: dashboard:read
-      # THE ORIGIN THE CSRF CHECK COMPARES AGAINST (issue #88 item 4).
-      #
-      # Every export of the dashboard's `'use server'` file is a POST endpoint
-      # anything on the internet can reach, and its session cookie is
-      # `SameSite=Lax` rather than `Strict`, so a top-level form submission
-      # from another site carries it. `src/server/csrf.ts` refuses an action
-      # whose `Origin` is not this value.
-      #
-      # SET HERE SINCE 2026-09-10 (exp36 review). Unset, that check falls back
-      # to comparing the `Host` header — never `X-Forwarded-Host`, so still
-      # stronger than Next's own, but a fallback rather than the thing. This
-      # stack is the one place in the repository where a browser actually
-      # drives those actions, so leaving it unset would have meant the
-      # configured path was the one path nothing ever exercised.
-      #
-      # The port is the same variable the publication and
-      # `VPAY_DASHBOARD_REDIRECT_URI` use, and it has to be: this is compared
-      # against the `Origin` a browser sends, which carries the host port.
-      # A stale literal here refuses every action with one sentence.
+      # The origin a browser reaches the dashboard on. The port is the same
+      # variable the publication uses, so a stale literal here is a mismatch
+      # with the published port.
       VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}
     depends_on:
       # `service_started`, not `service_healthy`: `vpay-server` has no
@@ -341,13 +309,9 @@ services:
       # boot-order guarantee only — the dashboard can still start before the
       # server has finished binding its listener.
       #
-      # Since 2026-09-07 the dashboard DOES call `/dash/v1` on render, so that
-      # race is no longer harmless in principle. What makes it survivable is
-      # that every such call is made per request rather than at boot, and a
-      # `fetch` that cannot connect is rendered as a failure with its request
-      # id rather than thrown (`src/server/api.ts`). `just test-e2e` and CI's
-      # e2e job both poll `/healthz` from outside before running Cypress,
-      # which is the actual readiness gate.
+      # Until VP-6b the dashboard renders a notice and calls nothing, so the
+      # race is harmless. `just test-e2e` and CI's e2e job both poll
+      # `/healthz` from outside, which is the actual readiness gate.
       vpay-server: { condition: service_started }
     ports: ["3000:3000"]
     restart: unless-stopped

@@ -86,6 +86,10 @@ rand.workspace = true
 # unpadded base64url, the format `--envelope-signing-key-file` reads. Already
 # in this binary's graph through `vpay-api`.
 base64 = "0.22"
+# Test-only: `tests/cli.rs` derives a console public key (SEC1, uncompressed and
+# compressed) at run time for the `staff pair-key` cases (VP-6a). The pin
+# `vpay-api` verifies a pairing's proof with, already in the graph.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 # Test-only, both of them: `exit_code_for`'s unit test constructs the two
 # `vpay_db::DbError` leaves whose exit codes must differ (a rollback to a
 # retired signing key -> 78, an unreachable database -> 69), and those

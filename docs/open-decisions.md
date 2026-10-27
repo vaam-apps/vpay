@@ -8,9 +8,11 @@ decision belongs in an ADR once it is taken.
   overlap that must cover that TTL. See
   [ADR-0009](adr/0009-dashboard-oidc-provider.md) and
   [the signing-key rotation runbook](runbooks/rotate-signing-key.md).
-- **OIDC provider evaluation:** Authkestra remains the accepted provider, but
-  the Keycloak/ZITADEL comparison has not been completed. See
-  [ADR-0009](adr/0009-dashboard-oidc-provider.md).
+- ~~**OIDC provider evaluation:** Authkestra remains the accepted provider, but
+  the Keycloak/ZITADEL comparison has not been completed.~~ **Moot since
+  2026-10-26 (VP-6a):** `/dash/v1` no longer has an OP, and `/v1/oauth` is
+  removed by VP-4. See
+  [ADR-0036](adr/0036-the-console-is-a-signed-message-under-a-paired-key.md).
 - **Merchant assertion and ingress controls:** decide whether `jti` values can
   be scoped per merchant and how ingress rate limits `/v1/oauth/token` and
   `/v1`. See [merchant-auth limits](flows/merchant-auth/verification-and-limits.md).
@@ -32,15 +34,18 @@ decision belongs in an ADR once it is taken.
   uses a separate host or a path under the API host, and whether a checkout
   session may create a PaymentIntent inline. See
   [the hosted checkout flow](flows/hosted-checkout.md).
-- **Staff sign-in limit:** deployments may set the sign-in rate-limit budget;
-  the default is not a policy decision. See
-  [ADR-0017](adr/0017-staff-authentication.md).
-- **Additional staff credentials:** decide whether a live payment deployment
+- ~~**Staff sign-in limit:** deployments may set the sign-in rate-limit budget;
+  the default is not a policy decision.~~ _Moot 2026-10-26 (VP-6a): there is no
+  sign-in to limit
+  ([ADR-0036](adr/0036-the-console-is-a-signed-message-under-a-paired-key.md))._
+- ~~**Additional staff credentials:** decide whether a live payment deployment
   may accept any single-factor credential beyond the implemented password,
-  TOTP and OIDC. See [ADR-0019](adr/0019-credential-model.md) § R1. _(Taken for
+  TOTP and OIDC. See [ADR-0019](adr/0019-credential-model.md) § R1.~~ _Moot
+  2026-10-26 (VP-6a): a person's credential is a paired console key and no
+  other kind is accepted. (Before that, taken for
   the `oidc` kind on 2026-10-19 — an id_token must prove a second factor,
-  [ADR-0030](adr/0030-staff-sign-in-federates-to-an-oidc-provider.md) decision 6. Still open for `hotp`, `magic_link`, `email_otp`, `phone_otp` and
-  `webauthn`.)_
+  [ADR-0030](adr/0030-staff-sign-in-federates-to-an-oidc-provider.md) decision 6. Open for `hotp`, `magic_link`, `email_otp`, `phone_otp` and
+  `webauthn`, which no longer have a door to open.)_
 - ~~**Federated staff provisioning:** decide whether IdP claims may grant admin,
   whether issuer allow-lists are deployment- or merchant-scoped, and how SSO
   members are provisioned.~~ _Taken 2026-10-19 (ADR-0019 § R2, R3, R4), recorded

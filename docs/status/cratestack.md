@@ -792,3 +792,64 @@ from the procedure's page, never from refine's `total` — pinned by
 `procedure-resources.test.ts`'s `reports 0 for a count the procedure says it
 does not know`. Evidence:
 [verification/2026-10-26-dashboard-cratestack-refine.md](verification/2026-10-26-dashboard-cratestack-refine.md).
+
+## 2026-10-27 — migration `0056` (console keys, and the sign-in tables go), and drift goes 214 → 208, measured
+
+VP-6a ([ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md))
+drops `staff_sessions`, `oauth_authorization_codes` and `staff_sso_attempts`,
+deletes the `password` and `totp` rows of `credentials`, and adds
+`console_keys`. Measured by
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` against a
+freshly migrated Postgres 16:
+`drift detected in 27 table(s)/view(s) (208 change(s) total)`.
+
+- Three relations left the report: `staff_sessions` and
+  `oauth_authorization_codes` (four `[safe]` lines each) and `staff_sso_attempts`
+  (five): **−13**.
+- `console_keys` joined with six `[safe]` lines: CHECKs `console_keys_alg_enum_check`,
+  `_id_length`, `_label_length`, `_public_key_shape` and `_thumbprint_format`,
+  and the index `console_keys_staff_member_idx`: **+6**. Its unique index on the
+  thumbprint is declared (`@unique`) and costs nothing; the two-column CHECK
+  `console_keys_lives_exactly_thirty_days` is invisible to the report and sits in
+  `postgres_smoke.rs`'s multi-column list instead (25 entries now: that one in,
+  `staff_sessions_token_expiry_is_paired` and
+  `staff_sso_attempts_lifetime_is_positive` out).
+- `credentials` gained `credentials_password_and_totp_are_retired`, a
+  single-column CHECK that closes the two kinds the migration retires: **+1**.
+- Nothing lossy: every `console_keys` column is `TEXT`/`TIMESTAMPTZ`, so
+  `EXPECTED_UNMAPPABLE_COLUMNS` stays 20.
+
+214 − 13 + 6 + 1 = 208. `EXPECTED_DRIFTED_RELATIONS` is 27 (29 − 3 + 1), the
+migration count `schema_migrates_cleanly_on_an_empty_database` pins is 56, and
+the model count in `vpay-db`'s `MODEL_TABLES` is 20. `StaffMember` lost its
+`delete` arm in the same change: nothing deletes a staff row, and a delete
+would cascade a person's console keys.
+
+## 2026-10-27 — migration `0057` (a pattern index for the console's key lookup), and drift goes 208 → 209, measured
+
+`/dash/v1` resolves a request's key by the COSE `kid` before it checks the
+signature, with `thumbprint LIKE '<16 hex>%'`
+(`vpay_db::ConsoleKeys::live_console_keys_for_kid`). `console_keys_thumbprint_key`
+is a plain btree, which answers a left-anchored `LIKE` only under the C
+collation; measured on 50 000 rows in a database created with an ICU `en-US`
+locale it was a `Seq Scan`, so any well-formed `kid` an unauthenticated caller
+sent cost a scan of the table. `0057_console-keys-thumbprint-prefix-index.sql`
+adds `console_keys_thumbprint_prefix_idx`, `text_pattern_ops` and partial on
+`revoked_at IS NULL`; the same query is an `Index Scan` with
+`~>=~`/`~<~` bounds, on the first execution of the prepared statement and past
+the custom-plan threshold. It is a new migration rather than an edit of `0056`
+because `just migrations-manifest` only appends and the PR had already pushed
+`0056`'s hash.
+
+- `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount`: one more
+  `[safe]` line (`index console_keys_thumbprint_prefix_idx exists in the live
+database but is not declared in the schema`; `@@index` has no
+  `text_pattern_ops` or partial spelling): **208 → 209**,
+  `EXPECTED_DRIFTED_RELATIONS` unchanged at 27. Measured with `cratestack migrate
+baseline --strict` on Postgres 16 migrated through `0056` and then `0057`
+  (207 → 208 without the bookkeeping table the test's own database carries).
+- `schema_migrates_cleanly_on_an_empty_database` pins **57** migrations.
+- `the_signed_transports_kid_lookup_is_served_by_a_pattern_index` pins the
+  index's shape and, with the unique index dropped in a rolled-back transaction
+  and `enable_seqscan = off`, that the planner reaches the lookup through it.
+  Delete `0057` and the plan is a `Seq Scan`.

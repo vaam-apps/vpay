@@ -39,10 +39,12 @@ use std::time::Duration;
 use anyhow::Context as _;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
-use vpay_api::envelope::{EnvelopeKeyError, EnvelopeKeys, V1Envelope, V1EnvelopeError};
+use vpay_api::envelope::{
+    EnvelopeKeyError, EnvelopeKeys, ManagementEnvelope, V1Envelope, V1EnvelopeError,
+};
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator};
+use vpay_api::resource_auth::JwtValidator;
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -145,13 +147,14 @@ enum StartupError {
     MissingSigningKeyFile,
 
     /// An envelope signing key flag was not supplied on a process that mounts
-    /// `/v1` (VP-3). Names the flag in both spellings, because the message is
+    /// a signed surface (VP-3, VP-6a). Names the flag in both spellings, because the message is
     /// the entire fix. Carries which of the two was missing so an operator who
     /// mounted one Secret key and not the other is told the right one.
     #[error(
-        "{flag} is required: vpay-server seals every /v1 response with the envelope signing key \
-         and cannot serve the merchant API without it (VP-3). A process that mounts no /v1 \
-         (deployment.surfaces without `business`) needs neither envelope key"
+        "{flag} is required: vpay-server seals every /v1, /dash/v1 and /svc/v1 response with the \
+         envelope signing key and cannot serve them without it (VP-3, VP-6a). A process that \
+         mounts none of them (deployment.surfaces with neither `business` nor `management`) \
+         needs neither envelope key"
     )]
     MissingEnvelopeKeyFile {
         /// `--envelope-signing-key-file / VPAY_ENVELOPE_SIGNING_KEY_FILE` or its
@@ -265,14 +268,11 @@ struct Booted {
     /// therefore loaded no envelope keys. `Some` on every process that does:
     /// `boot` refuses to return otherwise.
     v1_envelope: Option<V1Envelope>,
-    /// Everything the staff sign-in routes need, or `None`.
-    ///
-    /// `None` in three configurations, and all three are legal: no
-    /// `dashboard_client`, no `staff_auth.password_pepper`, or no
-    /// `staff_auth.totp_encryption_key`. In **livemode** the last two are
-    /// refused at boot by `vpay_config` (`StaffAuthSecretMissing`), so a
-    /// production deployment that registers a dashboard always has a login.
-    staff_login: Option<Arc<vpay_api::staff::StaffLogin>>,
+    /// The signed transport the management surface (`/dash/v1`, `/svc/v1`) is
+    /// wrapped in, or `None` on a process that mounts none
+    /// (`deployment.surfaces` without `management`, or no `dashboard:` block).
+    /// `Some` on every process that mounts it: `boot` refuses to return otherwise.
+    management_envelope: Option<ManagementEnvelope>,
 }
 
 /// The whole startup, as the ordered list of steps it is.
@@ -329,18 +329,16 @@ async fn run() -> anyhow::Result<()> {
 
     let booted = boot(&args).await?;
 
-    // Bound *before* the validator is built, because the validator needs the
-    // port this listener actually got — `--bind 127.0.0.1:0` is a real
-    // configuration (every test in tests/cli.rs uses an ephemeral port) and
-    // `args.bind` would still say `:0`.
+    // Bound before the router is built, so a port that is taken is a startup
+    // failure rather than a router nobody serves — and `--bind 127.0.0.1:0` is
+    // a real configuration (every test in tests/cli.rs uses an ephemeral port),
+    // so the address logged is the one the listener actually got.
     let listener = tokio::net::TcpListener::bind(args.bind)
         .await
         .with_context(|| format!("binding {}", args.bind))?;
     let bound = listener
         .local_addr()
         .context("reading the bound address back off the listener")?;
-    let dashboard_validator =
-        loopback_dashboard_validator(bound, &booted.merchant_op, &booted.config)?;
 
     // Corrected 2026-09-16. This said "Refunds are not routed: nothing calls
     // the `refunds` writer", and it had been false since the four refund
@@ -451,10 +449,9 @@ async fn run() -> anyhow::Result<()> {
         repositories: booted.repositories,
         merchant_op: booted.merchant_op,
         v1_envelope: booted.v1_envelope,
-        dashboard_validator,
+        management_envelope: booted.management_envelope,
         adapters,
         resource_config,
-        staff_login: booted.staff_login,
         surfaces,
         merchant_mcp,
     };
@@ -517,7 +514,7 @@ fn install_process_defaults(args: &ServerArgs) -> anyhow::Result<PrometheusHandl
 /// Not a style choice, and it was found by a test rather than reasoned out.
 /// `tracing_subscriber::fmt()` defaults to *stdout*, which is right for a
 /// long-running process — a container log collector reads stdout — and wrong
-/// for `staff add`, whose whole output is a one-time password an operator has
+/// for `staff add` and `staff pair-key`, whose whole output is a line an operator has
 /// to be able to pipe. With one stream, the password arrives as the fifth line
 /// of a JSON log and every line of that log is then a line an operator has to
 /// strip. Worse, a naive `> password.txt` would write the log to the file and
@@ -645,17 +642,34 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // After the database: the replay cache is a table, and the layer is built
     // over the repositories that reach it. Still before the listener binds, so
     // a merchant registry or layer configuration cstack refuses is `78`.
-    let v1_envelope = envelope_keys
-        .map(|keys| {
+    let surfaces = config
+        .deployment
+        .enabled_surfaces()
+        .context("resolving deployment.surfaces for the signed transport")?;
+    let v1_envelope = match (&envelope_keys, surfaces.business) {
+        (Some(keys), true) => Some(
             V1Envelope::new(&config, keys, Arc::clone(&repositories))
-                .context("assembling the signed /v1 transport (VP-3)")
-        })
-        .transpose()?;
-
-    // Built before `MerchantOp::new` takes the key by value. Both halves of
-    // one OP sign with one key, and `LoadedSigningKey::token_manager` hands
-    // out an `Arc` of the same `TokenManager` either way.
-    let staff_login = staff_login(&config, &signing_key, &repositories);
+                .context("assembling the signed /v1 transport (VP-3)")?,
+        ),
+        _ => None,
+    };
+    // The console is signed with the same response key and built wherever there
+    // is something of it to serve: `/dash/v1` on a `management` process and
+    // `/svc/v1` on a `business` one (ADR-0036 § "Which surface `/svc/v1` is on"),
+    // each only with a `dashboard:` block.
+    let management_envelope = match (&envelope_keys, &config.dashboard) {
+        (Some(keys), Some(_)) => Some(
+            ManagementEnvelope::new(&config, keys, Arc::clone(&repositories))
+                .context("assembling the signed /dash/v1 and /svc/v1 transport (VP-6a)")?,
+        ),
+        _ => {
+            tracing::info!(
+                "no dashboard is configured; /dash/v1 and /svc/v1 are not mounted and every \
+                 path under them answers 404"
+            );
+            None
+        }
+    };
 
     let merchant_op = Arc::new(MerchantOp::new(
         &config,
@@ -669,18 +683,18 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
         repositories,
         merchant_op,
         v1_envelope,
-        staff_login,
+        management_envelope,
     })
 }
 
-/// The Ed25519 keys `/v1` responses are sealed with, read from the Secret
-/// mounts named by `--envelope-signing-key-file` and
-/// `--envelope-signing-key-next-file`, or `None` when this process mounts no
-/// `/v1` (VP-3).
+/// The Ed25519 keys responses are sealed with, read from the Secret mounts named
+/// by `--envelope-signing-key-file` and `--envelope-signing-key-next-file`, or
+/// `None` when this process mounts nothing that seals (VP-3; the management
+/// surface since VP-6a).
 ///
-/// Loaded wherever `deployment.surfaces` includes `business` — the surface
-/// that mounts `/v1` — and nowhere else: a management-only pod seals nothing
-/// and the chart does not mount the Secret there. Refused rather than
+/// Loaded wherever `deployment.surfaces` includes `business` (`/v1`) or
+/// `management` (`/dash/v1`, `/svc/v1`): a process of neither seals nothing and
+/// the chart does not mount the Secret there. The one key signs all three. Refused rather than
 /// defaulted when absent, malformed, or the two are one seed
 /// ([`EnvelopeKeys::from_files`]); a server that booted without them would
 /// answer `/healthz` with a cheerful 200 and refuse every real request.
@@ -702,7 +716,7 @@ fn load_envelope_keys(
         .deployment
         .enabled_surfaces()
         .context("resolving deployment.surfaces for the envelope keys")?;
-    if !surfaces.business {
+    if !surfaces.business && !surfaces.management {
         return Ok(None);
     }
     let current =
@@ -717,12 +731,12 @@ fn load_envelope_keys(
         },
     )?;
     let keys =
-        EnvelopeKeys::from_files(current, next).context("loading the /v1 envelope signing keys")?;
+        EnvelopeKeys::from_files(current, next).context("loading the envelope signing keys")?;
     let (current_public, next_public) = keys.public_keys_base64url();
     tracing::info!(
         %current_public,
         %next_public,
-        "/v1 envelope signing keys loaded; merchants pin these two public keys"
+        "envelope signing keys loaded; merchants and the console pin these two public keys"
     );
     Ok(Some(keys))
 }
@@ -836,22 +850,6 @@ fn loopback_mcp_validator(
     .context("building the JWKS client the MCP token validator fetches with")
 }
 
-/// The `/dash/v1` token validator, or `None` when this deployment registers
-/// no `dashboard_client`.
-///
-/// Pointed at this process's own JWKS over loopback, with the OP's issuer —
-/// vpay runs one OP for both surfaces (ADR-0009), so there is one key set to
-/// fetch — and the dashboard's audience. (Until VP-3 a second validator
-/// guarded `/v1` with the merchant audience; `/v1` is signed now and holds
-/// none, so this is the only token validator in the process.)
-///
-/// `None` propagates all the way to `vpay_api::router`, which then mounts no
-/// `/dash/v1` nest at all — see `RouterDeps::dashboard_validator`.
-///
-/// # Errors
-///
-/// Whatever building the JWKS client fails with — in practice only a TLS or
-/// client-construction failure, since no request is made here.
 /// Runs an operator subcommand and returns, without binding anything.
 ///
 /// It takes a [`vpay_config::StaffCommand`] rather than the whole
@@ -864,7 +862,7 @@ fn loopback_mcp_validator(
 ///
 /// Whatever the subcommand's own step fails with — a config that will not
 /// load, a database that will not open, a merchant that is not registered, an
-/// address that is already taken.
+/// address that is already taken, a key that is not a P-256 point.
 async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> anyhow::Result<()> {
     match command {
         vpay_config::StaffCommand::Add {
@@ -873,15 +871,25 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
             name,
             admin,
         } => staff_add(args, &merchant, &email, &name, admin).await,
+        vpay_config::StaffCommand::PairKey {
+            staff,
+            public_key,
+            label,
+        } => pair_key(args, &staff, &public_key, label.as_deref()).await,
+        vpay_config::StaffCommand::RevokeKey { thumbprint } => revoke_key(args, &thumbprint).await,
     }
 }
 
-/// `vpay-server staff add` — the only way a staff member is created
-/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 1)
-/// and, since `--admin`, the only way one is created as a cross-tenant
-/// reader ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)).
-/// `admin` defaults to `false` at the `clap` layer, so an operator who never
-/// reads this far gets the narrower account.
+/// `vpay-server staff add` — the only way a staff member is created by hand
+/// and, since `--admin`, the only way one is created as a cross-tenant reader
+/// ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)). A
+/// person paired through vaam is provisioned by that pairing as a plain member;
+/// this is how an operator makes an administrator, or a member who has no vaam
+/// admin phone. `admin` defaults to `false` at the `clap` layer, so an operator
+/// who never reads this far gets the narrower account.
+///
+/// **It writes no credential** (VP-6a): the member reads `/dash/v1` only once a
+/// console key is attached to them, by `staff pair-key` or by a pairing.
 ///
 /// # The order of the checks, and why
 ///
@@ -893,18 +901,14 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
 ///
 /// # What it prints, and where
 ///
-/// The one-time password goes to **stdout**, alone on its line, so an
-/// operator can pipe it. Everything else goes to the tracing subscriber,
-/// which by default is JSON on stderr. A password interleaved into a JSON log
-/// stream is a password in a log aggregator.
+/// The new `stf_…` id goes to **stdout**, alone on its line, so an operator can
+/// pipe it into `staff pair-key --staff`. Everything else goes to the tracing
+/// subscriber, which on a subcommand is stderr.
 ///
 /// # Errors
 ///
 /// [`anyhow::Error`] naming the step. A duplicate address is
-/// `PersistenceError::Unique` from the `staff_members_email_key` index. That
-/// index is what refuses it — see `vpay_db::Staff::create`'s own doc for why
-/// the `create`-not-`upsert` choice is a guard against a *different* case and
-/// is not what makes this one fail.
+/// `PersistenceError::Unique` from the `staff_members_email_key` index.
 async fn staff_add(
     args: &ServerArgs,
     merchant: &str,
@@ -916,14 +920,6 @@ async fn staff_add(
         vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
             .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
 
-    let (pepper, totp_key) = config.staff_auth.both().context(
-        "staff_auth.password_pepper and staff_auth.totp_encryption_key are both required to \
-         create a staff member: the password is hashed with the pepper, so a row written \
-         without one could never be verified against a deployment that has one (ADR-0017)",
-    )?;
-    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
-        .context("reading the staff_auth secrets")?;
-
     // Before the database, for the reason in this function's doc.
     anyhow::ensure!(
         config
@@ -931,16 +927,12 @@ async fn staff_add(
             .iter()
             .any(|client| client.merchant_id == merchant),
         "--merchant {merchant} is not a merchant_id any merchant_clients entry registers; a \
-         staff member bound to it could sign in and see nothing at all"
+         staff member bound to it could read nothing at all"
     );
 
     // Lower-cased here, once, because `staff_members_email_is_lower_case` refuses the
-    // insert otherwise and because the sign-in lookup is a plain equality.
+    // insert otherwise and because the lookup is a plain equality.
     let email = email.trim().to_lowercase();
-    let password = vpay_api::staff_auth::tokens::one_time_password();
-    let password_hash = credentials
-        .hash_password(&password)
-        .context("hashing the one-time password")?;
 
     let database_url = args
         .common
@@ -950,7 +942,6 @@ async fn staff_add(
     let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
     let id = vpay_core::ids::staff_id();
-    let now = time::OffsetDateTime::now_utc();
     vpay_db::Staff::create(
         repositories.as_ref(),
         vpay_db::NewStaff {
@@ -959,256 +950,191 @@ async fn staff_add(
             email: email.clone(),
             display_name: display_name.to_owned(),
             is_admin: admin,
-            now,
+            now: time::OffsetDateTime::now_utc(),
         },
     )
     .await
     .with_context(|| format!("creating staff member {email}"))?;
 
-    // THE PASSWORD IS A SECOND ROW SINCE ADR-0019, and two inserts that are
-    // not one statement have a window between them. A failure here leaves a
-    // staff member who can never sign in AND whose address is taken — the
-    // email unique index refuses a second `staff add` for them, so the
-    // operator could not even retry.
-    //
-    // So this compensates. A real transaction would be better and is not
-    // available: `TxRepositories` is a hand-curated trait of raw `sqlx`
-    // statements, and putting these two inserts in it would take both tables
-    // off the generated data layer, which is the property migrations 0035 and
-    // 0044 were both shaped to buy (`vpay_db::Staff::delete`'s doc carries the
-    // argument).
-    //
-    // The residual is real and is not hidden: if the compensating delete also
-    // fails, the operator is shown BOTH errors and the `stf_…` to remove by
-    // hand. That is strictly better than either error alone, and it is why
-    // this is not a `?` on the delete.
-    let credential = vpay_db::Credentials::create(
-        repositories.as_ref(),
-        vpay_db::NewCredential {
-            id: vpay_core::ids::credential_id(),
-            staff_member_id: Some(id.clone()),
-            kind: vpay_db::CredentialKind::Password,
-            material: Some(password_hash),
-            issuer: None,
-            subject: None,
-            // The one-time password the CLI is about to print is a credential
-            // the operator has seen; it stops being usable the moment its
-            // owner picks their own.
-            must_change: true,
-            expires_at: None,
-            now,
-        },
-    )
-    .await;
-    if let Err(error) = credential {
-        let rolled_back = vpay_db::Staff::delete(repositories.as_ref(), &id).await;
-        return match rolled_back {
-            Ok(_) => Err(anyhow::Error::new(error).context(format!(
-                "creating the password credential for staff member {email}; the staff row was \
-                 removed again, so `staff add` can be retried"
-            ))),
-            Err(cleanup) => Err(anyhow::Error::new(error).context(format!(
-                "creating the password credential for staff member {email}, AND the staff row \
-                 could not be removed again ({cleanup}). Staff member {id} exists, cannot sign \
-                 in, and holds the address — delete it by hand before retrying"
-            ))),
-        };
-    }
-
     tracing::info!(
         staff_id = %id,
         merchant_id = %merchant,
         is_admin = admin,
-        "created a staff member; the one-time password is on stdout and is not logged"
+        "created a staff member; attach a console key with `vpay-server staff pair-key`"
     );
 
     // stdout, alone, and never through `tracing`. `print_stdout` is a
     // workspace `warn` lint precisely so that writing to stdout is a
-    // deliberate act; this was the one place in either binary where it is the
-    // right one, because the value must be pipeable. `callbacks ensure`'s
-    // per-rail report is the second, since 2026-10-22.
-    //
-    // "Alone" is what `install_process_defaults` arranges: on a subcommand it
-    // points the tracing subscriber at **stderr**, so this line is the whole
-    // of stdout. Without that, the password is the fifth line of a JSON log —
-    // measured, by the test named below, on the first draft of this
-    // subcommand.
+    // deliberate act; "alone" is what `install_process_defaults` arranges: on
+    // a subcommand it points the tracing subscriber at **stderr**.
     #[allow(
         clippy::print_stdout,
-        reason = "the one-time password must be pipeable and must be the whole of stdout; \
+        reason = "the new member's id must be pipeable and must be the whole of stdout; \
                   `install_process_defaults` puts a subcommand's logs on stderr so it is"
     )]
     {
-        println!("{password}");
+        println!("{id}");
     }
 
     Ok(())
 }
 
-/// Assembles the staff sign-in state, or `None` and no staff login is served
-/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+/// `vpay-server staff pair-key` — attaches a console key to an existing, active
+/// staff member: the break-glass way in (VP-6a, owner ruling Q2) and the **only**
+/// way a key reaches an administrator (`POST /svc/v1/console_keys` refuses one).
 ///
-/// Three inputs, all three required, and the `None` for each is a different
-/// legal deployment:
+/// There is no proof of possession: an operator who can run this against the
+/// database already holds more authority than a pairing grants. So it is bounded
+/// the other way: it creates no member, changes no admin flag, and shares
+/// [`vpay_api::console_keys::store_key`] with the service route, so the 30-day
+/// life, the thumbprint's uniqueness and "a revoked or expired key is never
+/// reinstated" are decided in one place. Idempotent for the same member's live
+/// key; any other collision is an error.
 ///
-/// * no `dashboard_client` — this deployment runs no dashboard at all, and
-///   `/dash/v1` mounts nothing;
-/// * no `staff_auth.password_pepper` or no `staff_auth.totp_encryption_key` —
-///   this deployment runs the `/dash/v1` **read** surface with no way to sign
-///   in, which is exactly the state this repository was in before ADR-0017.
-///   Legal in sandbox; refused at boot in livemode by
-///   `vpay_config::ConfigError::StaffAuthSecretMissing`.
+/// The key is parsed before the configuration is read, before any connection:
+/// a key that is not a P-256 point is answered in milliseconds.
 ///
-/// A **fourth** `None` is not legal and is not silent: a `totp_encryption_key`
-/// that is not 32 bytes of base64url is a configured secret this process
-/// cannot use, so it is logged at `error` and the login is not mounted rather
-/// than mounted with a key that would fail on the first enrolment. It is
-/// deliberately not a hard boot failure: the reads are unaffected, and a
-/// deployment losing its dashboard login is a smaller outage than a deployment
-/// losing its `/v1`.
-fn staff_login(
-    config: &vpay_config::Config,
-    key: &LoadedSigningKey,
-    repositories: &Arc<dyn vpay_db::Repositories>,
-) -> Option<Arc<vpay_api::staff::StaffLogin>> {
-    let dashboard = config.dashboard_client.as_ref()?;
-    let Some((pepper, totp_key)) = config.staff_auth.both() else {
-        tracing::warn!(
-            client_id = %dashboard.client_id,
-            "a dashboard_client is registered but staff_auth is incomplete; /dash/v1 mounts its \
-             READ surface and NO staff login. Set staff_auth.password_pepper and \
-             staff_auth.totp_encryption_key to serve one (ADR-0017). A livemode deployment \
-             refuses to start in this state"
-        );
-        return None;
-    };
+/// Prints one line to stdout, `<staff id> <key id> <thumbprint> <expires_at
+/// unix seconds>`, alone, so an operator can capture it.
+///
+/// # Errors
+///
+/// [`anyhow::Error`] naming the step: a key that does not parse, a member who
+/// does not exist or is disabled, a key already registered to someone else,
+/// revoked or expired.
+async fn pair_key(
+    args: &ServerArgs,
+    staff: &str,
+    public_key: &str,
+    label: Option<&str>,
+) -> anyhow::Result<()> {
+    let key = vpay_api::console_keys::parse_public_key(public_key)
+        .map_err(|error| anyhow::anyhow!("--public-key: {error}"))?;
+    let label = label
+        .map(vpay_api::console_keys::clean_label)
+        .transpose()
+        .map_err(|error| anyhow::anyhow!("--label: {error}"))?;
 
-    let credentials = match vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key) {
-        Ok(credentials) => Arc::new(credentials),
-        Err(error) => {
-            tracing::error!(
-                %error,
-                "staff_auth is configured but unusable; /dash/v1 mounts its READ surface and NO \
-                 staff login"
-            );
-            return None;
-        }
-    };
+    let database_url = args
+        .common
+        .database_url
+        .as_deref()
+        .context("--database-url / DATABASE_URL is required: `staff pair-key` writes a row")?;
+    let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
-    tracing::info!(
-        client_id = %dashboard.client_id,
-        merchant_id = %dashboard.merchant_id,
-        "/dash/v1 serves the staff authorization-code grant (ADR-0017): password + TOTP, \
-         server-side sessions, and tokens whose audience is this client id"
+    let member = if staff.starts_with(vpay_core::ids::STAFF_PREFIX) {
+        vpay_db::Staff::find(repositories.as_ref(), staff).await?
+    } else {
+        vpay_db::Staff::find_by_email(repositories.as_ref(), &staff.trim().to_lowercase()).await?
+    }
+    .with_context(|| format!("--staff {staff}: no such staff member"))?;
+    anyhow::ensure!(
+        member.is_active(),
+        "--staff {staff}: the member is disabled; a key paired to a disabled member would \
+         authenticate nobody"
     );
 
-    // Parsed here rather than in `vpay_config`, for `StaffCredentials::new`'s
-    // reason: the syntax is decided where the matching is. An entry that does
-    // not parse takes the login down with it rather than narrowing the list
-    // silently — a typo'd allow-list is a per-address budget that has quietly
-    // become the whole deployment's again, which is the failure this field
-    // exists to fix and the one nobody would notice.
-    let trusted_proxies = match vpay_api::staff::client_address::TrustedProxies::parse(
-        &config.staff_auth.trusted_proxies,
-    ) {
-        Ok(proxies) => proxies,
-        Err(error) => {
-            tracing::error!(
-                %error,
-                "staff_auth.trusted_proxies is unusable; /dash/v1 mounts its READ surface \
-                 and NO staff login"
-            );
-            return None;
-        }
-    };
-    if trusted_proxies.is_empty() {
-        tracing::info!(
-            "staff_auth.trusted_proxies is empty: the sign-in rate limiter counts the \
-             TRANSPORT PEER. Behind a reverse proxy that is one budget for the whole \
-             deployment (ADR-0017 Consequences); name the proxy to count the caller"
+    let paired = vpay_api::console_keys::store_key(
+        repositories.as_ref(),
+        &member,
+        &key,
+        label,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("pairing the key to {}: {error}", member.id))?;
+
+    tracing::info!(
+        staff_id = %member.id,
+        is_admin = member.is_admin,
+        thumbprint = %paired.key.thumbprint,
+        created = paired.created,
+        "a console key was paired from the command line"
+    );
+
+    #[allow(
+        clippy::print_stdout,
+        reason = "the result must be capturable and must be the whole of stdout; \
+                  `install_process_defaults` puts a subcommand's logs on stderr so it is"
+    )]
+    {
+        println!(
+            "{} {} {} {}",
+            member.id,
+            paired.key.id,
+            paired.key.thumbprint,
+            paired.key.expires_at.unix_timestamp()
         );
     }
 
-    // `staff_auth.sso` (ADR-0030): the block's presence is the whole switch.
-    // A provider that cannot even be constructed is the fixed TLS stack
-    // failing, so it takes the SSO routes down (they answer "not configured")
-    // and leaves password + TOTP — the break-glass path — mounted.
-    let sso = config.staff_auth.sso.as_ref().and_then(|sso| {
-        match vpay_api::staff::sso::SsoProvider::new(sso, &dashboard.merchant_id) {
-            Ok(provider) => {
-                tracing::info!(
-                    issuer = %sso.issuer,
-                    client_id = %sso.client_id,
-                    required_group = %sso.required_group,
-                    "/dash/v1 offers staff SSO (ADR-0030): members are provisioned on first \
-                     sign-in into merchant {}, never as admins; password + TOTP stays mounted \
-                     as the break-glass path",
-                    dashboard.merchant_id,
-                );
-                Some(Arc::new(provider))
-            }
-            Err(error) => {
-                tracing::error!(
-                    %error,
-                    "staff_auth.sso is configured but its HTTP client could not be built; SSO is \
-                     NOT offered. Password + TOTP is unaffected"
-                );
-                None
-            }
-        }
-    });
-
-    Some(Arc::new(vpay_api::staff::StaffLogin {
-        credentials,
-        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
-            config,
-            dashboard,
-            key,
-            Arc::clone(repositories),
-        )),
-        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(config.staff_auth.rate_limits),
-        trusted_proxies,
-        issuer_label: config.deployment.name.clone(),
-        sso,
-    }))
+    Ok(())
 }
 
-fn loopback_dashboard_validator(
-    bound: SocketAddr,
-    merchant_op: &MerchantOp,
-    config: &vpay_config::Config,
-) -> anyhow::Result<Option<DashboardJwtValidator>> {
-    let Some(dashboard) = config.dashboard_client.as_ref() else {
-        tracing::info!(
-            "no dashboard_client is registered; /dash/v1 is not mounted and every path under \
-             it answers 404"
-        );
-        return Ok(None);
-    };
+/// `vpay-server staff revoke-key` — revokes a console key by thumbprint: the
+/// break-glass counterpart of `staff pair-key`, for when no vaam service can
+/// (VP-6a). It runs [`vpay_api::console_keys::revoke`], the function
+/// `DELETE /svc/v1/console_keys/{thumbprint}` runs, so the two cannot decide
+/// differently: any member's key, an administrator's included, is revocable;
+/// the first `revoked_at` is kept; a revoked thumbprint stays taken.
+///
+/// The thumbprint's shape is checked before the database is opened, so a typo is
+/// answered in milliseconds and needs no configuration.
+///
+/// Prints one line to stdout, `<staff id> <key id> <thumbprint> <revoked_at unix
+/// seconds>`, alone, so an operator can capture it.
+///
+/// # Errors
+///
+/// [`anyhow::Error`] naming the step: a thumbprint of the wrong shape, or one no
+/// key registered.
+async fn revoke_key(args: &ServerArgs, thumbprint: &str) -> anyhow::Result<()> {
+    vpay_api::console_keys::check_thumbprint(thumbprint)
+        .map_err(|error| anyhow::anyhow!("--thumbprint: {error}"))?;
+
+    let database_url =
+        args.common.database_url.as_deref().context(
+            "--database-url / DATABASE_URL is required: `staff revoke-key` writes a row",
+        )?;
+    let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
+
+    let key = vpay_api::console_keys::revoke(
+        repositories.as_ref(),
+        thumbprint,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .map_err(|error| match error {
+        vpay_api::ApiError::NotFound { .. } => {
+            anyhow::anyhow!("--thumbprint {thumbprint}: no console key is registered under it")
+        }
+        other => anyhow::anyhow!("revoking the key: {other}"),
+    })?;
+    let revoked_at = key
+        .revoked_at
+        .context("the key was revoked but carries no revoked_at")?;
 
     tracing::info!(
-        client_id = %dashboard.client_id,
-        merchant_id = %dashboard.merchant_id,
-        "/dash/v1 is mounted as a READ-ONLY resource server bound to one merchant. Whether any \
-         grant can mint a token for it is decided by `staff_auth`; see the line `staff_login` \
-         logs. See docs/flows/dashboard-auth.md and docs/status.md"
+        staff_id = %key.staff_member_id,
+        thumbprint = %key.thumbprint,
+        "a console key was revoked from the command line"
     );
 
-    Ok(Some(DashboardJwtValidator(
-        JwtValidator::new(
-            loopback_jwks_url(bound),
-            JWKS_REFRESH_INTERVAL,
-            merchant_op.issuer(),
-            // ADR-0017 decision 3: the dashboard's audience is its own
-            // registered `client_id`, because that is what
-            // `default_handle_authorization_code` mints. It was the constant
-            // `vpay:dash/v1` until 2026-09-07, which no token from the only
-            // grant that can produce a dashboard credential would ever have
-            // carried.
-            dashboard.client_id.as_str(),
-        )
-        .context("building the JWKS client the /dash/v1 token validator fetches with")?,
-    )))
+    #[allow(
+        clippy::print_stdout,
+        reason = "the result must be capturable and must be the whole of stdout; \
+                  `install_process_defaults` puts a subcommand's logs on stderr so it is"
+    )]
+    {
+        println!(
+            "{} {} {} {}",
+            key.staff_member_id,
+            key.id,
+            key.thumbprint,
+            revoked_at.unix_timestamp()
+        );
+    }
+
+    Ok(())
 }
 
 /// Binds `--observability-bind` and starts serving `/livez` and `/metrics` on
@@ -1275,7 +1201,7 @@ async fn start_observability(
     Ok((task, shutdown_tx))
 }
 
-/// How often the `/dash/v1` validator re-fetches the JWKS.
+/// How often the MCP token validator re-fetches the JWKS.
 ///
 /// 300 s, matching [`vpay_api::op::jwks::JWKS_CACHE_MAX_AGE`] — the
 /// `Cache-Control: max-age` the document is served with. Two different
@@ -1289,14 +1215,14 @@ async fn start_observability(
 /// usable one.
 const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
-/// The URL this process's own `/dash/v1` validator fetches the JWKS from: always
+/// The URL this process's own MCP token validator fetches the JWKS from: always
 /// loopback, on the port actually bound.
 ///
 /// **Deliberately not `public_base_url`**, and deliberately not `--bind` either
 /// — an unspecified bind address is mapped to the matching loopback address of
 /// the same family rather than used as a destination. Why, and what the
 /// in-process alternative would cost:
-/// [docs/reference/vpay-config.md § why the /v1 validator fetches its JWKS over loopback](../../../../docs/reference/vpay-config.md#why-the-v1-validator-fetches-its-jwks-over-loopback).
+/// [docs/reference/vpay-config.md § why the MCP validator fetches its JWKS over loopback](../../../../docs/reference/vpay-config.md#why-the-mcp-validator-fetches-its-jwks-over-loopback).
 fn loopback_jwks_url(bound: SocketAddr) -> String {
     let host = match bound.ip() {
         IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),

@@ -2,6 +2,10 @@
 
 _Moved out of [docs/reference/vpay-api.md](../vpay-api.md) on 2026-09-11 by exp57, which split a 1 566-line reference into a page per surface. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a cross-reference pointed at a heading that is now on another page, the page it moved to._
 
+> **Narrowed 2026-10-27 (VP-6a, [ADR-0036](../../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md), merged with ADR-0033).**
+> The `/dash/v1` token validator that used this cache is gone; the cache stays
+> for the merchant MCP endpoint's validator ([resource-auth.md](resource-auth.md)).
+
 ## The JWKS cache (`jwks_cache.rs`)
 
 A time-bounded JWKS cache that takes its HTTP client as an argument.
@@ -120,7 +124,11 @@ Not deviations, and worth stating because they look like ones:
 
 ## A second cache, for a federated issuer (2026-10-20, ADR-0030)
 
-`jwks_cache.rs` now holds two caches. `JwksCache` is the port described above
+> **Deleted in VP-6a (2026-10-27).** Staff SSO is gone, and `KeySetCache` and
+> its tests went with it; `jwks_cache.rs` holds only `JwksCache`, which serves
+> the merchant MCP validator. What follows is the record of what it was.
+
+`jwks_cache.rs` held two caches. `JwksCache` is the port described above
 and serves this deployment's **own** `/v1/oauth/jwks.json` to the two bearer
 validators. `KeySetCache` serves the **identity provider's** key set to the SSO
 callback, and differs in four ways, each deliberate:

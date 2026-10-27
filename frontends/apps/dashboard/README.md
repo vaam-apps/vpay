@@ -1,602 +1,85 @@
 # `@vpay/dashboard`
 
-The staff dashboard. What it is, and what it is not, is
-[`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md)'s job — this
-file is the frontend's own, narrower one: how a screen in this app is built,
-and where each decision lives.
+The staff dashboard. What it is meant to become is
+[`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md)'s job; this file
+is the frontend's own, narrower one: what is in this app **today**, and how a
+screen in it is built.
 
-## What this app is, in one paragraph
+## What this app is today: a notice
 
-**The OAuth client**
-([ADR-0017](../../../docs/adr/0017-staff-authentication.md) decision 4). It
-holds the staff session in an httpOnly, Secure, SameSite=Lax cookie on its own
-origin, presents it to vpay in `X-Vpay-Staff-Session` server-side, and runs the
-authorization-code leg — request, follow the `302`, exchange — inside its own
-process. A browser never sees a code, a verifier or a token, and the `/dash/v1`
-access token is read back out of the `staff_sessions` row on every render
-rather than kept here, which is what makes signing out a revocation.
+**It renders one page, and that page says the console signs in with a paired
+key and that this is not available until VP-6b.** Every path (`/` and the
+`not-found` boundary) renders `ConsoleUnavailable`; there is no form, no
+field and no link to a page that would fail.
 
-## The pages
+Since VP-6a ([ADR-0036](../../../docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md))
+every `/dash/v1` request is a COSE_Sign1 message under a P-256 key a person's
+browser generated and vaam paired through `/svc/v1`. This app used to be an
+OAuth client with a password, a TOTP code, an SSO button and a session
+cookie, and it called routes that no longer exist in vpay
+(`/dash/v1/staff/*`, `/oauth/authorize`, `/oauth/token`, `/staff/sso/*`). All
+of that is deleted, with the BFF (`app/api/dash`), the method-policy
+middleware, the session and CSRF code, the pages that read through them and
+the tests that only exercised them. Nothing here calls vpay at all.
 
-| Route             | What it does                                                             |
-| ----------------- | ------------------------------------------------------------------------ |
-| `/`               | Redirects to `/overview` or `/login`. Nothing of its own                 |
-| `/login`          | Work email + argon2id password — leg one                                 |
-| `/login/totp`     | Six digits. A **first** sign-in also renders the enrolment QR and secret |
-| `/login/password` | Replaces the printed one-time password. Not optional — see below         |
-| `/overview`       | Home since 2026-10-21. Exact counts, each a link to the rows it counts   |
-| `/payments`       | The bound merchant's intents; status chips, date range, cursor paging    |
-| `/payments/{id}`  | Intent, charge, refunds, last error, event timeline                      |
-| `/refunds`        | Refunds, status chips, offset paging; each links to its payment          |
-| `/deliveries`     | Webhook deliveries, state chips, offset paging                           |
-| `/checkouts`      | Checkout sessions, status chips, offset paging; links to the payment     |
-| `/customers`      | Saved customers, offset paging                                           |
+`src/layout.test.tsx` pins it: the only `page.*` under `app/` is the
+notice's. The first real page VP-6b adds changes that test in the same commit.
 
-Every one of them is `dynamic = 'force-dynamic'`, and has to be: they all read
-cookies.
+### What VP-6b restores
 
-### There is no route at `redirect_uri`, and nothing is missing
+[`docs/status.md`](../../../docs/status.md), "The dashboard application
+cannot sign in until VP-6b", lists the sealed sign-in, the signed reader, the
+pages and **each deleted end-to-end case by name**.
 
-`dashboard_client.redirect_uris` names `http://localhost:3000/dash/v1/callback`
-and **no browser ever visits it.** Decision 4 has this app's own server follow
-the `302`, so that string is an identifier the two OAuth legs must spell
-identically — matched byte for byte by
-`ClientRegistration::allows_redirect_uri`, no prefix, no wildcard — and not a
-page. A route there would be a page nobody can reach.
+## What is kept, and why
 
-It is said here because a reader who knows OAuth will look for it, not find it,
-and reasonably conclude the flow is unfinished.
+The presentational components and the pure logic under them survive, with
+their tests, because they depend on nothing that was deleted and VP-6b will
+render them again:
 
-### `/login/password` is a step, not a nag
-
-`vpay-server staff add` sets `password_change_required`, and ADR-0017 decision
-1 refuses **every** authenticated route to a session carrying it,
-`/oauth/authorize` included. So no `/dash/v1` token can exist until it is done,
-and this page is the only one such a session can reach. ~~There is no
-"current password" field: the session has already presented both factors, and
-re-checking a password this endpoint then overwrites would be a second copy of
-that check in the wrong layer.~~ _(Struck 2026-10-22: wrong since 2026-09-10
-(`e9e9a845`, "a password change that means something"). The page asks for the
-current password, and vpay itself refuses a change without it, answering an
-absent one with the same `401` as a wrong one; `changePassword` in
-`src/server/actions.ts` refuses an empty one before sending, only to say which
-field is empty.)_
-
-## Single sign-on (OIDC) — the browser-facing half
-
-vpay stays the OpenID provider for `/dash/v1`; only the human step can go to
-an external identity provider (Keycloak). This app is the front door of that
-broker flow and holds **two route handlers**, both reachable without a session
-(they run before one exists — `middleware.ts` matches `/api/dash/**` only and
-does not touch them):
-
-| Route                        | What it does                                                                                                                                                                                                         |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /api/auth/sso/start`   | Origin check (`server/csrf.ts`, as the server actions), `POST /dash/v1/staff/sso/start`, stores the returned **pending-flow token** in the session cookie for 10 minutes, `303` to the validated `authorization_url` |
-| `GET /api/auth/sso/callback` | Reads `code` and `state`, `POST /dash/v1/staff/sso/callback` with the pending token, then either signs in or follows the one `prompt=login` retry vpay allows — see below                                            |
-
-`/login` asks vpay `GET /dash/v1/staff/sso` and, only when it answers
-`{"enabled": true}`, renders a secondary **Sign in with Keycloak** button under
-an "or" rule. It is a plain `<form method="post">`, so it works without
-JavaScript. The password + TOTP form is always rendered; if the status call
-fails for any reason the button is simply absent and nothing is logged.
-
-**The cookie hand-off.** The pending-flow token is not a session: only the
-callback accepts it. It lives in the same cookie slot as the session
-(`vpay_dash_session`, same `COOKIE_ATTRIBUTES`) and is always **replaced**,
-never reused, by the token the callback answers with:
-
-- `signed_in` — the new token is already authenticated; it is stored for the
-  full 12 hours, the existing authorization-code leg
-  (`completeAuthorizationCode`, the same one the TOTP success path runs) is
-  run, and the browser is sent to `/overview` (`HOME_PATH`; `/payments` until
-  2026-10-21). If that leg fails the browser is still sent there: the session is authenticated, and `requireStaff`
-  already handles an unminted token (password-change redirect, retry, outage
-  page, or sign-out). This answer does not carry `password_change_required`, so
-  the gate is where that is discovered.
-- `reauthenticate` — the id_token lacked a second factor; the new pending token
-  replaces the cookie (10 minutes) and the browser goes to the new
-  `authorization_url`. vpay allows this once.
-- anything else (`401`, `429`, `404`, a network failure, an unreadable body, a
-  missing/duplicated/empty `code` or `state`, an IdP `error` parameter) — the
-  cookie is cleared and the browser is sent to `/login?sso=failed`, which shows
-  one fixed sentence. Where `code`/`state` are missing or `error` is present,
-  vpay is not called at all.
-
-What never happens: a token in a URL or a log; the IdP's `code`, `state`, error
-text or claim values in HTML, a `Location`, a header or a log line; an
-`authorization_url` that is not an absolute `http(s)` URL without credentials
-being followed. Both routes answer with `Cache-Control: no-store` and
-`Referrer-Policy: no-referrer`. The substance is `src/server/sso.ts`; the three
-vpay calls are `ssoStart`, `ssoCallback` and `getSsoStatus` in
-`src/server/api.ts`.
-
-**What is verified, and what is not.** Covered by unit tests against a stubbed
-`fetch` (`src/server/sso.test.ts`, `src/server/sso-api.test.ts`,
-`app/login/page.test.tsx`, plus cases in `middleware.test.ts` and
-`src/a11y.test.tsx`). **Not** run: a real browser, a real Keycloak, the
-Cypress end-to-end suite, or Storybook (no story was added for the button).
-The `redirect_uri` registered at the identity provider has to be
-`<public origin>/api/auth/sso/callback`; that registration is outside this app
-and nothing here checks it. This is distinct from the dashboard's own OAuth
-`redirect_uri` above, which still has no route.
-
-## The BFF, which is a new browser-reachable surface
-
-Six `GET` route handlers: two added 2026-09-11, three on 2026-09-13 and one
-on 2026-09-14. _(This said "Two `GET` route handlers, added 2026-09-11", and
-the table listed only those two, until 2026-09-23.)_
-
-| Route                            | What it does                                       | Since      |
-| -------------------------------- | -------------------------------------------------- | ---------- |
-| `/api/dash/payment_intents`      | One page of this merchant's intents, as JSON       | 2026-09-11 |
-| `/api/dash/payment_intents/{id}` | One payment's intent, charge, refunds and timeline | 2026-09-11 |
-| `/api/dash/refunds`              | One page of refunds                                | 2026-09-13 |
-| `/api/dash/deliveries`           | One page of webhook deliveries                     | 2026-09-13 |
-| `/api/dash/customers`            | One page of customers                              | 2026-09-13 |
-| `/api/dash/checkouts`            | One page of checkout sessions                      | 2026-09-14 |
-
-**Read the paragraph before reaching for these.** Until they existed nothing in
-this app was reachable from a browser except a page and four Server Actions,
-and every `/dash/v1` read happened inside a render. They authenticate on the
-same httpOnly session cookie and proxy to `/dash/v1` with the token read out of
-the `staff_sessions` row on that request — the bearer never leaves this
-process — but they are an authenticated surface a script on this origin can
-call, which the app did not have before.
-
-~~**Nothing calls them.** No page, no component, no test but their own.~~
-**Corrected 2026-09-23:** wrong since 2026-09-12
-([#138](https://github.com/vaam-apps/vpay/pull/138)). Two screens now call
-them, and only after their first render. The payments list and the payment
-detail are Refine screens whose data provider (`dashDataProvider("/api/dash")`
-in `app/(dash)/layout.tsx`) sends their _later_ reads, paging and refetches,
-through `/api/dash/payment_intents` and `/api/dash/payment_intents/{id}`.
-Their first render is still read on the server and handed to Refine as
-`initialData` (`app/(dash)/payments/page.tsx`). And there are **six**
-handlers, not two: `refunds`, `deliveries`, `customers` and `checkouts` were
-added on 2026-09-14. _(Narrowed later on 2026-09-23: the first three on
-2026-09-13, `f9c7d2c`, and `checkouts` on 2026-09-14, `8be7850`.)_ Those four are still called by no page, because those
-four screens render on the server and use no client data layer.
-_(**Since 2026-10-26 they do have one**, and it still does not call them on
-a normal render. Each of the four lists hands its server read to Refine's
-`useList` as `initialData`, and the provider behind that hook — Refine's
-`procedures` data provider, `@cratestack/refine` over these four handlers
-(`src/dash/procedure-provider.ts`) — is reached only on a client refetch,
-which `staleTime: Infinity` does not make. The server read itself goes
-through the generated `@vpay/dash-client`'s procedures; see "The data layer"
-below.)_ They
-exist so that a client-side data layer has a transport, and
-**whether this app should have such a surface at all is the maintainer's
-decision, not this code's** — it is RD5 in
-[the Refine plan](../../../docs/plans/exp55-refine-seam-bff-notes/refine-plan.md)
-§8, and it reverses a stated property of the app's security model. ~~Deleting the
-two files under `app/api/` and `src/server/bff.ts` breaks nothing else.~~
-_(Struck 2026-09-23: since 2026-09-12 it would break the payments screens'
-paging and refetches, per the correction above.)_ _(Narrowed 2026-10-22: that
-held from 2026-09-12 until 2026-10-21. Since
-[#318](https://github.com/vaam-apps/vpay/pull/318), `DashProviders`
-(`src/dash/providers.tsx`, where the data provider is configured now, rendered
-by the layout) keeps a server-seeded query with `staleTime: Infinity` and
-`gcTime: 0`, so the browser does not re-read it, and the next page of payments
-is one server read where it was two, the server's and `/api/dash`'s. A
-twelve-step click-through made no BFF request
-([2026-10-21-dashboard-md3e.md](../../../docs/status/verification/2026-10-21-dashboard-md3e.md)).
-In that run neither payments screen read through it.)_
-
-What they do about it, each written as a mutation in `src/server/bff.test.ts`:
-
-- a request with **no session cookie** is refused and reaches vpay **not at
-  all** — the test asserts the stub `fetch` was never called, because a `401`
-  answered _after_ an upstream round trip is a surface anyone can use to make
-  this server open connections;
-- a request this dashboard did not issue is refused by `csrf.ts`'s own
-  `originIsAllowed`, plus `Sec-Fetch-Site: same-origin`, which is what a
-  browser sends instead of an `Origin` on a same-origin `GET`;
-- the bearer token appears in no response header and no response body, asserted
-  against the serialised response while the stubbed vpay echoes the token into
-  a header, into the envelope's `url` and into an extra top-level field;
-- no caller-supplied merchant id, audience or scope is forwarded, because the
-  upstream query string is built by `apiQueryString` from the five parameters
-  `queryFrom` reads and nothing else is ever looked at;
-- a repeated parameter takes its **first** value, the same as the page does.
-  `Object.fromEntries(searchParams.entries())` keeps the last, which would
-  have made one URL mean two different pages depending on which surface read
-  it.
-
-Only `GET` is exported and **no write can reach the file** — the same shape
-`/dash/v1` has, where `dash::required_scope` refuses a non-`GET` before the
-router matches.
-
-This line went on ~~"so Next answers `405` to everything else"~~ until
-**2026-09-11**, when the exp55 security review read
-`app-route/helpers/auto-implement-methods` instead of assuming it. Next
-auto-implements two methods:
-
-- **`HEAD` is bound to the `GET` handler itself** (`methods.HEAD =
-handlers.GET`), body discarded — so a `HEAD` costs the same session read,
-  the same possible token mint and the same upstream call, and answers the
-  status and the headers. Consistent with `/dash/v1`, which admits `GET` and
-  `HEAD`. Left as it is.
-- **`OPTIONS` answered `204` with `Allow: GET, HEAD, OPTIONS` before the
-  handler ran at all**, so before the origin check and before the cookie was
-  read — the one answer this surface could give without passing its own gate.
-  ~~"Suppressing it needs a middleware and this app has none, so it is
-  recorded rather than fixed."~~ **Fixed the same day (exp56):**
-  [`middleware.ts`](middleware.ts) matches `/api/dash/:path*` and answers
-  `405` with **no `Allow` header** to every method that is not `GET` or
-  `HEAD`, before the route module is reached.
-
-So the reachable method set is two, and the review's third — `OPTIONS` — is a
-refusal now. `middleware.test.ts` holds the pair of cases that say so: one
-runs the real route module through **Next's own `autoImplementMethods`** and
-measures the `204` and the `Allow` header it would still produce, and the next
-asserts what the caller actually gets. The decisive one is
-`answers OPTIONS 405 with no Allow header, before the route module can` —
-make `middleware` return `NextResponse.next()` unconditionally and it goes red
-on both the status and the header.
-
-**What it closed and what it did not**, measured against a real `next start`
-rather than reasoned about. The middleware runs on the matched subtree
-**before routing**, so a path under `/api/dash/` that no route file serves
-answers the same as the two that do:
-
-| probe                               | before          | after              |
-| ----------------------------------- | --------------- | ------------------ |
-| `OPTIONS /api/dash/payment_intents` | `204` + `Allow` | `405`              |
-| `OPTIONS /api/dash/nope`            | `404`           | `405`              |
-| `POST /api/dash/payment_intents`    | `405` (Next's)  | `405` (this one's) |
-| `GET /api/dash/payment_intents`     | the gate        | the gate           |
-| `GET /api/dash/nope`                | `404`           | `404`              |
-| `OPTIONS /payments`                 | `400`           | `400`, not matched |
-
-So for `OPTIONS` route existence really is unanswerable now. **For `GET` it is
-not**, and this should not be read as saying otherwise: an unauthenticated
-`GET` to a route that exists reaches `bff.ts`'s gate where a path nothing
-serves gets Next's `404`. `OPTIONS` was the loudest discriminator and the only
-one reachable without passing a check, never the only one — and making the
-`GET` pair uniform would mean answering `404` to an honest signed-out client.
-`answers alike for a path in the subtree that no route file serves` is the
-case that pins the first half.
-
-The review recorded all of this against **Next 16.3.4**, which is
-`examples/shop`'s pin; this app resolved **15.5.25** then (15.5.27 from
-2026-10-09, 15.5.28 since 2026-10-23, `middleware.test.ts` green on each), whose
-`AUTOMATIC_ROUTE_METHODS` and `Allow` assembly are the same. The finding held;
-the version named in it was not this app's. The test measures the installed
-one rather than repeating either number.
-
-Two more things the same review corrected, both of them claims rather than
-code. The third bullet above is pinned by the **detail** read's case and not
-the list's: `src/dash/provider.ts`'s `getList` has already rebuilt
-`{ data, hasMore, cursor }` field by field, so serving the upstream document
-verbatim leaves the list case green and only the detail case red. And
-`Sec-Fetch-Site` is not merely "a pre-2020 browser" question — **Safari has
-sent it only since 16.4 (March 2023)**, so this surface answers `403` to every
-older WebKit. That costs nothing while nothing calls it, and is a decision for
-whatever eventually does.
-
-The review corrected that in the test file's header and **not in the marker
-inside it**, which went on labelling the list case `// THE THIRD DECISIVE
-CASE` — so a reader following the comment nearest the code would still have
-deleted `project` and seen green. Both say the same thing as of **exp56**, and
-the mutation was re-run to say it: replacing `served(project(result.value))`
-with `served(result.value)` fails **two** cases, and only one of them is about
-a credential. `puts it in no part of the detail read either` is that one.
-`answers the page and its two cursors, and nothing vpay sent besides` is the
-other, and it fails on the envelope's **key names** — `data, hasMore, cursor`
-where the wire promises `object, data, has_more, cursor` — which is evidence
-about the contract this surface publishes, not about the token staying in.
-Named because two red cases read as more corroboration than one, and here they
-are two different claims.
-
-## The data layer
-
-Two providers, registered together in `src/dash/providers.tsx`:
-
-| Resource                                                          | Refine data provider                                         | Server read                                                                               |
-| ----------------------------------------------------------------- | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------- |
-| `payment_intents`                                                 | `default` — `dashDataProvider`, hand-written, cursor-paged   | `src/dash/provider.ts` over `readDash`, `GET /dash/v1/payment_intents[/{id}]`             |
-| `refunds`, `webhook_deliveries`, `customers`, `checkout_sessions` | `procedures` — `@cratestack/refine` over the four BFF routes | `src/dash/procedure-list.ts`: `@cratestack/refine` over the generated client's procedures |
-
-**`@vpay/dash-client` is generated, never edited.** `just gen-dash-client`
-writes it from `schemas/vpay.cstack`; `just check-schema` fails if it is stale,
-and any schema edit — a comment included — makes it stale, because
-`runtime.ts` carries the schema's SHA-256. Only `src/dash/cratestack-client.ts`
-may import it at runtime (ESLint enforces this; type imports are fine
-anywhere): the package carries a class for every model, vpay mounts none of
-those routes, and `PaymentIntentApi.list()` would reach the hand-written
-`GET /dash/v1/payment_intents` and misread its envelope.
-
-**The `@cratestack/refine` manifest is hand-written** (`src/dash/procedure-resources.ts`),
-not the generator's `--refine` output, for the same reason: that manifest
-binds models, and here the resources are procedures. It refuses — with a
-`400`, before sending anything — any filter key the procedure does not
-declare, any sort, and `getMany`; `getOne` is a `404` and every write a `403`.
-
-`next.config.ts` maps a `.js` import onto a `.ts` source for webpack, because
-the generated package's relative imports carry the `.js` suffix and its bytes
-are held by `--check`.
-
-## How the code is laid out
-
-| Directory               | What lives there                                                                                             |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `app/`                  | Routes only. Composition, a redirect, and a fetch — no logic worth testing alone                             |
-| `app/api/dash/`         | The BFF's six route handlers ("two" until 2026-09-23). Four lines each; `src/server/bff.ts` is the substance |
-| `middleware.ts`         | The one file that is neither — Next reads a middleware only from the project root                            |
-| `src/components/`       | Every rendered component. Pure props in, markup out; no `fetch`, no `next/headers`                           |
-| `src/server/`           | Everything that touches vpay, cookies, or PKCE. Imported only by `app/` and itself                           |
-| `src/dash/`             | The data layer: Refine's providers, the payments seam over `readDash`, and the generated client's wrapper    |
-| `src/config/`           | `settings.ts` decides what a configuration means; `runtime.ts` reads the environment once                    |
-| `src/format.ts`         | Money, instants, the em dash. The numbers a reader is entitled to have right                                 |
-| `src/payments-query.ts` | The URL's filter vocabulary ↔ the API's, and the two paging links                                            |
-| `src/testing/`          | Fixtures. Imported by tests and by nothing under `app/`                                                      |
-
-The split between `src/server/` and `src/components/` is the one that matters:
-a component that fetched would be a component no test could render, and a
-`fetch` inside a component is how a page ends up unable to say _why_ it is
-empty.
-
-`src/server/actions.ts` is a `'use server'` file, which may export **only async
-functions** — a constant or a route path exported from there is a build error,
-not a lint warning. That is why `FormState` and `NO_ERROR` live in
-`src/form-state.ts` and the route paths in `src/server/session.ts`.
-
-## The shell, the screens, and why nothing reloads (2026-10-21)
-
-**The shell is mounted once.** `app/(dash)/layout.tsx` runs `requireStaff()`
-and renders `DashProviders` (Refine, `src/dash/providers.tsx`) and `AppShell`
-around every signed-in page, so a navigation re-renders the page and keeps
-the rail, the top app bar and Refine's cache. `requireStaff` is wrapped in
-React's `cache()`, so the layout and the page share one session read per
-request rather than one each.
-
-**Rail clicks are client-side.** `SideNav` renders plain `<a href>` (the
-package has no Next dependency), which made every rail click a full document
-load. `AppShell` delegates one click handler around it and pushes an
-ordinary same-tab click through the app router (`src/client-navigation.ts`);
-modified, middle, `target` and `download` clicks are left to the browser.
-
-**Refine's `check` makes no request.** Refine calls `authProvider.check()` on
-every pathname change and discards the answer; it called a Server Action that
-re-read the session. Every page already gates on the server, so `check`
-answers without the network and `checkSession` is deleted.
-`auth-provider.test.ts` fails if anything starts to act on `check`.
-
-**A server-seeded query is not re-read by the browser** (`staleTime:
-Infinity`, `gcTime: 0` in `DashProviders`): the server's read is the answer.
-
-**Layout.** Material 3 Expressive through `@vaam-apps/ui` 0.5.0: the rail with
-an Overview top item and sections (Money, Customers, Integrations —
-`NAV_GROUPS`, derived from the registry), a sticky top app bar with the mark,
-the merchant, and a theme shortcut; `themeInitScript` applies the stored
-theme before the first paint; Roboto Flex and JetBrains Mono are
-self-hosted (`@fontsource-variable`). Every screen is `PageHeader` (an
-`<h2>`), then its filters, then a `Card`. Each route has a `loading.tsx`
-whose skeleton is sized by invisible copies of the real strings; the
-`PaymentsLoading` and `PaymentLoading` stories hold it to a pixel.
-
-**The Overview** reads twelve `totalCount`s from the search procedures
-(`src/dash/overview.ts`) — nothing summed, nothing estimated, a refused read
-drawn as a dash with the refusal — and links each number to the list
-filtered by the same value. **The lists filter with chips that are links**
-(`FilterChips`), so a filtered list is a URL; the four procedure lists share
-`ProcedureListScreen` and pass the procedure's own filter through
-(`status`, or `state` for deliveries).
+| Area                  | Where                                                                                                                                |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| Payments table/detail | `src/components/payments-table.tsx`, `payment-detail.tsx`, `payments-filters.tsx`, `payments-pager.tsx`                              |
+| Procedure lists       | `src/components/procedure-list-view.tsx`, `procedure-table.tsx`, `procedure-pager.tsx`, over `src/dash/procedure-resources.ts`       |
+| Query and paging      | `src/payments-query.ts` (cursors, filters, the URLs), `src/dash/procedure-paging.ts`                                                 |
+| Words and colour      | `src/format.ts` (the masked payer is a dash, never derived), `src/payment-status.ts`, `src/status-systems.ts`, from `@vpay/tokens`   |
+| Failure shape         | `src/server/api.ts` (`ApiFailure`, the request id, the object types), `src/components/read-failure.tsx`, `src/dash/failure.ts`       |
+| Storybook             | `src/components/dashboard-screens.stories.tsx`, run through axe in a real Chromium by `pnpm --filter @vpay/dashboard test-storybook` |
 
 ## The rules this app is held to
 
-### No computed `className`, no raw status colour
-
-**Updated 2026-09-12: `@vpay/ui` was deleted (the `@vaam-apps/ui` cutover),
-and this section's title changed with it.** `@vaam-apps/ui` ships no layout
-or typography primitive at all — no `PageShell`, `Stack`, `Heading`, `Text`
-or `List` — so this app now writes layout classes directly, in `app/` and
-`src/`. What is still refused, by `just verify-ui`'s checks 7a-i/7a-ii/7a-iii
-(`docs/status/gates.md`'s `verify-ui` entry has the full derivation): a
-_computed_ class string (`cn(...)`, a template literal, a ternary — a
-hand-rolled variant system by another name), a raw status-colour token
-written directly instead of through a status system, and a class attribute
-over 60 characters. `Table`, `Field`→`FormField`, `Input`, `Button`,
-`InlineBanner` (replacing `Alert`), `InlineEmptyState` and
-`createStatusPill`/`defineStatusSystem` (replacing `StatusBadge`) still come
-from `@vaam-apps/ui`. _(The native `<select>` the status filter used is gone
-since 2026-10-21: status is `FilterChips`, links, below.)_
-
-`data-theme` is `dark`, and `src/layout.test.tsx` pins it: `@vaam-apps/ui`
-registers two themes under daisyUI's built-in names — `dark`, its default,
-and an opt-in `light` that the shell's `ThemeSwitcher` writes — so a
-`data-theme` that names neither renders the page **completely unthemed** in
-a real browser with no error anywhere — the same guarantee as before, under
-the new package's theme. _(This said "registers its one theme" until
-2026-09-23; the second, `light`, arrived in 0.1.2 on 2026-09-12, and the
-test now reads both names off the package's `theme.css`.)_
-
-### Status colour comes from `@vpay/tokens`, always
-
-**Updated 2026-09-12:** `statusTone` is deleted (zero consumers after the
-cutover). `src/payment-status.ts`'s `PAYMENT_STATUS_SYSTEM` — a
-`defineStatusSystem` table — is now the one place a `PaymentIntent` status
-is drawn; its `label` field still reads from `@vpay/tokens`'s `statusLabel`,
-so the operator-facing copy has exactly one source. `PaymentStatusPill`
-(`createStatusPill(PAYMENT_STATUS_SYSTEM)`) takes its tone from that table,
-never from a local map, so a status cannot read one colour in the list and
-another on the detail page. A status this build cannot name renders as
-**text**, not as a coloured pill — a green badge on an unfamiliar value is a
-claim.
-
-### The nav rule, as a gate rather than a comment
-
-> "The navigation is only ever allowed to link to slices that exist. A menu
-> entry for a page nobody wrote is the same lie as an empty table."
-> — `docs/flows/dashboard.md`
-
-**Updated 2026-09-12 (plan lane 4).** `NAV_LINKS` and `src/nav.tsx` are
-deleted. `DASH_RESOURCES` in
-[`src/dash/resources.ts`](src/dash/resources.ts) is the one declaration:
-Refine routes from it and the rail renders from `NAV_ENTRIES`, derived from
-the same array, so the two cannot disagree — which is the failure the old
-pair of lists existed to catch and could only catch by being checked against
-each other.
-
-[`src/layout.test.tsx`](src/layout.test.tsx) checks it three ways still:
-every rail route resolves to a `page.tsx` on disk; every resource Refine
-routes on does too; and the rail's hrefs are exactly the registry's list
-routes. Adding a `resources` entry for `/webhooks` fails two of the three.
-Measured.
-
-`pageExists` resolves **route groups**: `app/(dash)/payments` serves
-`/payments`, and the helper tries the direct path and then each top-level
-`(group)`. Without that it reported every signed-in route as dangling the
-moment the routes moved into `(dash)` — which is how the gap was found.
-
-Sign-out is in the rail's account block and, from 640 to 1279px, in the top
-app bar — both `SignedInBar`, and both inside `AppShell`, which only the
-pages behind the gate render; the signed-out layout has no rail at all.
-_(This said "there is no Sign out in the nav" until 2026-10-21; true when
-the nav also rendered on `/login`, and stale since `SideNav` took an account
-slot.)_
-
-### Configuration fails closed
-
-Four environment variables — `VPAY_DASH_API`, `VPAY_DASHBOARD_CLIENT_ID`,
-`VPAY_DASHBOARD_REDIRECT_URI`, `VPAY_DASHBOARD_SCOPE` — read **once at start**
-through bracket notation, because Next inlines a statically-written
-`process.env.FOO` at build time and a value baked into the image is not a value
-an operator can change.
-
-A missing one is **not defaulted**. `/login` renders the variable names an
-operator has to set and offers no form. That is the opposite of
-`frontends/apps/checkout`'s runtime config, which defaults everything and
-warns, and deliberately so: a payment page with no branding still takes a
-payment; a dashboard with no client registration is a login form that cannot
-log anybody in, and rendering one invites somebody to retype a password.
-
-The **merchant** is not configured here at all — it comes from
-`GET /dash/v1/staff/session`, and is rendered beside the staff member's address
-on every signed-in page, because an operator looking at an empty list has to be
-able to tell "this merchant has no payments" from "I am looking at the wrong
-merchant".
-
-## Two things the pages do not show, and why absence is the honest shape
-
-**No "Rail" column on the list.** `GET /dash/v1/payment_intents` returns no
-charge, so the only rail-shaped value in that response is
-`payment_method_types` — the rails an intent _may_ be confirmed against. The
-column is headed **Methods**. A "Rail" heading over it would be wrong for every
-intent that offers two and was taken by one, and wrong _invisibly_. The detail
-page has a real `Rail`, from `charge.provider_code`.
-
-**The masked payer is an em dash, and it is a real `null`.**
-`charges.payer_ref_masked` is never written by anything (`docs/status.md`), so
-the detail page renders it **from the column** and never derives it — the only
-other value that could produce a mask is the payer's unmasked phone number, and
-reading that into a staff surface to make a row look populated is the trade
-this refuses. The row exists rather than being omitted so the value appears the
-day the column is written. `payment-detail.test.tsx` pins both directions, and
-`dashboard.cy.ts` walks the list until it finds a payment that _has_ a charge
-before asserting it — a dash on an intent nobody confirmed proves nothing.
-
-The **list** has no payer column at all, which is the stronger form of the same
-point: there is no field there to be null.
+- **No computed `className`, no raw status colour** (`just verify-ui`, checks
+  7a-i, 7a-ii and 7a-iii; `docs/status/gates.md` has the derivation): a class
+  string is a literal of 60 characters or fewer, and a status is drawn by its
+  status system, never by a local map. A status this build cannot name renders
+  as text, not as a coloured pill: a green badge on an unfamiliar value is a
+  claim.
+- **`data-theme` is `dark`**, and `src/layout.test.tsx` pins it:
+  `@vaam-apps/ui` registers `dark` (its default) and an opt-in `light`, and a
+  `data-theme` that names neither renders the page unstyled with no error.
+- **Absence is the honest shape.** The list has no "Rail" column
+  (`payment_method_types` are the rails an intent _may_ use, headed
+  **Methods**), and the detail page renders the masked payer from
+  `charges.payer_ref_masked`, which nothing writes, as a dash. Deriving a mask
+  from the payer's phone number to make a row look full is the trade this
+  refuses.
+- **Only the generated client's types may be imported** (`eslint.config.js`):
+  no module runs `@vpay/dash-client` until VP-6b builds the signed reader.
 
 ## Testing this app
 
 ```bash
-pnpm --filter @vpay/dashboard test        # 22 files, 243 tests, 0 skipped
+pnpm --filter @vpay/dashboard test
 pnpm --filter @vpay/dashboard typecheck
 pnpm --filter @vpay/dashboard lint
-pnpm --filter @vpay/dashboard build       # also proves the compiled CSS
-                                          # actually carries these classes
+pnpm --filter @vpay/dashboard build
 ```
 
-`vitest.config.ts` sets `globals: false`, so Testing Library does **not**
-register its own cleanup — `vitest.setup.ts` calls `afterEach(cleanup)`
-explicitly. Without it every render in a file accumulates in one
-`document.body` and `getByRole` finds the previous test's copy of a control.
+`vitest.config.ts` sets `globals: false`, so Testing Library does not register
+its own cleanup; `vitest.setup.ts` calls `afterEach(cleanup)` explicitly.
+Without it every render in a file accumulates in one `document.body`.
 
-[`src/a11y.test.tsx`](src/a11y.test.tsx) runs `axe-core@4.13.0`'s structural
-rules over the real rendered `<body>` of the layout and over **every** screen
-including its error and pending states. It exists because an earlier draft
-dropped the `<main>` landmark and every other gate stayed green: `region` went
-0 → 1 violation and nothing said so. Contrast is **not** checked and cannot be
-— jsdom computes no paint.
-
-### The decisive cases
-
-Each of these was applied to the tree, the suite run, and the mutation
-reverted:
-
-| Mutation                                                                     | Fails                                                                           |
-| ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `COOKIE_ATTRIBUTES.httpOnly` → `false`                                       | `src/server/cookies.test.ts`                                                    |
-| exchange a _fresh_ PKCE verifier rather than the one the challenge came from | `src/server/oauth.test.ts`                                                      |
-| `NAV_LINKS` gains a page nobody wrote                                        | `src/layout.test.tsx`, twice                                                    |
-| `pageCursors` reads `has_more` the same way in both paging directions        | `src/dash/provider.test.ts`, and `src/payments-query.test.ts` twice             |
-| the BFF reads the session cookie **after** the upstream session read         | `src/server/bff.test.ts`, twice — vpay is contacted for a caller with no cookie |
-| `apiIsSameOrigin` drops its `originIsAllowed` call                           | `src/server/bff.test.ts`, twice                                                 |
-| the BFF serves the parsed upstream document instead of the named fields      | `src/server/bff.test.ts` — the **detail** case only; see below                  |
-| `middleware` returns `NextResponse.next()` unconditionally                   | `middleware.test.ts`, three times; `OPTIONS` gets Next's `204` and `Allow` back |
-| `apiIsSameOrigin` drops its `Sec-Fetch-Site` comparison                      | `dashboard.cy.ts`'s frame case, in a browser — `200` where `403` was expected   |
-
-`oauth.test.ts`'s stub echoes the challenge into the code it returns, so the
-assertion is that the exchange presents the verifier whose `S256` **is** the
-challenge this call sent — not merely that some verifier was present. A
-refactor that generated a second pair for the exchange fails it.
-
-### End to end
-
-`frontends/tests/e2e/cypress/e2e/dashboard.cy.ts` signs a staff member in
-through the real OP against the real compose stack and computes its TOTP codes
-from the secret **the enrolment screen displayed**. `just demo-staff` creates
-the staff member; `just test-e2e` runs the whole thing.
-
-Five of its sixteen cases are the BFF's, and they are the only evidence in
-this repository about what a browser actually puts on the wire. The decisive
-one is `refuses a cross-origin FRAME of the same URL, which carries no Origin
-at all`: an `<iframe>` is a navigation, so it carries no `Origin`, and
-`SameSite=Lax` still attaches the session to a **same-site** request — so it
-reaches this surface with a signed-in cookie and nothing but `Sec-Fetch-Site`
-identifying it. Delete that comparison from `apiIsSameOrigin`, rebuild the
-image and re-run: it fails with **`200` where `403` was expected**, and every
-other case stays green.
-
-## What this app still cannot do
-
-- **Anything at all to a payment.** `/dash/v1` refuses every non-`GET` method
-  at the boundary, before the router matches — no re-poll, no replay, no
-  refund, no annotation, and therefore no `audit_log`, because there is nothing
-  yet to audit.
-- **Any other slice.** Balances, settings, rail health and webhook **retries
-  and signature replay** are not built, and the nav gate fails if it ever
-  links to them. _(This read "Webhooks, checkout sessions, balances, settings
-  and rail health are not built" until 2026-09-23. It had been wrong about
-  webhooks since 2026-09-13, when the read-only deliveries list landed, and
-  about checkout sessions since 2026-09-14, when the checkouts screen and its
-  nav entry did. [docs/flows/dashboard.md](../../../docs/flows/dashboard.md)
-  recorded both on 2026-09-20.)_
-- **Contrast checking.** jsdom computes no paint, and no `cypress-axe` pass
-  against a real browser exists.
-- ~~**Anything through the BFF.** The two handlers under `app/api/dash/` are
-  real and tested, and **nothing in this app calls them** — there is no
-  client-side data layer yet, and whether there should be one on this origin
-  is RD5.~~ _(Struck 2026-09-23: wrong since 2026-09-12 (#138), when
-  `app/(dash)/layout.tsx` wired `dashDataProvider("/api/dash")`. The screens
-  read through the BFF, which now has six handlers, one per list plus the
-  payment detail.)_ _(Narrowed later the same day: "the screens read through
-  the BFF" overstated it. Only the payments list and the payment detail do,
-  and only for reads after their first render. See "The BFF, which is a new
-  browser-reachable surface" above.)_ _(Narrowed again 2026-10-22: not
-  since 2026-10-21, when [#318](https://github.com/vaam-apps/vpay/pull/318)
-  stopped the browser re-reading a server-seeded query; see the same
-  section.)_ ~~They are exercised by `src/server/bff.test.ts` and by no browser
-  and no Cypress spec … that a real browser's `Sec-Fetch-Site` and cookie
-  arrive as this code expects them to is not proven here.~~ **They are
-  exercised by a browser since 2026-09-11 (exp56):** five cases in
-  `frontends/tests/e2e/cypress/e2e/dashboard.cy.ts` drive them from Chrome
-  against the real stack, and the measured headers are in
-  [`docs/flows/dashboard.md`](../../../docs/flows/dashboard.md). The browser
-  agreed with the code on every assumption. ~~What is still true is the first
-  sentence: **no page and no component in this app calls them.**~~ _(Struck
-  2026-09-23: the payments screens have called them since 2026-09-12, for
-  their later reads.)_
+[`src/a11y.test.tsx`](src/a11y.test.tsx) runs `axe-core`'s structural rules
+over the rendered `<body>` of the root layout around the notice, and over each
+component that survives, including its error states. Contrast is not checked
+there and cannot be, because jsdom computes no paint; the Storybook run does.

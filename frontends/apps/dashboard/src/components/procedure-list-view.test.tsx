@@ -14,12 +14,18 @@ import type { RefundSummary } from "@vpay/dash-client";
 import { describe, expect, it, vi } from "vitest";
 
 import type { Initial } from "../dash/initial";
-import type { ProcedureListPage } from "../dash/procedure-list";
+import type { ProcedureListPage } from "../dash/procedure-paging";
 import {
   procedureResources,
   type ProcedureLister,
 } from "../dash/procedure-resources";
 import { REFUNDS } from "../dash/resource-name";
+import {
+  ProcedureListView,
+  type ProcedureListBodyProps,
+} from "./procedure-list-view";
+import { IdCell, type ProcedureColumn } from "./procedure-table";
+import { Amount } from "./values";
 
 vi.mock("next/navigation", () => ({
   usePathname: () => "/refunds",
@@ -27,7 +33,30 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-const { RefundsList } = await import("../../app/(dash)/refunds/refunds-list");
+/**
+ * A list body of the shape each list's client module has: its columns over the
+ * generated row type, handed to the view. The pages that carried the real ones
+ * are deleted until VP-6b (ADR-0036); the view is what is under test.
+ */
+const COLUMNS: readonly ProcedureColumn<RefundSummary>[] = [
+  { key: "id", header: "Refund", render: (r) => <IdCell value={r.id} /> },
+  {
+    key: "amount",
+    header: "Amount",
+    align: "end",
+    render: (r) => <Amount minor={r.amount} currency={r.currency_code} />,
+  },
+];
+
+function RefundsList(props: ProcedureListBodyProps) {
+  return (
+    <ProcedureListView<RefundSummary>
+      {...props}
+      columns={COLUMNS}
+      idOf={(r) => r.id}
+    />
+  );
+}
 
 const REFUND: RefundSummary = {
   id: "re_test_0000000000000001",

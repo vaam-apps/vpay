@@ -71,46 +71,33 @@ A failed attempt is recorded on the `webhook_deliveries` row and rescheduled
 with exponential backoff. `provider_requests` is the rail-call journal, not the
 webhook-delivery journal.
 
-### 3. Staff Single Sign-On (OIDC Federation)
+### 3. Pairing a console key (ADR-0036)
 
 ```text
-Staff Browser           Next.js Dashboard               vpay-server                      OIDC IdP (Keycloak)
-      │                         │                            │                                    │
-      │ 1. Click "Sign in SSO"  │                            │                                    │
-      ├────────────────────────▶│                            │                                    │
-      │                         │ 2. POST /dash/v1/staff/sso/start                                 │
-      │                         ├───────────────────────────▶│                                    │
-      │                         │                            │ 3. Generate state, nonce and PKCE  │
-      │                         │                            │    Store staff_sso_attempts row    │
-      │ 4. Redirect to IdP      │                            │                                    │
-      │◀────────────────────────┤                            │                                    │
-      │                                                                                           │
-      │ 5. Authenticate at IdP (username + password + org MFA)                                   │
-      ├──────────────────────────────────────────────────────────────────────────────────────────▶│
-      │                                                                                           │
-      │ 6. Redirect to the dashboard callback with code and state                               │
-      │◀──────────────────────────────────────────────────────────────────────────────────────────┤
-      │                                                                                           │
-      │ 7. Exchange code via BFF                                                                 │
-      ├────────────────────────▶│ 8. POST /dash/v1/staff/sso/callback                            │
-      │                         ├───────────────────────────▶│                                    │
-      │                         │                            │ 9. Exchange code for ID token (TLS)│
-      │                         │                            ├───────────────────────────────────▶│
-      │                         │                            │◀───────────────────────────────────┤
-      │                         │                            │ 10. Verify signature, iss, aud,    │
-      │                         │                            │     azp, exp, iat, nonce, group,   │
-      │                         │                            │     and second factor              │
-      │                         │ 11. Mint an opaque token    │                                    │
-      │                         │     in an httpOnly cookie   │                                    │
-      │◀────────────────────────┤◀───────────────────────────┤                                    │
-      │ 12. Authenticated session                                                            │
-      │◀────────────────────────┤                                                                 │
+Console (browser)        Admin phone (vaam)        vaam (service)              vpay-server /svc/v1            Postgres
+      │                         │                        │                              │                        │
+      │ 1. Generate a non-extractable P-256 key; sign "vpay.console-pair.v1\n" + key + "\n" + issuedAt          │
+      │ 2. Show the pairing request                       │                              │                        │
+      ├────────────────────────▶│ 3. The admin approves   │                              │                        │
+      │                         ├────────────────────────▶│ 4. POST /svc/v1/console_keys │                        │
+      │                         │                         │    COSE_Sign1 under vaam's    │                        │
+      │                         │                         │    Ed25519 key                ├───────────────────────▶│
+      │                         │                         │                              │ 5. service key holds    │
+      │                         │                         │                              │    console_pairing? shape,│
+      │                         │                         │                              │    freshness, proof      │
+      │                         │                         │                              │ 6. find or provision a  │
+      │                         │                         │                              │    plain member; refuse │
+      │                         │                         │                              │    an administrator     │
+      │                         │                         │                              │ 7. INSERT console_keys  │
+      │                         │                         │                              │    (expires = +720 h)   │
+      │                         │                         │◀─────────────────────────────┤ 8. 201 {thumbprint, …}  │
 ```
 
-There is no `jti` check in the ID-token flow. Replay defence in the dashboard
-surface is the single-use authorization code and the server-side session row;
-the merchant API's replay cache is the signed transport's nonce store,
-`envelope_nonces`.
+After pairing, every `/dash/v1` request is a COSE_Sign1 message under the
+console key. The signed transport's nonce store is `envelope_nonces`; the key
+is looked up in `console_keys` on every request, so a revocation or expiry takes
+effect on the next one. There is no session, cookie, token or authorization
+code, and no identity provider.
 
 ## Security Controls Embedded in Flows
 
@@ -122,7 +109,9 @@ the merchant API's replay cache is the signed transport's nonce store,
 3. **Data redaction:** Payer MSISDN and other personal data are protected in
    logs and error structures by `vpay-core::privacy` and the privacy inventory
    ([ADR-0020](../adr/0020-privacy-controls-and-evidence.md)).
-4. **Rate limiting:** Staff sign-in and the current-password check spend from a
-   shared `rate_limit_windows` budget.
+4. **Pairing is a signed service call:** only a `service_clients` key holding
+   `console_pairing` can pair or revoke a console key, and a pairing can never
+   create or upgrade an administrator
+   ([ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).
 5. **Egress control:** Merchant webhook delivery refuses redirects, private
    targets by default, and vets the resolved address before connecting.

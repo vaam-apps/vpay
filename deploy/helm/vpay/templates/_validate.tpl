@@ -770,4 +770,38 @@ rendered and there is nothing to contradict.
 {{- end -}}
 {{- end -}}
 
+
+{{/* --------------------------------------------------------------- 25 */}}
+{{/*
+networkpolicy-service-ingress — `-server`'s NetworkPolicy admits, besides the
+ingress controller, the peers `networkPolicy.serviceIngress.peers` lists: the
+services that call `/svc/v1` (VP-6a, ADR-0036). Each entry is a verbatim
+NetworkPolicy peer, and a peer that selects nothing in particular selects
+EVERYTHING:
+
+  - `podSelector: {}` alone is every pod in the namespace;
+  - `namespaceSelector: {}` alone is every pod in the cluster;
+  - an entry with none of `podSelector`, `namespaceSelector` and `ipBlock`
+    is not a peer at all and kubeconform will not say so.
+
+Each of those renders, passes `helm lint`, and is a default-allow rule worn by
+a default-deny policy — the shape "networkpolicy-management-ingress" refuses
+for the management tier. A peer is accepted when it carries an `ipBlock`, or
+a `podSelector` or `namespaceSelector` that names labels (`matchLabels` or
+`matchExpressions`).
+
+Checked only while `networkPolicy.enabled`: the policy is not rendered
+otherwise.
+*/}}
+{{- if .Values.networkPolicy.enabled -}}
+{{- range $i, $peer := .Values.networkPolicy.serviceIngress.peers -}}
+{{- $pod := default dict $peer.podSelector -}}
+{{- $ns := default dict $peer.namespaceSelector -}}
+{{- $named := or (not (empty $peer.ipBlock)) (not (empty $pod.matchLabels)) (not (empty $pod.matchExpressions)) (not (empty $ns.matchLabels)) (not (empty $ns.matchExpressions)) -}}
+{{- if not $named -}}
+{{- fail (printf "vpay chart guard \"networkpolicy-service-ingress\": networkPolicy.serviceIngress.peers[%d] selects nothing in particular. An empty podSelector matches every pod in this namespace and an empty namespaceSelector every pod in the cluster, so the rendered -server policy would admit them all to /svc/v1 while reading like it admits one service. Name the caller: a podSelector.matchLabels (add a namespaceSelector.matchLabels in the SAME peer for a caller in another namespace), or an ipBlock." $i) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
 {{- end -}}

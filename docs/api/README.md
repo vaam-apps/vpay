@@ -1096,22 +1096,26 @@ integration reach staff-only state. See
 JWKS endpoint that landed on 2026-09-02 serve `/v1` and are not a step
 toward this surface being reachable; there is also an unresolved audience
 problem in the authorization-code grant that must be settled first.~~
-**Corrected 2026-09-20: built, mounted and tested.** `/dash/v1/staff`
+**Corrected 2026-09-20: built, mounted and tested.** ~~`/dash/v1/staff`
 (sign-in, TOTP, PKCE token exchange — [ADR-0017](../adr/0017-staff-authentication.md))
-and the `/dash/v1` read surface behind `require_dashboard_token`
-(`backends/crates/vpay-api/src/lib.rs:1021`) both exist. Mounting is
-conditional, not unconditional: `AppState::staff_login` is `Some` only on a
-deployment configured for the staff surface (ADR-0022's
-`deployment.surfaces`), and a deployment that omits it gets the honest 404
-`require_dashboard_token` and `staff_login()` (`lib.rs:386-390`) both name,
-not a `500` claiming the router is broken. Three integration suites exercise
-it against a real Postgres: `staff_sign_in.rs`, `dashboard_read_surface.rs`
-and `dashboard_procedure_transport.rs`
+and the `/dash/v1` read surface behind `require_dashboard_token`.~~
+**Changed 2026-10-26 (VP-6a,
+[ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)):
+there is no sign-in, TOTP, token exchange or `require_dashboard_token`.**
+`/dash/v1` (the read surface and CrateStack's procedure transport under it) is
+a COSE_Sign1 message under a paired P-256 console key, and `/svc/v1` is where
+vaam pairs one. Mounting is conditional: the management surface is mounted
+only on a deployment that registers a `dashboard:` and loads the envelope keys
+(ADR-0022's `deployment.surfaces`), and a deployment that omits it gets the
+honest `404`, not a `500` claiming the router is broken. Three integration
+suites exercise it against a real Postgres: `console_pairing.rs`,
+`dashboard_read_surface.rs` and `dashboard_procedure_transport.rs`
 (`backends/tests/integration/tests/`). **Implemented and tested is not
 deployed**: per `docs/status.md`, no cluster run of vpay is on record, so
-this surface is not recorded as running anywhere today. See
-[../flows/dashboard-auth.md](../flows/dashboard-auth.md) for the session
-model and [docs/status.md](../status.md) for the deployment picture.
+this surface is not recorded as running anywhere today, and **the dashboard
+application cannot sign in until VP-6b**. See
+[../flows/dashboard-auth.md](../flows/dashboard-auth.md) for the mechanism and
+[docs/status.md](../status.md) for the deployment picture.
 
 ## `/mcp/v1` — the merchant MCP endpoint (ADR-0033)
 

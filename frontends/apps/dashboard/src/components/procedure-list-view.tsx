@@ -9,8 +9,7 @@ import {
   initialQueryOptions,
   type Initial,
 } from "../dash/initial";
-import type { ProcedureListPage } from "../dash/procedure-list";
-import { PAGE_SIZE } from "../dash/procedure-paging";
+import { PAGE_SIZE, type ProcedureListPage } from "../dash/procedure-paging";
 import type { ProcedureResource } from "../dash/resource-name";
 import { TableCardSkeleton } from "./list-skeleton";
 import { ProcedurePager } from "./procedure-pager";
@@ -22,7 +21,7 @@ import { ReadFailure } from "./read-failure";
  *
  * Every field is serialisable on purpose: this crosses the server/client
  * boundary, so the columns — which carry render functions — are supplied by
- * each list's own client module (`app/(dash)/<list>/<list>-list.tsx`), not
+ * each list's own client module (a client module per list), not
  * passed down from the page.
  */
 export interface ProcedureListBodyProps {
@@ -49,19 +48,15 @@ export interface ProcedureListBodyProps {
 }
 
 /**
- * A procedure-backed list, through Refine — the shape
- * `app/(dash)/payments/payments-screen.tsx` has had since 2026-09-12, now on
- * `@cratestack/refine` rather than a hand-written provider.
+ * A procedure-backed list, through Refine, on `@cratestack/refine`.
  *
- * # The page is the SERVER's read
+ * # The page is the READER's answer
  *
- * `initial` was read by the Server Component, with the token that never
- * leaves that process, and is handed to `useList` as `initialData`.
- * `staleTime: Infinity` (`providers.tsx`) means the browser does not read it
- * again; paging and filtering are navigations, and the server reads those.
- * The `procedures` data provider this hook would fall back to is
- * `@cratestack/refine` over this app's own `GET /api/dash/<list>` routes
- * (`src/dash/procedure-provider.ts`), never over vpay.
+ * `initial` is whatever read the page (the signed reader VP-6b builds; none
+ * exists yet, ADR-0036) and is handed to `useList` as `initialData`. A
+ * `staleTime` of `Infinity` in the host's `<Refine>` means the browser does not
+ * read it again; paging and filtering are navigations, and the reader reads
+ * those.
  *
  * # The pager reads the procedure's page, not refine's `total`
  *
@@ -72,8 +67,7 @@ export interface ProcedureListBodyProps {
  *
  * # A refused read is never an empty list
  *
- * `ReadFailure` with the request id, the session untouched — the rule every
- * list here follows.
+ * `ReadFailure` with the request id — the rule every list here follows.
  */
 export function ProcedureListView<Row>({
   resource,
@@ -124,9 +118,7 @@ export function ProcedureListView<Row>({
   });
 
   if (serverFailure !== null) {
-    // Rendered rather than re-read from the browser — see `initial.ts`: a
-    // `401` re-read through `/api/dash` reaches `authProvider.onError`, which
-    // signs the person out of a session the server had just decided to keep.
+    // Rendered rather than re-read from the browser — see `initial.ts`.
     return <ReadFailure failure={serverFailure} />;
   }
   if (listQuery.isLoading) {

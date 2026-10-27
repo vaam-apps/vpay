@@ -16,9 +16,11 @@ pepper, mandatory RFC 6238 TOTP with a compare-and-swap replay guard,
 server-side sessions with an absolute and an idle bound, and the
 authorization-code grant with PKCE served for the dashboard client only.
 
-`backends/tests/integration/tests/staff_sign_in.rs` (~~13 cases~~ **27** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs -->,
-re-measured 2026-09-20) drives it end to end and **mints no token of its
-own**.
+~~`backends/tests/integration/tests/staff_sign_in.rs` (13 cases, then 27)
+drove it end to end and minted no token of its own.~~ **Deleted 2026-10-26
+(VP-6a, [ADR-0036](../../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md))
+with the sign-in it drove:** everything in this paragraph and the one before it
+is the record of what stood.
 
 ~~It is not built because building it requires a decision nobody has taken~~ —
 and the paragraph that followed, about `authkestra-op` authenticating nobody,

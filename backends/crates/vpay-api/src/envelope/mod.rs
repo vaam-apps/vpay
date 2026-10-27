@@ -1,10 +1,25 @@
-//! The signed transport, server half, for `/v1` (VP-3).
+//! The signed transport, server half, for `/v1` (VP-3) and for the management
+//! surface, `/dash/v1` and `/svc/v1` (VP-6a).
 //!
 //! Every `/v1` request is a COSE_Sign1 message from a merchant's registered
 //! Ed25519 key, and every answer to one is a COSE_Sign1 message from this
 //! process's key. There is no bearer token on `/v1`: an `Authorization` header
 //! is not read, because the layer that opens the request is in front of
 //! everything that could read one.
+//!
+//! The management surface is the same mechanism with different keys, three
+//! layers in all, each its own resolver and its own contract table:
+//!
+//! | Surface | Whose key | Where it is registered | Resolver |
+//! |---|---|---|---|
+//! | `/v1` | a merchant's backend (Ed25519) | `merchant_clients[].cose_keys` | [`MerchantKeyResolver`] |
+//! | `/dash/v1`, `/dash/v1/$procs/*` | a person's console (P-256) | `console_keys`, in the database | [`console::ConsoleKeyResolver`] |
+//! | `/svc/v1` | a service, vaam (Ed25519) | `service_clients[].cose_keys` | [`ServiceKeyResolver`] |
+//!
+//! A key of one kind is no key at another: each resolver reads its own registry
+//! and nothing else, so a merchant's key at `/svc/v1`, or a console's at `/v1`,
+//! is the coarse unsigned `401` an unknown key gets. All three seal their answers
+//! with the one response key (`VPAY_ENVELOPE_SIGNING_KEY_FILE`).
 //!
 //! ```text
 //!   client ──COSE_Sign1(form body)──▶ track_http_metrics
@@ -56,24 +71,30 @@
 //! the process refuses to boot (`vpay-server`, exit `78`).
 
 pub mod binding;
+pub mod console;
 pub mod keys;
 pub mod nonces;
 pub(crate) mod scope;
+pub(crate) mod service;
 
 use std::sync::Arc;
 
 use cratestack_axum::envelope_layer::{EnvelopeLayer, EnvelopeMode};
-use cratestack_cose::{CoseEnvelope, CoseMode};
+use cratestack_core::AcceptedContracts;
+use cratestack_cose::{CoseEnvelope, CoseMode, CoseVerifierResolver};
 use vpay_config::{Config, ConfigError};
 use vpay_core::{Category, Classify};
 use vpay_db::Repositories;
-use vpay_wire::{V1_CONTRACTS, V1_MOUNT};
+use vpay_wire::{DASH_CONTRACTS, DASH_MOUNT, SVC_CONTRACTS, SVC_MOUNT, V1_CONTRACTS, V1_MOUNT};
 
-pub use binding::V1Binding;
+pub use binding::TableBinding;
+pub use console::ConsoleKeyResolver;
 pub use keys::{EnvelopeKeyError, EnvelopeKeys};
 pub use nonces::PgNonceStore;
 
-use crate::merchant_keys::{MerchantKeyRegistry, MerchantKeyResolver};
+use crate::merchant_keys::{
+    MerchantKeyRegistry, MerchantKeyResolver, ServiceKeyRegistry, ServiceKeyResolver,
+};
 
 /// How much more than the `/v1` payload bound the layer will buffer of the
 /// COSE message that wraps it: protected header, claims, the 64-byte signature
@@ -87,18 +108,19 @@ const ENVELOPE_OVERHEAD_BYTES: usize = 16 * 1024;
 /// The payload's exact bound is enforced separately, inside the layer, on the
 /// opened bytes — this one only keeps an anonymous caller from making the
 /// process buffer more than a bounded message before the signature is checked.
+/// The management surface uses the same bound.
 pub const ENVELOPE_BODY_LIMIT_BYTES: usize = crate::V1_BODY_LIMIT_BYTES + ENVELOPE_OVERHEAD_BYTES;
 
-/// The audience every `/v1` request binds and this process answers to: the
+/// The audience every signed request binds and this process answers to: the
 /// deployment's public base URL, without a trailing slash.
 ///
 /// A configured logical name and never the `Host` header (ADR 0006 §4), so a
 /// request signed for one deployment cannot be replayed at another that shares
-/// a merchant key. It is `issuer_for`'s base, for the same reason that one is
-/// derived in one place: a merchant's client and this server compare the string
-/// byte for byte and the only symptom of a mismatch is the coarse `401`. A
-/// merchant that reaches vpay at an internal address (`http://vpay:8080`) sets
-/// the SDK's `audience` to this value, as vaam-apps does.
+/// a key. It is `issuer_for`'s base, for the same reason that one is derived in
+/// one place: a client and this server compare the string byte for byte and the
+/// only symptom of a mismatch is the coarse `401`. A merchant that reaches vpay
+/// at an internal address (`http://vpay:8080`) sets the SDK's `audience` to this
+/// value, as vaam-apps does.
 ///
 /// ```
 /// use vpay_api::envelope::audience_for;
@@ -111,18 +133,18 @@ pub fn audience_for(public_base_url: &str) -> String {
     public_base_url.trim_end_matches('/').to_owned()
 }
 
-/// Why the `/v1` envelope could not be assembled at boot.
+/// Why an envelope could not be assembled at boot.
 #[derive(Debug, thiserror::Error)]
 pub enum V1EnvelopeError {
-    /// The merchant key registry could not be read out of the configuration.
+    /// A key registry could not be read out of the configuration.
     /// Unreachable for a `Config` that came from a file (`validate_all` ran
     /// the same code); kept typed so a hand-built one is refused too.
-    #[error("the merchant key registry could not be built: {0}")]
+    #[error("a key registry could not be built: {0}")]
     Registry(#[from] ConfigError),
 
     /// cratestack refused the layer's configuration: an empty audience, or a
     /// payload-type or contract setup it cannot serve.
-    #[error("the /v1 envelope layer was refused: {0}")]
+    #[error("an envelope layer was refused: {0}")]
     Layer(String),
 }
 
@@ -134,10 +156,59 @@ impl Classify for V1EnvelopeError {
 
     fn code(&self) -> &'static str {
         match self {
-            Self::Registry(_) => "merchant_keys_unusable",
+            Self::Registry(_) => "key_registry_unusable",
             Self::Layer(_) => "envelope_layer_refused",
         }
     }
+}
+
+/// The COSE server envelope every surface shares in shape: sealing with this
+/// process's response key, verifying under `resolver`, replay-guarded by the
+/// Postgres nonce store.
+fn cose_envelope(
+    keys: &EnvelopeKeys,
+    resolver: Arc<dyn CoseVerifierResolver>,
+    repositories: &Arc<dyn Repositories>,
+) -> Result<CoseEnvelope, V1EnvelopeError> {
+    CoseEnvelope::server(
+        CoseMode::Sign1,
+        keys.signer(),
+        resolver,
+        Arc::new(PgNonceStore::new(repositories.clone())),
+    )
+    .build()
+    .map_err(layer_error)
+}
+
+fn layer_error(error: cratestack_core::CratestackError) -> V1EnvelopeError {
+    V1EnvelopeError::Layer(error.to_string())
+}
+
+/// One hand-written surface's layer: `Required`, bound by `binding` over
+/// `contracts`, mounted at `mount`, sealing in the types the binding declares.
+fn surface_layer(
+    config: &Config,
+    envelope: CoseEnvelope,
+    contracts: AcceptedContracts,
+    binding: TableBinding,
+    mount: &str,
+) -> Result<EnvelopeLayer, V1EnvelopeError> {
+    let (request_types, response_types) = binding.payload_types();
+    EnvelopeLayer::builder(
+        envelope,
+        audience_for(&config.deployment.public_base_url),
+        contracts,
+    )
+    .binding_resolver(binding)
+    .mount_prefix(mount)
+    .policy(EnvelopeMode::Required)
+    .payload_media_types(
+        request_types.iter().copied(),
+        response_types.iter().copied(),
+    )
+    .max_body_bytes(ENVELOPE_BODY_LIMIT_BYTES)
+    .build()
+    .map_err(layer_error)
 }
 
 /// Everything `router()` needs to put the signed transport in front of `/v1`:
@@ -170,7 +241,7 @@ impl V1Envelope {
     /// [`V1EnvelopeError`], both `78` at boot.
     pub fn new(
         config: &Config,
-        keys: EnvelopeKeys,
+        keys: &EnvelopeKeys,
         repositories: Arc<dyn Repositories>,
     ) -> Result<Self, V1EnvelopeError> {
         let registry = Arc::new(MerchantKeyRegistry::from_config(config)?);
@@ -186,35 +257,18 @@ impl V1Envelope {
     /// [`V1EnvelopeError::Layer`].
     pub fn with_resolver(
         config: &Config,
-        keys: EnvelopeKeys,
+        keys: &EnvelopeKeys,
         repositories: Arc<dyn Repositories>,
         merchants: Arc<MerchantKeyResolver>,
     ) -> Result<Self, V1EnvelopeError> {
-        let layer_error =
-            |error: cratestack_core::CratestackError| V1EnvelopeError::Layer(error.to_string());
-        let envelope = CoseEnvelope::server(
-            CoseMode::Sign1,
-            Arc::new(keys.into_signer()),
-            merchants.clone(),
-            Arc::new(PgNonceStore::new(repositories)),
-        )
-        .build()
-        .map_err(layer_error)?;
-        let layer = EnvelopeLayer::builder(
+        let envelope = cose_envelope(keys, merchants.clone(), &repositories)?;
+        let layer = surface_layer(
+            config,
             envelope,
-            audience_for(&config.deployment.public_base_url),
             *V1_CONTRACTS,
-        )
-        .binding_resolver(V1Binding)
-        .mount_prefix(V1_MOUNT)
-        .policy(EnvelopeMode::Required)
-        .payload_media_types(
-            binding::REQUEST_TYPES.iter().copied(),
-            binding::RESPONSE_TYPES.iter().copied(),
-        )
-        .max_body_bytes(ENVELOPE_BODY_LIMIT_BYTES)
-        .build()
-        .map_err(layer_error)?;
+            TableBinding::v1(),
+            V1_MOUNT,
+        )?;
         Ok(Self { layer, merchants })
     }
 
@@ -224,5 +278,96 @@ impl V1Envelope {
 
     pub(crate) fn merchants(&self) -> Arc<MerchantKeyResolver> {
         self.merchants.clone()
+    }
+}
+
+/// Everything `router()` needs to put the signed transport in front of the
+/// management surface (VP-6a): three layers, one per thing mounted, and the
+/// service resolver `/svc/v1`'s scope step asks.
+///
+/// The console's two layers share a key resolver and a response key and differ in
+/// what they bind: the hand-written reads ([`DASH_CONTRACTS`], [`TableBinding::dash`])
+/// and CrateStack's generated procedure transport (`ACCEPTED_CONTRACTS` and
+/// `ROUTE_TRANSPORTS`, from `schemas/vpay.cstack`, built by
+/// [`Repositories::dashboard_envelope_layer`] because the generated module is
+/// private to `vpay-db`).
+#[derive(Clone)]
+pub struct ManagementEnvelope {
+    dash: EnvelopeLayer,
+    procedures: EnvelopeLayer,
+    svc: EnvelopeLayer,
+    services: Arc<ServiceKeyResolver>,
+}
+
+impl std::fmt::Debug for ManagementEnvelope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ManagementEnvelope")
+            .field("services", &self.services)
+            .finish_non_exhaustive()
+    }
+}
+
+impl ManagementEnvelope {
+    /// Builds the three layers: the console resolver reads `console_keys` through
+    /// `repositories`, the service resolver reads `config.service_clients`.
+    ///
+    /// # Errors
+    ///
+    /// [`V1EnvelopeError`], both `78` at boot.
+    pub fn new(
+        config: &Config,
+        keys: &EnvelopeKeys,
+        repositories: Arc<dyn Repositories>,
+    ) -> Result<Self, V1EnvelopeError> {
+        let console: Arc<dyn CoseVerifierResolver> =
+            Arc::new(ConsoleKeyResolver::new(repositories.clone()));
+        let services = Arc::new(ServiceKeyResolver::new(
+            Arc::new(ServiceKeyRegistry::from_config(config)?),
+            repositories.clone(),
+        ));
+
+        let dash = surface_layer(
+            config,
+            cose_envelope(keys, console.clone(), &repositories)?,
+            *DASH_CONTRACTS,
+            TableBinding::dash(),
+            DASH_MOUNT,
+        )?;
+        let procedures = repositories
+            .dashboard_envelope_layer(
+                Arc::new(cose_envelope(keys, console, &repositories)?),
+                &audience_for(&config.deployment.public_base_url),
+                DASH_MOUNT,
+            )
+            .map_err(|error| V1EnvelopeError::Layer(error.to_string()))?;
+        let svc = surface_layer(
+            config,
+            cose_envelope(keys, services.clone(), &repositories)?,
+            *SVC_CONTRACTS,
+            TableBinding::svc(),
+            SVC_MOUNT,
+        )?;
+        Ok(Self {
+            dash,
+            procedures,
+            svc,
+            services,
+        })
+    }
+
+    pub(crate) fn dash_layer(&self) -> EnvelopeLayer {
+        self.dash.clone()
+    }
+
+    pub(crate) fn procedures_layer(&self) -> EnvelopeLayer {
+        self.procedures.clone()
+    }
+
+    pub(crate) fn svc_layer(&self) -> EnvelopeLayer {
+        self.svc.clone()
+    }
+
+    pub(crate) fn services(&self) -> Arc<ServiceKeyResolver> {
+        self.services.clone()
     }
 }

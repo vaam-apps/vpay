@@ -4,9 +4,10 @@
 //! `cratestack::AuthProvider` (`cratestack-core-0.12.0/src/context.rs:92`)
 //! has a blanket impl for any `Fn(&http::HeaderMap) -> Result<CratestackContext,
 //! E>`, which is the shape most consumers reach for. This crate cannot use
-//! it: `require_dashboard_procedure_token` (`vpay-api`) has *already*
-//! validated the caller's bearer token, re-read the staff row and resolved
-//! `vpay_api::dash::DashboardTenancy` by the time this transport's own
+//! it: the signed envelope layer has *already* verified the request under a
+//! paired console key, and `dash_scope` (`vpay-api`) has re-read the key and
+//! the staff row and resolved `vpay_api::dash::DashboardTenancy` by the time
+//! this transport's own
 //! request reaches it — repeating any of that here would be a second,
 //! parallel decision about tenancy rather than a use of the one lane B
 //! already made. What that decision produced is stashed on the request's
@@ -49,8 +50,7 @@ use cratestack::{CratestackContext, CratestackError, PrincipalContext, Principal
 ///
 /// `vpay-api` is the only crate that constructs one, from a closure that
 /// reads `vpay_api::dash::DashboardTenancy` (inserted into the request's
-/// extensions by `require_dashboard_procedure_token` before this transport
-/// ever runs) — see this module's doc for why the closure returns a plain
+/// extensions by `dash_scope` before this transport ever runs) — see this module's doc for why the closure returns a plain
 /// tenant id and not a `CratestackContext` itself.
 ///
 /// `Arc`, not a bare `fn` or a generic closure type, so
@@ -65,7 +65,7 @@ pub type DashboardAuthFn = Arc<dyn Fn(&Extensions) -> Option<String> + Send + Sy
 /// request the closure resolves a tenant for; [`CratestackError::Internal`]
 /// (a `500`, never told to the caller as anything specific) when it does
 /// not, because that means the request reached this transport with no
-/// `require_dashboard_procedure_token` in front of it — a wiring defect, the
+/// `dash_scope` in front of it — a wiring defect, the
 /// same fail-closed shape `vpay_api::dash::DashboardTenancy`'s own
 /// `FromRequestParts` impl answers for the identical reason.
 #[derive(Clone)]
@@ -91,7 +91,7 @@ impl cratestack::AuthProvider for ExtensionAuthProvider {
             })),
             None => Err(CratestackError::Internal(
                 "a dashboard procedure request ran with no tenant resolved on its extensions: \
-                 require_dashboard_procedure_token is not mounted in front of this transport"
+                 dash_scope is not mounted in front of this transport"
                     .to_owned(),
             )),
         };

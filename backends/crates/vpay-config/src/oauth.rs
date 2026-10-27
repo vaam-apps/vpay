@@ -1,13 +1,13 @@
-//! Statically registered OAuth2/OIDC clients (ADR-0010,
-//! [docs/flows/dashboard-auth.md](../../../../docs/flows/dashboard-auth.md)).
+//! Statically registered merchant clients (ADR-0010, ADR-0035).
 //!
-//! Two kinds, both loaded from YAML (ADR-0003) and both, structurally, carrying
-//! no client secret: [`MerchantClient`] (a merchant's `/v1` credential —
-//! `client_credentials` plus `private_key_jwt`, so vpay only ever holds the
-//! **public** JWK set) and [`DashboardClient`] (the single `/dash/v1` client —
-//! authorization-code plus PKCE, one read-only scope).
+//! [`MerchantClient`] is loaded from YAML (ADR-0003) and, structurally, carries
+//! no client secret: a merchant's `/v1` credential is a set of **public** keys
+//! (`cose_keys`, signed transport) and, until VP-4 deletes the OP, a public JWK
+//! set for `private_key_jwt`. The dashboard has no registration here any more
+//! (VP-6a): its tenant is [`crate::Dashboard`], and the people who sign in are
+//! keys in the database, not a client.
 //!
-//! Both carry a `client_secret: Option<String>` whose only legitimate value is
+//! It carries a `client_secret: Option<String>` whose only legitimate value is
 //! `None`: it exists so a config that accidentally carries a secret is *refused*
 //! at boot rather than silently ignored. Never populate it.
 //!
@@ -42,35 +42,6 @@ use crate::ConfigError;
 /// see [`crate::ConfigError::MerchantMissingV1Audience`] for the two concrete
 /// shapes that failure takes and why it is fatal at boot instead.
 pub const MERCHANT_AUDIENCE: &str = "vpay:v1";
-
-/// The claim a `/dash/v1` access token carries the merchant binding in.
-///
-/// **This is what replaced `DASHBOARD_AUDIENCE` on 2026-09-07**, and the
-/// replacement is [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)
-/// decision 3 rather than a rename. The constant `vpay:dash/v1` existed
-/// because `Surface::Dashboard`'s validator demanded a literal audience; the
-/// authorization-code grant mints `aud = <client_id>` and has no
-/// requested-audience path at all
-/// (`authkestra-op-0.13.1/src/handlers/token.rs`, step 7), so a token from the
-/// only grant that can ever produce a dashboard credential would never have
-/// carried it. The validator was changed to expect what the grant produces:
-/// the audience is now [`DashboardClient::client_id`], passed to
-/// `vpay_api::resource_auth::JwtValidator::new` as a value rather than looked
-/// up from a constant.
-///
-/// What a constant is still needed for is the **tenant**. `aud` says which
-/// credential; this claim says which merchant, and
-/// `vpay_api::require_dashboard_token` refuses a token whose value here is
-/// not [`DashboardClient::merchant_id`]. It is stamped by the one grant that
-/// mints these tokens and by nothing else, which is what makes a
-/// `client_credentials` token structurally unable to satisfy it — no machine
-/// client may read the dashboard.
-///
-/// `vpay_merchant_id` and not `merchant_id`: `authkestra_engine`'s
-/// `reject_named_claim_collisions` refuses an `extra` key that collides with
-/// a named `Claims` field, and a vendor prefix is what keeps this from
-/// colliding with one a future authkestra adds.
-pub const DASHBOARD_MERCHANT_CLAIM: &str = "vpay_merchant_id";
 
 /// OAuth2 grant types this workspace's clients can be registered for.
 ///
@@ -670,77 +641,6 @@ impl fmt::Debug for MerchantClient {
     }
 }
 
-/// The dashboard's OAuth2 client registration (`docs/flows/dashboard-auth.md`):
-/// authorization-code + PKCE, a public client with no secret at all, and
-/// exactly one read-only scope — the dashboard observes, it does not
-/// administer (ADR-0008).
-#[derive(Clone, Serialize, Deserialize, Validate)]
-#[serde(rename_all = "snake_case")]
-pub struct DashboardClient {
-    /// Public client identifier. Must be unique across every merchant and
-    /// dashboard client combined — see [`MerchantClient::client_id`]'s doc
-    /// comment for why that check lives in `Config::validate_all` instead of
-    /// here.
-    #[garde(length(min = 1))]
-    pub client_id: String,
-    /// Exact-match redirect URIs (`authkestra_op::client::ClientRegistration::allows_redirect_uri`
-    /// matches these literally, no prefix/wildcard). Must be non-empty — a
-    /// client that can never redirect back can never complete the
-    /// authorization-code flow, so it is fatal at boot rather than a
-    /// runtime 404 on first login attempt.
-    #[garde(skip)]
-    #[serde(default)]
-    pub redirect_uris: Vec<String>,
-    /// The one tenant this dashboard client may read
-    /// (`payment_intents.merchant_id`, and the value every `/dash/v1` query
-    /// is filtered by).
-    ///
-    /// **Required, and deliberately singular.** ADR-0008's dashboard
-    /// observes records; a staff surface that could name any tenant would be
-    /// an authorisation decision taken per request against a list nothing
-    /// validates. One client, one tenant, fixed in YAML and checked at boot
-    /// against the registered merchants
-    /// ([`crate::ConfigError::DashboardUnknownMerchant`]) — so a typo is a
-    /// refused deployment rather than a dashboard that renders an empty
-    /// table and looks like a merchant with no payments.
-    ///
-    /// A deployment whose staff must see several tenants registers several
-    /// dashboard clients; it does not widen this field. That is not a
-    /// limitation this type invents — it is the same rule
-    /// [`MerchantClient::merchant_id`] states, applied to the other surface.
-    #[garde(length(min = 1))]
-    pub merchant_id: String,
-    /// The dashboard's single scope. A plain `String`, not a `Vec<String>`
-    /// with a length-1 rule — the maintainer's decision
-    /// (`docs/flows/dashboard-auth.md`'s "Scope" section: the dashboard is
-    /// read-only observability and governance, so one scope is all it ever
-    /// needs) is enforced by the type itself, not by a rule that could be
-    /// loosened without anyone noticing the shape changed.
-    #[garde(length(min = 1))]
-    pub scope: String,
-    /// Must never be set — see the module docs' "No secret, ever" section.
-    #[garde(skip)]
-    #[serde(default)]
-    pub client_secret: Option<String>,
-}
-
-/// Redacts [`DashboardClient::client_secret`] — see [`MerchantClient`]'s
-/// `Debug` impl for the identical reasoning.
-impl fmt::Debug for DashboardClient {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("DashboardClient")
-            .field("client_id", &self.client_id)
-            .field("merchant_id", &self.merchant_id)
-            .field("redirect_uris", &self.redirect_uris)
-            .field("scope", &self.scope)
-            .field(
-                "client_secret",
-                &self.client_secret.as_deref().map(|_| "[redacted]"),
-            )
-            .finish()
-    }
-}
-
 impl MerchantClient {
     /// Reads every entry of [`Self::cose_keys`], in configuration order.
     ///
@@ -755,66 +655,85 @@ impl MerchantClient {
     /// [`ConfigError::MalformedCoseKey`], naming this client and the entry's
     /// position, for the first entry that breaks a rule.
     pub fn cose_verify_keys(&self) -> Result<Vec<RegisteredCoseKey>, ConfigError> {
-        self.cose_keys
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| {
-                let malformed = |reason: &'static str| ConfigError::MalformedCoseKey {
-                    client_id: self.client_id.clone(),
-                    index,
-                    reason,
-                };
-                if let Some(label) = entry.label.as_deref() {
-                    if label.trim().is_empty() {
-                        return Err(malformed(
-                            "label must not be blank; omit the key entirely to leave it unnamed",
-                        ));
-                    }
-                    if label.chars().count() > COSE_KEY_LABEL_MAX_CHARS {
-                        return Err(malformed("label must be at most 64 characters"));
-                    }
-                }
-                let key = entry.verify_key().map_err(malformed)?;
-                Ok(RegisteredCoseKey {
-                    label: entry.label.clone(),
-                    key,
-                })
-            })
-            .collect()
+        read_cose_keys(&self.client_id, &self.cose_keys)
     }
 }
 
-/// The whole-document rules on `merchant_clients[].cose_keys`: each entry reads
-/// as an Ed25519 key, and no thumbprint is registered twice.
+/// Reads `keys`, a registration's `cose_keys`, into verification keys: the one
+/// parse a merchant's keys and a service's keys share (VP-6a), so the two
+/// cannot read an entry differently.
+///
+/// # Errors
+///
+/// [`ConfigError::MalformedCoseKey`], naming `client_id` and the entry's
+/// position, for the first entry that breaks a rule.
+pub fn read_cose_keys(
+    client_id: &str,
+    keys: &[CoseKey],
+) -> Result<Vec<RegisteredCoseKey>, ConfigError> {
+    keys.iter()
+        .enumerate()
+        .map(|(index, entry)| {
+            let malformed = |reason: &'static str| ConfigError::MalformedCoseKey {
+                client_id: client_id.to_owned(),
+                index,
+                reason,
+            };
+            if let Some(label) = entry.label.as_deref() {
+                if label.trim().is_empty() {
+                    return Err(malformed(
+                        "label must not be blank; omit the key entirely to leave it unnamed",
+                    ));
+                }
+                if label.chars().count() > COSE_KEY_LABEL_MAX_CHARS {
+                    return Err(malformed("label must be at most 64 characters"));
+                }
+            }
+            let key = entry.verify_key().map_err(malformed)?;
+            Ok(RegisteredCoseKey {
+                label: entry.label.clone(),
+                key,
+            })
+        })
+        .collect()
+}
+
+/// The whole-document rules on every registered signing key —
+/// `merchant_clients[].cose_keys` and `service_clients[].cose_keys` (VP-6a):
+/// each entry reads as an Ed25519 key, and no thumbprint is registered twice.
 ///
 /// Uniqueness is over the *thumbprint*, not the written string, so two
 /// spellings of one key (a base64url value with a non-canonical final
-/// character, say) cannot be registered as two. It spans every merchant and
-/// each merchant's own list: the registry resolves a verified thumbprint to
-/// exactly one merchant, and a key present twice would resolve to whichever
-/// came first by iteration order.
+/// character, say) cannot be registered as two. It spans every merchant, every
+/// service and each one's own list: the registries resolve a verified
+/// thumbprint to exactly one registration, and a key present twice would
+/// resolve to whichever came first by iteration order. It spans the two kinds
+/// on purpose: one key that is both a merchant's and a service's is a merchant
+/// that is also vaam, which is the confusion `/svc` exists to rule out.
 ///
 /// # Errors
 ///
 /// [`ConfigError::MalformedCoseKey`] for the first unreadable entry in file
 /// order, then [`ConfigError::DuplicateCoseKey`] for the first collision. Each
-/// merchant is read and checked before the next, unlike
+/// registration is read and checked before the next, unlike
 /// [`ConfigError::DuplicatePublishableKey`]'s walk, which compares strings
 /// before it looks at their shape: a thumbprint cannot be taken from a value
 /// that does not parse.
-pub(crate) fn validate_cose_keys(merchants: &[MerchantClient]) -> Result<(), ConfigError> {
+pub(crate) fn validate_cose_keys<'a>(
+    registrations: impl IntoIterator<Item = (&'a str, &'a [CoseKey])>,
+) -> Result<(), ConfigError> {
     let mut seen: BTreeMap<[u8; 32], &str> = BTreeMap::new();
-    for merchant in merchants {
-        for registered in merchant.cose_verify_keys()? {
+    for (client_id, keys) in registrations {
+        for registered in read_cose_keys(client_id, keys)? {
             let thumbprint = registered.key.thumbprint();
-            if let Some(first) = seen.insert(thumbprint, merchant.client_id.as_str()) {
+            if let Some(first) = seen.insert(thumbprint, client_id) {
                 return Err(ConfigError::DuplicateCoseKey {
                     thumbprint: thumbprint
                         .iter()
                         .map(|byte| format!("{byte:02x}"))
                         .collect(),
                     first: first.to_owned(),
-                    second: merchant.client_id.clone(),
+                    second: client_id.to_owned(),
                 });
             }
         }
@@ -961,27 +880,5 @@ mod tests {
             formatted.contains("https://acme.example/hooks"),
             "{formatted}"
         );
-    }
-
-    #[test]
-    fn dashboard_client_debug_output_never_contains_a_client_secret_value() {
-        let client = DashboardClient {
-            client_id: "vpay-dashboard".to_owned(),
-            merchant_id: "acme-tenant".to_owned(),
-            redirect_uris: vec!["https://dashboard.example/callback".to_owned()],
-            scope: "dashboard:read".to_owned(),
-            client_secret: Some("this-should-never-be-here".to_owned()),
-        };
-
-        let formatted = format!("{client:?}");
-
-        assert!(
-            !formatted.contains("this-should-never-be-here"),
-            "{formatted}"
-        );
-        assert!(formatted.contains("[redacted]"), "{formatted}");
-        assert!(formatted.contains("vpay-dashboard"), "{formatted}");
-        assert!(formatted.contains("dashboard.example"), "{formatted}");
-        assert!(formatted.contains("dashboard:read"), "{formatted}");
     }
 }

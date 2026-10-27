@@ -238,11 +238,11 @@ fn valid_config_path() -> &'static str {
 }
 
 /// The configuration `vpay-server staff add` needs: a merchant to validate
-/// `--merchant` against, a dashboard client, and both `staff_auth` secrets.
+/// `--merchant` against, and a `dashboard:` block.
 ///
 /// A second fixture rather than fields on [`valid_config_path`]'s, because
 /// every other test in this file boots the *server* against that one and a
-/// registered `dashboard_client` would change what those boots mount.
+/// registered `dashboard:` would change what those boots mount.
 fn staff_config_path() -> &'static str {
     concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -1403,34 +1403,6 @@ fn the_report_of_a_server_read_through_a_channel_still_carries_its_stdout() {
     );
 }
 
-/// A syntactically well-formed RS256 JWT carrying a `kid` this deployment
-/// has never published, an unrelated `iss`/`aud`, and a signature that is
-/// not one.
-///
-/// The `kid` is the load-bearing part. `JwtValidator::validate`
-/// (`backends/crates/vpay-api/src/resource_auth.rs`) short-circuits a token
-/// with *no* `kid` before it touches the JWKS cache at all, so a garbage
-/// string such as `"nope"` would answer 401 without any HTTP client ever
-/// being used. A token with an unrecognised `kid` is the cheapest input
-/// that forces the cold cache to actually fetch the JWKS over loopback —
-/// which is the code path this file's trust-store test exists to exercise.
-const BOGUS_TOKEN_WITH_UNKNOWN_KID: &str = concat!(
-    "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImtpZCI6ImEta2lkLXRoaXMtZGVwbG95bWVudC1uZXZlci1wdWJsaXNoZWQifQ",
-    ".eyJpc3MiOiJodHRwczovL2V4YW1wbGUuaW52YWxpZCIsImF1ZCI6InZwYXkiLCJzdWIiOiJtX3Rlc3QiLCJleHAiOjQxMDI0NDQ4MDB9",
-    ".bm90LWEtcmVhbC1zaWduYXR1cmU",
-);
-
-/// The exact 401 envelope an unrecognised token gets, copied from
-/// `vpay_api::error`'s own pinned constant (`PINNED_INVALID_TOKEN`). Kept
-/// here as a literal rather than imported so this test asserts on the bytes
-/// a merchant's HTTP client receives, not on a constant the code under test
-/// could change in step with it.
-const PINNED_INVALID_TOKEN: &str = concat!(
-    r#"{"error":{"code":"invalid_token","#,
-    r#""message":"The bearer token is invalid, expired, or was not issued for this endpoint.","#,
-    r#""type":"authentication_error"}}"#,
-);
-
 /// The shipped runtime image is `FROM scratch` (`docs/adr/0004-musl-mimalloc.md`):
 /// no glibc, no shell, and — the part that matters here — **no OS
 /// certificate store**. This test reproduces that condition on a normal
@@ -1439,33 +1411,21 @@ const PINNED_INVALID_TOKEN: &str = concat!(
 /// `lib.rs`) at paths that do not exist, so the platform verifier finds an
 /// empty root store exactly as it does inside the image.
 ///
-/// It pins two things, both of which failed before
-/// `vpay_api::http_client` existed:
+/// It pins two things:
 ///
-/// 1. **The process boots.** `JwtValidator::new` used to call
-///    `JwksCache::new`, which calls `reqwest::Client::new()`, which under
-///    this workspace's reqwest 0.13 pin builds a
-///    `rustls_platform_verifier::Verifier` eagerly and returns
-///    `General("No CA certificates were loaded from the system")` when the
-///    store is empty — and `Client::new()` turns that into a **panic**. The
-///    server died at startup inside its own image while passing every test
-///    on a machine that has a trust store.
-/// 2. **The JWKS client actually works.** A boot-only assertion would still
-///    pass if the eager client build were merely deferred to first use, so
-///    the second half sends a `/v1` request with
-///    [`BOGUS_TOKEN_WITH_UNKNOWN_KID`] — the input that forces the cold
-///    `JwksCache` to fetch this process's own `/v1/oauth/jwks.json` over
-///    loopback — and requires the **401** `invalid_token` envelope. A
-///    failed fetch would answer `503 service_unavailable` instead (see
-///    `vpay_api::error`'s `PINNED_KEYS_UNAVAILABLE`), so 401 is the
-///    assertion that distinguishes "the JWKS was read" from "the JWKS could
-///    not be read".
-///
-/// The JWKS URL is plain `http://` over loopback and no TLS is ever
-/// negotiated — which is precisely why the old failure was so easy to miss.
-/// The trust store was consulted at *client construction*, not at connect.
+/// 1. **The process boots.** Every HTTP client this binary builds (the rails',
+///    the webhooks') has to construct from vendored roots; one that read the
+///    OS store would fail, or panic, at startup inside its own image while
+///    passing every test on a machine that has a trust store.
+/// 2. **The signed management surface is mounted and answers.** The
+///    configuration registers a `dashboard:`, so `/dash/v1` is mounted behind
+///    its `EnvelopeLayer`; an unsigned request is the layer's coarse `401`
+///    (`UNAUTHORIZED`, no cause). Before VP-6a this half fetched the server's
+///    own JWKS over loopback to check a bearer token; there is no token and no
+///    fetch now, and the assertion is that a boot with the dashboard
+///    configured reaches the layer at all.
 #[test]
-fn a_server_with_no_os_trust_store_boots_and_still_validates_dashboard_tokens() {
+fn a_server_with_no_os_trust_store_boots_and_mounts_the_signed_dash_surface() {
     with_live_postgres(|database_url| {
         let addr = free_addr();
         #[cfg_attr(not(unix), allow(unused_mut))]
@@ -1473,9 +1433,8 @@ fn a_server_with_no_os_trust_store_boots_and_still_validates_dashboard_tokens() 
             bin()
                 .env("VPAY_BIND", addr.to_string())
                 .env("DATABASE_URL", &database_url)
-                // A config that registers a `dashboard_client`: `/v1` holds no
-                // token validator since VP-3 (it verifies signatures), so the
-                // JWKS client this test is about now guards `/dash/v1` alone.
+                // A config that registers a `dashboard:`, so the management
+                // surface is mounted.
                 .env("VPAY_CONFIG", staff_config_path())
                 .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
                 .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
@@ -1492,25 +1451,21 @@ fn a_server_with_no_os_trust_store_boots_and_still_validates_dashboard_tokens() 
         assert_eq!(
             status,
             Some(200),
-            "server never became healthy on {addr} with no OS trust store — it is expected to \
-             boot, because it never speaks TLS to reach its own loopback JWKS"
+            "server never became healthy on {addr} with no OS trust store"
         );
 
-        let request = format!(
-            "GET /dash/v1/payment_intents HTTP/1.1\r\nHost: localhost\r\n\
-             Authorization: Bearer {BOGUS_TOKEN_WITH_UNKNOWN_KID}\r\nConnection: close\r\n\r\n"
-        );
+        let request = "GET /dash/v1/payment_intents HTTP/1.1\r\nHost: localhost\r\n\
+                       Accept: application/json\r\nConnection: close\r\n\r\n";
         let (code, response) =
-            http_request(addr, &request).expect("the authenticated /dash/v1 surface answers");
+            http_request(addr, request).expect("the signed /dash/v1 surface answers");
 
         assert_eq!(
             code, 401,
-            "expected the invalid-token 401 after a real JWKS fetch; a 503 here means the fetch \
-             itself failed. Response was:\n{response}"
+            "an unsigned /dash/v1 request is the layer's coarse 401: {response}"
         );
         assert!(
-            response.contains(PINNED_INVALID_TOKEN),
-            "expected the pinned invalid_token envelope, got:\n{response}"
+            response.contains("UNAUTHORIZED"),
+            "expected the layer's own refusal body, got:\n{response}"
         );
 
         #[cfg(unix)]
@@ -2226,31 +2181,28 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
     });
 }
 
-// ------------------------------------------------------- `staff add` (ADR-0017)
+// ------------------------------------------- `staff add` / `staff pair-key` (ADR-0036)
 
-/// `vpay-server staff add` creates a staff member and prints a one-time
-/// password **on stdout, alone**.
+/// `vpay-server staff add` creates a staff member and prints its id **on
+/// stdout, alone**.
 ///
-/// The subprocess half of `backends/tests/integration/tests/staff_sign_in.rs`,
-/// which exercises every line of this subcommand *except* the ones only a
-/// process has: that the binary accepts the flags at all, that it needs no
-/// signing key and binds no listener, and that the password does not go
-/// through the tracing subscriber — which is JSON on stderr and is shipped to
-/// a log aggregator.
+/// The subprocess half of the console suites in `backends/tests/integration`,
+/// which exercise the repository path but not the ones only a process has: that
+/// the binary accepts the flags at all, that it needs no signing key and binds
+/// no listener, and that the id is pipeable (`staff pair-key --staff $(…)`).
 ///
-/// **This test found a real defect on the first draft.** The subcommand
-/// printed the password to stdout correctly — and the tracing subscriber
-/// defaults to stdout too, so the password arrived as the fifth line of a
-/// JSON log and `> password.txt` would have written the log to the file and
-/// left the password on the terminal. `install_process_defaults` now points a
-/// *subcommand's* logs at stderr; the server's stay on stdout, where a
-/// container log collector reads them.
+/// It writes **no credential** since VP-6a — no password, no TOTP seed, no
+/// session: the member reads `/dash/v1` once a console key is attached. So the
+/// only thing on stdout is an `stf_…` id, and the tracing subscriber — JSON on
+/// stderr, shipped to a log aggregator — must not be where it goes: a
+/// subcommand's logs are on stderr (`install_process_defaults`), the server's
+/// on stdout where a container log collector reads them.
 ///
-/// Two decisive assertions, therefore. Move the `println!` to
-/// `tracing::info!` and stdout is empty; put the subcommand's logs back on
-/// stdout and the line count is five.
+/// Two decisive assertions. Move the `println!` to `tracing::info!` and stdout
+/// is empty; put the subcommand's logs back on stdout and the line count is
+/// more than one.
 #[test]
-fn staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout() {
+fn staff_add_creates_a_staff_member_and_prints_its_id_on_stdout() {
     with_live_postgres(|database_url| {
         let output = bin()
             .args([
@@ -2267,9 +2219,6 @@ fn staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout() {
             .env("DATABASE_URL", &database_url)
             .env("VPAY_LOG_FORMAT", "json")
             // Deliberately NOT set: this subcommand must need no signing key.
-            // A server that cannot sign cannot serve, but creating a staff
-            // member is not serving, and requiring the Secret here would mean
-            // mounting it into a one-shot Job that has no use for it.
             .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
             .output()
             .expect("running `vpay-server staff add`");
@@ -2286,31 +2235,24 @@ fn staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout() {
         assert_eq!(
             lines.len(),
             1,
-            "the password must be alone on stdout so an operator can pipe it: {stdout:?}"
+            "the id must be alone on stdout so an operator can pipe it: {stdout:?}"
         );
-        let password = lines.first().expect("exactly one line, asserted above");
-        assert_eq!(
-            password.len(),
-            26,
-            "26 characters of Crockford base32 is 130 bits: {password:?}"
-        );
+        let id = lines.first().expect("exactly one line, asserted above");
         assert!(
-            password
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
-            "the alphabet is `vpay_core::ids`', so nothing in it can be misread off a \
-             terminal: {password:?}"
-        );
-
-        assert!(
-            !stderr.contains(password),
-            "the password must NOT reach the tracing subscriber, which is JSON on stderr and \
-             is shipped to a log aggregator: {stderr}"
+            id.starts_with("stf_") && id.len() > "stf_".len(),
+            "a staff id: {id:?}"
         );
         assert!(
             stderr.contains("created a staff member"),
-            "the creation itself is logged, without the password: {stderr}"
+            "the creation itself is logged: {stderr}"
         );
+        for secret_shaped in ["password", "totp", "pepper"] {
+            assert!(
+                !stdout.to_lowercase().contains(secret_shaped)
+                    && !stderr.to_lowercase().contains(secret_shaped),
+                "no credential is minted or mentioned any more ({secret_shaped}): {stdout} {stderr}"
+            );
+        }
     });
 }
 
@@ -2367,46 +2309,11 @@ fn staff_add_admin_flag_defaults_to_false_and_admin_sets_it() {
         let admin_stderr = add("cross-tenant-staffer@example.test", true);
         assert!(admin_stderr.contains("\"is_admin\":true"), "{admin_stderr}");
 
-        // Read the two rows back through the repository — not the CLI's own
-        // exit code, and not a raw `SELECT`, so this is proven through the
-        // same trait `require_dashboard_token` reads at request time.
-        let database_url = database_url.clone();
-        let (plain_is_admin, admin_is_admin) = std::thread::spawn(move || {
-            // A fresh runtime on a fresh thread, deliberately: this closure
-            // runs synchronously *inside* `with_live_postgres`'s own
-            // `block_on`, and nesting a second `block_on` on that same
-            // thread panics ("Cannot start a runtime from within a
-            // runtime"). A new thread has no runtime of its own yet.
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("build a tokio runtime on the reader thread");
-            rt.block_on(async move {
-                let repositories = vpay_db::connect(&database_url)
-                    .await
-                    .expect("connecting to read the rows back");
-                let plain = vpay_db::Staff::find_by_email(
-                    repositories.as_ref(),
-                    "plain-staffer@example.test",
-                )
-                .await
-                .expect("reading the plain row")
-                .expect("staff add wrote it")
-                .is_admin;
-                let admin = vpay_db::Staff::find_by_email(
-                    repositories.as_ref(),
-                    "cross-tenant-staffer@example.test",
-                )
-                .await
-                .expect("reading the admin row")
-                .expect("staff add wrote it")
-                .is_admin;
-                (plain, admin)
-            })
-        })
-        .join()
-        .expect("the reader thread panicked");
-
+        let (plain_is_admin, admin_is_admin) = read_back_two_members(
+            &database_url,
+            "plain-staffer@example.test",
+            "cross-tenant-staffer@example.test",
+        );
         assert!(
             !plain_is_admin,
             "staff add with no --admin must write is_admin = false"
@@ -2418,17 +2325,45 @@ fn staff_add_admin_flag_defaults_to_false_and_admin_sets_it() {
     });
 }
 
-/// The same address twice is refused, and the second run does **not** print a
-/// password.
+/// Reads two members' `is_admin` through the repository, on a thread of its
+/// own: the caller runs inside `with_live_postgres`'s `block_on`, and nesting a
+/// second `block_on` on that thread panics.
+fn read_back_two_members(database_url: &str, first: &str, second: &str) -> (bool, bool) {
+    let (database_url, first, second) =
+        (database_url.to_owned(), first.to_owned(), second.to_owned());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a tokio runtime on the reader thread");
+        rt.block_on(async move {
+            let repositories = vpay_db::connect(&database_url)
+                .await
+                .expect("connecting to read the rows back");
+            let find = |email: String| {
+                let repositories = repositories.clone();
+                async move {
+                    vpay_db::Staff::find_by_email(repositories.as_ref(), &email)
+                        .await
+                        .expect("reading a row")
+                        .expect("the command wrote it")
+                        .is_admin
+                }
+            };
+            (find(first).await, find(second).await)
+        })
+    })
+    .join()
+    .expect("the reader thread panicked")
+}
+
+/// The same address twice is refused, and the second run prints no id.
 ///
 /// `Staff::create` is a `create` and not an `upsert`, deliberately: a second
 /// `staff add` for an existing address must fail rather than quietly rewrite
-/// that person's password hash to one an operator just printed on a terminal.
-/// The unique index on `email` is what turns that into a refusal.
-///
-/// It also proves the address is lower-cased before the insert — the two runs
-/// below differ only in case, and the second is refused by an index over a
-/// column the first wrote in lower case.
+/// that person's row. The unique index on `email` is what turns that into a
+/// refusal. It also proves the address is lower-cased before the insert — the
+/// two runs below differ only in case.
 #[test]
 fn staff_add_refuses_a_second_account_for_one_address_whatever_its_case() {
     with_live_postgres(|database_url| {
@@ -2461,7 +2396,7 @@ fn staff_add_refuses_a_second_account_for_one_address_whatever_its_case() {
         );
         assert!(
             stdout.trim().is_empty(),
-            "a refused run must print no password at all: {stdout:?}"
+            "a refused run must print no id at all: {stdout:?}"
         );
     });
 }
@@ -2470,9 +2405,9 @@ fn staff_add_refuses_a_second_account_for_one_address_whatever_its_case() {
 /// the database is opened.
 ///
 /// There is no merchants table (ADR-0003), so no foreign key could refuse it —
-/// and a staff member bound to a tenant nobody registers could sign in and see
-/// an empty dashboard, which is indistinguishable from a merchant with no
-/// payments. The check is in `staff_add` for exactly that reason.
+/// and a staff member bound to a tenant nobody registers could read an empty
+/// dashboard, which is indistinguishable from a merchant with no payments. The
+/// check is in `staff_add` for exactly that reason.
 ///
 /// No `DATABASE_URL` is supplied, which is what makes "before the database"
 /// an assertion rather than a claim: with the check moved after the
@@ -2507,36 +2442,391 @@ fn staff_add_refuses_an_unregistered_merchant_before_it_opens_the_database() {
     );
 }
 
-/// A configuration with no `staff_auth` secrets refuses to create a staff
-/// member.
+/// A console key's public half, SEC1 uncompressed, unpadded base64url — derived
+/// at run time from a scalar built here, never a stored value.
+fn generated_console_public_key() -> String {
+    use base64::Engine as _;
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    let mut scalar = [0x11_u8; 32];
+    scalar[0] = 1;
+    scalar[31] = (std::process::id() % 200) as u8 + 1;
+    let key = p256::SecretKey::from_bytes((&scalar).into()).expect("a scalar below the order");
+    let point = key.public_key().to_encoded_point(false);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point.as_bytes())
+}
+
+/// [`generated_console_public_key`]'s key in its 33-byte compressed spelling.
+fn generated_compressed_console_public_key() -> String {
+    use base64::Engine as _;
+    use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+    let mut scalar = [0x11_u8; 32];
+    scalar[0] = 1;
+    scalar[31] = (std::process::id() % 200) as u8 + 1;
+    let key = p256::SecretKey::from_bytes((&scalar).into()).expect("a scalar below the order");
+    let point = key.public_key().to_encoded_point(true);
+    assert_eq!(point.as_bytes().len(), 33);
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(point.as_bytes())
+}
+
+/// `vpay-server staff pair-key` attaches a console key to an existing member,
+/// prints one line on stdout (`<staff id> <key id> <thumbprint> <expires_at>`),
+/// is idempotent for the same member's live key, refuses the same key for
+/// another member, and never changes an administrator flag.
 ///
-/// A password hashed without the pepper could never be verified by a
-/// deployment that has one, so the row would be an account nobody can sign in
-/// to — and the refusal names the missing key rather than producing one.
+/// The break-glass way in (owner ruling Q2) and the only way a key reaches an
+/// administrator. Read back through the repository, not the exit code.
 #[test]
-fn staff_add_refuses_a_configuration_with_no_staff_auth() {
-    let output = bin()
-        .args([
+fn staff_pair_key_attaches_a_key_prints_one_line_and_is_idempotent() {
+    with_live_postgres(|database_url| {
+        let add = |email: &str, admin: bool| -> String {
+            let mut args = vec![
+                "staff",
+                "add",
+                "--merchant",
+                "acme-cameroon-tenant",
+                "--email",
+                email,
+                "--name",
+                "Ada",
+            ];
+            if admin {
+                args.push("--admin");
+            }
+            let output = bin()
+                .args(args)
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .output()
+                .expect("running `vpay-server staff add`");
+            assert!(output.status.success());
+            String::from_utf8_lossy(&output.stdout).trim().to_owned()
+        };
+        let admin_id = add("root@example.test", true);
+        let plain_id = add("ada@example.test", false);
+
+        let key = generated_console_public_key();
+        let pair = |staff: &str, key: &str| {
+            bin()
+                .args(["staff", "pair-key", "--staff", staff, "--public-key", key])
+                .args(["--label", "break-glass"])
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_LOG_FORMAT", "json")
+                .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+                .output()
+                .expect("running `vpay-server staff pair-key`")
+        };
+
+        // By email, to a plain member.
+        let first = pair("ada@example.test", &key);
+        let stdout = String::from_utf8_lossy(&first.stdout);
+        let stderr = String::from_utf8_lossy(&first.stderr);
+        assert!(first.status.success(), "{stdout}\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 1, "one line, alone on stdout: {stdout:?}");
+        let line = lines.first().expect("one line, asserted above");
+        let fields: Vec<&str> = line.split(' ').collect();
+        let &[member_id, key_id, thumbprint, expires_at] = fields.as_slice() else {
+            panic!("four fields: {stdout:?}");
+        };
+        assert_eq!(member_id, plain_id);
+        assert!(key_id.starts_with("ck_"), "{stdout:?}");
+        assert_eq!(thumbprint.len(), 64, "a thumbprint: {stdout:?}");
+        let expires: i64 = expires_at.parse().expect("unix seconds");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs() as i64;
+        assert!(
+            (expires - now - 30 * 24 * 60 * 60).abs() < 120,
+            "a key lives 30 days from now: {expires} vs {now}"
+        );
+
+        // Idempotent for the same member.
+        let again = pair(&plain_id, &key);
+        assert!(
+            again.status.success(),
+            "{}",
+            String::from_utf8_lossy(&again.stderr)
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&again.stdout).split(' ').nth(2),
+            Some(thumbprint)
+        );
+
+        // The same key for another member is refused, and prints nothing.
+        let moved = pair(&admin_id, &key);
+        assert!(!moved.status.success());
+        assert!(
+            String::from_utf8_lossy(&moved.stdout).trim().is_empty(),
+            "a refused run prints nothing"
+        );
+        assert!(
+            String::from_utf8_lossy(&moved.stderr).contains("already registered"),
+            "{}",
+            String::from_utf8_lossy(&moved.stderr)
+        );
+
+        // An administrator can be keyed here (and only here), and stays one.
+        let other = {
+            // A second, different key.
+            let mut scalar = [0x22_u8; 32];
+            scalar[0] = 1;
+            use base64::Engine as _;
+            use p256::elliptic_curve::sec1::ToEncodedPoint as _;
+            let secret = p256::SecretKey::from_bytes((&scalar).into()).expect("a scalar");
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .encode(secret.public_key().to_encoded_point(false).as_bytes())
+        };
+        let admin_pair = pair("root@example.test", &other);
+        assert!(
+            admin_pair.status.success(),
+            "{}",
+            String::from_utf8_lossy(&admin_pair.stderr)
+        );
+        let (still_admin, plain_is_admin) =
+            read_back_two_members(&database_url, "root@example.test", "ada@example.test");
+        assert!(still_admin, "pair-key never changes an admin flag");
+        assert!(!plain_is_admin, "and never makes a plain member one");
+    });
+}
+
+/// `staff pair-key` refuses what is not a SEC1 uncompressed P-256 point
+/// **before** reading any configuration or opening the database — no config, no
+/// `DATABASE_URL` is supplied, so "before" is an assertion — and a key that
+/// begins with a hyphen reaches that check instead of being parsed by clap as an
+/// option (`allow_hyphen_values`: base64url's alphabet includes `-`).
+#[test]
+fn staff_pair_key_refuses_a_bad_key_before_it_needs_a_config_or_a_database() {
+    let run = |key: &str| {
+        bin()
+            .args([
+                "staff",
+                "pair-key",
+                "--staff",
+                "ada@example.test",
+                "--public-key",
+                key,
+            ])
+            .env_remove("VPAY_CONFIG")
+            .env_remove("DATABASE_URL")
+            .output()
+            .expect("running `vpay-server staff pair-key`")
+    };
+
+    for (what, key) in [
+        ("a hyphen-led string", "-not-a-key-but-base64url".to_owned()),
+        ("garbage", "AAAA".to_owned()),
+        // A valid P-256 point in its compressed spelling: refused, not normalised.
+        (
+            "a compressed point",
+            generated_compressed_console_public_key(),
+        ),
+    ] {
+        let output = run(&key);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{what}: {stderr}");
+        assert!(
+            stderr.contains("--public-key"),
+            "{what}: the refusal names the flag, not clap's usage: {stderr}"
+        );
+        assert!(
+            !stderr.contains("unexpected argument") && !stderr.contains("DATABASE_URL"),
+            "{what}: the key is checked before anything else: {stderr}"
+        );
+    }
+}
+
+/// `staff pair-key` for a member that does not exist is refused, and for a
+/// disabled one too — a key paired to either would authenticate nobody.
+#[test]
+fn staff_pair_key_refuses_an_unknown_member() {
+    with_live_postgres(|database_url| {
+        let output = bin()
+            .args([
+                "staff",
+                "pair-key",
+                "--staff",
+                "nobody@example.test",
+                "--public-key",
+                &generated_console_public_key(),
+            ])
+            .env("VPAY_CONFIG", staff_config_path())
+            .env("DATABASE_URL", &database_url)
+            .output()
+            .expect("running `vpay-server staff pair-key`");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{stderr}");
+        assert!(stderr.contains("no such staff member"), "{stderr}");
+    });
+}
+
+/// `vpay-server staff revoke-key` refuses a thumbprint that is not 64 lower-case
+/// hex characters **before** reading any configuration or opening the database:
+/// no config and no `DATABASE_URL` is supplied, so "before" is an assertion.
+#[test]
+fn staff_revoke_key_refuses_a_malformed_thumbprint_before_it_needs_a_config_or_a_database() {
+    for (what, thumbprint) in [
+        ("too short", "abc".to_owned()),
+        ("upper case", "AB".repeat(32)),
+        ("not hex", "zz".repeat(32)),
+    ] {
+        let output = bin()
+            .args(["staff", "revoke-key", "--thumbprint", &thumbprint])
+            .env_remove("VPAY_CONFIG")
+            .env_remove("DATABASE_URL")
+            .output()
+            .expect("running `vpay-server staff revoke-key`");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{what}: {stderr}");
+        assert!(
+            stderr.contains("--thumbprint") && stderr.contains("64 lower-case hex"),
+            "{what}: the refusal names the flag and the shape: {stderr}"
+        );
+        assert!(
+            !stderr.contains("DATABASE_URL"),
+            "{what}: the shape is checked before anything else: {stderr}"
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    }
+}
+
+/// `vpay-server staff revoke-key` is the break-glass twin of `pair-key`: it
+/// revokes a key the command line paired, prints one line on stdout (`<staff
+/// id> <key id> <thumbprint> <revoked_at>`), is idempotent (the first
+/// `revoked_at` is kept), refuses a thumbprint nothing registered, and — read
+/// back through the repository — leaves the key dead for ever, even for an
+/// administrator's.
+///
+/// The decisive mutation: skip `revoke_console_key` and the read-back shows a
+/// live key while the exit code and the printed line stay green.
+#[test]
+fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempotent() {
+    with_live_postgres(|database_url| {
+        let run = |args: &[&str]| {
+            bin()
+                .args(args)
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_LOG_FORMAT", "json")
+                .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+                .output()
+                .expect("running `vpay-server staff …`")
+        };
+        let added = run(&[
             "staff",
             "add",
             "--merchant",
             "acme-cameroon-tenant",
             "--email",
-            "ada@example.test",
+            "root@example.test",
             "--name",
-            "Ada Lovelace",
-        ])
-        .env("VPAY_CONFIG", valid_config_path())
-        .env_remove("DATABASE_URL")
-        .output()
-        .expect("running `vpay-server staff add`");
+            "Root",
+            "--admin",
+        ]);
+        assert!(added.status.success());
+        let key = generated_console_public_key();
+        let paired = run(&[
+            "staff",
+            "pair-key",
+            "--staff",
+            "root@example.test",
+            "--public-key",
+            &key,
+        ]);
+        assert!(
+            paired.status.success(),
+            "{}",
+            String::from_utf8_lossy(&paired.stderr)
+        );
+        let paired_stdout = String::from_utf8_lossy(&paired.stdout).into_owned();
+        let thumbprint = paired_stdout
+            .split(' ')
+            .nth(2)
+            .expect("pair-key prints the thumbprint third")
+            .to_owned();
 
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(!output.status.success(), "{stderr}");
-    assert!(
-        stderr.contains("staff_auth"),
-        "the refusal names what is missing: {stderr}"
-    );
+        let revoked = run(&["staff", "revoke-key", "--thumbprint", &thumbprint]);
+        let stdout = String::from_utf8_lossy(&revoked.stdout);
+        let stderr = String::from_utf8_lossy(&revoked.stderr);
+        assert!(revoked.status.success(), "{stdout}\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 1, "one line, alone on stdout: {stdout:?}");
+        let fields: Vec<&str> = lines.first().expect("one line").split(' ').collect();
+        let &[member_id, key_id, printed, revoked_at] = fields.as_slice() else {
+            panic!("four fields: {stdout:?}");
+        };
+        assert!(member_id.starts_with("stf_") && key_id.starts_with("ck_"));
+        assert_eq!(printed, thumbprint);
+        let first_revoked_at: i64 = revoked_at.parse().expect("unix seconds");
+
+        // Read back through the repository, not the exit code.
+        assert_eq!(
+            read_back_key_revocation(&database_url, &thumbprint),
+            Some(first_revoked_at),
+            "the key row carries the revocation the command printed"
+        );
+
+        // Idempotent: the first instant is kept.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let again = run(&["staff", "revoke-key", "--thumbprint", &thumbprint]);
+        assert!(again.status.success());
+        let again_stdout = String::from_utf8_lossy(&again.stdout).into_owned();
+        assert_eq!(
+            again_stdout.trim().split(' ').nth(3),
+            Some(first_revoked_at.to_string().as_str()),
+            "a second revocation keeps the first revoked_at: {again_stdout:?}"
+        );
+
+        // A well-formed thumbprint nothing registered is refused and prints nothing.
+        let unknown = run(&["staff", "revoke-key", "--thumbprint", &"0".repeat(64)]);
+        assert!(!unknown.status.success());
+        assert!(String::from_utf8_lossy(&unknown.stdout).trim().is_empty());
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("no console key is registered"),
+            "{}",
+            String::from_utf8_lossy(&unknown.stderr)
+        );
+
+        // And a revoked thumbprint stays taken: pairing it again is refused.
+        let repaired = run(&[
+            "staff",
+            "pair-key",
+            "--staff",
+            "root@example.test",
+            "--public-key",
+            &key,
+        ]);
+        assert!(
+            !repaired.status.success(),
+            "a revoked key is never reinstated"
+        );
+    });
+}
+
+/// The key's `revoked_at` as unix seconds, read through the repository on a
+/// thread of its own (see [`read_back_two_members`]).
+fn read_back_key_revocation(database_url: &str, thumbprint: &str) -> Option<i64> {
+    let (database_url, thumbprint) = (database_url.to_owned(), thumbprint.to_owned());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a tokio runtime on the reader thread");
+        rt.block_on(async move {
+            let repositories = vpay_db::connect(&database_url)
+                .await
+                .expect("connecting to read the rows back");
+            vpay_db::ConsoleKeys::find_console_key(repositories.as_ref(), &thumbprint)
+                .await
+                .expect("reading a row")
+                .expect("the command paired it")
+                .revoked_at
+                .map(|at| at.unix_timestamp())
+        })
+    })
+    .join()
+    .expect("the reader thread panicked")
 }
 
 /// `vpay-server worker`, end to end against the real compiled binary.

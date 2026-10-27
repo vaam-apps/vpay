@@ -102,12 +102,6 @@ spec:
             # `dashboard.apiUrl`'s own comment in values.yaml.
             - name: VPAY_DASH_API
               value: {{ default (printf "http://%s:%d" (ternary (printf "%s-management" (include "vpay.fullname" .)) (include "vpay.fullname" .) .Values.management.enabled) (int .Values.service.port)) .Values.dashboard.apiUrl | quote }}
-            - name: VPAY_DASHBOARD_CLIENT_ID
-              value: {{ .Values.dashboard.clientId | quote }}
-            - name: VPAY_DASHBOARD_REDIRECT_URI
-              value: {{ .Values.dashboard.redirectUri | quote }}
-            - name: VPAY_DASHBOARD_SCOPE
-              value: {{ .Values.dashboard.scope | quote }}
             - name: VPAY_DASHBOARD_PUBLIC_ORIGIN
               value: {{ .Values.dashboard.publicOrigin | quote }}
             {{- with .Values.dashboard.extraEnv }}

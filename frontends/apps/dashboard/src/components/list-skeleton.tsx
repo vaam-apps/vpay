@@ -2,10 +2,8 @@ import { Card, Skeleton } from "@vaam-apps/ui";
 import { ArrowLeft, Check } from "lucide-react";
 import type { ReactNode } from "react";
 
-import type { ListScreenCopy } from "../dash/list-screens";
-
 /**
- * The placeholders every screen's `loading.tsx` is built from.
+ * The placeholders the loading states of the screens are built from.
  *
  * # Sized by the real strings, not by guessed widths
  *
@@ -103,29 +101,5 @@ export function TableCardSkeleton({ rows = 8 }: { readonly rows?: number }) {
         ))}
       </div>
     </Card>
-  );
-}
-
-/**
- * What a procedure-backed list shows between a click and its rows.
- *
- * Rendered by each list route's `loading.tsx`, from the same
- * `ListScreenCopy` its `page.tsx` renders. Before 2026-10-21 those routes had
- * no loading boundary at all, so following a link left the previous screen
- * on display, unchanged and still clickable, until the next one had been
- * read in full on the server — nothing said the click had landed.
- */
-export function ListSkeleton({ title, description, filter }: ListScreenCopy) {
-  return (
-    <div role="status" aria-busy="true" className="flex flex-col gap-6">
-      <span className="sr-only">Loading {title}…</span>
-      <PageHeaderSkeleton title={title} description={description} />
-      {filter === undefined ? null : (
-        <FilterChipsSkeleton
-          labels={filter.options.map((option) => option.label)}
-        />
-      )}
-      <TableCardSkeleton />
-    </div>
   );
 }

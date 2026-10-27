@@ -81,8 +81,7 @@ pub enum Category {
     InvalidRequest,
     /// The caller is not who they claim, or presented no credential. Every
     /// authentication failure collapses here regardless of *which* check
-    /// tripped — `vpay_api::resource_auth` explains why the response must
-    /// not be an oracle.
+    /// tripped: the response must not be an oracle for which one it was.
     Authentication,
     /// The caller is authenticated but not allowed: a disabled client, a
     /// missing scope, a merchant touching another merchant's object.

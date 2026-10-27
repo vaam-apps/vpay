@@ -29,39 +29,29 @@
  * `InlineEmptyState`, so both are covered again below, on this app's own
  * markup, rather than left to a suite this repo does not build.
  *
- * Every screen is covered through the **component** it is made of rather than
- * through its `page.tsx`: every page in this app is an async server component
- * that reads cookies and calls vpay, which jsdom cannot run. What each page
- * adds on top of these components is composition and a redirect, and the
- * landmark case below renders the real layout around real content.
+ * Every screen is covered through the **component** it is made of. Since
+ * VP-6a the app's only page is `ConsoleUnavailable` (ADR-0036): the pages that
+ * read `/dash/v1` are deleted until VP-6b, and the presentational components
+ * they were made of are covered here and in their own suites.
  */
-import { render, within } from "@testing-library/react";
+import { render } from "@testing-library/react";
 import axe from "axe-core";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import RootLayout from "../app/layout";
-import LoginLayout from "../app/login/layout";
-import { AppShell } from "./components/app-shell";
-import { EnrolmentPanel } from "./components/enrolment-panel";
-import { PasswordForm } from "./components/password-form";
+import { ConsoleUnavailable } from "./components/console-unavailable";
 import { PaymentDetailView } from "./components/payment-detail";
 import { PaymentsFilters } from "./components/payments-filters";
 import { PaymentsPager } from "./components/payments-pager";
 import { PaymentsTable } from "./components/payments-table";
-import { SignInForm } from "./components/sign-in-form";
-import { SsoSignIn } from "./components/sso-sign-in";
-import { SignedInBar } from "./components/signed-in-bar";
-import { TotpForm } from "./components/totp-form";
 import { DETAIL, INTENT } from "./testing/fixtures";
 
 // `PaymentsFilters` calls `useRouter()` to apply (see its own module doc);
 // outside a mock, Next throws "invariant expected app router to be mounted"
 // the moment it renders, which is every rendered-component case below since
-// none of them wrap a real `<AppRouterContext.Provider>`. `AppShell` calls
-// `usePathname()` for the same reason (`app-shell.tsx`'s own doc), following
-// the mock `app-shell.test.tsx` already uses for it.
+// none of them wrap a real `<AppRouterContext.Provider>`.
 vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
   usePathname: () => "/payments",
@@ -111,180 +101,34 @@ async function violations(container: Element): Promise<string[]> {
   );
 }
 
-const NO_STATE = { error: null, requestId: null };
-const idle = () => vi.fn(() => Promise.resolve(NO_STATE));
-
 describe("the rendered app", () => {
   it("puts every byte of page content inside a landmark", async () => {
-    // The real `<body>` the layouts render around real page content, not a
+    // The real `<body>` the root layout renders around the real page, not a
     // fragment — `region` is a document-level rule and a fragment would pass
-    // it vacuously.
-    //
-    // **Two layouts, because that is what a route actually gets.** The root
-    // layout is the document and provides no landmark of its own since the
-    // nav moved out of it; the `<main>` comes from the group a route is in —
-    // `LoginLayout` for the signed-out routes, `AppShell` for `(dash)`.
-    // Rendering the root alone would assert against a composition no URL
-    // resolves to, and it would fail exactly as it did when the nav left.
+    // it vacuously. The root layout is the document and provides no landmark
+    // of its own; the `<main>` comes from the page.
     const html = renderToStaticMarkup(
       RootLayout({
-        children: LoginLayout({
-          children: <PaymentsTable rows={[INTENT]} />,
-        }) as ReactElement,
+        children: <ConsoleUnavailable />,
       }) as ReactElement,
     );
     const body = html
       .replace(/^[\s\S]*?<body[^>]*>/, "")
       .replace(/<\/body>[\s\S]*$/, "");
     document.body.innerHTML = body;
-
-    expect(await violations(document.body)).toEqual([]);
-  });
-
-  it("puts every byte of the signed-in shell inside a landmark too", async () => {
-    // The `(dash)` composition an operator actually uses — `AppShell` (the
-    // rail, the identity bar, the sign-out form) inside the same real
-    // `RootLayout` — rather than `LoginLayout`'s signed-out shell above.
-    // Nothing before this case rendered `AppShell` through axe at all:
-    // `app-shell.test.tsx` covers its own structural guarantees (one `<h1>`,
-    // every declared route, sign-out as a POST) but never runs it past axe,
-    // and the landmark case above only ever exercised the signed-out shell.
-    // `AppShell` is a client component reading `usePathname()`, mocked above
-    // the same way `app-shell.test.tsx` mocks it.
-    const html = renderToStaticMarkup(
-      RootLayout({
-        // An ELEMENT, not `AppShell({...})` called as a plain function.
-        // That worked while the component's only hook was the mocked
-        // `usePathname`; it held real `useState`/`useEffect` for a while
-        // (to keep `SideNav`'s `accountSlot` empty below `xl`, which
-        // `@vaam-apps/ui` 0.4.0 made wrong), and `SideNav` renders hooks of
-        // its own, so a hook outside a render is
-        // `Cannot read properties of null` either way.
-        children: (
-          <AppShell
-            email="ops@example.test"
-            merchantId="acct_test"
-            signOut={() => Promise.resolve()}
-          >
-            <PaymentsTable rows={[INTENT]} />
-          </AppShell>
-        ),
-      }) as ReactElement,
-    );
-    const body = html
-      .replace(/^[\s\S]*?<body[^>]*>/, "")
-      .replace(/<\/body>[\s\S]*$/, "");
-    document.body.innerHTML = body;
-
-    expect(await violations(document.body)).toEqual([]);
-  });
-
-  it("covers the More sheet's markup with the sheet actually OPEN", async () => {
-    // The two cases above use `renderToStaticMarkup`, and a closed vaul
-    // sheet renders NONE of its children — not hidden, absent. `SideNav`'s
-    // toolbars are not in that markup at all either: they portal to
-    // `document.body` after an effect, which a static render never runs. So
-    // the sheet's account block — the theme radiogroup and the third
-    // `SignedInBar` — has structural coverage only from a real client
-    // render that opens it, which is this case.
-    //
-    // `document.body`, not the render container: the toolbars and the sheet
-    // portal to the body, so scoping to the container would exclude the
-    // very markup this case exists to see — and `region` is a
-    // document-level rule that a fragment passes vacuously.
-    //
-    // Clearing the body first is load-bearing, not tidiness. The two cases
-    // above ASSIGN `document.body.innerHTML`, and Testing Library's
-    // `cleanup` only unmounts roots and removes containers it created
-    // itself — it does not undo that assignment. Left in place, the static
-    // shell from the previous case would still be in the document here,
-    // and axe would be scanning a stale second copy of the shell rather
-    // than this render (measured with the drawer this case covered until
-    // 0.4.0: `getByRole` threw "found multiple elements").
-    document.body.innerHTML = "";
-
-    const { findByRole } = render(
-      <AppShell
-        email="ops@example.test"
-        merchantId="acct_test"
-        signOut={() => Promise.resolve()}
-      >
-        <PaymentsTable rows={[INTENT]} />
-      </AppShell>,
-    );
-    // The phone bar's control, by its hook: jsdom shows both toolbars, and
-    // the vertical rail has a "More" of its own.
-    const bar = document.body.querySelector<HTMLElement>(
-      '[data-floating-rail-axis="horizontal"]',
-    );
-    expect(bar, "the phone bar is portalled into the document").not.toBeNull();
-    within(bar as HTMLElement)
-      .getByRole("button", { name: "More" })
-      .click();
-    // Fails loudly if the sheet never opened, rather than running axe over
-    // a document that still has no sheet in it and reporting green.
-    const sheet = await findByRole("dialog", { name: "More" });
-    expect(
-      within(sheet).getByRole("radiogroup", { name: "Theme" }),
-      "the open sheet really contains the account block",
-    ).toBeInTheDocument();
 
     expect(await violations(document.body)).toEqual([]);
   });
 });
 
 describe("every screen this app renders", () => {
-  it("the password form, clean, refused and pending", async () => {
-    const clean = render(<SignInForm action={idle()} />);
-    expect(await violations(clean.container)).toEqual([]);
-    clean.unmount();
-
-    const refused = render(
-      <SignInForm
-        action={vi.fn(() =>
-          Promise.resolve({ error: "Refused.", requestId: "req_01J8" }),
-        )}
-      />,
-    );
-    expect(await violations(refused.container)).toEqual([]);
-    refused.unmount();
-  });
-
-  it("the single sign-on button beneath the password form", async () => {
-    const both = render(
-      <>
-        <SignInForm action={idle()} />
-        <SsoSignIn />
-      </>,
-    );
-    expect(await violations(both.container)).toEqual([]);
-    both.unmount();
-  });
-
-  it("the code form and the enrolment panel", async () => {
-    const form = render(<TotpForm action={idle()} enrolling />);
-    expect(await violations(form.container)).toEqual([]);
-    form.unmount();
-
-    const panel = render(
-      <EnrolmentPanel
-        // A one-pixel PNG: this test is about structure, and generating a
-        // real QR here would put `qrcode` in the assertion path.
-        qrDataUrl="data:image/png;base64,iVBORw0KGgo="
-        secret="GEZDGNBVGY3TQOJQ"
-      />,
-    );
-    expect(await violations(panel.container)).toEqual([]);
-    panel.unmount();
-  });
-
-  it("the password-change form", async () => {
-    const { container, unmount } = render(<PasswordForm action={idle()} />);
+  it("the unavailable notice, the only page there is", async () => {
+    const { container, unmount } = render(<ConsoleUnavailable />);
     expect(await violations(container)).toEqual([]);
     unmount();
   });
 
-  it("the payments list, its filters and its signed-in bar", async () => {
+  it("the payments list and its filters", async () => {
     const table = render(<PaymentsTable rows={[INTENT]} />);
     expect(await violations(table.container)).toEqual([]);
     table.unmount();
@@ -316,16 +160,6 @@ describe("every screen this app renders", () => {
     );
     expect(await violations(filtered.container)).toEqual([]);
     filtered.unmount();
-
-    const bar = render(
-      <SignedInBar
-        email="ada@example.test"
-        merchantId="demo-merchant-tenant"
-        signOut={vi.fn()}
-      />,
-    );
-    expect(await violations(bar.container)).toEqual([]);
-    bar.unmount();
   });
 
   it("the payment detail, with and without a charge", async () => {

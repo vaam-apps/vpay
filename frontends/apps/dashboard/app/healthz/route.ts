@@ -8,9 +8,9 @@
  * the `runner` stage's Dockerfile `HEALTHCHECK` has nothing to point at
  * without it.
  *
- * **It takes no dependency and reports on none.** This app's only upstream
- * is `/dash/v1`, reached server-side through `app/api/dash/*`'s BFF
- * (`docs/adr/0008-dashboard-scope.md`) — and probing that from here would
+ * **It takes no dependency and reports on none.** This app has no upstream
+ * until VP-6b (it calls nothing, ADR-0036), and once it has one, probing it from
+ * here would
  * mean a `vpay-server` rollout or a management-tier blip takes this pod's
  * readiness down with it, which is exactly the coupling
  * `checkout`'s own health route argues against. Readiness on this app means

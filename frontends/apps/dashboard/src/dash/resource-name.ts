@@ -59,17 +59,3 @@ export function isProcedureResource(
 ): resource is ProcedureResource {
   return (PROCEDURE_RESOURCES as readonly string[]).includes(resource);
 }
-
-/**
- * Where the browser reads each one: `app/api/dash/<path>/route.ts`.
- *
- * Two names differ from the resource — `deliveries` and `checkouts` are the
- * screens' own words — which is why this is a map and not the resource name
- * spliced into a URL.
- */
-export const BFF_PATH_OF: Readonly<Record<ProcedureResource, string>> = {
-  [REFUNDS]: "refunds",
-  [WEBHOOK_DELIVERIES]: "deliveries",
-  [CUSTOMERS]: "customers",
-  [CHECKOUT_SESSIONS]: "checkouts",
-};

@@ -42,9 +42,8 @@ export interface MintedCheckout {
 
 /**
  * A `VpayClient` bound to `shop-merchant` — same tenant `/dash/v1` reads
- * (`demo_dashboard_merchant`, exp51) — built once so both {@link
- * mintCheckoutPaymentIntent} and {@link mintPaymentIntentsForPaging} read
- * the signing seed exactly the same way and fail with the same message if it
+ * (`demo_dashboard_merchant`, exp51) — built once so every task here reads
+ * the signing seed exactly the same way and fails with the same message if it
  * is missing.
  */
 function shopMerchantClient(): {
@@ -150,47 +149,4 @@ export async function mintCheckoutPaymentIntent(): Promise<MintedCheckout> {
     publishableKey,
     baseUrl,
   };
-}
-
-/**
- * Mints `count` unconfirmed PaymentIntents on `shop-merchant`'s tenant —
- * the same one `/dash/v1` reads — and returns their ids.
- *
- * Exists for `dashboard.cy.ts`'s paging test (issue #88 item 3): measured on
- * 2026-09-11, the tenant carries only the three payments earlier legs of
- * this same spec run create (one from `checkout.cy.ts`, which runs first in
- * `e2e:default`'s alphabetical spec order, and two from this file's own
- * earlier tests) by the time that test runs — `shop-hosted.cy.ts`'s four and
- * `shop-embedded.cy.ts`'s six run AFTER it, in later spec files or a wholly
- * separate `cypress run` (`e2e:framed`). Against `payments-query.ts`'s
- * `PAGE_SIZE` of 25 that is not close: the "if a Next link exists" branch a
- * conditional test would take was never the forward-paging path, it was
- * always the single-page one. This mints enough that the forward path is
- * the one that runs, unconditionally.
- *
- * Sequential, not `Promise.all`: this is Node reusing one `VpayClient`
- * against a real server on `localhost`, and two dozen sequential creates are
- * a few seconds, not a bottleneck worth the concurrent-request risk against
- * a shared demo stack.
- */
-export async function mintPaymentIntentsForPaging(
-  count: number,
-): Promise<{ ids: string[] }> {
-  const { vpay } = shopMerchantClient();
-  const ids: string[] = [];
-  for (let i = 0; i < count; i += 1) {
-    const intent = await vpay.paymentIntents.create(
-      {
-        amount: 5000,
-        currency: "xaf",
-        payment_method_types: ["mtn_momo"],
-        metadata: { source: "dashboard.cy.ts:paging-seed" },
-      },
-      {
-        idempotencyKey: `dashboard-cy-paging-${Date.now()}-${i}-${Math.random().toString(36).slice(2, 8)}`,
-      },
-    );
-    ids.push(intent.id);
-  }
-  return { ids };
 }

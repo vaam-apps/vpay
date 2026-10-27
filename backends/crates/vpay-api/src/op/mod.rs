@@ -32,9 +32,6 @@ use crate::op::refusing_stores::{
 };
 
 pub mod clients;
-/// The `/dash/v1` half: the authorization-code grant, for the dashboard
-/// client and nothing else (ADR-0017 decision 3).
-pub mod dashboard;
 pub mod jwks;
 pub mod keys;
 pub mod refusing_stores;
@@ -163,16 +160,14 @@ impl MerchantOp {
     /// is "no trailing slash", and a `public_base_url` of
     /// `https://api.example/` would otherwise produce
     /// `https://api.example//v1/oauth`, which is a *different string* to
-    /// every consumer that compares it: the `iss` claim the resource
-    /// validator pins, the `aud` a merchant's `client_assertion` must
-    /// carry, and the `issuer` in the discovery document the SDK reads.
+    /// every consumer that compares it: the `iss` claim the OP stamps, the
+    /// `aud` a merchant's `client_assertion` must carry, and the `issuer` in
+    /// the discovery document the SDK reads.
     ///
-    /// This value has to be the same string in three places or `/v1` fails
-    /// closed with no diagnostic: here, in
-    /// [`keys::LoadedSigningKey::from_file`]'s `issuer` argument (what gets
-    /// stamped into every token), and in
-    /// [`crate::resource_auth::JwtValidator::new`]'s `issuer` (what every
-    /// token is checked against). `main` derives all three from
+    /// This value has to be the same string in both places or the token a
+    /// merchant is minted names an issuer the discovery document does not: here,
+    /// and in [`keys::LoadedSigningKey::from_file`]'s `issuer` argument (what
+    /// gets stamped into every token). `main` derives both from
     /// [`Self::issuer`] for exactly that reason.
     ///
     /// # The store

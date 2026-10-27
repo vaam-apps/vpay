@@ -1,0 +1,26 @@
+# Fixture for `a_deleted_features_block_is_refused_not_ignored`
+# (backends/crates/vpay-config/src/config.rs). A valid file in every respect
+# except one top-level key VP-6a deleted (`staff_auth`), named as a null (`staff_auth: ~`): a binary that silently
+# dropped it would leave an operator believing a sign-in exists.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+staff_auth: ~

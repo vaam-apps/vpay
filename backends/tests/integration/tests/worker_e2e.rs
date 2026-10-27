@@ -309,8 +309,8 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
         merchant_clients: vec![merchant_client(CLIENT_A, MERCHANT_A, jwks_a)],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
-        dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+        dashboard: None,
+        service_clients: Vec::new(),
         routing: Default::default(),
     }
 }
@@ -359,10 +359,8 @@ async fn harness() -> anyhow::Result<Harness> {
     let deps = router_deps(
         Arc::clone(&repositories),
         merchant_op,
-        // No `dashboard_client` in either suite's configuration, so no
-        // `/dash/v1` nest is mounted at all — see `support::router_deps`.
-        None,
-        &signing_key,
+        // No `dashboard:` in either suite's configuration, so no management
+        // nest is mounted at all — see `support::router_deps`.
         &config,
     );
     let server = tokio::spawn(async move {

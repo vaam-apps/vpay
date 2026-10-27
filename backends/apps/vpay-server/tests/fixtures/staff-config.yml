@@ -1,15 +1,11 @@
 # Fixture for the `vpay-server staff add` subprocess tests in
-# `backends/apps/vpay-server/tests/cli.rs` (ADR-0017).
+# `backends/apps/vpay-server/tests/cli.rs` (ADR-0036).
 #
-# It carries the three things `staff add` reads and nothing else: a merchant
-# registration to validate `--merchant` against, a `dashboard_client` (without
-# one there is no dashboard for a staff member to sign in to, and
-# `validate_staff_auth` would not run at all), and both `staff_auth` secrets.
-#
-# `livemode: false`, so the secrets below may be literals: the `LiteralSecret`
-# rule is a *livemode* rule, and a fixture that had to resolve `${VAR}`s would
-# make every one of these subprocess tests depend on the runner's environment.
-# The values are visibly test values for the same reason.
+# It carries the two things `staff add` and `staff pair-key` read and nothing
+# else: a merchant registration to validate `--merchant` against and a
+# `dashboard:` block (without one there is no console to read, and `/dash/v1`
+# is not mounted). There is no secret in it: the credentials this fixture used
+# to carry (a password pepper, a TOTP key) were deleted with their sign-in.
 
 deployment:
   name: vpay-server-cli-test
@@ -28,15 +24,5 @@ merchant_clients:
     grant_types: [client_credentials]
     allowed_audiences: [vpay:v1]
 
-dashboard_client:
-  client_id: vpay-dashboard
+dashboard:
   merchant_id: acme-cameroon-tenant
-  scope: dashboard:read
-  redirect_uris:
-    - http://localhost:3000/api/auth/callback
-
-staff_auth:
-  password_pepper: a-test-pepper-that-is-not-a-real-secret
-  # 32 zero bytes, base64url-encoded and unpadded — the length
-  # `vpay_api::staff_auth::secret_box::KEY_BYTES` requires.
-  totp_encryption_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

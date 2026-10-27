@@ -1,9 +1,10 @@
-//! Which `/v1` operation a request addresses, as the signed binding names it
-//! (VP-3).
+//! Which operation of a hand-written surface a request addresses, as the signed
+//! binding names it (VP-3; `/dash/v1` and `/svc/v1` since VP-6a).
 //!
 //! cratestack's `RestBindingResolver` reads a generated router's
-//! `ROUTE_TRANSPORTS`. `/v1` is hand-written, so [`V1Binding`] is the same
-//! decision over [`V1_ROUTES`]: the route template axum matched, with the
+//! `ROUTE_TRANSPORTS`. `/v1`, the console's reads and `/svc/v1` are
+//! hand-written, so [`TableBinding`] is the same decision over each surface's
+//! route table ([`V1_ROUTES`], [`DASH_ROUTES`], [`SVC_ROUTES`]): the route template axum matched, with the
 //! `/v1` mount stripped, is the `route` a client binds; the matched path
 //! parameters, in axum's order, are the `path_params`; and the operation's key
 //! into `vpay_wire::V1_CONTRACTS` is `"<METHOD> <template>"`.
@@ -36,58 +37,125 @@
 
 use axum::http::Method;
 use cratestack_axum::envelope_layer::{BindingResolver, Resolution, ResolvedRoute, RouteRequest};
-use vpay_wire::{V1_MOUNT, operation_key};
+use vpay_wire::{DASH_MOUNT, SVC_MOUNT, V1_MOUNT, operation_key};
 
+use crate::dash::DASH_ROUTES;
+use crate::svc::SVC_ROUTES;
 use crate::v1::V1_ROUTES;
 
 /// The request payload types every `/v1` operation declares.
 pub const REQUEST_TYPES: &[&str] = &["application/x-www-form-urlencoded"];
 /// The response payload types every `/v1` operation answers in.
 pub const RESPONSE_TYPES: &[&str] = &["application/json"];
+/// The payload types `/dash/v1`'s reads and `/svc/v1` take and answer in: JSON
+/// both ways. The console's reads carry an empty payload (a `GET` seals one);
+/// `/svc/v1`'s writes are JSON bodies.
+pub const JSON_TYPES: &[&str] = &["application/json"];
 
-/// The [`BindingResolver`] over [`V1_ROUTES`].
-#[derive(Debug, Clone, Copy, Default)]
-pub struct V1Binding;
-
-/// `matched` without the `/v1` mount, or `None` if it is not under it.
+/// The [`BindingResolver`] over one surface's route table.
 ///
-/// A path is under the mount only at a segment boundary: `/v1x/...` is not
-/// `/v1`'s.
-fn template_of(matched: &str) -> Option<&str> {
-    matched
-        .strip_prefix(V1_MOUNT)
-        .filter(|rest| rest.starts_with('/'))
+/// Built once at boot from a table of `(template, methods)` rows and the
+/// payload types the surface declares; the three constructors are the three
+/// hand-written surfaces, and a fourth is a new constructor and not a new
+/// resolver.
+#[derive(Debug, Clone)]
+pub struct TableBinding {
+    mount: &'static str,
+    routes: Vec<(&'static str, &'static [&'static str])>,
+    request_types: &'static [&'static str],
+    response_types: &'static [&'static str],
 }
 
-impl BindingResolver for V1Binding {
+impl TableBinding {
+    /// `/v1`: forms in, JSON out.
+    #[must_use]
+    pub fn v1() -> Self {
+        Self {
+            mount: V1_MOUNT,
+            routes: V1_ROUTES
+                .iter()
+                .map(|route| (route.path, route.methods))
+                .collect(),
+            request_types: REQUEST_TYPES,
+            response_types: RESPONSE_TYPES,
+        }
+    }
+
+    /// `/dash/v1`'s hand-written reads: JSON.
+    #[must_use]
+    pub fn dash() -> Self {
+        Self {
+            mount: DASH_MOUNT,
+            routes: DASH_ROUTES
+                .iter()
+                .map(|route| (route.path, route.methods))
+                .collect(),
+            request_types: JSON_TYPES,
+            response_types: JSON_TYPES,
+        }
+    }
+
+    /// `/svc/v1`: JSON.
+    #[must_use]
+    pub fn svc() -> Self {
+        Self {
+            mount: SVC_MOUNT,
+            routes: SVC_ROUTES
+                .iter()
+                .map(|route| (route.path, route.methods))
+                .collect(),
+            request_types: JSON_TYPES,
+            response_types: JSON_TYPES,
+        }
+    }
+
+    /// The request and response payload types this surface declares and its
+    /// layer is configured to seal.
+    #[must_use]
+    pub fn payload_types(&self) -> (&'static [&'static str], &'static [&'static str]) {
+        (self.request_types, self.response_types)
+    }
+
+    /// `matched` without this surface's mount, or `None` if it is not under it.
+    ///
+    /// A path is under the mount only at a segment boundary: `/v1x/...` is not
+    /// `/v1`'s.
+    fn template_of<'a>(&self, matched: &'a str) -> Option<&'a str> {
+        matched
+            .strip_prefix(self.mount)
+            .filter(|rest| rest.starts_with('/'))
+    }
+}
+
+impl BindingResolver for TableBinding {
     fn resolve(&self, request: &RouteRequest<'_>) -> Resolution {
         // No route matched at all (a 404 the nest's fallback answers): nothing
         // to bind, and the layer passes it through. Anything *matched* that is
-        // not a `V1_ROUTES` row — the bare `/v1`, the nest's own `/v1/{*rest}`
-        // catch-all that an unknown path or `/v1//x` lands on — is `NotAnOp`,
-        // and never `Unresolved`: under `Required`, `Unresolved` on a matched
-        // route is cratestack's "envelope misconfigured" unsigned `500`, which
-        // is the wrong answer for a path that simply does not exist. `NotAnOp`
-        // lets a plain request through to the fallback's honest 404 and refuses
-        // a COSE body for it with the unsigned 415 (there is no operation to
-        // have bound it to).
+        // not a table row — the bare mount, the nest's own `/{*rest}` catch-all
+        // that an unknown path lands on — is `NotAnOp`, and never
+        // `Unresolved`: under `Required`, `Unresolved` on a matched route is
+        // cratestack's "envelope misconfigured" unsigned `500`, which is the
+        // wrong answer for a path that simply does not exist. `NotAnOp` lets a
+        // plain request through to the fallback's honest 404 and refuses a COSE
+        // body for it with the unsigned 415 (there is no operation to have
+        // bound it to).
         let Some(matched) = request.matched_path() else {
             return Resolution::Unresolved;
         };
-        let Some(template) = template_of(matched) else {
+        let Some(template) = self.template_of(matched) else {
             return Resolution::NotAnOp;
         };
-        // axum answers a `HEAD` with the `GET` handler and `V1_ROUTES` lists
+        // axum answers a `HEAD` with the `GET` handler and the tables list
         // only the latter; the binding keeps the real method, the contract
         // key does not.
         let method = match request.method().as_str() {
             "HEAD" => "GET",
             other => other,
         };
-        let mut on_path = V1_ROUTES.iter().filter(|route| route.path == template);
-        if let Some(route) = on_path
+        let mut on_path = self.routes.iter().filter(|(path, _)| *path == template);
+        if let Some((path, _)) = on_path
             .clone()
-            .find(|route| route.methods.contains(&method))
+            .find(|(_, methods)| methods.contains(&method))
         {
             let params = request
                 .path_params()
@@ -95,14 +163,14 @@ impl BindingResolver for V1Binding {
                 .map(|(_, value)| value.clone())
                 .collect();
             return Resolution::Op(
-                ResolvedRoute::new(route.path, params)
-                    .with_contract_key(operation_key(method, route.path))
-                    .with_payload_types(REQUEST_TYPES, RESPONSE_TYPES),
+                ResolvedRoute::new(*path, params)
+                    .with_contract_key(operation_key(method, path))
+                    .with_payload_types(self.request_types, self.response_types),
             );
         }
         let allow: Vec<Method> = on_path
             .by_ref()
-            .flat_map(|route| route.methods.iter())
+            .flat_map(|(_, methods)| methods.iter())
             .filter_map(|method| method.parse().ok())
             .collect();
         if allow.is_empty() {
@@ -123,12 +191,26 @@ mod tests {
             .iter()
             .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
             .collect();
-        V1Binding.resolve(&RouteRequest::new(
+        TableBinding::v1().resolve(&RouteRequest::new(
             &method,
             matched.unwrap_or("/not/matched"),
             matched,
             &params,
         ))
+    }
+
+    fn resolve_in(
+        binding: &TableBinding,
+        method: &str,
+        matched: &str,
+        params: &[(&str, &str)],
+    ) -> Resolution {
+        let method: Method = method.parse().expect("a method");
+        let params: Vec<(String, String)> = params
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+            .collect();
+        binding.resolve(&RouteRequest::new(&method, matched, Some(matched), &params))
     }
 
     fn op(resolution: Resolution) -> ResolvedRoute {
@@ -209,5 +291,67 @@ mod tests {
         }
         // No matched route at all is the only `Unresolved`.
         assert!(matches!(resolve("GET", None, &[]), Resolution::Unresolved));
+    }
+
+    /// Every row of `/dash/v1`'s and `/svc/v1`'s tables binds to a contract key
+    /// the matching `vpay-wire` table holds (VP-6a). A route the layer could not
+    /// find a digest for is a `500` for every signed call to it.
+    #[test]
+    fn every_dash_and_svc_route_method_has_a_row_in_its_contract_table() {
+        for (binding, mount, routes, table) in [
+            (
+                TableBinding::dash(),
+                DASH_MOUNT,
+                DASH_ROUTES
+                    .iter()
+                    .map(|route| (route.path, route.methods))
+                    .collect::<Vec<_>>(),
+                *vpay_wire::DASH_CONTRACTS,
+            ),
+            (
+                TableBinding::svc(),
+                SVC_MOUNT,
+                SVC_ROUTES
+                    .iter()
+                    .map(|route| (route.path, route.methods))
+                    .collect::<Vec<_>>(),
+                *vpay_wire::SVC_CONTRACTS,
+            ),
+        ] {
+            for (path, methods) in routes {
+                for method in methods {
+                    let resolved = op(resolve_in(&binding, method, &format!("{mount}{path}"), &[]));
+                    let key = resolved.contract_key().expect("a contract key");
+                    assert_eq!(key, operation_key(method, path));
+                    assert!(table.iter().any(|(row, _)| *row == key), "{key}");
+                    assert_eq!(resolved.payload_request_types(), Some(JSON_TYPES));
+                }
+            }
+        }
+    }
+
+    /// One surface's binding knows nothing of another's: `/svc/v1/console_keys`
+    /// is not a `/dash/v1` operation and a `/dash/v1` read is not a `/svc/v1` one.
+    #[test]
+    fn a_binding_resolves_only_its_own_mount() {
+        let dash = TableBinding::dash();
+        let svc = TableBinding::svc();
+        assert!(matches!(
+            resolve_in(&dash, "POST", "/svc/v1/console_keys", &[]),
+            Resolution::NotAnOp
+        ));
+        assert!(matches!(
+            resolve_in(&svc, "GET", "/dash/v1/payment_intents", &[]),
+            Resolution::NotAnOp
+        ));
+        // And a write to a read-only route is the layer's own 405.
+        assert!(matches!(
+            resolve_in(&dash, "POST", "/dash/v1/payment_intents", &[]),
+            Resolution::MethodNotAllowed(_)
+        ));
+        assert!(matches!(
+            resolve_in(&svc, "GET", "/svc/v1/console_keys", &[]),
+            Resolution::MethodNotAllowed(_)
+        ));
     }
 }

@@ -332,6 +332,13 @@ cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features 
 #   `default-features = false` drops `decimal-rust-decimal`, as on the facade.
 cratestack-cose = { version = "=0.16.0", default-features = false }
 cratestack-core = { version = "=0.16.0", default-features = false }
+# `cratestack-parser`, a dev-dependency of `vpay-tests-integration` alone
+# (VP-6a): `tests/support/sealed.rs` parses `schemas/vpay.cstack` and reads the
+# digest of `POST /$procs/<name>` off `cratestack_core::bound_contracts`, so the
+# harness that seals a procedure call binds it from the schema file itself and
+# not from the generated module the server's layer is built over. Already in
+# the graph (`cratestack-macros` parses with it).
+cratestack-parser = { version = "=0.16.0", default-features = false }
 # `cratestack-axum` taken directly by `vpay-api` (VP-3, 2026-10-26) for the
 # `EnvelopeLayer`, `BindingResolver` and `ResolvedRoute` that `vpay-api`'s
 # hand-written `/v1` is wrapped in. Already in the lock through the facade, so a
@@ -479,7 +486,7 @@ authkestra-engine = { version = "=0.13.1", default-features = false, features = 
 # routes get mounted onto an axum Router (crates/authkestra-axum's own
 # feature graph: op = ["dep:authkestra-op", "session", "token"]).
 authkestra-axum = { version = "=0.13.1", default-features = false, features = ["rustls-no-provider", "op"] }
-# JWKS-backed token validation for /dash/v1 request guards.
+# JWKS-backed token validation for the merchant MCP endpoint (ADR-0033).
 authkestra-resource = { version = "=0.13.1", default-features = false, features = ["rustls-no-provider"] }
 
 # --- crypto ---

@@ -83,6 +83,16 @@ pub const STAFF_PREFIX: &str = "stf_";
 /// it is the row an operator traces a broken sign-in through.
 pub const CREDENTIAL_PREFIX: &str = "cred_";
 
+/// The prefix on a ConsoleKey id (VP-6a) — a person's registered console
+/// signing key.
+///
+/// `ck_`, two letters like `cs_` and `ch_` and sharing a leading pair with
+/// neither. Never rendered on `/dash/v1` or `/v1`; `/svc/v1` answers the key by
+/// its thumbprint, which is what a pairing service and an operator both hold.
+/// It gets a real id for [`CREDENTIAL_PREFIX`]'s reason: it is the row an
+/// operator traces a refused sign-in through.
+pub const CONSOLE_KEY_PREFIX: &str = "ck_";
+
 /// The prefix on an Invoice id (S4b).
 ///
 /// Stripe's own spelling. `in_` is two letters like `pi_` and `cs_`, and it
@@ -434,6 +444,20 @@ pub fn credential_id() -> String {
     new_id(CREDENTIAL_PREFIX)
 }
 
+/// A new console key id, `ck_…` (VP-6a).
+///
+/// ```
+/// use vpay_core::ids::{self, CONSOLE_KEY_PREFIX};
+///
+/// let id = ids::console_key_id();
+/// assert!(ids::is_well_formed(CONSOLE_KEY_PREFIX, &id));
+/// assert_ne!(id, ids::console_key_id());
+/// ```
+#[must_use]
+pub fn console_key_id() -> String {
+    new_id(CONSOLE_KEY_PREFIX)
+}
+
 /// A new ledger transaction id, `lt_…` (RFC-0003 § 4).
 ///
 /// # Random, not derived from the charge — and what that does not guarantee
@@ -630,7 +654,7 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 12] = [
+    const GENERATORS: [Generator; 13] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
@@ -639,6 +663,7 @@ mod tests {
         (customer_id, CUSTOMER_PREFIX),
         (staff_id, STAFF_PREFIX),
         (credential_id, CREDENTIAL_PREFIX),
+        (console_key_id, CONSOLE_KEY_PREFIX),
         (ledger_transaction_id, LEDGER_TRANSACTION_PREFIX),
         (invoice_id, INVOICE_PREFIX),
         (invoice_item_id, INVOICE_ITEM_PREFIX),

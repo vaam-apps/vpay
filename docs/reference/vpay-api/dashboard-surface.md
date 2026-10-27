@@ -2,6 +2,17 @@
 
 _Moved out of [docs/reference/vpay-api.md](../vpay-api.md) on 2026-09-11 by exp57, which split a 1 566-line reference into a page per surface. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a cross-reference pointed at a heading that is now on another page, the page it moved to._
 
+> **Changed 2026-10-26 (VP-6a, [ADR-0036](../../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).**
+> `/dash/v1` is a COSE_Sign1 message under a paired P-256 console key, behind an
+> `EnvelopeLayer` of its own, with `envelope::console::dash_scope` resolving
+> the verified key to a staff member and a tenant. There is no token,
+> authorization code, session or `staff/*` route; `require_dashboard_token`,
+> `require_dashboard_procedure_token` and the `dashboard_client` registration are
+> deleted, `dashboard:` names the tenant, and `/svc/v1` pairs the keys
+> ([dashboard-auth.md](../../flows/dashboard-auth.md) has the mechanism). The
+> route table, the handlers and the read-only boundary below are unchanged; every
+> sentence about a token, a scope or an OP is the record of what stood.
+
 ## The dashboard surface (`dash/`)
 
 Two `GET` routes under `/dash/v1`, added 2026-09-06. The product side is

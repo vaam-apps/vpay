@@ -72,21 +72,14 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# Offline (cached-JWKS) bearer-token validation for the two authenticated
-# surfaces (`/v1`, `/dash/v1`) — see src/resource_auth.rs. Already a
-# workspace dependency (root Cargo.toml pins it for exactly this); added
-# here at the member level only, per docs/api/README.md's OP-3 scope.
+# Offline (cached-JWKS) bearer-token validation for the merchant MCP endpoint
+# (ADR-0033) — see src/resource_auth.rs. Already a workspace dependency.
 authkestra-resource.workspace = true
 # `src/jwks_cache.rs` and `src/resource_auth.rs` name `reqwest::Client` in
 # their signatures — the client itself is built by `vpay_provider::http`,
-# which this crate re-exports as `http_client` (Step 3 moved that module to
-# the port crate so an adapter could use it too). `rustls` and `webpki-roots`
-# left with it: nothing under `src/` mentions either any more, and keeping a
-# dependency a crate does not use is how a supply-chain gate stops meaning
-# anything. Already in this crate's resolved graph via
-# authkestra-resource/-engine/-op at the same 0.13 pin, with every feature the
-# workspace pin asks for (`json`, `charset`, `http2`, `rustls-no-provider`)
-# enabled there — so this is an edge, not a new package.
+# which this crate re-exports as `http_client`. Already in this crate's
+# resolved graph via authkestra-resource/-engine/-op at the same 0.13 pin,
+# so this is an edge, not a new package.
 reqwest.workspace = true
 # The merchant OP itself (`/v1/oauth`, ADR-0010): the `ClientStore` trait,
 # `CompositeOpStore`, the token handler, and the three store traits the
@@ -110,12 +103,12 @@ reqwest.workspace = true
 authkestra-op.workspace = true
 # `TokenManager::new_asymmetric` — the RS256 signer the OP mints with.
 authkestra-engine.workspace = true
-# `authkestra-resource` depends on jsonwebtoken with the `rust_crypto`
-# backend (pure-Rust RSA/EC/Ed25519, no `ring`/`aws-lc-rs` — unrelated to
-# rustls's TLS crypto provider, see deny.toml). Not itself a workspace
-# dependency; pinned to the same major version and feature set authkestra-
-# resource already resolves, so this adds no new package to the graph, only
-# makes an already-resolved one directly importable here.
+# `jsonwebtoken` with the `rust_crypto` backend (pure-Rust RSA/EC/Ed25519, no
+# `ring`/`aws-lc-rs` — unrelated to rustls's TLS crypto provider, see
+# deny.toml). Not a workspace dependency; pinned to the major version and
+# feature set `authkestra-op` and `authkestra-engine` resolve, so this adds no
+# new package to the graph, only makes an already-resolved one directly
+# importable here (the OP's client-assertion tests encode one).
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 # `authkestra_op::client::ClientStore` is declared `#[async_trait]`;
 # implementing it (`op::clients::YamlClientStore`) requires the same expansion
@@ -139,41 +132,14 @@ sha2.workspace = true
 # dependency simply moved from test-only to production, because the JWKS a
 # merchant verifies against is production output.
 base64 = "0.22"
-# ADR-0017's staff credentials. `argon2` is the password hash, on the same
-# 0.6 `authkestra-engine` 0.13.1 resolves, so there is one copy in the lock.
-# Its default features are the three `staff_auth::password` uses: `alloc`
-# and `password-hash` for the PHC-string API, and `getrandom`, which is
-# where `hash_password` draws each salt (the OS CSPRNG, through
-# `getrandom` 0.4). It was 0.5.3 until 2026-10-26; a PHC string 0.5 wrote
-# verifies under 0.6 unchanged, and `password.rs` pins one to prove it.
-argon2 = "0.6"
-# The OS CSPRNG every other random value in `staff_auth` is drawn from: a
-# session token, an authorization code, a TOTP secret, an AES-GCM nonce, a
-# one-time password. `OsRng` is infallible-or-panics, which is what those
-# `#[must_use]` minting functions are written against. It used to arrive as
-# `argon2::password_hash::rand_core`; argon2 0.6 re-exports rand_core 0.10,
-# which has no `OsRng`, so this names the 0.6 copy the lock already carries
-# (`rsa` and `rand` 0.8 both resolve it) rather than adding one. `rand`
-# itself stays a dev-dependency, so no userspace CSPRNG enters the shipping
-# graph.
-rand_core = { version = "0.6", features = ["getrandom"] }
-# `staff.totp_secret` is sealed with AES-256-GCM (`staff_auth::secret_box`).
-# Workspace pin, and `docs/flows/dashboard-auth.md` has listed it as an unused
-# one since Step 2 — this is its first consumer.
-aes-gcm.workspace = true
-# HMAC-SHA1, RFC 6238's default and the only algorithm every authenticator app
-# honours (`staff_auth::totp` says why SHA-256 was not taken). `hmac` is the
-# workspace pin — a second unused one this closes.
-hmac.workspace = true
-# The digest half of the same HMAC. **Pinned to 0.10, not the 0.11 already in
-# `Cargo.lock`**, and the reason is a version wall rather than a preference:
-# `hmac` 0.12 is built on `digest` 0.10, `sha1` 0.11 on `digest` 0.11, and the
-# two do not compose. `sha1` 0.11 is in the lock through CrateStack's own
-# graph; this adds `sha1` 0.10 beside it, which `deny.toml`'s
-# `multiple-versions = "warn"` reports and does not fail. Not in
-# `[workspace.dependencies]`: this is the only consumer, and SHA-1 belongs to
-# exactly one RFC in this codebase.
-sha1 = "0.10"
+# `console_keys`: verifies the ECDSA-P-256-SHA-256 proof of possession a pairing
+# carries (VP-6a). Already in the graph at 0.13.2 through `cratestack-cose`'s
+# ESP256 verifier; `ecdsa` is the one feature the proof needs, and `std` keeps
+# its error types `std::error::Error`.
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+# `console_keys` and `envelope::console`: lower-case hex for a key's thumbprint,
+# the spelling `console_keys.thumbprint` stores. The workspace pin.
+hex.workspace = true
 # `authkestra_op::AuthorizationCode::expires_at` is `chrono::DateTime<Utc>`
 # (`authkestra-engine-0.13.1/src/oauth2/code.rs`; it was
 # `authkestra-op-0.7.1/src/code.rs` until 0.8), so the code store has to speak it at
@@ -183,11 +149,6 @@ sha1 = "0.10"
 # dashboard code store is production. No new package: the workspace pin is
 # already in both binaries' graphs.
 chrono.workspace = true
-# Constant-time comparison of a TOTP code (`staff_auth::totp::Totp::verify`).
-# A `==` on two six-digit strings exits at the first differing byte, which is
-# a timing oracle over a six-digit space a caller may probe at will. Workspace
-# pin, already in the graph via `vpay-db`.
-subtle.workspace = true
 # `op::keys`: `oauth_signing_keys.expires_at` is a `TIMESTAMPTZ` bound as a
 # `time::OffsetDateTime` by vpay-db, so the rotation-overlap policy this
 # crate owns (`ROTATION_OVERLAP`) has to be expressed in the same units to
@@ -213,10 +174,10 @@ uuid.workspace = true
 # handset. Apache-2.0, already allowed in `deny.toml`. Not a workspace pin:
 # this crate is its only consumer.
 phonenumber = "0.3"
-# `staff::sso`: building the provider's authorization URL (`query_pairs_mut`)
-# and form-encoding the token request and the `client_secret_basic` pair
-# (`form_urlencoded`). Workspace pin, already in this crate's graph through
-# reqwest and `vpay-config`, so this names an existing package.
+# `op::token`: parsing the RFC 8707 `resource` parameters of a token request
+# (`form_urlencoded`), which is how the OP mints a token for the MCP resource.
+# Workspace pin, already in this crate's graph through reqwest and
+# `vpay-config`, so this names an existing package.
 url.workspace = true
 
 [dev-dependencies]
@@ -262,9 +223,3 @@ rand.workspace = true
 # 0071 note); not a workspace dependency, so pinned directly here the same
 # way jsonwebtoken is above.
 rsa = "0.9"
-# Test-only: mints a P-256 keypair so `staff::sso::verify` is exercised with an
-# ES256 id_token as well as an RS256 one (ADR-0030 allows both). Already in the
-# resolved graph at 0.13.2 through `jsonwebtoken`'s `rust_crypto` backend; the
-# `pkcs8` and `ecdsa` features are what let `jsonwebtoken` read the private key
-# a test hands it.
-p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }

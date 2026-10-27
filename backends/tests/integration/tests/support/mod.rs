@@ -39,10 +39,10 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::envelope::{EnvelopeKeys, V1Envelope};
+use vpay_api::envelope::{EnvelopeKeys, ManagementEnvelope, V1Envelope};
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator};
+use vpay_api::resource_auth::JwtValidator;
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::oauth::{CoseKey, GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
@@ -92,9 +92,9 @@ pub(crate) async fn migrated_postgres()
 
 /// Installs the process-wide rustls `CryptoProvider`.
 ///
-/// `authkestra_resource::jwt::JwksCache::new` builds a `reqwest::Client`
-/// eagerly and the workspace pins reqwest with `rustls-no-provider`, which
-/// panics without a process-wide default. `vpay-server`'s `main` installs one
+/// Building a `reqwest::Client` (the harness's own, the SDK's, a rail's) needs
+/// one: the workspace pins reqwest with `rustls-no-provider`, which panics
+/// without a process-wide default. `vpay-server`'s `main` installs one
 /// at the top of startup for exactly this reason; each test binary is its own
 /// process, so it has to do the same.
 pub(crate) fn ensure_crypto_provider_installed() {
@@ -107,8 +107,8 @@ pub(crate) fn ensure_crypto_provider_installed() {
 }
 
 /// A `reqwest::Client` that sends every request from exactly `ip` on this
-/// machine's loopback interface — how `staff_sign_in.rs`'s per-source-address
-/// rate-limit cases simulate distinct callers without a second machine.
+/// machine's loopback interface — how a suite simulates distinct callers by
+/// source address without a second machine.
 ///
 /// # Why this preflights the bind instead of just building the client
 ///
@@ -429,18 +429,9 @@ pub(crate) fn adapters_by_code() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
 pub(crate) fn router_deps(
     repositories: Arc<dyn Repositories>,
     merchant_op: Arc<MerchantOp>,
-    dashboard_validator: Option<DashboardJwtValidator>,
-    signing_key: &LoadedSigningKey,
     config: &Config,
 ) -> RouterDeps {
-    router_deps_with(
-        repositories,
-        merchant_op,
-        dashboard_validator,
-        signing_key,
-        config,
-        adapters_by_code(),
-    )
+    router_deps_with(repositories, merchant_op, config, adapters_by_code())
 }
 
 /// [`router_deps`], with the adapter map the suite supplies — see
@@ -448,29 +439,26 @@ pub(crate) fn router_deps(
 pub(crate) fn router_deps_with(
     repositories: Arc<dyn Repositories>,
     merchant_op: Arc<MerchantOp>,
-    dashboard_validator: Option<DashboardJwtValidator>,
-    signing_key: &LoadedSigningKey,
     config: &Config,
     adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> RouterDeps {
-    let repositories_for_login = Arc::clone(&repositories);
     let v1_envelope = v1_envelope_for(config, &repositories);
+    let management_envelope = management_envelope_for(config, &repositories);
     RouterDeps {
         repositories,
         merchant_op,
         v1_envelope: Some(v1_envelope),
-        dashboard_validator,
+        // Derived from the configuration, exactly as `vpay-server`'s `main`
+        // derives it: a suite gets the signed management surface when, and
+        // only when, it registers a `dashboard:` block. Every suite that
+        // writes none gets `None` here, and `/dash/v1`, the procedure transport
+        // and `/svc/v1` are then nests the router does not mount at all.
+        management_envelope,
         adapters: Arc::new(adapters),
         resource_config: Arc::new(
             ResourceConfig::from_config(config)
                 .expect("the suite's configuration projects onto the port"),
         ),
-        // Derived from the configuration, exactly as `vpay-server`'s `main`
-        // derives it — so a suite gets a staff login when, and only when, it
-        // registers a `dashboard_client` **and** both `staff_auth` secrets.
-        // Every suite but `staff_sign_in.rs` gets `None`, which is what makes
-        // `/dash/v1/staff/login` a `404` in all of them.
-        staff_login: staff_login_for(config, signing_key, &repositories_for_login),
         // Derived exactly as `vpay-server`'s `main` derives it. `Config`'s
         // own construction in these suites is not run through
         // `Config::validate_all`, so unlike `main.rs` this can genuinely
@@ -487,105 +475,34 @@ pub(crate) fn router_deps_with(
     }
 }
 
+fn test_envelope_keys() -> EnvelopeKeys {
+    let seed = |seed: [u8; 32]| URL_SAFE_NO_PAD.encode(seed);
+    EnvelopeKeys::from_seeds(
+        &seed(sealed::server_seed_current()),
+        &seed(sealed::server_seed_next()),
+    )
+    .expect("two distinct seeds")
+}
+
 /// The signed transport `vpay-server`'s `main` builds, with the test server's
 /// two response seeds ([`sealed::server_seed_current`] / `_next`).
 pub(crate) fn v1_envelope_for(config: &Config, repositories: &Arc<dyn Repositories>) -> V1Envelope {
-    let seed = |seed: [u8; 32]| URL_SAFE_NO_PAD.encode(seed);
-    V1Envelope::new(
-        config,
-        EnvelopeKeys::from_seeds(
-            &seed(sealed::server_seed_current()),
-            &seed(sealed::server_seed_next()),
-        )
-        .expect("two distinct seeds"),
-        Arc::clone(repositories),
-    )
-    .expect("the suite's merchants project onto a key registry")
+    V1Envelope::new(config, &test_envelope_keys(), Arc::clone(repositories))
+        .expect("the suite's merchants project onto a key registry")
 }
 
-/// `vpay-server`'s own `staff_login`, for a suite's harness.
-///
-/// Copied rather than shared, because `main.rs`'s version logs three
-/// operator-facing lines this has no business emitting into a test's output —
-/// and because a helper in `vpay-api` that both called would be a shipping
-/// function whose only caller shape is a test. What must not drift is the
-/// *condition*, and it is one line in both: a dashboard client and both
-/// secrets, or `None`.
-pub(crate) fn staff_login_for(
+/// The management surface's signed transport (`/dash/v1`, the procedure
+/// transport under it, `/svc/v1`), or `None` when the configuration registers
+/// no `dashboard:` — `vpay-server`'s own condition, in one line.
+pub(crate) fn management_envelope_for(
     config: &Config,
-    signing_key: &LoadedSigningKey,
     repositories: &Arc<dyn Repositories>,
-) -> Option<Arc<vpay_api::staff::StaffLogin>> {
-    let dashboard = config.dashboard_client.as_ref()?;
-    let (pepper, totp_key) = config.staff_auth.both()?;
-    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
-        .expect("the suite's staff_auth secrets are usable");
-
-    Some(Arc::new(vpay_api::staff::StaffLogin {
-        credentials: Arc::new(credentials),
-        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
-            config,
-            dashboard,
-            signing_key,
-            Arc::clone(repositories),
-        )),
-        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(config.staff_auth.rate_limits),
-        // The suite's own `staff_auth.trusted_proxies`, parsed exactly as
-        // `main.rs` parses it. `expect` rather than a fallible return,
-        // because a suite that wrote an unparseable allow-list has a bug in
-        // its fixture and must say so rather than quietly booting a server
-        // that trusts nobody — which is the shape every OTHER suite is in,
-        // and would make a trusted-proxy assertion pass for the wrong reason.
-        trusted_proxies: vpay_api::staff::client_address::TrustedProxies::parse(
-            &config.staff_auth.trusted_proxies,
-        )
-        .expect("the suite's staff_auth.trusted_proxies are parseable"),
-        issuer_label: config.deployment.name.clone(),
-        // From `staff_auth.sso`, exactly as `main.rs` derives it. `None` for
-        // every suite that writes no block, which is every suite but the SSO
-        // one.
-        sso: config.staff_auth.sso.as_ref().map(|sso| {
-            Arc::new(
-                vpay_api::staff::sso::SsoProvider::new(sso, &dashboard.merchant_id)
-                    .expect("the suite's SSO provider builds"),
-            )
-        }),
-    }))
-}
-
-/// The `/dash/v1` validator a suite's server should hold, derived from its
-/// own configuration exactly as `vpay-server`'s `main` derives it.
-///
-/// `None` when the configuration registers no `dashboard_client`, which is
-/// every suite but `dashboard_read_surface.rs` — and that `None` is what
-/// makes `/dash/v1` a 404 rather than a 401 in all of them, which is what an
-/// undashboarded deployment does.
-///
-/// A helper here rather than three lines in each harness, for `serve`'s
-/// reason: the audience is the only thing separating the two surfaces, and a
-/// suite that built this with `Surface::Merchant` by copy-paste would have a
-/// dashboard nest that accepted merchant tokens and would still pass every
-/// test that did not look.
-pub(crate) fn dashboard_validator_for(
-    base_url: &str,
-    issuer: &str,
-    config: &Config,
-) -> Option<DashboardJwtValidator> {
-    config.dashboard_client.as_ref().map(|dashboard| {
-        DashboardJwtValidator(
-            JwtValidator::new(
-                format!("{base_url}/v1/oauth/jwks.json"),
-                Duration::from_secs(300),
-                issuer,
-                // ADR-0017 decision 3: the dashboard's audience is its own
-                // registered `client_id`, because that is what the
-                // authorization-code grant mints. It was the constant
-                // `vpay:dash/v1` until 2026-09-07.
-                dashboard.client_id.as_str(),
-            )
-            .expect("the vendored-roots JWKS client builds"),
-        )
-    })
+) -> Option<ManagementEnvelope> {
+    config.dashboard.as_ref()?;
+    Some(
+        ManagementEnvelope::new(config, &test_envelope_keys(), Arc::clone(repositories))
+            .expect("the suite's service clients project onto a key registry"),
+    )
 }
 
 /// Boot step 4, run against a test's own configuration.
@@ -1028,16 +945,8 @@ pub(crate) async fn serve_with_adapters(
         signing_key.clone(),
         Arc::clone(repositories),
     ));
-    let dashboard_validator = dashboard_validator_for(&base_url, merchant_op.issuer(), &config);
     let issuer = merchant_op.issuer().to_owned();
-    let mut deps = router_deps_with(
-        Arc::clone(repositories),
-        merchant_op,
-        dashboard_validator,
-        &signing_key,
-        &config,
-        adapters(),
-    );
+    let mut deps = router_deps_with(Arc::clone(repositories), merchant_op, &config, adapters());
     // The merchant MCP endpoint (ADR-0033), built exactly as `vpay-server`'s
     // `main` builds it — only when `deployment.surfaces` names `mcp`, over
     // a validator whose audience is the MCP resource and whose JWKS is this
@@ -1125,4 +1034,103 @@ pub(crate) fn no_webhook_endpoints() -> Arc<vpay_worker::EndpointRegistry> {
 pub(crate) fn default_egress_policy() -> vpay_worker::EgressPolicy {
     ensure_crypto_provider_installed();
     vpay_worker::EgressPolicy::DENY_PRIVATE
+}
+
+// ------------------------------------------------------------ the console --
+
+/// A registered service (`service_clients[]`), signing with the Ed25519 key
+/// [`sealed::service_seed`] derives from its `client_id`.
+pub(crate) fn service_client(
+    client_id: &str,
+    capabilities: &[vpay_config::ServiceCapability],
+) -> vpay_config::ServiceClient {
+    vpay_config::ServiceClient {
+        client_id: client_id.to_owned(),
+        capabilities: capabilities.to_vec(),
+        cose_keys: vec![CoseKey {
+            public_key: sealed::service_public_b64(client_id),
+            label: Some("it".to_owned()),
+        }],
+        client_secret: None,
+    }
+}
+
+/// Pairs the console key `label` to `staff_member_id` at `now`, through the
+/// shipping repository: the key is live for 30 days from `now`, so a `now` in
+/// the past is how a suite builds an expired one without sleeping.
+///
+/// Returns the thumbprint.
+pub(crate) async fn pair_console_key(
+    repositories: &dyn Repositories,
+    staff_member_id: &str,
+    label: &str,
+    now: time::OffsetDateTime,
+) -> anyhow::Result<String> {
+    let thumbprint = sealed::console_thumbprint(label);
+    repositories
+        .pair_console_key(vpay_db::NewConsoleKey {
+            id: vpay_core::ids::console_key_id(),
+            staff_member_id: staff_member_id.to_owned(),
+            public_key: sealed::console_public_b64(label),
+            thumbprint: thumbprint.clone(),
+            label: Some(label.to_owned()),
+            now,
+        })
+        .await
+        .with_context(|| format!("pairing console key {label} to {staff_member_id}"))?;
+    Ok(thumbprint)
+}
+
+/// A plain (unsigned) member of `merchant_id`, written through the shipping
+/// repository.
+pub(crate) async fn create_staff(
+    repositories: &dyn Repositories,
+    id: &str,
+    merchant_id: &str,
+    email: &str,
+    is_admin: bool,
+) -> anyhow::Result<()> {
+    vpay_db::Staff::create(
+        repositories,
+        vpay_db::NewStaff {
+            id: id.to_owned(),
+            merchant_id: merchant_id.to_owned(),
+            email: email.to_owned(),
+            display_name: email.to_owned(),
+            is_admin,
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .await
+    .with_context(|| format!("seeding staff member {id}"))
+}
+
+/// The layer's coarse refusal, asserted once and byte-comparable: its own
+/// `401`, **unsigned**, carrying `UNAUTHORIZED` and nothing about *why*.
+///
+/// Asserting the layer's own body and not just the status is what makes
+/// "`EnvelopeMode::Required`, not `Optional`" a property a test can fail: an
+/// `Optional` layer lets an unsigned request through to the handler, whose own
+/// refusal would be a `500` (no `VerifiedSigner`) and not this body.
+pub(crate) fn assert_coarse_401(status: u16, sealed: bool, body: &[u8], what: &str) {
+    assert_eq!(status, 401, "{what}: {}", String::from_utf8_lossy(body));
+    assert!(!sealed, "{what}: a refusal is never sealed");
+    // A caller that asked for JSON gets `{"code": "UNAUTHORIZED", …}`; a sealed
+    // caller asked for the envelope's type and gets the same document as CBOR,
+    // so the code is looked for as the text it is in either encoding and parsed
+    // when it is JSON.
+    assert!(
+        body.windows(b"UNAUTHORIZED".len())
+            .any(|window| window == b"UNAUTHORIZED"),
+        "{what}: the refusal carries UNAUTHORIZED: {body:?}"
+    );
+    if body.first() == Some(&b'{') {
+        let parsed: Value = serde_json::from_slice(body)
+            .unwrap_or_else(|error| panic!("{what}: the 401 body is JSON ({error})"));
+        assert_eq!(
+            parsed.get("code").and_then(Value::as_str),
+            Some("UNAUTHORIZED"),
+            "{what}: got {parsed:#}"
+        );
+    }
 }

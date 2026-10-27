@@ -190,9 +190,8 @@ merchant credential-minting endpoint on the staff tier.
 private-key-JWT grant. ADR-0017's staff authorization-code grant does **not**
 terminate here — it terminates at `/dash/v1/oauth/authorize` and
 `/dash/v1/oauth/token`, inside the `dash` nest
-([`staff/mod.rs:370`](../../backends/crates/vpay-api/src/staff/mod.rs)), and
-[`staff/oauth.rs:291`](../../backends/crates/vpay-api/src/staff/oauth.rs) says
-so in as many words: "This endpoint serves one grant; `/v1/oauth/token` serves
+(`staff/mod.rs:370`, deleted in VP-6a with the whole grant, ADR-0036), and
+`staff/oauth.rs:291` (likewise) said so in as many words: "This endpoint serves one grant; `/v1/oauth/token` serves
 the other." So the management tier has no use for it, and serving it there
 would mint merchant credentials on the staff tier — which is the precise
 boundary §2 exists to draw. ADR-0009's rate limit sits in front of the

@@ -5,13 +5,23 @@ use std::sync::LazyLock;
 use cratestack_core::AcceptedContracts;
 use sha2::{Digest, Sha256};
 
-use crate::operations::V1_OPERATIONS;
+use crate::operations::{DASH_OPERATIONS, Operation, SVC_OPERATIONS, V1_OPERATIONS};
 
 /// Domain-separation tag of [`contract_digest`], in the shape cratestack
 /// gives its own (`cratestack/op-contract/v1\0`). If the derivation changes,
 /// the tag moves to `v2`: two derivations must never produce the same bytes
 /// for different inputs.
 pub const CONTRACT_DOMAIN: &[u8] = b"vpay/v1-route-contract/v1\0";
+
+/// [`CONTRACT_DOMAIN`] for `/dash/v1` (VP-6a). A different tag, not the same
+/// one over a different path: `GET /payment_intents` is an operation on `/v1`
+/// and another on `/dash/v1`, and a message signed for one must not be
+/// accepted as the other even by a layer that was handed the wrong key set.
+pub const DASH_CONTRACT_DOMAIN: &[u8] = b"vpay/dash-route-contract/v1\0";
+
+/// [`CONTRACT_DOMAIN`] for `/svc/v1` (VP-6a), for [`DASH_CONTRACT_DOMAIN`]'s
+/// reason.
+pub const SVC_CONTRACT_DOMAIN: &[u8] = b"vpay/svc-route-contract/v1\0";
 
 /// The row key of an operation: `"<METHOD> <path>"`, as cratestack keys a
 /// REST op (`GET /payment_intents/{id}`), path relative to the mount.
@@ -41,13 +51,61 @@ pub fn operation_key(method: &str, path: &str) -> String {
 /// ```
 #[must_use]
 pub fn contract_digest(method: &str, path: &str) -> [u8; 32] {
+    digest_under(CONTRACT_DOMAIN, method, path)
+}
+
+/// [`contract_digest`] for an operation under `/dash/v1`.
+///
+/// ```
+/// assert_ne!(
+///     vpay_wire::dash_contract_digest("GET", "/payment_intents"),
+///     vpay_wire::contract_digest("GET", "/payment_intents"),
+/// );
+/// ```
+#[must_use]
+pub fn dash_contract_digest(method: &str, path: &str) -> [u8; 32] {
+    digest_under(DASH_CONTRACT_DOMAIN, method, path)
+}
+
+/// [`contract_digest`] for an operation under `/svc/v1`.
+///
+/// ```
+/// assert_ne!(
+///     vpay_wire::svc_contract_digest("POST", "/console_keys"),
+///     vpay_wire::dash_contract_digest("POST", "/console_keys"),
+/// );
+/// ```
+#[must_use]
+pub fn svc_contract_digest(method: &str, path: &str) -> [u8; 32] {
+    digest_under(SVC_CONTRACT_DOMAIN, method, path)
+}
+
+fn digest_under(domain: &[u8], method: &str, path: &str) -> [u8; 32] {
     let mut hasher = Sha256::new();
-    hasher.update(CONTRACT_DOMAIN);
+    hasher.update(domain);
     hasher.update(b"rest\0");
     hasher.update(method.as_bytes());
     hasher.update(b"\0");
     hasher.update(path.as_bytes());
     hasher.finalize().into()
+}
+
+/// One leaked row per operation, each with the one digest `digest` derives.
+fn table(
+    operations: &'static [Operation],
+    digest: fn(&str, &str) -> [u8; 32],
+) -> AcceptedContracts {
+    let rows: Vec<(&'static str, &'static [[u8; 32]])> = operations
+        .iter()
+        .map(|operation| {
+            let key: &'static str =
+                Box::leak(operation_key(operation.method, operation.path).into_boxed_str());
+            let digests: &'static [[u8; 32]] =
+                Box::leak(Box::new([digest(operation.method, operation.path)]));
+            (key, digests)
+        })
+        .collect();
+    Box::leak(rows.into_boxed_slice())
 }
 
 /// What the `/v1` `EnvelopeLayer` accepts: one digest per [`V1_OPERATIONS`]
@@ -65,21 +123,18 @@ pub fn contract_digest(method: &str, path: &str) -> [u8; 32] {
 /// Each row has exactly one digest. cratestack lets a server keep older,
 /// still-compatible digests after a change (`contracts =` / `ContractLock`);
 /// nothing here has a previous contract to keep.
-pub static V1_CONTRACTS: LazyLock<AcceptedContracts> = LazyLock::new(|| {
-    let rows: Vec<(&'static str, &'static [[u8; 32]])> = V1_OPERATIONS
-        .iter()
-        .map(|operation| {
-            let key: &'static str =
-                Box::leak(operation_key(operation.method, operation.path).into_boxed_str());
-            let digests: &'static [[u8; 32]] = Box::leak(Box::new([contract_digest(
-                operation.method,
-                operation.path,
-            )]));
-            (key, digests)
-        })
-        .collect();
-    Box::leak(rows.into_boxed_slice())
-});
+pub static V1_CONTRACTS: LazyLock<AcceptedContracts> =
+    LazyLock::new(|| table(V1_OPERATIONS, contract_digest));
+
+/// What the `/dash/v1` `EnvelopeLayer` accepts for the hand-written reads:
+/// one digest per [`DASH_OPERATIONS`] row, under [`DASH_CONTRACT_DOMAIN`].
+pub static DASH_CONTRACTS: LazyLock<AcceptedContracts> =
+    LazyLock::new(|| table(DASH_OPERATIONS, dash_contract_digest));
+
+/// What the `/svc/v1` `EnvelopeLayer` accepts: one digest per
+/// [`SVC_OPERATIONS`] row, under [`SVC_CONTRACT_DOMAIN`].
+pub static SVC_CONTRACTS: LazyLock<AcceptedContracts> =
+    LazyLock::new(|| table(SVC_OPERATIONS, svc_contract_digest));
 
 #[cfg(test)]
 mod tests {
@@ -132,6 +187,55 @@ mod tests {
             .flat_map(|(_, digests)| digests.iter().copied())
             .collect();
         assert_eq!(digests.len(), V1_CONTRACTS.len(), "a duplicate digest");
+    }
+
+    /// `/dash/v1` and `/svc/v1` bind under their own domain tags (VP-6a): the
+    /// same method and path is a different operation on each surface, and the
+    /// derivations are frozen like `/v1`'s so a refactor cannot move them.
+    #[test]
+    fn the_three_surfaces_never_share_a_digest_and_the_new_two_are_frozen() {
+        let (v1, dash, svc) = (
+            contract_digest("GET", "/payment_intents"),
+            dash_contract_digest("GET", "/payment_intents"),
+            svc_contract_digest("GET", "/payment_intents"),
+        );
+        assert!(v1 != dash && dash != svc && v1 != svc);
+        assert_eq!(
+            hex(&dash),
+            "8729fd35a8ec30362c77e1a780ed387271d15bb79d8b4b97e59dfd7ab804d0f8",
+            "frozen: a change here refuses every console already built"
+        );
+        assert_eq!(
+            hex(&svc_contract_digest("POST", "/console_keys")),
+            "097c77e8078fff0499367d0007e48fad7ca3c75fac7a30f79cc6ba52f3c24b4a",
+            "frozen: a change here refuses vaam's pairing calls"
+        );
+    }
+
+    #[test]
+    fn the_dash_and_svc_tables_have_one_row_and_one_digest_per_operation() {
+        use crate::operations::{DASH_OPERATIONS, SVC_OPERATIONS};
+        assert_eq!(DASH_CONTRACTS.len(), DASH_OPERATIONS.len());
+        assert_eq!(SVC_CONTRACTS.len(), SVC_OPERATIONS.len());
+        for operation in DASH_OPERATIONS {
+            let digests = find_contract(&DASH_CONTRACTS, operation.method, operation.path)
+                .unwrap_or_else(|| panic!("no row for {} {}", operation.method, operation.path));
+            assert_eq!(
+                digests,
+                &[dash_contract_digest(operation.method, operation.path)]
+            );
+        }
+        for operation in SVC_OPERATIONS {
+            let digests = find_contract(&SVC_CONTRACTS, operation.method, operation.path)
+                .unwrap_or_else(|| panic!("no row for {} {}", operation.method, operation.path));
+            assert_eq!(
+                digests,
+                &[svc_contract_digest(operation.method, operation.path)]
+            );
+        }
+        // The other surface's operations are not rows here.
+        assert!(find_contract(&DASH_CONTRACTS, "POST", "/console_keys").is_none());
+        assert!(find_contract(&SVC_CONTRACTS, "GET", "/payment_intents").is_none());
     }
 
     #[test]

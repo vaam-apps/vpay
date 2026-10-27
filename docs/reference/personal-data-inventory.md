@@ -74,11 +74,11 @@ visible element stays a documented decision in the impl.
 **Known open, 2026-10-09** (each is a type or path the list does not cover, not
 a claim that it is safe):
 
-- `vpay-api/src/staff/mod.rs` `LoginRequest` and `PasswordRequest` (a plaintext
-  password), `vpay-api/src/staff_auth/tokens.rs` `MintedToken` and
-  `vpay-api/src/staff/oauth.rs` `TokenResponse` still **derive** `Debug`. They
-  predate this work, are not registered, and are a follow-up by the
-  maintainer's decision.
+- ~~`vpay-api/src/staff/mod.rs` `LoginRequest` and `PasswordRequest` (a
+  plaintext password), `vpay-api/src/staff_auth/tokens.rs` `MintedToken` and
+  `vpay-api/src/staff/oauth.rs` `TokenResponse` still **derive** `Debug`.~~ All
+  four were deleted with their sign-in on 2026-10-26 (VP-6a): there is no
+  password, session or token type left in `vpay-api` to derive anything.
 - `reqwest::Error`'s **`Display`** ends in `for url (…)`, so
   `vpay_core::error::source_chain` — what the worker records in durable
   `last_error`-shaped columns — still carries a rail request's full URL. MTN's
@@ -308,8 +308,8 @@ whose `subject` is a person are:
 | `staff_email`             | `staff_members.email`                                                                                                                                        | `redact` |
 | `staff_display_name`      | `staff_members.display_name`                                                                                                                                 | `none`   |
 | `staff_credential_secret` | `credentials.material`/`subject`/`issuer` (migration 0044 moved the staff credential columns here from `staff_members`)                                      | `forbid` |
-| `staff_oauth_token`       | `staff_sessions.access_token`                                                                                                                                | `forbid` |
-| `session_oauth_code`      | `oauth_codes`, `oauth_refresh_tokens`, `oauth_device_codes`, `oauth_authorization_codes`, `oauth_client_assertion_jtis`, `oauth_dpop_jti`                    | `forbid` |
+| `staff_console_key`       | `console_keys.public_key`/`thumbprint`/`label` (migration `0056`, 2026-10-26: replaces `staff_oauth_token` and the `staff_sessions` it lived in)             | `none`   |
+| `session_oauth_code`      | `oauth_codes`, `oauth_refresh_tokens`, `oauth_device_codes`, `oauth_client_assertion_jtis`, `oauth_dpop_jti`                                                 | `forbid` |
 | `webhook_url`             | `webhook_deliveries.url`, `checkout_sessions.success_url`/`cancel_url`/`return_url`, `oauth_*redirect_uri`, `charges.redirect_url`/`return_url`              | `forbid` |
 | `oauth_signing_key`       | `oauth_signing_keys.kid`/`public_jwk`                                                                                                                        | `forbid` |
 | `oauth_client_secret`     | `oauth_clients.client_secret_hash`/`jwks`, `checkout_sessions.publishable_key`/`client_secret_suffix`/`return_token`, `payment_intents.client_secret_suffix` | `forbid` |

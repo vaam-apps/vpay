@@ -8090,10 +8090,10 @@ struct SecurityGap {
 
 /// The configuration paths this gate accepts, mirroring the closed sets in
 /// `vpay-config` (`Config`, `ProviderHost::credentials`, `MerchantClient`,
-/// `StaffAuth`, `DashboardClient`). A rail or a deployment secret added there
+/// `Dashboard`, `ServiceClient`). A rail or a deployment secret added there
 /// must be added here in the same change; a misspelled key the inventory
 /// invents is refused rather than silently believed.
-const SECURITY_CONFIG_KEYS: [&str; 13] = [
+const SECURITY_CONFIG_KEYS: [&str; 10] = [
     "providers.mtn_momo.credentials.subscription_key",
     "providers.mtn_momo.credentials.api_key",
     "providers.mtn_momo.credentials.disbursement_subscription_key",
@@ -8104,9 +8104,6 @@ const SECURITY_CONFIG_KEYS: [&str; 13] = [
     "providers.notchpay.credentials.public_key",
     "providers.notchpay.credentials.private_key",
     "merchant_clients[].webhooks[].secrets",
-    "staff_auth.password_pepper",
-    "staff_auth.totp_encryption_key",
-    "staff_auth.sso.client_secret",
 ];
 
 const SECURITY_THEMES: [&str; 4] = ["Organizational", "People", "Physical", "Technological"];

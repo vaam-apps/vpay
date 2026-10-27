@@ -208,10 +208,8 @@ export function pageCursors(
  * The paging links for a page of `rows`.
  *
  * {@link pageCursors} decides; this turns the decision into two `/payments`
- * URLs with the filters kept. The split is the one `server/gate.ts` and
- * `server/session.ts` already make for the session: what is true about the
- * data is a pure function, and what a particular medium does about it is
- * somewhere else.
+ * URLs with the filters kept. What is true about the data is a pure function,
+ * and what a particular medium does about it is somewhere else.
  */
 export function pagerHrefs(
   query: PaymentsQuery,

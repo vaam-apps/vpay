@@ -470,16 +470,16 @@ impl MerchantScope {
     }
 
     /// The **third** way a scope comes into existence: minted by
-    /// [`crate::require_dashboard_token`] from
-    /// [`DashboardBinding::merchant_id`], once a dashboard token has
-    /// validated against the registered dashboard client and carries its
-    /// scope.
+    /// `crate::envelope::console::dash_scope` from
+    /// [`DashboardBinding::merchant_id`] (or the merchant an administrator
+    /// named), once a request has verified under a live console key whose
+    /// member belongs to the dashboard's merchant.
     ///
     /// Named for its caller like [`Self::for_payer`], and `pub(crate)` for
     /// the same reason. The distinction worth stating: the merchant path
-    /// *resolves* a tenant from something the token said, and this one does
-    /// not — the tenant comes from configuration, and no claim in any token
-    /// can change it. That is what makes `/dash/v1` a surface bound to one
+    /// *resolves* a tenant from the key that signed, and this one does
+    /// not — the tenant comes from configuration, and nothing in a request
+    /// can change it for a person who is not an administrator. That is what makes `/dash/v1` a surface bound to one
     /// merchant rather than a surface a staff credential can point anywhere.
     pub(crate) fn for_dashboard(merchant_id: String) -> Self {
         Self { merchant_id }
@@ -798,8 +798,8 @@ pub struct ResourceConfig {
     /// `DuplicateMerchantId` relaxes it has to be decided in configuration
     /// rather than by iteration order. It cannot happen today.
     display_name_by_merchant_id: BTreeMap<String, String>,
-    /// The one dashboard registration this deployment serves `/dash/v1`
-    /// for, if it configured one.
+    /// The one tenant this deployment serves `/dash/v1` for, if it configured
+    /// a `dashboard:` block.
     ///
     /// `None` is a complete answer and the common one — a deployment that
     /// runs no dashboard — and [`crate::router`] reads it as such: the
@@ -808,11 +808,10 @@ pub struct ResourceConfig {
     /// credential would help.
     ///
     /// A single value, not a map keyed by `client_id` like
-    /// [`Self::merchant_id_by_client_id`], because
-    /// `vpay_config::DashboardClient` is a single value: the dashboard is
-    /// one registration bound to one tenant, and a map would model a
-    /// question — "which of several dashboard clients is this?" — the
-    /// configuration cannot ask.
+    /// [`Self::merchant_id_by_client_id`], because `vpay_config::Dashboard` is a
+    /// single value: the console is bound to one tenant, and a map would model a
+    /// question — "which of several dashboards is this?" — the configuration
+    /// cannot ask.
     dashboard: Option<DashboardBinding>,
     /// This tenant's default `success_url`/`cancel_url` for
     /// `POST /v1/invoices/{id}/pay` (issue #91, D2).
@@ -860,25 +859,16 @@ pub struct InvoiceUrlDefaults {
     pub cancel_url: Option<String>,
 }
 
-/// The `/dash/v1` registration, projected: which credential, which tenant,
-/// which scope.
+/// The `dashboard:` block, projected: which tenant the console reads.
 ///
-/// Its own type rather than three `Option` fields on [`ResourceConfig`],
-/// because the three are only ever meaningful together — a `client_id` with
-/// no `merchant_id` would be a dashboard bound to nothing, and there is no
-/// state of the configuration that produces one.
+/// Its own type rather than a bare `String` on [`ResourceConfig`], so a call
+/// site cannot pass a `merchant_id` where a client id is meant, and so the day
+/// the block grows a second field it is one edit.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DashboardBinding {
-    /// The registered dashboard credential's `client_id`. A token's `sub`
-    /// must equal this — see [`crate::require_dashboard_token`] for why the
-    /// audience alone is not enough.
-    pub client_id: String,
-    /// The one tenant this dashboard may read. Boot refuses a value no
-    /// merchant registers (`vpay_config::ConfigError::DashboardUnknownMerchant`).
+    /// The one tenant `/dash/v1` reads. Boot refuses a value no merchant
+    /// registers (`vpay_config::ConfigError::DashboardUnknownMerchant`).
     pub merchant_id: String,
-    /// The registration's single scope
-    /// (`docs/flows/dashboard-auth.md`'s "Scope"), which a token must carry.
-    pub scope: String,
 }
 
 impl ResourceConfig {
@@ -1017,14 +1007,9 @@ impl ResourceConfig {
             // Cloned rather than referenced for the reason every other field
             // here is: `ResourceConfig` outlives the `Config` it was
             // projected from, and the projection is what `AppState` holds.
-            dashboard: config
-                .dashboard_client
-                .as_ref()
-                .map(|dashboard| DashboardBinding {
-                    client_id: dashboard.client_id.clone(),
-                    merchant_id: dashboard.merchant_id.clone(),
-                    scope: dashboard.scope.clone(),
-                }),
+            dashboard: config.dashboard.as_ref().map(|dashboard| DashboardBinding {
+                merchant_id: dashboard.merchant_id.clone(),
+            }),
             invoice_urls_by_merchant_id,
             routing_weights: config.routing.weights(),
         })
@@ -1114,12 +1099,12 @@ impl ResourceConfig {
         self.invoice_urls_by_merchant_id.get(merchant_id)
     }
 
-    /// The `/dash/v1` registration, or `None` if this deployment configured
-    /// no dashboard.
+    /// The `/dash/v1` binding, or `None` if this deployment configured no
+    /// dashboard.
     ///
     /// Read in exactly two places, and both of them fail closed on `None`:
-    /// [`crate::router`] does not mount the nest, and
-    /// [`crate::require_dashboard_token`] refuses every request that somehow
+    /// [`crate::router`] does not mount the nests, and the console scope step
+    /// (`envelope::console::dash_scope`) refuses every request that somehow
     /// reaches it anyway. The second is not redundant with the first — a
     /// router assembled by a test, or by a future binary, is not obliged to
     /// consult the first.
@@ -1362,8 +1347,8 @@ mod tests {
             )],
             webhooks: vpay_config::WebhookPolicy::default(),
             checkout: vpay_config::CheckoutConfig::default(),
-            dashboard_client: None,
-            staff_auth: vpay_config::StaffAuth::default(),
+            dashboard: None,
+            service_clients: Vec::new(),
             routing: Default::default(),
         }
     }

@@ -32,6 +32,13 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $np.ingressControllerNamespace | quote }}
+        # The services that call `/svc/v1` (vaam), which is on this tier's
+        # business surface (ADR-0036 § "Which surface `/svc/v1` is on"). Peers
+        # are the operator's own, verbatim; none by default.
+        {{- range $np.serviceIngress.peers }}
+        -
+{{ toYaml . | indent 10 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.server.port }}
@@ -46,9 +53,6 @@ spec:
           port: {{ .Values.observability.port }}
   egress:
 {{ include "vpay.egressRules" . | indent 4 }}
-{{- with include "vpay.idpEgressRules" (dict "ctx" . "component" "server") }}
-{{ . | trim | indent 4 }}
-{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -135,8 +139,5 @@ spec:
           port: {{ .Values.observability.port }}
   egress:
 {{ include "vpay.egressRules" . | indent 4 }}
-{{- with include "vpay.idpEgressRules" (dict "ctx" . "component" "management") }}
-{{ . | trim | indent 4 }}
-{{- end }}
 {{- end }}
 {{- end }}

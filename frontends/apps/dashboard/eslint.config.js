@@ -30,9 +30,10 @@ export default [
   // `@vpay/dash-client` is generated from `schemas/vpay.cstack` and carries a
   // class for every MODEL as well as the procedures. vpay mounts none of the
   // model routes, and `PaymentIntentApi.list()` would reach the hand-written
-  // `GET /dash/v1/payment_intents` and cast its envelope to an array. One
-  // module builds the client and hands out `procedures` alone; everything
-  // else may import the generated TYPES and nothing that runs.
+  // `GET /dash/v1/payment_intents` and cast its envelope to an array. No
+  // module builds the client now (the signed reader is VP-6b's), and when one
+  // does it is the only one to be exempted here; until then everything may
+  // import the generated TYPES and nothing that runs.
   //
   // ESLint's own `no-restricted-imports`, NOT `@typescript-eslint/`'s: the
   // shared config already sets that one (the `testing/**` ban), and a flat
@@ -40,7 +41,6 @@ export default [
   // adding to them — so reusing it here would quietly lift that ban.
   {
     files: ["**/*.{ts,tsx}"],
-    ignores: ["src/dash/cratestack-client.ts"],
     rules: {
       "no-restricted-imports": [
         "error",
@@ -50,7 +50,7 @@ export default [
               name: "@vpay/dash-client",
               allowTypeImports: true,
               message:
-                "Import the generated client's procedures through src/dash/cratestack-client.ts; only its types may be imported elsewhere.",
+                "Only the generated client's types may be imported: no module runs it until VP-6b builds the signed reader.",
             },
           ],
         },

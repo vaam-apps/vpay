@@ -113,16 +113,12 @@ const CLIENT_ID: &str = "acme-cameroon";
 /// query filtered by the wrong one cannot pass.
 const MERCHANT_ID: &str = "acme-cameroon-tenant";
 
-/// The `aud` a `/dash/v1` token carries.
+/// The `aud` a `/dash/v1` token used to carry.
 ///
-/// **A registered `dashboard_client.client_id` since ADR-0017**, not the
-/// retired constant `vpay:dash/v1`: the authorization-code grant mints
-/// `aud = <client_id>` and has no requested-audience path, so the validator
-/// was changed to expect what the grant produces. Spelled here rather than
-/// imported because there is no constant left to import — it is
-/// configuration — and this suite registers no dashboard client, which is
-/// exactly what makes the case below meaningful: the value is one this
-/// deployment has never heard of, and `/v1` must refuse it anyway.
+/// The retired authorization-code grant (ADR-0017, deleted by ADR-0036) minted
+/// `aud = <the dashboard client's client_id>`. Nothing registers or mints it
+/// any more, which is what makes the case below meaningful: the value is one
+/// this deployment has never heard of, and `/v1` must refuse it anyway.
 ///
 /// Case (c) exists precisely because these two strings must never be
 /// interchangeable.
@@ -233,8 +229,8 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         )],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
-        dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+        dashboard: None,
+        service_clients: Vec::new(),
         routing: Default::default(),
     };
 
@@ -246,10 +242,8 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
     let deps = router_deps(
         Arc::clone(&repositories),
         merchant_op,
-        // No `dashboard_client` in either suite's configuration, so no
-        // `/dash/v1` nest is mounted at all — see `support::router_deps`.
-        None,
-        &signing_key,
+        // No `dashboard:` in either suite's configuration, so no management
+        // nest is mounted at all — see `support::router_deps`.
         &config,
     );
     let server = tokio::spawn(async move {

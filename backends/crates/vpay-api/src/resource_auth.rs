@@ -1,45 +1,17 @@
-//! Resource-server JWT validation for vpay's two protected HTTP surfaces:
-//! `/v1` (merchant, ADR-0010) and `/dash/v1` (dashboard, ADR-0009).
+//! Resource-server JWT validation for the one bearer-token surface vpay still
+//! has: the merchant MCP endpoint, `POST /mcp/v1` (ADR-0033).
 //!
-//! STATUS, corrected 2026-10-26 (VP-3). **The merchant half is gone from the
-//! request path.** `/v1` is a signed transport now (`crate::envelope`): no
-//! bearer token is read there, `require_merchant_token` and the
-//! `AuthenticatedMerchant` extractor are deleted, and this module's
-//! [`Surface::Merchant`] audience is what the OP still mints tokens for until
-//! VP-4 removes the OP with it. Everything below that says "the merchant
-//! surface validates here" describes `/v1` as it stood on 2026-09-06.
+//! `/v1` is a signed transport (`crate::envelope`, VP-3) and the console's
+//! `/dash/v1` and `/svc/v1` are signed too (VP-6a), so this module no longer
+//! guards either: `Surface`, the dashboard validator and the dashboard
+//! extractor are deleted with the staff sessions. What remains is
+//! [`JwtValidator`] and the [`ResourceClaims`] it returns, which
+//! [`crate::mcp`] builds its `McpAuthenticator` from. The token comes from
+//! vpay's own OP (`/v1/oauth/token`) with the MCP resource as audience.
 //!
-//! This paragraph used to say the dashboard half was unmounted, that no
-//! `/dash/v1/*` route existed and that nothing constructed a
-//! [`DashboardJwtValidator`]. All three stopped being true on 2026-09-06:
-//! [`crate::require_dashboard_token`] validates through
-//! [`DashboardJwtValidator`] in front of two `GET` routes
-//! ([`crate::dash::DASH_ROUTES`]), and `vpay-server`'s `main` builds one
-//! whenever the deployment registers a `dashboard_client`.
-//!
-//! ~~What is still true, and is the sentence that matters: **no grant this
-//! deployment serves can mint a token for that surface**, so it is a resource
-//! server with no issuer.~~ **Corrected 2026-09-07**
-//! ([ADR-0017](../../../docs/adr/0017-staff-authentication.md)): the
-//! authorization-code grant is served for the dashboard client,
-//! [`crate::staff`] is what produces the `Identity` for it, and
-//! `staff_sign_in.rs` obtains a token over a real socket. It has an issuer.
-//!
-//! What ADR-0017 changed *here*: [`Surface::audience()`] is gone.
-//! [`JwtValidator::new`] takes the audience as a value, because for the
-//! dashboard it is the registered `dashboard_client.client_id` — which is
-//! configuration, and is what `default_handle_authorization_code` actually
-//! mints. See [`Surface`] for the full account. See also `crate::dash`'s
-//! module header and `docs/flows/dashboard.md`.
-//!
-//! [`AuthenticatedDashboard`], the *extractor*, is genuinely mounted on
-//! nothing and remains so — `/dash/v1` validates once in middleware
-//! ([`crate::require_dashboard_token`]) so that the boundary and the handler
-//! cannot disagree about one token.
-//!
-//! Validation is local — `crate::jwks_cache` (private) caches the JWKS and every check
-//! after the first verifies the signature from memory. The one input that can
-//! still force a network fetch is an *unrecognized* `kid`, which is why this
+//! Validation is local: `crate::jwks_cache` (private) caches the JWKS and every
+//! check after the first verifies the signature from memory. The one input that
+//! can still force a network fetch is an *unrecognized* `kid`, which is why this
 //! module throttles: see `UNKNOWN_KID_REFRESH_INTERVAL` (private, in this file).
 //!
 //! Why the throttle exists, the `jsonwebtoken` audience edge
@@ -53,9 +25,6 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use authkestra_resource::jwt::ValidationError;
-use axum::extract::{FromRef, FromRequestParts};
-use axum::http::header;
-use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use jsonwebtoken::{Algorithm, Validation, decode_header};
 use serde::Deserialize;
@@ -105,97 +74,21 @@ use crate::jwks_cache::{JwksCache, validate_with_jwks};
 /// most N such fetches.
 const UNKNOWN_KID_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 
-/// Which of vpay's two protected surfaces a token was minted for. vpay runs
-/// one OP ([ADR-0009]) issuing tokens for both off one JWKS, so the audience
-/// claim is the only thing that separates them — which is exactly why every
-/// [`JwtValidator`] is pinned to exactly one audience and never two.
-///
-/// # `Surface::audience()` is gone, and that is [ADR-0017] decision 3
-///
-/// It used to answer a `&'static str` per variant: `vpay_config::MERCHANT_AUDIENCE`
-/// for `/v1` and a `vpay_config::DASHBOARD_AUDIENCE` constant for `/dash/v1`.
-/// The dashboard half could not survive a login. `authkestra_op`'s
-/// `default_handle_authorization_code` mints the access token with
-/// `aud = <client_id>` and has **no requested-audience path at all**
-/// (`authkestra-op-0.13.1/src/handlers/token.rs`, step 7), so no token from
-/// the only grant that can ever produce a dashboard credential would have
-/// carried the constant. ADR-0017 changed the validator to expect what the
-/// grant produces: the audience is the dashboard client's own `client_id`,
-/// which is configuration and not a constant, so it is passed to
-/// [`JwtValidator::new`] as a value.
-///
-/// The merchant half is unchanged and still a constant, because
-/// `handle_client_credentials` *does* honour a requested audience and every
-/// merchant registration must list `vpay:v1`
-/// (`vpay_config::ConfigError::MerchantMissingV1Audience`).
-///
-/// This enum survives the change because it still names something real —
-/// which surface a validator guards — even though nothing branches on it any
-/// more. It is what [`DashboardJwtValidator`] documents itself against (and
-/// what a `/v1` validator did until VP-3).
-///
-/// [ADR-0009]: ../../../docs/adr/0009-dashboard-oidc-provider.md
-/// [ADR-0017]: ../../../docs/adr/0017-staff-authentication.md
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Surface {
-    /// `/v1`, the merchant API — `client_credentials` + `private_key_jwt`.
-    /// Its audience is [`vpay_config::MERCHANT_AUDIENCE`].
-    Merchant,
-    /// `/dash/v1`, the staff dashboard — a staff session, the
-    /// authorization-code grant, one read-only scope. Its audience is the
-    /// registered `dashboard_client.client_id` (ADR-0017).
-    Dashboard,
-}
-
 /// The claims a handler actually needs out of a validated token.
 /// Deliberately narrower than the full JWT: a handler that needs something
 /// else should have it added here explicitly, not reach into a raw claims
 /// map that could silently drift from what was actually validated.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResourceClaims {
-    /// The token's `sub`, and **what it names depends on the grant**.
+    /// The token's `sub`: for the `client_credentials` grant, the OAuth2
+    /// **client** (`TokenManager::issue_client_token` sets `sub` to the client
+    /// id), which [`crate::mcp`] maps to a merchant through configuration.
     ///
-    /// * `client_credentials` (`/v1`): the OAuth2 **client**.
-    ///   `TokenManager::issue_client_token` sets `sub` to the client id, so
-    ///   [`Self::subject`] is the merchant's credential. (Until VP-3 that is
-    ///   what mapped it to a tenant; `/v1` is signed now.)
-    /// * authorization code (`/dash/v1`): the **staff member**.
-    ///   `default_handle_authorization_code` calls
-    ///   `issue_user_token_with_extra(identity, …, Some(client_id))`, so
-    ///   `sub` is `identity.external_id` — a `stf_…` — and the client id is
-    ///   the *audience*.
-    ///
-    /// The field was called `client_id` until 2026-09-07 and that name was
-    /// only ever right for one of the two. It was
-    /// [exp23's finding F7](../../../docs/plans/exp23-dashboard-notes/opus-review.md):
-    /// `require_dashboard_token` compared it to the registered dashboard
-    /// client id, which would have refused every token a real staff login
-    /// produced. **The rename is the fix's visible half** — nothing can now
-    /// read this as a client id without saying so — and ADR-0017 decision 3
-    /// is the other: the dashboard credential is identified by `aud`, which
-    /// the validator has already checked by the time these claims exist.
-    ///
-    /// Not a secret on either surface: a client id is public and a `stf_…`
-    /// is an opaque id. Safe to log or attach to a span.
+    /// Not a secret: a client id is public. Safe to log or attach to a span.
     pub subject: String,
     /// The token's `scope` claim, space-split per RFC 6749 §3.3. Empty if
     /// the token carried no `scope` claim at all.
     pub scope: Vec<String>,
-    /// The merchant this token is for, from the
-    /// [`vpay_config::DASHBOARD_MERCHANT_CLAIM`] claim, or `None`.
-    ///
-    /// **`Some` only on a `/dash/v1` token**, and that asymmetry is the
-    /// tightening ADR-0017 decision 3 makes: nothing but the staff
-    /// authorization-code grant stamps this claim, so a
-    /// `client_credentials` token structurally cannot carry one — which is
-    /// what makes "no machine client may read the dashboard" a property of
-    /// the mint rather than of a list somebody maintains.
-    ///
-    /// `/v1` does not read it. Its tenant comes from
-    /// `ResourceConfig::merchant_id_for`, i.e. from configuration keyed by
-    /// the client id, and a claim that could override that would be a tenant
-    /// a caller chooses.
-    pub merchant: Option<String>,
 }
 
 impl ResourceClaims {
@@ -210,21 +103,12 @@ impl ResourceClaims {
 /// and nothing else — this type exists only because `jsonwebtoken::decode`
 /// needs a concrete `Deserialize` target, and it deliberately carries no more
 /// than `ResourceClaims` re-exposes.
-///
-/// The merchant claim is `#[serde(rename)]`d from
-/// [`vpay_config::DASHBOARD_MERCHANT_CLAIM`]'s spelling rather than named
-/// `vpay_merchant_id` here, so that the minting side and this one read the
-/// same constant. `rename_all = "snake_case"` stays on the type because
-/// `verify-serde` requires it and because the other two fields are already
-/// snake_case; the explicit rename wins for the field that carries it.
 #[derive(Deserialize)]
 #[serde(rename_all = "snake_case")]
 struct RawClaims {
     sub: String,
     #[serde(default)]
     scope: Option<String>,
-    #[serde(default, rename = "vpay_merchant_id")]
-    merchant: Option<String>,
 }
 
 impl From<RawClaims> for ResourceClaims {
@@ -235,26 +119,9 @@ impl From<RawClaims> for ResourceClaims {
                 .scope
                 .map(|scope| scope.split_whitespace().map(str::to_owned).collect())
                 .unwrap_or_default(),
-            merchant: raw.merchant,
         }
     }
 }
-
-/// The `RawClaims` rename and `vpay_config`'s constant are the same string.
-///
-/// A `const` assertion rather than a runtime test because `#[serde(rename)]`
-/// takes a literal and cannot take a constant: the two spellings are written
-/// twice by necessity, so something has to compare them, and a compile-time
-/// comparison fails before a token is ever minted under one and read under
-/// the other.
-const _: () = assert!(
-    matches!(
-        vpay_config::DASHBOARD_MERCHANT_CLAIM.as_bytes(),
-        b"vpay_merchant_id"
-    ),
-    "RawClaims renames the merchant claim to a literal; it must equal \
-     vpay_config::DASHBOARD_MERCHANT_CLAIM, which is what the mint stamps"
-);
 
 /// Every way a bearer token can fail to authenticate a request, collapsed
 /// into the Stripe-shaped envelope this crate renders in one place
@@ -431,38 +298,7 @@ impl IntoResponse for AuthRejection {
     }
 }
 
-/// Extracts a bearer token from the `Authorization` header, rejecting a
-/// missing or malformed header rather than falling back to an
-/// unauthenticated path.
-///
-/// `pub(crate)` because the `/dash/v1` boundary is a *middleware*, not an
-/// extractor (Step 2's D3): [`crate::require_dashboard_token`] runs this and
-/// [`JwtValidator::validate`] exactly once per request and puts the result
-/// on the request's extensions. It stays private to the crate — the header
-/// parsing and the rejection vocabulary belong together, and a caller
-/// outside this crate has no business turning an `Authorization` header into
-/// anything but a rejection or a validated [`ResourceClaims`].
-pub(crate) fn extract_bearer_token(parts: &Parts) -> Result<&str, AuthRejection> {
-    let value = parts
-        .headers
-        .get(header::AUTHORIZATION)
-        .ok_or(AuthRejection::MissingHeader)?
-        .to_str()
-        .map_err(|_error| AuthRejection::MalformedHeader)?;
-
-    let token = value
-        .strip_prefix("Bearer ")
-        .ok_or(AuthRejection::MalformedHeader)?
-        .trim();
-
-    if token.is_empty() {
-        return Err(AuthRejection::MalformedHeader);
-    }
-
-    Ok(token)
-}
-
-/// Validates bearer tokens for exactly one [`Surface`]: one JWKS cache, one
+/// Validates bearer tokens for exactly one audience: one JWKS cache, one
 /// required audience, one required issuer. Cheap to clone (the cache and the
 /// two pieces of throttle state are all `Arc`-shared) so it can live in axum
 /// state alongside a database pool.
@@ -533,14 +369,10 @@ impl JwtValidator {
     /// than `#[must_use] -> Self` because the alternative under this crate's
     /// no-panic lint policy would be to swallow the failure and hand back a
     /// validator that rejects every token for a reason no log explains.
-    /// # The audience is a value, not a [`Surface`]
+    /// # The audience is a value
     ///
-    /// It was `surface: Surface` until 2026-09-07 and the validator asked the
-    /// enum for a `&'static str`. ADR-0017 decision 3 made `/dash/v1`'s
-    /// audience the registered `dashboard_client.client_id` — configuration,
-    /// not a constant — because that is what the authorization-code grant
-    /// actually mints. Passing the string is what lets one function serve
-    /// both surfaces without either of them owning a literal.
+    /// It is configuration (the MCP resource identifier, derived from
+    /// `deployment.public_base_url`), not a constant.
     pub fn new(
         jwks_url: impl Into<String>,
         jwks_refresh_interval: Duration,
@@ -745,35 +577,6 @@ impl JwtValidator {
     }
 }
 
-/// Newtype so router state can hold the `/dash/v1` [`JwtValidator`] under a type
-/// axum's `FromRef` can name. (It was one of two until VP-3: `/v1` verifies a
-/// signature now and holds no validator.)
-#[derive(Debug, Clone)]
-pub struct DashboardJwtValidator(pub JwtValidator);
-
-/// Extractor for `/dash/v1` handlers; requires
-/// `FromRef<S> for DashboardJwtValidator`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthenticatedDashboard(pub ResourceClaims);
-
-impl<S> FromRequestParts<S> for AuthenticatedDashboard
-where
-    S: Send + Sync,
-    DashboardJwtValidator: FromRef<S>,
-{
-    type Rejection = AuthRejection;
-
-    async fn from_request_parts(parts: &mut Parts, state: &S) -> Result<Self, Self::Rejection> {
-        let token = extract_bearer_token(parts)?;
-        let validator = DashboardJwtValidator::from_ref(state);
-        validator
-            .0
-            .validate(token)
-            .await
-            .map(AuthenticatedDashboard)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
@@ -869,10 +672,10 @@ mod tests {
         server
     }
 
-    /// The registered `dashboard_client.client_id` these tests validate
-    /// against — an ordinary configuration value, which is exactly the point
-    /// of ADR-0017's change: there is no constant to reach for any more.
-    const DASHBOARD_CLIENT_ID: &str = "vpay-dashboard";
+    /// An audience that is not the MCP resource's: the registered client's own
+    /// id, which is what a token request that names no `resource` comes back
+    /// with.
+    const OTHER_AUDIENCE: &str = "vpay-other-client";
 
     fn merchant_validator(jwks_url: String) -> JwtValidator {
         JwtValidator::new(
@@ -880,16 +683,6 @@ mod tests {
             Duration::from_secs(300),
             ISSUER,
             vpay_config::MERCHANT_AUDIENCE,
-        )
-        .expect("the vendored-roots JWKS client builds")
-    }
-
-    fn dashboard_validator(jwks_url: String) -> JwtValidator {
-        JwtValidator::new(
-            jwks_url,
-            Duration::from_secs(300),
-            ISSUER,
-            DASHBOARD_CLIENT_ID,
         )
         .expect("the vendored-roots JWKS client builds")
     }
@@ -980,65 +773,22 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_merchant_audience_token_is_rejected_by_the_dashboard_validator() {
+    async fn a_token_for_another_audience_is_rejected() {
         let (encoding_key, jwk) = &*KEYPAIR;
         let server = jwks_server(jwk).await;
-        // Minted with the *merchant* audience, presented to the *dashboard*
-        // validator — the separation the whole module exists to enforce.
-        let validator = dashboard_validator(format!("{}/jwks.json", server.uri()));
-
-        let token = mint_token(
-            encoding_key,
-            "test-key-1",
-            &valid_claims(vpay_config::MERCHANT_AUDIENCE, "merchant-123", ""),
-        );
-
-        let error = validator
-            .validate(&token)
-            .await
-            .expect_err("a merchant-audience token must not validate on the dashboard surface");
-        assert!(matches!(error, AuthRejection::InvalidToken));
-    }
-
-    #[tokio::test]
-    async fn a_dashboard_audience_token_is_rejected_by_the_merchant_validator() {
-        let (encoding_key, jwk) = &*KEYPAIR;
-        let server = jwks_server(jwk).await;
-        // The mirror image of the test above: proven in both directions,
-        // not assumed from one.
         let validator = merchant_validator(format!("{}/jwks.json", server.uri()));
 
         let token = mint_token(
             encoding_key,
             "test-key-1",
-            &valid_claims(DASHBOARD_CLIENT_ID, "staff-oidc-session", "dash:read"),
+            &valid_claims(OTHER_AUDIENCE, "client-123", ""),
         );
 
         let error = validator
             .validate(&token)
             .await
-            .expect_err("a dashboard-audience token must not validate on the merchant surface");
+            .expect_err("a token for another audience must not validate");
         assert!(matches!(error, AuthRejection::InvalidToken));
-    }
-
-    #[tokio::test]
-    async fn a_dashboard_audience_token_is_accepted_by_the_dashboard_validator() {
-        let (encoding_key, jwk) = &*KEYPAIR;
-        let server = jwks_server(jwk).await;
-        let validator = dashboard_validator(format!("{}/jwks.json", server.uri()));
-
-        let token = mint_token(
-            encoding_key,
-            "test-key-1",
-            &valid_claims(DASHBOARD_CLIENT_ID, "staff-oidc-session", "dash:read"),
-        );
-
-        let claims = validator
-            .validate(&token)
-            .await
-            .expect("a correctly-audienced dashboard token is accepted by the dashboard validator");
-        assert_eq!(claims.subject, "staff-oidc-session");
-        assert_eq!(claims.scope, vec!["dash:read".to_string()]);
     }
 
     #[tokio::test]
@@ -1254,19 +1004,19 @@ mod tests {
         let server = jwks_server(jwk).await;
         let validator = merchant_validator(format!("{}/jwks.json", server.uri()));
 
-        // Signed by the published key, but addressed to the other surface —
+        // Signed by the published key, but addressed to another audience —
         // exactly case (c)'s first request.
         let wrong_audience = mint_token(
             encoding_key,
             "test-key-1",
-            &valid_claims(DASHBOARD_CLIENT_ID, "merchant-123", ""),
+            &valid_claims(OTHER_AUDIENCE, "merchant-123", ""),
         );
         assert!(
             matches!(
                 validator.validate(&wrong_audience).await,
                 Err(AuthRejection::InvalidToken)
             ),
-            "a token for the wrong surface must be refused"
+            "a token for the wrong audience must be refused"
         );
 
         let good = mint_token(

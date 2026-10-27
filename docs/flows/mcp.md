@@ -61,10 +61,12 @@ arguments)`. A replay returns the first answer. The same key with different
   allowlist of its five searches. The write procedures' policy also refuses a
   dashboard context. The generated `@vpay/dash-client` still lists all seven
   merchant procedures (`openPaymentIntent`, `issueRefund`, …), because
-  `cratestack generate-typescript` emits every procedure in the schema. The
-  dashboard's wrapper (`frontends/apps/dashboard/src/dash/cratestack-client.ts`)
-  hands out only the five searches, and `/dash/v1/$procs` answers the rest
-  with 404.
+  `cratestack generate-typescript` emits every procedure in the schema.
+  `/dash/v1/$procs` answers the rest with 404, ahead of the signed transport.
+  The dashboard app's own wrapper that handed out only the five searches
+  (`cratestack-client.ts`) went with the sign-in it served (VP-6a), so the
+  backend allowlist is the only thing left that enforces the restriction. The
+  console client VP-6b writes should expose just the five as well.
 
 ## What can go wrong
 

@@ -1,6 +1,10 @@
 # ADR-0030: Staff sign-in federates to an OpenID Connect provider
 
-- **Status:** Accepted
+- **Status:** **Superseded 2026-10-26 by
+  [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)** — the
+  OIDC broker, the SSO block and its Keycloak suite are deleted (owner ruling Q1:
+  phone pairing only); the `oidc` credential row survives as the link to a vaam
+  identity. The text below is left as written.
 - **Date:** 2026-10-19
 - **Deciders:** the vpay maintainer, who took the four decisions ADR-0019 had
   reserved — R1 (for the `oidc` kind), R2, R3 and R4 — on 2026-10-19, and
@@ -212,7 +216,7 @@ That rule **only works if the realm is set up for it**: `amr` is empty until the
 executions carry a `default.reference.value`, and it does not survive an
 SSO-cookie re-entry past about a second until they carry a
 `default.reference.maxAge`. Both are realm settings an operator makes, and
-`docs/flows/dashboard-auth/sso.md` lists them. (The second-last row corrects an
+`docs/flows/dashboard-auth/sso.md` (deleted in VP-6a) listed them. (The second-last row corrects an
 earlier measurement of 2026-10-19 that saw `amr` survive re-entry: that run was
 inside the one-second window. A test that crossed a second boundary failed two
 runs in eight until this was found.)

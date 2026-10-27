@@ -1711,8 +1711,8 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
         )],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
-        dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+        dashboard: None,
+        service_clients: Vec::new(),
         routing: Default::default(),
     }
 }
@@ -1983,8 +1983,8 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
-        dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+        dashboard: None,
+        service_clients: Vec::new(),
         routing: Default::default(),
     }
 }

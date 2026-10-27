@@ -56,6 +56,11 @@
 mod contract;
 mod operations;
 
-pub use contract::{CONTRACT_DOMAIN, V1_CONTRACTS, contract_digest, operation_key};
+pub use contract::{
+    CONTRACT_DOMAIN, DASH_CONTRACT_DOMAIN, DASH_CONTRACTS, SVC_CONTRACT_DOMAIN, SVC_CONTRACTS,
+    V1_CONTRACTS, contract_digest, dash_contract_digest, operation_key, svc_contract_digest,
+};
 pub use cratestack_core::AcceptedContracts;
-pub use operations::{V1_MOUNT, V1_OPERATIONS, V1Operation};
+pub use operations::{
+    DASH_MOUNT, DASH_OPERATIONS, Operation, SVC_MOUNT, SVC_OPERATIONS, V1_MOUNT, V1_OPERATIONS,
+};

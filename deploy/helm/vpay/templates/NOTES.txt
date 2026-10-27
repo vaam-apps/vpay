@@ -8,12 +8,13 @@ vpay {{ .Chart.AppVersion }} — chart {{ .Chart.Version }}, release {{ .Release
   server:     {{ .Values.server.replicaCount }} replicas (no args — serves the API)
 {{- end }}
 {{- if .Values.management.enabled }}
-              surfaces: business only — /v1, /v1/browser, /provider, POST /v1/oauth/token
+              surfaces: business only — /v1, /v1/browser, /provider, POST /v1/oauth/token, and /svc/v1
+              (the service that pairs console keys, e.g. vaam, calls it on this Service; see networkPolicy.serviceIngress)
   management: {{ .Values.management.replicaCount }} replicas, NOT autoscaled (ADR-0022)
-              surfaces: management only — /dash/v1 and the staff sign-in routes
-              /v1/oauth/token is NOT served here; jwks.json and the discovery document are
+              surfaces: management only — /dash/v1 (signed with a paired console key)
+              /v1/oauth/token and /svc/v1 are NOT served here
 {{- else }}
-              surfaces: every surface (deployment.surfaces unset) — /v1 AND /dash/v1 on one pod
+              surfaces: every surface (deployment.surfaces unset) — /v1, /dash/v1 AND /svc/v1 on one pod
 {{- end }}
   worker:     {{ .Values.worker.replicaCount }} replicas (args: ["worker"] — the job loop)
 {{- if .Values.dashboard.enabled }}
@@ -49,16 +50,6 @@ READ THIS.
       Secret/{{ .Values.envelopeKeys.existingSecret }} (keys {{ .Values.envelopeKeys.current }}, {{ .Values.envelopeKeys.next }}) — the signed /v1 transport's two Ed25519 response seeds; hand merchants both PUBLIC halves
       Secret/{{ .Values.rails.existingSecret }} — the rail credentials, one key per ${VAR} in the config
 
-  * Staff single sign-on (`staff_auth.sso` in the overlay) is on only if the
-    overlay WRITES that block, and then it needs Secret/{{ .Values.rails.existingSecret }} to carry
-    VPAY_STAFF_SSO_CLIENT_SECRET BEFORE the pods roll: an unresolved ${VAR} is
-    exit 78 on every process. An overlay without the block needs no new key.
-    redirect_uri must equal {{ if .Values.dashboard.publicOrigin }}{{ .Values.dashboard.publicOrigin }}{{ else }}<dashboard.publicOrigin>{{ end }}/api/auth/sso/callback and be registered at
-    the IdP; the chart can check neither. The pod serving /dash/v1 then calls
-    the IdP over HTTPS: with networkPolicy on, a public IdP on 443 is allowed by
-    railsEgress; a private or in-cluster one needs networkPolicy.idpEgress. Nothing here has run in a
-    cluster; see README.md "Staff single sign-on".
-
   * Rotating the signing key is restart-based, and rolling back to a retired
     kid is exit 78, not a degraded start.
 {{ if .Values.server.autoscaling.enabled }}
@@ -74,8 +65,8 @@ READ THIS.
 {{- end }}
 {{ if .Values.management.enabled }}
   * This release runs the surfaces SPLIT (ADR-0022, status: Proposed).
-    -server serves the merchant API and -management serves /dash/v1; neither
-    serves the other. Two things that are easy to get wrong:
+    -server serves the merchant API and /svc/v1, -management serves /dash/v1;
+    neither serves the other's. Two things that are easy to get wrong:
 
       - /dash/v1 is only reachable by whatever you have pointed at
         Service/{{ include "vpay.fullname" . }}-management.{{ if not .Values.route.enabled }} This release publishes no
@@ -83,10 +74,13 @@ READ THIS.
         cluster reaches it yet.{{ end }}{{ if and .Values.route.enabled .Values.networkPolicy.enabled }} The HTTPRoute publishes it AND the
         NetworkPolicy restricts who may reach the pod — check both agree.{{ end }}
       - POST /v1/oauth/token is served by -server ONLY. It mints the
-        MERCHANT credential; the staff grant is /dash/v1/oauth/token, on
-        -management. Both tiers serve /v1/oauth/jwks.json and the discovery
-        document, so the management tier can validate a staff token without
-        the business tier being up.
+        MERCHANT credential. /svc/v1, the door the service that pairs console
+        keys (vaam) walks through, is on -server too, at the same
+        Service/{{ include "vpay.fullname" . }}:{{ .Values.service.port }} origin merchants use, and is published
+        by no HTTPRoute or Ingress: with networkPolicy on, that caller must be
+        listed in networkPolicy.serviceIngress.peers or the CNI drops it.
+        /dash/v1 and /svc/v1 are both served only when the overlay carries a
+        dashboard: block; without one this release has no console at all.
 {{- end }}
 {{ if not .Values.metrics.prometheusRule.enabled }}
   * The PrometheusRule is disabled. Enabling it installs alerts whose

@@ -46,15 +46,13 @@ const headers = {
 - `client.webhookDeliveries`
 - `client.customers`
 - `client.staffMembers`
-- `client.staffSessions`
-- `client.staffSsoAttempts`
-- `client.oauthAuthorizationCodes`
 - `client.credentials`
 - `client.invoices`
 - `client.invoiceItems`
 - `client.manualPayments`
 - `client.rateLimitWindows`
 - `client.envelopeNonces`
+- `client.consoleKeys`
 
 ### List
 

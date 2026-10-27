@@ -228,48 +228,28 @@ impl fmt::Debug for NewStaff {
 
 /// Reads and writes of the `staff_members` table.
 ///
-/// Four methods, every one of them through CrateStack. There is deliberately
-/// **no** `list`, no `disable` and no `delete`: the only writer of this table
-/// is the operator CLI, ADR-0017 gives it exactly one subcommand, and a
-/// repository method with no caller is a claim `docs/status.md` would have to
-/// carry.
+/// Three methods, every one of them through CrateStack. There is deliberately
+/// **no** `list`, no `disable` and no `delete`, and since VP-6a no
+/// `record_sign_in` either: the only writer of this table is the operator CLI
+/// (`staff add`) and the just-in-time provisioning transaction a first pairing
+/// through vaam runs ([`provision_federated_in_tx`]), and a repository method
+/// with no caller is a claim `docs/status.md` would have to carry.
 ///
-/// It was six until migration 0044. `enrol_totp`, `record_totp_step` and
-/// `set_password` are `crate::credentials`' `create`, `advance_counter` and
-/// `replace_material` now — generalised over kind on the way, because none of
-/// the three said anything about a password or a time step that was not
-/// already "opaque material" and "a strictly increasing counter".
+/// It was six until migration 0044 moved the credentials out, and five until
+/// migration 0056 retired the session that `record_sign_in` stamped and the
+/// compensating `delete` that `staff add`'s second insert (the password) needed.
 #[async_trait]
 pub trait Staff {
     /// Inserts one staff member. The operator CLI is the only caller, and
-    /// there is no HTTP endpoint that reaches this (ADR-0017 decision 1).
+    /// there is no HTTP endpoint that reaches this.
     ///
-    /// `create`, not `upsert`. A second `staff add` for an address that
-    /// already exists must **fail**, not quietly rewrite that person's
-    /// password hash to one an operator just printed on a terminal.
-    ///
-    /// **What actually refuses it is measured rather than assumed**, and the
-    /// two halves are different. `staff add` mints a fresh `stf_…` every
-    /// time, so the second row's *primary key* is new and the conflict is on
-    /// the **email** — which `staff_members_email_key` refuses whichever
-    /// builder is used. Swapping this `create` for an `upsert` therefore
-    /// changes nothing observable for that case, and a mutation proved it:
-    /// `a_staff_address_is_unique_and_looked_up_exactly` stays green.
-    ///
-    /// The builder choice is what refuses the *other* case — a caller that
-    /// supplies an id already in the table — where an upsert would overwrite
-    /// silently and a create raises. No caller does that today (`staff add`
-    /// generates the id), so it is a guard against a second writer rather
-    /// than a live one, and it is stated that way instead of being claimed as
-    /// the reason the duplicate-address case fails.
-    ///
-    /// **That case is now asserted**, by
-    /// `a_second_create_for_one_staff_id_is_refused_rather_than_overwriting`
-    /// in `vpay-db/tests/repositories.rs` — two writes with one id and two
-    /// different addresses, so the email index cannot be what refuses the
-    /// second and the builder is the only thing left. It was added by the
-    /// exp24 review, whose mutation M17 (`create` -> `upsert`) was recorded
-    /// as *not caught*; with that test it is.
+    /// `create`, not `upsert`: a caller that supplies an id already in the table
+    /// must raise, not overwrite. A second `staff add` for an address that
+    /// already exists fails on `staff_members_email_key` whichever builder is
+    /// used; the builder choice is what refuses the other case (an id already
+    /// present), asserted by
+    /// `a_second_create_for_one_staff_id_is_refused_rather_than_overwriting` in
+    /// `vpay-db/tests/repositories.rs`.
     ///
     /// # Errors
     ///
@@ -290,11 +270,6 @@ pub trait Staff {
     /// predicate here would let a writer store a form the database and the
     /// reader disagreed about.
     ///
-    /// `None` is the answer for "no such address" and is also what a caller
-    /// must produce for a wrong password: see `vpay_api::staff_auth`'s login
-    /// handler, which runs the same argon2 verification against a dummy hash
-    /// so the two take the same path.
-    ///
     /// # Errors
     ///
     /// [`DbError::StaffStatusUnknown`] if the stored `status` is outside the
@@ -302,66 +277,15 @@ pub trait Staff {
     /// [`DbError::Persistence`] otherwise.
     async fn find_by_email(&self, email: &str) -> Result<Option<StaffRow>, DbError>;
 
-    /// The account for an id, or `None`. The session path's read: every
-    /// request re-reads the staff row rather than trusting what the session
-    /// recorded, which is what makes disabling an account take effect on the
-    /// next request.
+    /// The account for an id, or `None`. The signed transport's read: every
+    /// `/dash/v1` request re-reads the staff row rather than trusting what a
+    /// key recorded, which is what makes disabling an account take effect on
+    /// the next request.
     ///
     /// # Errors
     ///
     /// [`Staff::find_by_email`]'s.
     async fn find(&self, id: &str) -> Result<Option<StaffRow>, DbError>;
-
-    /// Stamps `last_sign_in_at`, once both factors have been accepted.
-    ///
-    /// Deliberately **not** merged into
-    /// [`crate::credentials::Credentials::advance_counter`], although both run
-    /// at the same moment: that one is a compare-and-swap whose `false`
-    /// refuses the sign-in, and this one is bookkeeping whose failure must
-    /// not. Merging them would make a stamp that could not be written look
-    /// like a replayed code — and since migration 0044 they are not even on
-    /// the same table.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Persistence`].
-    async fn record_sign_in(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError>;
-
-    /// Deletes one staff member, and by cascade their sessions, their
-    /// authorization codes and their credentials.
-    ///
-    /// # This exists for exactly one caller, and it is a compensation
-    ///
-    /// This trait's doc says there is deliberately no `delete`, and that was
-    /// right while `staff add` was **one** insert. ADR-0019 makes it two — a
-    /// `staff_members` row and a `credentials` row — and two inserts that are
-    /// not one statement have a window between them. A failure in that window
-    /// leaves a staff member **who can never sign in and whose address is
-    /// taken**: the email unique index refuses a second `staff add` for them,
-    /// so the operator cannot even retry.
-    ///
-    /// So `staff add` compensates, and this is what it calls. It is not a
-    /// general account-removal facility and there is no surface that reaches
-    /// it; `model StaffMember`'s `@@allow("delete", …)` arm, which had no
-    /// caller until now, is what admits it.
-    ///
-    /// **A real transaction would be better** and is not available here:
-    /// `TxRepositories` is a hand-curated trait of raw `sqlx` statements, and
-    /// putting these two inserts in it would take both tables off the
-    /// generated data layer — which is the property migration 0035 and
-    /// migration 0044 were both shaped to buy. The residual is stated where
-    /// it is paid, in `staff add` itself: if the compensating delete *also*
-    /// fails, the operator is shown both errors and the `stf_…` to remove.
-    ///
-    /// `false` means no such row, which for the compensating caller means the
-    /// insert it is compensating for did not land either.
-    ///
-    /// # Errors
-    ///
-    /// [`DbError::Persistence`]. A missing `@@allow("delete", …)` is
-    /// **silent**: the policy is compiled into the statement's `WHERE`, so an
-    /// empty allow list makes this answer `false` rather than raise.
-    async fn delete(&self, id: &str) -> Result<bool, DbError>;
 }
 
 #[async_trait]
@@ -422,69 +346,25 @@ impl Staff for crate::repository::PgRepositories {
             .map(row_from_model)
             .transpose()
     }
-
-    async fn record_sign_in(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError> {
-        let summary = self
-            .cs
-            .staff_member()
-            .update_many()
-            .where_(staff_member::id().eq(id.to_owned()))
-            .set(cratestack_schema::UpdateStaffMemberInput {
-                last_sign_in_at: Some(Some(to_chrono(now))),
-                updated_at: Some(to_chrono(now)),
-                ..cratestack_schema::UpdateStaffMemberInput::default()
-            })
-            .run(&system_context())
-            .await
-            .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
-
-        Ok(summary.ok == 1)
-    }
-
-    async fn delete(&self, id: &str) -> Result<bool, DbError> {
-        // `delete_many().where_(id)` and not a `delete_unique`, so that the
-        // answer is a row count rather than an error for "no such row": the
-        // one caller is compensating for a failed insert and "there was
-        // nothing to remove" is a success for it.
-        //
-        // The cascades do the rest. `staff_sessions.staff_id`,
-        // `oauth_authorization_codes.staff_id` and `credentials.staff_member_id`
-        // are all ON DELETE CASCADE, so a half-created account takes every
-        // row that names it.
-        let summary = self
-            .cs
-            .staff_member()
-            .delete_many()
-            .where_(staff_member::id().eq(id.to_owned()))
-            .run(&system_context())
-            .await
-            .map_err(|error| DbError::from(classify_cratestack(MODEL, "delete", error)))?;
-
-        Ok(summary.ok == 1)
-    }
 }
 
-/// Creates a staff member **and** their first credential in the caller's
-/// transaction — the one write just-in-time SSO provisioning makes
-/// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+/// Creates a staff member **and** their federated link in the caller's
+/// transaction — the one write a first pairing through vaam makes (VP-6a,
+/// [ADR-0036](../../../../docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md);
+/// the pattern is ADR-0030's just-in-time provisioning).
 ///
-/// # Why this is a transaction and `staff add` is not
+/// # Why this is a transaction
 ///
-/// `vpay-server staff add` is two inserts with a compensating delete, and
-/// says why: the transaction seam is a hand-curated trait and putting both
-/// tables in it would take them off the generated data layer. That is no
-/// longer the trade here. CrateStack's `run_in_tx` runs the *same* generated
-/// statements on a transaction the caller owns (`customers::erase_in_tx` and
-/// `webhook_deliveries::create_in_tx` already do), so the data-layer property
-/// survives and the window does not exist: a person provisioned by their first
-/// sign-in either has a member **and** the link that lets them sign in again,
-/// or has neither. The failure the compensation exists for — a member nobody
-/// can sign in as, holding an email address nobody else can now be given — is
-/// not reachable.
+/// CrateStack's `run_in_tx` runs the *same* generated statements on a
+/// transaction the caller owns (`customers::erase_in_tx` and
+/// `webhook_deliveries::create_in_tx` already do), so a person provisioned by
+/// their first pairing either has a member **and** the link that lets the next
+/// pairing find them, or has neither: never a member holding an address
+/// nobody else can now be given and no link to reach it by.
 ///
 /// A unique violation on `staff_members_email_key` (the address belongs to
 /// somebody else) or on `credentials_federated_identity_key` (a concurrent
-/// first sign-in of the same identity won) rolls the whole thing back and
+/// first pairing of the same identity won) rolls the whole thing back and
 /// reaches the caller as [`crate::PersistenceError::Unique`].
 ///
 /// # Errors
@@ -597,14 +477,12 @@ mod tests {
         );
         assert!(
             !descriptor.update_allow_policies.is_empty(),
-            "model StaffMember lost @@allow(\"update\", …): record_sign_in would silently stamp \
-             nothing, because an update policy is part of the statement's own WHERE and an \
-             empty allow list renders FALSE. The *dangerous* update on this path is the replay \
-             guard, which migration 0044 moved to model Credential"
+            "model StaffMember lost @@allow(\"update\", …)"
         );
         assert!(
-            !descriptor.delete_allow_policies.is_empty(),
-            "model StaffMember lost @@allow(\"delete\", …)"
+            descriptor.delete_allow_policies.is_empty(),
+            "model StaffMember gained @@allow(\"delete\", …): nothing deletes a staff member, \
+             and a delete cascades their console keys and their federated link"
         );
         assert!(
             descriptor.read_deny_policies.is_empty()

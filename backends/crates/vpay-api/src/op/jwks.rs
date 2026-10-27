@@ -46,14 +46,11 @@ use crate::error::ApiError;
 
 /// The `Cache-Control: max-age` this document is served with, in seconds.
 ///
-/// Five minutes, and the reasoning is about *who* is caching. vpay's own
-/// resource-server validator does not depend on this header at all: it holds
-/// its own [`JwksCache`](authkestra_resource::jwt::JwksCache) on a refresh
-/// interval it chooses, and it refetches immediately on an unrecognised
-/// `kid`, so a rotation reaches it without waiting for any TTL to lapse
-/// ([`crate::resource_auth`]). What this header bounds is everything vpay
-/// does not control — a CDN, an ingress cache, a merchant's HTTP client —
-/// and there the tradeoff is: long enough that a public, unauthenticated
+/// Five minutes, and the reasoning is about *who* is caching. Nothing in vpay
+/// reads this document back (the resource-server validator that did was
+/// deleted with the staff bearer token in VP-6a), so this header bounds
+/// everything vpay does not control — a CDN, an ingress cache, a merchant's
+/// HTTP client — and there the tradeoff is: long enough that a public, unauthenticated
 /// endpoint is not a per-request database read for anyone who points a
 /// load generator at it, short enough that a newly rotated key is picked up
 /// in minutes rather than hours.
@@ -75,16 +72,14 @@ pub const JWKS_CACHE_MAX_AGE: u64 = 300;
 /// Order follows the input, which [`vpay_db::SigningKeys::publishable_signing_keys`]
 /// orders by `created_at` — so the document is stable across requests and a
 /// diff between two fetches means something actually changed. Order carries
-/// no meaning to a verifier: consumers select by `kid`, and vpay's own
-/// validator is built with `require_kid(true)` specifically so that no
-/// verifier ever falls back to "the first key in the list".
+/// no meaning to a verifier: consumers select by `kid` and none should ever
+/// fall back to "the first key in the list".
 ///
 /// **A JWK with no `kid` member is skipped, with a warning**, rather than
-/// published. The validator that consumes this document
-/// ([`crate::resource_auth::JwtValidator`]) looks keys up by `kid` and
-/// rejects a token that has none, so a JWK without one cannot ever be
-/// selected — publishing it would add an entry that no verifier can use
-/// while making the document look healthier than it is. Skipping is not a
+/// published. A verifier looks keys up by `kid` and rejects a token that has
+/// none, so a JWK without one cannot ever be selected — publishing it would
+/// add an entry that no verifier can use while making the document look
+/// healthier than it is. Skipping is not a
 /// silent fix: it is logged at `warn` with the row's own `kid` column, which
 /// is enough for an operator to find the row, because a row whose stored JWK
 /// disagrees with its key column means something wrote this table by hand.

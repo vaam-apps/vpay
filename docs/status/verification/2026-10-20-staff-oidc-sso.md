@@ -9,7 +9,7 @@ No `NotImplemented` token moved, and password + TOTP sign-in is unchanged.**
 
 This page says what was run, what it printed, what a real Keycloak showed, and
 what was **not** run. The decisions are the ADR's; the process is
-[dashboard-auth/sso.md](../../flows/dashboard-auth/sso.md).
+`docs/flows/dashboard-auth/sso.md` (deleted in VP-6a).
 
 ## What a real Keycloak 26.6.1 showed
 

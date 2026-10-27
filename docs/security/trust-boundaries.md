@@ -16,7 +16,7 @@ where the surface provides them; where it does not, the document says so.
  │   • Merchant systems (API clients, webhook listeners)                       │
  │   • Payers (mobile handsets, browsers)                                      │
  │   • Mobile money telcos (MTN, Orange) and aggregators (Notch Pay)           │
- │   • Identity providers (Keycloak, enterprise IdP)                           │
+ │   • vaam (a registered service that pairs console keys)                     │
  └──────────────────────┬───────────────────────────────▲──────────────────────┘
                         │ Inbound HTTPS                 │ Outbound HTTPS
                         ▼                               │
@@ -82,12 +82,14 @@ where the surface provides them; where it does not, the document says so.
 
 ### 3. Staff operator -> `/dash/v1`
 
-- **Authentication:** Password with Argon2id and a server-side pepper plus
-  mandatory TOTP, or federated OpenID Connect SSO
-  ([ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
-- **Session:** vpay sets no cookie. vpay mints an opaque bearer token and stores
-  it in `staff_sessions`; the dashboard holds it in an httpOnly, Secure,
-  SameSite=Lax cookie on its own origin and presents it to `/dash/v1`.
+- **Authentication:** A COSE_Sign1 message signed by a paired P-256 console
+  key ([ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).
+  A key is paired by vaam after its admin phone vouches for the person
+  (`POST /svc/v1/console_keys`, callable only by a registered service holding
+  `console_pairing`) or by an operator (`vpay-server staff pair-key`); it lives
+  30 days and a revocation takes effect on the next request.
+- **Session:** none. No cookie, no token, no server-side session row; the
+  signature is the credential and the replay cache is `envelope_nonces`.
 - **Authorization:** Cross-tenant access is restricted to read-only views
   ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
 

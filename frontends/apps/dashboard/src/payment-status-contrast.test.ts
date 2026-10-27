@@ -22,10 +22,8 @@
  *    `--state-<hue>-fg` directly against the page ground (`--color-base-100`)
  *    — there is no pill background to composite over, because none is ever
  *    painted here.
- * 2. **`InlineBanner`** (`form-alert.tsx`, `read-failure.tsx`,
- *    `payment-detail.tsx` — `variant="danger"`; `enrolment-panel.tsx`,
- *    `app/login/page.tsx`, `app/login/password/page.tsx` —
- *    `variant="warning"`; no call site in this app uses `"success"` or
+ * 2. **`InlineBanner`** (`read-failure.tsx`, `payment-detail.tsx` —
+ *    `variant="danger"`; `console-unavailable.tsx` — `variant="warning"`; no call site in this app uses `"success"` or
  *    `"uncertain"`, verified by `git grep -n 'InlineBanner variant='` over
  *    `frontends/apps/dashboard`). `InlineBanner` (`inline-banner.js`) paints
  *    `text-state-<hue>-fg` UNCONDITIONALLY on `bg-state-<hue>-bg` — there is

@@ -89,7 +89,8 @@ merchant_clients:
     scopes: [payments:write, payments:read]
     allowed_audiences: ["vpay:v1"]
 
-# The base file's dashboard client names acme-cameroon, which this overlay
-# removes; boot refuses an unknown tenant (DashboardUnknownMerchant).
-dashboard_client:
+# Serve the management console, reading this overlay's one merchant. The base
+# file serves none (R4); boot refuses a tenant no `merchant_clients` entry
+# registers (DashboardUnknownMerchant).
+dashboard:
   merchant_id: notchpay-sandbox-merchant

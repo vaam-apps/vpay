@@ -12,7 +12,7 @@
  * Refine's query cache and repainted the shell, ~1.0–1.4 s apiece where the
  * row links (`next/link`) took ~0.25 s.
  *
- * `AppShell` delegates one click handler around the rail and asks this
+ * The shell delegates one click handler around the rail and asks this
  * function whether the click is one a browser would have treated as an
  * ordinary same-tab navigation. React's synthetic events bubble through
  * portals along the component tree, so the floating rails and the More

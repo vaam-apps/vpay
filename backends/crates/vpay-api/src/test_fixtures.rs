@@ -2,7 +2,7 @@
 //! that need a fully-wired router or a real signing key.
 //!
 //! **Not a test double.** Everything here builds the *real* types
-//! (`vpay_config::Config`, `op::MerchantOp`, `resource_auth::JwtValidator`,
+//! (`vpay_config::Config`, `op::MerchantOp`, the envelope layers,
 //! `RouterDeps`) from real material — including a real RSA keypair — so a
 //! test that passes here passes against the objects that ship. What it saves
 //! is repetition: `lib.rs`, `error.rs` and the two `op` modules all need the
@@ -26,16 +26,14 @@ use std::sync::{Arc, LazyLock};
 use std::time::Duration;
 
 use rsa::pkcs1::{EncodeRsaPrivateKey as _, LineEnding};
-use vpay_config::oauth::{DashboardClient, GrantType, MerchantClient};
-use vpay_config::{Config, Deployment, EnabledSurfaces, MERCHANT_AUDIENCE};
+use vpay_config::oauth::{GrantType, MerchantClient};
+use vpay_config::{Config, Dashboard, Deployment, EnabledSurfaces, MERCHANT_AUDIENCE};
 use vpay_db::Repositories;
 
 use crate::RouterDeps;
-use crate::envelope::{EnvelopeKeys, V1Envelope};
+use crate::envelope::{EnvelopeKeys, ManagementEnvelope, V1Envelope};
 use crate::op::MerchantOp;
 use crate::op::keys::LoadedSigningKey;
-use crate::resource_auth::DashboardJwtValidator;
-use crate::resource_auth::JwtValidator;
 
 /// The base URL every fixture below derives its issuer and endpoints from.
 /// A real `https` URL, not `localhost`: `Config::validate_all` treats the
@@ -198,8 +196,8 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         merchant_clients: merchants,
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
-        dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+        dashboard: None,
+        service_clients: Vec::new(),
         routing: Default::default(),
     }
 }
@@ -232,15 +230,23 @@ pub(crate) fn merchant_op() -> Arc<MerchantOp> {
 /// a real server and a real Postgres, which is
 /// `backends/tests/integration/tests/signed_transport.rs`.
 pub(crate) fn v1_envelope(config: &Config) -> V1Envelope {
+    V1Envelope::new(config, &fixture_keys(), lazy_repositories())
+        .expect("the fixture's merchants project onto a key registry")
+}
+
+fn fixture_keys() -> EnvelopeKeys {
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     let seed = |byte: u8| URL_SAFE_NO_PAD.encode([byte; 32]);
-    V1Envelope::new(
-        config,
-        EnvelopeKeys::from_seeds(&seed(0x11), &seed(0x22)).expect("two distinct seeds"),
-        lazy_repositories(),
-    )
-    .expect("the fixture's merchants project onto a key registry")
+    EnvelopeKeys::from_seeds(&seed(0x11), &seed(0x22)).expect("two distinct seeds")
+}
+
+/// The management surface's three layers over `config` and a lazy pool, for the
+/// tests that mount `/dash/v1` and `/svc/v1`. Like [`v1_envelope`], every
+/// assertion made against it is about a request refused before any lookup.
+pub(crate) fn management_envelope(config: &Config) -> ManagementEnvelope {
+    ManagementEnvelope::new(config, &fixture_keys(), lazy_repositories())
+        .expect("the fixture's registrations project onto key registries")
 }
 
 /// The same [`RouterDeps`] `vpay-server`'s `main` builds, with generated keys
@@ -259,17 +265,12 @@ pub(crate) fn deps() -> RouterDeps {
                 .expect("the fixture's rails project onto the port"),
         ),
         v1_envelope: Some(v1_envelope(&config())),
-        // `None`, matching `config()`'s `dashboard_client: None`: this
-        // crate's own tests are about `/v1`, and a fixture that mounted the
-        // dashboard nest would make every `/dash/v1` path in them answer
-        // `401` instead of the `404` an undashboarded deployment gives.
-        // `crate::dash`'s own tests build their own deps.
-        dashboard_validator: None,
-        // `None` for the same reason, and it is the honest fixture for a
-        // deployment with no `dashboard_client`: with one, every
-        // `/dash/v1/staff/...` path in this crate's tests would answer a
-        // refusal instead of the `404` an undashboarded deployment gives.
-        staff_login: None,
+        // `None`, matching `config()`'s `dashboard: None`: this crate's own
+        // tests are about `/v1`, and a fixture that mounted the console nests
+        // would make every `/dash/v1` path in them answer `401` instead of the
+        // `404` an undashboarded deployment gives. `crate::dash`'s own tests
+        // build their own deps.
+        management_envelope: None,
         merchant_mcp: None,
         // Both surfaces, matching every deployment that never wrote
         // `deployment.surfaces` — this crate's non-surface-specific tests
@@ -279,32 +280,26 @@ pub(crate) fn deps() -> RouterDeps {
     }
 }
 
-/// A dashboard registration bound to `merchant_id`, for the ADR-0022
-/// `surfaces` boundary tests only. `deps` above deliberately carries
-/// `dashboard_client: None` (see its own comment); the tests that need
-/// `/dash/v1` to actually mount build a *different* [`Config`] with this
-/// client attached, through [`deps_with_surfaces`].
-pub(crate) fn dashboard_client(merchant_id: &str) -> DashboardClient {
-    DashboardClient {
-        client_id: "dashboard".to_owned(),
-        redirect_uris: vec!["https://dashboard.vpay.test/callback".to_owned()],
+/// A `dashboard:` block bound to `merchant_id`, for the ADR-0022 `surfaces`
+/// boundary tests only. `deps` above deliberately carries `dashboard: None` (see
+/// its own comment); the tests that need `/dash/v1` to actually mount build a
+/// *different* [`Config`] with this attached, through [`deps_with_surfaces`].
+pub(crate) fn dashboard(merchant_id: &str) -> Dashboard {
+    Dashboard {
         merchant_id: merchant_id.to_owned(),
-        scope: "dashboard:read".to_owned(),
-        client_secret: None,
     }
 }
 
 /// [`RouterDeps`] for the ADR-0022 `deployment.surfaces` boundary tests
-/// (`lib.rs`'s `surfaces` test module): one merchant, one dashboard client
-/// bound to that merchant's tenant, and `deployment.surfaces` set to
+/// (`lib.rs`'s `surfaces` test module): one merchant, one dashboard bound to
+/// that merchant's tenant, and `deployment.surfaces` set to
 /// whatever the caller passes — `None` for "absent" (both surfaces, the
 /// backward-compatibility case), `Some(vec![...])` for an explicit list.
 ///
-/// The dashboard validator points at a dead loopback JWKS URL and the `/v1`
-/// envelope is the one [`deps`] builds, for the same reason: every assertion in
+/// The envelopes are lazy-pool ones, for the same reason: every assertion in
 /// that test module is about which *route* answers, driven by requests carrying
-/// no credential at all, so the auth layers refuse before a key is ever looked
-/// up.
+/// no credential at all, so the signed-transport layers refuse before a key is
+/// ever looked up.
 ///
 /// # Panics
 /// If `surfaces` is empty or names an unknown value — the two cases
@@ -318,7 +313,7 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
     let merchant_client = merchant("acme-cameroon", &["payments:write"]);
     let merchant_id = merchant_client.merchant_id.clone();
     let mut config = config_with(PUBLIC_BASE_URL, vec![merchant_client]);
-    config.dashboard_client = Some(dashboard_client(&merchant_id));
+    config.dashboard = Some(dashboard(&merchant_id));
     config.deployment.surfaces = surfaces;
 
     let resolved: EnabledSurfaces = config
@@ -335,16 +330,7 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
                 .expect("the fixture's rails project onto the port"),
         ),
         v1_envelope: Some(v1_envelope(&config)),
-        dashboard_validator: Some(DashboardJwtValidator(
-            JwtValidator::new(
-                "http://127.0.0.1:1/dash/v1/oauth/jwks.json",
-                Duration::from_secs(300),
-                ISSUER,
-                "dashboard",
-            )
-            .expect("the vendored-roots JWKS client builds"),
-        )),
-        staff_login: None,
+        management_envelope: Some(management_envelope(&config)),
         merchant_mcp: None,
         surfaces: resolved,
     }

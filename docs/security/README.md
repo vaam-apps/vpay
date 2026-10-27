@@ -34,7 +34,7 @@ in:
 
 - [trust-boundaries.md](trust-boundaries.md) — five trust tiers and their
   crossing controls
-- [data-flows.md](data-flows.md) — payment, webhook and SSO data-flow maps
+- [data-flows.md](data-flows.md) — payment, webhook and console-key pairing data-flow maps
 - [reference/security-asset-inventory.md](../reference/security-asset-inventory.md)
   — human-facing asset and control inventory
 - [../../schemas/security-inventory.yaml](../../schemas/security-inventory.yaml)
