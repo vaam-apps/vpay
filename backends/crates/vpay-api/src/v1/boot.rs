@@ -1328,6 +1328,21 @@ mod tests {
         assert!(log.contains("explicit=false"), "{log}");
     }
 
+    /// The line is said by the loader every mode boots through, not only by a
+    /// helper nobody calls: loading a file that writes `auth.methods: [keypair]`
+    /// logs exactly that, and nothing about a method the file left out.
+    #[test]
+    fn load_config_says_which_methods_the_file_resolved_to() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../vpay-config/tests/fixtures/auth-methods-keypair-only.yml");
+        let (config, log) =
+            crate::test_log::with_captured_log(|| load_config(Some(&path), "does-not-exist"));
+        config.expect("the fixture is a valid keypair-only deployment");
+        assert!(log.contains("permitted=keypair "), "{log}");
+        assert!(log.contains("explicit=true"), "{log}");
+        assert!(!log.contains("machine_tokens"), "{log}");
+    }
+
     /// RFC-0014 security review (2026-10-23): while a previous secret is
     /// configured, every boot says so, naming the rail, the setting and the
     /// counter that says when to remove it, and never the secret; nothing is
