@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Sixteen invariants this repo enforces on itself, all wired into `just verify`:
+# Seventeen invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -76,12 +76,15 @@
 # It is appended after `verify-doc-counts` and before `verify-docs`; both
 # annotated tallies moved to sixteen in the same change.
 #
-# `just verify` prints a sixteenth thing that is NOT an invariant and never
+# `verify-mcp-parity` makes it **seventeen** on 2026-10-26 (ADR-0033 D8): every
+# `/v1` route is mapped to an MCP tool or a dated gap, in both directions.
+#
+# `just verify` prints an eighteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# A seventeenth check is a gate that is NOT in `just ci`, because it needs the
+# A nineteenth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -1647,9 +1650,23 @@ audit-web:
 # gate above it is where it is: the list is chronological, so every ordinal
 # already written down elsewhere stays true when a gate is added.
 #
-# The sixteen self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-security-inventory verify-docs
-    @echo "verify: ok — the sixteen gates above passed; the verify-docs report is advisory"
+# `verify-mcp-parity` joined on 2026-10-26 as the seventeenth (ADR-0033 D8), after
+# `verify-security-inventory`:
+# every `/v1` route has a row in docs/api/mcp-parity.md saying which MCP tool
+# serves it, or a dated gap, and every declared tool is named. Last, for the
+# chronological reason above.
+#
+# The seventeen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-security-inventory verify-mcp-parity verify-docs
+    @echo "verify: ok — the seventeen gates above passed; the verify-docs report is advisory"
+
+# ADR-0033 D8: the merchant MCP endpoint's parity with `/v1` is a gate, not a
+# promise. Two-directional: a mounted `/v1` route with no row in
+# docs/api/mcp-parity.md fails, and so does a row naming an unmounted route,
+# a tool the schema does not declare, an undated gap, or a declared tool no
+# row names. See `verify_mcp_parity` in `.xtask/src/main.rs`.
+verify-mcp-parity:
+    cargo xtask verify-mcp-parity
 
 verify-no-mocks:
     cargo xtask verify-no-mocks
@@ -3114,7 +3131,13 @@ expected_ignored := "0"
 # **54** binaries, **2413** tests, **0** ignored (the total fell with the 27 + SSO
 # cases of the deleted suites and rose with the new ones; the 1080 floor is
 # untouched).
-expected_suites := "54"
+#
+# **54 -> 55 on 2026-10-27 (ADR-0033 step 3, merged onto VP-6a)**: one new binary,
+# `backends/tests/integration/tests/mcp_merchant.rs` (the merchant MCP
+# endpoint against a real Postgres and the real OP; its own file because
+# every case boots a server with `surfaces: [business, mcp]`), on top of
+# VP-6a's 54.
+expected_suites := "55"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

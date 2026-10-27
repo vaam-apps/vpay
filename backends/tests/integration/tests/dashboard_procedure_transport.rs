@@ -426,6 +426,50 @@ async fn an_unknown_dash_path_is_still_the_honest_404() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// ADR-0033 D6: the merchant MCP procedures live in the same schema, and
+/// CrateStack's generated procedure router mounts every procedure it
+/// declares. A console signed under a paired key, naming one, gets the same
+/// honest 404 a procedure the schema does not declare gets, and nothing on
+/// the merchant's books moves.
+///
+/// Removing `only_dashboard_procedures` from `vpay_api::router` makes this
+/// a `403` (the procedure's own `@allow` refusing a context with no
+/// `audience` claim) rather than a `404`, and that is the mutation this
+/// pins: the allowlist is the outer wall, the policy the inner one. The
+/// allowlist sits outside the envelope, so the `404` does not depend on the
+/// signature either.
+#[tokio::test]
+async fn a_merchant_mcp_procedure_is_not_served_to_the_dashboard() -> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    for procedure in [
+        "openPaymentIntent",
+        "confirmPaymentIntent",
+        "cancelPaymentIntent",
+        "retrievePaymentIntent",
+        "issueRefund",
+        "cancelRefund",
+        "retrieveRefund",
+    ] {
+        let (status, body) = harness
+            .post_body(
+                &format!("/dash/v1/$procs/{procedure}"),
+                Some(CONSOLE),
+                &serde_json::json!({
+                    "args": { "idempotency_key": "k", "amount": 100, "currency": "XAF",
+                              "payment_method_types": [], "metadata": [] }
+                }),
+            )
+            .await?;
+        assert_eq!(
+            status, 404,
+            "`{procedure}` is a merchant MCP procedure and /dash/v1/$procs must not serve it: \
+             {body}"
+        );
+    }
+    Ok(())
+}
+
 /// **A malformed body is a refusal that says nothing about the tenant.**
 ///
 /// Criterion 2's other half: a caller who *has* a key and sends nonsense is

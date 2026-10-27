@@ -105,9 +105,15 @@ mod client_assertion;
 // crate's own implementation detail; a caller supplies the closure, never
 // the `cratestack::AuthProvider` impl itself.
 mod dashboard_transport;
+// The merchant MCP endpoint (ADR-0033): the port its tools reach the rails
+// through, and the auth seam `vpay-api` implements. Both modules are
+// private; their public types are re-exported below, and no CrateStack type
+// is among them.
 mod disabled_clients;
 mod envelope_nonces;
 mod error;
+mod mcp_transport;
+mod merchant_operations;
 // The CrateStack layer. Both modules are private and neither exports a
 // name: `schema` holds the generated `cratestack_schema` module, and
 // `persistence` is the only place in this crate a `CratestackError` is read.
@@ -154,6 +160,13 @@ pub use invoices::{
 };
 pub use jobs::{JobRow, Jobs};
 pub use ledger::Ledger;
+pub use mcp_transport::{
+    McpAuthRefusal, McpAuthenticator, McpCaller, McpEndpoint, McpEndpointError,
+};
+pub use merchant_operations::{
+    ConfirmRequest, MerchantCall, MerchantOperation, MerchantOperations, NewIntentRequest,
+    NewRefundRequest, OperationOutcome, OperationRefusal,
+};
 pub use migrations::Migrations;
 pub use payment_intents::{
     IntentFilter, ListPage, NewPaymentIntent, PaymentIntentRow, PaymentIntents,

@@ -271,6 +271,7 @@ pub(crate) fn deps() -> RouterDeps {
         // `404` an undashboarded deployment gives. `crate::dash`'s own tests
         // build their own deps.
         management_envelope: None,
+        merchant_mcp: None,
         // Both surfaces, matching every deployment that never wrote
         // `deployment.surfaces` — this crate's non-surface-specific tests
         // (everything but `lib.rs`'s own `surfaces` module) exercise the
@@ -330,6 +331,7 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
         ),
         v1_envelope: Some(v1_envelope(&config)),
         management_envelope: Some(management_envelope(&config)),
+        merchant_mcp: None,
         surfaces: resolved,
     }
 }

@@ -516,7 +516,7 @@ mod tests {
                 .await
                 .expect("an authenticated caller satisfies the only @allow arm");
 
-        let error = super::super::search_payment_intents::Payments
+        let error = super::super::search_payment_intents::Payments::default()
             .search_webhook_deliveries(&cs, &tenantless, args, authorized)
             .await
             .expect_err("no tenant means no rows may be read, not all of them");
@@ -698,7 +698,7 @@ mod tests {
             let args = procedures::search_webhook_deliveries::Args { page, filter };
             let authorized =
                 procedures::search_webhook_deliveries::authorize_with_db(cs, &args, ctx).await?;
-            super::super::super::search_payment_intents::Payments
+            super::super::super::search_payment_intents::Payments::default()
                 .search_webhook_deliveries(cs, ctx, args, authorized)
                 .await
         }

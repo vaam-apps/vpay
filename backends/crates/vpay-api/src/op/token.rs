@@ -14,9 +14,9 @@
 
 use std::sync::Arc;
 
-use authkestra_op::handlers::token::{TokenRequest, handle_token};
+use authkestra_op::handlers::token::{TokenErrorResponse, TokenRequest, handle_token};
 use axum::Json;
-use axum::extract::{Form, State};
+use axum::extract::{Form, FromRequest as _, RawForm, Request, State};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use base64::Engine as _;
@@ -60,11 +60,28 @@ use crate::op::{
 pub async fn token_handler(
     State(op): State<Arc<MerchantOp>>,
     headers: HeaderMap,
-    Form(mut request): Form<TokenRequest>,
+    RawForm(body): RawForm,
 ) -> Response {
     let auth_header = headers
         .get(header::AUTHORIZATION)
         .and_then(|value| value.to_str().ok());
+
+    // Decoded through the same `Form` extractor the handler took until
+    // 2026-10-26, so a malformed body is refused exactly as before; the raw
+    // bytes are kept for the one parameter `TokenRequest` has no field for.
+    let mut decode = Request::new(axum::body::Body::from(body.clone()));
+    *decode.method_mut() = axum::http::Method::POST;
+    decode.headers_mut().insert(
+        header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("application/x-www-form-urlencoded"),
+    );
+    let mut request = match Form::<TokenRequest>::from_request(decode, &()).await {
+        Ok(Form(request)) => request,
+        Err(rejection) => return rejection.into_response(),
+    };
+    if let Err(error) = apply_resource_indicator(&mut request, &body) {
+        return (StatusCode::BAD_REQUEST, Json(error)).into_response();
+    }
 
     // RFC 6749 §3.3: a request that names no scope is granted this
     // deployment's "locally defined default", which is the client's own
@@ -168,6 +185,56 @@ fn token_error_status(code: &str) -> StatusCode {
     }
 }
 
+/// RFC 8707's `resource` parameter, as the audience `handle_token` reads.
+///
+/// `authkestra_op`'s `TokenRequest` has an `audience` field and no
+/// `resource` field, and the form decoder drops a key it has no field for.
+/// So a client following the MCP authorization specification, which sends
+/// `resource=<the MCP endpoint>` and no `audience`, was minted a token
+/// with the default audience, and the endpoint it asked for refused that
+/// token (measured 2026-10-26 by `mcp_merchant.rs`'s
+/// `an_rfc_8707_resource_is_the_audience_it_names`, before this function).
+///
+/// The rule:
+///
+/// - no `resource`: nothing changes;
+/// - one `resource` and no `audience`: the resource **is** the audience, so
+///   `handle_client_credentials` applies the same `allowed_audiences` gate
+///   to it that it applies to `audience`;
+/// - one `resource` equal to `audience`: nothing changes;
+/// - a `resource` that disagrees with `audience`, or more than one
+///   `resource`: `invalid_target` (RFC 8707 § 2), because a token has one
+///   audience here and guessing which target was meant would mint one the
+///   client did not ask for.
+fn apply_resource_indicator(
+    request: &mut TokenRequest,
+    body: &[u8],
+) -> Result<(), TokenErrorResponse> {
+    let resources: Vec<String> = url::form_urlencoded::parse(body)
+        .filter(|(key, _)| key == "resource")
+        .map(|(_, value)| value.into_owned())
+        .collect();
+    let invalid_target = |description: &str| {
+        TokenErrorResponse::new("invalid_target".to_owned(), description.to_owned())
+    };
+    match resources.as_slice() {
+        [] => Ok(()),
+        [resource] => match &request.audience {
+            None => {
+                request.audience = Some(resource.clone());
+                Ok(())
+            }
+            Some(audience) if audience == resource => Ok(()),
+            Some(_) => Err(invalid_target(
+                "`resource` and `audience` name different targets; send one",
+            )),
+        },
+        _ => Err(invalid_target(
+            "a token request may name one `resource`; this one names several",
+        )),
+    }
+}
+
 /// `GET {issuer}/.well-known/openid-configuration` — the metadata document.
 ///
 /// Served at the OpenID Connect Discovery path rather than RFC 8414's
@@ -251,6 +318,55 @@ mod tests {
 
     use super::*;
     use crate::test_fixtures::merchant_op;
+
+    fn request_with_audience(audience: Option<&str>) -> TokenRequest {
+        serde_json::from_value(serde_json::json!({
+            "grant_type": "client_credentials",
+            "audience": audience,
+        }))
+        .expect("a TokenRequest decodes from its own fields")
+    }
+
+    #[test]
+    fn a_resource_without_an_audience_becomes_the_audience() {
+        let mut request = request_with_audience(None);
+        apply_resource_indicator(
+            &mut request,
+            b"grant_type=client_credentials&resource=https%3A%2F%2Fpay.example%2Fmcp%2Fv1",
+        )
+        .expect("one resource is legal");
+        assert_eq!(
+            request.audience.as_deref(),
+            Some("https://pay.example/mcp/v1")
+        );
+    }
+
+    #[test]
+    fn a_resource_agreeing_with_the_audience_changes_nothing_and_a_disagreeing_one_is_refused() {
+        let mut agreeing = request_with_audience(Some("vpay:v1"));
+        apply_resource_indicator(&mut agreeing, b"resource=vpay%3Av1&audience=vpay%3Av1")
+            .expect("agreeing targets are legal");
+        assert_eq!(agreeing.audience.as_deref(), Some("vpay:v1"));
+
+        let mut disagreeing = request_with_audience(Some("vpay:v1"));
+        let error = apply_resource_indicator(&mut disagreeing, b"resource=https%3A%2F%2Fx")
+            .expect_err("two targets are refused");
+        assert_eq!(error.error, "invalid_target");
+        assert_eq!(disagreeing.audience.as_deref(), Some("vpay:v1"));
+    }
+
+    #[test]
+    fn two_resources_are_refused_and_none_changes_nothing() {
+        let mut request = request_with_audience(None);
+        let error = apply_resource_indicator(&mut request, b"resource=a&resource=b")
+            .expect_err("two resources are refused");
+        assert_eq!(error.error, "invalid_target");
+
+        let mut untouched = request_with_audience(None);
+        apply_resource_indicator(&mut untouched, b"grant_type=client_credentials")
+            .expect("no resource is legal");
+        assert_eq!(untouched.audience, None);
+    }
 
     /// Serves the discovery route on a router built exactly as
     /// `crate::router` builds it — a real axum request in, a real response

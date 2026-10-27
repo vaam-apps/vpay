@@ -375,6 +375,17 @@ fn conflicting_key(path: &[Segment], fallback: &'static str) -> ApiError {
     )
 }
 
+/// The refusal for a body whose decoded shape is not the endpoint's: the
+/// form gate's, and a merchant MCP tool call's (ADR-0033 D3), so the two
+/// cannot answer the same mistake differently.
+pub(crate) fn shape_refusal() -> ApiError {
+    ApiError::invalid_param(
+        "body",
+        "The request body did not have the fields this endpoint requires. \
+         Check the field names this endpoint documents.",
+    )
+}
+
 /// `T`, deserialized from a bracket-nested form body.
 ///
 /// The `POST` counterpart of [`VpayQuery`], and the extractor every `/v1`
@@ -422,17 +433,11 @@ where
             })?;
 
         let value = parse_form(&bytes)?;
-        let parsed = serde_json::from_value(value).map_err(|_| {
-            // serde's own text is dropped for the reasons `error.rs`'s
-            // `extractor_rejection!` gives: it names our struct fields and
-            // changes between releases. A *handler* says which field is wrong
-            // and why, in vpay's vocabulary; this is only the shape gate.
-            ApiError::invalid_param(
-                "body",
-                "The request body did not have the fields this endpoint requires. \
-                 Check the field names this endpoint documents.",
-            )
-        })?;
+        // serde's own text is dropped for the reasons `error.rs`'s
+        // `extractor_rejection!` gives: it names our struct fields and
+        // changes between releases. A *handler* says which field is wrong
+        // and why, in vpay's vocabulary; this is only the shape gate.
+        let parsed = serde_json::from_value(value).map_err(|_| shape_refusal())?;
         Ok(Self(parsed))
     }
 }

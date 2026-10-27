@@ -127,6 +127,11 @@ datasource db {
   url = env("DATABASE_URL")
 }
 
+mcp {
+  expose = [tools]
+}
+
+
 // --- enums -------------------------------------------------------------
 // Every enum below is a direct transcription of a real, tested Rust enum —
 // variant-for-variant, in the enum's #[serde(rename_all = "snake_case")]
@@ -2433,6 +2438,7 @@ type PaymentIntentListFilter {
 // `createCharge` and `deleteCustomer` are unavailable for the same reason.
 procedure searchPaymentIntents(page: PageInput, filter: PaymentIntentListFilter): Page<PaymentIntentSummary>
   @allow(auth() != null)
+  @mcp(tool: "search_payment_intents", description: "List this merchant's payment intents, newest first.")
 
 // --- Lane D: the refunds slice --------------------------------------------
 //
@@ -2519,6 +2525,7 @@ type RefundListFilter {
 // as `procedure listPaymentIntents` did.
 procedure searchRefunds(page: PageInput, filter: RefundListFilter): Page<RefundSummary>
   @allow(auth() != null)
+  @mcp(tool: "search_refunds", description: "List this merchant's refunds, newest first.")
 
 // --- webhook deliveries (Lane D, slice: deliveries) --------------------
 
@@ -2799,3 +2806,171 @@ type CheckoutSessionListFilter {
 // (migration 0028), so `ORDER BY seq DESC` is a total order.
 procedure searchCheckoutSessions(page: PageInput, filter: CheckoutSessionListFilter): Page<CheckoutSessionSummary>
   @allow(auth() != null)
+
+// --- MCP: the merchant agent surface (ADR-0033) ------------------------
+//
+// Everything below exists for `mcp { expose = [tools] }` at the top of this
+// file. ADR-0033 is the decision and `docs/security/threat-models/mcp.md`
+// its threat model; `docs/flows/mcp.md` says what is built.
+//
+// THE OBJECTS ARE `/v1`'S, RESHAPED IN THREE NAMED PLACES AND NOWHERE ELSE.
+// A tool's output is the JSON `/v1` renders for the same object, converted
+// by `backends/crates/vpay-api/src/mcp/merchant.rs` (which owns `/v1`'s
+// shapes; `vpay-db` only deserializes what it is handed):
+//
+//   * `metadata` is a `MetadataEntry[]`, not a map. CrateStack 0.16 refuses
+//     to expose a tool whose input or output holds a `Json` field
+//     (`cratestack-macros` `include/mcp_gate/plan.rs`), and `/v1` metadata is
+//     string-to-string, so the list is lossless.
+//   * `next_action.type` is `next_action.kind`, and
+//     `payment_method_details.type` is `payment_method_details.method_type`.
+//   * `object` is absent: it is a constant per type.
+//
+// `the_mcp_objects_are_the_v1_objects_reshaped_in_three_places` pins all
+// three, field by field.
+//
+// THE POLICIES READ TWO CLAIMS, AND ONLY THE MERCHANT ENDPOINT SETS THEM.
+// `vpay-api`'s `MerchantMcpAuth` builds a context whose claims are
+// `audience = "merchant"` and `can_write` (the token carries
+// `payments:write`). The dashboard's `ExtensionAuthProvider` sets a tenant
+// and nothing else, so on `/dash/v1/$procs` every write below is refused by
+// its own `@allow`, and `vpay-api`'s procedure-path allowlist refuses it
+// before that (ADR-0033 D6).
+//
+// PROCEDURE NAMES AVOID `create`/`get`/`list`/`update`/`delete`, the stems
+// the generated model handlers own (see `searchPaymentIntents` above). The
+// tool name an agent sees is the `@mcp(tool: ...)` argument, not this name.
+
+auth Caller {
+  audience String?
+  can_write Boolean?
+}
+
+type MetadataEntry {
+  key String
+  value String
+}
+
+// One `payment_method_data[<type>][<name>]` or `destination[<type>][<name>]`
+// value. Which names a rail takes is the rail's own declaration
+// (`ProviderAdapter::payer_fields`), so this is a list rather than one
+// field per rail.
+type NamedValue {
+  name String
+  value String
+}
+
+type McpRedirect {
+  url String
+  return_url String?
+}
+
+type McpNextAction {
+  kind String
+  redirect_to_url McpRedirect?
+}
+
+type McpLastPaymentError {
+  code String
+  message String
+}
+
+type McpPaymentMethodDetails {
+  method_type String?
+  rail String
+}
+
+type McpPaymentIntent {
+  id String
+  amount Int
+  currency String
+  status String
+  payment_method_types String[]
+  payment_method_details McpPaymentMethodDetails?
+  next_action McpNextAction?
+  last_payment_error McpLastPaymentError?
+  metadata MetadataEntry[]
+  description String?
+  customer String?
+  created Int
+  livemode Boolean
+}
+
+type McpRefund {
+  id String
+  amount Int
+  currency String
+  payment_intent String
+  status String
+  reason String?
+  // `/v1`'s `fee`: what the rail charged for the refund, once it says.
+  fee Int?
+  metadata MetadataEntry[]
+  created Int
+}
+
+type OpenPaymentIntentInput {
+  idempotency_key String
+  amount Int
+  currency String
+  payment_method_types String[]
+  description String?
+  customer String?
+  metadata MetadataEntry[]
+}
+
+type ConfirmPaymentIntentInput {
+  idempotency_key String
+  id String
+  payment_method_type String
+  payer_fields NamedValue[]
+  return_url String?
+}
+
+type CancelInput {
+  idempotency_key String
+  id String
+}
+
+type IssueRefundInput {
+  idempotency_key String
+  payment_intent String
+  amount Int?
+  reason String?
+  destination_type String?
+  destination_fields NamedValue[]
+  metadata MetadataEntry[]
+}
+
+procedure retrievePaymentIntent(id: String): McpPaymentIntent
+  @allow(auth().audience == "merchant")
+  @mcp(tool: "retrieve_payment_intent", description: "Read one of this merchant's payment intents by id.")
+
+mutation procedure openPaymentIntent(args: OpenPaymentIntentInput): McpPaymentIntent
+  @allow(auth().audience == "merchant" && auth().can_write == true)
+  @no_idempotency
+  @mcp(tool: "create_payment_intent", description: "Create a payment intent for an amount in minor units. Nothing is charged until it is confirmed. `idempotency_key` is required: a retry with the same key returns the first result.")
+
+mutation procedure confirmPaymentIntent(args: ConfirmPaymentIntentInput): McpPaymentIntent
+  @allow(auth().audience == "merchant" && auth().can_write == true)
+  @no_idempotency
+  @mcp(tool: "confirm_payment_intent", description: "Confirm a payment intent on a payment method type. This asks the payer's rail to take the money. `idempotency_key` is required.")
+
+mutation procedure cancelPaymentIntent(args: CancelInput): McpPaymentIntent
+  @allow(auth().audience == "merchant" && auth().can_write == true)
+  @no_idempotency
+  @mcp(tool: "cancel_payment_intent", description: "Cancel a payment intent that no rail holds a live charge for. `idempotency_key` is required.")
+
+procedure retrieveRefund(id: String): McpRefund
+  @allow(auth().audience == "merchant")
+  @mcp(tool: "retrieve_refund", description: "Read one of this merchant's refunds by id.")
+
+mutation procedure issueRefund(args: IssueRefundInput): McpRefund
+  @allow(auth().audience == "merchant" && auth().can_write == true)
+  @no_idempotency
+  @mcp(tool: "create_refund", description: "Refund some or all of a succeeded payment intent. A refund starts `pending`. Nothing in vpay settles a pending refund yet, and the orange_money and notchpay rails cannot refund at all (NotImplemented). `idempotency_key` is required.")
+
+mutation procedure cancelRefund(args: CancelInput): McpRefund
+  @allow(auth().audience == "merchant" && auth().can_write == true)
+  @no_idempotency
+  @mcp(tool: "cancel_refund", description: "Cancel a refund that is still pending and that no rail has been given. `idempotency_key` is required.")

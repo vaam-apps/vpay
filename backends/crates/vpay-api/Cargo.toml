@@ -72,6 +72,15 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+# Offline (cached-JWKS) bearer-token validation for the merchant MCP endpoint
+# (ADR-0033) — see src/resource_auth.rs. Already a workspace dependency.
+authkestra-resource.workspace = true
+# `src/jwks_cache.rs` and `src/resource_auth.rs` name `reqwest::Client` in
+# their signatures — the client itself is built by `vpay_provider::http`,
+# which this crate re-exports as `http_client`. Already in this crate's
+# resolved graph via authkestra-resource/-engine/-op at the same 0.13 pin,
+# so this is an edge, not a new package.
+reqwest.workspace = true
 # The merchant OP itself (`/v1/oauth`, ADR-0010): the `ClientStore` trait,
 # `CompositeOpStore`, the token handler, and the three store traits the
 # `OpStore` supertrait demands for grants no `/v1` request reaches.
@@ -165,6 +174,11 @@ uuid.workspace = true
 # handset. Apache-2.0, already allowed in `deny.toml`. Not a workspace pin:
 # this crate is its only consumer.
 phonenumber = "0.3"
+# `op::token`: parsing the RFC 8707 `resource` parameters of a token request
+# (`form_urlencoded`), which is how the OP mints a token for the MCP resource.
+# Workspace pin, already in this crate's graph through reqwest and
+# `vpay-config`, so this names an existing package.
+url.workspace = true
 
 [dev-dependencies]
 # Test-only again as of 2026-09-05, and back where it was before the OP work.

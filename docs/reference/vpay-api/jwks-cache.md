@@ -2,9 +2,9 @@
 
 _Moved out of [docs/reference/vpay-api.md](../vpay-api.md) on 2026-09-11 by exp57, which split a 1 566-line reference into a page per surface. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a cross-reference pointed at a heading that is now on another page, the page it moved to._
 
-> **Deleted 2026-10-26 (VP-6a, [ADR-0036](../../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).**
-> `jwks_cache.rs` had one caller left, the `/dash/v1` token validator, and went
-> with it. The page is the record of what stood.
+> **Narrowed 2026-10-27 (VP-6a, [ADR-0036](../../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md), merged with ADR-0033).**
+> The `/dash/v1` token validator that used this cache is gone; the cache stays
+> for the merchant MCP endpoint's validator ([resource-auth.md](resource-auth.md)).
 
 ## The JWKS cache (`jwks_cache.rs`)
 

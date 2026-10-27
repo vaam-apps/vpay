@@ -2911,9 +2911,25 @@ fn value_response(status: StatusCode, value: &Value) -> Response {
 /// it is the sequence it exposes.
 pub(crate) struct PostRequest {
     key: IdempotencyKey,
-    parts: Parts,
-    body: Bytes,
+    /// What the claim is recorded under (`idempotency_keys.request_method`
+    /// and `request_path`): the HTTP method and path for a `/v1` request,
+    /// `"MCP"` and `"tool/<name>"` for a tool call (ADR-0033 D7).
+    method: String,
+    path: String,
+    origin: Origin,
     hash: [u8; 32],
+}
+
+/// Where a [`PostRequest`]'s parameters came from.
+enum Origin {
+    /// A `/v1` request: its head and its raw form body, decoded by
+    /// [`VpayForm`] exactly as every other handler decodes one.
+    Http { parts: Box<Parts>, body: Bytes },
+    /// A merchant MCP tool call: the parameters already in the shape
+    /// `crate::form::parse_form` produces from a form body — nested objects
+    /// with string leaves — so the same `serde` decode and every rule after
+    /// it run unchanged (ADR-0033 D3).
+    Tool { params: Value },
 }
 
 impl PostRequest {
@@ -2938,22 +2954,66 @@ impl PostRequest {
         let hash = request_hash(parts.method.as_str(), parts.uri.path(), &body);
         Ok(Self {
             key,
-            parts,
-            body,
+            method: parts.method.as_str().to_owned(),
+            path: parts.uri.path().to_owned(),
+            origin: Origin::Http {
+                parts: Box::new(parts),
+                body,
+            },
+            hash,
+        })
+    }
+
+    /// A merchant MCP tool call's request (ADR-0033 D7).
+    ///
+    /// The claim is recorded under `"MCP"` and `"tool/<tool>"`, and the
+    /// fingerprint is [`request_hash`] over those and `params`' JSON. So a
+    /// key reused for a different call, on MCP or across MCP and `/v1`, is
+    /// the same mismatch refusal `/v1` gives. `serde_json`'s `Map` is
+    /// ordered by key, so two calls with the same arguments serialize to the
+    /// same bytes whatever order the agent sent them in.
+    ///
+    /// # Errors
+    ///
+    /// The `Idempotency-Key` rules `/v1` applies to the header, applied to
+    /// `key`.
+    pub(crate) fn for_tool(key: &str, tool: &str, params: Value) -> Result<Self, ApiError> {
+        let key = IdempotencyKey::parse(Some(key))?;
+        let method = "MCP".to_owned();
+        let path = format!("tool/{tool}");
+        let bytes = serde_json::to_vec(&params).map_err(|error| {
+            ApiError::Internal(format!("serializing a tool call's parameters: {error}"))
+        })?;
+        let hash = request_hash(&method, &path, &bytes);
+        Ok(Self {
+            key,
+            method,
+            path,
+            origin: Origin::Tool { params },
             hash,
         })
     }
 
     /// Decodes the body through the same [`VpayForm`] extractor every other
     /// handler uses, by handing it back the request it came from.
+    ///
+    /// A tool call's parameters are decoded by the same `serde` step, and a
+    /// shape mismatch is answered with the same refusal [`VpayForm`] gives.
     pub(crate) async fn form<T: serde::de::DeserializeOwned>(&self) -> Result<T, ApiError> {
-        let mut request = Request::new(axum::body::Body::from(self.body.clone()));
-        *request.method_mut() = self.parts.method.clone();
-        *request.uri_mut() = self.parts.uri.clone();
-        *request.headers_mut() = self.parts.headers.clone();
-        VpayForm::<T>::from_request(request, &())
-            .await
-            .map(|form| form.0)
+        match &self.origin {
+            Origin::Http { parts, body } => {
+                let mut request = Request::new(axum::body::Body::from(body.clone()));
+                *request.method_mut() = parts.method.clone();
+                *request.uri_mut() = parts.uri.clone();
+                *request.headers_mut() = parts.headers.clone();
+                VpayForm::<T>::from_request(request, &())
+                    .await
+                    .map(|form| form.0)
+            }
+            Origin::Tool { params } => {
+                serde_json::from_value(params.clone()).map_err(|_| crate::form::shape_refusal())
+            }
+        }
     }
 
     async fn claim(
@@ -2965,8 +3025,8 @@ impl PostRequest {
             repositories,
             scope.merchant_id(),
             self.key.as_str(),
-            self.parts.method.as_str(),
-            self.parts.uri.path(),
+            &self.method,
+            &self.path,
             &self.hash,
         )
         .await

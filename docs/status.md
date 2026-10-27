@@ -170,13 +170,13 @@ token written in a comment of any kind, in a `#[doc = "…"]` attribute or insid
 any string, raw-string or character literal is prose, and prose declares
 nothing.
 
-`just verify` is **16** <!-- count:verify-gates --> gates and one advisory
+`just verify` is **17** <!-- count:verify-gates --> gates and one advisory
 report. What each one refuses, and what the first fourteen printed when they
 were re-run, one invocation each, on **2026-09-18** on this branch's merge of
 `master` at `bd5c85d1`, on macOS with `cratestack` 0.12.0 on `PATH`; the
-fifteenth row, `verify-doc-counts`, landed 2026-09-20, and the sixteenth,
-`verify-security-inventory`, landed 2026-10-26; both were measured on their own
-trees below.
+fifteenth row, `verify-doc-counts`, landed 2026-09-20, the sixteenth,
+`verify-security-inventory`, landed 2026-10-26, and the seventeenth,
+`verify-mcp-parity`, the same day; each was measured on its own tree below.
 The figure above is in digits and carries a marker because it is the number
 this repository has got wrong most often, and `verify-doc-counts` is the gate
 that now reads it off the `verify:` recipe. _(The column before it was 2026-09-17
@@ -205,25 +205,26 @@ this merge, and the row read "**red at `eb078020`** — 2 unannotated
 `extra-files`". It is replaced rather than struck because the row it described
 no longer exists; the history is the paragraph you are reading.)_
 
-| Gate                        | What it refuses                                                                                                                                                                 | Last printed                                                      |
-| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `verify-no-mocks`           | a test double reachable from a shipping binary                                                                                                                                  | no test double reachable                                          |
-| `verify-status`             | an undeclared — or a stale — `NotImplemented` token                                                                                                                             | 1 unimplemented item                                              |
-| `verify-errors`             | an unclassified error type, or `anyhow` in a library crate                                                                                                                      | 20 error types, 17 `#[from]` variants                             |
-| `verify-sdk-parity`         | an SDK capability with no row, or a row naming no capability                                                                                                                    | 662 proving tests, 37 dated gaps, 35 methods, 39 rows             |
-| `verify-links`              | a repository link that resolves to no tracked path                                                                                                                              | 1 789 links in 404 files                                          |
-| `verify-npm-scope`          | an unpublishable manifest, or a retired package name outside the record                                                                                                         | 2 publishable packages, 1 private                                 |
-| `check-schema`              | a `schemas/vpay.cstack` that does not type-check, or a committed `@vpay/dash-client` it no longer generates (2026-10-26)                                                        | 30 declarations under 0.15.0, client matches                      |
-| `verify-serde`              | a serialisable type that does not spell the wire convention                                                                                                                     | 102 types, 17 exemptions                                          |
-| `verify-repositories`       | a repository implementation named outside `vpay-db`, or an exported schema                                                                                                      | 4 implementations, 84 source files outside                        |
-| `verify-toolchain`          | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                                  | 1.98.0                                                            |
-| `verify-ui`                 | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12)                | nothing: silent on success, exit 0 only                           |
-| `verify-migrations`         | an applied migration whose bytes changed                                                                                                                                        | 48 files                                                          |
-| `verify-versions`           | a release version reference that disagrees, a line release-please must rewrite with no `x-release-please-version` comment, or a bare-string `extra-files` entry (PR #201, #204) | 22 version references, all 0.3.1                                  |
-| `verify-privacy-inventory`  | a migrated column with no inventory classification, or an inventory row naming no live column (#144), or a `debug_protections` type that derives `Debug` or is stale (#147)     | 307 columns / 26 elements / 10 surfaces                           |
-| `verify-doc-counts`         | a documented number that no longer equals what the tree measures, a marker whose kind no measurer knows, and finding no marker at all (2026-09-20)                              | 13 counts in 11 of 262 markdown files                             |
-| `verify-security-inventory` | an unknown inventory key, a nonexistent path or cited test, a table missing in either direction, an invented config key, or a gap with no live tracker (2026-10-26)             | 5 services / 33 tables / 10 secret classes / 15 controls / 7 gaps |
-| `verify-docs`               | **nothing — it exits 0 whatever it finds**                                                                                                                                      | advisory report                                                   |
+| Gate                        | What it refuses                                                                                                                                                                              | Last printed                                                      |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `verify-no-mocks`           | a test double reachable from a shipping binary                                                                                                                                               | no test double reachable                                          |
+| `verify-status`             | an undeclared — or a stale — `NotImplemented` token                                                                                                                                          | 1 unimplemented item                                              |
+| `verify-errors`             | an unclassified error type, or `anyhow` in a library crate                                                                                                                                   | 20 error types, 17 `#[from]` variants                             |
+| `verify-sdk-parity`         | an SDK capability with no row, or a row naming no capability                                                                                                                                 | 662 proving tests, 37 dated gaps, 35 methods, 39 rows             |
+| `verify-links`              | a repository link that resolves to no tracked path                                                                                                                                           | 1 789 links in 404 files                                          |
+| `verify-npm-scope`          | an unpublishable manifest, or a retired package name outside the record                                                                                                                      | 2 publishable packages, 1 private                                 |
+| `check-schema`              | a `schemas/vpay.cstack` that does not type-check, or a committed `@vpay/dash-client` it no longer generates (2026-10-26)                                                                     | 30 declarations under 0.15.0, client matches                      |
+| `verify-serde`              | a serialisable type that does not spell the wire convention                                                                                                                                  | 102 types, 17 exemptions                                          |
+| `verify-repositories`       | a repository implementation named outside `vpay-db`, or an exported schema                                                                                                                   | 4 implementations, 84 source files outside                        |
+| `verify-toolchain`          | a `backends/Dockerfile` that drifts from `rust-toolchain.toml`                                                                                                                               | 1.98.0                                                            |
+| `verify-ui`                 | a computed class string, a raw status-colour token, a >60-char class, a daisyUI-4 or unrouted daisyUI class, or an import of the deleted `@vpay/ui` (2026-09-12)                             | nothing: silent on success, exit 0 only                           |
+| `verify-migrations`         | an applied migration whose bytes changed                                                                                                                                                     | 48 files                                                          |
+| `verify-versions`           | a release version reference that disagrees, a line release-please must rewrite with no `x-release-please-version` comment, or a bare-string `extra-files` entry (PR #201, #204)              | 22 version references, all 0.3.1                                  |
+| `verify-privacy-inventory`  | a migrated column with no inventory classification, or an inventory row naming no live column (#144), or a `debug_protections` type that derives `Debug` or is stale (#147)                  | 307 columns / 26 elements / 10 surfaces                           |
+| `verify-doc-counts`         | a documented number that no longer equals what the tree measures, a marker whose kind no measurer knows, and finding no marker at all (2026-09-20)                                           | 13 counts in 11 of 262 markdown files                             |
+| `verify-security-inventory` | an unknown inventory key, a nonexistent path or cited test, a table missing in either direction, an invented config key, or a gap with no live tracker (2026-10-26)                          | 5 services / 33 tables / 10 secret classes / 15 controls / 7 gaps |
+| `verify-mcp-parity`         | a mounted `/v1` route with no row in `docs/api/mcp-parity.md`, a row naming an unmounted route or an undeclared tool, an undated gap, or a declared tool no row names (2026-10-26, ADR-0033) | 37 routes: 9 tools, 28 dated gaps                                 |
+| `verify-docs`               | **nothing — it exits 0 whatever it finds**                                                                                                                                                   | advisory report                                                   |
 
 _(**Two rows were re-run on 2026-09-20** with the fifteenth gate, because
 this change moved one of them and the other had gone stale on `master`:

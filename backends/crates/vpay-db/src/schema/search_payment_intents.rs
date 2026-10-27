@@ -90,12 +90,14 @@
 //!    `tests::an_unknown_status_is_refused_rather_than_answered_with_an_empty_page`.
 
 use std::str::FromStr as _;
+use std::sync::Arc;
 
 use cratestack::{CratestackContext, CratestackError, Page, PageInfo, PageInput};
 use time::OffsetDateTime;
 use vpay_core::IntentStatus;
 
 use super::cratestack_schema::{self, procedures, types};
+use crate::MerchantOperations;
 
 // `#[path]` rather than a plain `mod search_refunds;` in `schema.rs`:
 // `resolve_page`, `tenant_of`, `to_chrono` and `to_time` are private
@@ -174,12 +176,28 @@ const SEARCH_SQL: &str = "SELECT id, merchant_id, livemode, amount, amount_recei
 
 /// vpay's implementation of the schema's `ProcedureRegistry`.
 ///
-/// A unit struct: the trait hands the body its [`cratestack_schema::Cratestack`]
-/// and its [`CratestackContext`] on every call, so there is no state a
-/// registry could usefully hold, and holding a pool here would be a second
-/// way to reach the database that nothing audits.
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct Payments;
+/// The trait hands the body its [`cratestack_schema::Cratestack`] and its
+/// [`CratestackContext`] on every call, so the registry holds no pool:
+/// holding one here would be a second way to reach the database that
+/// nothing audits.
+///
+/// It holds one thing, and only on one endpoint: `ops`, the port the merchant
+/// MCP tools reach the rails through (ADR-0033 D3,
+/// [`crate::MerchantOperations`]). The dashboard's procedure router builds
+/// this with `ops: None`, so a write procedure reached through it refuses
+/// whatever its policy said (`mcp_merchant::perform`).
+#[derive(Clone, Default)]
+pub(crate) struct Payments {
+    pub(crate) ops: Option<Arc<dyn MerchantOperations>>,
+}
+
+impl std::fmt::Debug for Payments {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Payments")
+            .field("ops", &self.ops.as_ref().map(|_| "MerchantOperations"))
+            .finish()
+    }
+}
 
 impl procedures::ProcedureRegistry for Payments {
     async fn search_payment_intents(
@@ -279,6 +297,87 @@ impl procedures::ProcedureRegistry for Payments {
     ) -> Result<procedures::search_checkout_sessions::Output, CratestackError> {
         super::search_checkout_sessions::search_checkout_sessions(db, ctx, args).await
     }
+
+    // The merchant MCP procedures (ADR-0033). Each is a delegation to the
+    // port through `super::mcp_merchant`, whose module doc says what a body
+    // does and why it does no more.
+
+    async fn retrieve_payment_intent(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::retrieve_payment_intent::Args,
+        _authorized: procedures::retrieve_payment_intent::Authorized,
+    ) -> Result<procedures::retrieve_payment_intent::Output, CratestackError> {
+        let operation = super::mcp_merchant::retrieve_payment_intent(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
+
+    async fn open_payment_intent(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::open_payment_intent::Args,
+        _authorized: procedures::open_payment_intent::Authorized,
+    ) -> Result<procedures::open_payment_intent::Output, CratestackError> {
+        let operation = super::mcp_merchant::open_payment_intent(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
+
+    async fn confirm_payment_intent(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::confirm_payment_intent::Args,
+        _authorized: procedures::confirm_payment_intent::Authorized,
+    ) -> Result<procedures::confirm_payment_intent::Output, CratestackError> {
+        let operation = super::mcp_merchant::confirm_payment_intent(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
+
+    async fn cancel_payment_intent(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::cancel_payment_intent::Args,
+        _authorized: procedures::cancel_payment_intent::Authorized,
+    ) -> Result<procedures::cancel_payment_intent::Output, CratestackError> {
+        let operation = super::mcp_merchant::cancel_payment_intent(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
+
+    async fn retrieve_refund(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::retrieve_refund::Args,
+        _authorized: procedures::retrieve_refund::Authorized,
+    ) -> Result<procedures::retrieve_refund::Output, CratestackError> {
+        let operation = super::mcp_merchant::retrieve_refund(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
+
+    async fn issue_refund(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::issue_refund::Args,
+        _authorized: procedures::issue_refund::Authorized,
+    ) -> Result<procedures::issue_refund::Output, CratestackError> {
+        let operation = super::mcp_merchant::issue_refund(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
+
+    async fn cancel_refund(
+        &self,
+        _db: &cratestack_schema::Cratestack,
+        ctx: &CratestackContext,
+        args: procedures::cancel_refund::Args,
+        _authorized: procedures::cancel_refund::Authorized,
+    ) -> Result<procedures::cancel_refund::Output, CratestackError> {
+        let operation = super::mcp_merchant::cancel_refund(args);
+        super::mcp_merchant::perform(self.ops.as_ref(), ctx, operation).await
+    }
 }
 
 /// [`PageInput::resolve`]'s clamp, with vpay's default page size rather
@@ -312,7 +411,7 @@ fn resolve_page(page: PageInput) -> (i64, i64) {
 /// It is never `Ok` with an empty string: an empty `merchant_id` would be a
 /// perfectly well-formed predicate matching no rows, and "no results" is the
 /// answer an operator would believe.
-fn tenant_of(ctx: &CratestackContext) -> Result<&str, CratestackError> {
+pub(super) fn tenant_of(ctx: &CratestackContext) -> Result<&str, CratestackError> {
     match ctx.tenant_id() {
         Some(tenant) if !tenant.is_empty() => Ok(tenant),
         _ => Err(CratestackError::Forbidden(
@@ -950,7 +1049,7 @@ mod tests {
                 .await
                 .expect("an authenticated caller satisfies the only @allow arm");
 
-        let error = Payments
+        let error = Payments::default()
             .search_payment_intents(&cs, &tenantless, args, authorized)
             .await
             .expect_err("no tenant means no rows may be read, not all of them");
@@ -1121,7 +1220,7 @@ mod tests {
             let args = procedures::search_payment_intents::Args { page, filter };
             let authorized =
                 procedures::search_payment_intents::authorize_with_db(cs, &args, ctx).await?;
-            Payments
+            Payments::default()
                 .search_payment_intents(cs, ctx, args, authorized)
                 .await
         }

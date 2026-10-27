@@ -498,6 +498,15 @@ impl MerchantScope {
     pub(crate) fn for_signed(merchant_id: String) -> Self {
         Self { merchant_id }
     }
+
+    /// The **fifth** way, minted by [`crate::mcp::MerchantOps`] for a merchant MCP tool call
+    /// (ADR-0033), from the merchant `vpay-db`'s procedure body read off the
+    /// authenticated context, which [`crate::mcp::MerchantMcpAuth`] built
+    /// from a validated token through the same
+    /// [`ResourceConfig::merchant_id_for`] `/v1` uses.
+    pub(crate) fn for_mcp(merchant_id: String) -> Self {
+        Self { merchant_id }
+    }
 }
 
 impl<S> FromRequestParts<S> for MerchantScope

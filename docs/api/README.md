@@ -1,6 +1,7 @@
 # API
 
-vpay exposes three authenticated HTTP surfaces plus one public, stateless
+vpay exposes three authenticated HTTP surfaces (four where a deployment
+names `mcp`, ADR-0033, § `/mcp/v1` below) plus one public, stateless
 callback path, and conflating any of them is a security bug: `/v1` (a
 merchant's own backend), `/v1/browser` (a payer's browser, added Step 5c —
 see below), and `/dash/v1` (a logged-in staff member). Each has its own
@@ -1115,6 +1116,19 @@ this surface is not recorded as running anywhere today, and **the dashboard
 application cannot sign in until VP-6b**. See
 [../flows/dashboard-auth.md](../flows/dashboard-auth.md) for the mechanism and
 [docs/status.md](../status.md) for the deployment picture.
+
+## `/mcp/v1` — the merchant MCP endpoint (ADR-0033)
+
+A fourth authenticated surface, for a merchant's **agent**: MCP revision
+`2026-07-28` over Streamable HTTP, mounted only when `deployment.surfaces`
+names `mcp`. It takes a bearer token from vpay's own OP whose audience is
+`{public_base_url}/mcp/v1`; a merchant opts in by listing that in its
+`allowed_audiences`. A `vpay:v1` token is refused here. On `/v1`, which is
+signed since VP-3, every bearer token is refused, an MCP token included.
+
+Each tool runs the `/v1` route it stands for. Which routes have a tool is
+[mcp-parity.md](mcp-parity.md), and `cargo xtask verify-mcp-parity` keeps that
+table complete. The process is [../flows/mcp.md](../flows/mcp.md).
 
 ## `/provider/{code}/callback` — rail callbacks
 

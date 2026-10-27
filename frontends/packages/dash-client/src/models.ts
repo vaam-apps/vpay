@@ -115,6 +115,18 @@ export const wireShapes: Readonly<Record<string, WireShape>> = {
   CustomerListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   CheckoutSessionSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   CheckoutSessionListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  MetadataEntry: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  NamedValue: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  McpRedirect: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  McpNextAction: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'redirect_to_url': 'McpRedirect' } },
+  McpLastPaymentError: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  McpPaymentMethodDetails: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  McpPaymentIntent: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payment_method_details': 'McpPaymentMethodDetails', 'next_action': 'McpNextAction', 'last_payment_error': 'McpLastPaymentError', 'metadata': 'MetadataEntry' } },
+  McpRefund: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'metadata': 'MetadataEntry' } },
+  OpenPaymentIntentInput: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'metadata': 'MetadataEntry' } },
+  ConfirmPaymentIntentInput: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'payer_fields': 'NamedValue' } },
+  CancelInput: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  IssueRefundInput: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: { 'destination_fields': 'NamedValue', 'metadata': 'MetadataEntry' } },
 };
 
 /** Decodes `value` against the named entry in {@link wireShapes},
@@ -1012,6 +1024,97 @@ export interface CheckoutSessionListFilter {
   payment_status?: string | null;
   created_gte?: string | null;
   created_lte?: string | null;
+}
+
+export interface MetadataEntry {
+  key: string;
+  value: string;
+}
+
+export interface NamedValue {
+  name: string;
+  value: string;
+}
+
+export interface McpRedirect {
+  url: string;
+  return_url?: string | null;
+}
+
+export interface McpNextAction {
+  kind: string;
+  redirect_to_url?: McpRedirect | null;
+}
+
+export interface McpLastPaymentError {
+  code: string;
+  message: string;
+}
+
+export interface McpPaymentMethodDetails {
+  method_type?: string | null;
+  rail: string;
+}
+
+export interface McpPaymentIntent {
+  id: string;
+  amount: number;
+  currency: string;
+  status: string;
+  payment_method_types: string[];
+  payment_method_details?: McpPaymentMethodDetails | null;
+  next_action?: McpNextAction | null;
+  last_payment_error?: McpLastPaymentError | null;
+  metadata: MetadataEntry[];
+  description?: string | null;
+  customer?: string | null;
+  created: number;
+  livemode: boolean;
+}
+
+export interface McpRefund {
+  id: string;
+  amount: number;
+  currency: string;
+  payment_intent: string;
+  status: string;
+  reason?: string | null;
+  fee?: number | null;
+  metadata: MetadataEntry[];
+  created: number;
+}
+
+export interface OpenPaymentIntentInput {
+  idempotency_key: string;
+  amount: number;
+  currency: string;
+  payment_method_types: string[];
+  description?: string | null;
+  customer?: string | null;
+  metadata: MetadataEntry[];
+}
+
+export interface ConfirmPaymentIntentInput {
+  idempotency_key: string;
+  id: string;
+  payment_method_type: string;
+  payer_fields: NamedValue[];
+  return_url?: string | null;
+}
+
+export interface CancelInput {
+  idempotency_key: string;
+  id: string;
+}
+
+export interface IssueRefundInput {
+  idempotency_key: string;
+  payment_intent: string;
+  amount?: number | null;
+  reason?: string | null;
+  destination_type?: string | null;
+  destination_fields: NamedValue[];
+  metadata: MetadataEntry[];
 }
 
 export interface Currency {
@@ -2110,5 +2213,33 @@ export interface SearchCustomersArgs {
 export interface SearchCheckoutSessionsArgs {
   page: PageInput;
   filter: CheckoutSessionListFilter;
+}
+
+export interface RetrievePaymentIntentArgs {
+  id: string;
+}
+
+export interface OpenPaymentIntentArgs {
+  args: OpenPaymentIntentInput;
+}
+
+export interface ConfirmPaymentIntentArgs {
+  args: ConfirmPaymentIntentInput;
+}
+
+export interface CancelPaymentIntentArgs {
+  args: CancelInput;
+}
+
+export interface RetrieveRefundArgs {
+  id: string;
+}
+
+export interface IssueRefundArgs {
+  args: IssueRefundInput;
+}
+
+export interface CancelRefundArgs {
+  args: CancelInput;
 }
 

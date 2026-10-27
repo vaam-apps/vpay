@@ -84,6 +84,7 @@ use vpay_core::{Category, Classify, Retry, Severity};
 use vpay_ledger::LedgerError;
 
 use crate::error_envelope_with_param;
+use crate::resource_auth::AuthRejection;
 
 /// How many leading characters of an `Idempotency-Key` may be echoed back.
 ///
@@ -375,6 +376,12 @@ pub enum ApiError {
     /// operator's problem rather than the merchant's.
     #[error(transparent)]
     Config(#[from] vpay_config::ConfigError),
+
+    /// The bearer token was missing, malformed, or did not validate. The
+    /// conversion is what lets `AuthRejection`'s `IntoResponse` route
+    /// through this type, so there is exactly one envelope renderer.
+    #[error(transparent)]
+    Auth(#[from] AuthRejection),
 
     /// No route matched. The router's fallback, and the one variant a
     /// merchant sees today.
@@ -826,6 +833,7 @@ impl Classify for ApiError {
             Self::Currency(e) => e.category(),
             Self::Ledger(e) => e.category(),
             Self::Config(e) => e.category(),
+            Self::Auth(e) => e.category(),
             // 404, and `invalid_request_error` on the wire — the same shape
             // a missing object gets, because to a caller "no such URL" and
             // "no such object" are the same class of mistake.
@@ -862,6 +870,7 @@ impl Classify for ApiError {
             Self::Currency(e) => e.code(),
             Self::Ledger(e) => e.code(),
             Self::Config(e) => e.code(),
+            Self::Auth(e) => e.code(),
             // Overrides `NotFound`'s `resource_missing`: an unrecognised URL
             // is not a missing object, and an SDK branching on the code
             // should be able to tell "you called an endpoint vpay does not
@@ -915,6 +924,7 @@ impl Classify for ApiError {
             Self::Currency(e) => e.retry(),
             Self::Ledger(e) => e.retry(),
             Self::Config(e) => e.retry(),
+            Self::Auth(e) => e.retry(),
             // No overrides: none of this layer's own failures heals on its
             // own, and every one of these categories already defaults to
             // `Retry::Never`.
@@ -945,6 +955,7 @@ impl Classify for ApiError {
             Self::Currency(e) => e.severity(),
             Self::Ledger(e) => e.severity(),
             Self::Config(e) => e.severity(),
+            Self::Auth(e) => e.severity(),
             // No overrides. A 404 and a bad parameter are `Info` because a
             // payment gateway serves thousands a day and none is worth
             // investigating; `Internal` pages.
@@ -969,6 +980,7 @@ impl Classify for ApiError {
             Self::Currency(e) => e.public_message(),
             Self::Ledger(e) => e.public_message(),
             Self::Config(e) => e.public_message(),
+            Self::Auth(e) => e.public_message(),
             // Deliberately does *not* echo the method or path back. The
             // sentence is what this endpoint has always answered and what
             // `docs/api/README.md` documents; reflecting an
@@ -1344,6 +1356,36 @@ mod tests {
                 500,
                 "api_error",
                 "misconfigured",
+            ),
+            // The auth leaf, per variant.
+            (
+                || ApiError::Auth(AuthRejection::MissingHeader),
+                401,
+                "authentication_error",
+                "missing_bearer_token",
+            ),
+            (
+                || ApiError::Auth(AuthRejection::MalformedHeader),
+                401,
+                "authentication_error",
+                "malformed_authorization_header",
+            ),
+            (
+                || ApiError::Auth(AuthRejection::InvalidToken),
+                401,
+                "authentication_error",
+                "invalid_token",
+            ),
+            // The one auth rejection that is *not* about the credential: a
+            // JWKS this process could not fetch is our outage, and it has to
+            // answer 503/`api_error` so an SDK backs off instead of
+            // re-authenticating. A 401 here would send every client back to
+            // the (database-backed) token endpoint during an outage.
+            (
+                || ApiError::Auth(AuthRejection::KeysUnavailable),
+                503,
+                "api_error",
+                "service_unavailable",
             ),
             // This layer's own variants.
             (
@@ -1913,6 +1955,12 @@ mod tests {
 
     const PINNED_404: &str = r#"{"error":{"code":"unknown_route","message":"Unrecognized request URL. vpay implements a subset of the Stripe API; see docs/api.","type":"invalid_request_error"}}"#;
 
+    const PINNED_MISSING_HEADER: &str = r#"{"error":{"code":"missing_bearer_token","message":"No Authorization header was provided. Send an OAuth2 access token as 'Authorization: Bearer <token>'.","type":"authentication_error"}}"#;
+
+    const PINNED_MALFORMED_HEADER: &str = r#"{"error":{"code":"malformed_authorization_header","message":"The Authorization header was present but was not a well-formed 'Bearer <token>' value.","type":"authentication_error"}}"#;
+
+    const PINNED_INVALID_TOKEN: &str = r#"{"error":{"code":"invalid_token","message":"The bearer token is invalid, expired, or was not issued for this endpoint.","type":"authentication_error"}}"#;
+
     /// The 404 path, driven through the real router.
     ///
     /// The URI is deliberately outside `/v1`: since the merchant
@@ -1936,6 +1984,58 @@ mod tests {
 
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         assert_eq!(body_string(response).await, PINNED_404);
+    }
+
+    #[tokio::test]
+    async fn every_auth_rejection_is_byte_for_byte_what_it_was_before_api_error() {
+        let expected = [
+            (AuthRejection::MissingHeader, PINNED_MISSING_HEADER),
+            (AuthRejection::MalformedHeader, PINNED_MALFORMED_HEADER),
+            (AuthRejection::InvalidToken, PINNED_INVALID_TOKEN),
+        ];
+
+        for (rejection, pinned) in expected {
+            let label = format!("{rejection:?}");
+            // Through `AuthRejection`'s own `IntoResponse` — the path an
+            // extractor rejection takes.
+            let response = rejection.into_response();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
+            assert_eq!(body_string(response).await, pinned, "{label}");
+        }
+
+        // And through the composite, which is what the above now delegates
+        // to: identical bytes, or the delegation changed the wire.
+        for (rejection, pinned) in [
+            (AuthRejection::MissingHeader, PINNED_MISSING_HEADER),
+            (AuthRejection::MalformedHeader, PINNED_MALFORMED_HEADER),
+            (AuthRejection::InvalidToken, PINNED_INVALID_TOKEN),
+        ] {
+            let label = format!("{rejection:?}");
+            let response = ApiError::from(rejection).into_response();
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
+            assert_eq!(body_string(response).await, pinned, "{label}");
+        }
+    }
+
+    /// `KeysUnavailable` is deliberately **not** in the list above: it is the
+    /// one [`AuthRejection`] that does not answer 401, so pinning it there
+    /// would have meant weakening that test's status assertion for every
+    /// variant. It gets the same both-paths treatment separately.
+    ///
+    /// The bytes are the `Category::Storage` policy row verbatim — 503,
+    /// `api_error`, `service_unavailable`, and the sentence that tells a
+    /// caller to retry rather than to re-authenticate.
+    #[tokio::test]
+    async fn a_jwks_outage_renders_as_503_through_both_paths() {
+        const PINNED_KEYS_UNAVAILABLE: &str = r#"{"error":{"code":"service_unavailable","message":"vpay is temporarily unavailable. Retry after a short delay.","type":"api_error"}}"#;
+
+        let response = AuthRejection::KeysUnavailable.into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_string(response).await, PINNED_KEYS_UNAVAILABLE);
+
+        let response = ApiError::from(AuthRejection::KeysUnavailable).into_response();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_string(response).await, PINNED_KEYS_UNAVAILABLE);
     }
 
     /// Wrapping must not change the answer — ADR-0011's "composites do not
@@ -1985,6 +2085,19 @@ mod tests {
         assert_delegates!(
             ApiError::Currency(UnknownCurrency("XYZ".into())),
             UnknownCurrency("XYZ".into())
+        );
+        assert_delegates!(
+            ApiError::Auth(AuthRejection::InvalidToken),
+            AuthRejection::InvalidToken
+        );
+        // The leaf that overrides its *sibling variants'* category rather
+        // than its own category's defaults: a composite that mapped
+        // `Self::Auth(_)` to `Category::Authentication` wholesale — the
+        // obvious shortcut, and what this arm looked like before
+        // `KeysUnavailable` existed — would answer 401 here and fail.
+        assert_delegates!(
+            ApiError::Auth(AuthRejection::KeysUnavailable),
+            AuthRejection::KeysUnavailable
         );
         assert_delegates!(ApiError::Db(leaky_db_error()), leaky_db_error());
         assert_delegates!(

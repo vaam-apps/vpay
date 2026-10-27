@@ -76,6 +76,9 @@ mod search_customers;
 // because it imports nothing private from that file. Only `search_refunds`
 // needs the `#[path]` form, and its own comment says why.
 mod search_checkout_sessions;
+// The merchant MCP procedures' bodies (ADR-0033 D3): each a delegation to
+// the `MerchantOperations` port.
+mod mcp_merchant;
 
 /// Mounts `searchPaymentIntents` over HTTP — the read-only CrateStack
 /// transport this schema has never had a caller for before Lane C
@@ -116,7 +119,7 @@ where
 {
     cratestack_schema::axum::procedure_router(
         db,
-        search_payment_intents::Payments,
+        search_payment_intents::Payments::default(),
         (),
         ::cratestack_codec_json::JsonCodec,
         auth_provider,
@@ -159,6 +162,67 @@ pub(crate) fn dashboard_envelope_layer(
     .mount_prefix(mount)
     .payload_media_types(["application/json"], ["application/json"])
     .build()
+}
+
+/// The merchant MCP endpoint (ADR-0033): the generated tool table served
+/// over Streamable HTTP, nested at `endpoint.resource`'s path, plus the
+/// RFC 9728 metadata document at the host root.
+///
+/// Built here, beside [`dashboard_procedure_router`], for that function's
+/// reason: the generated `mcp` module must not leave this file's module.
+/// The registry carries `ops`, so the write procedures run; the dashboard's
+/// registry does not.
+///
+/// No `OpExecutor` is installed, so CrateStack reserves no idempotency key
+/// and limits no rate: every write procedure is `@no_idempotency` and claims
+/// its key in vpay's own store through the port (ADR-0033 D7).
+pub(crate) fn merchant_mcp_router(
+    db: cratestack_schema::Cratestack,
+    ops: std::sync::Arc<dyn crate::MerchantOperations>,
+    provider: crate::mcp_transport::MerchantMcpProvider,
+    endpoint: &crate::McpEndpoint,
+) -> Result<::cratestack::axum::Router, crate::mcp_transport::McpEndpointError> {
+    use ::cratestack::mcp::{ProtectedResource, StreamableHttpServer};
+
+    let path = mount_path(&endpoint.resource)?;
+    let tools =
+        cratestack_schema::mcp::tools(db, search_payment_intents::Payments { ops: Some(ops) }, ());
+    let resource = ProtectedResource::new(
+        endpoint.resource.clone(),
+        endpoint.authorization_servers.iter().cloned(),
+    )
+    .with_scopes(endpoint.scopes.iter().cloned());
+    let http = StreamableHttpServer::builder(
+        tools,
+        provider,
+        endpoint.allowed_origins.iter().cloned(),
+        resource,
+    )
+    .with_implementation("vpay", env!("CARGO_PKG_VERSION"))
+    .build()
+    .map_err(|error| crate::mcp_transport::McpEndpointError(error.to_string()))?;
+    Ok(::cratestack::axum::Router::new()
+        .nest_service(&path, http.service())
+        .merge(http.metadata_router()))
+}
+
+/// The path part of an absolute resource identifier, which is where the
+/// endpoint is mounted: `https://pay.example/mcp/v1` → `/mcp/v1`.
+fn mount_path(resource: &str) -> Result<String, crate::mcp_transport::McpEndpointError> {
+    let refuse = || {
+        crate::mcp_transport::McpEndpointError(format!(
+            "`{resource}` is not an absolute https or http URL with a path"
+        ))
+    };
+    let rest = resource
+        .strip_prefix("https://")
+        .or_else(|| resource.strip_prefix("http://"))
+        .ok_or_else(refuse)?;
+    let path = rest.find('/').map(|at| &rest[at..]).ok_or_else(refuse)?;
+    if path.len() < 2 || path.contains(['?', '#']) {
+        return Err(refuse());
+    }
+    Ok(path.trim_end_matches('/').to_owned())
 }
 
 #[cfg(test)]

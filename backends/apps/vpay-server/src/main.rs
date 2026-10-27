@@ -31,7 +31,7 @@ mod worker;
 
 use std::collections::BTreeMap;
 use std::future::{Future, IntoFuture as _};
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::Duration;
@@ -44,6 +44,7 @@ use vpay_api::envelope::{
 };
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
+use vpay_api::resource_auth::JwtValidator;
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -405,30 +406,55 @@ async fn run() -> anyhow::Result<()> {
     );
     tracing::info!(addr = %bound, "listening");
 
-    let deps =
-        RouterDeps {
-            repositories: booted.repositories,
-            merchant_op: booted.merchant_op,
-            v1_envelope: booted.v1_envelope,
-            management_envelope: booted.management_envelope,
-            adapters: Arc::new(booted.adapters),
-            // The projection, not the whole `Config` — see `ResourceConfig`, and
-            // note this is the only way `deployment.livemode` reaches a handler.
-            resource_config: Arc::new(
-                ResourceConfig::from_config(&booted.config)
-                    .context("projecting the validated configuration onto the /v1 request path")?,
-            ),
-            // Already validated by `Config::load` -> `validate_all`
-            // (ADR-0022): an empty or unknown `deployment.surfaces` is a boot
-            // failure long before this line, so this `?` is unreachable for a
-            // `Config` that made it this far — `.context` rather than
-            // `.expect()` anyway, because this function returns `anyhow::Result`
-            // and every other fallible line in it already propagates rather
-            // than panics.
-            surfaces: booted.config.deployment.enabled_surfaces().context(
-                "re-resolving deployment.surfaces after Config::load already validated it",
-            )?,
-        };
+    // Already validated by `Config::load` -> `validate_all` (ADR-0022): an
+    // empty or unknown `deployment.surfaces` is a boot failure long before
+    // this line, so this `?` is unreachable for a `Config` that made it this
+    // far — `.context` rather than `.expect()` anyway, because this function
+    // returns `anyhow::Result` and every other fallible line in it already
+    // propagates rather than panics.
+    let surfaces = booted
+        .config
+        .deployment
+        .enabled_surfaces()
+        .context("re-resolving deployment.surfaces after Config::load already validated it")?;
+    // The projection, not the whole `Config` — see `ResourceConfig`, and note
+    // this is the only way `deployment.livemode` reaches a handler.
+    let resource_config = Arc::new(
+        ResourceConfig::from_config(&booted.config)
+            .context("projecting the validated configuration onto the /v1 request path")?,
+    );
+    let adapters = Arc::new(booted.adapters);
+    // ADR-0033: built only when `deployment.surfaces` names `mcp`, so an
+    // absent key never gains it.
+    let merchant_mcp = match surfaces.mcp {
+        true => {
+            let public_base_url = booted.config.deployment.public_base_url.clone();
+            let parts = vpay_api::mcp::MerchantMcpParts {
+                repositories: Arc::clone(&booted.repositories),
+                config: Arc::clone(&resource_config),
+                adapters: Arc::clone(&adapters),
+                validator: loopback_mcp_validator(bound, &booted.merchant_op, &public_base_url)?,
+                public_base_url,
+                issuer: booted.merchant_op.issuer().to_owned(),
+            };
+            Some(
+                vpay_api::mcp::merchant_router(parts)
+                    .context("building the merchant MCP endpoint (ADR-0033)")?,
+            )
+        }
+        false => None,
+    };
+
+    let deps = RouterDeps {
+        repositories: booted.repositories,
+        merchant_op: booted.merchant_op,
+        v1_envelope: booted.v1_envelope,
+        management_envelope: booted.management_envelope,
+        adapters,
+        resource_config,
+        surfaces,
+        merchant_mcp,
+    };
 
     let (observability, observability_shutdown_tx) =
         start_observability(args.common.observability_bind, metrics).await?;
@@ -801,6 +827,29 @@ async fn announce_signing_key(
     Ok(())
 }
 
+/// The merchant MCP endpoint's token validator (ADR-0033 D9).
+///
+/// This process's own JWKS over loopback ([`loopback_jwks_url`]), the merchant
+/// OP's issuer, and the MCP resource identifier as the **only** audience: a
+/// merchant client lists that identifier in its `allowed_audiences` to opt in.
+/// Since VP-3, `/v1` takes no bearer token at all (every request is signed), so
+/// the OP's client-credentials grant serves this endpoint and the `vpay:v1`
+/// audience no other; a `vpay:v1` token is refused here because its audience is
+/// not this one.
+fn loopback_mcp_validator(
+    bound: SocketAddr,
+    merchant_op: &MerchantOp,
+    public_base_url: &str,
+) -> anyhow::Result<JwtValidator> {
+    JwtValidator::new(
+        loopback_jwks_url(bound),
+        JWKS_REFRESH_INTERVAL,
+        merchant_op.issuer(),
+        vpay_api::mcp::merchant_resource(public_base_url),
+    )
+    .context("building the JWKS client the MCP token validator fetches with")
+}
+
 /// Runs an operator subcommand and returns, without binding anything.
 ///
 /// It takes a [`vpay_config::StaffCommand`] rather than the whole
@@ -1150,6 +1199,40 @@ async fn start_observability(
         },
     ));
     Ok((task, shutdown_tx))
+}
+
+/// How often the MCP token validator re-fetches the JWKS.
+///
+/// 300 s, matching [`vpay_api::op::jwks::JWKS_CACHE_MAX_AGE`] — the
+/// `Cache-Control: max-age` the document is served with. Two different
+/// numbers here would mean this process either re-fetched a document it was
+/// told was still fresh, or held a copy past the freshness it advertised to
+/// everyone else. It is not a correctness bound in either direction: the
+/// cache also refetches immediately on an unrecognised `kid`, so a rotation
+/// reaches this validator without waiting for the interval to lapse
+/// (`vpay_api::resource_auth`), and the 24 h publication overlap
+/// (`vpay_api::op::keys::ROTATION_OVERLAP`) means a stale copy is still a
+/// usable one.
+const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
+
+/// The URL this process's own MCP token validator fetches the JWKS from: always
+/// loopback, on the port actually bound.
+///
+/// **Deliberately not `public_base_url`**, and deliberately not `--bind` either
+/// — an unspecified bind address is mapped to the matching loopback address of
+/// the same family rather than used as a destination. Why, and what the
+/// in-process alternative would cost:
+/// [docs/reference/vpay-config.md § why the /v1 validator fetches its JWKS over loopback](../../../../docs/reference/vpay-config.md#why-the-v1-validator-fetches-its-jwks-over-loopback).
+fn loopback_jwks_url(bound: SocketAddr) -> String {
+    let host = match bound.ip() {
+        IpAddr::V4(v4) if v4.is_unspecified() => IpAddr::V4(Ipv4Addr::LOCALHOST),
+        IpAddr::V6(v6) if v6.is_unspecified() => IpAddr::V6(Ipv6Addr::LOCALHOST),
+        specific => specific,
+    };
+    // `SocketAddr`'s own `Display` puts the brackets around an IPv6 literal,
+    // which a URL authority requires and a bare `Ipv6Addr` does not produce.
+    let authority = SocketAddr::new(host, bound.port());
+    format!("http://{authority}/v1/oauth/jwks.json")
 }
 
 /// Serves `listener` until the shutdown signal fires, then waits at most
