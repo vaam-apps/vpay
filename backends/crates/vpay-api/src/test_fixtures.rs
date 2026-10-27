@@ -260,15 +260,10 @@ pub(crate) fn v1_envelope_with_tokens(config: &Config, jwks_url: &str) -> V1Enve
 pub(crate) const TOKEN_ISSUER: &str = "https://op.vpay.test";
 
 /// A `/v1` bearer-token validator over `jwks_url`: issuer [`TOKEN_ISSUER`],
-/// audience `vpay:v1`, as `vpay-server`'s.
+/// audience `vpay:v1`, built by the same function `vpay-server` calls.
 pub(crate) fn token_validator(jwks_url: &str) -> crate::resource_auth::JwtValidator {
-    crate::resource_auth::JwtValidator::new(
-        jwks_url,
-        Duration::from_secs(300),
-        TOKEN_ISSUER,
-        MERCHANT_AUDIENCE,
-    )
-    .expect("the vendored-roots JWKS client builds")
+    crate::resource_auth::merchant_token_validator(jwks_url, Duration::from_secs(300), TOKEN_ISSUER)
+        .expect("the vendored-roots JWKS client builds")
 }
 
 pub(crate) fn fixture_keys() -> EnvelopeKeys {

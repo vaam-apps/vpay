@@ -859,38 +859,36 @@ async fn announce_signing_key(
 /// The merchant MCP endpoint's token validator (ADR-0033 D9).
 ///
 /// This process's own JWKS over loopback ([`loopback_jwks_url`]), the merchant
-/// OP's issuer, and the MCP resource identifier as the **only** audience: a
-/// merchant client lists that identifier in its `allowed_audiences` to opt in.
-/// Since VP-3, `/v1` takes no bearer token at all (every request is signed), so
-/// the OP's client-credentials grant serves this endpoint and the `vpay:v1`
-/// audience no other; a `vpay:v1` token is refused here because its audience is
-/// not this one.
+/// OP's issuer, and the MCP resource identifier as the **only** audience (built
+/// by `vpay_api::resource_auth::mcp_token_validator`): a merchant client lists
+/// that identifier in its `allowed_audiences` to opt in. A `vpay:v1` token is
+/// refused here because its audience is not this one, and the reverse.
 fn loopback_mcp_validator(
     bound: SocketAddr,
     merchant_op: &MerchantOp,
     public_base_url: &str,
 ) -> anyhow::Result<JwtValidator> {
-    JwtValidator::new(
+    vpay_api::resource_auth::mcp_token_validator(
         loopback_jwks_url(bound),
         JWKS_REFRESH_INTERVAL,
         merchant_op.issuer(),
-        vpay_api::mcp::merchant_resource(public_base_url),
+        public_base_url,
     )
     .context("building the JWKS client the MCP token validator fetches with")
 }
 
 /// The `/v1` bearer-token validator (ADR-0037): this process's own JWKS over
-/// loopback, the merchant OP's issuer, and `vpay:v1` as the **only** audience,
-/// so a token minted for the MCP resource is refused here and the reverse.
+/// loopback and the merchant OP's issuer, built by
+/// `vpay_api::resource_auth::merchant_token_validator`, whose audience
+/// (`vpay:v1`, the only one) is tested in `vpay-api` and not typed here.
 fn loopback_merchant_validator(
     bound: SocketAddr,
     merchant_op: &MerchantOp,
 ) -> anyhow::Result<JwtValidator> {
-    JwtValidator::new(
+    vpay_api::resource_auth::merchant_token_validator(
         loopback_jwks_url(bound),
         JWKS_REFRESH_INTERVAL,
         merchant_op.issuer(),
-        vpay_config::MERCHANT_AUDIENCE,
     )
     .context("building the JWKS client the /v1 token validator fetches with")
 }

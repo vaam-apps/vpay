@@ -215,7 +215,7 @@ async fn both_ways_a_token_that_does_not_earn_the_request_is_refused_plainly() {
 
     let wrong_audience = json!({
         "iss": crate::test_fixtures::TOKEN_ISSUER,
-        "aud": "vpay-mcp",
+        "aud": crate::mcp::merchant_resource(PUBLIC_BASE_URL),
         "sub": CLIENT_ID,
         "scope": "payments:write",
         "exp": crate::test_fixtures::tokens::now_secs() + 300,

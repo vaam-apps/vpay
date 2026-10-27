@@ -568,8 +568,9 @@ async fn each_surface_accepts_only_its_own_audience() -> anyhow::Result<()> {
         .await?;
     assert_eq!(status, 401, "a vpay:v1 token on /mcp/v1: {body}");
 
-    // Since VP-3 `/v1` takes no bearer token of any audience: an MCP token
-    // there is the same coarse unsigned 401 as any other.
+    // `/v1` takes a bearer token only for `vpay:v1` (ADR-0037, and only where
+    // `machine_tokens` is permitted): an MCP token there is a 401, whichever
+    // refusal this deployment's `auth.methods` gives it.
     let mcp_token = harness.mcp_token(CLIENT_A, vpay_api::SCOPE_PAYMENTS_WRITE);
     let v1 = raw_client()
         .get(format!("{}/v1/payment_intents", harness.base_url))
