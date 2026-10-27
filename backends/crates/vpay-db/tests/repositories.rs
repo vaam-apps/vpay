@@ -10284,8 +10284,7 @@ async fn migration_0044_moves_every_live_credential_unchanged() -> anyhow::Resul
     assert_eq!(password.counter, 0);
     assert!(
         vpay_core::ids::is_well_formed(vpay_core::ids::CREDENTIAL_PREFIX, &password.id),
-        "a backfilled id must be shaped like a minted one: {}",
-        password.id
+        "a backfilled id must be shaped like a minted one"
     );
 
     // 2. THE ONE-TIME PASSWORD FLAG MOVED WITH IT, on the other member.
