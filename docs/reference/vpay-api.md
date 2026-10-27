@@ -226,17 +226,17 @@ needs a request id on it more than any other.
 and the overview now; each surface has its own page below, moved **verbatim**.
 Nothing was summarised away and no dated measurement or correction was dropped.
 
-| Surface                                                               | Page                                                                                   |
-| --------------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
-| The merchant OP (`op/`)                                               | [vpay-api/merchant-op.md](vpay-api/merchant-op.md)                                     |
-| The signed `/v1` transport (`envelope/`)                              | [vpay-api/envelope.md](vpay-api/envelope.md)                                           |
-| Resource-server JWT validation (`resource_auth.rs`, MCP only)         | [vpay-api/resource-auth.md](vpay-api/resource-auth.md)                                 |
-| The dashboard surface (`dash/`)                                       | [vpay-api/dashboard-surface.md](vpay-api/dashboard-surface.md)                         |
-| The JWKS cache (`jwks_cache.rs`)                                      | [vpay-api/jwks-cache.md](vpay-api/jwks-cache.md)                                       |
-| The form decoder (`form.rs`)                                          | [vpay-api/form-decoder.md](vpay-api/form-decoder.md)                                   |
-| The confirm path, and the return trip                                 | [vpay-api/confirm-path.md](vpay-api/confirm-path.md)                                   |
-| Checkout Sessions                                                     | [vpay-api/checkout-sessions.md](vpay-api/checkout-sessions.md)                         |
-| The account-holder route, and Customers                               | [vpay-api/account-holders-and-customers.md](vpay-api/account-holders-and-customers.md) |
-| The rail callback route (`provider_callback.rs`)                      | [vpay-api/provider-callback.md](vpay-api/provider-callback.md)                         |
-| Boot (`boot.rs`)                                                      | [vpay-api/boot.md](vpay-api/boot.md)                                                   |
-| The merchant MCP endpoint (`mcp.rs`)                                  | [vpay-api/mcp.md](vpay-api/mcp.md)                                                     |
+| Surface                                                       | Page                                                                                   |
+| ------------------------------------------------------------- | -------------------------------------------------------------------------------------- |
+| The merchant OP (`op/`)                                       | [vpay-api/merchant-op.md](vpay-api/merchant-op.md)                                     |
+| The signed `/v1` transport (`envelope/`)                      | [vpay-api/envelope.md](vpay-api/envelope.md)                                           |
+| Resource-server JWT validation (`resource_auth.rs`, MCP only) | [vpay-api/resource-auth.md](vpay-api/resource-auth.md)                                 |
+| The dashboard surface (`dash/`)                               | [vpay-api/dashboard-surface.md](vpay-api/dashboard-surface.md)                         |
+| The JWKS cache (`jwks_cache.rs`)                              | [vpay-api/jwks-cache.md](vpay-api/jwks-cache.md)                                       |
+| The form decoder (`form.rs`)                                  | [vpay-api/form-decoder.md](vpay-api/form-decoder.md)                                   |
+| The confirm path, and the return trip                         | [vpay-api/confirm-path.md](vpay-api/confirm-path.md)                                   |
+| Checkout Sessions                                             | [vpay-api/checkout-sessions.md](vpay-api/checkout-sessions.md)                         |
+| The account-holder route, and Customers                       | [vpay-api/account-holders-and-customers.md](vpay-api/account-holders-and-customers.md) |
+| The rail callback route (`provider_callback.rs`)              | [vpay-api/provider-callback.md](vpay-api/provider-callback.md)                         |
+| Boot (`boot.rs`)                                              | [vpay-api/boot.md](vpay-api/boot.md)                                                   |
+| The merchant MCP endpoint (`mcp.rs`)                          | [vpay-api/mcp.md](vpay-api/mcp.md)                                                     |
