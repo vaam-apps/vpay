@@ -26,7 +26,8 @@
 
 ```text
   merchant's agent host                 staff member's agent host
-  (holds a private_key_jwt key)         (PKCE, loopback redirect)
+  (holds a private_key_jwt key)         (PKCE, loopback redirect: SUPERSEDED,
+                                         see the note under this diagram)
         │ client_credentials,                 │ authorization code
         │ audience = <merchant MCP resource>  │ aud = <staff MCP resource>
         ▼                                     ▼
@@ -49,6 +50,14 @@
         │ an email, a web page. Any of it can carry instructions.
   a third party
 ```
+
+**The staff column is superseded (2026-10-27).** #383 (ADR-0036) deleted
+`/dash/v1/oauth/*`, the staff OP and staff sessions; the console signs with a
+paired key instead. The staff side of this diagram is therefore what was
+designed, and nothing serves it. How a staff agent authenticates is
+ADR-0033's "Left to the maintainer" item 5. The two staff rows below keep
+their mitigations as designed, and are **not built** for that reason as well
+as for the missing endpoint.
 
 The trust boundaries crossed are:
 

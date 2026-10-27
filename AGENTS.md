@@ -388,7 +388,7 @@ process to a reader who will decide what to do. A skill briefs an agent that is
 already doing it, and is therefore judged on a different question: not "is this
 accurate and complete" but "would an agent that read only this do the right
 thing on its first attempt". That is why they are a separate repository — a
-briefing that has to clear sixteen gates to be corrected is a briefing nobody
+briefing that has to clear seventeen gates to be corrected is a briefing nobody
 corrects — and why drift between them and this tree is gated rather than
 trusted.
 

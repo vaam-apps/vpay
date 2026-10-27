@@ -122,6 +122,17 @@ without naming.
 
 ### 1. Surface selection is a deployment concern, expressed in config
 
+> **Extended 2026-10-27 by [ADR-0033](0033-mcp-is-the-primary-agent-surface.md)
+> (Proposed), and built for the merchant half in
+> [#377](https://github.com/vaam-apps/vpay/pull/377).** `deployment.surfaces`
+> takes a third value, `mcp`, which mounts the merchant MCP endpoint
+> `POST /mcp/v1` and its RFC 9728 metadata. It is **opt-in only**: it is not in
+> `EnabledSurfaces::ALL`, so an absent key (every deployment this ADR upgraded
+> unchanged) never mounts it. `mcp_staff`, the staff endpoint's value, is
+> designed in ADR-0033 and **not built**. Nothing in the chart or compose sets
+> `mcp`: the workloads this section's tiers imply for it are ADR-0033 step 6,
+> also not built. Nothing else this section decides changed.
+
 Make `/v1` mounting conditional, mirroring the `Option` shape `/dash/v1`
 already has. One image, one binary, one router function; which surfaces a
 process serves is decided by its configuration at boot.

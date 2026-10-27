@@ -48,6 +48,16 @@
   authenticate with `private_key_jwt`) and
   [ADR-0017](0017-staff-authentication.md) (staff authorisation re-reads the
   staff row on every request).
+
+  **Both were superseded under this ADR while it was Proposed.**
+  - [ADR-0035](0035-v1-is-a-signed-message-not-a-token.md) (#380, 2026-10-26)
+    superseded ADR-0010 for `/v1`. The `private_key_jwt` grant survives only
+    as the way `/mcp/v1` gets its tokens (D9).
+  - [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)
+    (#383, 2026-10-27) superseded ADR-0017 entirely. It deleted the staff OP,
+    the staff sessions and the PKCE client D9's staff design relies on. See
+    "Left to the maintainer" item 5.
+
 - **Amends:** two conventions that are not ADRs but are pinned by tests and
   comments. "CrateStack lives in `vpay-db` and nowhere else" is unchanged,
   and so is its privacy. The conventions that move are "no money model
@@ -310,7 +320,12 @@ tenancy-safe ledger read does.
   - The token endpoint stays on the business tier (ADR-0022 §2). The
     discovery routes mount on `mcp` pods too, so the loopback JWKS validator
     works there.
-- **Staff.**
+- **Staff.** **Superseded 2026-10-27, and not replaced.** The two bullets
+  below assume ADR-0017's staff OP. #383 (ADR-0036) deleted that OP: the
+  console now signs every `/dash/v1` request under a paired P-256 key, and no
+  staff token exists. They are kept as what was designed, not as a plan. How
+  a staff member's agent authenticates to `/dash/mcp/v1` is open ("Left to the
+  maintainer" item 5).
   - A second staff OP client, a public PKCE client with loopback redirect
     URIs, mints `aud = <staff MCP resource>`.
   - The endpoint's `AuthProvider` performs every check
@@ -393,3 +408,10 @@ it:
    an OAuth authorization server, so either VP-4 keeps the OP for MCP, or
    this endpoint gets another one first. Removing the OP with nothing in its
    place would make `/mcp/v1` unusable, and no gate would notice.
+5. How the staff MCP endpoint authenticates, now that #383 (ADR-0036) has
+   deleted the staff OP D9 designed it on. MCP's specification expects an
+   OAuth bearer token, and ADR-0036's console signs messages under a paired
+   key and holds no token. Either a staff agent gets an OAuth client again,
+   for this endpoint alone, or the staff endpoint uses the paired-key
+   transport, which MCP clients do not speak today. Nothing is built either
+   way.

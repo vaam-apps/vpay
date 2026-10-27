@@ -1484,6 +1484,10 @@ case; [the flow page](../flows/mcp.md) has the list.
 - **What issues its tokens after VP-4 is undecided.** VP-4 plans to retire the
   OP's token path, which this endpoint is the last user of (ADR-0033, "Left to
   the maintainer" item 4).
+- **How a staff MCP endpoint would authenticate is undecided** (added
+  2026-10-27). ADR-0033 D9 designed it on the staff OP, and #383 (ADR-0036)
+  deleted that OP. D9's staff half and the threat model's staff rows now say
+  so ("Left to the maintainer" item 5).
 
 A new gate, `verify-mcp-parity`, makes `just verify` seventeen gates, after
 #356's `verify-security-inventory`. CI's `self-checks` job runs it too.

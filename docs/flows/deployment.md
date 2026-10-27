@@ -618,6 +618,13 @@ rather than at pull time.
   and is the one that is now true.
 - **Deploy the dashboard.** The chart templates no dashboard workload; see the
   chart README for why.
+- **Serve the merchant MCP endpoint.** `deployment.surfaces` takes `mcp` since
+  2026-10-27 ([#377](https://github.com/vaam-apps/vpay/pull/377),
+  [ADR-0033](../adr/0033-mcp-is-the-primary-agent-surface.md)), and nothing in
+  the chart, its values schema, its NetworkPolicy, its Ingress or compose sets
+  it. `mcp` is not in `EnabledSurfaces::ALL`, so every workload here leaves
+  `/mcp/v1` unmounted. An `<release>-mcp` Deployment is ADR-0033 step 6, not
+  built, and so is its place in the connection-budget guard.
 - **Be pulled from anywhere.** ~~§2 describes a workflow that has never run.
   There is no image at `ghcr.io/vaam-apps/vpay-server`, none at `-worker`,
   none at `-dashboard`, and no signature to verify on any of them. Every
