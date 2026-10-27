@@ -61,7 +61,7 @@ pub use signal::ShutdownSignals;
 /// assert!(!deployment.livemode, "livemode gates no behaviour, but it is a label that must be right");
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, garde::Validate)]
-#[serde(rename_all = "snake_case")]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct Deployment {
     #[garde(length(min = 1))]
     pub name: String,
@@ -1539,6 +1539,25 @@ pub enum ConfigError {
         key: String,
         /// What it was probably meant to be.
         meant: &'static str,
+    },
+
+    /// A merchant registration declares `grant_types` or `allowed_audiences`
+    /// but no `jwks`, while `machine_tokens` is permitted. That is half of an
+    /// OAuth client with nothing to authenticate it: it can mint nothing, and
+    /// it reads as a door that is configured. Refused for the reason a block
+    /// of a method that is off is (ADR-0037 decision 4): dormant configuration
+    /// is how an operator comes to believe a door is open or shut. Add the
+    /// `jwks` or delete the key.
+    #[error(
+        "merchant_clients[{client_id}] declares `{key}` but no `jwks`; the OAuth half of a \
+         registration is all three of `jwks`, `grant_types` and `allowed_audiences` or none. Add \
+         the `jwks`, or delete `{key}` (a `cose_keys` registration needs none of them)"
+    )]
+    MerchantOauthWithoutJwks {
+        /// The registration.
+        client_id: String,
+        /// The key declared without a `jwks`.
+        key: &'static str,
     },
 
     /// A merchant registration with neither `cose_keys` nor `jwks`: no way to

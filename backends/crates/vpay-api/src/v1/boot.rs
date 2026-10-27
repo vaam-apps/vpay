@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use vpay_config::{CallbackVerification, Config, ConfigError, ProviderHost};
+use vpay_config::{AuthMethod, CallbackVerification, Config, ConfigError, ProviderHost};
 use vpay_core::ProviderFlow;
 use vpay_core::error::{Category, Classify};
 use vpay_db::{CurrencySeed, DbError, ProviderSeed, Repositories};
@@ -735,7 +735,37 @@ pub fn load_config(path: Option<&Path>, profile: &str) -> Result<Config, ConfigE
         dashboard_configured = config.dashboard.is_some(),
         "configuration loaded and validated"
     );
+    log_auth_methods(&config)?;
     Ok(config)
+}
+
+/// Says, at `info`, which ways of authenticating this deployment permits
+/// (`auth.methods`, ADR-0037) and whether the key was written.
+///
+/// An absent key permits every method, and an operator who believes they
+/// narrowed the list needs to see that they did not; this line is where that is
+/// visible without reading the YAML back. `permitted` lists method names only
+/// (`keypair`, `machine_tokens`, `hmac_webhooks`, `human_login`), never a key or
+/// a secret. `served` is what `GET /.well-known/vpay-auth` answers.
+///
+/// Called by [`load_config`], which every mode of `vpay-server` boots through.
+///
+/// # Errors
+///
+/// [`ConfigError`] from `Config::auth_methods`; unreachable for a `Config`
+/// that came from a file, since `Config::load` ran the same resolution.
+pub fn log_auth_methods(config: &Config) -> Result<(), ConfigError> {
+    let methods = config.auth_methods()?;
+    let names = |iter: &mut dyn Iterator<Item = AuthMethod>| {
+        iter.map(AuthMethod::as_str).collect::<Vec<_>>().join(",")
+    };
+    tracing::info!(
+        permitted = %names(&mut methods.permitted()),
+        served = %names(&mut methods.served()),
+        explicit = methods.is_explicit(),
+        "authentication methods (auth.methods; an absent key permits every method)"
+    );
+    Ok(())
 }
 
 /// Opens the pool and applies every migration, in that order.
@@ -1268,6 +1298,34 @@ mod tests {
             matches!(error, ConfigError::CallbackSigningSecretMissing { .. }),
             "{error:?}"
         );
+    }
+
+    /// ADR-0037, VPA-1 review: every boot says which methods `auth.methods`
+    /// resolved to, and whether the key was written, so an operator who
+    /// believes they narrowed the list sees that they did (or did not).
+    #[test]
+    fn boot_logs_the_resolved_auth_methods() {
+        let narrowed = crate::test_fixtures::config_with_auth(Some(&["keypair", "hmac_webhooks"]));
+        let (result, log) = crate::test_log::with_captured_log(|| log_auth_methods(&narrowed));
+        result.expect("a legal list resolves");
+        assert!(log.contains("INFO"), "{log}");
+        assert!(log.contains("permitted=keypair,hmac_webhooks"), "{log}");
+        assert!(log.contains("served=keypair,hmac_webhooks"), "{log}");
+        assert!(log.contains("explicit=true"), "{log}");
+        assert!(!log.contains("machine_tokens"), "{log}");
+
+        let absent = crate::test_fixtures::config_with_auth(None);
+        let (result, log) = crate::test_log::with_captured_log(|| log_auth_methods(&absent));
+        result.expect("absent is always legal");
+        assert!(
+            log.contains("permitted=keypair,machine_tokens,hmac_webhooks,human_login"),
+            "{log}"
+        );
+        assert!(
+            log.contains("served=keypair,machine_tokens,hmac_webhooks "),
+            "{log}"
+        );
+        assert!(log.contains("explicit=false"), "{log}");
     }
 
     /// RFC-0014 security review (2026-10-23): while a previous secret is

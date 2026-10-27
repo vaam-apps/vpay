@@ -824,19 +824,21 @@ router.
 Each is a boot refusal with its own `ConfigError` variant and a fixture
 (`tests/fixtures/auth-methods-*.yml`), and each exits `78`.
 
-| Rule                                                                                        | Variant                     |
-| ------------------------------------------------------------------------------------------- | --------------------------- |
-| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key) | `NoAuthMethods`             |
-| a name that is not a method                                                                 | `UnknownAuthMethod`         |
-| a method listed twice                                                                       | `DuplicateAuthMethod`       |
-| `human_login` named explicitly                                                              | `AuthMethodUnavailable`     |
-| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                    | `NoWayIn`                   |
-| `deployment.surfaces` names `mcp` and `machine_tokens` is off                               | `McpNeedsMachineTokens`     |
-| `machine_tokens` named explicitly and no merchant has a `jwks`                              | `AuthMethodNotConfigured`   |
-| a block from the table above, present while its method is off                               | `AuthMethodDisabled`        |
-| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`        | `MerchantGrantTypesMissing` |
-| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it            | `MerchantNoCredential`      |
-| a top-level `auth_methods:`, `auth-methods:`, `authmethods:` or `authentication:`           | `NearMissKey`               |
+| Rule                                                                                                                                | Variant                     |
+| ----------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)                                         | `NoAuthMethods`             |
+| a name that is not a method                                                                                                         | `UnknownAuthMethod`         |
+| a method listed twice                                                                                                               | `DuplicateAuthMethod`       |
+| `human_login` named explicitly                                                                                                      | `AuthMethodUnavailable`     |
+| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                                                            | `NoWayIn`                   |
+| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                                                       | `McpNeedsMachineTokens`     |
+| `machine_tokens` named explicitly and no merchant has a `jwks`                                                                      | `AuthMethodNotConfigured`   |
+| a block from the table above, present while its method is off                                                                       | `AuthMethodDisabled`        |
+| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`                                                | `MerchantGrantTypesMissing` |
+| `machine_tokens` permitted and a registration with `grant_types` or `allowed_audiences` but **no `jwks`** (a dormant OAuth half)    | `MerchantOauthWithoutJwks`  |
+| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                                                    | `MerchantNoCredential`      |
+| a top-level `auth_methods:`, `auth-methods:`, `authmethods:`, `authentication:` or any case variant of those or of `auth` (`Auth:`) | `NearMissKey`               |
+| an `auth:` block (or any other key `deployment` does not read) under `deployment:`                                                  | `Shape` (`unknown field`)   |
 
 - **Permitted is not served.** A method with a block runs where the block is. An
   absent `auth.methods` permits `machine_tokens` and still boots a file whose
@@ -854,11 +856,20 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
   and simply cannot mint or present a token. With `machine_tokens` off the three
   are refused outright (`AuthMethodDisabled`), and `grant_types` defaults to empty
   for that reason. Whatever `grant_types` a registration does write is
-  `[client_credentials]` and nothing else.
+  `[client_credentials]` and nothing else. `grant_types` or `allowed_audiences`
+  **without a `jwks`** is refused too (`MerchantOauthWithoutJwks`): half an OAuth
+  client mints nothing and reads as a configured door, the dormant configuration
+  ADR-0037 decision 4 rules out.
 - **A top-level key near `auth` is refused, not ignored.** `Config` ignores
   unknown top-level keys, which for this one is a fail-open: `auth_methods:
-[keypair]` would be dropped and the deployment would permit all four.
-  `NearMissKey` names the spelling and the real key.
+[keypair]` would be dropped and the deployment would permit all four. The match
+  is case-insensitive, so `Auth:` and `AUTH:` are refused as well (only the exact
+  lowercase `auth` is the key). `NearMissKey` names the spelling and the real key.
+  The same fail-open under `deployment:` is closed by `deny_unknown_fields`: an
+  `auth:` written there is a shape error naming it, not a block that is dropped.
+- **Boot says what it resolved.** Every `vpay-server` mode logs one `info` line,
+  `authentication methods`, with `permitted`, `served` and `explicit` (names only,
+  never a key or a secret), so an operator sees an absent key permitting all four.
 - **`hmac_webhooks` off means no merchant webhooks** until VP-8 adds sealed
   delivery: any `webhooks[]` entry is refused, not only one with `secrets`,
   since an endpoint without a secret was already `WebhookSecretCount`.

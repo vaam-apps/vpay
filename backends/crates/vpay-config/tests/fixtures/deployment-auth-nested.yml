@@ -1,0 +1,20 @@
+# Fixture for `an_auth_block_under_deployment_is_refused_not_ignored`
+# (backends/crates/vpay-config/src/config.rs, ADR-0037, VPA-1).
+#
+# `auth` is a top-level key. Written under `deployment:` it is not read, so the
+# deployment would permit all four methods while its operator believed they had
+# narrowed them. `deployment` denies unknown fields.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+  auth:
+    methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci

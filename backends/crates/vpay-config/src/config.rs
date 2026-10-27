@@ -1535,7 +1535,23 @@ fn validate_merchant_client(
     // The three are required together, and only for a merchant that has a
     // `jwks` (ADR-0037).
     if merchant.jwks.is_none() {
-        return validate_grants(merchant);
+        // ...and a half is not a half-door but dormant configuration, refused
+        // for ADR-0037 decision 4's reason: a registration is the OAuth half
+        // whole or not at all.
+        let dormant = if !merchant.grant_types.is_empty() {
+            Some("grant_types")
+        } else if !merchant.allowed_audiences.is_empty() {
+            Some("allowed_audiences")
+        } else {
+            None
+        };
+        if let Some(key) = dormant {
+            return Err(ConfigError::MerchantOauthWithoutJwks {
+                client_id: merchant.client_id.clone(),
+                key,
+            });
+        }
+        return Ok(());
     }
     if !jwks_has_at_least_one_key(&merchant.jwks) {
         return Err(ConfigError::EmptyMerchantJwks(merchant.client_id.clone()));
@@ -2366,17 +2382,22 @@ const RETIRED_KEYS: [(&str, &str); 2] = [
 ];
 
 /// Top-level keys that are near misses of a real one, and what the real one is.
+/// Matched without regard to case, as is `auth` itself (only the exact lowercase
+/// `auth` is the key).
 ///
 /// `Config` ignores unknown top-level keys, and for `auth.methods` that is a
 /// fail-open: a deployment that wrote `auth_methods: [keypair]` believes it
 /// narrowed the list and permitted all four. Add a spelling here only when it
 /// was or plausibly will be written by someone who meant the real key.
 const NEAR_MISS_KEYS: [(&str, &str); 4] = [
-    ("auth_methods", "auth: {methods: [...]}"),
-    ("auth-methods", "auth: {methods: [...]}"),
-    ("authentication", "auth: {methods: [...]}"),
-    ("authmethods", "auth: {methods: [...]}"),
+    ("auth_methods", AUTH_KEY_MEANT),
+    ("auth-methods", AUTH_KEY_MEANT),
+    ("authentication", AUTH_KEY_MEANT),
+    ("authmethods", AUTH_KEY_MEANT),
 ];
+
+/// What every near miss of `auth` was meant to be.
+const AUTH_KEY_MEANT: &str = "auth: {methods: [...]}";
 
 /// Refuses a document that still carries a retired top-level key.
 ///
@@ -2395,10 +2416,22 @@ fn reject_retired_keys(raw: &figment::value::Value) -> Result<(), ConfigError> {
             });
         }
     }
-    for (key, meant) in NEAR_MISS_KEYS {
-        if document.contains_key(key) {
+    // Case-insensitively: YAML keys are case-sensitive, so `Auth:` is a key
+    // `Config` does not read and would drop, with the same fail-open. The exact
+    // `auth` is the key and is the one spelling that passes.
+    for written in document.keys() {
+        let lowered = written.to_ascii_lowercase();
+        let meant = if lowered == "auth" && written != "auth" {
+            Some(AUTH_KEY_MEANT)
+        } else {
+            NEAR_MISS_KEYS
+                .iter()
+                .find(|(near, _)| *near == lowered)
+                .map(|(_, meant)| *meant)
+        };
+        if let Some(meant) = meant {
             return Err(ConfigError::NearMissKey {
-                key: key.to_owned(),
+                key: written.clone(),
                 meant,
             });
         }
@@ -2982,17 +3015,19 @@ merchant_clients:
 
     /// The OAuth half is required together and only for a merchant that has a
     /// `jwks`: a `jwks` with no `grant_types` is still refused under the default
-    /// (`oauth-merchant-grant-types-missing.yml`), and a grant declared without
-    /// a `jwks` is held to the same single permitted value.
+    /// (`oauth-merchant-grant-types-missing.yml`); `grant_types` or
+    /// `allowed_audiences` without a `jwks` is a dormant half and is refused
+    /// (ADR-0037 decision 4); and a grant declared next to a `jwks` is held to
+    /// the one permitted value.
     #[test]
     fn grant_types_without_a_jwks_are_still_only_client_credentials() {
         let mut config = valid_config();
         let merchant = config.merchant_clients.first_mut().expect("one merchant");
-        merchant.jwks = None;
-        merchant.allowed_audiences.clear();
         merchant.cose_keys = vec![cose_key(COSE_KEY_A, Some("ci"))];
-        merchant.grant_types = vec![crate::oauth::GrantType::ClientCredentials];
-        assert!(config.validate_all(&RawSecrets::default()).is_ok());
+        assert!(
+            config.validate_all(&RawSecrets::default()).is_ok(),
+            "the fixture with its jwks is valid"
+        );
 
         let merchant = config.merchant_clients.first_mut().expect("one merchant");
         merchant.grant_types = vec![crate::oauth::GrantType::AuthorizationCode];
@@ -3000,6 +3035,44 @@ merchant_clients:
             config.validate_all(&RawSecrets::default()),
             Err(ConfigError::DisallowedMerchantGrant { .. })
         ));
+
+        // Without a `jwks` the same declarations are dormant, not a grant to check.
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.jwks = None;
+        merchant.allowed_audiences.clear();
+        merchant.grant_types = vec![crate::oauth::GrantType::ClientCredentials];
+        assert_eq!(
+            config.validate_all(&RawSecrets::default()).err(),
+            Some(ConfigError::MerchantOauthWithoutJwks {
+                client_id: "acme-cameroon".to_owned(),
+                key: "grant_types",
+            })
+        );
+    }
+
+    /// A dormant OAuth half is refused: `grant_types` or `allowed_audiences`
+    /// with no `jwks` while tokens are permitted configures a door nothing can
+    /// open, which is how an operator comes to believe it is shut or open.
+    #[test]
+    fn an_oauth_half_without_a_jwks_is_refused() {
+        for (fixture, key) in [
+            ("auth-methods-grant-types-without-jwks.yml", "grant_types"),
+            (
+                "auth-methods-audiences-without-jwks.yml",
+                "allowed_audiences",
+            ),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert_eq!(
+                err,
+                ConfigError::MerchantOauthWithoutJwks {
+                    client_id: "acme-cameroon".to_owned(),
+                    key,
+                },
+                "{fixture}"
+            );
+            assert_eq!(vpay_core::Classify::category(&err).exit_code(), 78);
+        }
     }
 
     /// `Config` ignores unknown top-level keys, so `auth_methods:` or
@@ -3018,6 +3091,64 @@ merchant_clients:
             );
             assert!(err.to_string().contains("auth: {methods:"), "{err}");
         }
+    }
+
+    /// YAML keys are case-sensitive, so `Auth:` is a key `Config` does not read
+    /// and would drop: the same fail-open as `auth_methods:`. Every case
+    /// variant of `auth`, and of each spelling in `NEAR_MISS_KEYS`, is refused;
+    /// the exact `auth` is the key and stays valid.
+    #[test]
+    fn a_case_variant_of_the_auth_key_is_refused_not_ignored() {
+        let err = load_fixture("near-miss-key-auth-capitalised.yml").expect_err("`Auth:`");
+        assert!(
+            matches!(&err, ConfigError::NearMissKey { key, .. } if key == "Auth"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("auth: {methods:"), "{err}");
+
+        for key in [
+            "AUTH",
+            "aUTH",
+            "Auth_Methods",
+            "AUTH-METHODS",
+            "Authentication",
+            "AuthMethods",
+        ] {
+            let raw: figment::value::Value = figment::Figment::from(
+                figment::providers::Yaml::string(&format!("{key}:\n  methods: [keypair]\n")),
+            )
+            .extract()
+            .expect("a document");
+            assert!(
+                matches!(
+                    reject_retired_keys(&raw),
+                    Err(ConfigError::NearMissKey { key: ref k, .. }) if k == key
+                ),
+                "{key}"
+            );
+        }
+
+        let exact: figment::value::Value = figment::Figment::from(
+            figment::providers::Yaml::string("auth:\n  methods: [keypair]\n"),
+        )
+        .extract()
+        .expect("a document");
+        assert!(
+            reject_retired_keys(&exact).is_ok(),
+            "the exact key is the key"
+        );
+    }
+
+    /// `auth` is a top-level key. Under `deployment:` it would be dropped and
+    /// the deployment would permit all four methods, so `deployment` denies
+    /// unknown fields and the shape error names the key.
+    #[test]
+    fn an_auth_block_under_deployment_is_refused_not_ignored() {
+        let err = load_fixture("deployment-auth-nested.yml").expect_err("auth under deployment");
+        assert!(
+            matches!(&err, ConfigError::Shape(m) if m.contains("unknown field `auth`")),
+            "{err:?}"
+        );
     }
 
     /// A misspelt key under `auth:` must not be dropped: a deployment that
