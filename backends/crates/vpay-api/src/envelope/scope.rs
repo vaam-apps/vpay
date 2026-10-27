@@ -29,6 +29,7 @@
 //! | a [`VerifiedSigner`] **and** an `Authorization` header | `400`, sealed |
 //! | no [`VerifiedSigner`], no `Authorization`, `machine_tokens` permitted | `401` `missing_bearer_token`, plain |
 //! | no [`VerifiedSigner`], a token that does not validate | `401` `invalid_token`, plain; `503` when the JWKS cannot be read |
+//! | no [`VerifiedSigner`], a valid token whose client is switched off in `disabled_clients` | `401` `invalid_token`, plain; the database's own error if the lookup fails |
 //! | no [`VerifiedSigner`], a valid token naming no registered client | `403` `forbidden`, plain |
 //! | a valid token whose scopes carry none the method needs | `403` `forbidden`, plain |
 //!
@@ -73,7 +74,7 @@ use cratestack_core::VerifiedSigner;
 
 use crate::ApiError;
 use crate::merchant_keys::MerchantKeyResolver;
-use crate::resource_auth::{JwtValidator, extract_bearer_token};
+use crate::resource_auth::{AuthRejection, JwtValidator, extract_bearer_token};
 use crate::v1::{MerchantScope, ResourceConfig, required_scopes};
 
 /// The `auth.method` span field's two values on `/v1` (ADR-0037, tracing
@@ -208,6 +209,17 @@ async fn token_scope(
         },
         Err(rejection) => return ApiError::from(rejection).into_response(),
     };
+
+    // The kill switch, on the same footing as the signed path's: a token minted
+    // before `disable_client` is otherwise good until it expires. A lookup that
+    // fails is an error, not a miss. The refusal is the signed path's
+    // too, a credential that is no longer anyone's (`401`, not `403`: the
+    // registration is switched off, not absent).
+    match state.merchants.is_disabled(&claims.subject).await {
+        Ok(false) => {}
+        Ok(true) => return ApiError::from(AuthRejection::InvalidToken).into_response(),
+        Err(error) => return ApiError::from(error).into_response(),
+    }
 
     let Some(merchant_id) = state.resource_config.merchant_id_for(&claims.subject) else {
         tracing::warn!(

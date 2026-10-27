@@ -32,6 +32,7 @@ use vpay_db::Repositories;
 
 use crate::RouterDeps;
 use crate::envelope::{EnvelopeKeys, ManagementEnvelope, V1Envelope};
+use crate::merchant_keys::{MerchantKeyRegistry, MerchantKeyResolver};
 use crate::op::MerchantOp;
 use crate::op::keys::LoadedSigningKey;
 
@@ -249,11 +250,60 @@ pub(crate) fn v1_envelope(config: &Config) -> V1Envelope {
     }
 }
 
-/// [`v1_envelope`] whose bearer-token validator fetches `jwks_url`.
+/// [`v1_envelope`] whose bearer-token validator fetches `jwks_url`, over a
+/// kill switch that switches nobody off.
+///
+/// The kill switch is in memory because a token caller is checked against
+/// `disabled_clients` (ADR-0037), and over the lazy pool every such lookup
+/// would be a refused connection instead of an answer.
 pub(crate) fn v1_envelope_with_tokens(config: &Config, jwks_url: &str) -> V1Envelope {
-    V1Envelope::new(config, &fixture_keys(), lazy_repositories())
+    let merchants = Arc::new(MerchantKeyResolver::new(
+        Arc::new(
+            MerchantKeyRegistry::from_config(config)
+                .expect("the fixture's merchants project onto a key registry"),
+        ),
+        Arc::new(MemoryKillSwitch::disabling(&[])),
+    ));
+    V1Envelope::with_resolver(config, &fixture_keys(), lazy_repositories(), merchants)
         .expect("the fixture's merchants project onto a key registry")
         .with_machine_tokens(token_validator(jwks_url))
+}
+
+/// The `disabled_clients` kill switch held in memory: a fake of the *port*
+/// ([`vpay_db::DisabledClients`]), in a `#[cfg(test)]` module, reachable from no
+/// shipping graph (`verify-no-mocks`). The real table's behaviour is proven
+/// against Postgres in `vpay-db`'s suite and `merchant_token_flow.rs`.
+pub(crate) struct MemoryKillSwitch(std::sync::Mutex<std::collections::HashSet<String>>);
+
+impl MemoryKillSwitch {
+    pub(crate) fn disabling(client_ids: &[&str]) -> Self {
+        Self(std::sync::Mutex::new(
+            client_ids.iter().map(|id| (*id).to_owned()).collect(),
+        ))
+    }
+}
+
+#[async_trait::async_trait]
+impl vpay_db::DisabledClients for MemoryKillSwitch {
+    async fn is_client_disabled(&self, client_id: &str) -> Result<bool, vpay_db::DbError> {
+        Ok(self.0.lock().is_ok_and(|set| set.contains(client_id)))
+    }
+    async fn disable_client(
+        &self,
+        client_id: &str,
+        _: Option<&str>,
+    ) -> Result<(), vpay_db::DbError> {
+        if let Ok(mut set) = self.0.lock() {
+            set.insert(client_id.to_owned());
+        }
+        Ok(())
+    }
+    async fn enable_client(&self, client_id: &str) -> Result<(), vpay_db::DbError> {
+        if let Ok(mut set) = self.0.lock() {
+            set.remove(client_id);
+        }
+        Ok(())
+    }
 }
 
 /// The issuer every fixture token carries (`iss`) and the validator requires.

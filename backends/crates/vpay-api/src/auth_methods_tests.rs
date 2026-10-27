@@ -25,7 +25,6 @@ use cratestack_core::{CratestackError, NonceStore, VerifiedSigner};
 use serde_json::{Value, json};
 use tower::ServiceExt as _;
 use vpay_config::{AuthMethod, Config, MERCHANT_AUDIENCE};
-use vpay_db::{DbError, DisabledClients};
 
 use crate::envelope::scope::{ScopeState, merchant_scope};
 use crate::envelope::{SurfaceMode, V1Envelope};
@@ -33,8 +32,8 @@ use crate::merchant_keys::{MerchantKeyRegistry, MerchantKeyResolver};
 use crate::router;
 use crate::test_fixtures::tokens::{generate_keypair, jwks_server, mint_token, v1_claims};
 use crate::test_fixtures::{
-    PUBLIC_BASE_URL, config_with_auth, deps_over, deps_with_auth, fixture_keys, lazy_repositories,
-    token_validator, v1_envelope_with_tokens,
+    MemoryKillSwitch, PUBLIC_BASE_URL, config_with_auth, deps_over, deps_with_auth, fixture_keys,
+    lazy_repositories, token_validator, v1_envelope_with_tokens,
 };
 use crate::test_log::{CapturedLog, captured_log_subscriber};
 
@@ -481,21 +480,6 @@ async fn tokens_permitted_but_no_validator_wired_refuses_everything() {
 
 // ------------------------------------------------------------- the scope step --
 
-struct NobodyDisabled;
-
-#[async_trait]
-impl DisabledClients for NobodyDisabled {
-    async fn is_client_disabled(&self, _: &str) -> Result<bool, DbError> {
-        Ok(false)
-    }
-    async fn disable_client(&self, _: &str, _: Option<&str>) -> Result<(), DbError> {
-        Ok(())
-    }
-    async fn enable_client(&self, _: &str) -> Result<(), DbError> {
-        Ok(())
-    }
-}
-
 #[derive(Default)]
 struct MemoryNonces(Mutex<HashSet<String>>);
 
@@ -538,7 +522,7 @@ fn config_with_merchant_key(methods: &[&str]) -> Config {
 fn merchants_for(config: &Config) -> Arc<MerchantKeyResolver> {
     Arc::new(MerchantKeyResolver::new(
         Arc::new(MerchantKeyRegistry::from_config(config).expect("the keys parse")),
-        Arc::new(NobodyDisabled),
+        Arc::new(MemoryKillSwitch::disabling(&[])),
     ))
 }
 
@@ -608,6 +592,91 @@ async fn a_signature_and_a_bearer_together_are_a_400() {
         signed_only.status(),
         StatusCode::OK,
         "the control: the same signer, no header, resolves through the key registry"
+    );
+}
+
+/// The scope step over a real token and a real JWKS, with a kill switch the
+/// test controls (`None` is a database that cannot answer).
+fn token_scope_app(
+    config: &Config,
+    jwks_url: &str,
+    switch: Option<Arc<MemoryKillSwitch>>,
+) -> Router {
+    let registry = Arc::new(MerchantKeyRegistry::from_config(config).expect("the keys parse"));
+    let merchants = match switch {
+        Some(switch) => Arc::new(MerchantKeyResolver::new(registry, switch)),
+        None => Arc::new(MerchantKeyResolver::new(registry, lazy_repositories())),
+    };
+    let state = ScopeState {
+        merchants,
+        machine_tokens: true,
+        validator: Some(token_validator(jwks_url)),
+        resource_config: Arc::new(crate::ResourceConfig::from_config(config).expect("projects")),
+    };
+    Router::new()
+        .route("/probe", get(ok_handler))
+        .route_layer(from_fn_with_state(state, merchant_scope))
+}
+
+/// `disable_client` reaches a bearer caller as it reaches a signer: a token
+/// minted before the switch flipped is good until it expires otherwise. The
+/// control row proves the same token is admitted while the client is enabled,
+/// and a kill switch that cannot answer is an error, never "not disabled".
+#[tokio::test]
+async fn a_token_for_a_disabled_client_is_refused_and_an_unanswerable_switch_is_an_error() {
+    let (encoding_key, jwk) = generate_keypair("tok-1");
+    let jwks = jwks_server(&jwk).await;
+    let url = format!("{}/jwks.json", jwks.uri());
+    let token = mint_token(
+        &encoding_key,
+        "tok-1",
+        &v1_claims(CLIENT_ID, "payments:write"),
+    );
+    let config = config_with_auth(Some(BOTH));
+    let header = bearer(&token);
+    let headers = [("authorization", header.as_str())];
+
+    let enabled = send(
+        token_scope_app(
+            &config,
+            &url,
+            Some(Arc::new(MemoryKillSwitch::disabling(&[]))),
+        ),
+        "GET",
+        "/probe",
+        &headers,
+    )
+    .await;
+    assert_eq!(enabled.status(), StatusCode::OK, "the control");
+
+    let disabled = send(
+        token_scope_app(
+            &config,
+            &url,
+            Some(Arc::new(MemoryKillSwitch::disabling(&[CLIENT_ID]))),
+        ),
+        "GET",
+        "/probe",
+        &headers,
+    )
+    .await;
+    assert_eq!(disabled.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(
+        error_code(&json_of(disabled).await).map(str::to_owned),
+        Some("invalid_token".to_owned())
+    );
+
+    let unanswerable = send(
+        token_scope_app(&config, &url, None),
+        "GET",
+        "/probe",
+        &headers,
+    )
+    .await;
+    assert_ne!(
+        unanswerable.status(),
+        StatusCode::OK,
+        "a database outage must not be a revocation bypass"
     );
 }
 
