@@ -132,6 +132,36 @@ was never held to the YAML. The router fixture for token cases now registers
 both scopes, and `only_a_token_addressed_to_v1_is_accepted_on_v1` (integration)
 mints the registration's own `payments:write` for its audience-only case.
 
+## Review follow-ups: a misplaced `auth`, a bare `methods`
+
+Four findings from the final review of #384. Each guard was broken in the source,
+its named test seen to fail, and the source restored with `git checkout` (the
+logs are kept outside the repository). The red run before the implementation
+failed five tests, and the shipped-configuration test passed trivially, as
+intended: it is the one that must stay green.
+
+| #   | Finding                                                                                                                                              | What it became                                                                                                                                                                              | The guard that failed when broken (sabotage name)                                                                                                                                                                                                                                                                                                                                                     |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | an `auth:` under `checkout`, `webhooks[]`, `dashboard`, `providers[]` or `merchant_clients[]` was dropped, and `explicit=false` was only a boot line | `reject_retired_keys` walks the merged document; any key `auth`, in any case, below the top level is `MisplacedAuthKey { path }`; arrays count as a level; two fixtures and an inline table | walk not called (`s1-walk-not-called`): three tests fail. Match case-sensitive (`s2-auth-match-case-sensitive`): `the_misplaced_auth_walk_names_the_path_and_spares_what_is_not_a_key`. Arrays not descended (`s3-arrays-not-descended`): `a_misplaced_auth_key_is_refused_at_any_depth` and the same walk test. The top-level `auth` refused too (`s4-top-level-auth-refused-too`): eight tests fail |
+| 2   | ADR-0037 Consequences left out that vaam's key must be registered                                                                                    | the sentence adds "after registering its Ed25519 key under `cose_keys`"                                                                                                                     | docs only                                                                                                                                                                                                                                                                                                                                                                                             |
+| 3   | the `MerchantOauthWithoutJwks` comment read as if it relied on rule order                                                                            | the check is handed `machine_tokens` and has no verdict when it is off, so it never relied on order; the doc comment says so and a test pins it                                             | early return on `!machine_tokens` removed (`s6-merchant-rule-ignores-machine-tokens`): `the_dormant_oauth_half_rule_does_not_depend_on_the_method_rules_running_first`                                                                                                                                                                                                                                |
+| 4   | a top-level `methods: [keypair]`, its `auth:` parent forgotten, was dropped                                                                          | `methods` joins `NEAR_MISS_KEYS`; a fixture, and `Methods` and `METHODS` in the case-variant loop                                                                                           | entry removed (`s5-methods-not-a-near-miss`): `a_near_miss_of_the_auth_key_is_refused_not_ignored` and `a_case_variant_of_the_auth_key_is_refused_not_ignored`. Near-miss match case-sensitive (`s7-near-miss-case-sensitive`): the case-variant test                                                                                                                                                 |
+
+**The `deployment.auth` test changed, not its guard.** The walk now names
+`deployment.auth` before `deployment`'s `deny_unknown_fields` is asked, so
+`an_auth_block_under_deployment_is_refused_not_ignored` expects
+`MisplacedAuthKey`. `deny_unknown_fields` stays for every other stray key.
+
+**Every shipped configuration was checked for a legitimate nested `auth`, and
+none has one:** `config/*.yml`, `.e2e/application-demo.yml`, every fixture, the
+helm `ci/` values and chart defaults, the `justfile`'s generated demo overlay
+(its `auth:` is top level), and vaam's `deploy/values/vpay.{demo,live}.yaml`
+overlays (parsed as YAML, strings that hold a config document included). The
+only `auth` keys found below a top level are `schemas/security-inventory.yaml`'s
+own, which is not a vpay configuration, and the one `deployment-auth-nested.yml`
+fixture this change is about. `no_shipped_configuration_carries_a_nested_auth_key`
+keeps the repository's own files that way.
+
 ## What this does not prove
 
 - That a signed and a token request of one merchant share an idempotency key
