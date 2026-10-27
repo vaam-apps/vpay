@@ -2032,10 +2032,11 @@ check-schema:
     # Added 2026-10-26 with the package; see `gen-dash-client` for the flags.
     #
     # Against a COPY without `node_modules/`, not the package itself, and
-    # that is a measured upstream bug rather than caution: cratestack
-    # 0.15.0's (and 0.16.0's) drift walker follows pnpm's `node_modules/decimal.js` symlink, asks
-    # `git check-ignore` about the files beyond it, gets "fatal: pathspec ...
-    # is beyond a symbolic link" (exit 128), and `drift.rs`'s `git_ignored`
+    # that is a measured upstream bug rather than caution (cratestack#1235):
+    # cratestack 0.15.0's and 0.16.0's drift walker follows pnpm's
+    # `node_modules/decimal.js` symlink, asks `git check-ignore` about the
+    # files beyond it, gets "fatal: pathspec ... is beyond a symbolic link"
+    # (exit 128), and `drift.rs`'s `git_ignored`
     # reads any non-zero exit as "nothing is ignored" — so six files of
     # `decimal.js` reported as drift on a checkout with nothing stale in it.
     # The copy keeps the check's meaning, including the stale-file arm for
