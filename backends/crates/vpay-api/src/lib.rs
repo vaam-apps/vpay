@@ -40,10 +40,14 @@
 //! (VP-3) — and, since VP-6a, in front of the management surface: `/dash/v1`
 //! (a person's P-256 console key) and `/svc/v1` ([`svc`], a registered service's
 //! key). See [`router`]'s "Route tree" section for exactly which paths sit inside
-//! and outside it. `/dash/v1` and `/svc/v1` are mounted on a deployment that
-//! configured a `dashboard:` and enabled the `management` surface
-//! (ADR-0022's `deployment.surfaces`); one that did not gets the honest 404 an
-//! unmounted route gives, not a panic. Integration suites exercise them against a
+//! and outside it. `/dash/v1` is mounted on a deployment that configured a
+//! `dashboard:` and enabled the `management` surface (ADR-0022's
+//! `deployment.surfaces`); `/svc/v1` on one that configured a `dashboard:` and
+//! enabled the **`business`** surface, because its caller is a service like a
+//! merchant (vaam, at the one in-cluster origin it already dials), not a person's
+//! browser (ADR-0036 § "Which surface `/svc/v1` is on"). A deployment with no
+//! `dashboard:` mounts neither and gets the honest 404 an unmounted route
+//! gives, not a panic. Integration suites exercise them against a
 //! real Postgres: `dashboard_read_surface.rs`, `dashboard_procedure_transport.rs`
 //! and `console_pairing.rs`. None of this runs on any live deployment yet — see
 //! `docs/status.md`.
@@ -329,10 +333,10 @@ pub struct RouterDeps {
     /// `/svc/v1`, and the resolver that turns a service's key into its
     /// capabilities.
     ///
-    /// `Option` for [`Self::v1_envelope`]'s reason: a process that does not mount
-    /// the management surface has no use for the response key and `vpay-server`
-    /// does not load it there. **A process that mounts `/dash/v1` and has `None`
-    /// here answers every request to it with a `500`** (the nest is mounted, and
+    /// `Option` for [`Self::v1_envelope`]'s reason: a process that mounts none
+    /// of these nests has no use for the response key and `vpay-server` does not
+    /// load it there. **A process that mounts `/dash/v1` or `/svc/v1` and has
+    /// `None` here answers every request to it with a `500`** (the nest is mounted, and
     /// says plainly that it cannot serve) rather than serving unsigned or not at
     /// all; `vpay-server` cannot produce that combination, so the arm exists for
     /// a router assembled by some other caller.
@@ -1107,23 +1111,30 @@ pub fn router(deps: RouterDeps) -> Router {
         // code would otherwise get to choose.
         .layer(from_fn(track_http_metrics));
 
-    // The management surface (VP-6a): `/dash/v1` (the console's reads),
-    // CrateStack's procedure transport under it, and `/svc/v1` (what a registered
-    // service calls). A deployment with no `dashboard:` mounts none of them, so
-    // every `/dash/v1/...` and `/svc/v1/...` path falls through to the outer
-    // honest 404 — the fail-closed reading of an absent registration. The
-    // alternative, a mounted nest whose layers refuse everything, answers 401 to
-    // a caller and invites them to go looking for a credential that this
-    // deployment could never issue.
+    // The console (VP-6a): `/dash/v1` (the console's reads), CrateStack's
+    // procedure transport under it, and `/svc/v1` (what a registered service
+    // calls). A deployment with no `dashboard:` mounts none of them, so every
+    // `/dash/v1/...` and `/svc/v1/...` path falls through to the outer honest
+    // 404 — the fail-closed reading of an absent registration. The alternative, a
+    // mounted nest whose layers refuse everything, answers 401 to a caller and
+    // invites them to go looking for a credential that this deployment could
+    // never issue.
     //
-    // ADR-0022 adds the surface condition: a process whose
-    // `deployment.surfaces` does not include `management` mounts nothing here
-    // regardless of `dashboard`, so an operator can run a business-only replica
-    // against a config file that still names a dashboard (e.g. shared between the
-    // `-server` and `-management` Deployments).
-    let dash_is_configured = surfaces.management && state.resource_config.dashboard().is_some();
-    let management =
-        dash_is_configured.then(|| management_nests(&state, deps.management_envelope.as_ref()));
+    // ADR-0022 adds the surface condition, and `/svc/v1` and `/dash/v1` take
+    // different halves of it. `/dash/v1` is the management surface: a process
+    // whose `deployment.surfaces` does not include `management` mounts none of it,
+    // so an operator can run a business-only replica against a config file that
+    // still names a dashboard (e.g. shared between `-server` and `-management`).
+    // `/svc/v1` is the business surface's: its caller is a registered service
+    // (vaam), like a merchant on `/v1`, and the split topology routes services to
+    // the business Service (`http://vpay:8080` in-cluster), not to the tier a
+    // person's browser reaches. A `surfaces: [management]` process therefore
+    // answers 404 on `/svc/v1` (ADR-0036 § "Which surface `/svc/v1` is on").
+    let console_is_configured = state.resource_config.dashboard().is_some();
+    let serves_dash = surfaces.management && console_is_configured;
+    let serves_svc = surfaces.business && console_is_configured;
+    let management = (serves_dash || serves_svc)
+        .then(|| management_nests(&state, deps.management_envelope.as_ref()));
 
     let router = Router::new()
         .route("/healthz", get(healthz))
@@ -1158,15 +1169,26 @@ pub fn router(deps: RouterDeps) -> Router {
             dash,
             procedures,
             svc,
-        }) => router
-            .nest(DASH_NEST, dash)
-            // `nest_service`, not `nest`: `procedures` is already `Router<()>`
-            // (CrateStack's generated `procedure_router` calls its own
-            // `.with_state(..)` over its own state, never `AppState`), and
-            // `nest_service` is the one combinator that does not require its
-            // argument to share this router's state type.
-            .nest_service(DASH_NEST, procedures)
-            .nest(SVC_NEST, svc),
+        }) => {
+            let router = if serves_dash {
+                router
+                    .nest(DASH_NEST, dash)
+                    // `nest_service`, not `nest`: `procedures` is already
+                    // `Router<()>` (CrateStack's generated `procedure_router`
+                    // calls its own `.with_state(..)` over its own state, never
+                    // `AppState`), and `nest_service` is the one combinator that
+                    // does not require its argument to share this router's state
+                    // type.
+                    .nest_service(DASH_NEST, procedures)
+            } else {
+                router
+            };
+            if serves_svc {
+                router.nest(SVC_NEST, svc)
+            } else {
+                router
+            }
+        }
         None => router,
     };
 
@@ -1522,6 +1544,37 @@ mod tests {
     #[tokio::test]
     async fn unknown_routes_still_get_the_honest_404() {
         assert_eq!(get(UNROUTED_PATH).await.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// R4: the console is optional. The fixture config carries no `dashboard:`
+    /// (what the shipped base file now means), and every path of the three
+    /// management nests is then the honest `404` — not the layer's `401`, which
+    /// would invite a caller to look for a credential this deployment can never
+    /// issue.
+    #[tokio::test]
+    async fn a_deployment_with_no_dashboard_block_serves_no_console_at_all() {
+        for route in DASH_ROUTES {
+            let path = format!("{DASH_NEST}{}", route.path.replace("{id}", "pi_anything"));
+            assert_eq!(
+                get(&path).await.status(),
+                StatusCode::NOT_FOUND,
+                "{path} must 404 with no `dashboard:` configured"
+            );
+        }
+        for route in svc::SVC_ROUTES {
+            for method in route.methods {
+                let path = format!(
+                    "{}{}",
+                    svc::SVC_NEST,
+                    route.path.replace("{thumbprint}", "anything")
+                );
+                assert_eq!(
+                    request(method, &path, &[]).await.status(),
+                    StatusCode::NOT_FOUND,
+                    "{method} {path} must 404 with no `dashboard:` configured"
+                );
+            }
+        }
     }
 
     /// The security boundary, asserted from the outside, over the table the
@@ -2493,7 +2546,7 @@ mod tests {
         use tower::ServiceExt as _;
 
         use crate::test_fixtures::deps_with_surfaces;
-        use crate::{DASH_NEST, DASH_ROUTES, V1_ROUTES, router};
+        use crate::{DASH_NEST, DASH_ROUTES, SVC_NEST, SVC_ROUTES, V1_ROUTES, router};
 
         async fn status_of(app: &Router, uri: &str) -> StatusCode {
             status_of_as(app, "GET", uri).await
@@ -2511,6 +2564,11 @@ mod tests {
                 .await
                 .expect("router does not fail to serve")
                 .status()
+        }
+
+        /// The path of an `/svc/v1` route with its placeholder filled.
+        fn svc_path(path: &str) -> String {
+            format!("{SVC_NEST}{}", path.replace("{thumbprint}", "anything"))
         }
 
         /// `surfaces: [management]` — every `/v1` route is unmounted (404),
@@ -2544,6 +2602,21 @@ mod tests {
                      [management]; got {status}"
                 );
             }
+
+            // `/svc/v1` is the business surface's (ADR-0036): a management-only
+            // process mounts none of it, signed or not.
+            for route in SVC_ROUTES {
+                for method in route.methods {
+                    let path = svc_path(route.path);
+                    let status = status_of_as(&app, method, &path).await;
+                    assert_eq!(
+                        status,
+                        StatusCode::NOT_FOUND,
+                        "{method} {path} must 404 when deployment.surfaces = [management]; \
+                         got {status}"
+                    );
+                }
+            }
         }
 
         /// `surfaces: [business]` — the mirror image: `/dash/v1` is
@@ -2574,6 +2647,22 @@ mod tests {
                         status,
                         StatusCode::UNAUTHORIZED,
                         "{method} {path} must still answer 401 to an unsigned request when \
+                         deployment.surfaces = [business]; got {status}"
+                    );
+                }
+            }
+
+            // And `/svc/v1` is mounted here, which is the whole of the split
+            // topology's answer for the service that pairs console keys: it
+            // dials the business Service, whose origin it already knows.
+            for route in SVC_ROUTES {
+                for method in route.methods {
+                    let path = svc_path(route.path);
+                    let status = status_of_as(&app, method, &path).await;
+                    assert_eq!(
+                        status,
+                        StatusCode::UNAUTHORIZED,
+                        "{method} {path} must be mounted (401 to an unsigned request) when \
                          deployment.surfaces = [business]; got {status}"
                     );
                 }
@@ -2611,6 +2700,19 @@ mod tests {
                     "{path} must answer (401 without a token) when deployment.surfaces is \
                      absent; got {status}"
                 );
+            }
+
+            for route in SVC_ROUTES {
+                for method in route.methods {
+                    let path = svc_path(route.path);
+                    let status = status_of_as(&app, method, &path).await;
+                    assert_eq!(
+                        status,
+                        StatusCode::UNAUTHORIZED,
+                        "{method} {path} must answer (401 to an unsigned request) when \
+                         deployment.surfaces is absent; got {status}"
+                    );
+                }
             }
         }
 

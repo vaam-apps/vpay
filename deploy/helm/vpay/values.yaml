@@ -1080,6 +1080,35 @@ networkPolicy:
     # exists so that an operator who has made that decision can express it;
     # the guard exists so that nobody makes it by accident.
     namespaceSelector: {}
+  # Who else may reach `-server`'s traffic port besides the ingress controller:
+  # the SERVICES that call `/svc/v1` (VP-6a, ADR-0036) — vaam, pairing a
+  # person's console key.
+  #
+  # `/svc/v1` is on the business surface, so a split release (`management.enabled`)
+  # serves it from `-server`, behind the same `vpay` Service as `/v1`, and vaam
+  # keeps the one in-cluster origin it already dials (`http://vpay:8080`). It is
+  # NOT routed by the HTTPRoute or the Ingress: a service reaches it inside the
+  # cluster, and nothing public has a use for it. What default-deny does
+  # block is that in-cluster caller, because `-server` admits the ingress
+  # controller's namespace and nothing else. Each entry here is a standard
+  # NetworkPolicy peer, rendered verbatim into `-server`'s ingress rule (the same
+  # port), so a caller in another namespace is a `namespaceSelector` and
+  # `podSelector` in ONE peer (ANDed: those pods, in that namespace):
+  #
+  #   peers:
+  #     - namespaceSelector:
+  #         matchLabels:
+  #           kubernetes.io/metadata.name: vaam
+  #       podSelector:
+  #         matchLabels:
+  #           app.kubernetes.io/name: vaam-api
+  #
+  # `[]` (the default) renders no such peer. A peer that selects everything (an
+  # empty `podSelector` or `namespaceSelector` and no `ipBlock`) is refused by the
+  # "networkpolicy-service-ingress" guard: it would admit every pod in the
+  # namespace, or in the cluster, to `/svc/v1`'s signed transport.
+  serviceIngress:
+    peers: []
   database:
     # Where Postgres is. Set exactly one shape:
     #   cidrs: ["10.0.4.7/32"]            — a managed instance's address

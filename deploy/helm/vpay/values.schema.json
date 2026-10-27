@@ -591,6 +591,17 @@
             }
           }
         },
+        "serviceIngress": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "peers": {
+              "description": "NetworkPolicy ingress peers admitted to the -server traffic port besides the ingress controller: the services that call /svc/v1 (vaam). Rendered verbatim. See the networkpolicy-service-ingress guard.",
+              "type": "array",
+              "items": { "type": "object" }
+            }
+          }
+        },
         "database": {
           "type": "object",
           "additionalProperties": false,

@@ -3381,7 +3381,7 @@ wrapper := "deploy/helm/fixtures/wrapper"
 # twenty-three and `ci/guards/` already held twenty-three files. The list is
 # the gate — it is compared against the directory on every run — so the count
 # in this sentence was decoration that had gone stale, not a check that had
-# been weakened. It is twenty-four now, and four value sets: `ci/values-
+# been weakened. It is twenty-five now (with "networkpolicy-service-ingress"), and four value sets: `ci/values-
 # route-networkpolicy.yaml` is the fourth, and it exists because the Gateway
 # API half and the NetworkPolicy half were each covered while the COMBINATION
 # of them was not.
@@ -3456,6 +3456,7 @@ helm-check:
         networkpolicy-database
         networkpolicy-management-ingress
         networkpolicy-management-route
+        networkpolicy-service-ingress
         observability-port
         overlay-empty
         pdb-minavailable
@@ -3603,6 +3604,39 @@ helm-check:
     fi
     echo "    ServiceMonitors: server, worker, management (not dashboard — it exports no metrics)"
     echo "    default: no -management or -dashboard object, no HPA; ci/values-full.yaml: both Deployments + Services, HPA"
+
+    # `/svc/v1` (VP-6a, ADR-0036) is the business surface's: the service that
+    # pairs console keys dials the `vpay` Service it already dials for nothing
+    # else (`http://vpay:8080`), so a split release must (a) let that caller past
+    # `-server`'s default-deny policy, (b) NOT admit it to `-management`, and (c)
+    # publish `/svc/v1` at no Gateway or Ingress — a service reaches it inside
+    # the cluster. An absence and a presence a `fail` guard cannot assert, so the
+    # rendered yaml is read. Before this the split release served `/svc/v1` from
+    # nowhere a caller could reach: `-server` mounted none of it and
+    # `-management` admitted only the dashboard.
+    echo "==> /svc/v1: reachable on -server, not on -management, published to nothing"
+    np="$(helm template vpay "$chart" -f "$chart/ci/values-full.yaml" --show-only templates/networkpolicy.yaml)"
+    server_np="$(printf '%s\n' "$np" | sed -n '/^  name: vpay-server$/,/^---$/p')"
+    management_np="$(printf '%s\n' "$np" | sed -n '/^  name: vpay-management$/,/^---$/p')"
+    printf '%s' "$server_np" | grep -q 'app.kubernetes.io/name: vaam-api' \
+        || { echo "helm-check: FAIL — ci/values-full.yaml sets networkPolicy.serviceIngress.peers but the -server NetworkPolicy admits no such peer; the service that calls /svc/v1 would be dropped by the CNI" >&2; exit 1; }
+    if printf '%s' "$management_np" | grep -q 'app.kubernetes.io/name: vaam-api'; then
+        echo "helm-check: FAIL — the -management NetworkPolicy admits the /svc/v1 caller; /svc/v1 is on -server, and the management tier admits the dashboard alone" >&2
+        exit 1
+    fi
+    for values in values-route.yaml values-route-networkpolicy.yaml; do
+        published="$(helm template vpay "$chart" -f "$chart/ci/$values" --api-versions gateway.networking.k8s.io/v1 --show-only templates/httproute.yaml)"
+        if printf '%s' "$published" | grep -q '/svc'; then
+            echo "helm-check: FAIL — ci/$values publishes /svc/v1 at the Gateway; it is a service-to-service route and has no business on a public listener" >&2
+            exit 1
+        fi
+    done
+    ingress_paths="$(helm template vpay "$chart" -f "$chart/ci/values-full.yaml" --show-only templates/ingress.yaml)"
+    if printf '%s' "$ingress_paths" | grep -q '/svc'; then
+        echo "helm-check: FAIL — ci/values-full.yaml publishes /svc/v1 on the Ingress; it is a service-to-service route and has no business on a public listener" >&2
+        exit 1
+    fi
+    echo "    -server admits the /svc/v1 caller; -management does not; no HTTPRoute or Ingress carries /svc"
 
     # ADR-0009 assumes a rate limit exists in front of the token endpoint.
     # This is the only thing in the repository that checks one is configured,

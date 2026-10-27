@@ -32,6 +32,13 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: {{ $np.ingressControllerNamespace | quote }}
+        # The services that call `/svc/v1` (vaam), which is on this tier's
+        # business surface (ADR-0036 § "Which surface `/svc/v1` is on"). Peers
+        # are the operator's own, verbatim; none by default.
+        {{- range $np.serviceIngress.peers }}
+        -
+{{ toYaml . | indent 10 }}
+        {{- end }}
       ports:
         - protocol: TCP
           port: {{ .Values.server.port }}

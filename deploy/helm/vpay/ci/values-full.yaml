@@ -135,6 +135,18 @@ networkPolicy:
     podSelector:
       app.kubernetes.io/name: vpay
       app.kubernetes.io/component: dashboard
+  # VP-6a: the service that pairs console keys, vaam, calls `/svc/v1` on the
+  # business tier — `-server`, the `vpay` Service — so the default-deny policy
+  # has to admit it. `helm-check` asserts the peer reaches `-server`'s policy
+  # and that `/svc/v1` is routed to nothing.
+  serviceIngress:
+    peers:
+      - namespaceSelector:
+          matchLabels:
+            kubernetes.io/metadata.name: vaam
+        podSelector:
+          matchLabels:
+            app.kubernetes.io/name: vaam-api
   database:
     # TEST-NET-3 (RFC 5737), i.e. deliberately not a real address.
     cidrs:

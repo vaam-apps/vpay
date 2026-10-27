@@ -1,0 +1,16 @@
+# Violates exactly one guard: "networkpolicy-service-ingress".
+#
+# A `/svc/v1` caller peer that selects nothing in particular: an empty
+# `podSelector` matches every pod in the namespace, so the rendered `-server`
+# policy would admit them all to the service transport while reading as though
+# it admits one service (VP-6a, ADR-0036). `database.cidrs` is set only so the
+# earlier "networkpolicy-database" guard is satisfied and this file violates one
+# guard and not two.
+networkPolicy:
+  enabled: true
+  database:
+    cidrs:
+      - 203.0.113.10/32
+  serviceIngress:
+    peers:
+      - podSelector: {}

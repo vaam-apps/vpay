@@ -627,21 +627,20 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
         ),
         _ => None,
     };
-    // The management surface is signed with the same response key and mounted
-    // only where there is a console to serve: a `management` process with a
-    // `dashboard:` block.
-    let management_envelope = match (&envelope_keys, surfaces.management, &config.dashboard) {
-        (Some(keys), true, Some(_)) => Some(
+    // The console is signed with the same response key and built wherever there
+    // is something of it to serve: `/dash/v1` on a `management` process and
+    // `/svc/v1` on a `business` one (ADR-0036 § "Which surface `/svc/v1` is on"),
+    // each only with a `dashboard:` block.
+    let management_envelope = match (&envelope_keys, &config.dashboard) {
+        (Some(keys), Some(_)) => Some(
             ManagementEnvelope::new(&config, keys, Arc::clone(&repositories))
                 .context("assembling the signed /dash/v1 and /svc/v1 transport (VP-6a)")?,
         ),
         _ => {
-            if surfaces.management {
-                tracing::info!(
-                    "no dashboard is configured; /dash/v1 and /svc/v1 are not mounted and every \
-                     path under them answers 404"
-                );
-            }
+            tracing::info!(
+                "no dashboard is configured; /dash/v1 and /svc/v1 are not mounted and every \
+                 path under them answers 404"
+            );
             None
         }
     };
