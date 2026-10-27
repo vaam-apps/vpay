@@ -72,22 +72,6 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-# Offline (cached-JWKS) bearer-token validation for the two authenticated
-# surfaces (`/v1`, `/dash/v1`) — see src/resource_auth.rs. Already a
-# workspace dependency (root Cargo.toml pins it for exactly this); added
-# here at the member level only, per docs/api/README.md's OP-3 scope.
-authkestra-resource.workspace = true
-# `src/jwks_cache.rs` and `src/resource_auth.rs` name `reqwest::Client` in
-# their signatures — the client itself is built by `vpay_provider::http`,
-# which this crate re-exports as `http_client` (Step 3 moved that module to
-# the port crate so an adapter could use it too). `rustls` and `webpki-roots`
-# left with it: nothing under `src/` mentions either any more, and keeping a
-# dependency a crate does not use is how a supply-chain gate stops meaning
-# anything. Already in this crate's resolved graph via
-# authkestra-resource/-engine/-op at the same 0.13 pin, with every feature the
-# workspace pin asks for (`json`, `charset`, `http2`, `rustls-no-provider`)
-# enabled there — so this is an edge, not a new package.
-reqwest.workspace = true
 # The merchant OP itself (`/v1/oauth`, ADR-0010): the `ClientStore` trait,
 # `CompositeOpStore`, the token handler, and the three store traits the
 # `OpStore` supertrait demands for grants no `/v1` request reaches.
@@ -110,12 +94,12 @@ reqwest.workspace = true
 authkestra-op.workspace = true
 # `TokenManager::new_asymmetric` — the RS256 signer the OP mints with.
 authkestra-engine.workspace = true
-# `authkestra-resource` depends on jsonwebtoken with the `rust_crypto`
-# backend (pure-Rust RSA/EC/Ed25519, no `ring`/`aws-lc-rs` — unrelated to
-# rustls's TLS crypto provider, see deny.toml). Not itself a workspace
-# dependency; pinned to the same major version and feature set authkestra-
-# resource already resolves, so this adds no new package to the graph, only
-# makes an already-resolved one directly importable here.
+# `jsonwebtoken` with the `rust_crypto` backend (pure-Rust RSA/EC/Ed25519, no
+# `ring`/`aws-lc-rs` — unrelated to rustls's TLS crypto provider, see
+# deny.toml). Not a workspace dependency; pinned to the major version and
+# feature set `authkestra-op` and `authkestra-engine` resolve, so this adds no
+# new package to the graph, only makes an already-resolved one directly
+# importable here (the OP's client-assertion tests encode one).
 jsonwebtoken = { version = "11", features = ["rust_crypto"] }
 # `authkestra_op::client::ClientStore` is declared `#[async_trait]`;
 # implementing it (`op::clients::YamlClientStore`) requires the same expansion
@@ -181,11 +165,6 @@ uuid.workspace = true
 # handset. Apache-2.0, already allowed in `deny.toml`. Not a workspace pin:
 # this crate is its only consumer.
 phonenumber = "0.3"
-# `staff::sso`: building the provider's authorization URL (`query_pairs_mut`)
-# and form-encoding the token request and the `client_secret_basic` pair
-# (`form_urlencoded`). Workspace pin, already in this crate's graph through
-# reqwest and `vpay-config`, so this names an existing package.
-url.workspace = true
 
 [dev-dependencies]
 # Test-only again as of 2026-09-05, and back where it was before the OP work.

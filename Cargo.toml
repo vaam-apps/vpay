@@ -482,8 +482,6 @@ authkestra-engine = { version = "=0.13.1", default-features = false, features = 
 # routes get mounted onto an axum Router (crates/authkestra-axum's own
 # feature graph: op = ["dep:authkestra-op", "session", "token"]).
 authkestra-axum = { version = "=0.13.1", default-features = false, features = ["rustls-no-provider", "op"] }
-# JWKS-backed token validation for /dash/v1 request guards.
-authkestra-resource = { version = "=0.13.1", default-features = false, features = ["rustls-no-provider"] }
 
 # --- crypto ---
 sha2 = "0.10"
