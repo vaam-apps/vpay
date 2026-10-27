@@ -86,7 +86,9 @@ pub(crate) mod service;
 
 use std::sync::Arc;
 
-use cratestack_axum::envelope_layer::{EnvelopeLayer, EnvelopeMode, PolicyRequest};
+use cratestack_axum::envelope_layer::{
+    EnvelopeLayer, EnvelopeMode, PolicyRequest, UnsignedRequest,
+};
 use cratestack_core::AcceptedContracts;
 use cratestack_cose::{CoseEnvelope, CoseMode, CoseVerifierResolver};
 use vpay_config::{AuthMethod, Config, ConfigError};
@@ -229,9 +231,18 @@ fn surface_layer(
         // `unresolved_mode` with itself, so a route the resolver could not
         // bind would pass through unsigned instead of failing closed with the
         // `500` (cratestack decision S2). Only the ops' own mode is loosened.
+        //
+        // **And an unsigned request is never answered sealed.** The default
+        // `ResponseSealPolicy` seals an unsigned request's answer when it
+        // carries a `Cratestack-Nonce` and an `Accept` naming
+        // `application/cose`; that seal binds the nonce and the payload, not
+        // the caller, so a token caller would be handed a sealed answer that
+        // proves nothing about who it was for. A bearer caller's answer is
+        // plain JSON by ADR-0037, and this is what makes it so.
         SurfaceMode::Optional => builder
             .policy(|_request: &PolicyRequest<'_>| EnvelopeMode::Optional)
-            .unresolved_mode(EnvelopeMode::Required),
+            .unresolved_mode(EnvelopeMode::Required)
+            .response_seal_policy(|_request: &UnsignedRequest<'_>| false),
         SurfaceMode::Off => builder.policy(EnvelopeMode::Off),
     };
     builder

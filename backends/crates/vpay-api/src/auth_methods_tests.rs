@@ -363,6 +363,56 @@ async fn optional_keeps_unserved_methods_a_405_from_the_layer() {
     }
 }
 
+/// An unsigned request is never answered sealed on `/v1`, even one that asks to
+/// be: a `Cratestack-Nonce`, an `Accept` naming `application/cose` and a
+/// `Cratestack-Payload-Accept` naming the JSON `/v1` answers in is what
+/// cratestack's default `ResponseSealPolicy` seals for (without the last the
+/// layer's own `406` answers first), and that seal binds the nonce and the
+/// payload, not the caller. ADR-0037 gives a token caller a plain
+/// answer; the policy is what makes the sentence true.
+///
+/// Both an authenticated and an unauthenticated request are held to it: a sealed
+/// `401` would be the same defect.
+#[tokio::test]
+async fn both_ways_a_bearer_caller_is_never_handed_a_sealed_answer() {
+    let (encoding_key, jwk) = generate_keypair("tok-1");
+    let jwks = jwks_server(&jwk).await;
+    let url = format!("{}/jwks.json", jwks.uri());
+    let token = mint_token(
+        &encoding_key,
+        "tok-1",
+        &v1_claims(CLIENT_ID, "payments:write"),
+    );
+    let nonce = cratestack_core::RequestNonce::from_bytes([3; 16]).to_header_value();
+    let authorization = bearer(&token);
+
+    for (what, credential) in [
+        ("a valid token", Some(authorization.as_str())),
+        ("no credential", None),
+    ] {
+        let mut headers = vec![
+            ("accept", "application/cose"),
+            (cratestack_core::NONCE_HEADER, nonce.as_str()),
+            (cratestack_core::PAYLOAD_ACCEPT_HEADER, "application/json"),
+        ];
+        if let Some(value) = credential {
+            headers.push(("authorization", value));
+        }
+        let response = send(
+            app_with_tokens(BOTH, &url),
+            "GET",
+            "/v1/payment_intents/pi_x",
+            &headers,
+        )
+        .await;
+        assert!(
+            !content_type(&response).starts_with("application/cose"),
+            "{what}: an unsigned request must not be answered sealed, got {}",
+            content_type(&response)
+        );
+    }
+}
+
 // ------------------------------------------------------ machine_tokens alone --
 
 /// A legacy-only deployment: the envelope is `Off`, so a COSE body is refused
