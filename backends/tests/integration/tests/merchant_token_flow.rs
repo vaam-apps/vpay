@@ -1,19 +1,27 @@
 //! The OP's token flow, and what `/v1` makes of its tokens, end to end: the
 //! real `vpay_api::router` on a real socket, backed by a real Postgres.
 //!
-//! `/v1` is signed now (`docs/signed-transport.md`): a merchant seals every
-//! call with its registered Ed25519 key, and no bearer token is a credential
-//! there. The OP (`/v1/oauth/*`) still exists until VP-4 and still mints
-//! tokens, and the cases below hold it to what it claims while it does:
+//! `/v1` takes two credentials, one per request, and which are accepted is the
+//! deployment's choice (`auth.methods`, ADR-0037, `docs/reference/vpay-config.md`).
+//! Under the default (the key absent: every method) a merchant seals each call
+//! with its registered Ed25519 key **or** presents a bearer token the OP
+//! (`/v1/oauth/*`) minted from its `private_key_jwt` assertion; under
+//! `[keypair]` alone `/v1` is `Required` and the OP's token door is not
+//! mounted. The cases below hold the OP to what it claims and `/v1` to what it
+//! does with each credential:
 //!
-//! - **(a)** a sealed request reaches the honest 404, and the token the OP
-//!   mints for the same merchant, presented as a bearer, gets the unsigned
-//!   401; a plain request gets the layer's coarse 401 too.
+//! - **(a)** a sealed request reaches the honest 404 and is answered sealed;
+//!   the token the OP mints for the same merchant, presented as a bearer,
+//!   reaches the same 404 and is answered in plain JSON; a request with no
+//!   credential gets the token path's 401.
 //! - **(b)** `vpay_db::disable_client` takes effect on the *next* request, on
 //!   both doors: `invalid_client`/401 at the token endpoint, the unsigned 401
 //!   on a sealed `/v1` call.
-//! - **(c)** no bearer reaches `/v1`, whatever its audience — including the
-//!   one this OP mints when `audience` is left off.
+//! - **(c)** only a token addressed to `/v1` (`vpay:v1`) is accepted there: a
+//!   dashboard-audience token, and the one this OP mints when `audience` is
+//!   left off (addressed to the client itself), are `invalid_token`.
+//! - **(l)** under `[keypair]` alone a bearer token buys nothing, `/token` is
+//!   the honest 404, and `/.well-known/vpay-auth` says so.
 //! - **(d)** `/v1/oauth/jwks.json` publishes exactly the `kid` this process
 //!   signs with, and the discovery document names the endpoints this test
 //!   derives from the base URL independently of the server.
@@ -176,6 +184,11 @@ async fn harness() -> anyhow::Result<Harness> {
     harness_with_scopes(&[vpay_api::SCOPE_PAYMENTS_WRITE]).await
 }
 
+/// [`harness`] for a deployment whose `auth.methods` is exactly `methods`.
+async fn harness_with_methods(methods: &[&str]) -> anyhow::Result<Harness> {
+    harness_configured(&[vpay_api::SCOPE_PAYMENTS_WRITE], Some(methods)).await
+}
+
 /// [`harness`] with the merchant's registered `scopes:` spelled out.
 ///
 /// The registration is not decoration for cases (g) and (h): it *is* the
@@ -185,6 +198,11 @@ async fn harness() -> anyhow::Result<Harness> {
 /// request's narrower scope won" and "the default was applied" produce
 /// identical tokens and neither claim would be tested.
 async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
+    harness_configured(scopes, None).await
+}
+
+/// [`harness_with_scopes`] with `auth.methods` spelled out (`None`: absent).
+async fn harness_configured(scopes: &[&str], methods: Option<&[&str]>) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
     let (container, repositories, pool) = migrated_postgres().await?;
@@ -232,6 +250,9 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: vpay_config::AuthConfig {
+            methods: methods.map(|names| names.iter().map(|name| (*name).to_owned()).collect()),
+        },
     };
 
     let merchant_op = Arc::new(MerchantOp::new(
@@ -407,18 +428,18 @@ fn access_token(status: u16, body: &Value) -> anyhow::Result<String> {
 
 // --------------------------------------------------------------- case (a)
 
-/// The honest 404 behind the signature, and the credential kind that cannot
-/// reach it.
+/// The honest 404, reached by each credential and answered in its own form.
 ///
 /// A sealed request from the registered merchant reaches
 /// `/v1/payment_intents/pi_x` and gets `404 resource_missing` — sealed, with
 /// the code, because this merchant has no intent under that id. The access
 /// token this very server's OP mints for the same merchant, presented as a
-/// bearer on the same path, gets the layer's unsigned `401`. Both halves
-/// matter: the first says the route exists and looked; the second says the
-/// token the OP still issues until VP-4 retires it buys nothing on `/v1`.
+/// bearer on the same path, reaches the same handler and gets the same `404`
+/// in **plain JSON**: a token caller is not sealed to, which is the trade the
+/// deployment makes by permitting `machine_tokens`. A request that presents
+/// nothing gets the token path's `401 missing_bearer_token`.
 #[tokio::test]
-async fn a_sealed_request_reaches_the_honest_404_and_the_ops_token_does_not() -> anyhow::Result<()>
+async fn a_sealed_request_and_a_token_reach_the_same_404_each_in_its_own_form() -> anyhow::Result<()>
 {
     let harness = harness().await?;
     let url = format!("{}/v1/payment_intents/pi_x", harness.base_url);
@@ -440,7 +461,7 @@ async fn a_sealed_request_reaches_the_honest_404_and_the_ops_token_does_not() ->
     let (status, token_body) =
         post_token(&harness, &token_request_form(&mint_assertion(&harness)?)).await?;
     let token = access_token(status, &token_body)?;
-    let refused = raw_client()
+    let plain = raw_client()
         .get(&url)
         .header("accept", "application/json")
         .bearer_auth(&token)
@@ -448,16 +469,47 @@ async fn a_sealed_request_reaches_the_honest_404_and_the_ops_token_does_not() ->
         .await
         .context("the server answers")?;
     assert_eq!(
-        refused.status().as_u16(),
-        401,
-        "a bearer token is not a credential on /v1"
+        plain.status().as_u16(),
+        404,
+        "the token reaches the handler"
+    );
+    let content_type = plain
+        .headers()
+        .get("content-type")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_owned();
+    assert!(
+        content_type.starts_with("application/json"),
+        "a token caller's answer is plain JSON, not COSE: {content_type}"
+    );
+    let plain_body: Value = plain.json().await.context("the plain body is JSON")?;
+    assert_eq!(
+        plain_body.pointer("/error/code").and_then(Value::as_str),
+        Some("resource_missing"),
+        "got {plain_body:#}"
+    );
+
+    let nothing = raw_client()
+        .get(&url)
+        .header("accept", "application/json")
+        .send()
+        .await
+        .context("the server answers an unauthenticated /v1 request")?;
+    assert_eq!(nothing.status().as_u16(), 401);
+    let nothing_body: Value = nothing.json().await.context("the 401 body is JSON")?;
+    assert_eq!(
+        nothing_body.pointer("/error/code").and_then(Value::as_str),
+        Some("missing_bearer_token"),
+        "got {nothing_body:#}"
     );
 
     harness.shutdown().await;
     Ok(())
 }
 
-/// The other side of the boundary: the same path, nothing presented at all.
+/// The other side of the boundary, under `[keypair]`: the same path, nothing
+/// presented at all.
 ///
 /// The layer's coarse `401` — `code: UNAUTHORIZED`, identical for every
 /// cause and no longer the Stripe `authentication_error` envelope the retired
@@ -465,8 +517,9 @@ async fn a_sealed_request_reaches_the_honest_404_and_the_ops_token_does_not() ->
 /// states the change). A `404` here would mean the envelope is not in front
 /// of the `/v1` nest's fallback.
 #[tokio::test]
-async fn a_v1_request_that_is_not_signed_is_the_layers_coarse_401() -> anyhow::Result<()> {
-    let harness = harness().await?;
+async fn under_keypair_a_v1_request_that_is_not_signed_is_the_layers_coarse_401()
+-> anyhow::Result<()> {
+    let harness = harness_with_methods(&["keypair"]).await?;
 
     let response = raw_client()
         .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
@@ -562,25 +615,25 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
 
 // --------------------------------------------------------------- case (c)
 
-/// No bearer reaches `/v1`, whatever it is addressed to.
+/// Only a bearer addressed to `/v1` is accepted there.
 ///
 /// Both tokens are minted directly through the server's own `TokenManager`,
 /// so their signatures verify and their `kid` is in the JWKS — everything
-/// about them is right. One is addressed to the dashboard surface, the other
-/// to `vpay:v1`. Before the signed transport the audience was the whole
-/// difference between a `401` and the honest `404`; now neither is a
-/// credential at all and both are refused with the same unsigned answer,
-/// which is what the "no token fallback" ruling means in a test.
+/// about them is right but the audience. One is addressed to the dashboard
+/// surface and is `invalid_token`; the other to `vpay:v1`, and reaches the
+/// handler (the honest `404`, the merchant having no such intent). The
+/// audience is the whole difference, as it was before the signed transport.
 #[tokio::test]
-async fn a_bearer_token_of_any_audience_is_refused_on_v1() -> anyhow::Result<()> {
+async fn only_a_token_addressed_to_v1_is_accepted_on_v1() -> anyhow::Result<()> {
     let harness = harness().await?;
 
-    for (label, audience, scope) in [
-        ("dashboard", DASHBOARD_AUDIENCE, None),
+    for (label, audience, scope, expected) in [
+        ("dashboard", DASHBOARD_AUDIENCE, None, 401),
         (
             "merchant",
             MERCHANT_AUDIENCE,
             Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
+            404,
         ),
     ] {
         let token = harness
@@ -604,8 +657,8 @@ async fn a_bearer_token_of_any_audience_is_refused_on_v1() -> anyhow::Result<()>
             .context("the server answers")?;
         assert_eq!(
             response.status().as_u16(),
-            401,
-            "a {label}-audience bearer must not reach /v1"
+            expected,
+            "a {label}-audience bearer on /v1"
         );
     }
 
@@ -625,7 +678,7 @@ async fn a_bearer_token_of_any_audience_is_refused_on_v1() -> anyhow::Result<()>
 ///    upstream's source
 ///    (`authkestra-op-0.13.1/src/handlers/token.rs`: "No audience requested;
 ///    defaulting client_credentials token audience to client_id");
-/// 3. `/v1` refuses it with the unsigned `401`.
+/// 3. `/v1` refuses it as `invalid_token`: it is not addressed to `vpay:v1`.
 #[tokio::test]
 async fn a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_on_v1()
 -> anyhow::Result<()> {
@@ -664,6 +717,81 @@ async fn a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_
         .await
         .context("the server answers")?;
     assert_eq!(response.status().as_u16(), 401);
+    let refusal: Value = response.json().await.context("the 401 body is JSON")?;
+    assert_eq!(
+        refusal.pointer("/error/code").and_then(Value::as_str),
+        Some("invalid_token"),
+        "got {refusal:#}"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+// --------------------------------------------------------------- case (l)
+
+/// Under `[keypair]` alone the OP's token door is not mounted and a bearer
+/// token buys nothing.
+///
+/// The token is minted with the server's own signer, addressed to `vpay:v1`
+/// and carrying the scope the request needs — everything about it is right —
+/// and `/v1` still answers the layer's coarse unsigned `401`. `/token`, the
+/// JWKS and the discovery document are the honest `404`, and
+/// `/.well-known/vpay-auth` tells a client which ways in there are.
+#[tokio::test]
+async fn under_keypair_a_bearer_token_buys_nothing_and_the_token_door_is_a_404()
+-> anyhow::Result<()> {
+    let harness = harness_with_methods(&["keypair"]).await?;
+
+    let token = harness
+        .signing_key
+        .token_manager()
+        .issue_client_token_with_extra(
+            CLIENT_ID,
+            900,
+            Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
+            Some(MERCHANT_AUDIENCE.to_owned()),
+            HashMap::new(),
+        )
+        .context("minting a token with the server's own signer")?;
+    let refused = raw_client()
+        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
+        .header("accept", "application/json")
+        .bearer_auth(&token)
+        .send()
+        .await
+        .context("the server answers")?;
+    assert_eq!(refused.status().as_u16(), 401);
+    let body: Value = refused.json().await.context("the 401 body is JSON")?;
+    assert_eq!(
+        body.get("code").and_then(Value::as_str),
+        Some("UNAUTHORIZED"),
+        "the layer's coarse answer, not the token path's: {body:#}"
+    );
+
+    let (status, _) = post_token(&harness, &token_request_form(&mint_assertion(&harness)?)).await?;
+    assert_eq!(status, 404, "/v1/oauth/token is not mounted");
+    for path in [
+        "/v1/oauth/jwks.json",
+        "/v1/oauth/.well-known/openid-configuration",
+    ] {
+        let response = raw_client()
+            .get(format!("{}{path}", harness.base_url))
+            .send()
+            .await
+            .context("the server answers")?;
+        assert_eq!(response.status().as_u16(), 404, "{path}");
+    }
+
+    let discovery: Value = raw_client()
+        .get(format!("{}/.well-known/vpay-auth", harness.base_url))
+        .send()
+        .await
+        .context("the discovery document answers")?
+        .json()
+        .await
+        .context("the discovery document is JSON")?;
+    assert_eq!(discovery, json!({ "methods": ["keypair"] }));
 
     harness.shutdown().await;
     Ok(())

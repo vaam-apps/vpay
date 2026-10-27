@@ -443,6 +443,26 @@ pub(crate) fn router_deps_with(
     adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> RouterDeps {
     let v1_envelope = v1_envelope_for(config, &repositories);
+    // `vpay-server`'s `main` hands `/v1` a bearer-token validator over this
+    // process's own JWKS when `auth.methods` permits `machine_tokens`; the
+    // suites bind the issuer to the base URL they serve on, so the same URL
+    // is the one the validator fetches.
+    let v1_envelope = match config
+        .auth_methods()
+        .expect("the suite's auth.methods is valid")
+        .permits(vpay_config::AuthMethod::MachineTokens)
+    {
+        true => v1_envelope.with_machine_tokens(
+            vpay_api::resource_auth::JwtValidator::new(
+                format!("{}/jwks.json", merchant_op.issuer()),
+                Duration::from_secs(300),
+                merchant_op.issuer(),
+                vpay_config::MERCHANT_AUDIENCE,
+            )
+            .expect("the vendored-roots JWKS client builds"),
+        ),
+        false => v1_envelope,
+    };
     let management_envelope = management_envelope_for(config, &repositories);
     RouterDeps {
         repositories,
