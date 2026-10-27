@@ -914,15 +914,10 @@ jobs:
       # `application-sandbox.yml` is exercised by nothing in this workflow
       # even though `sandbox` is the CLI's default profile.
       #
-      # **That stopped being inert on 2026-09-07 (exp28), and this paragraph
-      # used to end "the day a spec signs in, this job stops covering the
-      # profile it thinks it covers".** `dashboard.cy.ts` signs in now, so a
-      # redirect URI *is* read, and it is the demo overlay's — `just
-      # gen-demo-keys` writes `http://localhost:3000/dash/v1/callback` into it
-      # and refuses to keep an overlay that names a different port. The
-      # sandbox overlay's copy of the same setting is still exercised by
-      # nothing in this workflow, which is what docs/status.md's "GitHub
-      # Actions" row records.
+      # (It stopped being inert on 2026-09-07 (exp28), when `dashboard.cy.ts`
+      # signed in and read the demo overlay's OAuth redirect URI, and went
+      # back to inert on VP-6a: the spec and the redirect URI are both gone, so
+      # this job reads no dashboard setting but `dashboard.merchant_id`.)
       #
       # THE `3000` IN THAT STRING IS A DEFAULT, NOT A LITERAL, since
       # 2026-09-10 (exp35, issue #78): the port is `justfile`'s
@@ -1003,22 +998,6 @@ jobs:
               exit 1
             fi
           done
-      # The dashboard's staff member, created against the RUNNING stack.
-      #
-      # `vpay-server staff add` is the only way one is created (ADR-0017
-      # decision 1), and without it `dashboard.cy.ts` has nobody to sign in
-      # as: `cy.task('staffPassword')` throws, and five of its seven cases
-      # fail. `just test-e2e` grew this step on 2026-09-07 (exp28); this job
-      # is a second copy of the same sequence and did not, so the branch that
-      # wrote the spec was green locally and would have failed here. The
-      # recipe is called rather than its body copied, so the two cannot drift
-      # again.
-      #
-      # No `VPAY_DEMO_*` is set anywhere in this job, so the recipe's own
-      # defaults stand and it addresses the same `vpay-demo` project the
-      # `docker compose` lines above brought up.
-      - name: create the dashboard's staff member (dashboard.cy.ts signs in as them)
-        run: just demo-staff
       # `just e2e-specs`, NOT a second copy of the environment it sets.
       #
       # This step used to spell out VPAY_BASE_URL, the four browser URLs, the
@@ -1031,14 +1010,14 @@ jobs:
       # this copy kept saying `demo-merchant`, and run 34555068739 failed
       # `checkout.cy.ts` 0/1 and `dashboard.cy.ts` 8/11 on a branch whose
       # `just test-e2e` was green. The recipe is the single source now, the
-      # same arrangement `just demo-staff` above, `just lint-web`,
-      # `just check-schema` and `just helm-check` already use.
+      # same arrangement `just lint-web`, `just check-schema` and
+      # `just helm-check` already use. (`dashboard.cy.ts` itself is gone since
+      # VP-6a: it signed in with a password and a TOTP code, and there is no
+      # such sign-in until VP-6b.)
       #
       # No `VPAY_DEMO_*` is set anywhere in this job, so the recipe's own
-      # defaults stand — 8080, 3000, 3001, 3080, 8082 and
-      # `.e2e/vpay-demo/staff-password.txt`, which are exactly the ports the
-      # `docker compose` lines above published and the file `just demo-staff`
-      # wrote.
+      # defaults stand — 8080, 3000, 3001, 3080 and 8082, which are exactly
+      # the ports the `docker compose` lines above published.
       #
       # TWO Cypress runs, not one (Step 9, lane 6). The recipe runs
       # `pnpm --filter @vpay/e2e e2e`, which chains `e2e:default` and

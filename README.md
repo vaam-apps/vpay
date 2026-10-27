@@ -250,11 +250,12 @@ deploy/         helm/vpay   (rendered and schema-validated; never applied to a c
 
 `schemas/vpay.cstack` is no longer outside the build: `vpay-db` compiles it
 (`include_server_schema!`) and `just check-schema` runs `cratestack check`
-against the pinned CLI inside `just verify`. **Fourteen of the file's
+against the pinned CLI inside `just verify`. **Thirteen of the file's
 twenty models carry statements `vpay-server` actually runs** — `currencies`, `providers`,
 `disabled_clients`, `customers`, `events`, `webhook_deliveries`,
 `checkout_sessions`, `invoices`, `invoice_items`, `manual_payments`, `staff_members`,
-`staff_sessions`, `oauth_authorization_codes` and `credentials`; the six that do not are
+`credentials` and `console_keys` (VP-6a, 2026-10-26: `staff_sessions` and
+`oauth_authorization_codes` left with their sign-in and `console_keys` joined); the six that do not are
 `payment_intents`, `charges`, `refunds`, `ledger_transactions` and
 `ledger_entries`, plus `rate_limit_windows`, whose SQL remains hand-written.
 _(Measured 2026-09-16 by counting `@@allow` arms; this said "nine of thirteen"
@@ -380,10 +381,11 @@ notice and a status-badge reference, makes no call to `vpay-server` and has no
 login, so there is no screen that could show the six payments the walkthrough
 just made.~~ **Corrected 2026-09-23:** wrong since exp28 (2026-09-07), when the
 dashboard gained staff sign-in and joined `demo_services`. It starts with the
-rest of the demo: a staff member signs in with a password and TOTP (`just
-demo-staff` creates one) and reads **one** merchant's payments, refunds,
-deliveries, customers and checkout sessions through `/dash/v1`. It shows the
-**shop's** tenant, not the walkthrough's, on purpose.
+rest of the demo: `/dash/v1` serves **one** merchant's payments, refunds,
+deliveries, customers and checkout sessions to a signed request under a paired
+console key (`just demo-staff` creates the member; **the dashboard application
+cannot sign in until VP-6b**, see the runbook). It shows the **shop's** tenant,
+not the walkthrough's, on purpose.
 [docs/runbooks/demo/dashboard-sign-in.md](docs/runbooks/demo/dashboard-sign-in.md)
 is how to get in and why. It is read-only, and it has never run in a
 deployment. ~~`/dash/v1`'s two read routes and staff sign-in … nothing in the

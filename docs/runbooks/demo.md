@@ -71,14 +71,14 @@ just demo-down          # containers AND volumes
 `just demo` is a composition of two recipes that also exist on their own, so
 nothing on this page runs a path the one-liner does not:
 
-| Recipe             | What it does                                                                                                                                                                                                |
-| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just demo-up`     | `gen-demo-keys`, `docker compose up -d --build --wait`, then poll `/healthz`                                                                                                                                |
-| `just demo-walk`   | run `examples/merchant-demo` against a stack that is already up                                                                                                                                             |
-| `just demo-status` | what is running, under which project, on which host ports                                                                                                                                                   |
-| `just demo-down`   | stop the stack and delete its volumes                                                                                                                                                                       |
-| `just demo`        | `demo-up` then `demo-walk`                                                                                                                                                                                  |
-| `just demo-staff`  | create the dashboard's staff member against a **running** stack and write the one-time password to `.e2e/<demo_project>/staff-password.txt` ([§6](demo/dashboard-sign-in.md#6-signing-in-to-the-dashboard)) |
+| Recipe             | What it does                                                                                                                                                                                                               |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just demo-up`     | `gen-demo-keys`, `docker compose up -d --build --wait`, then poll `/healthz`                                                                                                                                               |
+| `just demo-walk`   | run `examples/merchant-demo` against a stack that is already up                                                                                                                                                            |
+| `just demo-status` | what is running, under which project, on which host ports                                                                                                                                                                  |
+| `just demo-down`   | stop the stack and delete its volumes                                                                                                                                                                                      |
+| `just demo`        | `demo-up` then `demo-walk`                                                                                                                                                                                                 |
+| `just demo-staff`  | create the dashboard's staff member against a **running** stack and write its id to `.e2e/<demo_project>/staff-id.txt`; attach a key with `staff pair-key` ([§6](demo/dashboard-sign-in.md#6-signing-in-to-the-dashboard)) |
 
 **`just demo-walk` takes about a minute** — 58 s measured on 2026-09-10, six
 payments, of which two wait a ten-second rung of `vpay_worker::poll_delay` (the

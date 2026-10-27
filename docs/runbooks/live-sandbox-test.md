@@ -99,10 +99,9 @@ does), replacing the example values. `.e2e/` and `secrets/` are git-ignored.
 
 ```bash
 cp .env.live.example .env.live
-# edit .env.live: MTN_SUBSCRIPTION_KEY, MTN_API_USER, MTN_API_KEY,
-# and (for the dashboard) VPAY_STAFF_PEPPER + VPAY_STAFF_TOTP_KEY.
-# Generate the two staff secrets with:
-#   openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n'
+# edit .env.live: MTN_SUBSCRIPTION_KEY, MTN_API_USER, MTN_API_KEY.
+# (The dashboard needs no secret of its own since VP-6a: there is no staff
+# password pepper or TOTP key to generate.)
 ```
 
 `.env.live` is loaded by `set -a; . ./.env.live; set +a` in every terminal
@@ -225,10 +224,13 @@ export VPAY_DASH_API=http://localhost:8080 \
 just dev-dashboard        # http://localhost:3000
 ```
 
-Sign in with the email + the one-time password, then complete TOTP enrolment.
-The dashboard shows the `live-merchant` tenant's payment intents — the one you
-just paid is there. The dashboard is read-only (ADR-0008); it never processes
-a payment, so this step is optional for reproducing the settlement.
+**The dashboard application cannot sign in until VP-6b** (ADR-0036): `staff
+add` prints the member's id and creates no password. To read the tenant's
+payment intents before then, attach a console key with `vpay-server staff
+pair-key --staff <that id> --public-key <key>` and send signed requests to
+`/dash/v1` (see [../flows/dashboard-auth.md](../flows/dashboard-auth.md)). The
+dashboard is read-only (ADR-0008); it never processes a payment, so this step
+is optional for reproducing the settlement.
 
 ---
 

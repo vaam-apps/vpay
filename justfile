@@ -297,16 +297,6 @@ build-dist:
 
 test: test-rust test-doc test-web
 
-# Four cases in backends/tests/integration/tests/staff_sign_in.rs simulate
-# distinct client source addresses with `reqwest::ClientBuilder::local_address`
-# on 127.0.0.2 through 127.0.0.35. Linux assigns the whole 127.0.0.0/8 range
-# to `lo`, so this needs nothing there and CI (Linux) is unaffected either
-# way; macOS assigns only 127.0.0.1 to `lo0`, so on an unaliased Mac those
-# four fail to bind (`os error 49`) — run `just loopback-aliases` once per
-# boot first (measured 2026-09-18; see CLAUDE.md § "Things that will waste
-# your time"). On Linux, and therefore in CI, nothing needs doing.
-#
-# macOS: run `just loopback-aliases` once per boot before this.
 test-rust:
     cargo nextest run --workspace
 
@@ -314,51 +304,6 @@ test-rust:
 # Expect failures; this is for seeing what is NOT covered, not for CI.
 test-rust-all:
     cargo nextest run --workspace --run-ignored all
-
-# The one-time fix `test-rust`'s comment above points at, and the fix
-# `support::client_bound_to`'s own preflight error names.
-#
-# macOS assigns only 127.0.0.1 to `lo0` by default; Linux assigns the whole
-# 127.0.0.0/8 range to `lo`. `staff_sign_in.rs`'s four per-source-address
-# rate-limit cases bind loopback addresses up to 127.0.0.35 to simulate
-# distinct callers, which is why they need nothing on Linux (CI) and need
-# this recipe on a Mac. A no-op on Linux — detected with `uname -s`, not
-# skipped by a flag, because the whole /8 already being on `lo` there is the
-# actual reason nothing needs adding, not an arbitrary exemption — and
-# idempotent: each address is checked against `ifconfig lo0`'s own output
-# before `alias … up` runs, so a second run neither errors nor re-adds
-# anything, and only a genuinely missing address prompts for `sudo`.
-#
-# These aliases do NOT survive a reboot. Safe and cheap to re-run any time
-# `just test-rust` reports `os error 49` again.
-#
-# Alias the ten loopback addresses staff_sign_in.rs sends from onto lo0 (macOS only).
-loopback-aliases:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ "$(uname -s)" != "Darwin" ]; then
-        echo "loopback-aliases: $(uname -s) already assigns the whole 127.0.0.0/8 to lo — nothing to do"
-        exit 0
-    fi
-    # Exactly what backends/tests/integration/tests/staff_sign_in.rs binds:
-    # 127.0.0.2 and .3 (the_sign_in_rate_limit_is_per_source_address),
-    # 127.0.0.4 (the_second_factor_is_rate_limited_and_not_only_the_password),
-    # 127.0.0.20 (a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget),
-    # and 127.0.0.30 through .35 (two_replicas_share_one_sign_in_budget, which
-    # binds `127.0.0.30 + n` for n in 0..6). Verified against the source on
-    # 2026-09-18 — `grep -n local_address` there before adding an address
-    # here that no test actually uses.
-    addrs="127.0.0.2 127.0.0.3 127.0.0.4 127.0.0.20 127.0.0.30 127.0.0.31 127.0.0.32 127.0.0.33 127.0.0.34 127.0.0.35"
-    current="$(ifconfig lo0)"
-    for addr in $addrs; do
-        if grep -q "inet $addr " <<< "$current"; then
-            echo "loopback-aliases: $addr already on lo0"
-        else
-            sudo ifconfig lo0 alias "$addr" up
-            echo "loopback-aliases: added $addr to lo0"
-        fi
-    done
-    echo "loopback-aliases: lo0 now carries every address staff_sign_in.rs needs (does not survive a reboot)"
 
 # Doctests — a SECOND test runner, not a flag on the first one.
 #
@@ -1128,25 +1073,23 @@ wasm-build-test:
 # `dashboard.cy.ts` visits it.
 # Creates the demo dashboard's staff member against a RUNNING stack.
 #
-# `vpay-server staff add` is the only way a staff member is created (ADR-0017
-# decision 1). It needs the same configuration and the same database the
-# server has, so it runs as a one-off container in the stack rather than on
-# the host — `--no-deps` because the stack is expected to be up already, and
-# `-T` so stdout is the password and nothing else.
+# `vpay-server staff add` is the only way a staff member is made by hand
+# ([ADR-0036](docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).
+# It needs the same configuration and the same database the server has, so it
+# runs as a one-off container in the stack rather than on the host —
+# `--no-deps` because the stack is expected to be up already, and `-T` so
+# stdout is the id and nothing else.
 #
-# **The password is on stdout, alone.** A subcommand's tracing subscriber
-# writes to stderr precisely so that it is (`staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout`),
-# and `docker compose run`'s own chatter goes to stderr too — so the last
-# non-blank line of stdout is the credential. It is read that way rather than
-# with a `grep` for a shape, because the shape of a generated password is not
-# a thing this recipe should know.
+# **It creates no credential any more.** The password this recipe used to
+# capture is gone with the sign-in it opened (VP-6a): the member reads
+# `/dash/v1` only once a console key is attached, with `vpay-server staff
+# pair-key` or through vaam's pairing, and the demo dashboard application cannot
+# sign in at all until VP-6b. What is written to `demo_staff_id_file` is the
+# member's `stf_…` id, which `staff pair-key --staff` takes.
 #
 # Idempotent in the only way it can be: a second run hits the
-# `staff_members_email_key` unique index and fails. If the password file from
-# the first run is still there that is a no-op and this says so; if it is not,
-# the password is unrecoverable — it is printed once and only its argon2id
-# hash is stored — and the honest answer is to fail and say to tear the stack
-# down.
+# `staff_members_email_key` unique index and fails, and if the id file from the
+# first run is still there that is a no-op and this says so.
 demo-staff:
     #!/usr/bin/env bash
     set -uo pipefail
@@ -1158,7 +1101,7 @@ demo-staff:
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
     export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
 
-    out={{demo_staff_password_file}}
+    out={{demo_staff_id_file}}
     mkdir -p "$(dirname "$out")"
     stderr=$(mktemp)
     trap 'rm -f "$stderr"' EXIT
@@ -1171,42 +1114,30 @@ demo-staff:
     status=$?
 
     if [ "$status" -ne 0 ]; then
-        # `-f` as well as `-s`, because `-s` is true of a DIRECTORY too and
-        # this branch would then report a password kept in something that
-        # cannot hold one (exp28 review).
+        # `-f` as well as `-s`, because `-s` is true of a DIRECTORY too.
         if [ -f "$out" ] && [ -s "$out" ]; then
-            echo "demo-staff: {{demo_staff_email}} already exists; keeping the password in $out"
+            echo "demo-staff: {{demo_staff_email}} already exists; its id is in $out"
             exit 0
         fi
-        echo "demo-staff: FAIL — \`staff add\` exited $status and there is no password in $out." >&2
-        echo "demo-staff: a one-time password is printed ONCE and only its hash is stored, so if" >&2
-        echo "demo-staff: the account exists its password cannot be recovered. \`just demo-down\`" >&2
-        echo "demo-staff: (which deletes the volumes) and start again." >&2
+        echo "demo-staff: FAIL — \`staff add\` exited $status and there is no id in $out." >&2
         cat "$stderr" >&2
         exit 1
     fi
 
-    password=$(printf '%s\n' "$stdout" | grep -v '^[[:space:]]*$' | tail -n 1)
-    if [ -z "$password" ]; then
+    id=$(printf '%s\n' "$stdout" | grep -v '^[[:space:]]*$' | tail -n 1)
+    if [ -z "$id" ]; then
         echo "demo-staff: FAIL — \`staff add\` succeeded but printed nothing on stdout." >&2
         cat "$stderr" >&2
         exit 1
     fi
     # CHECKED, because `set -uo pipefail` has no `-e` and a redirect that
-    # fails here is silent. Found by the exp28 review, by running this recipe
-    # with `demo_project` set to a value that made `$out` name a DIRECTORY:
-    # the write failed, `chmod 0600` succeeded — on the directory, which the
-    # stack bind-mounts — and this line still said "created". The password is
-    # printed once and only its argon2id hash is stored, so a credential that
-    # is claimed to be on disk and is not is unrecoverable.
-    if ! printf '%s' "$password" > "$out" || [ ! -f "$out" ] || [ ! -s "$out" ]; then
-        echo "demo-staff: FAIL — {{demo_staff_email}} was created but the password could not" >&2
-        echo "demo-staff: be written to $out, and it is printed once. \`just demo-down\` (which" >&2
-        echo "demo-staff: deletes the volumes) and start again." >&2
+    # fails here is silent (the exp28 review found it with `$out` naming a
+    # DIRECTORY).
+    if ! printf '%s' "$id" > "$out" || [ ! -f "$out" ] || [ ! -s "$out" ]; then
+        echo "demo-staff: FAIL — {{demo_staff_email}} was created ($id) but the id could not be written to $out." >&2
         exit 1
     fi
-    chmod 0600 "$out"
-    echo "demo-staff: created {{demo_staff_email}} for {{demo_staff_merchant}}; the one-time password is in $out"
+    echo "demo-staff: created {{demo_staff_email}} for {{demo_staff_merchant}} as $id; attach a console key with \`vpay-server staff pair-key --staff $id --public-key <key>\`"
 
 test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     #!/usr/bin/env bash
@@ -1262,55 +1193,13 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
         done
     done
 
-    # The demo dashboard's staff member, created against the running stack.
-    # `dashboard.cy.ts` signs in as this person through the real OP: password,
-    # then a TOTP code it computes from the secret the enrolment screen shows.
-    # Without it that spec has nobody to sign in as — and it must fail loudly
-    # rather than skip, so this is checked rather than tolerated.
-    #
-    # Every port override is repeated on this sub-invocation, and that is not
-    # ceremony: `just demo-staff` inherits the ENVIRONMENT exported above but
-    # NOT this recipe's variable overrides, so a bare call resolves
-    # `demo_project` to its default and addresses `vpay-demo` — somebody
-    # else's stack, on somebody else's machine, with somebody else's data.
-    # Measured on the first run of this recipe: it created a one-off container
-    # in a stack this run had never brought up.
-    #
-    # `demo_dashboard_merchant` is on that list since 2026-09-11, and it was
-    # missing for the whole of the day exp51 introduced it. `gen-demo-keys` is
-    # a `just` DEPENDENCY of this recipe, so it does see the override and
-    # writes an overlay bound to the tenant asked for; this sub-invocation did
-    # not, so `demo_staff_merchant` — which is `demo_dashboard_merchant` —
-    # resolved to its default. Under
-    # `just demo_dashboard_merchant=demo-merchant-tenant test-e2e` the result
-    # was a dashboard client bound to `demo-merchant-tenant` and a staff
-    # member created in `shop-merchant-tenant`, so every sign-in died at
-    # /authorize and the whole dashboard spec failed on the FIRST leg.
-    # Measured, with `psql` against the running stack. It looked like the
-    # tenancy guard firing and it was not: a spec that cannot sign in proves
-    # nothing about which payments a dashboard shows.
-    just demo_project={{demo_project}} \
-         demo_port={{demo_port}} \
-         demo_receiver_port={{demo_receiver_port}} \
-         demo_orange_port={{demo_orange_port}} \
-         demo_checkout_port={{demo_checkout_port}} \
-         demo_shop_port={{demo_shop_port}} \
-         demo_dashboard_port={{demo_dashboard_port}} \
-         demo_fixture_port={{demo_fixture_port}} \
-         demo_dashboard_merchant={{demo_dashboard_merchant}} \
-         demo-staff
-    if [ $? -ne 0 ] || [ ! -s {{demo_staff_password_file}} ]; then
-        echo "test-e2e: FAIL — no staff member for the dashboard spec" >&2
-        docker compose {{demo_compose}} down -v
-        exit 1
-    fi
-
     # The Cypress run itself is `e2e-specs` below, CALLED rather than spelled
-    # here, for the reason the `demo-staff` call above states: CI's
-    # `e2e (compose)` job does the same three things in YAML, and a second
+    # here: CI's `e2e (compose)` job does the same things in YAML, and a second
     # copy of this environment is what broke on 2026-09-11. Every override is
     # repeated on the sub-invocation because `just` passes the environment on
-    # and its variable overrides not at all.
+    # and its variable overrides not at all. (There is no staff member to
+    # create here since VP-6a: the dashboard spec signed in with a password and
+    # a TOTP code, and there is no such sign-in to drive until VP-6b.)
     just demo_project={{demo_project}} \
          demo_port={{demo_port}} \
          demo_orange_port={{demo_orange_port}} \
@@ -1382,8 +1271,6 @@ e2e-specs:
     #!/usr/bin/env bash
     set -uo pipefail
     VPAY_BASE_URL=http://localhost:{{demo_port}} \
-      VPAY_STAFF_EMAIL={{demo_staff_email}} \
-      VPAY_STAFF_PASSWORD_FILE="$PWD/{{demo_staff_password_file}}" \
       VPAY_DASHBOARD_URL=http://localhost:{{demo_dashboard_port}} \
       VPAY_SHOP_URL=http://localhost:{{demo_shop_port}} \
       VPAY_CHECKOUT_URL=http://localhost:{{demo_checkout_port}} \
@@ -3214,7 +3101,19 @@ expected_ignored := "0"
 # one-shot `--workspace` link does not fit the disk this was written on, and the
 # per-package listings sum to the same thing): **56** binaries, **2536** tests,
 # **0** ignored. `merchant-demo` is one of the 56 with no tests in it, as before.
-expected_suites := "56"
+#
+# **56 -> 54 on 2026-10-27 (VP-6a, ADR-0036)**, from four moves.
+# `backends/tests/integration/tests/staff_sign_in.rs`, `staff_sso.rs` and
+# `staff_sso_keycloak.rs` are deleted with the sign-in they drove (password,
+# TOTP, session, authorization code, OIDC SSO; the last needed a Keycloak
+# container), and `console_pairing.rs` is new (`/svc/v1` against a real Postgres
+# and the shipping router; its own file because each case boots a container).
+# `dashboard_read_surface.rs` and `dashboard_procedure_transport.rs` stay, now
+# driving the signed console. Measured the way `verify-ignored` measures it:
+# **54** binaries, **2413** tests, **0** ignored (the total fell with the 27 + SSO
+# cases of the deleted suites and rose with the new ones; the 1080 floor is
+# untouched).
+expected_suites := "54"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
@@ -4282,22 +4181,12 @@ demo_shop_port := "3001"
 #
 #     just demo_dashboard_port=13000 demo
 #
-# Added 2026-09-10 (exp35, issue #78). FOUR things have to agree about it, and
-# the fourth is the one that made this a variable late:
-#
-#   1. the published port (`compose.demo.yml` reads `$VPAY_DEMO_DASHBOARD_PORT`,
-#      on a `!override` so compose.e2e.yml's literal does not survive beside it);
-#   2. `VPAY_DASHBOARD_REDIRECT_URI` on the service (`compose.e2e.yml`), which
-#      is the string the APP sends in both OAuth legs;
-#   3. `dashboard_client.redirect_uris` in the generated overlay, which is what
-#      the OP has REGISTERED — authkestra matches (2) against (3) byte for
-#      byte, no prefix and no wildcard, so a mismatch is a 400 at /authorize
-#      naming redirect_uri while server, app and base config are each right;
-#   4. Cypress's `baseUrl` (`VPAY_DASHBOARD_URL`, set by `test-e2e`), because
-#      every bare `cy.visit("/…")` in `dashboard.cy.ts` resolves against it.
-#
-# `gen-demo-keys` regenerates the overlay when this changes, and its shape
-# check is keyed on this port for exactly reason (3).
+# Added 2026-09-10 (exp35, issue #78). Two things have to agree about it: the
+# published port (`compose.demo.yml` reads `$VPAY_DEMO_DASHBOARD_PORT`, on a
+# `!override` so compose.e2e.yml's literal does not survive beside it) and
+# Cypress's `baseUrl` (`VPAY_DASHBOARD_URL`, set by `test-e2e`). The OAuth
+# redirect URI the generated overlay used to register on this port is gone with
+# the sign-in (VP-6a, ADR-0036), and `gen-demo-keys` no longer keys on it.
 #
 # 3000 is the default because that is what `compose.e2e.yml` publishes and what
 # CI's e2e job polls; nothing outside a `demo_dashboard_port=…` invocation sees
@@ -4328,7 +4217,7 @@ demo_fixture_port := "4180"
 #     shop-merchant  -> shop-merchant-tenant   what `examples/shop` pays as
 #
 # A `/dash/v1` request reads exactly one tenant's rows — the one
-# `dashboard_client.merchant_id` names, checked at boot and filtered on in
+# `dashboard.merchant_id` names, checked at boot and filtered on in
 # every repository call (`vpay_api::dash`'s module doc). So the dashboard can
 # show one of those two and not both, and the two cannot be merged into one
 # tenant either: `ConfigError::DuplicateMerchantId` refuses a config where two
@@ -4354,73 +4243,34 @@ demo_fixture_port := "4180"
 #
 # Both halves move together because `demo_staff_merchant` below is this
 # variable: the staff member must be created in the tenant the dashboard is
-# bound to, or /authorize refuses to mint a code for a tenant this dashboard
-# may not read. `gen-demo-keys` regenerates an overlay whose binding no longer
-# matches, the same job its checks do for `demo_dashboard_port` and
-# `demo_staff_token_ttl`, and refuses a value that names neither registered
-# tenant rather than letting the server exit 78 in a restart loop.
-#
-# What the override does NOT do is keep `just test-e2e` green:
-# `dashboard.cy.ts` asserts that the payment it makes through the SHOP is
-# visible to the demo staff member, and under the override it is not. That
-# spec failing is the proof this variable is load-bearing, not a regression.
+# bound to. `gen-demo-keys` regenerates an overlay whose binding no longer
+# matches, and refuses a value that names neither registered tenant rather than
+# letting the server exit 78 in a restart loop.
 demo_dashboard_merchant := "shop-merchant-tenant"
 
-# The demo dashboard's one staff member — ADR-0017 decision 1's only way in.
+# The demo dashboard's one staff member.
 #
 # There is no self-service sign-up and no HTTP endpoint that creates a staff
-# member: `vpay-server staff add` inserts the row and prints a one-time
-# password that must be replaced at first sign-in. `just demo-staff` runs it
-# against the running stack and writes that password to a git-ignored file, so
-# `dashboard.cy.ts` and a human reading `docs/runbooks/demo.md` sign in as the
-# same person with the same credential.
+# member: `vpay-server staff add` inserts the row and prints its id, and
+# `just demo-staff` runs it against the running stack and writes that id to a
+# git-ignored file. A console key is attached afterwards (`staff pair-key`, or
+# vaam's pairing); there is no password (ADR-0036).
 #
 # `demo_staff_merchant` must be a `merchant_id` some `merchant_clients` entry
 # registers — `staff add` refuses otherwise, before it opens the database —
-# AND the one `dashboard_client.merchant_id` is bound to, or /authorize
-# refuses to mint a code for a tenant this dashboard may not read. It is
-# therefore `demo_dashboard_merchant` itself rather than a second literal:
-# two literals is how the two went out of step in the first place.
+# AND the one `dashboard.merchant_id` is bound to, or the member would read a
+# tenant this dashboard does not serve. It is therefore `demo_dashboard_merchant`
+# itself rather than a second literal: two literals is how the two went out of
+# step in the first place.
 demo_staff_email := "ada@example.test"
 demo_staff_name := "Ada Demo"
 demo_staff_merchant := demo_dashboard_merchant
 
-# Where the one-time password lands. Under `.e2e/<project>/` so two concurrent
-# demo stacks do not overwrite each other's, and git-ignored like everything
-# else in there — it is a credential, however throwaway.
-demo_staff_password_file := ".e2e/" + demo_project + "/staff-password.txt"
+# Where the member's id lands. Under `.e2e/<project>/` so two concurrent demo
+# stacks do not overwrite each other's, and git-ignored like everything else in
+# there. It is an identifier, not a credential: there is no password any more.
+demo_staff_id_file := ".e2e/" + demo_project + "/staff-id.txt"
 
-# How long a `/dash/v1` access token lives on the demo stack, in seconds
-# (`staff_auth.access_token_ttl_seconds`, issue #88 item 1).
-#
-# THIRTY, and NOT the 900 a deployment that writes nothing gets. That is a
-# deliberate difference between this stack and production, and it is the whole
-# reason the setting is configuration at all.
-#
-# The token's TTL is 900 s while a session's bounds are twelve hours and thirty
-# minutes idle, so what a staff member met a quarter of an hour into every
-# sign-in — an error box on every render, because nothing re-minted — was
-# exercised by NOTHING. `dashboard.cy.ts` runs in about two minutes and
-# `just demo-walk` in less; a browser run cannot sit out fifteen minutes, so
-# before this variable the only proof the re-mint worked was a unit test over a
-# stubbed clock. At thirty seconds the margin falls at twenty-four and a spec
-# crosses both in one leg with six seconds of slack on either side — measured:
-# at twenty the window was four seconds wide and the leg landed 300 ms inside
-# it, which is a flake waiting for a slower machine.
-#
-# `gen-demo-keys` writes it into the overlay and its shape check is keyed on
-# the CURRENT value, so `just demo_staff_token_ttl=900 demo` regenerates rather
-# than silently keeping a file for the other number — the same job that check
-# does for `demo_dashboard_port`. That check is an ANCHORED regex and not a
-# `grep -F`: every other value in this file that a freshness check keys on ends
-# in something (a path, a hostname) that cannot be a prefix of another legal
-# value, and a bare number is not — `grep -F '...: 10'` matches a line reading
-# `...: 100`, so `just demo_staff_token_ttl=10 demo` against an overlay written
-# for 100 kept the stale file and served a TTL ten times what was asked for.
-#
-# The bound `garde` enforces is 10..=3600; anything outside it stops the server
-# at boot with a validation error naming the field.
-demo_staff_token_ttl := "30"
 
 
 # The signed transport's throwaway server keys for the compose stacks: the two
@@ -4677,7 +4527,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
 
     # Added 2026-09-07 (exp23 → PR #69). The base config binds its dashboard
     # client to `acme-cameroon`, a merchant this overlay replaces wholesale,
-    # so an overlay without its own `dashboard_client.merchant_id` line makes
+    # so an overlay without its own `dashboard.merchant_id` line makes
     # the merged document name a tenant no `merchant_clients` entry registers
     # and the server exits 78 on every restart with
     # `DashboardUnknownMerchant`. Measured on the maintainer's own demo stack
@@ -4688,47 +4538,18 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     #
     # Keyed on the CURRENT `demo_dashboard_merchant` since 2026-09-11 (exp51),
     # so this is also what regenerates a stale overlay after
-    # `just demo_dashboard_merchant=… demo` — the same job
-    # `dashboard_redirect_present` does for `demo_dashboard_port`. Without
+    # `just demo_dashboard_merchant=… demo`. Without
     # that the override would keep an overlay bound to the other tenant while
     # `just demo-staff` created the staff member in the one asked for, and
     # every sign-in would die at /authorize rather than at anything naming a
     # tenant.
     #
     # Anchored at both ends and not a `grep -F`, for the reason
-    # `demo_staff_token_ttl` records: a merchant id is a bare token and one
+    # the demo's other freshness checks: a merchant id is a bare token and one
     # legal value can be a prefix of another.
     dashboard_binding_present() {
-        grep -A1 '^dashboard_client:$' "$overlay" \
+        grep -A1 '^dashboard:$' "$overlay" \
             | grep -qE '^  merchant_id: {{demo_dashboard_merchant}}$'
-    }
-
-    # Added 2026-09-07 (exp28). The base config's redirect_uris names port
-    # 8080; the dashboard app runs on `demo_dashboard_port` and sends this
-    # string in both OAuth legs, where authkestra matches it byte for byte. An
-    # overlay generated before this line makes every staff sign-in end in a
-    # 400 naming redirect_uri — with the server, the app and the base config
-    # all individually correct. Keyed on the exact string compose.e2e.yml sets
-    # in VPAY_DASHBOARD_REDIRECT_URI, because equality with THAT is the
-    # property that matters.
-    #
-    # Keyed on the CURRENT port since exp35 (issue #78), so this is also what
-    # regenerates a stale overlay after `just demo_dashboard_port=… demo` —
-    # the same job `checkout_base_present` does for `demo_checkout_port`.
-    dashboard_redirect_present() {
-        grep -qF "    - http://localhost:{{demo_dashboard_port}}/dash/v1/callback" "$overlay"
-    }
-
-    # Added 2026-09-07 (exp28). Without both staff_auth secrets `staff_login`
-    # is None, /dash/v1 mounts NO login at all, and every call the dashboard
-    # makes to /dash/v1/staff/login is a 404 — a deployment state ADR-0017
-    # explicitly permits for a sandbox, which is why nothing else fails. An
-    # overlay generated before this block is exactly that state.
-    staff_auth_present() {
-        grep -q '^staff_auth:$' "$overlay" \
-            && grep -qE '^  password_pepper: .+$' "$overlay" \
-            && grep -qE '^  totp_encryption_key: .+$' "$overlay" \
-            && grep -qE '^  access_token_ttl_seconds: {{demo_staff_token_ttl}}$' "$overlay"
     }
 
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ] && [ -e "$demo_seed" ] && [ -e "$shop_seed" ]; then
@@ -4759,9 +4580,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
             && checkout_base_present \
             && mtn_settles_xaf \
             && dashboard_binding_present \
-            && dashboard_redirect_present \
-            && cose_keys_present \
-            && staff_auth_present; then
+            && cose_keys_present; then
             echo "gen-demo-keys: $key, $shop_key, $demo_seed, $shop_seed and $overlay already exist, keeping them"
             exit 0
         fi
@@ -4813,24 +4632,7 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
         elif ! dashboard_binding_present; then
             # Since exp51 this also fires when `demo_dashboard_merchant`
             # MOVED rather than only when the line is absent altogether.
-            echo "gen-demo-keys: $overlay does not bind the dashboard client to {{demo_dashboard_merchant}} — regenerating the pair"
-        elif ! dashboard_redirect_present; then
-            # Added 2026-09-07 (exp28). The base config registers port 8080;
-            # the dashboard app is published on `demo_dashboard_port` and
-            # sends its own redirect_uri in both legs, matched byte for byte.
-            # Since exp35 this also fires when that VARIABLE changed rather
-            # than only when the overlay predates the line at all. Stale,
-            # and every staff sign-in dies at /authorize with a 400 naming
-            # redirect_uri while the server, the app and the base config are
-            # each individually right.
-            echo "gen-demo-keys: $overlay does not register the dashboard app's redirect_uri on port {{demo_dashboard_port}} — regenerating the pair"
-        elif ! staff_auth_present; then
-            # Added 2026-09-07 (exp28). Without the two staff_auth secrets
-            # `vpay-server` mounts /dash/v1's READ surface and no login at all
-            # — legal for a sandbox, and it logs a warning nobody reads — so
-            # the dashboard's first call is a 404 and the login page reports
-            # it as though the address were wrong.
-            echo "gen-demo-keys: $overlay is missing a \`staff_auth\` line this stack needs — either both secrets (without which it serves no staff login at all) or \`access_token_ttl_seconds: {{demo_staff_token_ttl}}\` — regenerating the pair"
+            echo "gen-demo-keys: $overlay does not bind the dashboard to {{demo_dashboard_merchant}} — regenerating the pair"
         elif ! cose_keys_present; then
             echo "gen-demo-keys: $overlay does not register the merchants' current Ed25519 signing keys (cose_keys) — regenerating the pair"
         elif ! checkout_base_present; then
@@ -4893,18 +4695,6 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     cargo xtask gen-envelope-key --out .e2e/shop-merchant --name signing --world-readable >/dev/null
     cose_demo=$(cat .e2e/demo-merchant/signing.pub)
     cose_shop=$(cat .e2e/shop-merchant/signing.pub)
-
-    # ADR-0017's two staff-auth secrets, drawn from the OS CSPRNG and written
-    # only into the git-ignored overlay. base64url without padding for the
-    # AEAD key, because `secret_box::decode_key` decodes URL_SAFE_NO_PAD and
-    # refuses anything else; the pepper is an opaque string argon2 takes as
-    # bytes, so its encoding is free and the same one is used for both.
-    command -v openssl >/dev/null 2>&1 || { echo "gen-demo-keys: needs 'openssl' on PATH for the staff_auth secrets" >&2; exit 1; }
-    randb64url() {
-        openssl rand 32 | base64 | tr '+/' '-_' | tr -d '=\n'
-    }
-    staff_pepper=$(randb64url)
-    staff_totp_key=$(randb64url)
 
     # 0644, NOT the 0600 `demo-merchant`'s key gets, and the difference is the
     # whole point: unlike the demo binary — which runs on the HOST, as a
@@ -5050,65 +4840,15 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     webhooks:
       allow_private_targets: true
 
-    # The base file binds its dashboard client to \`acme-cameroon\`, a merchant
-    # this overlay replaces wholesale below. figment's dict merge keeps the
-    # base block's client_id and scope and overlays these two fields, so
-    # /dash/v1 reads the demo tenant and boot does not refuse with
-    # ConfigError::DashboardUnknownMerchant (it did, in PR #69's e2e job, when
-    # the merchant_id line was missing).
-    #
-    # \`redirect_uris\` is a LIST, so this replaces the base file's outright —
-    # which is what it is for. The base names port 8080; the dashboard app is
-    # published on \`demo_dashboard_port\` (compose.demo.yml reads
-    # \$VPAY_DEMO_DASHBOARD_PORT), and the app sends this string in BOTH OAuth
-    # legs, where authkestra matches it byte for byte. It must be the same
-    # bytes as compose.e2e.yml's VPAY_DASHBOARD_REDIRECT_URI, or every sign-in
-    # ends in a 400 naming redirect_uri. Nothing ever fetches this URL: the
-    # app's own server follows the 302 (ADR-0017 decision 4).
-    #
-    # Templated on the variable rather than a literal 3000, and that is the
-    # whole of issue #78. exp35's first draft templated the CHECK below and
-    # left this line literal, which was measured to do two things at once:
-    # register :3000 while the app sends :{{demo_dashboard_port}} (every
-    # sign-in dies at /authorize with a 400 naming redirect_uri), and never
-    # satisfy \`dashboard_redirect_present\` — so every single invocation
-    # regenerated the shared merchant key pair and took any already-running
-    # stack's \`demo-walk\` down with it (\`invalid_client\`; see
-    # docs/runbooks/demo.md §7 for why a regenerated pair does that).
-    dashboard_client:
+    # The base file binds its dashboard to \`acme-cameroon\`, a merchant this
+    # overlay replaces wholesale below, so the overlay names the demo tenant
+    # itself or boot refuses with ConfigError::DashboardUnknownMerchant (it did,
+    # in PR #69's e2e job, when the merchant_id line was missing). There is
+    # nothing else to say about the dashboard since VP-6a: no client id, no
+    # redirect URI, no scope and no staff secrets (ADR-0036) — a person reads
+    # it with a paired console key.
+    dashboard:
       merchant_id: {{demo_dashboard_merchant}}
-      redirect_uris:
-        - http://localhost:{{demo_dashboard_port}}/dash/v1/callback
-
-    # ADR-0017 decision 1's two deployment secrets. Without BOTH,
-    # \`staff_login\` is None and /dash/v1 mounts its read surface and NO login
-    # at all — a state a sandbox deployment is allowed to be in, and this one
-    # must not be, because the whole demo dashboard is behind a sign-in.
-    #
-    # THROWAWAY VALUES, regenerated per checkout into a git-ignored file, and
-    # throwaway in a way that has a consequence: losing the pepper invalidates
-    # every stored password hash and losing the AEAD key invalidates every
-    # enrolled second factor, so this recipe rewriting the overlay means every
-    # staff member on the old stack has to be created again. That is fine here
-    # and is exactly what an operator must NOT do to a real deployment — in
-    # production both belong in the same Secret as the RS256 signing key, with
-    # the same backup story.
-    #
-    # Literals rather than \`\${VAR}\` placeholders: \`livemode: false\` is what
-    # permits that, and a livemode config with a literal here is refused
-    # outright (ConfigError::LiteralSecret).
-    staff_auth:
-      password_pepper: $staff_pepper
-      # 32 bytes, base64url without padding — \`secret_box::decode_key\` takes
-      # nothing else, and a wrong length is a refusal to serve any login
-      # rather than a runtime surprise.
-      totp_encryption_key: $staff_totp_key
-      # How long a /dash/v1 access token lives (issue #88 item 1). THIRTY on
-      # this stack and 900 in a deployment that writes nothing — see
-      # \`demo_staff_token_ttl\` in the justfile for why the demo deliberately
-      # differs, and \`docs/flows/dashboard-auth.md\` for what the dashboard
-      # does with it.
-      access_token_ttl_seconds: {{demo_staff_token_ttl}}
 
     merchant_clients:
       - client_id: demo-merchant

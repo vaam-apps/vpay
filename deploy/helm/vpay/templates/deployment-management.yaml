@@ -77,6 +77,15 @@ spec:
               value: {{ printf "0.0.0.0:%d" (int .Values.server.port) | quote }}
             - name: VPAY_OAUTH_SIGNING_KEY_FILE
               value: {{ .Values.signingKey.mountPath | quote }}
+            # The signed `/dash/v1`, procedure-transport and `/svc/v1`
+            # responses are sealed with the same two keys `/v1` is (VP-6a,
+            # ADR-0036); the management tier loads them for the same reason the
+            # server does, and a process that mounts none of the signed
+            # surfaces refuses to boot with them set.
+            - name: VPAY_ENVELOPE_SIGNING_KEY_FILE
+              value: {{ printf "%s/%s" .Values.envelopeKeys.mountPath .Values.envelopeKeys.current | quote }}
+            - name: VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE
+              value: {{ printf "%s/%s" .Values.envelopeKeys.mountPath .Values.envelopeKeys.next | quote }}
             {{- with .Values.management.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -112,6 +121,9 @@ spec:
               mountPath: {{ .Values.signingKey.mountPath }}
               subPath: {{ .Values.signingKey.key }}
               readOnly: true
+            - name: envelope-keys
+              mountPath: {{ .Values.envelopeKeys.mountPath }}
+              readOnly: true
             - name: config-overlay
               mountPath: {{ include "vpay.overlayMountPath" . }}
               subPath: {{ include "vpay.overlayFileName" . }}
@@ -124,6 +136,15 @@ spec:
             items:
               - key: {{ .Values.signingKey.key }}
                 path: {{ .Values.signingKey.key }}
+        - name: envelope-keys
+          secret:
+            secretName: {{ .Values.envelopeKeys.existingSecret | quote }}
+            defaultMode: {{ .Values.envelopeKeys.defaultMode }}
+            items:
+              - key: {{ .Values.envelopeKeys.current }}
+                path: {{ .Values.envelopeKeys.current }}
+              - key: {{ .Values.envelopeKeys.next }}
+                path: {{ .Values.envelopeKeys.next }}
         - name: config-overlay
           configMap:
             name: {{ include "vpay.fullname" . }}-management-config-overlay
