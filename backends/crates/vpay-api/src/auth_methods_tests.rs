@@ -740,18 +740,17 @@ async fn a_tokens_scopes_are_held_to_the_registrations_current_yaml() {
         &v1_claims(CLIENT_ID, "payments:read payments:write"),
     );
     let header = bearer(&both_scopes);
-    let headers = [("authorization", header.as_str())];
     let kill_switch = || Some(Arc::new(MemoryKillSwitch::disabling(&[])));
 
     let run = |yaml_scopes: &'static [&'static str], method: &'static str| {
         let config = config_with_scopes(Some(BOTH), yaml_scopes);
         let app = token_scope_app(&config, &url, kill_switch());
-        let headers = headers;
+        let header = header.clone();
         async move {
             let request = Request::builder()
                 .method(method)
                 .uri("/probe")
-                .header("authorization", headers[0].1)
+                .header("authorization", header)
                 .body(Body::empty())
                 .expect("a request");
             app.oneshot(request).await.expect("the router answers")
