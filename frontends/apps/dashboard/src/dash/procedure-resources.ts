@@ -37,9 +37,8 @@
  * # Isomorphic on purpose
  *
  * Nothing here holds a credential or reaches the network. The `list` it is
- * given decides that: the server binds it to the generated client
- * (`cratestack-client.ts`), the browser to this app's own `GET /api/dash`
- * routes (`procedure-provider.ts`). One manifest, two transports.
+ * given decides that, and the one that signs its requests with a paired key is
+ * VP-6b's to write (ADR-0036).
  */
 import type {
   CratestackModelApi,

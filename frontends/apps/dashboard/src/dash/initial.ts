@@ -1,48 +1,19 @@
 /**
- * The read the **server** already made, handed to the Refine hook that would
+ * The read that was already made, handed to the Refine hook that would
  * otherwise make it again from the browser.
  *
- * # Why this module exists, stated as the defect it repairs
- *
- * Lane 3 moved `/payments` and `/payments/{id}` onto `useList` / `useOne`,
- * which fetch from `/api/dash` **in the browser, after hydration**. Two
- * things follow, and both were measured in `dashboard.cy.ts` rather than
- * reasoned about:
- *
- * 1. **The first paint carries no data.** At the `load` event the detail
- *    page is a skeleton, so anything reading the document at that moment —
- *    a person on a slow link, a crawler, or
- *    `renders the masked payer as a dash`, which reads `body` once and does
- *    not retry — sees an empty screen. That leg walked every row in the
- *    list, found `[data-testid="detail-payer"]` on none of them, and
- *    reported "no payment in this merchant's list has a charge" about a
- *    merchant whose list holds four.
- * 2. **The page issues a `/api/dash` request of its own**, where until Lane 3
- *    "no page and no component" called that surface (`server/bff.ts` says so
- *    in as many words). `dashboard.cy.ts`'s BFF block aliases that URL
- *    *before* it visits the page, so `cy.wait` consumed the page's own
- *    cookie-bearing request instead of the deliberate cookie-less one the
- *    leg had just made — the leg failed between `cy.clearCookie` and the
- *    `cy.setCookie` that restores it, and the six legs after it ran in a
- *    signed-out browser.
- *
- * So the reads go back where they were: in the Server Component, on the
- * request, with the token that never leaves this process. Refine keeps the
- * data layer — the hooks, the provider, the cache, the paging — and is
- * handed the answer rather than sent to fetch one. This is the SSR shape
- * §2.6 of `docs/plans/exp55-refine-seam-bff-notes/refine-plan.md` names as
- * the alternative to a browser-side first read.
+ * Refine keeps the data layer — the hooks, the cache, the paging — and is
+ * handed the answer rather than sent to fetch one: the first paint carries the
+ * data, and a page does not issue a second request of its own for what it has
+ * just rendered. Who makes the first read is the signed reader VP-6b builds
+ * (ADR-0036); nothing in this app makes one today.
  *
  * # A refusal is *not* retried from the browser, and that is the point
  *
- * {@link initialQueryOptions} answers `enabled: false` when the server's read
- * was refused, and the screen renders that refusal directly. Retrying it
- * through `/api/dash` would be the same refusal a round trip later — except
- * for a `401`, which reaches `authProvider.onError`, whose answer to a `401`
- * is `{ logout: true }` and therefore the real `signOut()` Server Action.
- * `requireStaff` deliberately **keeps** the cookie for a read it could not
- * complete (issue #88 item 2); a browser-side retry of that same read would
- * end the session the server had just decided to keep.
+ * {@link initialQueryOptions} answers `enabled: false` when the read was
+ * refused, and the screen renders that refusal directly. A browser-side retry
+ * would be the same refusal a round trip later, and it would hide the request
+ * id the first one carried.
  */
 import type { GetListResponse, GetOneResponse } from "@refinedev/core";
 

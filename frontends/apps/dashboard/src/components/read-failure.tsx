@@ -24,10 +24,8 @@ export interface ReadFailureProps {
  *
  * # What it deliberately does not do
  *
- * It does not decide anything. Whether a refusal ends the session is
- * `server/gate.ts`'s `refusalFor`, and it is a pure function with a unit test
- * precisely so that "a `503` signs everybody out" is a red test rather than a
- * thing somebody notices during an incident.
+ * It does not decide anything. It draws a refusal; what a refusal means for
+ * the caller is the caller's.
  *
  * The `role="alert"` lives on a plain wrapper `<div>` rather than on
  * `InlineBanner` itself (2026-09-12, `@vaam-apps/ui` cutover): `InlineBanner`

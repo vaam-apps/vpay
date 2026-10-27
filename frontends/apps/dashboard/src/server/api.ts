@@ -1,28 +1,25 @@
 /**
- * Every call this app makes to vpay, and the one shape it turns a refusal
- * into.
+ * The shapes `/dash/v1` answers in, and the one shape a refusal becomes.
  *
- * **Server-side only.** `frontends/apps/dashboard` is the OAuth client
- * (ADR-0017 decision 4): it holds the session cookie on its own origin and
- * keeps the `/dash/v1` access token in this process. Nothing in this file is
- * reachable from a browser bundle, and nothing it returns carries a token.
+ * # What this file is since VP-6a (ADR-0036)
+ *
+ * It used to be every call the app made to vpay, and most of it was the
+ * sign-in: the password and TOTP routes, the authorization-code leg, the token
+ * mint and the SSO exchange. All of those routes are deleted. What is left is
+ * what a console that reads `/dash/v1` will still need whatever carries the
+ * request: the object types, and {@link ApiFailure} with its builders. No call
+ * is made from here, because the console now signs every request with a paired
+ * key and **this app cannot do that yet** (VP-6b).
  *
  * # Why the request id is threaded through everything
  *
  * vpay emits `request-id` (Stripe's spelling) and `x-request-id` with one
  * value on every response, and `vpay-api`'s error envelope deliberately
- * carries no `request_id` field because the header already does. A staff
- * member who cannot sign in has nothing else to quote to an operator, and
- * every refusal on the sign-in path is the same sentence by design
- * (`docs/flows/dashboard-auth.md`, "Every refusal is one answer") — so the
- * id is the only thing that distinguishes one failure from another. It is
- * carried on the failure and rendered beside the message.
+ * carries no `request_id` field because the header already does. It is the
+ * only thing that distinguishes one refusal from another for a person who has
+ * to quote something to an operator, so it is carried on the failure and
+ * rendered beside the message.
  */
-// No `server-only` import: the package throws under any condition but
-// `react-server`, which would make this module's own vitest suite
-// unrunnable. What keeps it server-side is that every importer is a server
-// component or a server action, and that nothing here is exported to one
-// that is not.
 
 /** The two spellings vpay emits, in the order this app prefers them. */
 const REQUEST_ID_HEADERS = ["request-id", "x-request-id"] as const;
@@ -41,73 +38,6 @@ export interface ApiFailure {
 export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: ApiFailure };
-
-/** `POST /dash/v1/staff/login`'s answer (`vpay_api::staff::LoginResponse`). */
-export interface LoginResponse {
-  readonly session: string;
-  readonly next: "totp" | "totp_enrolment";
-  readonly otpauth_uri?: string;
-  readonly enrolment?: string;
-}
-
-/** `POST /dash/v1/staff/totp`'s answer. */
-export interface TotpResponse {
-  readonly password_change_required: boolean;
-}
-
-/** `GET /dash/v1/staff/session`'s answer (`vpay_api::staff::SessionResponse`). */
-export interface SessionResponse {
-  readonly staff_id: string;
-  readonly display_name: string;
-  readonly email: string;
-  readonly merchant_id: string;
-  readonly password_change_required: boolean;
-  /** Absent until the code exchange has minted one. */
-  readonly access_token?: string;
-  /**
-   * When {@link SessionResponse.access_token} stops being accepted, RFC 3339.
-   * Absent exactly when the token is.
-   *
-   * Read from `staff_sessions.access_token_expires_at` (migration 0040) and
-   * **not** from the JWT's own `exp`: this app holds the token and presents
-   * it, it does not verify it, and reading a claim out of an unverified
-   * credential is a habit worth not having here.
-   */
-  readonly access_token_expires_at?: string;
-  /**
-   * How long a freshly minted token lives, in seconds
-   * (`staff_auth.access_token_ttl_seconds`).
-   *
-   * The denominator of the re-mint margin — see `gate.ts`'s
-   * `REMINT_AFTER_FRACTION`, which is a fraction precisely because this is
-   * configuration now.
-   */
-  readonly access_token_ttl_seconds: number;
-}
-
-/**
- * `GET /dash/v1/staff/session/stage`'s answer
- * (`vpay_api::staff::SessionStageResponse`).
- *
- * The one read that answers for a session **mid-sign-in**. `/staff/session`
- * refuses one that has not presented a code — the same `401` it answers for a
- * session that is over — so this is what lets `/login/totp` tell "you mistyped
- * your code" from "your session is gone".
- *
- * One field, deliberately: a caller at this stage has proved a password and
- * no second factor, so vpay publishes nothing about the person here.
- */
-export interface SessionStageResponse {
-  readonly stage: "pending_totp" | "authenticated";
-}
-
-/** `POST /dash/v1/oauth/token`'s answer. */
-export interface TokenResponse {
-  readonly access_token: string;
-  readonly token_type: string;
-  readonly expires_in: number;
-  readonly scope: string;
-}
 
 /** One `payment_intent`, as `/dash/v1` renders it (no `client_secret`). */
 export interface PaymentIntentObject {
@@ -184,9 +114,6 @@ export interface PaymentDetail {
   readonly events: readonly TimelineEvent[];
 }
 
-/** The header vpay takes a staff session token in (`vpay_api::staff::SESSION_HEADER`). */
-export const SESSION_HEADER = "x-vpay-staff-session";
-
 /** The request id from either spelling, or `null`. */
 export function requestIdOf(response: Response): string | null {
   for (const header of REQUEST_ID_HEADERS) {
@@ -199,34 +126,12 @@ export function requestIdOf(response: Response): string | null {
 }
 
 /**
- * `error.message` out of vpay's envelope, or a sentence naming the status.
- *
- * A body this app cannot parse is **not** rendered raw: an upstream proxy's
- * HTML error page in an `Alert` is both unreadable and a disclosure of what
- * sits in front of vpay.
- */
-async function failureOf(response: Response): Promise<ApiFailure> {
-  let body: unknown = null;
-  try {
-    body = await response.json();
-  } catch {
-    // Left as the status sentence `envelopeMessage` falls back to.
-  }
-  return {
-    status: response.status,
-    message: envelopeMessage(response.status, body),
-    requestId: requestIdOf(response),
-  };
-}
-
-/**
  * `error.message` out of an already-decoded vpay envelope, or the sentence
  * naming the status.
  *
- * Split out of `failureOf` so the generated CrateStack client's refusals
- * (`src/dash/cratestack-client.ts`), which arrive already decoded on a
- * `CratestackHttpError`, render the same sentence a hand-written call
- * would have — never the raw body, for the reason above.
+ * A body this app cannot parse is **not** rendered raw: an upstream proxy's
+ * HTML error page in an alert is both unreadable and a disclosure of what sits
+ * in front of vpay.
  */
 export function envelopeMessage(status: number, body: unknown): string {
   const envelope = (body as { error?: { message?: unknown } } | null)?.error;
@@ -237,26 +142,6 @@ export function envelopeMessage(status: number, body: unknown): string {
     return envelope.message.trim();
   }
   return `vpay answered ${status}.`;
-}
-
-/** Everything a call may carry beyond its body. */
-interface CallOptions {
-  /** The opaque staff session token, for the five `/staff/*` routes. */
-  readonly sessionToken?: string;
-  /** The `/dash/v1` access token, for the two protected reads. */
-  readonly bearer?: string;
-}
-
-/** The headers `options` implies, and nothing else. */
-function authHeaders(options: CallOptions): Record<string, string> {
-  const headers: Record<string, string> = {};
-  if (options.sessionToken !== undefined) {
-    headers[SESSION_HEADER] = options.sessionToken;
-  }
-  if (options.bearer !== undefined) {
-    headers["authorization"] = `Bearer ${options.bearer}`;
-  }
-  return headers;
 }
 
 /**
@@ -274,279 +159,4 @@ export function unreachable(error: unknown): ApiFailure {
     message: `vpay could not be reached (${detail}).`,
     requestId: null,
   };
-}
-
-/**
- * `POST` a form-encoded body.
- *
- * Form-encoded and not JSON because that is what the handlers take: every
- * staff route and the token endpoint extract `axum::Form`, and a JSON body
- * to one of them is a `415` that says nothing about the credential.
- */
-export async function postForm<T>(
-  apiBaseUrl: string,
-  path: string,
-  body: Readonly<Record<string, string>>,
-  options: CallOptions = {},
-): Promise<ApiResult<T>> {
-  let response: Response;
-  try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/x-www-form-urlencoded",
-        accept: "application/json",
-        ...authHeaders(options),
-      },
-      body: new URLSearchParams(body).toString(),
-      // Every one of these is a credential step. A cached sign-in is not a
-      // thing that can be allowed to exist.
-      cache: "no-store",
-      redirect: "error",
-    });
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-  if (!response.ok) {
-    return { ok: false, failure: await failureOf(response) };
-  }
-  try {
-    return { ok: true, value: (await response.json()) as T };
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-}
-
-/** `GET` a JSON document. */
-export async function getJson<T>(
-  apiBaseUrl: string,
-  path: string,
-  options: CallOptions = {},
-): Promise<ApiResult<T>> {
-  let response: Response;
-  try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
-      method: "GET",
-      headers: { accept: "application/json", ...authHeaders(options) },
-      // A dashboard that showed a cached payment would be worse than one
-      // that showed none: an operator reads it to decide whether something
-      // is still happening.
-      cache: "no-store",
-      redirect: "error",
-    });
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-  if (!response.ok) {
-    return { ok: false, failure: await failureOf(response) };
-  }
-  try {
-    return { ok: true, value: (await response.json()) as T };
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-}
-
-/**
- * `GET /dash/v1/oauth/authorize`, **without following the redirect**.
- *
- * `redirect: 'manual'` is the whole of ADR-0017 decision 4 in one option:
- * the `302`'s `Location` is read here, in this process, and the code in it
- * never reaches a browser. `fetch`'s default would follow it to a URL nothing
- * serves.
- *
- * Returns the `Location` on a `302`. Anything else — including a `200`, which
- * would mean the endpoint answered something other than an authorization
- * response — is a failure.
- */
-export async function authorizeRedirect(
-  apiBaseUrl: string,
-  query: Readonly<Record<string, string>>,
-  sessionToken: string,
-): Promise<ApiResult<string>> {
-  const search = new URLSearchParams(query).toString();
-  let response: Response;
-  try {
-    response = await fetch(`${apiBaseUrl}/dash/v1/oauth/authorize?${search}`, {
-      method: "GET",
-      headers: { accept: "application/json", [SESSION_HEADER]: sessionToken },
-      cache: "no-store",
-      redirect: "manual",
-    });
-  } catch (error) {
-    return { ok: false, failure: unreachable(error) };
-  }
-  const location = response.headers.get("location");
-  if (response.status !== 302 || location === null) {
-    if (!response.ok) {
-      return { ok: false, failure: await failureOf(response) };
-    }
-    return {
-      ok: false,
-      failure: {
-        status: response.status,
-        message: "The authorization endpoint did not answer with a redirect.",
-        requestId: requestIdOf(response),
-      },
-    };
-  }
-  return { ok: true, value: location };
-}
-
-/**
- * `GET /dash/v1/staff/sso`'s answer: whether this deployment offers a
- * federated sign-in at all.
- */
-export interface SsoStatus {
-  readonly enabled: boolean;
-}
-
-/**
- * `POST /dash/v1/staff/sso/start`'s answer.
- *
- * **`session` is a pending-flow token, not a session.** Only the callback
- * accepts it; every other route refuses it, so a cookie holding it signs
- * nobody in.
- */
-export interface SsoStartResponse {
-  readonly session: string;
-  readonly authorization_url: string;
-}
-
-/**
- * `POST /dash/v1/staff/sso/callback`'s answer — one of two outcomes.
- *
- * Either way `session` is a **new** token, and the cookie must be replaced by
- * it: after `signed_in` it is the authenticated session, after
- * `reauthenticate` it is the pending-flow token for the single `prompt=login`
- * retry vpay started. The token the callback was called with is never reused.
- */
-export type SsoCallbackResponse =
-  | { readonly outcome: "signed_in"; readonly session: string }
-  | {
-      readonly outcome: "reauthenticate";
-      readonly session: string;
-      readonly authorization_url: string;
-    };
-
-/**
- * Whether the login page should offer the single sign-on button.
- *
- * **Fails soft, and only this call does.** The password form must render
- * whatever happens here, so any refusal, any outage and any body that is not
- * `{"enabled": true}` read as "not enabled" — and nothing is logged: the page
- * is rendered by every visitor to `/login`, and a line per visit for an
- * unreachable vpay would bury the one `staff_auth` warning that matters.
- * A `404` is the documented "this deployment mounts no staff login" answer
- * and lands here too.
- *
- * Only a literal boolean `true` enables it. `"true"`, `1` and an object are
- * not `true`.
- */
-export async function getSsoStatus(apiBaseUrl: string): Promise<SsoStatus> {
-  const result = await getJson<unknown>(apiBaseUrl, "/dash/v1/staff/sso");
-  if (!result.ok) {
-    return { enabled: false };
-  }
-  const body = result.value as { enabled?: unknown } | null;
-  return { enabled: body?.enabled === true };
-}
-
-/** A body this app could not trust, as a failure rather than a thrown error. */
-function malformed(what: string): ApiFailure {
-  return {
-    status: 200,
-    message: `vpay answered ${what} this app could not read.`,
-    requestId: null,
-  };
-}
-
-/** `true` for a non-empty string; the only thing a token is allowed to be. */
-function nonEmpty(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
-/**
- * Starts a federated sign-in: asks vpay for a pending-flow token and the
- * identity provider's authorization URL.
- *
- * No body and no session header — nobody is signed in yet. A `401` is vpay's
- * uniform refusal, `429` the rate limit, `404` "SSO is not configured"; all
- * three arrive as the ordinary {@link ApiFailure} with `status` set, and the
- * caller turns every one of them into the same generic redirect.
- */
-export async function ssoStart(
-  apiBaseUrl: string,
-): Promise<ApiResult<SsoStartResponse>> {
-  const result = await postForm<unknown>(
-    apiBaseUrl,
-    "/dash/v1/staff/sso/start",
-    {},
-  );
-  if (!result.ok) {
-    return result;
-  }
-  const body = result.value as {
-    session?: unknown;
-    authorization_url?: unknown;
-  } | null;
-  if (!nonEmpty(body?.session) || !nonEmpty(body?.authorization_url)) {
-    return { ok: false, failure: malformed("a start response") };
-  }
-  return {
-    ok: true,
-    value: {
-      session: body.session,
-      authorization_url: body.authorization_url,
-    },
-  };
-}
-
-/**
- * Hands the identity provider's `code` and `state` to vpay, with the
- * pending-flow token in the session header.
- *
- * This is the **only** place those two values are sent anywhere. The body is
- * form-encoded like every other staff call; nothing is logged and the values
- * are not echoed into the failure — `failureOf` reads vpay's own envelope,
- * never the request.
- */
-export async function ssoCallback(
-  apiBaseUrl: string,
-  pendingToken: string,
-  code: string,
-  state: string,
-): Promise<ApiResult<SsoCallbackResponse>> {
-  const result = await postForm<unknown>(
-    apiBaseUrl,
-    "/dash/v1/staff/sso/callback",
-    { code, state },
-    { sessionToken: pendingToken },
-  );
-  if (!result.ok) {
-    return result;
-  }
-  const body = result.value as {
-    outcome?: unknown;
-    session?: unknown;
-    authorization_url?: unknown;
-  } | null;
-  if (body?.outcome === "signed_in" && nonEmpty(body.session)) {
-    return { ok: true, value: { outcome: "signed_in", session: body.session } };
-  }
-  if (
-    body?.outcome === "reauthenticate" &&
-    nonEmpty(body.session) &&
-    nonEmpty(body.authorization_url)
-  ) {
-    return {
-      ok: true,
-      value: {
-        outcome: "reauthenticate",
-        session: body.session,
-        authorization_url: body.authorization_url,
-      },
-    };
-  }
-  return { ok: false, failure: malformed("a callback response") };
 }

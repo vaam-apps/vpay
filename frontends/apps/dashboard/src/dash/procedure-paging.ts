@@ -1,8 +1,7 @@
 /**
- * The pure half of procedure paging: the page size and the query-string
- * readers. Split from `procedure-list.ts` (2026-10-21) because that module
- * reaches the server-only token code through `callDashProcedure`, and the
- * pager is rendered by client components and stories too.
+ * Procedure paging: the page size, the query-string readers and the shape of
+ * one page. Pure, so the pager can be rendered by client components and
+ * stories alike.
  */
 
 /** How many rows a procedure-backed screen asks for. */
@@ -29,4 +28,21 @@ export function singleParam(
 ): string {
   const raw = params[name];
   return typeof raw === "string" ? raw : "";
+}
+
+/**
+ * One page of a procedure-backed list, as the screen needs it.
+ *
+ * `list` is what `@cratestack/refine`'s `getList` resolves, so it is what the
+ * client screen's `useList` cache holds for the key. `totalCount` and
+ * `hasNextPage` come from the procedure's own `Page`, because refine's `total`
+ * cannot say "unknown": past the end of the set a procedure answers
+ * `totalCount: null` and the provider reports `0`. The pager reads these.
+ */
+export interface ProcedureListPage<Row> {
+  readonly list: { readonly data: Row[]; readonly total: number };
+  readonly totalCount: number | null;
+  readonly hasNextPage: boolean;
+  /** The offset actually read — the requested one, floored to a page. */
+  readonly offset: number;
 }

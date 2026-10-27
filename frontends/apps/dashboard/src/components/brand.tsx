@@ -3,8 +3,8 @@
  * wordmark. Decorative chrome in the seed's `primary` family — the one hue
  * `@vaam-apps/ui` reserves for chrome — so it can never read as a status.
  *
- * Not a heading. The document's one `<h1>` is the `sr-only` brand in
- * `AppShell`; this is what the eye sees.
+ * Not a heading. The document's one `<h1>` is the `sr-only` brand beside it
+ * on each page; this is what the eye sees.
  */
 export function Brand() {
   return (

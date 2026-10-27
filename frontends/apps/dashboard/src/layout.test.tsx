@@ -1,5 +1,6 @@
 /**
- * The root layout: the theme, the brand, and the nav-honesty gate.
+ * The root layout: the theme and the brand, and the gate that keeps the app's
+ * only page the unavailable notice until VP-6b.
  *
  * `docs/plans/2026-09-07-ui-revamp.md` §5 Lane D names the theme regression
  * as a decisive mutation: "the layout's `data-theme` reverts to `corporate`"
@@ -29,7 +30,15 @@
  * this file guards. The first case now reads the set of registered names off
  * the package's own `theme.css` rather than asserting there is one.
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -39,12 +48,6 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 
 import RootLayout from "../app/layout";
-import {
-  DASH_RESOURCES,
-  NAV_ENTRIES,
-  NAV_GROUPS,
-  OVERVIEW_NAV,
-} from "./dash/resources";
 
 function markup(): string {
   return renderToStaticMarkup(
@@ -74,12 +77,8 @@ describe("the root layout", () => {
     }
   });
 
-  it("renders no <h1> of its own — the brand moved to the signed-in rail", () => {
-    // It used to be an <h1> inside a <nav> this layout rendered for EVERY
-    // route, signed in or not, so the sign-in form carried a link to a page
-    // nobody at that point could open. `AppShell` renders it now, inside
-    // `app/(dash)` — the only group a signed-in staff member is in — and
-    // `app-shell.test.tsx` asserts it is still exactly one <h1>.
+  it("renders no <h1> of its own — the page owns the document's one", () => {
+    // `ConsoleUnavailable` renders it (`sr-only`, as the shell's did).
     expect(markup()).not.toMatch(/<h1/);
   });
 
@@ -87,7 +86,7 @@ describe("the root layout", () => {
     expect(markup()).not.toContain("vpay dashboard");
   });
 
-  it("renders no signed-in control — this layout is on /login too", () => {
+  it("renders no signed-in control — nobody can be signed in", () => {
     // "Sign out" in chrome shared with a page where nobody is signed in is
     // the same kind of claim as a nav entry for a page nobody wrote.
     expect(markup()).not.toMatch(/sign out/i);
@@ -110,110 +109,50 @@ describe("the root layout", () => {
 
 const APP_DIR = join(dirname(fileURLToPath(import.meta.url)), "..", "app");
 
-/**
- * Does `app/` actually have a page for this route?
- *
- * App Router: `/` is `app/page.tsx`, `/payments` is `app/payments/page.tsx`.
- * Route groups are not handled because this app has none; a dynamic segment
- * is resolved by looking for a `[…]` directory, which is what
- * `/payments/{id}` is served by.
- */
-/**
- * Does a URL path have a page file?
- *
- * **Route groups are why this is not a plain `join`.** `app/(dash)/payments`
- * serves `/payments`: a `(group)` segment is a filesystem directory that
- * contributes nothing to the URL. A naive join looks for
- * `app/payments/page.tsx`, finds nothing, and reports every signed-in route
- * as dangling — which is exactly what it did when the payments routes moved
- * into `(dash)`.
- *
- * So this tries the direct path first, then the same path under each
- * top-level group. It stays a **negative** control as well: `/webhooks` has
- * no page in any group and must still answer `false`.
- */
-function pageExists(route: string): boolean {
-  const segments = route.split("/").filter(Boolean);
-  const exts = ["tsx", "ts", "jsx", "js"];
-  const direct = exts.some((ext) =>
-    existsSync(join(APP_DIR, ...segments, `page.${ext}`)),
-  );
-  if (direct) {
-    return true;
-  }
-  const groups = readdirSync(APP_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && entry.name.startsWith("("))
-    .map((entry) => entry.name);
-  return groups.some((group) =>
-    exts.some((ext) =>
-      existsSync(join(APP_DIR, group, ...segments, `page.${ext}`)),
-    ),
-  );
+/** Every `page.*` under `app/`, as a path relative to it. */
+function pagesUnder(dir: string, prefix = ""): string[] {
+  return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
+    if (entry.isDirectory()) {
+      return pagesUnder(join(dir, entry.name), `${prefix}${entry.name}/`);
+    }
+    return /^page\.(tsx|ts|jsx|js)$/.test(entry.name)
+      ? [`${prefix}${entry.name}`]
+      : [];
+  });
 }
 
 /**
- * The nav-honesty rule, as a gate rather than as a comment.
+ * The fail-closed gate (ADR-0036, VP-6a).
  *
- * `docs/flows/dashboard.md`: "the navigation is only ever allowed to link to
- * slices that exist. A menu entry for a page nobody wrote is the same lie as
- * an empty table." That rule was stated in this app's README, in
- * `app/layout.tsx`'s doc comment and in the flow doc, and enforced by nothing
- * at all until this test: a dangling `<a href="/payments">` left the whole
- * suite, `lint` and `dashboard.cy.ts` green (measured —
- * `docs/plans/exp26-notes/lane-d-review.md`, finding 2).
+ * The console signs every `/dash/v1` request with a paired key and this app
+ * cannot do that until VP-6b, so its one page is the notice that says so. A
+ * second page would be a page that reads vpay with nothing to read it with, or
+ * a sign-in form for credentials vpay no longer accepts — the two things the
+ * cutover deleted. When VP-6b adds the first real page it changes this list in
+ * the same commit, which is what makes the change visible.
  *
- * It is checked **twice**, and the pair is the point. The rendered markup
- * catches a link written straight into the JSX. `NAV_LINKS` catches one
- * added to the constant but rendered only in a branch this test does not
- * exercise — which is what a conditional nav would make possible.
+ * The negative control is the same function over a directory that does have
+ * pages, so an always-empty `pagesUnder` cannot pass the real assertion.
  */
-describe("the nav links only to pages that exist", () => {
-  it("every route the rail offers has a page under app/", () => {
-    const dangling = NAV_ENTRIES.filter((entry) => !pageExists(entry.href));
-    expect(dangling).toEqual([]);
-  });
-
-  it("every resource Refine routes on has a page under app/", () => {
-    // Lane 4's decisive mutation: add a `resources` entry for a page nobody
-    // wrote and this must fail. It is the same mutation that used to fail
-    // against `NAV_LINKS`, moved onto the array that now does both jobs.
-    const dangling = DASH_RESOURCES.filter(
-      (entry) =>
-        typeof entry.resource.list === "string" &&
-        !pageExists(entry.resource.list),
-    );
-    expect(dangling).toEqual([]);
-  });
-
-  it("the rail and Refine read the SAME array, so they cannot disagree", () => {
-    // The failure this replaces: two lists, one of them stale, and a link to
-    // a page that no longer exists. `NAV_ENTRIES` is derived from
-    // `DASH_RESOURCES` rather than written beside it.
-    const listRoutes = DASH_RESOURCES.map((entry) => entry.resource.list)
-      .filter((route): route is string => typeof route === "string")
-      .sort();
-    expect(NAV_ENTRIES.map((entry) => entry.href).sort()).toEqual(listRoutes);
-    expect(listRoutes.length).toBeGreaterThan(0);
-  });
-
-  it("the Overview, the one destination that is not a resource, has a page too", () => {
-    expect(pageExists(OVERVIEW_NAV.href)).toBe(true);
-  });
-
-  it("the rail's sections hold every resource exactly once, and nothing else", () => {
-    // The sections are derived from each entry's `group`, so a destination
-    // can only go missing from the rail by being dropped here. Sorted by
-    // href so the section order does not matter to the comparison.
-    const sectioned = NAV_GROUPS.flatMap((group) => group.items)
-      .map((item) => item.href)
-      .sort();
-    expect(sectioned).toEqual(NAV_ENTRIES.map((entry) => entry.href).sort());
+describe("the app has no page but the unavailable notice", () => {
+  it("serves `/` and nothing else", () => {
+    expect(pagesUnder(APP_DIR).sort()).toEqual(["page.tsx"]);
   });
 
   it("the helper it relies on is not vacuously true", () => {
-    // A negative control: if `pageExists` answered `true` for everything the
-    // tests above would pass whatever the layout linked to.
-    expect(pageExists("/payments")).toBe(true);
-    expect(pageExists("/webhooks")).toBe(false);
+    // A negative control: a tree with a nested page and a stray one is found.
+    const root = mkdtempSync(join(tmpdir(), "dash-pages-"));
+    try {
+      mkdirSync(join(root, "payments", "[id]"), { recursive: true });
+      writeFileSync(join(root, "page.tsx"), "");
+      writeFileSync(join(root, "payments", "[id]", "page.tsx"), "");
+      writeFileSync(join(root, "payments", "payments-list.tsx"), "");
+      expect(pagesUnder(root).sort()).toEqual([
+        "page.tsx",
+        "payments/[id]/page.tsx",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
