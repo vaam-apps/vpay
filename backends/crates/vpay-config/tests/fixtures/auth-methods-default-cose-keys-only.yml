@@ -1,0 +1,18 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-1).
+#
+# The default (no `auth` key permits all four) with a merchant that registers
+# only a signing key: no `jwks`, no `grant_types`, no `allowed_audiences`. It
+# cannot use a bearer token, and need not; it must load.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci

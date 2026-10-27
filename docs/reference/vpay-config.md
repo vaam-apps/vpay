@@ -826,7 +826,7 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
 
 | Rule                                                                                              | Variant                     |
 | ------------------------------------------------------------------------------------------------- | --------------------------- |
-| `methods: []`                                                                                     | `NoAuthMethods`             |
+| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)       | `NoAuthMethods`             |
 | a name that is not a method                                                                       | `UnknownAuthMethod`         |
 | a method listed twice                                                                             | `DuplicateAuthMethod`       |
 | `human_login` named explicitly                                                                    | `AuthMethodUnavailable`     |
@@ -834,16 +834,31 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
 | `deployment.surfaces` names `mcp` and `machine_tokens` is off                                     | `McpNeedsMachineTokens`     |
 | `machine_tokens` named explicitly and no merchant has a `jwks`                                    | `AuthMethodNotConfigured`   |
 | a block from the table above, present while its method is off                                     | `AuthMethodDisabled`        |
-| `machine_tokens` permitted and a registration without `grant_types` (it used to be a shape error) | `MerchantGrantTypesMissing` |
+| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`              | `MerchantGrantTypesMissing` |
+| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                  | `MerchantNoCredential`      |
+| a top-level `auth_methods:`, `auth-methods:`, `authmethods:` or `authentication:`                  | `NearMissKey`               |
 
 - **Permitted is not served.** A method with a block runs where the block is. An
-  absent `auth.methods` permits `machine_tokens` and still boots a file with no
-  `jwks`; only naming it explicitly demands one. `human_login` is the one method
-  nothing serves yet: the default permits it, `AuthMethods::served()` omits it,
-  and VPA-3 is the change that restores it.
-- **With `machine_tokens` off, the OAuth half of a registration is not
-  required**: `jwks`, `grant_types` and `allowed_audiences` may be omitted, and
-  `grant_types` now defaults to empty for that reason.
+  absent `auth.methods` permits `machine_tokens` and still boots a file whose
+  merchants hold no `jwks`; only naming it explicitly demands one merchant that
+  does. `human_login` is the one method nothing serves yet: the default permits
+  it, `AuthMethods::served()` omits it, and VPA-3 is the change that restores it.
+  `served()` is **permitted minus `human_login`** and nothing else: it is what the
+  deployment offers (the discovery document's list), not a promise about any
+  one merchant, who may hold no `jwks` and so cannot use a token.
+- **A registration is a credential, and the OAuth half is its own.** Every
+  merchant needs `cose_keys` or `jwks` (`MerchantNoCredential`). The three of
+  `jwks`, `grant_types` and `allowed_audiences` are required together, and only
+  for a merchant that **has a `jwks`** while `machine_tokens` is permitted; a
+  merchant with `cose_keys` alone may omit all three, boots under the default,
+  and simply cannot mint or present a token. With `machine_tokens` off the three
+  are refused outright (`AuthMethodDisabled`), and `grant_types` defaults to empty
+  for that reason. Whatever `grant_types` a registration does write is
+  `[client_credentials]` and nothing else.
+- **A top-level key near `auth` is refused, not ignored.** `Config` ignores
+  unknown top-level keys, which for this one is a fail-open: `auth_methods:
+  [keypair]` would be dropped and the deployment would permit all four.
+  `NearMissKey` names the spelling and the real key.
 - **`hmac_webhooks` off means no merchant webhooks** until VP-8 adds sealed
   delivery: any `webhooks[]` entry is refused, not only one with `secrets`,
   since an endpoint without a secret was already `WebhookSecretCount`.
@@ -866,3 +881,15 @@ and on an `mcp` process. `GET /.well-known/vpay-auth` answers
 `{"methods": ["keypair", ...]}` on every process, unauthenticated: the methods
 permitted **and served**. See [signed-transport.md](../flows/signed-transport.md)
 for the request side.
+
+### Upgrading: a signed request that carries `Authorization` is now a `400`
+
+Before ADR-0037 `/v1` ignored an `Authorization` header on a signed request: the
+layer that opens the request sits in front of everything that could read one.
+A request that proves a key **and** presents a bearer token is now refused
+`400` (`param: authorization`) on every deployment, `[keypair]` included, because
+one caller presents one credential and the answer to ambiguity is to refuse. An
+SDK or a proxy that adds a bearer header to a signed request must stop doing so
+before the upgrade. The vpay SDKs never set one (their sources name no
+`Authorization` header); a gateway or proxy in front of vpay is the operator's to
+check.

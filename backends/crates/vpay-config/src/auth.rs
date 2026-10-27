@@ -11,7 +11,11 @@
 //!
 //! and **absent means all four**: a config written before the key existed gets
 //! exactly what it always got. Order is irrelevant, a duplicate is refused,
-//! and so are an empty list and an unknown name.
+//! and so are an empty list, a null (`methods:` with every item commented out
+//! reads as one) and an unknown name. Absent and null are different things on
+//! purpose: the first is an operator who never narrowed the list, the second
+//! one who tried to and left it empty, and treating the second as the first
+//! would open every door the edit was meant to shut.
 //!
 //! | Method | What it permits | Its block |
 //! |---|---|---|
@@ -37,7 +41,7 @@
 //!
 //! One [`ConfigError`] variant each:
 //!
-//! 1. an empty list, [`ConfigError::NoAuthMethods`];
+//! 1. an empty list or a null, [`ConfigError::NoAuthMethods`];
 //! 2. an unknown name, [`ConfigError::UnknownAuthMethod`];
 //! 3. a duplicate, [`ConfigError::DuplicateAuthMethod`];
 //! 4. `human_login` named explicitly, [`ConfigError::AuthMethodUnavailable`];
@@ -49,6 +53,14 @@
 //!    [`ConfigError::AuthMethodNotConfigured`];
 //! 8. a block present for a method that is not permitted,
 //!    [`ConfigError::AuthMethodDisabled`].
+//!
+//! The per-merchant half of the same contract lives in `validate_all`'s merchant
+//! rules and is stated here because it is the part an operator reads this page
+//! for: a merchant needs **a credential**, `cose_keys` or `jwks`
+//! ([`ConfigError::MerchantNoCredential`]), and `grant_types` and
+//! `allowed_audiences` only if it has a `jwks` and `machine_tokens` is permitted.
+//! A merchant with `cose_keys` alone boots under the default and simply cannot
+//! mint or present a token.
 //!
 //! # Examples
 //!
@@ -64,6 +76,10 @@
 //! let only = keypair_only.resolve().expect("a legal list");
 //! assert!(only.permits(AuthMethod::Keypair));
 //! assert!(!only.permits(AuthMethod::MachineTokens));
+//!
+//! // `methods:` with every item commented out is a null: not the default.
+//! let null: AuthConfig = serde_yaml_ng::from_str("methods: ~").expect("a null parses");
+//! assert!(null.resolve().is_err());
 //! ```
 
 use std::collections::BTreeSet;
@@ -126,13 +142,33 @@ impl fmt::Display for AuthMethod {
 /// is a specific [`ConfigError::UnknownAuthMethod`] naming the legal set,
 /// rather than a serde shape error; [`Self::resolve`] is the one place they
 /// become [`AuthMethod`]s.
+///
+/// A YAML null is read as an **empty list**, not as absent, so that
+/// `methods:` with its items commented out is [`ConfigError::NoAuthMethods`]
+/// and not a silent all-four.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case", deny_unknown_fields)]
 pub struct AuthConfig {
     /// `None`, absent from the YAML, permits every method. `Some` is exactly
-    /// the list.
-    #[serde(default)]
+    /// the list, and a null in the YAML is `Some(vec![])`.
+    #[serde(
+        default,
+        deserialize_with = "present_methods",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub methods: Option<Vec<String>>,
+}
+
+/// Reads the key when it is *present*: a list as itself, a null as the empty
+/// list. `#[serde(default)]` is what makes an *absent* key `None`, and never
+/// reaches this function, so the two stay distinguishable.
+fn present_methods<'de, D>(deserializer: D) -> Result<Option<Vec<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Ok(Some(
+        Option::<Vec<String>>::deserialize(deserializer)?.unwrap_or_default(),
+    ))
 }
 
 impl AuthConfig {
@@ -203,9 +239,12 @@ impl AuthMethods {
     /// The permitted methods this release actually serves: what
     /// `GET /.well-known/vpay-auth` tells a client.
     ///
-    /// Everything permitted except `human_login`, whose blocks are retired
-    /// keys until VPA-3 restores them. **This is the one place that changes
-    /// when it does.**
+    /// **Permitted minus `human_login`**, and nothing else: whether a method
+    /// *runs* for a given merchant still depends on that merchant's blocks (a
+    /// merchant with no `jwks` cannot use `machine_tokens` on a deployment that
+    /// serves it), so the list is what the deployment offers, not a promise
+    /// about any one caller. `human_login`'s blocks are retired keys until
+    /// VPA-3 restores them; **this is the one place that changes when it does.**
     pub fn served(&self) -> impl Iterator<Item = AuthMethod> + '_ {
         self.permitted()
             .filter(|method| *method != AuthMethod::HumanLogin)

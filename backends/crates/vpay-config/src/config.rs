@@ -1494,12 +1494,15 @@ fn validate_required_rail_keys(provider: &ProviderHost, livemode: bool) -> Resul
     Ok(())
 }
 
-/// ADR-0010's merchant-client rules: no client secret, ever; a non-empty,
-/// non-degenerate JWK set (`private_key_jwt` with no key can never
-/// authenticate); `client_credentials` as the only permitted grant; and
+/// ADR-0010's merchant-client rules: no client secret, ever; **a credential**
+/// (`cose_keys` or `jwks`, [`ConfigError::MerchantNoCredential`]); and, for a
+/// registration that has a `jwks` while `machine_tokens` is permitted, a
+/// non-empty, non-degenerate JWK set (`private_key_jwt` with no key can never
+/// authenticate), `client_credentials` as the only permitted grant, and
 /// [`MERCHANT_AUDIENCE`] present in `allowed_audiences`, without which the
 /// client's `/v1` tokens are unusable in a way nothing downstream can
-/// diagnose (see [`ConfigError::MerchantMissingV1Audience`]).
+/// diagnose (see [`ConfigError::MerchantMissingV1Audience`]). A registration
+/// with `cose_keys` alone is exempt from all of those (ADR-0037).
 ///
 /// The audience rule is checked last on purpose: it is the only one of the
 /// four that is about what a *correctly shaped* registration would go on to
@@ -1512,11 +1515,27 @@ fn validate_merchant_client(
     if merchant.client_secret.is_some() {
         return Err(ConfigError::ClientSecretPresent(merchant.client_id.clone()));
     }
+    // A registration is a way to authenticate. With neither a signing key nor
+    // a `jwks` there is none, whichever methods the deployment permits.
+    // `jwks: {keys: []}` is *present* and stays `EmptyMerchantJwks` below.
+    if merchant.jwks.is_none() && merchant.cose_keys.is_empty() {
+        return Err(ConfigError::MerchantNoCredential(
+            merchant.client_id.clone(),
+        ));
+    }
     // The OAuth half of a registration exists to mint and verify a bearer
     // token. Without `machine_tokens` it is refused if present
     // (`validate_auth_methods`) and not required here.
     if !machine_tokens {
         return Ok(());
+    }
+    // A merchant with `cose_keys` alone has no OAuth half and may omit all
+    // three of `jwks`, `grant_types` and `allowed_audiences`: it cannot use a
+    // token, which is the deployment's default offering and not its demand.
+    // The three are required together, and only for a merchant that has a
+    // `jwks` (ADR-0037).
+    if merchant.jwks.is_none() {
+        return validate_grants(merchant);
     }
     if !jwks_has_at_least_one_key(&merchant.jwks) {
         return Err(ConfigError::EmptyMerchantJwks(merchant.client_id.clone()));
@@ -1526,14 +1545,7 @@ fn validate_merchant_client(
             client_id: merchant.client_id.clone(),
         });
     }
-    for grant in &merchant.grant_types {
-        if *grant != GrantType::ClientCredentials {
-            return Err(ConfigError::DisallowedMerchantGrant {
-                client_id: merchant.client_id.clone(),
-                grant: *grant,
-            });
-        }
-    }
+    validate_grants(merchant)?;
     if !merchant
         .allowed_audiences
         .iter()
@@ -1547,6 +1559,21 @@ fn validate_merchant_client(
     // a constant. (It moved to `Config::validate_all` on 2026-09-07 for
     // ADR-0017's dashboard client id; ADR-0036 deleted that client, and the
     // check with it.)
+    Ok(())
+}
+
+/// Whatever `grant_types` a registration does declare is
+/// `[client_credentials]` and nothing else (ADR-0010), whether or not it has a
+/// `jwks` to mint with.
+fn validate_grants(merchant: &MerchantClient) -> Result<(), ConfigError> {
+    for grant in &merchant.grant_types {
+        if *grant != GrantType::ClientCredentials {
+            return Err(ConfigError::DisallowedMerchantGrant {
+                client_id: merchant.client_id.clone(),
+                grant: *grant,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -2338,6 +2365,19 @@ const RETIRED_KEYS: [(&str, &str); 2] = [
     ),
 ];
 
+/// Top-level keys that are near misses of a real one, and what the real one is.
+///
+/// `Config` ignores unknown top-level keys, and for `auth.methods` that is a
+/// fail-open: a deployment that wrote `auth_methods: [keypair]` believes it
+/// narrowed the list and permitted all four. Add a spelling here only when it
+/// was or plausibly will be written by someone who meant the real key.
+const NEAR_MISS_KEYS: [(&str, &str); 4] = [
+    ("auth_methods", "auth: {methods: [...]}"),
+    ("auth-methods", "auth: {methods: [...]}"),
+    ("authentication", "auth: {methods: [...]}"),
+    ("authmethods", "auth: {methods: [...]}"),
+];
+
 /// Refuses a document that still carries a retired top-level key.
 ///
 /// `Config` does not set `deny_unknown_fields` (an overlay may carry keys a
@@ -2352,6 +2392,14 @@ fn reject_retired_keys(raw: &figment::value::Value) -> Result<(), ConfigError> {
             return Err(ConfigError::RetiredKey {
                 key: key.to_owned(),
                 instead,
+            });
+        }
+    }
+    for (key, meant) in NEAR_MISS_KEYS {
+        if document.contains_key(key) {
+            return Err(ConfigError::NearMissKey {
+                key: key.to_owned(),
+                meant,
             });
         }
     }
@@ -2832,6 +2880,9 @@ merchant_clients:
         };
         for (fixture, expected) in [
             ("auth-methods-empty.yml", ConfigError::NoAuthMethods),
+            // `methods:` with every item commented out is a null, which is
+            // not the absent key and must not read as the all-four default.
+            ("auth-methods-null.yml", ConfigError::NoAuthMethods),
             (
                 "auth-methods-unknown.yml",
                 ConfigError::UnknownAuthMethod("oauth".to_owned()),
@@ -2898,6 +2949,74 @@ merchant_clients:
                 78,
                 "{fixture}: a contradiction in auth.methods is a deploy to fix"
             );
+        }
+    }
+
+    /// A merchant needs a credential, whichever methods are permitted; and under
+    /// the default a merchant with `cose_keys` alone loads, with none of the
+    /// OAuth half (`jwks`, `grant_types`, `allowed_audiences`) that a merchant
+    /// minting tokens needs.
+    #[test]
+    fn a_merchant_needs_a_credential_and_cose_keys_alone_is_enough_under_the_default() {
+        let config = load_fixture("auth-methods-default-cose-keys-only.yml")
+            .expect("the default must not demand an OAuth half from a keypair merchant");
+        let methods = config.auth_methods().expect("resolves");
+        assert!(!methods.is_explicit(), "the fixture writes no auth key");
+        assert!(methods.permits(crate::AuthMethod::MachineTokens));
+        let merchant = config.merchant_clients.first().expect("one merchant");
+        assert!(merchant.jwks.is_none() && merchant.grant_types.is_empty());
+
+        for fixture in [
+            "auth-methods-merchant-no-credential.yml",
+            "auth-methods-keypair-only-merchant-no-credential.yml",
+        ] {
+            assert_eq!(
+                load_fixture(fixture).err(),
+                Some(ConfigError::MerchantNoCredential(
+                    "acme-cameroon".to_owned()
+                )),
+                "{fixture}"
+            );
+        }
+    }
+
+    /// The OAuth half is required together and only for a merchant that has a
+    /// `jwks`: a `jwks` with no `grant_types` is still refused under the default
+    /// (`oauth-merchant-grant-types-missing.yml`), and a grant declared without
+    /// a `jwks` is held to the same single permitted value.
+    #[test]
+    fn grant_types_without_a_jwks_are_still_only_client_credentials() {
+        let mut config = valid_config();
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.jwks = None;
+        merchant.allowed_audiences.clear();
+        merchant.cose_keys = vec![cose_key(COSE_KEY_A, Some("ci"))];
+        merchant.grant_types = vec![crate::oauth::GrantType::ClientCredentials];
+        assert!(config.validate_all(&RawSecrets::default()).is_ok());
+
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.grant_types = vec![crate::oauth::GrantType::AuthorizationCode];
+        assert!(matches!(
+            config.validate_all(&RawSecrets::default()),
+            Err(ConfigError::DisallowedMerchantGrant { .. })
+        ));
+    }
+
+    /// `Config` ignores unknown top-level keys, so `auth_methods:` or
+    /// `authentication:` would be dropped and the deployment would permit all
+    /// four while its operator believed it had narrowed them.
+    #[test]
+    fn a_near_miss_of_the_auth_key_is_refused_not_ignored() {
+        for (fixture, key) in [
+            ("near-miss-key-auth-methods.yml", "auth_methods"),
+            ("near-miss-key-authentication.yml", "authentication"),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert!(
+                matches!(&err, ConfigError::NearMissKey { key: k, .. } if k == key),
+                "{fixture}: {err:?}"
+            );
+            assert!(err.to_string().contains("auth: {methods:"), "{err}");
         }
     }
 

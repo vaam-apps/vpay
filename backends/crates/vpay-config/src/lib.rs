@@ -1511,15 +1511,44 @@ pub enum ConfigError {
         client_id: String,
     },
 
-    /// `auth.methods` is present and an empty list (ADR-0037). A deployment
-    /// that permits no way of authenticating is a misconfiguration; absent is
-    /// legal and permits every method (see [`AuthConfig`]).
+    /// `auth.methods` is present and an empty list or a null (ADR-0037). A
+    /// deployment that permits no way of authenticating is a misconfiguration;
+    /// absent is legal and permits every method (see [`AuthConfig`]). A null
+    /// is how `methods:` reads once every item under it is commented out, and
+    /// is refused rather than read as absent: the operator was narrowing the
+    /// list, and all four is the opposite of what they meant.
     #[error(
-        "auth.methods is present and empty; a deployment that permits no way of authenticating \
-         is a misconfiguration. Name one or more of: keypair, machine_tokens, hmac_webhooks \
-         (or delete the key to permit every method)"
+        "auth.methods is present and empty (or null: `methods:` with every item commented \
+         out); a deployment that permits no way of authenticating is a misconfiguration. Name \
+         one or more of: keypair, machine_tokens, hmac_webhooks (or delete the key to permit \
+         every method)"
     )]
     NoAuthMethods,
+
+    /// A top-level key that is a near miss of one vpay reads (`auth_methods`
+    /// for `auth.methods`). `Config` ignores unknown top-level keys so that an
+    /// overlay may carry one a later release reads, which would drop this one
+    /// and leave the deployment permitting everything its operator tried to
+    /// narrow (ADR-0037).
+    #[error(
+        "the configuration names `{key}`, which is not a key vpay reads; did you mean \
+         `{meant}`? Fix or delete it in the base file and in every profile overlay"
+    )]
+    NearMissKey {
+        /// The key, as written.
+        key: String,
+        /// What it was probably meant to be.
+        meant: &'static str,
+    },
+
+    /// A merchant registration with neither `cose_keys` nor `jwks`: no way to
+    /// authenticate as it, so no request could ever be its own. Fatal, not a
+    /// tenant that exists and answers `401` to everyone (ADR-0037).
+    #[error(
+        "merchant_clients[{0}] registers no credential; add `cose_keys` (a signing key) or, \
+         with machine_tokens permitted, a `jwks`"
+    )]
+    MerchantNoCredential(String),
 
     /// `auth.methods` names something that is not a method.
     #[error(
