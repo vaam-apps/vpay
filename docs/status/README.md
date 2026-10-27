@@ -138,7 +138,8 @@ rather than trusting this list to be exhaustive.
   permits, and `/v1` takes a bearer token beside a signed request when
   `machine_tokens` is among them. Each rule and each guard was broken, its test
   seen to fail, and restored; one mutation survived until its assertion was
-  written. The Postgres-backed suites compile and were not run.
+  written. A second section records the adversarial review's nine findings and
+  the guard each one added. The Postgres-backed suites compile and were not run.
 - [verification/2026-10-26-dashboard-cratestack-refine.md](verification/2026-10-26-dashboard-cratestack-refine.md) —
   the dashboard's four procedure-backed lists and its Overview read through
   `@vpay/dash-client`, a TypeScript client generated from

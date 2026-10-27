@@ -1684,12 +1684,16 @@ token round trips against the real tables are CI's `merchant_token_flow.rs` and
 `signed_transport.rs`, both edited here and only compiled.
 
 - **`auth.methods`** (`vpay-config/src/auth.rs`): `keypair`, `machine_tokens`,
-  `hmac_webhooks`, `human_login`; absent means all four. Eight rules, one
+  `hmac_webhooks`, `human_login`; absent means all four. Eight rules (and the per-merchant credential rule), one
   `ConfigError` variant and one fixture (`auth-methods-*.yml`) each, listed in
   [the config reference](../reference/vpay-config.md#auth--which-ways-of-authenticating-a-deployment-permits-adr-0037).
   A block belonging to a method that is not permitted is refused, so a
   `[keypair]` deployment must drop `jwks`, `grant_types` and
-  `allowed_audiences` from its merchant registrations.
+  `allowed_audiences` from its merchant registrations. A merchant needs
+  `cose_keys` or a `jwks`; the three of `jwks`, `grant_types` and
+  `allowed_audiences` are required only together with a `jwks`, so a
+  `cose_keys`-only merchant boots under the default. A null `methods:` is
+  refused (it is not the absent key), as are `auth_methods:`-style near misses.
 - **`/v1` mode follows the methods**: `[keypair]` is `Required` (as before),
   `[keypair, machine_tokens]` is `Optional` with the unresolved mode pinned to
   `Required`, `[machine_tokens]` is `Off`. In `merchant_scope` a verified
@@ -1702,8 +1706,8 @@ token round trips against the real tables are CI's `merchant_token_flow.rs` and
   methods.
 - **`hmac_webhooks` off refuses any `webhooks[]` entry at boot**: no merchant
   webhooks until sealed delivery (VP-8).
-- **Tests**: 14 refusal fixtures and 4 loading ones in `vpay-config`, and 15
-  router cases in `vpay-api/src/auth_methods_tests.rs`, including a sealed call
+- **Tests**: 20 refusal fixtures and 5 loading ones in `vpay-config`, and 17 router cases in
+  `vpay-api/src/auth_methods_tests.rs`, including a sealed call
   through the real layer and the SDK next to a token call on one router; the
   guard proofs are in
   [verification/2026-10-27-vpa1-auth-methods.md](verification/2026-10-27-vpa1-auth-methods.md).

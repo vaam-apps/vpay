@@ -15,9 +15,12 @@ was run, what broke it on purpose, and what could not be run.
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
 | `cargo fmt --check`                                                                                                                                            | clean                                                  |
 | `cargo clippy -p vpay-config -p vpay-api -p vpay-server -p vpay-db --all-targets -- -D warnings`, and the same over `vpay-tests-integration` and `vpay-worker` | clean                                                  |
-| `cargo test -p vpay-config`                                                                                                                                    | 158 passed, and 7 in its second target                 |
-| `cargo test -p vpay-api --lib`                                                                                                                                 | 448 passed (15 of them are `auth_methods_tests`)       |
-| `cargo test -p vpay-server`, the unit targets                                                                                                                  | 9 and 8 passed                                         |
+| `cargo test -p vpay-config`                                                                                                                                    | 161 passed, and 7 doctests                             |
+| `cargo test -p vpay-api --lib`                                                                                                                                 | 451 passed (17 of them are `auth_methods_tests`)       |
+| `cargo test -p vpay-api --doc`                                                                                                                                 | 24 passed                                              |
+| `cargo test -p vpay-server --lib --bins`                                                                                                                       | 9 and 8 passed                                         |
+| `cargo check -p merchant-demo`, via `cargo clippy -p merchant-demo --all-targets -- -D warnings`                                                               | clean                                                  |
+| `just gen-demo-keys`, then `Config::load_with_env` over the base file and the generated overlay (a scratch test, not committed)                                | the overlay loads: keypair on, tokens off, 2 merchants |
 | `cargo check --tests -p vpay-tests-integration`                                                                                                                | compiles                                               |
 | `cargo deny check`                                                                                                                                             | advisories, bans, licenses and sources ok              |
 | `just verify`                                                                                                                                                  | the seventeen gates passed (`verify-docs` is advisory) |
@@ -73,10 +76,50 @@ that should have read it had not been added (a text replacement that matched
 nothing, after a reformat). The assertion was added and the mutation run again;
 it failed.
 
+## Review round: the adversarial review of #384
+
+The review found nine things. Each is a commit on top of the PR; the guard each
+one added was broken, its test seen to fail, and the source restored (a `diff`
+against the saved copy printed nothing).
+
+| #   | Finding                                                                             | What it became                                                                                                                                     | The guard that failed when broken                                                                                                                                                                       |
+| --- | ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | the demo's steps 2 and 3 fail under the default config                              | the demo overlay runs `[keypair, hmac_webhooks]` and drops `jwks`, `grant_types`, `allowed_audiences`; a stale overlay is regenerated              | with the freshness predicate removed `gen-demo-keys` kept a stale overlay; with it, it regenerated and said why                                                                                         |
+| 2   | the default still demanded the OAuth half of every merchant                         | required together and only for a merchant with a `jwks`; every merchant needs a credential (`MerchantNoCredential`)                                | credential check off: `a_merchant_needs_a_credential_and_cose_keys_alone_is_enough_under_the_default`; old behaviour back: that test and `grant_types_without_a_jwks_are_still_only_client_credentials` |
+| 3   | the docs said a token caller has its own idempotency and rate-limit namespace       | corrected in ADR-0037, signed-transport.md and this page; integration case (m) pins one key for both credentials                                   | not run here (it needs Postgres); it compiles                                                                                                                                                           |
+| 4   | `auth: {methods: ~}` read as the absent key (all four); near-miss keys were dropped | a null is `NoAuthMethods`; `auth_methods`, `auth-methods`, `authmethods`, `authentication` are `NearMissKey`                                       | null read as absent: `every_auth_methods_rule_refuses_its_fixture_with_its_own_variant`; near-miss loop off: `a_near_miss_of_the_auth_key_is_refused_not_ignored`                                       |
+| 5   | the shipped `/v1` validator was typed in `main.rs` and copied by every test         | `merchant_token_validator` and `mcp_token_validator` in `vpay-api`, called by `main.rs`, the integration support and the unit fixtures             | `/v1` audience changed to the MCP resource: six cases including `a_v1_token_is_refused_by_mcp_and_an_mcp_token_by_v1`; MCP audience changed to `vpay:v1`: that test                                     |
+| 6   | a token caller could be sealed an answer (`Cratestack-Nonce` + `Accept`)            | the response seal policy under `Optional` is "never"                                                                                               | policy removed: `both_ways_a_bearer_caller_is_never_handed_a_sealed_answer`                                                                                                                             |
+| 7   | `disable_client` did not reach a token caller                                       | the scope step asks `disabled_clients` for the token's `client_id`: `401` `invalid_token`; a switch that cannot answer is an error                 | check of `Ok(true)` removed: `a_token_for_a_disabled_client_is_refused_and_an_unanswerable_switch_is_an_error`; `Err` swallowed: the same test                                                          |
+| 8   | a signed request with `Authorization` is `400` even under `[keypair]` (was ignored) | kept; upgrade note in ADR-0037 and the config reference                                                                                            | (existing) `a_signature_and_a_bearer_together_are_a_400`                                                                                                                                                |
+| 9   | nits                                                                                | ADR-0035 marked superseded in part by ADR-0037; `AuthMethods::served()` defined as permitted minus `human_login` in its doc and the discovery docs | docs only                                                                                                                                                                                               |
+
+**The seal-policy test needed a second look.** Its first version sent
+`Cratestack-Nonce` and `Accept: application/cose` and passed with the policy
+removed too: the layer answered `406` first, because an unsigned request's
+response type defaults to CBOR and `/v1` declares JSON only. Sealing needs
+`Cratestack-Payload-Accept: application/json` as well. With that header the
+test fails without the policy, which is the mutation row above.
+
+**One test is flaky and was not written here.** `both_ways_a_valid_token_reaches_the_handler_and_is_answered_in_plain_json`
+(from the PR's first commit) failed once in about ten runs, on its
+`auth.method="machine_token"` log assertion, in a run that changed nothing it
+reads. The log it captures printed no span context in that run, which is what a
+`tracing` callsite cached as disabled by a neighbouring test's missing
+subscriber looks like. It passed in the three runs made after, and is not fixed
+here.
+
 ## What this does not prove
 
-- That a token caller is rate-limited or deduplicated as a signer is: the keys
-  differ by credential (ADR-0037, Consequences) and no test pins either.
+- That a signed and a token request of one merchant share an idempotency key
+  against the real table: the claim is merchant-scoped in the code
+  (`Idempotency::claim(merchant_id, key, ...)`), and integration case (m) says
+  it from outside, but it compiles here and was not run.
+- That `disable_client` reaches a token minted before it, against the real
+  `disabled_clients` table: case (b) says it, and compiles. The unit test uses
+  an in-memory kill switch.
+- That the demo walkthrough runs end to end: the overlay it needs is generated
+  and loads, and the example builds, but the stack needs Docker.
 - That the SDKs speak the token half: they do not (VPA-6).
 - That a legacy-only (`keypair` off) deployment boots end to end: the config and
   the layer mode are tested; the server's key loading is unchanged and still
