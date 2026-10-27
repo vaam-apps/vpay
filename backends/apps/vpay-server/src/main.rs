@@ -828,6 +828,7 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
             public_key,
             label,
         } => pair_key(args, &staff, &public_key, label.as_deref()).await,
+        vpay_config::StaffCommand::RevokeKey { thumbprint } => revoke_key(args, &thumbprint).await,
     }
 }
 
@@ -1015,6 +1016,73 @@ async fn pair_key(
             paired.key.id,
             paired.key.thumbprint,
             paired.key.expires_at.unix_timestamp()
+        );
+    }
+
+    Ok(())
+}
+
+/// `vpay-server staff revoke-key` — revokes a console key by thumbprint: the
+/// break-glass counterpart of `staff pair-key`, for when no vaam service can
+/// (VP-6a). It runs [`vpay_api::console_keys::revoke`], the function
+/// `DELETE /svc/v1/console_keys/{thumbprint}` runs, so the two cannot decide
+/// differently: any member's key, an administrator's included, is revocable;
+/// the first `revoked_at` is kept; a revoked thumbprint stays taken.
+///
+/// The thumbprint's shape is checked before the database is opened, so a typo is
+/// answered in milliseconds and needs no configuration.
+///
+/// Prints one line to stdout, `<staff id> <key id> <thumbprint> <revoked_at unix
+/// seconds>`, alone, so an operator can capture it.
+///
+/// # Errors
+///
+/// [`anyhow::Error`] naming the step: a thumbprint of the wrong shape, or one no
+/// key registered.
+async fn revoke_key(args: &ServerArgs, thumbprint: &str) -> anyhow::Result<()> {
+    vpay_api::console_keys::check_thumbprint(thumbprint)
+        .map_err(|error| anyhow::anyhow!("--thumbprint: {error}"))?;
+
+    let database_url =
+        args.common.database_url.as_deref().context(
+            "--database-url / DATABASE_URL is required: `staff revoke-key` writes a row",
+        )?;
+    let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
+
+    let key = vpay_api::console_keys::revoke(
+        repositories.as_ref(),
+        thumbprint,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await
+    .map_err(|error| match error {
+        vpay_api::ApiError::NotFound { .. } => {
+            anyhow::anyhow!("--thumbprint {thumbprint}: no console key is registered under it")
+        }
+        other => anyhow::anyhow!("revoking the key: {other}"),
+    })?;
+    let revoked_at = key
+        .revoked_at
+        .context("the key was revoked but carries no revoked_at")?;
+
+    tracing::info!(
+        staff_id = %key.staff_member_id,
+        thumbprint = %key.thumbprint,
+        "a console key was revoked from the command line"
+    );
+
+    #[allow(
+        clippy::print_stdout,
+        reason = "the result must be capturable and must be the whole of stdout; \
+                  `install_process_defaults` puts a subcommand's logs on stderr so it is"
+    )]
+    {
+        println!(
+            "{} {} {} {}",
+            key.staff_member_id,
+            key.id,
+            key.thumbprint,
+            revoked_at.unix_timestamp()
         );
     }
 

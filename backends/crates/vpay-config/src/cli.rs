@@ -619,6 +619,21 @@ pub enum StaffCommand {
         #[arg(long)]
         label: Option<String>,
     },
+
+    /// Revoke a console key by thumbprint: the break-glass way to cut a key off
+    /// when no vaam service can (VP-6a). The same function `DELETE
+    /// /svc/v1/console_keys/{thumbprint}` runs, so the two cannot disagree.
+    ///
+    /// Takes effect on the key's next request. Idempotent: a key already
+    /// revoked keeps its first `revoked_at`. It revokes any member's key,
+    /// an administrator's included (incident response), and never re-enables
+    /// one: a revoked thumbprint stays taken for ever.
+    RevokeKey {
+        /// The key's RFC 9679 thumbprint: 64 lower-case hex characters, as
+        /// `staff pair-key` printed it.
+        #[arg(long)]
+        thumbprint: String,
+    },
 }
 
 /// `vpay-server worker` — the flags the job loop takes that no other mode
@@ -1167,6 +1182,32 @@ mod tests {
         assert_eq!(staff, "ops@acme.example");
         assert_eq!(public_key, key);
         assert_eq!(label.as_deref(), Some("break-glass"));
+    }
+
+    /// `staff revoke-key --thumbprint` parses, and takes nothing else: it is
+    /// the break-glass twin of `pair-key` and names a key, not a member.
+    #[test]
+    fn revoke_key_takes_a_thumbprint() {
+        let thumbprint = "ab".repeat(32);
+        let args = ServerArgs::try_parse_from([
+            "vpay-server",
+            "staff",
+            "revoke-key",
+            "--thumbprint",
+            &thumbprint,
+        ])
+        .expect("`staff revoke-key --thumbprint <t>` parses");
+        let Some(ServerCommand::Staff {
+            command: StaffCommand::RevokeKey { thumbprint: parsed },
+        }) = args.command
+        else {
+            panic!("expected `staff revoke-key`");
+        };
+        assert_eq!(parsed, thumbprint);
+        assert!(
+            ServerArgs::try_parse_from(["vpay-server", "staff", "revoke-key"]).is_err(),
+            "the thumbprint is required"
+        );
     }
 
     #[test]

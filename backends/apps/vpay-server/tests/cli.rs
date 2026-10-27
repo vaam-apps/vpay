@@ -2661,6 +2661,174 @@ fn staff_pair_key_refuses_an_unknown_member() {
     });
 }
 
+/// `vpay-server staff revoke-key` refuses a thumbprint that is not 64 lower-case
+/// hex characters **before** reading any configuration or opening the database:
+/// no config and no `DATABASE_URL` is supplied, so "before" is an assertion.
+#[test]
+fn staff_revoke_key_refuses_a_malformed_thumbprint_before_it_needs_a_config_or_a_database() {
+    for (what, thumbprint) in [
+        ("too short", "abc".to_owned()),
+        ("upper case", "AB".repeat(32)),
+        ("not hex", "zz".repeat(32)),
+    ] {
+        let output = bin()
+            .args(["staff", "revoke-key", "--thumbprint", &thumbprint])
+            .env_remove("VPAY_CONFIG")
+            .env_remove("DATABASE_URL")
+            .output()
+            .expect("running `vpay-server staff revoke-key`");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "{what}: {stderr}");
+        assert!(
+            stderr.contains("--thumbprint") && stderr.contains("64 lower-case hex"),
+            "{what}: the refusal names the flag and the shape: {stderr}"
+        );
+        assert!(
+            !stderr.contains("DATABASE_URL"),
+            "{what}: the shape is checked before anything else: {stderr}"
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    }
+}
+
+/// `vpay-server staff revoke-key` is the break-glass twin of `pair-key`: it
+/// revokes a key the command line paired, prints one line on stdout (`<staff
+/// id> <key id> <thumbprint> <revoked_at>`), is idempotent (the first
+/// `revoked_at` is kept), refuses a thumbprint nothing registered, and — read
+/// back through the repository — leaves the key dead for ever, even for an
+/// administrator's.
+///
+/// The decisive mutation: skip `revoke_console_key` and the read-back shows a
+/// live key while the exit code and the printed line stay green.
+#[test]
+fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempotent() {
+    with_live_postgres(|database_url| {
+        let run = |args: &[&str]| {
+            bin()
+                .args(args)
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_LOG_FORMAT", "json")
+                .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+                .output()
+                .expect("running `vpay-server staff …`")
+        };
+        let added = run(&[
+            "staff",
+            "add",
+            "--merchant",
+            "acme-cameroon-tenant",
+            "--email",
+            "root@example.test",
+            "--name",
+            "Root",
+            "--admin",
+        ]);
+        assert!(added.status.success());
+        let key = generated_console_public_key();
+        let paired = run(&[
+            "staff",
+            "pair-key",
+            "--staff",
+            "root@example.test",
+            "--public-key",
+            &key,
+        ]);
+        assert!(
+            paired.status.success(),
+            "{}",
+            String::from_utf8_lossy(&paired.stderr)
+        );
+        let paired_stdout = String::from_utf8_lossy(&paired.stdout).into_owned();
+        let thumbprint = paired_stdout
+            .split(' ')
+            .nth(2)
+            .expect("pair-key prints the thumbprint third")
+            .to_owned();
+
+        let revoked = run(&["staff", "revoke-key", "--thumbprint", &thumbprint]);
+        let stdout = String::from_utf8_lossy(&revoked.stdout);
+        let stderr = String::from_utf8_lossy(&revoked.stderr);
+        assert!(revoked.status.success(), "{stdout}\n{stderr}");
+        let lines: Vec<&str> = stdout.lines().filter(|l| !l.is_empty()).collect();
+        assert_eq!(lines.len(), 1, "one line, alone on stdout: {stdout:?}");
+        let fields: Vec<&str> = lines.first().expect("one line").split(' ').collect();
+        let &[member_id, key_id, printed, revoked_at] = fields.as_slice() else {
+            panic!("four fields: {stdout:?}");
+        };
+        assert!(member_id.starts_with("stf_") && key_id.starts_with("ck_"));
+        assert_eq!(printed, thumbprint);
+        let first_revoked_at: i64 = revoked_at.parse().expect("unix seconds");
+
+        // Read back through the repository, not the exit code.
+        assert_eq!(
+            read_back_key_revocation(&database_url, &thumbprint),
+            Some(first_revoked_at),
+            "the key row carries the revocation the command printed"
+        );
+
+        // Idempotent: the first instant is kept.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        let again = run(&["staff", "revoke-key", "--thumbprint", &thumbprint]);
+        assert!(again.status.success());
+        let again_stdout = String::from_utf8_lossy(&again.stdout).into_owned();
+        assert_eq!(
+            again_stdout.trim().split(' ').nth(3),
+            Some(first_revoked_at.to_string().as_str()),
+            "a second revocation keeps the first revoked_at: {again_stdout:?}"
+        );
+
+        // A well-formed thumbprint nothing registered is refused and prints nothing.
+        let unknown = run(&["staff", "revoke-key", "--thumbprint", &"0".repeat(64)]);
+        assert!(!unknown.status.success());
+        assert!(String::from_utf8_lossy(&unknown.stdout).trim().is_empty());
+        assert!(
+            String::from_utf8_lossy(&unknown.stderr).contains("no console key is registered"),
+            "{}",
+            String::from_utf8_lossy(&unknown.stderr)
+        );
+
+        // And a revoked thumbprint stays taken: pairing it again is refused.
+        let repaired = run(&[
+            "staff",
+            "pair-key",
+            "--staff",
+            "root@example.test",
+            "--public-key",
+            &key,
+        ]);
+        assert!(
+            !repaired.status.success(),
+            "a revoked key is never reinstated"
+        );
+    });
+}
+
+/// The key's `revoked_at` as unix seconds, read through the repository on a
+/// thread of its own (see [`read_back_two_members`]).
+fn read_back_key_revocation(database_url: &str, thumbprint: &str) -> Option<i64> {
+    let (database_url, thumbprint) = (database_url.to_owned(), thumbprint.to_owned());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a tokio runtime on the reader thread");
+        rt.block_on(async move {
+            let repositories = vpay_db::connect(&database_url)
+                .await
+                .expect("connecting to read the rows back");
+            vpay_db::ConsoleKeys::find_console_key(repositories.as_ref(), &thumbprint)
+                .await
+                .expect("reading a row")
+                .expect("the command paired it")
+                .revoked_at
+                .map(|at| at.unix_timestamp())
+        })
+    })
+    .join()
+    .expect("the reader thread panicked")
+}
+
 /// `vpay-server worker`, end to end against the real compiled binary.
 ///
 /// **This module is `backends/apps/vpay-worker-bin/tests/cli.rs`, moved.**
