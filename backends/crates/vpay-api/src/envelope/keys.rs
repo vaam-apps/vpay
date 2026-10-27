@@ -33,6 +33,7 @@
 
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
@@ -134,7 +135,7 @@ impl Classify for EnvelopeKeyError {
 /// process never signs with the latter, so after loading it nothing in memory
 /// can.
 pub struct EnvelopeKeys {
-    current: Ed25519Signer,
+    current: Arc<Ed25519Signer>,
     current_public: [u8; 32],
     next_public: [u8; 32],
 }
@@ -186,7 +187,7 @@ impl EnvelopeKeys {
         Ok(Self {
             current_public: public_bytes(&current),
             next_public: public_bytes(&next),
-            current,
+            current: Arc::new(current),
         })
     }
 
@@ -230,10 +231,11 @@ impl EnvelopeKeys {
         )
     }
 
-    /// The signer that seals responses.
+    /// The signer that seals responses. Shared, not moved: the `/v1` layer,
+    /// the console's two layers and `/svc/v1` all seal with the one key (VP-6a).
     #[must_use]
-    pub fn into_signer(self) -> Ed25519Signer {
-        self.current
+    pub fn signer(&self) -> Arc<Ed25519Signer> {
+        Arc::clone(&self.current)
     }
 }
 

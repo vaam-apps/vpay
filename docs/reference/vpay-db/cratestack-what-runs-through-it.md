@@ -2,6 +2,18 @@
 
 _Moved out of [docs/reference/vpay-db.md](../vpay-db.md) on 2026-09-11 by exp57, which split a 3 330-line reference into pages a person can read. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the relative links gained a `../` because the file moved one directory down._
 
+> **Changed 2026-10-26 (VP-6a, migration `0056`).** `staff_sessions` and
+> `oauth_authorization_codes` no longer exist, so their nine rows below are the
+> record of what stood, and `staff_members` lost `enrol_totp`, `record_totp_step`,
+> `set_password` and `delete` (it has no `delete` arm). `console_keys` is new
+> with four generated statements in `vpay_db::console_keys`: `pair_console_key`
+> (`create`), `find_console_key` (`find_many().where_(thumbprint).limit(1)`),
+> `live_console_keys_for_kid` (`find_many().where_(thumbprint.starts_with(kid))
+.where_(revoked_at.is_null()).where_(expires_at.gt(now))`) and
+> `revoke_console_key` (`update_many().where_(thumbprint).where_(revoked_at.is_null())`).
+> The registry was not re-measured; the counts in the paragraphs after this one
+> are the 2026-09-10 snapshot.
+
 > **A dated snapshot, not today's list (added 2026-09-23).** The registry
 > below is the one measured on **2026-09-10** — thirty-two statements over
 > twelve tables — and the page title's "today" is that day's. It is kept

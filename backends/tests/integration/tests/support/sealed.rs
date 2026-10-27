@@ -29,7 +29,8 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use bytes::Bytes;
 use cratestack_client_rust::cose::{
-    CoseEnvelope, CoseMode, CoseVerifyKey, Ed25519Signer, StaticVerifierResolver,
+    CoseEnvelope, CoseMode, CoseSigner, CoseVerifyKey, Ed25519Signer, P256Signer,
+    StaticVerifierResolver,
 };
 use cratestack_client_rust::{ClientEnvelope, ClientError, EnvelopeError, RouteRef, SealCall};
 use reqwest::header::HeaderMap;
@@ -80,12 +81,160 @@ pub(crate) fn server_keys_b64() -> (String, String) {
     )
 }
 
-/// The `vpay-wire` operation a concrete path and method address, with the
+// ------------------------------------------------------------- the console --
+
+/// The P-256 scalar a console named `label` signs with.
+///
+/// Derived, like a merchant's seed, so the harness that pairs a key and the code
+/// that signs with it agree without a registry. `SHA-256` of a label is a valid
+/// scalar with overwhelming probability (it fails only for 0 or >= the group
+/// order); [`console_signer`] panics if one ever is not, and the label is
+/// changed.
+pub(crate) fn console_scalar(label: &str) -> [u8; 32] {
+    seed_of(&format!("vpay-it-console:{label}"))
+}
+
+fn console_signer(scalar: &[u8; 32]) -> P256Signer {
+    P256Signer::from_scalar(scalar).expect("a derived scalar is a valid P-256 scalar")
+}
+
+/// The SEC1 uncompressed public key (65 bytes, `0x04 || X || Y`) of [`console_scalar`].
+pub(crate) fn console_public(label: &str) -> [u8; 65] {
+    console_signer(&console_scalar(label))
+        .verify_key()
+        .p256_sec1_uncompressed()
+        .expect("a P-256 key")
+}
+
+/// [`console_public`] as the unpadded base64url a pairing carries.
+pub(crate) fn console_public_b64(label: &str) -> String {
+    URL_SAFE_NO_PAD.encode(console_public(label))
+}
+
+/// The thumbprint (RFC 9679, lower-case hex) of the console key `label`: the
+/// `console_keys.thumbprint` a pairing of it stores.
+pub(crate) fn console_thumbprint(label: &str) -> String {
+    let key = CoseVerifyKey::p256_sec1(&console_public(label)).expect("a point");
+    key.thumbprint()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// The Ed25519 seed the service `client_id` signs with.
+pub(crate) fn service_seed(client_id: &str) -> [u8; 32] {
+    seed_of(&format!("vpay-it-service:{client_id}"))
+}
+
+/// [`service_seed`]'s public half as the unpadded base64url `cose_keys` holds.
+pub(crate) fn service_public_b64(client_id: &str) -> String {
+    URL_SAFE_NO_PAD.encode(public_of(&service_seed(client_id)))
+}
+
+/// The ECDSA-SHA256 possession proof over `"vpay.console-pair.v1\n" +
+/// publicKey + "\n" + issuedAt` that a pairing carries, signed by console `label`'s
+/// private half, as the unpadded base64url of the 64-byte `r || s`.
+pub(crate) fn possession_proof(label: &str, public_key_b64: &str, issued_at: i64) -> String {
+    use p256::ecdsa::signature::Signer as _;
+    let key = p256::ecdsa::SigningKey::from_bytes((&console_scalar(label)).into())
+        .expect("a valid scalar");
+    let signature: p256::ecdsa::Signature =
+        key.sign(format!("vpay.console-pair.v1\n{public_key_b64}\n{issued_at}").as_bytes());
+    URL_SAFE_NO_PAD.encode(signature.to_bytes())
+}
+
+/// Every op digest of the generated procedure transport, from the schema file
+/// itself: the independent oracle for what `POST /dash/v1/$procs/<name>` binds.
+fn procedure_digest(name: &str) -> Option<[u8; 32]> {
+    use std::sync::OnceLock;
+    static TABLE: OnceLock<Vec<(String, [u8; 32])>> = OnceLock::new();
+    let table = TABLE.get_or_init(|| {
+        let schema =
+            cratestack_parser::parse_schema(include_str!("../../../../../schemas/vpay.cstack"))
+                .expect("schemas/vpay.cstack parses");
+        cratestack_core::bound_contracts(&schema)
+    });
+    let key = format!("POST /$procs/{name}");
+    table
+        .iter()
+        .find(|(candidate, _)| *candidate == key)
+        .map(|(_, digest)| *digest)
+}
+
+/// Which surface a URL addresses, and the operation it binds there.
+struct Bound {
+    template: String,
+    params: Vec<String>,
+    digest: [u8; 32],
+    /// Whether the surface speaks JSON in both directions (everything but `/v1`).
+    json: bool,
+}
+
+fn bind_operations(
+    operations: &'static [vpay_wire::Operation],
+    method: &str,
+    path: &str,
+    digest: fn(&str, &str) -> [u8; 32],
+    json: bool,
+) -> Option<Bound> {
+    let (template, params) = match_operation(operations, method, path)?;
+    let method = if method == "HEAD" { "GET" } else { method };
+    Some(Bound {
+        template: template.to_owned(),
+        params,
+        digest: digest(method, template),
+        json,
+    })
+}
+
+/// Resolves a full URL path to the operation it addresses.
+fn bind_url_path(method: &str, full_path: &str) -> Option<Bound> {
+    if let Some(name) = full_path.strip_prefix("/dash/v1/$procs/") {
+        return Some(Bound {
+            template: format!("/$procs/{name}"),
+            params: Vec::new(),
+            digest: procedure_digest(name)?,
+            json: true,
+        });
+    }
+    if let Some(path) = full_path.strip_prefix("/dash/v1") {
+        return bind_operations(
+            vpay_wire::DASH_OPERATIONS,
+            method,
+            path,
+            vpay_wire::dash_contract_digest,
+            true,
+        );
+    }
+    if let Some(path) = full_path.strip_prefix("/svc/v1") {
+        return bind_operations(
+            vpay_wire::SVC_OPERATIONS,
+            method,
+            path,
+            vpay_wire::svc_contract_digest,
+            true,
+        );
+    }
+    let path = full_path.strip_prefix("/v1")?;
+    bind_operations(
+        vpay_wire::V1_OPERATIONS,
+        method,
+        path,
+        vpay_wire::contract_digest,
+        false,
+    )
+}
+
+/// The operation of `operations` a concrete path and method address, with the
 /// decoded parameter values: the independent oracle for what the server binds.
-fn bind(method: &str, path: &str) -> Option<(&'static str, Vec<String>)> {
+fn match_operation(
+    operations: &'static [vpay_wire::Operation],
+    method: &str,
+    path: &str,
+) -> Option<(&'static str, Vec<String>)> {
     let method = if method == "HEAD" { "GET" } else { method };
     let segments: Vec<&str> = path.strip_prefix('/')?.split('/').collect();
-    'rows: for operation in vpay_wire::V1_OPERATIONS {
+    'rows: for operation in operations {
         if operation.method != method {
             continue;
         }
@@ -148,6 +297,8 @@ impl SealedHttp {
             client_id: None,
             pinned: server_seed_current(),
             seal_with: None,
+            console_scalar: None,
+            forced_binding: None,
             audience: None,
         }
     }
@@ -180,6 +331,8 @@ pub(crate) struct SealedRequest {
     client_id: Option<String>,
     pinned: [u8; 32],
     seal_with: Option<[u8; 32]>,
+    console_scalar: Option<[u8; 32]>,
+    forced_binding: Option<(String, [u8; 32])>,
     audience: Option<String>,
 }
 
@@ -187,6 +340,36 @@ impl SealedRequest {
     /// Sign as `client_id` — the merchant whose derived key this is.
     pub(crate) fn signed_by(mut self, client_id: &str) -> Self {
         self.client_id = Some(client_id.to_owned());
+        self
+    }
+
+    /// Bind the call to this route template and contract digest instead of the
+    /// ones the URL addresses: a method or path the contract does not list, for
+    /// the cases that prove the layer refuses it.
+    pub(crate) fn bound_to(mut self, template: &str, digest: [u8; 32]) -> Self {
+        self.forced_binding = Some((template.to_owned(), digest));
+        self
+    }
+
+    /// Sign as the console key `label` (a P-256 key, [`console_scalar`]).
+    pub(crate) fn signed_by_console(mut self, label: &str) -> Self {
+        self.client_id = Some(format!("console:{label}"));
+        self.console_scalar = Some(console_scalar(label));
+        self
+    }
+
+    /// Sign as the registered service `client_id` ([`service_seed`]).
+    pub(crate) fn signed_by_service(mut self, client_id: &str) -> Self {
+        self.client_id = Some(client_id.to_owned());
+        self.seal_with = Some(service_seed(client_id));
+        self
+    }
+
+    /// Sign with this P-256 scalar: a console key nobody paired, for the guard
+    /// cases.
+    pub(crate) fn signed_with_console_scalar(mut self, scalar: [u8; 32]) -> Self {
+        self.client_id = Some("console:adhoc".to_owned());
+        self.console_scalar = Some(scalar);
         self
     }
 
@@ -285,14 +468,18 @@ impl SealedRequest {
             .ok_or_else(|| anyhow::anyhow!("a sealed request needs .signed_by(..)"))?;
         let url = reqwest::Url::parse(&self.url)?;
         let origin = url.origin().ascii_serialization();
-        let path = url
-            .path()
-            .strip_prefix("/v1")
-            .ok_or_else(|| anyhow::anyhow!("{url} is not a /v1 path"))?
-            .to_owned();
-        let (template, params) = bind(&self.method, &path)
-            .ok_or_else(|| anyhow::anyhow!("no /v1 operation matches {} {path}", self.method))?;
-        let params: Vec<&str> = params.iter().map(String::as_str).collect();
+        let bound = match &self.forced_binding {
+            Some((template, digest)) => Bound {
+                template: template.clone(),
+                params: Vec::new(),
+                digest: *digest,
+                json: !url.path().starts_with("/v1"),
+            },
+            None => bind_url_path(&self.method, url.path()).ok_or_else(|| {
+                anyhow::anyhow!("no operation matches {} {}", self.method, url.path())
+            })?,
+        };
+        let params: Vec<&str> = bound.params.iter().map(String::as_str).collect();
 
         let mut query_pairs: Vec<(String, String)> = url
             .query_pairs()
@@ -305,12 +492,16 @@ impl SealedRequest {
                 .finish()
         });
 
-        let seed = self.seal_with.unwrap_or_else(|| merchant_seed(&client_id));
-        let signer = Ed25519Signer::from_seed(&seed);
+        let signer: std::sync::Arc<dyn CoseSigner> = match self.console_scalar {
+            Some(scalar) => std::sync::Arc::new(console_signer(&scalar)),
+            None => std::sync::Arc::new(Ed25519Signer::from_seed(
+                &self.seal_with.unwrap_or_else(|| merchant_seed(&client_id)),
+            )),
+        };
         let server_key = CoseVerifyKey::ed25519(&public_of(&self.pinned)).expect("a point");
         let cose = CoseEnvelope::client(
             CoseMode::Sign1,
-            std::sync::Arc::new(signer),
+            signer,
             std::sync::Arc::new(StaticVerifierResolver::new().with_key(server_key)),
         )
         .build()?;
@@ -318,20 +509,17 @@ impl SealedRequest {
 
         let payload_type = self
             .header_value("content-type")
-            .unwrap_or("application/x-www-form-urlencoded")
+            .unwrap_or(if bound.json {
+                "application/json"
+            } else {
+                "application/x-www-form-urlencoded"
+            })
             .to_owned();
         let idempotency_key = self.header_value("idempotency-key").map(str::to_owned);
         let mut call = SealCall::new(
             &self.method,
-            RouteRef::new(template, &params),
-            vpay_wire::contract_digest(
-                if self.method == "HEAD" {
-                    "GET"
-                } else {
-                    &self.method
-                },
-                template,
-            ),
+            RouteRef::new(&bound.template, &params),
+            bound.digest,
         )
         .query(query_string.as_deref())
         .payload(&self.body, &payload_type)
@@ -403,6 +591,25 @@ pub(crate) struct SealedResponse {
 }
 
 impl SealedResponse {
+    /// A plain `reqwest` answer wrapped as an unsealed one: for the requests a
+    /// case sends with no signature at all, so they are asserted through the
+    /// same accessors as the sealed ones.
+    pub(crate) async fn from_plain(response: reqwest::Response) -> Result<Self, reqwest::Error> {
+        let status = response.status();
+        let headers = response.headers().clone();
+        let sealed = headers
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.starts_with("application/cose"));
+        let body = response.bytes().await?;
+        Ok(Self {
+            status,
+            headers,
+            body,
+            sealed,
+        })
+    }
+
     pub(crate) fn status(&self) -> reqwest::StatusCode {
         self.status
     }

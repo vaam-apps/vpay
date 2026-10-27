@@ -2,6 +2,12 @@
 
 _Moved out of [docs/reference/vpay-api.md](../vpay-api.md) on 2026-09-11 by exp57, which split a 1 566-line reference into a page per surface. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a cross-reference pointed at a heading that is now on another page, the page it moved to._
 
+> **Deleted 2026-10-26 (VP-6a, [ADR-0036](../../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).**
+> `resource_auth.rs` no longer exists: `/v1` was already off it (VP-3), and now
+> `/dash/v1` is a signed message too (`DashboardJwtValidator`,
+> `require_dashboard_token` and `require_dashboard_procedure_token` are gone).
+> The page is the record of what stood.
+
 > **Superseded for `/v1`, 2026-10-26 (VP-3).** `require_merchant_token`,
 > `MerchantJwtValidator` and `AuthenticatedMerchant` are deleted: `/v1` is
 > authenticated by the signed transport ([envelope.md](envelope.md)), and the

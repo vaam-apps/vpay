@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 pub mod cli;
 pub mod config;
+pub mod console;
 pub mod oauth;
 pub mod signal;
 pub use cli::{
@@ -28,12 +29,12 @@ pub use cli::{
 };
 pub use config::{
     CallbackRegistration, CallbackVerification, CheckoutConfig, Config, CurrencyEntry,
-    ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits, Routing,
-    RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
+    ProviderCallbacks, ProviderHost, RailDisplayName, Routing, RoutingWeight, WebhookPolicy,
 };
+pub use console::{Dashboard, ServiceCapability, ServiceClient};
 pub use oauth::{
-    COSE_KEY_LABEL_MAX_CHARS, CoseKey, DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType,
-    InvoiceDefaults, MERCHANT_AUDIENCE, MerchantClient, RegisteredCoseKey, WebhookEndpoint,
+    COSE_KEY_LABEL_MAX_CHARS, CoseKey, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
+    MerchantClient, RegisteredCoseKey, WebhookEndpoint, read_cose_keys,
 };
 pub use signal::ShutdownSignals;
 
@@ -453,168 +454,84 @@ pub enum ConfigError {
         oauth::MERCHANT_AUDIENCE
     )]
     MerchantMissingV1Audience { client_id: String },
-    /// `docs/flows/dashboard-auth.md`: authorization-code + PKCE needs
-    /// somewhere to redirect back to; a client that can never redirect can
-    /// never complete a login.
-    #[error("dashboard client {0} declares no redirect_uris")]
-    DashboardMissingRedirectUri(String),
-    /// The dashboard client names a tenant no `merchant_clients` entry
+    /// `dashboard.merchant_id` names a tenant no `merchant_clients` entry
     /// registers.
     ///
-    /// Fatal, and it is the whole reason
-    /// [`oauth::DashboardClient::merchant_id`] is checked rather than merely
-    /// stored. A `/dash/v1` bound to an unregistered tenant is not a broken
-    /// deployment that announces itself: every query filters by a
-    /// `merchant_id` no row carries, so the payments list is *empty* and the
-    /// detail read is a *404* — which is exactly what a real merchant with
-    /// no payments looks like. An operator who mistyped a tenant would be
-    /// told nothing at all, by a screen designed to say "no payments yet".
+    /// Fatal, and it is the whole reason [`console::Dashboard::merchant_id`] is
+    /// checked rather than merely stored. A `/dash/v1` bound to an
+    /// unregistered tenant is not a broken deployment that announces itself:
+    /// every query filters by a `merchant_id` no row carries, so the payments
+    /// list is *empty* and the detail read is a *404* — which is exactly what
+    /// a real merchant with no payments looks like. An operator who mistyped a
+    /// tenant would be told nothing at all, by a screen designed to say "no
+    /// payments yet".
     ///
     /// Checked against the registered `merchant_clients[].merchant_id`
     /// values because that is the only enumeration of tenants that exists —
     /// ADR-0003 keeps merchants in YAML and there is no `merchants` table
     /// (migration `0003`'s comment).
     #[error(
-        "dashboard client {client_id} is bound to merchant_id `{merchant_id}`, which no \
-         merchant_clients entry registers; /dash/v1 would read a tenant that does not exist"
+        "dashboard is bound to merchant_id `{merchant_id}`, which no merchant_clients entry \
+         registers; /dash/v1 would read a tenant that does not exist"
     )]
     DashboardUnknownMerchant {
-        /// The dashboard registration naming the unknown tenant.
-        client_id: String,
         /// The `merchant_id` it named.
         merchant_id: String,
     },
-    /// A **merchant** registration lists the dashboard client's own id in
-    /// `allowed_audiences`.
+
+    /// The file carries a top-level key whose feature VP-6a deleted
+    /// (`dashboard_client`, `staff_auth`). Fatal, and not ignored: a key the
+    /// binary silently drops is an operator who believes a sign-in exists that
+    /// does not, with a password pepper and a TOTP key still sitting in their
+    /// secrets store (ADR-0036).
+    #[error("the configuration carries `{key}`, which no longer exists: {instead}")]
+    RetiredKey {
+        /// The key, as written.
+        key: String,
+        /// What replaced it, in one sentence.
+        instead: &'static str,
+    },
+
+    /// A `service_clients` entry holds no capability.
     ///
-    /// This is a privilege boundary, not tidiness. `handle_client_credentials`
-    /// honours a *requested* audience whenever `allowed_audiences` permits
-    /// it, so a merchant registration carrying that value lets that merchant
-    /// post `audience=<dashboard client id>` to `/v1/oauth/token` and receive
-    /// a token the `/dash/v1` resource validator's audience check accepts.
-    /// The two surfaces exist to be different credentials (ADR-0008: the
-    /// dashboard never holds a merchant key), and one YAML line would have
-    /// made them the same one.
-    ///
-    /// # What changed on 2026-09-07, and why the check had to move
-    ///
-    /// The forbidden value used to be the constant `vpay:dash/v1`, and this
-    /// was checked inside `validate_merchant_client` — one registration at a
-    /// time, against a value that was the same in every deployment.
-    /// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)
-    /// decision 3 retired that constant: the audience is now the dashboard
-    /// client's own `client_id`, which is only knowable once the whole
-    /// document has been read. So the check moved to `Config::validate_all`,
-    /// beside `validate_dashboard_binding`, which is the other rule that is
-    /// a property of the *document* rather than of a registration.
-    ///
-    /// **A deployment with no `dashboard_client` cannot trip it**, and that
-    /// is correct rather than a gap: with no dashboard registered there is no
-    /// dashboard audience for a merchant to claim, and `/dash/v1` mounts
-    /// nothing at all.
-    ///
-    /// `/dash/v1` refuses such a token a second time anyway — a
-    /// `client_credentials` token carries no merchant claim, and
-    /// `vpay_api::require_dashboard_token` requires one — but a boundary that
-    /// depends on one check is a boundary one edit removes. Refusing the
-    /// registration is the cheap half, and it is the half an operator can
-    /// read.
-    ///
-    /// Merchant-only: the dashboard client has no `allowed_audiences` field
-    /// at all, because it is not the party that requests one.
+    /// Fatal: a service that may call nothing is a registration somebody
+    /// believes does something. The capability list is the whole of what a
+    /// service key is worth (`/svc/v1` refuses a service key that lacks the
+    /// capability a route needs), and it is deployment configuration only —
+    /// no HTTP route can grant one (VP-6a).
     #[error(
-        "merchant client {client_id} lists `{audience}` in allowed_audiences; that is the \
-         dashboard client's own id, which is the audience of every /dash/v1 token, and a \
-         merchant credential must never be able to mint one (ADR-0008, ADR-0017)"
+        "service client {client_id} declares no capabilities; a service key that may call \
+         nothing is refused rather than registered"
     )]
-    MerchantClaimsDashboardAudience {
-        /// The merchant registration that claimed it.
+    ServiceClientWithoutCapability {
+        /// The registration.
         client_id: String,
-        /// The value it claimed — the dashboard client's `client_id`. Never
-        /// a secret: it is a public client identifier published in the
-        /// deployment's own YAML.
-        audience: String,
-    },
-    /// A livemode deployment registers a `dashboard_client` and leaves one
-    /// of the two `staff_auth` secrets out
-    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
-    ///
-    /// Fatal, and specifically fatal rather than "mount no login": in a
-    /// livemode deployment a registered dashboard with no way to sign in is
-    /// a surface an operator believes exists. In a *sandbox* deployment the
-    /// same configuration is legal and `vpay-server` logs that no staff login
-    /// is mounted, because a sandbox with no staff is an ordinary thing and
-    /// requiring a Secret there is how a Secret acquires a checked-in default
-    /// value.
-    ///
-    /// The message names the field and never a value — neither of these has
-    /// a non-secret half worth printing.
-    #[error(
-        "staff_auth.{field} is required in a livemode deployment that registers a \
-         dashboard_client: without it no staff member can sign in, and the dashboard would be \
-         a surface nobody can reach (ADR-0017)"
-    )]
-    StaffAuthSecretMissing {
-        /// `password_pepper` or `totp_encryption_key`.
-        field: String,
     },
 
-    /// `staff_auth.sso` is present and no `dashboard_client` is registered
-    /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
-    ///
-    /// Fatal: a member provisioned on first sign-in is bound to
-    /// `dashboard_client.merchant_id`, so without a dashboard client there is
-    /// no tenant to bind them to and no `/dash/v1` for them to reach.
-    #[error(
-        "staff_auth.sso is configured but no dashboard_client is registered: a member \
-         provisioned on first sign-in is bound to dashboard_client.merchant_id (ADR-0030)"
-    )]
-    StaffSsoRequiresDashboardClient,
-
-    /// `staff_auth.sso` is present and `password_pepper` or
-    /// `totp_encryption_key` is not.
-    ///
-    /// Fatal in every deployment. The staff login mounts only with both, and
-    /// the SSO flow seals its PKCE verifier under the second one; a block that
-    /// would be silently ignored is the "looks configured, is not" state this
-    /// repository refuses.
-    #[error(
-        "staff_auth.sso is configured but staff_auth.password_pepper / \
-         staff_auth.totp_encryption_key are not both set: the staff login, and with it SSO, \
-         would not mount (ADR-0030)"
-    )]
-    StaffSsoRequiresStaffSecrets,
-
-    /// A `staff_auth.sso` value is unusable. `reason` is chosen by the check
-    /// and never by anything a file contains; the value itself is never
-    /// echoed, because one of the fields is a secret and the others do not
-    /// need it to be found.
-    #[error("staff_auth.sso.{field} is not usable: {reason}")]
-    StaffSsoMalformed {
-        /// Which field.
-        field: &'static str,
-        /// Which rule it broke.
-        reason: &'static str,
+    /// A `service_clients` entry holds no `cose_keys`: nothing could ever
+    /// authenticate as it.
+    #[error("service client {client_id} declares no cose_keys; nothing could sign as it")]
+    ServiceClientWithoutKey {
+        /// The registration.
+        client_id: String,
     },
 
-    /// `staff_auth.sso` lists neither an accepted `acr` nor an accepted `amr`
-    /// (ADR-0019 § R1 for the `oidc` kind, taken by ADR-0030).
-    ///
-    /// Fail closed: an id_token is accepted only if it proves a second
-    /// factor, and a block with no rule for what proves one cannot say. Either
-    /// list may be empty as long as the other is not.
+    /// A service client holds `console_pairing` and the deployment has no
+    /// `dashboard`: pairing binds a person to `dashboard.merchant_id`, so
+    /// without one there is no tenant to bind them to.
     #[error(
-        "staff_auth.sso lists neither accepted_acr nor accepted_amr: an id_token is accepted \
-         only if it proves a second factor, and this block names no way to tell (ADR-0030)"
+        "service client {client_id} holds `console_pairing` but no `dashboard` is configured: \
+         a paired console key is bound to dashboard.merchant_id"
     )]
-    StaffSsoNoSecondFactorRule,
+    ConsolePairingWithoutDashboard {
+        /// The registration.
+        client_id: String,
+    },
 
-    /// ADR-0010 / `docs/flows/dashboard-auth.md`: vpay stores no client
-    /// secret, in any form, for any client kind — a merchant authenticates
-    /// only via a signed `private_key_jwt` assertion, and the dashboard is a
-    /// public client by design. A config that carries a secret is refused
-    /// outright rather than the secret being silently dropped as an unknown
-    /// field.
+    /// ADR-0010: vpay stores no client secret, in any form — a merchant
+    /// authenticates only with a signature from a registered key. A config
+    /// that carries a secret is refused outright rather than the secret being
+    /// silently dropped as an unknown field.
     #[error("OAuth client {0} declares a client_secret; vpay stores none (see ADR-0010)")]
     ClientSecretPresent(String),
 

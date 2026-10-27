@@ -483,28 +483,10 @@ pub enum DbError {
         /// The `cred_…` whose row will not decode. Not personal data and not
         /// a secret: an opaque internal handle.
         id: String,
-        /// The stored value, quoted back. Never a secret — it is one of eight
+        /// The stored value, quoted back. Never a secret — it is one of six
         /// words or a corruption. **Not** the material, which this error
         /// never carries.
         kind: String,
-    },
-
-    /// A `staff_sessions` row's `state` is outside the vocabulary
-    /// `staff_sessions_state_is_known` closes (ADR-0017).
-    ///
-    /// [`Self::StaffStatusUnknown`]'s reasoning, on the other half of the
-    /// sign-in: only reachable if that CHECK were dropped, and deliberately
-    /// not a default, because a default would read a session the database
-    /// stopped constraining as being at some particular stage of sign-in.
-    #[error(
-        "staff session {id} has state {state}, which is neither `pending_totp` nor \
-         `authenticated`"
-    )]
-    SessionStateUnknown {
-        /// The session's primary key — already a digest, so safe to log.
-        id: String,
-        /// The stored value, quoted back.
-        state: String,
     },
 
     /// A query that ran through CrateStack's data layer rather than through
@@ -680,7 +662,6 @@ impl vpay_core::Classify for DbError {
             Self::WriteMatchedNoRow { .. }
             | Self::StaffStatusUnknown { .. }
             | Self::CredentialKindUnknown { .. }
-            | Self::SessionStateUnknown { .. }
             | Self::UnknownCurrency { .. }
             | Self::RefundCurrencyMismatch { .. } => Category::Internal,
             // Delegated, never re-decided. Named explicitly rather than
@@ -723,7 +704,6 @@ impl vpay_core::Classify for DbError {
             Self::ProviderFlowUnknown { .. } => "provider_flow_unknown",
             Self::StaffStatusUnknown { .. } => "staff_status_unknown",
             Self::CredentialKindUnknown { .. } => "credential_kind_unknown",
-            Self::SessionStateUnknown { .. } => "session_state_unknown",
             Self::WriteMatchedNoRow { .. } => "write_matched_no_row",
             Self::UnknownCurrency { .. } => "unknown_currency",
             // Not `unknown_currency`: both codes are currencies this build

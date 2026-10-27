@@ -125,6 +125,13 @@ reqwest = { workspace = true, features = ["query", "form"] }
 vpay-wire.workspace = true
 serde.workspace = true
 cratestack-client-rust.workspace = true
+# `tests/support/sealed.rs` (VP-6a): the digest of a `POST /$procs/<name>` call,
+# read off the schema file (`cratestack_parser::parse_schema` then
+# `cratestack_core::bound_contracts`), and the console's P-256 possession proof
+# (`p256`, the pin `vpay-api` verifies it with).
+cratestack-core.workspace = true
+cratestack-parser.workspace = true
+p256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
 bytes = "1"
 percent-encoding = "2"
 url = "2"
@@ -136,10 +143,10 @@ rsa = "0.9"
 rand.workspace = true
 # `rsa`'s modulus/exponent are base64url in a JWK.
 base64 = "0.22"
-# `staff_sign_in.rs` computes a PKCE challenge and a session digest — the same
-# two functions `vpay_api::staff_auth` computes, deliberately recomputed here
-# rather than exposed, so the suite checks the server's answer against an
-# independent one. Workspace pin, already in this crate's graph.
+# `tests/support/sealed.rs` derives every test key from a label with SHA-256, so
+# nothing is stored and nothing is hard-coded. (This line also served
+# `staff_sign_in.rs`'s PKCE challenge until VP-6a deleted that suite.)
+# Workspace pin, already in this crate's graph.
 sha2.workspace = true
 # `tests/dashboard_read_surface.rs` mints ONE token by hand: the expired one.
 # Every other token that suite presents comes from

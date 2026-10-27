@@ -1,6 +1,10 @@
 # ADR-0017: How a staff member signs in to `/dash/v1`
 
-- **Status:** Accepted. **Amended 2026-10-19 by
+- **Status:** **Superseded 2026-10-26 by
+  [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)** —
+  there is no password, TOTP, session, authorization code or bearer token on
+  `/dash/v1` any more; the text below is the record of what was decided
+  before, left as written. Before that: **Amended 2026-10-19 by
   [ADR-0030](0030-staff-sign-in-federates-to-an-oidc-provider.md):** decision 1
   describes the only way a staff member signed in until that date. Staff may now
   also sign in through an OpenID Connect provider; password + TOTP, as decided

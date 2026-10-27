@@ -84,7 +84,6 @@ use vpay_core::{Category, Classify, Retry, Severity};
 use vpay_ledger::LedgerError;
 
 use crate::error_envelope_with_param;
-use crate::resource_auth::AuthRejection;
 
 /// How many leading characters of an `Idempotency-Key` may be echoed back.
 ///
@@ -377,12 +376,6 @@ pub enum ApiError {
     #[error(transparent)]
     Config(#[from] vpay_config::ConfigError),
 
-    /// The bearer token was missing, malformed, or did not validate. The
-    /// conversion is what lets `AuthRejection`'s `IntoResponse` route
-    /// through this type, so there is exactly one envelope renderer.
-    #[error(transparent)]
-    Auth(#[from] AuthRejection),
-
     /// No route matched. The router's fallback, and the one variant a
     /// merchant sees today.
     #[error("no route matches {method} {path}")]
@@ -511,53 +504,6 @@ pub enum ApiError {
     /// scopes.
     #[error("the client is not permitted to perform that action")]
     Forbidden,
-
-    /// A staff sign-in step did not succeed
-    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
-    ///
-    /// **One variant for every failure of the sign-in path**, and the
-    /// uniformity is the security property rather than laziness: no such
-    /// address, wrong password, disabled account, wrong TOTP code, a replayed
-    /// TOTP code, an expired session, an idle session, a session that never
-    /// existed and a session at the wrong stage all render as one `401` with
-    /// one sentence. A caller that could tell them apart would have an
-    /// account-enumeration oracle and a "you got the password right" oracle,
-    /// which are the two things a login form must not be.
-    ///
-    /// `stage` is **operator-facing only** — it reaches the `Display` above
-    /// and therefore the log, never the response body (see
-    /// [`Classify::public_message`]). It is a `&'static str` naming one of
-    /// this crate's own steps, never a value the caller sent.
-    ///
-    /// The timing half of the same property is
-    /// `crate::staff_auth::StaffCredentials::verify_absent_account`: an
-    /// address with no account still costs one argon2id verification.
-    #[error("staff sign-in refused at {stage}")]
-    StaffSignInRefused {
-        /// Which step refused, for the log. One of this crate's own literals.
-        stage: &'static str,
-    },
-
-    /// Too many sign-in attempts for this email or from this address
-    /// (ADR-0017 decision 2).
-    ///
-    /// `Category::RateLimited` → `429`, `Retry::AfterBackoff`. It is refused
-    /// **before** any credential work happens, which is the point: an attempt
-    /// over the budget must not cost an argon2id verification, or the limit
-    /// would be the amplifier rather than the defence.
-    #[error("staff sign-in refused: over the rate limit")]
-    StaffSignInRateLimited,
-
-    /// A staff credential operation failed for a reason that is nobody's
-    /// fault but this deployment's: a misconfigured key, or a stored secret
-    /// that will not open.
-    ///
-    /// `transparent`, and its classification is **delegated** rather than
-    /// re-decided (ADR-0011): `StaffAuthError` classifies every one of its
-    /// variants `Internal`, deliberately, because none of them is anything a
-    /// caller did and none may ever reach a person as "wrong password".
-    #[error(transparent)]
-    StaffAuth(#[from] crate::staff_auth::StaffAuthError),
 
     /// A merchant asked vpay to create a Checkout Session on a deployment
     /// that serves no checkout page — `checkout.public_base_url` is absent
@@ -880,7 +826,6 @@ impl Classify for ApiError {
             Self::Currency(e) => e.category(),
             Self::Ledger(e) => e.category(),
             Self::Config(e) => e.category(),
-            Self::Auth(e) => e.category(),
             // 404, and `invalid_request_error` on the wire — the same shape
             // a missing object gets, because to a caller "no such URL" and
             // "no such object" are the same class of mistake.
@@ -892,16 +837,6 @@ impl Classify for ApiError {
             Self::NotFound { .. } => Category::NotFound,
             Self::Conflict { .. } => Category::Conflict,
             Self::Forbidden => Category::Forbidden,
-            // Every sign-in failure is one answer — see the variant. The
-            // category is `Authentication` and not `Forbidden`: the caller
-            // has not authenticated at all, and `403` would tell them they
-            // had.
-            Self::StaffSignInRefused { .. } => Category::Authentication,
-            Self::StaffSignInRateLimited => Category::RateLimited,
-            // Delegated, never re-decided (ADR-0011). Named explicitly rather
-            // than caught by a wildcard, which is what `verify-errors`
-            // checks.
-            Self::StaffAuth(e) => e.category(),
             // An operator's problem, fixed by a deploy, never by retrying —
             // which is `Category::Configuration`'s own definition. See the
             // variant for why it is not `Storage` even though the plan asked
@@ -927,7 +862,6 @@ impl Classify for ApiError {
             Self::Currency(e) => e.code(),
             Self::Ledger(e) => e.code(),
             Self::Config(e) => e.code(),
-            Self::Auth(e) => e.code(),
             // Overrides `NotFound`'s `resource_missing`: an unrecognised URL
             // is not a missing object, and an SDK branching on the code
             // should be able to tell "you called an endpoint vpay does not
@@ -956,12 +890,6 @@ impl Classify for ApiError {
             Self::NotFound { .. } => Category::NotFound.default_code(),
             Self::Conflict { .. } => Category::Conflict.default_code(),
             Self::Forbidden => Category::Forbidden.default_code(),
-            // The category defaults, and deliberately no override: a code
-            // per sign-in step would be exactly the oracle the single
-            // variant exists to remove.
-            Self::StaffSignInRefused { .. } => Category::Authentication.default_code(),
-            Self::StaffSignInRateLimited => Category::RateLimited.default_code(),
-            Self::StaffAuth(e) => e.code(),
             // The third deliberate override in this enum. The category
             // default, `misconfigured`, is what *every* configuration failure
             // says, and a merchant integrating hosted checkout has to be able
@@ -987,7 +915,6 @@ impl Classify for ApiError {
             Self::Currency(e) => e.retry(),
             Self::Ledger(e) => e.retry(),
             Self::Config(e) => e.retry(),
-            Self::Auth(e) => e.retry(),
             // No overrides: none of this layer's own failures heals on its
             // own, and every one of these categories already defaults to
             // `Retry::Never`.
@@ -1004,9 +931,6 @@ impl Classify for ApiError {
             | Self::NotFound { .. }
             | Self::Conflict { .. }
             | Self::Forbidden
-            | Self::StaffSignInRefused { .. }
-            | Self::StaffSignInRateLimited
-            | Self::StaffAuth(_)
             | Self::CheckoutNotConfigured(_)
             | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_retry(),
@@ -1021,7 +945,6 @@ impl Classify for ApiError {
             Self::Currency(e) => e.severity(),
             Self::Ledger(e) => e.severity(),
             Self::Config(e) => e.severity(),
-            Self::Auth(e) => e.severity(),
             // No overrides. A 404 and a bad parameter are `Info` because a
             // payment gateway serves thousands a day and none is worth
             // investigating; `Internal` pages.
@@ -1032,16 +955,9 @@ impl Classify for ApiError {
             | Self::NotFound { .. }
             | Self::Conflict { .. }
             | Self::Forbidden
-            | Self::StaffSignInRefused { .. }
-            | Self::StaffSignInRateLimited
             | Self::CheckoutNotConfigured(_)
             | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_severity(),
-            // Delegated: `StaffAuthError` is `Internal` throughout, so this
-            // pages — which is correct for a key that will not decode and
-            // for a stored secret that will not open, and is why neither may
-            // be rendered as a refused password.
-            Self::StaffAuth(e) => e.severity(),
         }
     }
 
@@ -1053,7 +969,6 @@ impl Classify for ApiError {
             Self::Currency(e) => e.public_message(),
             Self::Ledger(e) => e.public_message(),
             Self::Config(e) => e.public_message(),
-            Self::Auth(e) => e.public_message(),
             // Deliberately does *not* echo the method or path back. The
             // sentence is what this endpoint has always answered and what
             // `docs/api/README.md` documents; reflecting an
@@ -1102,22 +1017,6 @@ impl Classify for ApiError {
             // can act on, and enumerating the scope it lacks would describe
             // the authorisation model to something that failed it.
             Self::Forbidden => Category::Forbidden.generic_message().to_owned(),
-            // ONE sentence for every sign-in failure. Nothing about which
-            // step refused, nothing about whether the address exists,
-            // nothing about whether the password was right. `stage` stays in
-            // the `Display` for the log and never reaches here.
-            Self::StaffSignInRefused { .. } => {
-                "Sign-in failed. Check the email address, the password and the code from your \
-                 authenticator app."
-                    .to_owned()
-            }
-            Self::StaffSignInRateLimited => {
-                "Too many sign-in attempts. Wait a few minutes and try again.".to_owned()
-            }
-            // Never the detail: every variant of `StaffAuthError` is about a
-            // deployment secret or a stored ciphertext, and the caller is a
-            // person at a login form.
-            Self::StaffAuth(e) => e.public_message(),
             // Its own sentence rather than `Category::Configuration`'s
             // generic "vpay is misconfigured for this operation. Contact
             // support." — which is true and useless here. This is not an
@@ -1138,6 +1037,39 @@ impl Classify for ApiError {
             // broke, and the text describing it is about our internals by
             // definition.
             Self::Internal(_) => Category::Internal.generic_message().to_owned(),
+        }
+    }
+}
+
+/// A pairing or revocation refusal, rendered through the variants a caller already
+/// knows (VP-6a). Written out here and not as a `#[from]` variant of its own for
+/// the reason [`ApiError::invalid_param`] is a constructor: there is one envelope
+/// renderer, and a request-validation refusal names a *parameter*.
+///
+/// | `ConsoleKeyError` | Answer |
+/// |---|---|
+/// | `Malformed { field, reason }` | `400` naming `field` |
+/// | `Stale` | `400` naming `issued_at` |
+/// | `ProofRejected` | `400` naming `possession_proof` |
+/// | `Administrator`, `NotPermitted` | `403`: one answer, the credential's, not the object's |
+/// | `KeyTaken` | `409` |
+/// | `Inconsistent` | `500` |
+impl From<crate::console_keys::ConsoleKeyError> for ApiError {
+    fn from(error: crate::console_keys::ConsoleKeyError) -> Self {
+        use crate::console_keys::ConsoleKeyError;
+        match error {
+            ConsoleKeyError::Malformed { field, reason } => {
+                Self::invalid_param(field, format!("{field} {reason}."))
+            }
+            ConsoleKeyError::Stale => Self::invalid_param("issued_at", error.public_message()),
+            ConsoleKeyError::ProofRejected => {
+                Self::invalid_param("possession_proof", error.public_message())
+            }
+            ConsoleKeyError::Administrator | ConsoleKeyError::NotPermitted => Self::Forbidden,
+            ConsoleKeyError::KeyTaken => Self::Conflict {
+                message: error.public_message(),
+            },
+            ConsoleKeyError::Inconsistent => Self::Internal(error.to_string()),
         }
     }
 }
@@ -1413,36 +1345,6 @@ mod tests {
                 500,
                 "api_error",
                 "misconfigured",
-            ),
-            // The auth leaf, per variant.
-            (
-                || ApiError::Auth(AuthRejection::MissingHeader),
-                401,
-                "authentication_error",
-                "missing_bearer_token",
-            ),
-            (
-                || ApiError::Auth(AuthRejection::MalformedHeader),
-                401,
-                "authentication_error",
-                "malformed_authorization_header",
-            ),
-            (
-                || ApiError::Auth(AuthRejection::InvalidToken),
-                401,
-                "authentication_error",
-                "invalid_token",
-            ),
-            // The one auth rejection that is *not* about the credential: a
-            // JWKS this process could not fetch is our outage, and it has to
-            // answer 503/`api_error` so an SDK backs off instead of
-            // re-authenticating. A 401 here would send every client back to
-            // the (database-backed) token endpoint during an outage.
-            (
-                || ApiError::Auth(AuthRejection::KeysUnavailable),
-                503,
-                "api_error",
-                "service_unavailable",
             ),
             // This layer's own variants.
             (
@@ -2005,18 +1907,12 @@ mod tests {
     // --- pinned bytes: what these two responses have always answered ---
     //
     // Captured from the implementation *before* `ApiError` existed and
-    // asserted verbatim, so routing the fallback and `AuthRejection` through
-    // the composite is provably a refactor and not a wire change. Any
+    // asserted verbatim, so routing the fallback through the composite is
+    // provably a refactor and not a wire change. Any
     // difference — a re-worded sentence, a reordered key, a `param` that
     // should not be there — fails here.
 
     const PINNED_404: &str = r#"{"error":{"code":"unknown_route","message":"Unrecognized request URL. vpay implements a subset of the Stripe API; see docs/api.","type":"invalid_request_error"}}"#;
-
-    const PINNED_MISSING_HEADER: &str = r#"{"error":{"code":"missing_bearer_token","message":"No Authorization header was provided. Send an OAuth2 access token as 'Authorization: Bearer <token>'.","type":"authentication_error"}}"#;
-
-    const PINNED_MALFORMED_HEADER: &str = r#"{"error":{"code":"malformed_authorization_header","message":"The Authorization header was present but was not a well-formed 'Bearer <token>' value.","type":"authentication_error"}}"#;
-
-    const PINNED_INVALID_TOKEN: &str = r#"{"error":{"code":"invalid_token","message":"The bearer token is invalid, expired, or was not issued for this endpoint.","type":"authentication_error"}}"#;
 
     /// The 404 path, driven through the real router.
     ///
@@ -2043,58 +1939,6 @@ mod tests {
         assert_eq!(body_string(response).await, PINNED_404);
     }
 
-    #[tokio::test]
-    async fn every_auth_rejection_is_byte_for_byte_what_it_was_before_api_error() {
-        let expected = [
-            (AuthRejection::MissingHeader, PINNED_MISSING_HEADER),
-            (AuthRejection::MalformedHeader, PINNED_MALFORMED_HEADER),
-            (AuthRejection::InvalidToken, PINNED_INVALID_TOKEN),
-        ];
-
-        for (rejection, pinned) in expected {
-            let label = format!("{rejection:?}");
-            // Through `AuthRejection`'s own `IntoResponse` — the path an
-            // extractor rejection takes.
-            let response = rejection.into_response();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
-            assert_eq!(body_string(response).await, pinned, "{label}");
-        }
-
-        // And through the composite, which is what the above now delegates
-        // to: identical bytes, or the delegation changed the wire.
-        for (rejection, pinned) in [
-            (AuthRejection::MissingHeader, PINNED_MISSING_HEADER),
-            (AuthRejection::MalformedHeader, PINNED_MALFORMED_HEADER),
-            (AuthRejection::InvalidToken, PINNED_INVALID_TOKEN),
-        ] {
-            let label = format!("{rejection:?}");
-            let response = ApiError::from(rejection).into_response();
-            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{label}");
-            assert_eq!(body_string(response).await, pinned, "{label}");
-        }
-    }
-
-    /// `KeysUnavailable` is deliberately **not** in the list above: it is the
-    /// one [`AuthRejection`] that does not answer 401, so pinning it there
-    /// would have meant weakening that test's status assertion for every
-    /// variant. It gets the same both-paths treatment separately.
-    ///
-    /// The bytes are the `Category::Storage` policy row verbatim — 503,
-    /// `api_error`, `service_unavailable`, and the sentence that tells a
-    /// caller to retry rather than to re-authenticate.
-    #[tokio::test]
-    async fn a_jwks_outage_renders_as_503_through_both_paths() {
-        const PINNED_KEYS_UNAVAILABLE: &str = r#"{"error":{"code":"service_unavailable","message":"vpay is temporarily unavailable. Retry after a short delay.","type":"api_error"}}"#;
-
-        let response = AuthRejection::KeysUnavailable.into_response();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body_string(response).await, PINNED_KEYS_UNAVAILABLE);
-
-        let response = ApiError::from(AuthRejection::KeysUnavailable).into_response();
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        assert_eq!(body_string(response).await, PINNED_KEYS_UNAVAILABLE);
-    }
-
     /// Wrapping must not change the answer — ADR-0011's "composites do not
     /// re-classify", as an executable assertion, and the twin of
     /// `vpay_worker::error`'s test of the same name. It fails if any of the
@@ -2105,9 +1949,7 @@ mod tests {
     /// One leaf per interesting override: `Rejected` overrides code, retry
     /// *and* severity; `Negative` overrides code and message; `UnknownCurrency`
     /// overrides both and bounds the message; `DbError::Connect` overrides
-    /// the code; `LedgerError::Unbalanced` overrides code and severity;
-    /// `AuthRejection::InvalidToken` is the one that must stay a 401 with
-    /// nothing said about why.
+    /// the code; `LedgerError::Unbalanced` overrides code and severity.
     #[test]
     fn wrapping_a_leaf_preserves_every_classification_the_leaf_chose() {
         macro_rules! assert_delegates {
@@ -2157,19 +1999,6 @@ mod tests {
                 debits: 5_000,
                 credits: 4_900,
             }
-        );
-        assert_delegates!(
-            ApiError::Auth(AuthRejection::InvalidToken),
-            AuthRejection::InvalidToken
-        );
-        // The leaf that overrides its *sibling variants'* category rather
-        // than its own category's defaults: a composite that mapped
-        // `Self::Auth(_)` to `Category::Authentication` wholesale — the
-        // obvious shortcut, and what this arm looked like before
-        // `KeysUnavailable` existed — would answer 401 here and fail.
-        assert_delegates!(
-            ApiError::Auth(AuthRejection::KeysUnavailable),
-            AuthRejection::KeysUnavailable
         );
 
         // The assertions above are only worth anything if at least one leaf
@@ -2505,19 +2334,11 @@ mod tests {
                 409,
                 "false",
             ),
-            (
-                || ApiError::from(AuthRejection::KeysUnavailable),
-                503,
-                "true",
-            ),
+            // A storage outage: ours, and healed by waiting.
+            (|| ApiError::Db(leaky_db_error()), 503, "true"),
             (
                 || ApiError::Internal("an invariant broke".into()),
                 500,
-                "false",
-            ),
-            (
-                || ApiError::from(AuthRejection::MissingHeader),
-                401,
                 "false",
             ),
             (

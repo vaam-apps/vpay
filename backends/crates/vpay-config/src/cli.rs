@@ -322,11 +322,13 @@ pub struct ServerArgs {
     /// [`Self::oauth_signing_key_file`]'s RS256 key, which mints the tokens
     /// `/v1` no longer reads and goes with the OP in VP-4.
     ///
-    /// Required wherever `/v1` is mounted (`deployment.surfaces` includes
-    /// `business`); `vpay_api::envelope::EnvelopeKeys::from_files` refuses its
-    /// absence, an unreadable or malformed file, and a file that holds the
-    /// same seed as [`Self::envelope_signing_key_next_file`], all at boot and
-    /// all `78`. A management-only process mounts no `/v1` and reads neither.
+    /// Required wherever a signed surface is mounted (`deployment.surfaces`
+    /// includes `business` for `/v1`, or `management` for `/dash/v1` and
+    /// `/svc/v1` since VP-6a, ADR-0036: one key seals all three);
+    /// `vpay_api::envelope::EnvelopeKeys::from_files` refuses its absence, an
+    /// unreadable or malformed file, and a file that holds the same seed as
+    /// [`Self::envelope_signing_key_next_file`], all at boot and all `78`. A
+    /// process that mounts neither reads neither.
     ///
     /// Serve-only and not `global`, exactly as the OAuth key is: the worker
     /// seals nothing, and `compose` / Helm mount the Secret on the server
@@ -500,8 +502,8 @@ pub enum ServerCommand {
     /// still describes the loop it runs.
     Worker(WorkerArgs),
 
-    /// Manage the humans who may sign in to `/dash/v1`
-    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+    /// Manage the humans who may read `/dash/v1`: create a member, and
+    /// attach a console key to one (VP-6a; ADR-0017 as amended by it).
     ///
     /// A nested `Subcommand` rather than a flat `staff-add` so that a second
     /// staff operation (disable, list) is a sibling rather than another
@@ -549,15 +551,14 @@ pub enum CallbacksCommand {
 /// `vpay-server staff …`.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum StaffCommand {
-    /// Create a staff member and print a one-time password.
+    /// Create a staff member. No credential: a member reads `/dash/v1` only
+    /// once a console key is attached (`staff pair-key`, or a phone pairing
+    /// through `/svc/v1`).
     ///
-    /// **The only way a staff member is created.** ADR-0017 decision 1: no
-    /// HTTP endpoint creates one, and there is no self-service sign-up — a
-    /// dashboard account is a decision an operator takes, not a form a
-    /// visitor fills in.
-    ///
-    /// The password is generated, printed once, and must be replaced at
-    /// first sign-in; TOTP enrolment is mandatory at the same sign-in.
+    /// **The only way an administrator is created.** A member paired through
+    /// vaam is provisioned just in time as a plain member (owner ruling R2),
+    /// and no HTTP route creates or upgrades an admin: a dashboard account
+    /// with a cross-tenant read is a decision an operator takes.
     Add {
         /// The tenant this person may see. Must be a `merchant_id` some
         /// `merchant_clients` entry registers — checked before the insert,
@@ -567,8 +568,7 @@ pub enum StaffCommand {
         merchant: String,
 
         /// Their email address. Lower-cased before it is written, and
-        /// unique across the whole deployment: sign-in names an address and
-        /// no tenant.
+        /// unique across the whole deployment.
         #[arg(long)]
         email: String,
 
@@ -579,17 +579,45 @@ pub enum StaffCommand {
 
         /// A cross-tenant read grant
         /// ([ADR-0018](../../../../docs/adr/0018-cross-tenant-admin-reads.md)):
-        /// may this person's `/dash/v1` session read a merchant other than
+        /// may this person's `/dash/v1` requests read a merchant other than
         /// `--merchant` by naming one in `?merchant_id=`? Read-only, like
-        /// every other `/dash/v1` credential — this flag has no bearing on
-        /// ADR-0008's write boundary, which is unimplemented regardless of
-        /// it.
+        /// every other `/dash/v1` credential.
         ///
         /// Defaults to `false`, deliberately: an operator who runs `staff
         /// add` without reading this far must get the narrower account,
         /// never the wider one.
         #[arg(long, default_value_t = false)]
         admin: bool,
+    },
+
+    /// Attach a console key to an existing, active staff member: the
+    /// break-glass way in when no vaam admin phone can pair one (VP-6a, owner
+    /// ruling Q2).
+    ///
+    /// There is **no proof of possession**: an operator who can run this
+    /// against the database already holds more authority than a pairing
+    /// grants. So it is bounded the other way: it creates no member and
+    /// changes no admin flag, and it is the *only* way a key reaches an
+    /// administrator (`POST /svc/v1/console_keys` refuses one). The key
+    /// expires 30 days after it is paired, like any other.
+    PairKey {
+        /// The member, by email (lower-cased) or by `stf_…` id.
+        #[arg(long)]
+        staff: String,
+
+        /// The console's P-256 public key: the SEC1 uncompressed point (65
+        /// bytes, first byte `0x04`) as unpadded base64url, what WebCrypto's
+        /// `exportKey("raw")` returns. A compressed point is refused.
+        ///
+        /// `allow_hyphen_values`: a base64url value may begin with `-`, which
+        /// clap would otherwise read as a flag and refuse with a message
+        /// about an unknown option, not about the key.
+        #[arg(long, allow_hyphen_values = true)]
+        public_key: String,
+
+        /// A name for the key in logs, 1 to 64 characters.
+        #[arg(long)]
+        label: Option<String>,
     },
 }
 
@@ -701,7 +729,7 @@ mod tests {
 
     use clap::{CommandFactory, Parser};
 
-    use super::{LogFormat, ServerArgs, ServerCommand, WorkerArgs};
+    use super::{LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs};
 
     /// `(arg id, expected env var)` for every option common to every mode,
     /// i.e. every field of [`CommonArgs`](super::CommonArgs).
@@ -1103,6 +1131,42 @@ mod tests {
             args.common.config,
             Some(std::path::PathBuf::from("/config/application.yml"))
         );
+    }
+
+    /// `staff pair-key --public-key` takes a value that starts with `-`
+    /// (VP-6a). A base64url string does about one time in sixty-four, and
+    /// without `allow_hyphen_values` clap reads it as a flag and answers with
+    /// a message about an unknown option, so an operator locked out of the
+    /// console would be told their key is not a key.
+    #[test]
+    fn pair_key_takes_a_public_key_that_starts_with_a_hyphen() {
+        let key = "-QJkl_xJ-ZGtMCwG2h9Xz7vN8B3U4o0yXW1pS5aTq6c";
+        let args = ServerArgs::try_parse_from([
+            "vpay-server",
+            "staff",
+            "pair-key",
+            "--staff",
+            "ops@acme.example",
+            "--public-key",
+            key,
+            "--label",
+            "break-glass",
+        ])
+        .expect("a key starting with `-` must parse as the value of --public-key");
+        let Some(ServerCommand::Staff {
+            command:
+                StaffCommand::PairKey {
+                    staff,
+                    public_key,
+                    label,
+                },
+        }) = args.command
+        else {
+            panic!("expected `staff pair-key`");
+        };
+        assert_eq!(staff, "ops@acme.example");
+        assert_eq!(public_key, key);
+        assert_eq!(label.as_deref(), Some("break-glass"));
     }
 
     #[test]

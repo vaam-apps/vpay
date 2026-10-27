@@ -252,7 +252,7 @@ mod tests {
     /// Every way the SDK's table and `vpay-wire`'s disagree: a row on one side
     /// only, the same rows in a different order (the order is the file's, and
     /// a reordering is a hand edit), and the two digests of a row.
-    fn sdk_table_gaps(sdk: &[(&str, &str)], wire: &[vpay_wire::V1Operation]) -> Vec<String> {
+    fn sdk_table_gaps(sdk: &[(&str, &str)], wire: &[vpay_wire::Operation]) -> Vec<String> {
         let mut gaps = Vec::new();
         for (method, template) in sdk {
             if !wire

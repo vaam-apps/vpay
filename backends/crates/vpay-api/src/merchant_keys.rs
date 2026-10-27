@@ -46,15 +46,27 @@ use async_trait::async_trait;
 use cratestack_core::CratestackError;
 use cratestack_cose::thumbprint::{KID_LEN, kid_from_thumbprint};
 use cratestack_cose::{CoseAlg, CoseVerifierResolver, CoseVerifyKey};
-use vpay_config::{Config, ConfigError};
+use vpay_config::{Config, ConfigError, ServiceCapability};
 use vpay_db::{DbError, DisabledClients};
 
-/// One registered key and the merchant it belongs to.
-#[derive(Debug, Clone)]
-struct Entry {
-    client_id: String,
+/// What a merchant's key stands for: the tenant and the scopes YAML grants.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MerchantGrant {
     merchant_id: String,
     scopes: Vec<String>,
+}
+
+/// What a service's key stands for: the capabilities YAML grants (VP-6a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceGrant {
+    capabilities: Vec<ServiceCapability>,
+}
+
+/// One registered key and the registration it belongs to.
+#[derive(Debug, Clone)]
+struct Entry<G> {
+    client_id: String,
+    grant: G,
     label: Option<String>,
     key: CoseVerifyKey,
 }
@@ -80,70 +92,107 @@ pub struct ResolvedMerchant {
     pub thumbprint: [u8; 32],
 }
 
-/// Every merchant's Ed25519 keys, indexed by thumbprint and by `kid`.
+/// The service a verified key belongs to, as `/svc/v1` needs it (VP-6a).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedService {
+    /// The credential: what `disabled_clients` is keyed on and what a log line
+    /// names.
+    pub client_id: String,
+    /// What YAML lets this service do. A route checks the one it needs.
+    pub capabilities: Vec<ServiceCapability>,
+    /// The operator's name for the key that verified, if it has one.
+    pub label: Option<String>,
+    /// The key's RFC 9679 thumbprint — what was looked up.
+    pub thumbprint: [u8; 32],
+}
+
+impl ResolvedService {
+    /// Whether the service holds `capability`.
+    #[must_use]
+    pub fn holds(&self, capability: ServiceCapability) -> bool {
+        self.capabilities.contains(&capability)
+    }
+}
+
+/// Every registered Ed25519 key of one kind of registration, indexed by
+/// thumbprint and by `kid`.
+///
+/// Generic over what a key stands for ([`MerchantGrant`], [`ServiceGrant`]) and
+/// otherwise one implementation, so a merchant registry and a service registry
+/// cannot index, or refuse a duplicate, differently. They are **two registries**
+/// and never one: `/svc/v1` is resolved against [`ServiceKeyRegistry`] alone, so
+/// a merchant's key is not a key there at all.
 ///
 /// Immutable for the life of the process (ADR-0003: configuration loads once,
 /// with no hot reload), so a plain map behind an `Arc` and no lock.
-#[derive(Debug, Clone, Default)]
-pub struct MerchantKeyRegistry {
-    by_thumbprint: HashMap<[u8; 32], Entry>,
+#[derive(Debug, Clone)]
+pub struct KeyRegistry<G> {
+    by_thumbprint: HashMap<[u8; 32], Entry<G>>,
     /// A `kid` is only the first eight bytes of a thumbprint, so several keys
     /// can share one (about 2^32 keys for a birthday collision, but the trait
     /// requires handling it). Values are thumbprints, in registration order.
     by_kid: HashMap<[u8; KID_LEN], Vec<[u8; 32]>>,
 }
 
-impl MerchantKeyRegistry {
-    /// Reads every merchant's `cose_keys` out of a loaded [`Config`].
-    ///
-    /// Parses with the same code `Config::validate_all` ran at boot
-    /// (`MerchantClient::cose_verify_keys`), and refuses a thumbprint
-    /// registered twice again rather than trusting that it ran: a `Config`
-    /// built in code and never validated must not produce a registry in which
-    /// one key resolves to whichever merchant came last.
-    ///
-    /// # Errors
-    ///
-    /// The [`ConfigError`] `validate_all` would have raised —
-    /// [`ConfigError::MalformedCoseKey`] or [`ConfigError::DuplicateCoseKey`].
-    /// Unreachable for a `Config` that came from a file.
-    pub fn from_config(config: &Config) -> Result<Self, ConfigError> {
-        let mut registry = Self::default();
-        for merchant in &config.merchant_clients {
-            for registered in merchant.cose_verify_keys()? {
-                let thumbprint = registered.key.thumbprint();
-                let entry = Entry {
-                    client_id: merchant.client_id.clone(),
-                    merchant_id: merchant.merchant_id.clone(),
-                    scopes: merchant.scopes.clone(),
-                    label: registered.label,
-                    key: registered.key,
-                };
-                if let Some(first) = registry.by_thumbprint.insert(thumbprint, entry) {
-                    return Err(ConfigError::DuplicateCoseKey {
-                        thumbprint: thumbprint.iter().map(|b| format!("{b:02x}")).collect(),
-                        first: first.client_id,
-                        second: merchant.client_id.clone(),
-                    });
-                }
-                registry
-                    .by_kid
-                    .entry(kid_from_thumbprint(&thumbprint))
-                    .or_default()
-                    .push(thumbprint);
-            }
+impl<G> Default for KeyRegistry<G> {
+    fn default() -> Self {
+        Self {
+            by_thumbprint: HashMap::new(),
+            by_kid: HashMap::new(),
         }
-        Ok(registry)
+    }
+}
+
+/// The merchants' keys.
+pub type MerchantKeyRegistry = KeyRegistry<MerchantGrant>;
+/// The services' keys (VP-6a).
+pub type ServiceKeyRegistry = KeyRegistry<ServiceGrant>;
+
+impl<G> KeyRegistry<G> {
+    /// Adds every key of one registration, refusing a thumbprint registered
+    /// twice rather than trusting that `Config::validate_all` ran: a `Config`
+    /// built in code and never validated must not produce a registry in which
+    /// one key resolves to whichever registration came last.
+    fn register(
+        &mut self,
+        client_id: &str,
+        grant: &G,
+        keys: Vec<vpay_config::RegisteredCoseKey>,
+    ) -> Result<(), ConfigError>
+    where
+        G: Clone,
+    {
+        for registered in keys {
+            let thumbprint = registered.key.thumbprint();
+            let entry = Entry {
+                client_id: client_id.to_owned(),
+                grant: grant.clone(),
+                label: registered.label,
+                key: registered.key,
+            };
+            if let Some(first) = self.by_thumbprint.insert(thumbprint, entry) {
+                return Err(ConfigError::DuplicateCoseKey {
+                    thumbprint: thumbprint.iter().map(|b| format!("{b:02x}")).collect(),
+                    first: first.client_id,
+                    second: client_id.to_owned(),
+                });
+            }
+            self.by_kid
+                .entry(kid_from_thumbprint(&thumbprint))
+                .or_default()
+                .push(thumbprint);
+        }
+        Ok(())
     }
 
-    /// How many keys are registered, across all merchants.
+    /// How many keys are registered, across all registrations.
     #[must_use]
     pub fn len(&self) -> usize {
         self.by_thumbprint.len()
     }
 
-    /// Whether no merchant has registered a key — the state of every
-    /// deployment until its operators add `cose_keys`.
+    /// Whether no registration has a key — the state of every deployment until
+    /// its operators add `cose_keys`.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.by_thumbprint.is_empty()
@@ -151,7 +200,7 @@ impl MerchantKeyRegistry {
 
     /// The entries whose `kid` is `kid`, in registration order. Empty for a
     /// `kid` of the wrong length, which no key has.
-    fn candidates(&self, kid: &[u8]) -> impl Iterator<Item = &Entry> {
+    fn candidates(&self, kid: &[u8]) -> impl Iterator<Item = &Entry<G>> {
         <[u8; KID_LEN]>::try_from(kid)
             .ok()
             .and_then(|kid| self.by_kid.get(&kid))
@@ -161,32 +210,107 @@ impl MerchantKeyRegistry {
     }
 }
 
-/// Resolves a signature's key and its merchant, with the kill switch in front.
+impl KeyRegistry<MerchantGrant> {
+    /// Reads every merchant's `cose_keys` out of a loaded [`Config`].
+    ///
+    /// Parses with the same code `Config::validate_all` ran at boot
+    /// (`MerchantClient::cose_verify_keys`).
+    ///
+    /// # Errors
+    ///
+    /// The [`ConfigError`] `validate_all` would have raised —
+    /// [`ConfigError::MalformedCoseKey`] or [`ConfigError::DuplicateCoseKey`].
+    /// Unreachable for a `Config` that came from a file.
+    pub fn from_config(config: &Config) -> Result<Self, ConfigError> {
+        let mut registry = Self::default();
+        for merchant in &config.merchant_clients {
+            let grant = MerchantGrant {
+                merchant_id: merchant.merchant_id.clone(),
+                scopes: merchant.scopes.clone(),
+            };
+            registry.register(&merchant.client_id, &grant, merchant.cose_verify_keys()?)?;
+        }
+        Ok(registry)
+    }
+}
+
+impl KeyRegistry<ServiceGrant> {
+    /// Reads every service's `cose_keys` out of a loaded [`Config`] (VP-6a).
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::MalformedCoseKey`] or [`ConfigError::DuplicateCoseKey`];
+    /// unreachable for a `Config` that came from a file.
+    pub fn from_config(config: &Config) -> Result<Self, ConfigError> {
+        let mut registry = Self::default();
+        for service in &config.service_clients {
+            let grant = ServiceGrant {
+                capabilities: service.capabilities.clone(),
+            };
+            registry.register(
+                &service.client_id,
+                &grant,
+                vpay_config::read_cose_keys(&service.client_id, &service.cose_keys)?,
+            )?;
+        }
+        Ok(registry)
+    }
+}
+
+/// Resolves a signature's key and its registration, with the kill switch in
+/// front.
 ///
 /// Cheap to clone: two `Arc`s.
-#[derive(Clone)]
-pub struct MerchantKeyResolver {
-    registry: Arc<MerchantKeyRegistry>,
+pub struct KeyResolver<G> {
+    registry: Arc<KeyRegistry<G>>,
     disabled: Arc<dyn DisabledClients>,
 }
 
-impl std::fmt::Debug for MerchantKeyResolver {
+impl<G> Clone for KeyResolver<G> {
+    fn clone(&self) -> Self {
+        Self {
+            registry: self.registry.clone(),
+            disabled: self.disabled.clone(),
+        }
+    }
+}
+
+/// The merchants' resolver.
+pub type MerchantKeyResolver = KeyResolver<MerchantGrant>;
+/// The services' resolver (VP-6a).
+pub type ServiceKeyResolver = KeyResolver<ServiceGrant>;
+
+impl<G> std::fmt::Debug for KeyResolver<G> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("MerchantKeyResolver")
+        f.debug_struct("KeyResolver")
             .field("keys", &self.registry.len())
             .finish_non_exhaustive()
     }
 }
 
-impl MerchantKeyResolver {
+impl<G> KeyResolver<G> {
     /// `disabled` is the kill-switch query layer; the server hands it the same
     /// repositories the OP's client store reads (`Arc<dyn Repositories>`
     /// coerces: `DisabledClients` is one of its supertraits).
     #[must_use]
-    pub fn new(registry: Arc<MerchantKeyRegistry>, disabled: Arc<dyn DisabledClients>) -> Self {
+    pub fn new(registry: Arc<KeyRegistry<G>>, disabled: Arc<dyn DisabledClients>) -> Self {
         Self { registry, disabled }
     }
 
+    async fn is_disabled(&self, client_id: &str) -> Result<bool, DbError> {
+        let disabled = self.disabled.is_client_disabled(client_id).await?;
+        if disabled {
+            tracing::warn!(
+                client_id,
+                "refusing a configured key: the client is disabled via the \
+                 disabled_clients kill switch"
+            );
+        }
+        Ok(disabled)
+    }
+}
+
+impl KeyResolver<MerchantGrant> {
     /// The merchant that registered the key with this RFC 9679 thumbprint, or
     /// `None` if no merchant did **or** the merchant is disabled.
     ///
@@ -208,29 +332,43 @@ impl MerchantKeyResolver {
         }
         Ok(Some(ResolvedMerchant {
             client_id: entry.client_id.clone(),
-            merchant_id: entry.merchant_id.clone(),
-            scopes: entry.scopes.clone(),
+            merchant_id: entry.grant.merchant_id.clone(),
+            scopes: entry.grant.scopes.clone(),
             label: entry.label.clone(),
             thumbprint: *thumbprint,
         }))
     }
+}
 
-    async fn is_disabled(&self, client_id: &str) -> Result<bool, DbError> {
-        let disabled = self.disabled.is_client_disabled(client_id).await?;
-        if disabled {
-            tracing::warn!(
-                client_id,
-                "refusing a configured merchant key: the client is disabled via the \
-                 disabled_clients kill switch"
-            );
+impl KeyResolver<ServiceGrant> {
+    /// The service that registered the key with this RFC 9679 thumbprint, or
+    /// `None` if none did **or** the service is disabled (VP-6a).
+    ///
+    /// # Errors
+    ///
+    /// [`DbError`] if the `disabled_clients` lookup fails, and only then.
+    pub async fn service_for_thumbprint(
+        &self,
+        thumbprint: &[u8; 32],
+    ) -> Result<Option<ResolvedService>, DbError> {
+        let Some(entry) = self.registry.by_thumbprint.get(thumbprint) else {
+            return Ok(None);
+        };
+        if self.is_disabled(&entry.client_id).await? {
+            return Ok(None);
         }
-        Ok(disabled)
+        Ok(Some(ResolvedService {
+            client_id: entry.client_id.clone(),
+            capabilities: entry.grant.capabilities.clone(),
+            label: entry.label.clone(),
+            thumbprint: *thumbprint,
+        }))
     }
 }
 
 #[async_trait]
-impl CoseVerifierResolver for MerchantKeyResolver {
-    /// Every key of an enabled merchant whose `kid` is `kid`.
+impl<G: Send + Sync + 'static> CoseVerifierResolver for KeyResolver<G> {
+    /// Every key of an enabled registration whose `kid` is `kid`.
     ///
     /// `alg` filters (`CoseVerifyKey::supports`), so asking for anything but
     /// Ed25519 — ESP256, or either HMAC, which a shared secret would make —

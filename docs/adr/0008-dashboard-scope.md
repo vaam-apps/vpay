@@ -1,6 +1,8 @@
 # ADR-0008: The dashboard observes; it does not administer
 
-- **Status:** Accepted
+- **Status:** Accepted. The credential it assumed (an OIDC session) is
+  superseded by [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md);
+  "the dashboard observes, it does not administer" stands.
 - **Date:** 2026-08-08
 - **Deciders:** vpay maintainers
 

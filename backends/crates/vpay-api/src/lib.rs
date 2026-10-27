@@ -36,19 +36,17 @@
 //! it is mechanism both binaries share, and because the test that keeps
 //! those two paths off [`router`] belongs beside the module that owns them.
 //!
-//! [`resource_auth`] supplies the bearer-token validation now mounted in
-//! front of `/v1` — see [`router`]'s "Route tree" section for exactly which
-//! paths sit inside and outside it. ~~`/dash/v1` is still mounted nowhere:
-//! that surface needs the dashboard OIDC login flow, which is later
-//! work.~~ **Corrected 2026-09-20:** `/dash/v1` is mounted, conditionally —
-//! [`AppState::staff_login`] is `Some` only on a deployment configured for
-//! the staff surface (ADR-0022's `deployment.surfaces`), and a deployment
-//! that omits it gets the same honest 404 an unmounted route would, not a
-//! panic. See [`AppState::staff_login`]'s own doc comment and
-//! [`require_dashboard_token`]. Three integration suites exercise it against
-//! a real Postgres: `staff_sign_in.rs`, `dashboard_read_surface.rs` and
-//! `dashboard_procedure_transport.rs`. None of this runs on any live
-//! deployment yet — see `docs/status.md`.
+//! [`envelope`] is the authentication in front of `/v1` — the signed transport
+//! (VP-3) — and, since VP-6a, in front of the management surface: `/dash/v1`
+//! (a person's P-256 console key) and `/svc/v1` ([`svc`], a registered service's
+//! key). See [`router`]'s "Route tree" section for exactly which paths sit inside
+//! and outside it. `/dash/v1` and `/svc/v1` are mounted on a deployment that
+//! configured a `dashboard:` and enabled the `management` surface
+//! (ADR-0022's `deployment.surfaces`); one that did not gets the honest 404 an
+//! unmounted route gives, not a panic. Integration suites exercise them against a
+//! real Postgres: `dashboard_read_surface.rs`, `dashboard_procedure_transport.rs`
+//! and `console_pairing.rs`. None of this runs on any live deployment yet — see
+//! `docs/status.md`.
 //!
 //! Since Step 5c there is a **third** surface, [`browser`]: two routes under
 //! `/v1/browser` that a payer's own page calls with a publishable key and the
@@ -80,7 +78,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{FromRef, FromRequestParts, MatchedPath, State};
+use axum::extract::{FromRef, MatchedPath, State};
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderName, Method, Request, Uri};
 use axum::middleware::{Next, from_fn, from_fn_with_state};
@@ -98,20 +96,22 @@ use vpay_db::Repositories;
 use vpay_provider::ProviderAdapter;
 
 pub mod browser;
+// A person's console key: parsing it, the proof of possession and storing it
+// (VP-6a), shared by `POST /svc/v1/console_keys` and `staff pair-key`.
+pub mod console_keys;
 // The staff surface, `/dash/v1`. Its own module rather than routes under
 // `v1` for the reason `browser` is: it is a different credential, a
 // different tenancy rule and a different authentication boundary, and a
 // route table shared with `/v1` would be one `V1Route` entry away from a
-// merchant token reaching a staff read.
+// merchant key reaching a staff read.
 pub mod dash;
 pub mod envelope;
 pub mod error;
 pub mod form;
 pub mod idempotency;
-mod jwks_cache;
-// The merchants' Ed25519 keys and the resolver over them (VP-2). Mounted by
-// nothing yet: the `EnvelopeLayer` that verifies against it is VP-3, and until
-// then `/v1` still authenticates with the bearer token below.
+// The merchants' and the services' Ed25519 keys and the resolvers over them
+// (VP-2; the services' since VP-6a). The `EnvelopeLayer`s of `/v1` and `/svc/v1`
+// verify against them.
 pub mod merchant_keys;
 pub mod model;
 // The second listener: `/livez` and `/metrics`, on `--observability-bind`,
@@ -127,14 +127,8 @@ pub mod op;
 // merchant API and must not sit inside the `/v1` authentication boundary —
 // see that module's header.
 pub mod provider_callback;
-pub mod resource_auth;
-/// Staff credentials: argon2id with a deployment pepper, RFC 6238 TOTP, the
-/// AEAD that keeps a TOTP secret out of a database dump, and the opaque
-/// tokens (ADR-0017).
-/// Staff sign-in: the routes that produce the credential `/dash/v1` checks
-/// (ADR-0017).
-pub mod staff;
-pub mod staff_auth;
+// The routes a registered service calls (VP-6a): pair and revoke a console key.
+pub mod svc;
 #[cfg(test)]
 mod test_fixtures;
 #[cfg(test)]
@@ -147,16 +141,14 @@ pub mod v1;
 /// moved to [`vpay_provider::http`] when the rail adapters needed it: an
 /// adapter depends on the port and must never depend on this crate, so the
 /// only home both can reach is `vpay-provider`. Re-exported under the old
-/// name rather than renamed at every call site — `resource_auth` and
-/// `jwks_cache` still spell `crate::http_client::client`, and a mechanical
-/// rename across them would have buried the one-line move in noise.
+/// name rather than renamed at every call site.
 pub use vpay_provider::http as http_client;
 
 pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use dash::{DASH_NEST, DASH_ROUTES, DashRoute};
 pub use error::ApiError;
 pub use provider_callback::{PROVIDER_CALLBACK_ROUTE, PROVIDER_NEST};
-pub use resource_auth::DashboardJwtValidator;
+pub use svc::{SVC_NEST, SVC_ROUTES, SvcRoute};
 /// The boot steps both binaries call, under the name to call them by.
 ///
 /// The module itself is [`v1::boot`] for historical reasons; nothing about
@@ -168,8 +160,6 @@ pub use v1::{
     DashboardBinding, MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE,
     V1_ROUTES, V1Route, WebhookEndpointConfig, required_scopes,
 };
-
-use resource_auth::extract_bearer_token;
 
 /// The header carrying the request id, in and out.
 ///
@@ -334,18 +324,19 @@ pub struct RouterDeps {
     /// `Arc` because axum clones router state per request and an adapter may
     /// hold a connection pool of its own.
     pub adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
-    /// Validates the bearer tokens `/dash/v1` accepts.
+    /// The signed transport the management surface is wrapped in (VP-6a): the
+    /// layers of `/dash/v1`, of CrateStack's procedure transport under it, and of
+    /// `/svc/v1`, and the resolver that turns a service's key into its
+    /// capabilities.
     ///
-    /// `Option`, and that is the whole mounting decision: `None` means this
-    /// deployment configured no `dashboard_client`, and [`router`] then
-    /// mounts **no `/dash/v1` nest at all**, so every path under it answers
-    /// the honest 404 rather than a 401 that promises a credential would
-    /// help. A validator of its own because its JWKS URL is a deployment fact (it
-    /// points at this process's own `/v1/oauth/jwks.json`), and one validator
-    /// rather than one with two audiences, because a validator
-    /// that accepted either audience is exactly the confusion
-    /// [`resource_auth::Surface`] exists to prevent.
-    pub dashboard_validator: Option<DashboardJwtValidator>,
+    /// `Option` for [`Self::v1_envelope`]'s reason: a process that does not mount
+    /// the management surface has no use for the response key and `vpay-server`
+    /// does not load it there. **A process that mounts `/dash/v1` and has `None`
+    /// here answers every request to it with a `500`** (the nest is mounted, and
+    /// says plainly that it cannot serve) rather than serving unsigned or not at
+    /// all; `vpay-server` cannot produce that combination, so the arm exists for
+    /// a router assembled by some other caller.
+    pub management_envelope: Option<envelope::ManagementEnvelope>,
     /// The slice of the YAML deployment configuration a request path needs —
     /// see [`ResourceConfig`], which is also where `livemode` reaches a
     /// handler from.
@@ -354,18 +345,6 @@ pub struct RouterDeps {
     /// same `Config` the same way, and so this crate never learns how to
     /// find a config file.
     pub resource_config: Arc<ResourceConfig>,
-    /// Everything the staff sign-in routes need, or `None` and they are not
-    /// mounted (ADR-0017).
-    ///
-    /// A second `Option` beside [`Self::dashboard_validator`], and the two
-    /// are deliberately independent. A deployment can register a
-    /// `dashboard_client` and leave the `staff_auth` secrets out — legal in
-    /// sandbox, refused at boot in livemode — and what it gets is the
-    /// `/dash/v1` read surface exp23 built, with no way to sign in. That is
-    /// exactly the state master was in before this ADR, and it stays
-    /// expressible so that "the reads are mounted" and "a human can reach
-    /// them" remain two separate claims rather than one.
-    pub staff_login: Option<Arc<staff::StaffLogin>>,
     /// Which of `/v1` (business) and `/dash/v1` (management) this process
     /// mounts (ADR-0022), resolved from `deployment.surfaces` by
     /// [`vpay_config::Deployment::enabled_surfaces`] before this struct is
@@ -373,7 +352,7 @@ pub struct RouterDeps {
     /// so a boot-time refusal (empty or unknown value) happens once, in
     /// `Config::validate_all`, and never as a silent default here.
     ///
-    /// Deliberately **not** derivable from [`Self::dashboard_validator`] or
+    /// Deliberately **not** derivable from `config.dashboard` or
     /// from whether any merchant is registered: a management-only process
     /// still registers `merchant_clients` (dashboard-binding validation
     /// requires it), so an empty merchant list is not a legal proxy for "no
@@ -391,33 +370,8 @@ pub struct RouterDeps {
 pub(crate) struct AppState {
     repositories: Arc<dyn Repositories>,
     merchant_op: std::sync::Arc<op::MerchantOp>,
-    dashboard_validator: Option<DashboardJwtValidator>,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
-    staff_login: Option<Arc<staff::StaffLogin>>,
-}
-
-impl AppState {
-    /// The staff sign-in state, or the honest 404.
-    ///
-    /// Every staff handler starts here. `router` only mounts them when this
-    /// is `Some`, so reaching the `Err` arm means a router was assembled by
-    /// some other caller — and the answer is the one an unmounted deployment
-    /// gives, for `require_dashboard_token`'s reason: a `500` would claim
-    /// vpay is broken when the truth is that this deployment serves no staff
-    /// login.
-    pub(crate) fn staff_login(&self) -> Result<&staff::StaffLogin, ApiError> {
-        self.staff_login.as_deref().ok_or(ApiError::NotFound {
-            resource: "route",
-            id: "/dash/v1/staff".to_owned(),
-        })
-    }
-
-    /// The repositories, for a staff handler that would otherwise need its
-    /// own `State` extractor beside this one.
-    pub(crate) fn repositories(&self) -> &dyn Repositories {
-        self.repositories.as_ref()
-    }
 }
 
 /// So [`op::jwks::jwks_handler`] can take `State<Arc<dyn Repositories>>` and
@@ -433,16 +387,6 @@ impl FromRef<AppState> for Arc<dyn Repositories> {
 impl FromRef<AppState> for std::sync::Arc<op::MerchantOp> {
     fn from_ref(state: &AppState) -> Self {
         std::sync::Arc::clone(&state.merchant_op)
-    }
-}
-
-/// So [`require_dashboard_token`] resolves its validator out of router
-/// state. `Option`: see
-/// [`RouterDeps::dashboard_validator`] — a deployment with no dashboard has
-/// no validator, and the middleware refuses rather than inventing one.
-impl FromRef<AppState> for Option<DashboardJwtValidator> {
-    fn from_ref(state: &AppState) -> Self {
-        state.dashboard_validator.clone()
     }
 }
 
@@ -829,458 +773,17 @@ async fn refuse_v1_without_envelope(_request: Request<Body>, _next: Next) -> Res
     .into_response()
 }
 
-/// The `/dash/v1` authentication **and** authorisation boundary — the
-/// bearer-token twin of what `/v1` did until VP-3 (`/v1` is signed now:
-/// `envelope::scope`), and different from it in exactly the three ways the
-/// dashboard is different from a merchant.
-///
-/// | | `/v1` (signed, VP-3) | `/dash/v1` |
-/// |---|---|---|
-/// | tenant | resolved from the key that signed | **fixed** by `dashboard_client.merchant_id` |
-/// | credential | any registered merchant key | the **one** registered dashboard client |
-/// | methods | every method, scoped per verb | `GET`/`HEAD` only; everything else refused here |
-///
-/// # What identifies the credential, after ADR-0017
-///
-/// **`aud` and the merchant claim; never `sub`.**
-///
-/// The audience is checked by the validator before this function runs, and
-/// under ADR-0017 decision 3 it *is* the registered
-/// `dashboard_client.client_id` — the value the authorization-code grant
-/// actually mints (`default_handle_authorization_code` passes
-/// `Some(client_id)` as the audience and has no requested-audience path). So
-/// "was this token minted for this deployment's dashboard client" is answered
-/// by [`resource_auth::JwtValidator`]'s own `set_audience`, and repeating it
-/// here would be a second copy of one check rather than a second check.
-///
-/// What this function adds is the **tenant**: the token must carry
-/// [`vpay_config::DASHBOARD_MERCHANT_CLAIM`] and it must equal
-/// `dashboard_client.merchant_id`. Two things follow, and both are the point:
-///
-/// 1. **No machine client can read this surface.** A `client_credentials`
-///    token carries no merchant claim, because nothing but the staff
-///    authorization-code grant stamps one — so the refusal is a property of
-///    how tokens are minted, not of a list somebody maintains. That is a
-///    tightening over what stood here before, and it is deliberate:
-///    `/dash/v1` is a staff surface, and a machine caller on it would be a
-///    service account nobody registered as a person.
-/// 2. **A token cannot choose its own tenant.** The claim is *compared*, not
-///    *used*: the [`MerchantScope`] inserted below is built from the binding,
-///    exactly as before, so a forged claim buys a `403` rather than another
-///    merchant's rows. The claim is a second lock on the same door, and the
-///    door was already locked.
-///
-/// # And the person named by `sub` must still be allowed in
-///
-/// `sub` authorises nothing, but it *identifies* — and this function reads
-/// the `staff_members` row it names and refuses three cases with one answer:
-/// the row is `disabled`, the row is gone, or the row no longer belongs to
-/// this deployment's merchant.
-///
-/// Added by the exp24 review (findings F1 and F6), because everything above
-/// this paragraph is a statement about a **token** and none of it is a
-/// statement about the **person**. A token lives 15 minutes; an operator
-/// disabling an account or moving a staff member between tenants expects
-/// either to take effect now. Neither did.
-///
-/// This refuses nobody who was ever allowed in: `staff::oauth::authorize`
-/// already requires an `active` row whose `merchant_id` is the binding before
-/// it will mint a code. It is one primary-key read, after every cheaper
-/// check, and it fails closed — a database that cannot answer is not read as
-/// a `yes`.
-///
-/// # The check this replaces, and why it could not stay
-///
-/// Until 2026-09-07 this compared [`resource_auth::ResourceClaims`]' `sub` to
-/// `binding.client_id`. That was right for `client_credentials`, where
-/// `TokenManager::issue_client_token` sets `sub` to the client id — and
-/// **wrong for every token a real staff login produces**, where `sub` is the
-/// staff member and the client id is the audience. The 2026-09-06 review
-/// recorded it as finding F7 and left it, because which claim identifies the
-/// credential was a maintainer decision. ADR-0017 takes it. `sub` now names
-/// the staff row and authorises nothing; it is logged, and that is all.
-///
-/// Boot already refuses a merchant registration that could mint this audience
-/// at all (`vpay_config::ConfigError::MerchantClaimsDashboardAudience`, moved
-/// to whole-document scope by the same ADR); this is the second of the two,
-/// and neither is sufficient alone.
-///
-/// # Why a method it does not serve is refused here
-///
-/// `dash::required_scope` answers `None` for anything but a read, and this
-/// function turns that into a `403` **before** the router matches — the
-/// same answer `/v1` gives a token that carries none of the scopes its
-/// method needs, and for the same reason: it is a statement about the
-/// credential's permissions, which the caller can already inspect. (Not a
-/// `405`: this surface answers no method on any path with a credential that
-/// could ever be allowed to write, so "the method is wrong for this route"
-/// would be a narrower and less true thing to say than "you may not write
-/// here at all".) The
-/// alternative — relying on `dash::DASH_ROUTES` mounting no `post(..)` —
-/// makes "the dashboard cannot write" a property of a route table rather
-/// than of the boundary, and a route table is the thing a future slice
-/// edits. ADR-0008 requires an `audit_log` row per dashboard write and none
-/// exists, so a write that arrived here must not reach a handler at all.
-///
-/// # Why `None` for the validator is a `404` and not a `500`
-///
-/// A deployment with no `dashboard_client` mounts no nest, so this function
-/// is unreachable in that configuration and the honest answer to a request
-/// that reached it anyway is the same one the unmounted deployment gives:
-/// there is no such route here. A `500` would claim vpay is broken when the
-/// truth is that this deployment does not run a dashboard.
-///
-/// Generic over the state so that a test mounts this exact function rather
-/// than a copy of it.
-pub async fn require_dashboard_token<S>(
-    State(state): State<S>,
-    request: Request<Body>,
-    next: Next,
-) -> Response
-where
-    S: Send + Sync + Clone + 'static,
-    Option<DashboardJwtValidator>: FromRef<S>,
-    Arc<ResourceConfig>: FromRef<S>,
-    Arc<dyn Repositories>: FromRef<S>,
-{
-    let (mut parts, body) = request.into_parts();
-
-    let resource_config = Arc::<ResourceConfig>::from_ref(&state);
-    let (Some(validator), Some(binding)) = (
-        Option::<DashboardJwtValidator>::from_ref(&state),
-        resource_config.dashboard(),
-    ) else {
-        return not_found(parts.method.clone(), parts.uri.clone())
-            .await
-            .into_response();
-    };
-
-    // Before the token is even looked at: a method this surface does not
-    // serve is refused whatever credential it carries, so a write can never
-    // be *authenticated* here, only rejected.
-    let Some(required_scope) = dash::required_scope(&parts.method, binding) else {
-        tracing::warn!(
-            method = %parts.method,
-            "a /dash/v1 request names a method this read-only surface does not serve; refusing"
-        );
-        return ApiError::Forbidden.into_response();
-    };
-
-    let (tenancy, claims) = match resolve_dashboard_tenancy(
-        &mut parts,
-        &state,
-        &validator,
-        binding,
-        &resource_config,
-        required_scope,
+/// The answer of a management nest (`/dash/v1`, `/svc/v1`) mounted by a process
+/// that was handed no signed transport: a plain `500`, for every route and the
+/// fallback. [`refuse_v1_without_envelope`]'s device, and unreachable from
+/// `vpay-server` for its reason. See [`RouterDeps::management_envelope`].
+async fn refuse_management_without_envelope(_request: Request<Body>, _next: Next) -> Response {
+    ApiError::Internal(
+        "the management nests are mounted but were given no signed transport \
+         (RouterDeps::management_envelope)"
+            .to_owned(),
     )
-    .await
-    {
-        Ok(pair) => pair,
-        Err(response) => return *response,
-    };
-
-    parts.extensions.insert(MerchantScope::for_dashboard(
-        tenancy.merchant_id().to_owned(),
-    ));
-    parts.extensions.insert(tenancy);
-    parts.extensions.insert(claims);
-
-    next.run(Request::from_parts(parts, body)).await
-}
-
-/// Everything [`require_dashboard_token`] does *after* deciding which HTTP
-/// methods this request's surface serves at all: validate the bearer token,
-/// check the merchant claim and the scope, re-read the staff row, and
-/// resolve ADR-0018's tenancy.
-///
-/// Extracted so [`require_dashboard_procedure_token`] (Lane C,
-/// `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`) can share it.
-/// The two middlewares differ in exactly one thing — which HTTP method(s)
-/// their surface serves, and therefore what `required_scope` a caller has to
-/// present — never in how a validated token becomes a tenant; duplicating
-/// this block for a second surface would be a second, independent chance
-/// for the two to quietly disagree about what "this staff member may read"
-/// means.
-///
-/// Returns the resolved [`dash::DashboardTenancy`] and the validated
-/// [`resource_auth::ResourceClaims`] on success, or the exact [`Response`]
-/// the caller should return unchanged otherwise — every refusal path below
-/// is byte-for-byte what this block produced before the extraction.
-async fn resolve_dashboard_tenancy<S>(
-    parts: &mut axum::http::request::Parts,
-    state: &S,
-    validator: &DashboardJwtValidator,
-    binding: &DashboardBinding,
-    resource_config: &ResourceConfig,
-    required_scope: &str,
-) -> Result<(dash::DashboardTenancy, resource_auth::ResourceClaims), Box<Response>>
-where
-    S: Send + Sync + Clone + 'static,
-    Arc<dyn Repositories>: FromRef<S>,
-{
-    let claims = {
-        let token = extract_bearer_token(parts)
-            .map_err(|rejection| Box::new(ApiError::from(rejection).into_response()))?;
-        validator
-            .0
-            .validate(token)
-            .await
-            .map_err(|rejection| Box::new(ApiError::from(rejection).into_response()))?
-    };
-
-    // The tenant claim, which is what tells a staff token from every other
-    // token this OP can mint. `None` is the `client_credentials` case and is
-    // refused with the same 403 a wrong tenant gets: telling them apart would
-    // say which of the two a caller had presented.
-    if claims.merchant.as_deref() != Some(binding.merchant_id.as_str()) {
-        tracing::warn!(
-            subject = %claims.subject,
-            carried_merchant_claim = claims.merchant.is_some(),
-            "a validly signed dashboard-audience token does not carry this deployment's \
-             merchant claim; refusing rather than serving a tenant nothing vouched for"
-        );
-        return Err(Box::new(ApiError::Forbidden.into_response()));
-    }
-
-    if !claims.has_scope(required_scope) {
-        tracing::warn!(
-            subject = %claims.subject,
-            granted = ?claims.scope,
-            required = required_scope,
-            "a /dash/v1 token does not carry the dashboard registration's scope; refusing"
-        );
-        return Err(Box::new(ApiError::Forbidden.into_response()));
-    }
-
-    // THE STAFF ROW IS RE-READ HERE, and this is a bearer token rather than a
-    // session, so it is worth saying why it is read at all.
-    //
-    // `sub` names the `stf_…` the authorization-code grant minted for. A
-    // disabled account must stop reading `/dash/v1` on its next request —
-    // that is what `staff_members.status` is *for*: ADR-0017 gives an
-    // operator no way to disable the dashboard client, and says in so many
-    // words that "what can be disabled per person is `staff_members.status`,
-    // which is the granularity that matters". Until the exp24 review
-    // (finding F1) that was true of the session routes and false of this one,
-    // which is the only credential that reads a merchant's payments:
-    // `disabling_a_staff_member_refuses_their_live_session` disabled the
-    // account and then checked `/dash/v1/staff/session`, discarding the
-    // bearer token, so a disabled staff member went on listing payment
-    // intents for the whole 15-minute access-token TTL. Break-glass has to
-    // work faster than a token expiry or it is not break-glass.
-    //
-    // Placed **after** the audience, tenant and scope checks so that the read
-    // costs only a caller who has already proved a validly signed, in-tenant,
-    // in-scope token — an unauthenticated caller cannot make this surface
-    // touch Postgres.
-    //
-    // NOT a session lookup, deliberately. Binding every `/dash/v1` read to a
-    // live `staff_sessions` row would also make sign-out a true revocation,
-    // which ADR-0017's Consequences currently accepts as a residual ("a
-    // minted token stays valid for its TTL"). Reversing an accepted decision
-    // is the maintainer's, not this middleware's — the exp24 review surfaces
-    // it rather than taking it. What is fixed here is the case the ADR never
-    // accepted and its own text contradicts.
-    // The row's OWN tenant is checked here too, and it is a second question
-    // from the merchant *claim* above. The claim says which tenant the token
-    // was minted for; this says which tenant the person belongs to **now**.
-    // `staff::oauth::authorize` requires the two to agree before it will mint
-    // a code at all, so this refuses nobody who was ever allowed in — what it
-    // closes is a staff member moved to another merchant, whose old token
-    // otherwise went on reading their old merchant's payments for the rest of
-    // its TTL. `oauth_authorization_codes.merchant_id` is a copy taken at
-    // issue precisely so an edit cannot move a token to a *new* tenant; this
-    // is the other half, and without it the copy only protects the tenant
-    // being moved to.
-    let repositories = Arc::<dyn Repositories>::from_ref(state);
-    let staff = match vpay_db::Staff::find(repositories.as_ref(), &claims.subject).await {
-        Ok(Some(staff)) if staff.is_active() && staff.merchant_id == binding.merchant_id => staff,
-        Ok(_) => {
-            // One answer for "disabled", "gone" and "no longer this tenant's":
-            // telling them apart would say which `stf_…` values name a row,
-            // and none of the three may read.
-            tracing::warn!(
-                subject = %claims.subject,
-                "a /dash/v1 token names a staff member who is disabled, no longer exists, or no \
-                 longer belongs to this deployment's merchant; refusing rather than serving rows \
-                 to a revoked account for the rest of the token's TTL"
-            );
-            return Err(Box::new(ApiError::Forbidden.into_response()));
-        }
-        Err(error) => {
-            // Fail closed. A database that cannot answer "is this person
-            // still allowed in" must not be read as "yes".
-            tracing::error!(%error, "reading the staff row behind a /dash/v1 token");
-            return Err(Box::new(ApiError::from(error).into_response()));
-        }
-    };
-
-    // Which tenant this request may read (ADR-0018). A non-admin resolves to
-    // the *bound* one unconditionally, and never anything the token or the
-    // query string said — that is the difference from `/v1` that matters
-    // most, and it is exactly as true after this ADR as before it: the
-    // `?merchant_id=` parameter below is not even PARSED unless
-    // `staff.is_admin` is true, so nothing a non-admin caller writes can
-    // move it — `a_non_admin_cannot_move_the_tenant_with_the_query_parameter`
-    // is the end-to-end guard.
-    //
-    // `dash::AdminMerchantOverride` is read through `VpayQuery` — the same
-    // decoder every `/dash/v1` and `/v1` query parameter goes through —
-    // rather than a bespoke split on `&`/`=`, so a malformed value here fails
-    // the same way a malformed `limit` does, and not in a boundary-specific
-    // way nothing else in this crate produces.
-    let tenancy = if staff.is_admin {
-        let requested =
-            match crate::form::VpayQuery::<dash::AdminMerchantOverride>::from_request_parts(
-                parts, state,
-            )
-            .await
-            {
-                Ok(crate::form::VpayQuery(over)) => {
-                    over.merchant_id.filter(|value| !value.is_empty())
-                }
-                Err(rejection) => return Err(Box::new(rejection.into_response())),
-            };
-
-        match requested {
-            // No override, or the admin named its own tenant: this is not a
-            // cross-tenant read, and `DashboardTenancy::is_cross_tenant`
-            // must answer `false` for it — see that type's doc.
-            None => dash::DashboardTenancy::Bound(binding.merchant_id.clone()),
-            Some(merchant_id) if merchant_id == binding.merchant_id => {
-                dash::DashboardTenancy::Bound(merchant_id)
-            }
-            Some(merchant_id) => {
-                if !resource_config.is_known_merchant(&merchant_id) {
-                    tracing::warn!(
-                        subject = %claims.subject,
-                        %merchant_id,
-                        "an admin /dash/v1 request named a merchant this deployment does not \
-                         serve; refusing rather than answering an empty page for a typo"
-                    );
-                    return Err(Box::new(
-                        ApiError::invalid_param(
-                            "merchant_id",
-                            "Unknown merchant. An admin may read any merchant this deployment \
-                             serves; this is not one of them.",
-                        )
-                        .into_response(),
-                    ));
-                }
-                // The one line ADR-0018's "blast radius" section asks for:
-                // every cross-tenant read is logged with both merchants, so
-                // a mis-set `is_admin` is visible in the same place every
-                // other refusal and grant on this surface already is.
-                tracing::info!(
-                    subject = %claims.subject,
-                    home_merchant_id = %binding.merchant_id,
-                    %merchant_id,
-                    "an admin /dash/v1 session named a merchant other than its own; serving a \
-                     cross-tenant read (ADR-0018)"
-                );
-                dash::DashboardTenancy::ChosenByAdmin(merchant_id)
-            }
-        }
-    } else {
-        dash::DashboardTenancy::Bound(binding.merchant_id.clone())
-    };
-
-    Ok((tenancy, claims))
-}
-
-/// The dashboard's CrateStack procedure transport boundary (Lane C,
-/// `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`) — the same
-/// tenancy resolution [`require_dashboard_token`] applies to `/dash/v1`'s
-/// generated-free routes, mounted in front of `POST /$procs/searchPaymentIntents`
-/// instead.
-///
-/// # Why this is a second function rather than a second case in
-/// [`dash::required_scope`]
-///
-/// That function is the whole of `/dash/v1`'s "reads only" boundary: it maps
-/// every method but `GET`/`HEAD` to `None`, and [`require_dashboard_token`]
-/// turns `None` into an unconditional `403` — the single place ADR-0008's
-/// "no write reaches a handler" property lives. CrateStack's generated
-/// procedure transport is `POST` unconditionally
-/// (`cratestack-macros-0.12.0/src/axum/procedure/route_attrs.rs`), which is
-/// a fact about the wire shape a *read* procedure call takes, not a
-/// loosening of that boundary — the procedure it calls has no write policy
-/// arm and the schema it runs against declares none of writes lane C is
-/// forbidden from mounting model CRUD for. Changing `dash::required_scope`
-/// to admit `POST` would widen what *every* `/dash/v1` route may accept;
-/// this function instead gives the procedure transport its own, narrower
-/// boundary — `POST` and nothing else — so `/dash/v1`'s own boundary is
-/// untouched, in code and in its own tests.
-///
-/// # Where the tenant this middleware resolves goes
-///
-/// Into the request's extensions, exactly like [`require_dashboard_token`]
-/// — [`dash::DashboardTenancy`], [`MerchantScope`] and the validated
-/// [`resource_auth::ResourceClaims`]. `vpay_db::DashboardAuthFn` (the
-/// closure `router` builds below) reads `DashboardTenancy` back out of
-/// there; see `vpay_db`'s `dashboard_transport` module for why it is a
-/// closure over a tenant id rather than this crate constructing a
-/// `cratestack::CratestackContext` itself.
-pub(crate) async fn require_dashboard_procedure_token<S>(
-    State(state): State<S>,
-    request: Request<Body>,
-    next: Next,
-) -> Response
-where
-    S: Send + Sync + Clone + 'static,
-    Option<DashboardJwtValidator>: FromRef<S>,
-    Arc<ResourceConfig>: FromRef<S>,
-    Arc<dyn Repositories>: FromRef<S>,
-{
-    let (mut parts, body) = request.into_parts();
-
-    let resource_config = Arc::<ResourceConfig>::from_ref(&state);
-    let (Some(validator), Some(binding)) = (
-        Option::<DashboardJwtValidator>::from_ref(&state),
-        resource_config.dashboard(),
-    ) else {
-        return not_found(parts.method.clone(), parts.uri.clone())
-            .await
-            .into_response();
-    };
-
-    // CrateStack's generated procedure transport is `POST /$procs/<name>`
-    // unconditionally — see this function's own doc for why that is not
-    // `dash::required_scope`'s job to admit. Refused before the token is
-    // even looked at, for `require_dashboard_token`'s own reason: a method
-    // this surface does not serve must never be *authenticated*, only
-    // rejected.
-    if parts.method != Method::POST {
-        tracing::warn!(
-            method = %parts.method,
-            "a dashboard procedure request names a method this surface does not serve; refusing"
-        );
-        return ApiError::Forbidden.into_response();
-    }
-    let required_scope = binding.scope.as_str();
-
-    let (tenancy, claims) = match resolve_dashboard_tenancy(
-        &mut parts,
-        &state,
-        &validator,
-        binding,
-        &resource_config,
-        required_scope,
-    )
-    .await
-    {
-        Ok(pair) => pair,
-        Err(response) => return *response,
-    };
-
-    parts.extensions.insert(MerchantScope::for_dashboard(
-        tenancy.merchant_id().to_owned(),
-    ));
-    parts.extensions.insert(tenancy);
-    parts.extensions.insert(claims);
-
-    next.run(Request::from_parts(parts, body)).await
+    .into_response()
 }
 
 /// The largest `/v1` request body this router will read, in bytes.
@@ -1293,6 +796,109 @@ where
 /// process buffer megabytes — the limit layer is mounted *outside* the token
 /// check for exactly that reason.
 pub(crate) const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
+
+/// The three nests of the management surface (VP-6a), built.
+struct ManagementNests {
+    /// `/dash/v1`'s hand-written reads.
+    dash: Router<AppState>,
+    /// CrateStack's procedure transport, already state-erased (see
+    /// [`router`]'s `nest_service`).
+    procedures: Router,
+    /// `/svc/v1`.
+    svc: Router<AppState>,
+}
+
+/// Builds the management nests, signed when `envelope` is `Some`, refusing
+/// every request with a `500` when it is not (see
+/// [`RouterDeps::management_envelope`]).
+///
+/// Per nest, innermost first, which is the order that matters:
+///
+/// 1. the **scope step** (`route_layer`, around the routes alone): the verified
+///    signer becomes a tenant (`/dash/v1`) or a capability (`/svc/v1`). Around
+///    the routes and not the fallback, because the only requests that reach a
+///    fallback unsigned are the ones with no operation to sign for, and wrapping
+///    them would turn their honest `404` into a `500` for the missing signer —
+///    the `/v1` nest's measured lesson, and the reason an anonymous `OPTIONS`
+///    (which the layer passes through, bodiless) is not a page;
+/// 2. the **body limit**, on the OPENED payload;
+/// 3. the **envelope layer**, last, so it runs first and sees the matched route;
+/// 4. `track_http_metrics`, outermost, inside the nest.
+fn management_nests(
+    state: &AppState,
+    envelope: Option<&envelope::ManagementEnvelope>,
+) -> ManagementNests {
+    let scope = envelope::console::DashScopeState {
+        repositories: Arc::clone(&state.repositories),
+        resource_config: Arc::clone(&state.resource_config),
+    };
+
+    // The closure is the whole of `vpay_db::DashboardAuthFn`'s contract: read
+    // the tenant `dash_scope` already resolved onto the request's own
+    // extensions, and hand back nothing else. This crate never constructs a
+    // `cratestack::CratestackContext` — see `vpay_db`'s `dashboard_transport`
+    // module doc for why it must not, and why a plain tenant id is all this
+    // closure is trusted with.
+    let auth: vpay_db::DashboardAuthFn = Arc::new(|extensions: &axum::http::Extensions| {
+        extensions
+            .get::<dash::DashboardTenancy>()
+            .map(|tenancy| tenancy.merchant_id().to_owned())
+    });
+    let procedures = state.repositories.dashboard_procedure_router(auth);
+
+    match envelope {
+        Some(envelope) => ManagementNests {
+            dash: dash::routes()
+                .route_layer(from_fn_with_state(
+                    scope.clone(),
+                    envelope::console::dash_scope,
+                ))
+                .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+                .layer(envelope.dash_layer())
+                .layer(from_fn(track_http_metrics)),
+            procedures: procedures
+                .route_layer(from_fn_with_state(scope, envelope::console::dash_scope))
+                .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+                .layer(envelope.procedures_layer())
+                // **Added AFTER the envelope, so it is OUTSIDE it — and it is
+                // not optional.** `Router::nest_service` does not mount one
+                // path: it registers a *catch-all* (`/dash/v1/{*rest}`, plus
+                // `/dash/v1` and `/dash/v1/`) in the outer router's **path**
+                // table (`axum-0.8.9/src/routing/path_router.rs:246-282`). A
+                // path-table entry beats the fallback router, where
+                // `Router::nest` put `dash::routes`' own `.fallback(not_found)`
+                // — so without this line every previously-unmatched
+                // `/dash/v1/...` path stops reaching that fallback and reaches
+                // the procedure router's own, which has none. `not_found` and
+                // not a refusal: a path this deployment does not mount is not
+                // a permissions question, and answering one as though it were
+                // tells a prober which prefixes are live
+                // (`an_unknown_dash_path_is_still_the_honest_404`).
+                .fallback(not_found)
+                .layer(from_fn(track_http_metrics)),
+            svc: svc::routes()
+                .route_layer(from_fn_with_state(
+                    envelope.services(),
+                    envelope::service::service_scope,
+                ))
+                .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+                .layer(envelope.svc_layer())
+                .layer(from_fn(track_http_metrics)),
+        },
+        None => ManagementNests {
+            dash: dash::routes()
+                .layer(from_fn(refuse_management_without_envelope))
+                .layer(from_fn(track_http_metrics)),
+            procedures: procedures
+                .layer(from_fn(refuse_management_without_envelope))
+                .fallback(not_found)
+                .layer(from_fn(track_http_metrics)),
+            svc: svc::routes()
+                .layer(from_fn(refuse_management_without_envelope))
+                .layer(from_fn(track_http_metrics)),
+        },
+    }
+}
 
 /// Builds the application router from [`RouterDeps`].
 ///
@@ -1331,39 +937,27 @@ pub fn router(deps: RouterDeps) -> Router {
     let state = AppState {
         repositories: deps.repositories,
         merchant_op: deps.merchant_op,
-        dashboard_validator: deps.dashboard_validator,
         adapters: deps.adapters,
         resource_config: deps.resource_config,
-        staff_login: deps.staff_login,
     };
 
     // Unauthenticated by necessity, not by omission — see the table above.
     //
-    // Split three ways by surface, and the split *is* the ADR-0022 boundary
-    // — see ADR-0022 § "Where `/v1/oauth` goes". The two discovery routes
-    // mint nothing and are mounted on both surfaces, because the management
-    // tier's `resource_auth` validator fetches JWKS over HTTP and must not
-    // have to reach the business tier to validate a staff token. `/token`
-    // mints the **merchant** private-key-JWT credential (ADR-0017's staff
-    // grant terminates at `/dash/v1/oauth/token`, not here — see
-    // `staff::oauth`), so it is business-only: a `surfaces: [management]`
-    // pod that served it would mint merchant credentials on the staff tier,
-    // outside ADR-0009's rate limit, which is the exact boundary this ADR
-    // exists to draw.
+    // **Business-only since VP-6a.** The two discovery routes were mounted on
+    // both surfaces because the management tier's bearer-token validator
+    // fetched JWKS over HTTP and must not have to reach the business tier to
+    // validate a staff token (ADR-0022 § "Where `/v1/oauth` goes"). There is no
+    // staff token and no validator any more, so nothing on the management tier
+    // reads these routes, and `/token` mints the **merchant** private-key-JWT
+    // credential: a `surfaces: [management]` pod serves none of the OP. VP-4
+    // deletes the rest.
     let oauth = Router::new()
         .route(
             "/.well-known/openid-configuration",
             get(op::token::discovery_handler),
         )
-        .route("/jwks.json", get(op::jwks::jwks_handler));
-    let oauth = match surfaces.business {
-        true => oauth.route("/token", post(op::token::token_handler)),
-        // Not mounted at all, so the nest's own `.fallback` answers the
-        // honest 404 rather than a refusal — the same fail-closed answer
-        // `/v1` and `/dash/v1` already give a surface that is not enabled.
-        false => oauth,
-    };
-    let oauth = oauth
+        .route("/jwks.json", get(op::jwks::jwks_handler))
+        .route("/token", post(op::token::token_handler))
         // Explicit, not inherited — see this function's route table and the
         // paragraph under it.
         .fallback(not_found)
@@ -1513,150 +1107,23 @@ pub fn router(deps: RouterDeps) -> Router {
         // code would otherwise get to choose.
         .layer(from_fn(track_http_metrics));
 
-    // The staff surface. A deployment with no `dashboard_client` mounts
-    // nothing here, so every `/dash/v1/...` path falls through to the outer
+    // The management surface (VP-6a): `/dash/v1` (the console's reads),
+    // CrateStack's procedure transport under it, and `/svc/v1` (what a registered
+    // service calls). A deployment with no `dashboard:` mounts none of them, so
+    // every `/dash/v1/...` and `/svc/v1/...` path falls through to the outer
     // honest 404 — the fail-closed reading of an absent registration. The
-    // alternative, a mounted nest whose middleware refuses everything,
-    // answers 401 to a caller and invites them to go looking for a
-    // credential that this deployment could never issue.
+    // alternative, a mounted nest whose layers refuse everything, answers 401 to
+    // a caller and invites them to go looking for a credential that this
+    // deployment could never issue.
     //
-    // The first two conditions were already required and neither is
-    // redundant: the validator is what checks a token, the binding is what
-    // a query filters by, and a nest mounted with one and not the other
-    // would be a surface that authenticates and cannot answer, or one that
-    // answers and cannot authenticate. ADR-0022 adds the third: a process
-    // whose `deployment.surfaces` does not include `management` mounts
-    // nothing here regardless of `dashboard_client`, so an operator can run
-    // a business-only replica against a config file that still names a
-    // dashboard client (e.g. shared between the `-server` and
-    // `-management` Deployments).
-    let dash_is_configured = surfaces.management
-        && state.dashboard_validator.is_some()
-        && state.resource_config.dashboard().is_some();
-    let dash = dash_is_configured.then(|| {
-        dash::routes()
-            .layer(from_fn_with_state(
-                state.clone(),
-                require_dashboard_token::<AppState>,
-            ))
-            // **Merged AFTER the token layer, so these routes are outside
-            // it.** They have to be: they exist to produce the credential
-            // that layer checks, and a `/dash/v1/staff/login` behind a
-            // bearer-token requirement is a login nobody can reach.
-            //
-            // `Router::layer` wraps the routes *and the fallback* present
-            // when it is called, so the merge below adds unwrapped routes
-            // and leaves `dash::routes`' fallback inside the layer —
-            // which is why an unmatched `/dash/v1/...` path still answers
-            // exactly what it answered before this module existed.
-            // `staff::routes` deliberately carries no fallback of its own:
-            // two routers with fallbacks cannot be merged.
-            //
-            // Mounted whether or not `staff_login` is `Some`. A deployment
-            // with a dashboard and no `staff_auth` secrets gets these paths
-            // answering the honest 404 through `AppState::staff_login`,
-            // rather than the paths vanishing — because a 404 on
-            // `/dash/v1/staff/login` and a 404 on `/dash/v1/nonsense` are
-            // the same answer, and making the route table depend on a
-            // Secret's presence is how a deployment discovers a missing
-            // Secret by reading a route table.
-            .merge(staff::routes())
-            // Outside the token check, for the `/v1` nest's reason: an
-            // anonymous caller must not be able to make this process
-            // buffer a body before the 401. The limit is `/v1`'s,
-            // although this surface reads no body at all — a shared
-            // constant cannot drift, and the day a dashboard write
-            // exists it is already bounded.
-            .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
-            // Inside the nest, for the reason every other nest gives.
-            .layer(from_fn(track_http_metrics))
-    });
-
-    // The read-only CrateStack procedure transport (Lane C,
-    // `docs/plans/2026-09-13-dashboard-nav-notes/transport.md`) —
-    // `searchPaymentIntents` answering over HTTP for the first time. A
-    // *second*, separately-mounted router rather than something merged into
-    // `dash` above, for a reason that is not stylistic: CrateStack's
-    // generated `procedure_router` calls its own `.with_state(..)` inside
-    // `vpay_db::Repositories::dashboard_procedure_router` (over CrateStack's
-    // own internal state, never `AppState`), so what it returns is already
-    // `axum::Router<()>` — state-erased — while `dash` above is still
-    // `Router<AppState>` until this function's own `.with_state(state)` at
-    // the very end. `Router::merge`/`Router::nest` both require the *same*
-    // state type on both sides; only `Router::nest_service` treats its
-    // argument as an opaque `tower::Service` and does not care what state,
-    // if any, it closed over — which is exactly what a `Router<()>` needs to
-    // be merged into a tree whose state is not yet fixed.
-    //
-    // Gated on the same `dash_is_configured` condition and mounted at the
-    // same [`dash::DASH_NEST`]: CrateStack's own generated route is already
-    // the absolute path `/$procs/searchPaymentIntents`
-    // (`cratestack-macros-0.12.0/src/axum/procedure/route_attrs.rs`), so
-    // nesting it under `DASH_NEST` produces exactly
-    // `/dash/v1/$procs/searchPaymentIntents` and nothing this deployment did
-    // not already reserve `/dash/v1` for.
-    let dash_procs = dash_is_configured.then(|| {
-        // The closure is the whole of `vpay_db::DashboardAuthFn`'s contract:
-        // read the tenant [`require_dashboard_procedure_token`] already
-        // resolved onto the request's own extensions, and hand back nothing
-        // else. This crate never constructs a `cratestack::CratestackContext`
-        // — see `vpay_db`'s `dashboard_transport` module doc for why it must
-        // not, and why a plain tenant id is all this closure is trusted
-        // with.
-        let auth = std::sync::Arc::new(|extensions: &axum::http::Extensions| {
-            extensions
-                .get::<dash::DashboardTenancy>()
-                .map(|tenancy| tenancy.merchant_id().to_owned())
-        });
-
-        state
-            .repositories
-            .dashboard_procedure_router(auth)
-            // Authenticated by [`require_dashboard_procedure_token`], not
-            // [`require_dashboard_token`]: CrateStack's generated procedure
-            // transport is always `POST /$procs/<name>`, and
-            // `require_dashboard_token`'s method check exists specifically
-            // to refuse every non-`GET`/`HEAD` request on `/dash/v1` —
-            // reusing it here would refuse the very requests this transport
-            // answers. `require_dashboard_procedure_token`'s own doc says
-            // why that is a narrower boundary of its own rather than a
-            // loosening of `/dash/v1`'s.
-            .layer(from_fn_with_state(
-                state.clone(),
-                require_dashboard_procedure_token::<AppState>,
-            ))
-            // **Added AFTER the token layer, so it is OUTSIDE it — and it is
-            // not optional.** `Router::nest_service` does not mount one path:
-            // it registers a *catch-all* (`/dash/v1/{*rest}`, plus
-            // `/dash/v1` and `/dash/v1/`) in the outer router's **path**
-            // table (`axum-0.8.9/src/routing/path_router.rs:246-282`). A
-            // path-table entry beats the fallback router, where
-            // `Router::nest` put `dash::routes`' own `.fallback(not_found)`
-            // — so without this line every previously-unmatched
-            // `/dash/v1/...` path stops reaching that fallback and reaches
-            // `require_dashboard_procedure_token` instead, which refuses any
-            // non-`POST` with `403` before it looks at the token at all.
-            //
-            // Measured on 2026-09-13, which is why this is spelled out: with
-            // this line removed, `GET /dash/v1/not_a_dashboard_route` with a
-            // perfectly valid dashboard token answers `403 forbidden`
-            // instead of the honest `404`, and `staff::routes`' own doc — "it
-            // is also what keeps an unmatched `/dash/v1/...` path answering
-            // exactly what it answered before this module existed" — stops
-            // being true. `an_unknown_dash_path_is_still_the_honest_404`
-            // pins both halves.
-            //
-            // `not_found` and not a refusal, for `dash`'s own reason: a path
-            // this deployment does not mount is not a permissions question,
-            // and answering one as though it were tells a prober which
-            // prefixes are live.
-            .fallback(not_found)
-            // Same ceiling `/dash/v1`'s other routes carry, for the same
-            // reason: an anonymous caller must not be able to make this
-            // process buffer a body before the token check refuses it.
-            .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
-            .layer(from_fn(track_http_metrics))
-    });
+    // ADR-0022 adds the surface condition: a process whose
+    // `deployment.surfaces` does not include `management` mounts nothing here
+    // regardless of `dashboard`, so an operator can run a business-only replica
+    // against a config file that still names a dashboard (e.g. shared between the
+    // `-server` and `-management` Deployments).
+    let dash_is_configured = surfaces.management && state.resource_config.dashboard().is_some();
+    let management =
+        dash_is_configured.then(|| management_nests(&state, deps.management_envelope.as_ref()));
 
     let router = Router::new()
         .route("/healthz", get(healthz))
@@ -1669,46 +1136,37 @@ pub fn router(deps: RouterDeps) -> Router {
         // double every `/v1` count and label half of them `unmatched`.
         .layer(from_fn(track_http_metrics));
 
-    // The `/v1/oauth` **nest** mounts whenever either surface is enabled
-    // (ADR-0022 § "Where `/v1/oauth` goes"), because both surfaces need the
-    // discovery pair; which routes are inside it is decided above, and
-    // `/token` is not one of them on a management-only pod. `match` after
-    // the fold rather than inside the chain, for the same reason the
-    // `dash`/`dash_procs` nests below already are — the chain is not an
-    // `Option`-shaped expression, and writing it as one would need a
-    // `Router` identity to merge against, which is exactly the thing a
-    // reader would then have to check does nothing.
-    let router = match (surfaces.business || surfaces.management).then_some(oauth) {
-        Some(oauth) => router.nest("/v1/oauth", oauth),
-        None => router,
-    };
-
-    // The business surface — `/v1/browser`, `/v1`, `/provider` — mounted
-    // only when `surfaces.business`. A management-only process falls
-    // through to the outer honest 404 for every one of these paths, the
-    // same fail-closed answer `/dash/v1` already gives an undashboarded
-    // deployment.
-    let router = match surfaces.business.then_some((browser, v1, provider)) {
-        Some((browser, v1, provider)) => router
+    // The business surface — `/v1/oauth`, `/v1/browser`, `/v1`, `/provider` —
+    // mounted only when `surfaces.business`. A management-only process falls
+    // through to the outer honest 404 for every one of these paths, the same
+    // fail-closed answer `/dash/v1` already gives an undashboarded deployment.
+    let router = match surfaces.business.then_some((oauth, browser, v1, provider)) {
+        Some((oauth, browser, v1, provider)) => router
+            .nest("/v1/oauth", oauth)
             .nest("/v1/browser", browser)
             .nest("/v1", v1)
             .nest(PROVIDER_NEST, provider),
         None => router,
     };
 
-    // `nest` after the fold rather than inside the chain, for the same
-    // reason as the two matches above.
-    let router = match dash {
-        Some(dash) => router.nest(DASH_NEST, dash),
-        None => router,
-    };
-
-    // `nest_service`, not `nest`: `dash_procs` is already `Router<()>` (see
-    // its own construction above for why), and `nest_service` is the one
-    // combinator that does not require its argument to share this router's
-    // state type — it treats `dash_procs` as an opaque `tower::Service`.
-    let router = match dash_procs {
-        Some(dash_procs) => router.nest_service(DASH_NEST, dash_procs),
+    // `nest` after the fold rather than inside the chain: the chain is not an
+    // `Option`-shaped expression, and writing it as one would need a `Router`
+    // identity to merge against, which is exactly the thing a reader would then
+    // have to check does nothing.
+    let router = match management {
+        Some(ManagementNests {
+            dash,
+            procedures,
+            svc,
+        }) => router
+            .nest(DASH_NEST, dash)
+            // `nest_service`, not `nest`: `procedures` is already `Router<()>`
+            // (CrateStack's generated `procedure_router` calls its own
+            // `.with_state(..)` over its own state, never `AppState`), and
+            // `nest_service` is the one combinator that does not require its
+            // argument to share this router's state type.
+            .nest_service(DASH_NEST, procedures)
+            .nest(SVC_NEST, svc),
         None => router,
     };
 
@@ -3186,13 +2644,14 @@ mod tests {
         /// mint merchant credentials on the staff tier, and ADR-0009's rate
         /// limit sits only in front of the business tier's copy.
         ///
-        /// The discovery pair is the other half of the same decision and is
-        /// asserted here rather than in its own test, because the value of
-        /// the assertion is the *contrast*: they mint nothing, the
-        /// management tier's own `resource_auth` validator needs JWKS to
-        /// check a staff token, and making it fetch that from the business
-        /// tier would reintroduce the coupling ADR-0022 removes. So they
-        /// answer on both surfaces while `/token` does not.
+        /// **Since VP-6a the discovery pair is business-only too.** It answered on
+        /// both surfaces while the management tier's own bearer-token validator
+        /// needed the JWKS to check a staff token, and making it fetch that from
+        /// the business tier would have reintroduced the coupling ADR-0022
+        /// removes. There is no staff token and no validator now, so nothing on
+        /// the management tier reads the pair, and a `surfaces: [management]` pod
+        /// serves no part of the OP. The assertion is the contrast: the pair
+        /// answers wherever `/token` does, and nowhere else.
         ///
         /// Decisive (mutation-checked 2026-09-16): move `.route("/token",
         /// …)` in [`router`] out of the `match surfaces.business` and onto
@@ -3211,12 +2670,21 @@ mod tests {
                  of the business tier's copy"
             );
 
-            // The discovery pair, on every surface including the one above.
-            for deployment in [
-                Some(vec!["management".to_owned()]),
-                Some(vec!["business".to_owned()]),
-                None,
+            // The discovery pair is as absent on the management tier as `/token`.
+            for path in [
+                "/v1/oauth/.well-known/openid-configuration",
+                "/v1/oauth/jwks.json",
             ] {
+                assert_eq!(
+                    status_of(&management, path).await,
+                    StatusCode::NOT_FOUND,
+                    "{path} must not be mounted when deployment.surfaces = [management]: \
+                     nothing there validates a token any more (VP-6a)"
+                );
+            }
+
+            // ...and answers wherever the business surface is mounted.
+            for deployment in [Some(vec!["business".to_owned()]), None] {
                 let label = deployment
                     .as_ref()
                     .map_or_else(|| "absent".to_owned(), |s| s.join("+"));
@@ -3236,9 +2704,7 @@ mod tests {
                 assert_ne!(
                     status_of(&app, "/v1/oauth/jwks.json").await,
                     StatusCode::NOT_FOUND,
-                    "/v1/oauth/jwks.json must be mounted on surfaces = {label}: the management \
-                     tier validates staff tokens against it and must not depend on the business \
-                     tier being up to do so"
+                    "/v1/oauth/jwks.json must be mounted on surfaces = {label}"
                 );
             }
 

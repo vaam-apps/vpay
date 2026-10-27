@@ -2,423 +2,196 @@
 
 ## The invariant
 
-> **No `/dash/v1` request runs without a token vpay itself issued, signed
-> with a key vpay itself rotates, against a client vpay itself registered.**
+> **No `/dash/v1` request is handled unless it is a COSE_Sign1 message signed
+> by a console key that is registered to an active member of the dashboard's
+> merchant, was paired less than 30 days ago, has not been revoked, is addressed
+> to this deployment, and has not been seen before. Every answer to such a request
+> is a COSE_Sign1 message signed by this deployment.**
 
-`/dash/v1` never accepts a merchant API key and never accepts another
-issuer's token. vpay is its own OpenID Provider (OP) for this surface, running
-[Authkestra](https://github.com/marcjazz/authkestra)'s `authkestra-op`
-in-process. See [ADR-0008](../adr/0008-dashboard-scope.md) for why the
-dashboard uses sessions at all, and [ADR-0009](../adr/0009-dashboard-oidc-provider.md)
-for why vpay runs the OP itself rather than pointing at someone else's.
+There is no password, no TOTP code, no session, no authorization code, no bearer
+token and no federated sign-in on this surface. A person's identity on the wire
+is a **P-256 key their browser generated and cannot export** (WebCrypto,
+`extractable: false`), registered in `console_keys`; vpay's is one of the two
+Ed25519 response keys that `/v1` is sealed with too. The mechanism is the same
+cratestack signed transport [signed-transport.md](signed-transport.md) describes
+for `/v1`; this page is what differs: who the signer is, how a key gets
+registered, and how long it lives.
 
-~~`/dash/v1` … never federates to an external IdP.~~ **Corrected 2026-10-19
-([ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).**
-What federates, when a deployment configures `staff_auth.sso`, is the **human
-authentication step**: a person may prove who they are at the deployment's
-OpenID Connect provider instead of with a password and a TOTP code. What does
-**not** federate is everything the invariant above is about: the provider's
-id_token is verified, its claims read and the token discarded; its access token
-is never read; and the session, the authorization code and the `/dash/v1` token
-are all vpay's, signed by vpay's key. A successful SSO sign-in ends in the same
-`authenticated` `staff_sessions` row the TOTP step ends in. See
-[dashboard-auth/sso.md](dashboard-auth/sso.md).
+[ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)
+records the decision and the owner rulings behind it, and what it supersedes
+([ADR-0017](../adr/0017-staff-authentication.md) and
+[ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md) entirely).
+[ADR-0008](../adr/0008-dashboard-scope.md) still decides what the dashboard is
+for, and [ADR-0018](../adr/0018-cross-tenant-admin-reads.md) still decides which
+tenant a request reads.
 
-## Login flow
+> **The dashboard application cannot sign in until VP-6b.** It still carries the
+> sign-in screens, the cookie and the authorization-code exchange it had, and
+> vpay has no server for them any more. The way in meanwhile is the break-glass
+> below (`vpay-server staff pair-key`) and a client that signs requests;
+> [`docs/status.md`](../status.md) says so.
 
-Two legs, and the first of them is vpay's own. `authkestra-op` authenticates
-nobody — `handle_authorize` takes an already-authenticated `Identity` **as a
-parameter** — so the thing that produces one is
-[ADR-0017](../adr/0017-staff-authentication.md)'s staff table and the four
-routes in front of it.
+## Pairing a key
 
-```text
-staff browser              dashboard app              vpay
-      |  POST /api/auth/login  |                       |
-      |----------------------->|  POST /dash/v1/staff/login
-      |                        |---------------------->|  argon2id + pepper
-      |                        |  { session, next }    |  session row: pending_totp
-      |                        |<----------------------|
-      |  (QR on first sign-in) |                       |
-      |  POST /api/auth/totp   |                       |
-      |----------------------->|  POST /dash/v1/staff/totp
-      |                        |---------------------->|  RFC 6238, +/-1 step
-      |                        |                       |  replay guard: CAS on
-      |                        |                       |  last_totp_step
-      |                        |<----------------------|  session row: authenticated
-      |                        |                       |
-      |                        |  GET /dash/v1/oauth/authorize?code_challenge=...
-      |                        |---------------------->|  exact redirect_uri match
-      |                        |  302 -> ?code=...     |  code row, 60 s, single use
-      |                        |<----------------------|
-      |                        |  POST /dash/v1/oauth/token { code, code_verifier }
-      |                        |---------------------->|  PKCE S256, CAS consume
-      |                        |  { access_token }     |  aud = dashboard client_id
-      |                        |<----------------------|  + vpay_merchant_id claim
-      |                        |                       |
-      |  a page                |  GET /dash/v1/payment_intents, Bearer ...
-      |<---------------------->|---------------------->|
+A key reaches `console_keys` by exactly two doors, and both end in the same
+function (`vpay_api::console_keys::store_key`).
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant B as Console (browser)
+    participant P as Admin phone (vaam)
+    participant V as vaam (service)
+    participant S as /svc/v1 (vpay-server)
+    participant D as Postgres
+
+    B->>B: generate a non-extractable P-256 key
+    B->>B: sign "vpay.console-pair.v1\n" + publicKey + "\n" + issuedAt
+    B->>P: show the pairing request
+    P->>V: the admin approves; vaam knows who the person is
+    V->>S: POST /svc/v1/console_keys, COSE_Sign1 under vaam's Ed25519 key<br/>{vaam_user_id, public_key, possession_proof, issued_at}
+    S->>S: the key is a service_clients key holding console_pairing?
+    S->>S: shape of every field, then |now - issued_at| ≤ 300 s, then the proof
+    S->>D: find (vaam, vaam_user_id), or provision a plain member of dashboard.merchant_id
+    S->>S: an administrator? disabled? another merchant's? refuse
+    S->>D: INSERT console_keys (expires_at = paired_at + 720 h)
+    S-->>V: 201 {thumbprint, staff_member_id, expires_at, …} (200 for a repeat)
 ```
 
-**The dashboard app follows the `302` itself**, and that is
-[ADR-0017](../adr/0017-staff-authentication.md) decision 4 rather than an
-accident. In a browser-driven flow the user agent follows it and a callback
-_page_ completes the exchange; here the app's own server does, and a browser
-never sees a code, a verifier or a token. Everything the grant checks is
-unchanged — the redirect URI is matched byte for byte against the
-registration, PKCE is mandatory, the code is single-use — and what changes is
-only who follows the redirect.
+The second door is the break-glass (owner ruling Q2): an operator with database
+access runs `vpay-server staff pair-key --staff <email|stf_…> --public-key <key>
+[--label …]` for an **existing, active** member. It needs no proof of possession,
+because the operator already holds more authority than a pairing grants; it
+creates no member, changes no flag, and prints one line (`<staff id> <key id>
+<thumbprint> <expires_at>`). It is also the **only** way a key reaches an
+administrator, and `vpay-server staff add --admin` the only way one is made.
 
-`redirect_uris` are matched exactly — no prefix or wildcard matching
-(`authkestra_op::client::ClientRegistration::allows_redirect_uri`). PKCE is
-mandatory for **every** client on this grant, unconditionally
-(authkestra#273, OAuth 2.1 §4.1), not because a registration asks for it.
+What a pairing never does (owner rulings R2 and 2026-10-09):
 
-The diagram intentionally does not show a `refresh_token` — see Token
-lifetimes below.
+- **create or upgrade an administrator.** The body has no role field and
+  `deny_unknown_fields` rejects one; the member provisioned is `is_admin =
+false`, bound to `dashboard.merchant_id` from configuration; an existing
+  member's flag is never written; and an already-linked administrator is refused
+  (`403`, logged as such), because a service holding `console_pairing` can
+  name any linked person;
+- **name a tenant.** There is no field for one;
+- **move or reinstate a key.** A thumbprint is unique for ever: another member's
+  key is a `409`, and a revoked or expired key is the same `409`
+  — the row is never deleted.
 
-## The session, and what signing out actually does
+## One call
 
-The session token is 256 bits from the OS CSPRNG, held by the dashboard app in
-an httpOnly, Secure, SameSite=Lax cookie on its own origin and presented to
-vpay in `X-Vpay-Staff-Session`. `staff_sessions` is keyed by its **SHA-256**,
-so a dump of that table yields no usable session.
+```mermaid
+sequenceDiagram
+    autonumber
+    participant C as Console (signs with its key)
+    participant L as EnvelopeLayer (vpay-server)
+    participant K as console_keys
+    participant N as envelope_nonces
+    participant H as dash_scope, then the handler
 
-Two bounds, and they are not one bound:
+    C->>L: HTTP request, body = COSE_Sign1 (even for a GET)
+    L->>K: live keys for this kid (not revoked, expires_at > now)
+    alt unknown, revoked or expired key, bad signature, wrong audience, replay
+        L-->>C: 401, unsigned, coarse (the same bytes for every cause)
+    else verified
+        L->>N: record (kid, cti)
+        L->>H: the request, with the verified signer attached
+        H->>K: re-read the key (revoked between the two reads → 403)
+        H->>H: re-read the member: active, and this merchant's? else 403
+        H->>H: tenancy: dashboard.merchant_id (an admin may name another, ADR-0018)
+        H-->>C: sealed answer
+    end
+```
 
-| Bound    | Value                                  | Moved by                 |
-| -------- | -------------------------------------- | ------------------------ |
-| Absolute | 12 h from creation                     | nothing — never extended |
-| Idle     | 30 min since the last accepted request | every accepted request   |
+Everything in the layer is [signed-transport.md](signed-transport.md)'s: what a
+signature binds (method, route, parameters, query, payload type, audience), the
+Postgres replay cache, and the coarse refusal. Three things differ.
 
-Both are checked on **read** and neither deletes anything: an expired row is
-refused and left in place, so "this session expired" and "this session never
-existed" stay distinguishable to an operator reading the table. On the wire
-they are the same `401`, for the reason in the next section.
+- **Three layers, not one.** `/dash/v1`'s hand-written reads, CrateStack's
+  procedure transport under `/dash/v1/$procs/…` (a layer the generated module
+  builds, because its route table and contract digests are private to
+  `vpay-db`), and `/svc/v1` each have their own `EnvelopeLayer`, their own
+  contract domain tag in `vpay-wire` (`vpay/dash-route-contract/v1`,
+  `vpay/svc-route-contract/v1`) so one operation's digest is never another surface's,
+  and a JSON payload type. A merchant's key is not a key on any of them: `/dash/v1`
+  resolves signatures against `console_keys`, `/svc/v1` against `service_clients`,
+  `/v1` against `merchant_clients`, and boot refuses one public key in two lists.
+- **Revocation takes effect on the next request.** The resolver reads
+  `console_keys` on every request and caches nothing. `DELETE
+/svc/v1/console_keys/{thumbprint}` (or an operator's SQL) therefore ends a key
+  at once; a key ends itself 30 days after `paired_at`, enforced by a `CHECK` and
+  by the read, with no job to run.
+- **A database that cannot answer is a `500`, never a miss.** Treating a failed
+  key lookup as "no key" would make an outage look like a revocation, and treating
+  it as "yes" would make it a bypass.
 
-`POST /dash/v1/staff/logout` **deletes** the row. That is a revocation rather
-than a cookie clear: the row carries the access token the exchange minted, so
-the dashboard's own server can no longer obtain it — and the cascade on
-`oauth_authorization_codes.session_id` kills any code that session issued and
-has not exchanged. **This is the server-side deny-list ADR-0009's
-Consequences section explicitly left open**, and ADR-0017 is what decides it.
+### What a refusal looks like
 
-What it is not: the minted JWT stays cryptographically valid for the rest of
-its TTL. Nothing can change that, and
-`signing_out_deletes_the_session_and_with_it_the_access_token` asserts it
-rather than implying otherwise.
+| Cause                                                                                                      | Answer                                                                                                              |
+| ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| no signature, an unknown key, a revoked key, an expired key, a bad signature, the wrong audience, a replay | the layer's coarse `401` (`UNAUTHORIZED`), unsigned, identical bytes                                                |
+| a write method (`POST`, `PUT`, `PATCH`, `DELETE`) on a read-only route                                     | the layer's own `405` with `Allow: GET` (a signed one: `415`) — before the router, whatever key signed it           |
+| an anonymous bodiless `OPTIONS`                                                                            | the router's `405`; the layer lets a CORS preflight through and the scope step passes it on, so it is never a `500` |
+| a verified key whose member is disabled, gone, or of another merchant                                      | sealed `403` — one answer for the three                                                                             |
+| an administrator naming a merchant this deployment does not serve                                          | sealed `400` naming `merchant_id`                                                                                   |
 
-## The rest of this flow
+## Where each piece lives
 
-Everything between the session above and the Status below was 464 lines until
-2026-09-11. It is three pages now, in the order it was written, moved verbatim;
-a fourth, written new on 2026-10-20, is the last bullet:
+| Piece                                       | Where                                                                           |
+| ------------------------------------------- | ------------------------------------------------------------------------------- |
+| the table and its 30-day `CHECK`            | `backends/migrations/0056_console-keys.sql`                                     |
+| the repository                              | `vpay_db::ConsoleKeys` (`backends/crates/vpay-db/src/console_keys.rs`)          |
+| parsing a key, the proof, pairing, revoking | `vpay_api::console_keys`                                                        |
+| the key resolver and the tenancy step       | `vpay_api::envelope::console`                                                   |
+| `/svc/v1` and the capability check          | `vpay_api::svc`, `vpay_api::envelope::service`                                  |
+| the registered services                     | `service_clients` in the YAML ([`vpay-config.md`](../reference/vpay-config.md)) |
+| the one tenant                              | `dashboard.merchant_id` in the YAML                                             |
+| the operations and their digests            | `backends/crates/vpay-wire`                                                     |
+| the break-glass                             | `vpay-server staff pair-key` (`backends/apps/vpay-server/src/main.rs`)          |
 
-- [dashboard-auth/sessions-and-refusals.md](dashboard-auth/sessions-and-refusals.md)
-  — changing a password ends every other session, a mistyped code does not, and
-  why every refusal is one answer
-- [dashboard-auth/rate-limiting.md](dashboard-auth/rate-limiting.md) — the
-  budget is the deployment's, and which address the limiter counts
-- [dashboard-auth/scope-and-tokens.md](dashboard-auth/scope-and-tokens.md) —
-  scope, token lifetimes, replacing a token before it expires, JWKS publication
-  and key rotation, and where each piece lives
-- [dashboard-auth/sso.md](dashboard-auth/sso.md) — signing in through an
-  OpenID Connect provider (2026-10-20): the flow, the second-factor rule and the
-  one `prompt=login` retry, what the provider's realm must be set up to do, and
-  what is not built
+## Services, and who may pair
+
+`POST /svc/v1/console_keys` and `DELETE /svc/v1/console_keys/{thumbprint}` are
+called by a **service**, never a person and never a merchant. A service is an
+entry of `service_clients` — `client_id`, `capabilities`, and `cose_keys` in the
+shape of a merchant's — read by the same code as `merchant_clients`, from a
+separate list. **A capability is a field of that file and nothing else**: no HTTP
+route, database row or environment variable can grant one, so granting
+`console_pairing` is a reviewed configuration change, the way adding a merchant
+is. The route table (`SVC_ROUTES`) names the capability each route needs and the
+scope step enforces the row it was built from; a handler then demands a
+`PairingAuthority`, a type only that step can construct. A service is switched
+off with the merchants' kill switch (`disabled_clients`), effective on its next
+request.
+
+```yaml
+dashboard:
+  merchant_id: acme-cameroon-tenant
+
+service_clients:
+  - client_id: vaam
+    capabilities: [console_pairing]
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo   # Ed25519, unpadded base64url
+        label: vaam-2026-10
+```
 
 ## Status
 
-**Added 2026-10-20 ([ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)):
-a staff member can also sign in through an OpenID Connect provider.** Three
-unauthenticated routes (`GET /staff/sso`, `POST /staff/sso/start`,
-`POST /staff/sso/callback` — **eleven** staff routes now, eight until that date)
-and two dashboard routes (`/api/auth/sso/start`, `/api/auth/sso/callback`), behind
-a `staff_auth.sso` block whose presence is the whole switch. A first sign-in
-provisions the member just in time, gated by an IdP group, linked by `(iss, sub)`
-and never by email, as a non-admin of the configured tenant. An id_token is
-accepted only if it proves a second factor (`acr` or `amr` in configured lists),
-and a token whose only defect is the missing factor earns exactly one
-`prompt=login` retry. Password + TOTP is unchanged and is the break-glass path.
-Proven against a simulated provider and against a real Keycloak 26.6.1 — see
-[dashboard-auth/sso.md](dashboard-auth/sso.md) for the flow, what the realm must
-be configured to do (without which `amr` is empty), and the list of what is not
-built: no linking of existing members, no logout propagation, no continuous
-group check, nothing run in a cluster.
+Built in VP-6a (2026-10-26) and proven by `console_pairing.rs`,
+`dashboard_read_surface.rs` and `dashboard_procedure_transport.rs` against a real
+Postgres, with each guard broken in turn and its test seen to fail (see
+[`docs/status/verification/2026-10-26-vp6a-console-keys.md`](../status/verification/2026-10-26-vp6a-console-keys.md)).
 
-**A staff member can sign in, and since 2026-09-07 they can do it in a
-browser.** The first half of that sentence entered this document with
-ADR-0017; the second half is exp28's, and until it was true everything below
-was reachable over HTTP and by nothing a person could click.
+Not built, and not claimed:
 
-~~**No login has ever been performed.**~~ Corrected 2026-09-07
-([ADR-0017](../adr/0017-staff-authentication.md)). ~~Thirteen cases~~
-**27 cases** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs --> — re-measured 2026-09-20, and
-gated from that day by `cargo xtask verify-doc-counts`, which re-counts
-`#[tokio::test]` in that file on every `just verify` — in
-`backends/tests/integration/tests/staff_sign_in.rs` drive the real
-`vpay_api::router` on a real socket over a real Postgres, and **that suite
-mints no token at all**: every token it presents came out of
-`POST /dash/v1/oauth/token` after a password, a TOTP code and a PKCE exchange,
-and the server verified it through its own published JWKS over the same
-socket.
-
-**The credentials moved out of `staff_members` on 2026-09-13
-([ADR-0019](../adr/0019-credential-model.md), migration `0044`), and nothing
-on this surface changed.** `password_hash`, `password_change_required`,
-`totp_secret`, `totp_enrolled_at` and `last_totp_step` are rows in
-`credentials` now — one per credential, generic over kind today and over
-subject tomorrow — because their _names_ hardcoded exactly two authentication
-methods on a table that is not about credentials.
-
-That the flow below is unchanged is the **acceptance criterion** and not an
-accident: the suite named in the paragraph above passes **48/48 with every
-assertion exactly as it was written against the pre-split behaviour**. Three
-fixtures and four doc comments moved; not one assertion did. The migration is
-one file and therefore one transaction, and it copies every live row's material
-**byte for byte** — the argon2id PHC string verifies under the same unchanged
-pepper and the sealed secret opens under the same unchanged key — so there is
-no instant at which anybody cannot sign in.
-
-**Four of those cases cannot run at all on an unaliased Mac, and that is host
-setup rather than a gap in the claim (2026-09-18).**
-`the_sign_in_rate_limit_is_per_source_address`,
-`the_second_factor_is_rate_limited_and_not_only_the_password`,
-`a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget` and
-`two_replicas_share_one_sign_in_budget` bind distinct loopback **source
-addresses** — the thing under test, which is why none of it can be simulated
-with a header: two of the four exist to prove `X-Forwarded-For` is _not_
-honoured from an untrusted peer ([rate-limiting.md](dashboard-auth/rate-limiting.md)).
-Linux assigns the whole `127.0.0.0/8` to `lo`, so CI measures all four; macOS
-assigns only `127.0.0.1` to `lo0`, so they need `just loopback-aliases` once
-per boot. They are **not** gated or ignored, and a Mac without the aliases is
-correctly red — it now says so, naming the fix, instead of failing with
-`os error 49`. See
-[status/verification/2026-09-18-macos-loopback-and-two-load-flakes.md](../status/verification/2026-09-18-macos-loopback-and-two-load-flakes.md).
-
-Two things a reader of this page should carry away from it. **The replay guard
-is `Credentials::advance_counter` now**, a compare-and-swap on the credential
-row rather than on the person, with its `NOT NULL` counter argument intact
-(`NULL < step` is `NULL` in SQL, so a nullable counter refuses every subject's
-first code forever). And **enrolment is the existence of a `totp` row**, so
-`staff_members_totp_is_paired` and `Staff::enrol_totp`'s
-`totp_enrolled_at IS NULL` guard are both gone — replaced by a partial unique
-index, which an edit cannot drop by accident the way a `WHERE` clause can.
-
-**Eight kinds are declared and ~~two~~ three are implemented** _(corrected
-2026-10-20: `oidc` has a writer and a verifier now, ADR-0030)_. `hotp`,
-`magic_link`, `email_otp`, `phone_otp` and `webauthn` are reachable by no code
-path here. ~~Federated identity has columns, constraints and indexes and **no
-writer**.~~ Whether a live payment deployment may ever accept a **single-factor**
-credential is still a **reserved maintainer decision** — ADR-0019 § R1 — and it
-is not live, because none of those five has a verifier; for `oidc` it is taken
-(ADR-0030 decision 6: an id_token must prove a second factor).
-
-What is built, in the order a request meets it:
-
-- `staff_members`, `staff_sessions` and `oauth_authorization_codes`
-  (migration `0035`) and `credentials` (migration `0044`), all four born with a
-  `schemas/vpay.cstack` model and shaped so that **every** repository method
-  runs through CrateStack — no `jsonb`, no `bytea`, no native enum, no
-  `DEFAULT` on any column a writer names. `docs/reference/vpay-db.md` §
-  CrateStack has the account, and
-  `docs/status/cratestack/2026-09-13-credentials.md` has 0044's measurement.
-- `vpay-server staff add --merchant … --email … --name …`, the **only** way a
-  staff member is created. No HTTP endpoint creates one and there is no
-  self-service sign-up. It prints a one-time password on stdout alone —
-  a subcommand's logs go to stderr, which
-  `staff_add_creates_a_staff_member_and_prints_a_one_time_password_on_stdout`
-  found the hard way.
-- `POST /dash/v1/staff/login`, `/totp`, `/password`, `/logout`,
-  `GET /dash/v1/staff/session` and `/staff/session/stage`, and
-  `GET /dash/v1/oauth/authorize` + `POST /dash/v1/oauth/token`. ~~**Eight**~~
-  **Eleven** _(three SSO routes joined on 2026-10-20, ADR-0030)_
-  unauthenticated routes (seven until 2026-09-10 — the eighth is the stage
-  read, "A mistyped code does not end a session either" above), mounted beside
-  the protected reads rather than inside the bearer-token layer, because they
-  exist to produce the credential that layer checks.
-- argon2id at OWASP's first parameter set with a deployment pepper; RFC 6238
-  TOTP (HMAC-SHA1, 30 s, ±1 step) whose codes are pinned against Appendix B's
-  own vectors; AES-256-GCM for the stored secret; the PKCE check pinned
-  against RFC 7636 Appendix B's own vector. The argon2 crate is 0.6 since
-  2026-10-26 (0.5.3 before). Hashes 0.5.3 wrote verify unchanged, and a unit
-  test pins one; a hash 0.6 writes verifies under 0.5.3, so rolling back loses
-  no sign-in
-  ([verification](../status/verification/2026-10-26-argon2-0-6.md)).
-- `Surface::Dashboard.audience()` is **gone**. The audience is the registered
-  `dashboard_client.client_id`, because that is what
-  `default_handle_authorization_code` mints; `vpay:dash/v1` is retired and
-  ADR-0017 supersedes that part of ADR-0009.
-- `require_dashboard_token` no longer compares the token's `sub` to the
-  client id. That check was exp23's finding F7 — right for
-  `client_credentials` and wrong for every token a real login produces — and
-  the maintainer decision it reserved is taken: the credential is `aud` plus
-  the merchant claim, and `sub` names the staff row — and while `sub`
-  authorises nothing, the staff row it names must still be `active`, or the
-  request is refused (finding F1).
-- **No machine client may read `/dash/v1`.** A `client_credentials` token
-  carries no merchant claim and nothing but this grant stamps one, so the
-  refusal is a property of the mint. It is a tightening over what stood
-  before, and `a_client_credentials_token_is_refused_on_dash_v1` pins it.
-
-**Added 2026-09-13 ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)): a
-cross-tenant admin role.** `staff_members.is_admin` (migration `0043`, no
-`@default` — migration `0035`'s rule for every column on this table), read on
-the same `require_dashboard_token` re-read that already answers `status` and
-`merchant_id`, so revoking it takes effect on the next request exactly like
-disabling an account does. A non-admin's boundary is byte-for-byte what it
-was before this ADR: `?merchant_id=` is not even parsed unless the row says
-`is_admin`. An admin's `?merchant_id=` scopes the read to any merchant
-`config.merchant_clients` registers — one at a time, through the same
-single-tenant repository calls every other request already uses — defaulting
-to the bound tenant when none is named, and answering `400` for a merchant
-this deployment does not serve. No write path: ADR-0008's boundary is
-checked before the staff row and therefore before `is_admin` is even read.
-`vpay_api::dash::DashboardTenancy` (`Bound`/`ChosenByAdmin`) is the seam a
-future CrateStack transport (the dashboard-nav plan's Lane C) mints its
-tenant context from.
-`backends/tests/integration/tests/dashboard_read_surface.rs` grew from 16 to
-21 cases: an admin reads a merchant other than its own, a non-admin's
-identical override parameter is silently ignored and the uniform-404
-property holds under it, an admin still cannot write (403 on every
-non-`GET`, override included), the flag defaults to non-admin, and an
-unknown merchant is a `400` naming the parameter. `vpay-server staff add`
-grew `--admin` (defaulting to `false`), proven by
-`staff_add_admin_flag_defaults_to_false_and_admin_sets_it` in
-`backends/apps/vpay-server/tests/cli.rs`.
-
-_Reviewed 2026-09-13._ All 21 cases ran against real Postgres — 21 passed, 0
-ignored, 0 skipped — and the three properties above were **mutation-tested
-rather than asserted**: deleting the `is_admin` check reddens the two
-non-admin cases (the failure body shows the other tenant's row in a
-non-admin's list), deleting `required_scope`'s write refusal reddens
-`an_admin_still_cannot_write` with a `405` where a `403` belongs, and making
-"not yours" distinguishable from "does not exist" reddens the uniform-404
-cases for admin and non-admin alike. The review also found that migration
-`0043`'s dropped `DEFAULT` broke five hand-written `INSERT`s in
-`postgres_smoke.rs` — `staff_members` has a second writer the compiler
-cannot see — and repaired them by naming the column rather than by restoring
-a default. [Verification log](../status/verification/2026-09-13-adr-0018-admin-role-review.md).
-
-**Added 2026-09-10 (issue #79 items 1-3):**
-
-- `rate_limit_windows` (migration `0038`), and with it a sign-in budget that
-  is **the deployment's rather than each replica's** — see "The budget is the
-  deployment's". `two_replicas_share_one_sign_in_budget` boots two vpay
-  servers over one Postgres and reads `429` on the sixth attempt against a
-  configured budget of five; with per-instance counters it reads `[401 × 6]`.
-- `staff_auth.trusted_proxies`, so the per-address budget can count the
-  **caller** behind a reverse proxy rather than the proxy — see "Which
-  address the limiter counts". Two cases, because either alone would pass
-  with the check deleted.
-- `staff_auth.rate_limits`, one policy per action.
-- `POST /staff/password` requires the **current** password and deletes every
-  other session of that staff member — see "Changing a password ends every
-  other session". The dashboard's form carries the field; its vitest case
-  asserted the opposite until this pass, quoting the argument the endpoint
-  itself carried.
-
-**What is still not built, and none of it is implied by the above:**
-
-1. ~~**The pages.**~~ **Built 2026-09-07 (exp28).** `frontends/apps/dashboard`
-   serves `/login`, `/login/totp` (with the enrolment QR and the secret as
-   text on a first sign-in), `/login/password`, `/payments` and
-   `/payments/{id}`. It is the OAuth client decision 4 describes: the session
-   cookie is httpOnly, Secure, SameSite=Lax on its own origin, the app's own
-   server follows the `/authorize` `302` and exchanges the code, and the
-   `/dash/v1` access token is read back out of the `staff_sessions` row on
-   every render rather than kept in the app — which is what makes signing out
-   a revocation in practice and not only in the schema.
-
-   **There is no route at `redirect_uri`, and nothing is missing.** Decision 4
-   has the app's own server follow the redirect, so that string is an
-   identifier the two legs must spell identically rather than a page. It is a
-   thing a reader will go looking for, so it is said here as well as in
-   [dashboard.md](dashboard.md).
-
-   `dashboard.cy.ts` drives the whole of the flow above through a browser
-   against the real stack, and computes its TOTP codes from the secret **the
-   enrolment screen displayed** — so what it proves is that an authenticator
-   app enrolled from that QR would work, rather than that a test secret
-   verifies against itself. `just demo-staff` is what creates the staff member
-   it signs in as; `vpay-server staff add` is still the only way one is
-   created.
-
-2. **No sweep.** Nothing deletes an expired `staff_sessions` or
-   `oauth_authorization_codes` row on a schedule. Expired rows are refused on
-   read and removed by the sign-out cascade; the indexes a sweep would need
-   exist, and the sweep does not.
-3. **No `audit_log`.** ADR-0008 wants one row per dashboard _write_, and this
-   surface mounts none — `require_dashboard_token` refuses every non-read
-   method before the router matches.
-4. **No way to disable the dashboard client.** `disabled_clients` revokes a
-   _merchant_ credential; the dashboard registration can only be removed from
-   YAML and the process restarted. What can be disabled per person is
-   `staff_members.status`, which is the granularity that matters — and which
-   now takes effect on the **next request** for both credentials a sign-in
-   produces, not just for the session.
-
-   _Corrected 2026-09-07 (exp24 review, findings F1 and F6)._ As first
-   delivered, setting `status = 'disabled'` refused the session routes and
-   left the already-minted `/dash/v1` bearer token reading payment intents
-   for the rest of its 15-minute TTL — and reassigning a staff member to
-   another merchant left them reading their old merchant's rows for the same
-   window. `require_dashboard_token` never read `staff_members` at all:
-   everything it checked was a statement about the _token_ and none of it was
-   a statement about the _person_. It now reads the row its `sub` names and
-   refuses a `disabled` one, a missing one, and one whose `merchant_id` is no
-   longer the binding — one primary-key read, after every cheaper check,
-   failing closed on a database error, and refusing nobody who was ever
-   allowed in, since `/authorize` requires both before it will mint a code.
-   `disabling_a_staff_member_refuses_their_live_session` and
-   `moving_a_staff_member_to_another_merchant_refuses_their_existing_token`
-   are the guards. A break-glass control that a payments dashboard honours a
-   quarter of an hour late is not a break-glass control.
-
-5. **Key rotation has still never happened.** ADR-0009's fourth blocker is
-   untouched. `TokenManager` holds one key for the life of the process,
-   rotation is restart-based, and nothing re-reads the key file.
-6. ~~**The rate limit is per replica** — see "Every refusal is one answer".~~
-   _(Struck 2026-09-23: wrong since 2026-09-10 (issue #79 item 2), when
-   `rate_limit_windows` (migration `0038`) made the sign-in budget the
-   deployment's. `two_replicas_share_one_sign_in_budget` pins it; see
-   "Added 2026-09-10" above and
-   [dashboard-auth/rate-limiting.md](dashboard-auth/rate-limiting.md).)_
-
-**What the two blockers this document recorded turned out to be:**
-
-~~1. **No login route.** … And writing them needs a decision that has never
-been taken: how does a staff member prove who they are?~~ Taken, as ADR-0017
-decision 1: a vpay-owned `staff_members` table, argon2id with a pepper, and
-mandatory TOTP.
-
-~~2. **No session store.** `authkestra-engine` is pinned without
-`sql-postgres`.~~ Still pinned without it, and it is **not** a blocker: vpay's
-sessions are its own rows in its own table through its own data layer, not
-`authkestra-engine`'s `SessionStore`. Enabling that feature would pull
-`sqlx/chrono` and `sqlx/json` into the graph for a store this deployment does
-not use.
-
-~~3. **An audience problem that must be solved before any of the above.**~~
-Solved by changing the _validator_ rather than the grant — ADR-0017 decision
-3, above.
-
-4. **Key rotation** — see item 5 of what is not built. Unchanged.
-
-What is proven about the dashboard **validator** is now proven about the whole
-path: `backends/tests/integration/tests/dashboard_read_surface.rs`
-(~~15 cases~~ **21** <!-- count:tokio-tests backends/tests/integration/tests/dashboard_read_surface.rs --> — see above, "grew from 16 to 21") covers which rows a
-validly-minted token may read and which credentials are refused, and
-`staff_sign_in.rs` (~~13 cases~~ **27** <!-- count:tokio-tests backends/tests/integration/tests/staff_sign_in.rs -->, re-measured 2026-09-20) covers how
-one is obtained. The first file's own header still opens by saying it proves
-nothing about signing in, and that remains true _of that file_.
-
-`hmac`, `sha2`, `subtle` and `aes-gcm` were listed here as unused workspace
-pins. `sha2` gained its first consumer on 2026-09-02; **`hmac`, `subtle` and
-`aes-gcm` gained theirs on 2026-09-07** — the TOTP HMAC, the constant-time
-code comparison, and the sealed TOTP secret respectively. None is unused now.
-
-This flow was tracked as **Phase 2b** in `docs/roadmap.md`, removed
-2026-09-16; the maintainer questions it left open are in
-[`docs/open-decisions.md`](../open-decisions.md).
-See [../status.md](../status.md) for the full, row-by-row picture.
+- **The console's own sign-in (VP-6b)**: key generation in the browser, the
+  pairing request, signing every request, the pairing screen on vaam's admin
+  phone. Until it ships the dashboard application cannot reach this surface.
+- **vaam's side of `/svc/v1`**: the registered service key and the call itself.
+- **Listing a person's keys**: only pairing and revoking exist.
+- **Rate limiting of `/svc/v1`.** The sign-in limiter went with the sign-in
+  (`rate_limit_windows` and `RateLimits` remain as unused scaffolding); a
+  pairing is a signed call from a registered service, not an anonymous one.
+- **A run against a cluster.** Nothing here has been applied to one.

@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 55,
-        "all fifty-five migration files under backends/migrations should be recorded as applied \
+        applied, 56,
+        "all fifty-six migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -395,7 +395,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          decision for each routed charge, written in the transaction that \
          opens it (D10), and 0054, which copies the charge's rail and type \
          onto payment_intents.charge_rail and charge_method_type -- what /v1 \
-         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
+         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -637,7 +637,7 @@ async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<(
         // A secret-bearing kind with no secret: verifies against nothing.
         (
             "hollow",
-            "password",
+            "webauthn",
             "NULL",
             "NULL",
             "NULL",
@@ -676,7 +676,7 @@ async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<(
         // password_hash column" failure, one column over.
         (
             "smuggled",
-            "password",
+            "webauthn",
             "'a-hash'",
             "'https://idp.example.test'",
             "'sub-1'",
@@ -714,7 +714,7 @@ async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<(
         // multi-column the day `customer_id` lands; pinned here either way.
         (
             "subjectless",
-            "password",
+            "webauthn",
             "'a-hash'",
             "NULL",
             "NULL",
@@ -726,7 +726,7 @@ async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<(
         // A counter below the seed.
         (
             "negative",
-            "totp",
+            "hotp",
             "'sealed'",
             "NULL",
             "NULL",
@@ -734,6 +734,31 @@ async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<(
             "false",
             "NULL",
             "credentials_counter_is_not_negative",
+        ),
+        // The two kinds migration 0056 retired: a password and a TOTP seed
+        // authenticate nobody once the code that checks them is gone, so the
+        // database refuses to hold one again.
+        (
+            "retired_password",
+            "password",
+            "'a-hash'",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_password_and_totp_are_retired",
+        ),
+        (
+            "retired_totp",
+            "totp",
+            "'sealed'",
+            "NULL",
+            "NULL",
+            "0",
+            "false",
+            "NULL",
+            "credentials_password_and_totp_are_retired",
         ),
         // A kind nobody declared.
         (
@@ -792,15 +817,22 @@ async fn a_malformed_credential_is_refused_by_the_database() -> anyhow::Result<(
     // still pass, which is the failure mode the old version of this test
     // guarded against with its "neither" case.
     insert(
-        "ok_pw", "password", "'a-hash'", "NULL", "NULL", "0", "true", "NULL",
+        "ok_key",
+        "webauthn",
+        "'a-public-key'",
+        "NULL",
+        "NULL",
+        "0",
+        "false",
+        "NULL",
     )
     .await
-    .context("an operator-issued password is a legal row")?;
+    .context("a secret-bearing kind that was not retired is a legal row")?;
     insert(
-        "ok_totp", "totp", "'sealed'", "NULL", "NULL", "0", "false", "NULL",
+        "ok_hotp", "hotp", "'sealed'", "NULL", "NULL", "0", "false", "NULL",
     )
     .await
-    .context("an enrolled second factor is a legal row")?;
+    .context("a counter-bearing kind that was not retired is a legal row")?;
     insert(
         "ok_oidc",
         "oidc",
@@ -896,208 +928,6 @@ async fn a_mixed_case_address_and_an_unknown_status_are_refused_by_the_database(
         .await
         .context("`disabled` is the other half of the vocabulary")?;
 
-    Ok(())
-}
-
-/// `staff_sessions` and `oauth_authorization_codes` cascade from the rows they
-/// belong to, which is what makes signing out kill a code in flight.
-///
-/// Two foreign keys and one behaviour. `oauth_authorization_codes.session_id`
-/// is `ON DELETE CASCADE` onto `staff_sessions`, so
-/// `POST /dash/v1/staff/logout` — one `DELETE` — also removes any code that
-/// session issued and has not exchanged. Without it, a sign-out during a login
-/// race would leave a code that could still be exchanged for a token.
-///
-/// The FK itself is single-column and the drift report sees it; what it does
-/// **not** see is `ON DELETE CASCADE`, which is the half this asserts.
-#[tokio::test]
-async fn signing_out_cascades_onto_a_code_in_flight() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-
-    sqlx::query(
-        "INSERT INTO staff_members (id, merchant_id, email, display_name, \
-         status, is_admin, created_at, updated_at) \
-         VALUES ('stf_cascade', 'merchant_a', 'cascade@example.test', 'Ada', \
-         'active', false, now(), now())",
-    )
-    .execute(&pool)
-    .await
-    .context("seeding a staff member")?;
-
-    let session = "a".repeat(64);
-    sqlx::query(
-        "INSERT INTO staff_sessions (id, staff_id, state, created_at, expires_at, last_seen_at) \
-         VALUES ($1, 'stf_cascade', 'authenticated', now(), now() + interval '12 hours', now())",
-    )
-    .bind(&session)
-    .execute(&pool)
-    .await
-    .context("seeding a session")?;
-
-    sqlx::query(
-        "INSERT INTO oauth_authorization_codes (code_hash, client_id, staff_id, session_id, \
-         merchant_id, scope, code_challenge, code_challenge_method, redirect_uri, created_at, \
-         expires_at) \
-         VALUES ($1, 'vpay-dashboard', 'stf_cascade', $2, 'merchant_a', 'dashboard:read', \
-         'challenge', 'S256', 'https://dash.example.test/cb', now(), now() + interval '60 seconds')",
-    )
-    .bind("b".repeat(64))
-    .bind(&session)
-    .execute(&pool)
-    .await
-    .context("seeding a code in flight")?;
-
-    let deleted = sqlx::query("DELETE FROM staff_sessions WHERE id = $1")
-        .bind(&session)
-        .execute(&pool)
-        .await
-        .context("signing out")?;
-    assert_eq!(deleted.rows_affected(), 1);
-
-    let codes: i64 = sqlx::query("SELECT COUNT(*) AS n FROM oauth_authorization_codes")
-        .fetch_one(&pool)
-        .await
-        .context("counting codes")?
-        .get("n");
-    assert_eq!(
-        codes, 0,
-        "signing out must take an unexchanged code with it, or a sign-out during a login race \
-         leaves a code that can still be exchanged for a token"
-    );
-
-    Ok(())
-}
-
-/// `staff_sessions_token_expiry_is_paired` fires against a real Postgres
-/// (migration 0040, issue #88 item 1).
-///
-/// **The only thing that can check it**, for
-/// `a_half_enrolled_staff_member_is_refused_by_the_database`'s reason: the
-/// constraint is multi-column, `cratestack migrate baseline` skips every
-/// multi-column CHECK in both directions, and
-/// `the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` would
-/// therefore not move by one if it were deleted.
-///
-/// What it says is that a `/dash/v1` token and the instant it dies are one
-/// fact. Both directions matter and the first is the dangerous one:
-///
-/// * a **token with no expiry** is what the dashboard reads as "I cannot tell
-///   when this dies". `gate.ts` fails closed on it and re-mints on every
-///   render — a credential operation per page view — which is a bug that
-///   presents as latency rather than as an error;
-/// * an **expiry with no token** would have the session read publish a date
-///   for a credential that is not there.
-///
-/// And a row with **neither** is legal, which is what every session looks like
-/// between the second factor and its first render.
-#[tokio::test]
-async fn a_session_token_without_its_expiry_is_refused_by_the_database() -> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-
-    sqlx::query(
-        "INSERT INTO staff_members (id, merchant_id, email, display_name, \
-         status, is_admin, created_at, updated_at) \
-         VALUES ('stf_expiry', 'merchant_a', 'expiry@example.test', 'Ada', \
-         'active', false, now(), now())",
-    )
-    .execute(&pool)
-    .await
-    .context("seeding a staff member")?;
-
-    let insert = |suffix: char, columns: &str, values: &str| {
-        let sql = format!(
-            "INSERT INTO staff_sessions (id, staff_id, state, created_at, expires_at, \
-             last_seen_at{columns}) \
-             VALUES ('{}', 'stf_expiry', 'authenticated', now(), now() + interval '12 hours', \
-             now(){values})",
-            suffix.to_string().repeat(64)
-        );
-        sqlx::query(sqlx::AssertSqlSafe(sql)).execute(&pool)
-    };
-
-    for (suffix, columns, values) in [
-        ('a', ", access_token", ", 'header.payload.sig'"),
-        (
-            'b',
-            ", access_token_expires_at",
-            ", now() + interval '900 seconds'",
-        ),
-    ] {
-        let err = insert(suffix, columns, values)
-            .await
-            .expect_err("half a token is not a token");
-        let db_err = err.as_database_error().expect("a database-level error");
-        eprintln!("observed rejection: {db_err}");
-        assert_eq!(
-            db_err.constraint(),
-            Some("staff_sessions_token_expiry_is_paired"),
-            "the rejection must come from the coherence CHECK specifically"
-        );
-    }
-
-    // Neither: every session between the second factor and its first render.
-    insert('c', "", "")
-        .await
-        .context("a session with no token yet is the ordinary case")?;
-    // Both: what the code exchange writes, in one statement.
-    insert(
-        'd',
-        ", access_token, access_token_expires_at",
-        ", 'header.payload.sig', now() + interval '900 seconds'",
-    )
-    .await
-    .context("a token and its expiry together is the other legal row")?;
-
-    Ok(())
-}
-
-/// The PKCE method column admits `S256` and nothing else.
-///
-/// `default_handle_authorization_code` refuses a stored code whose method is
-/// not `S256` with `server_error`, so a row carrying `plain` is a row that can
-/// only ever produce a 500 — and `plain` is what OAuth 2.1 §7.5.2 forbids. The
-/// CHECK is what stops a writer other than `/authorize` creating one.
-#[tokio::test]
-async fn an_authorization_code_with_a_plain_pkce_method_is_refused_by_the_database()
--> anyhow::Result<()> {
-    let (_container, pool) = migrated_postgres().await?;
-
-    sqlx::query(
-        "INSERT INTO staff_members (id, merchant_id, email, display_name, \
-         status, is_admin, created_at, updated_at) \
-         VALUES ('stf_plain', 'merchant_a', 'plain@example.test', 'Ada', \
-         'active', false, now(), now())",
-    )
-    .execute(&pool)
-    .await?;
-    let session = "c".repeat(64);
-    sqlx::query(
-        "INSERT INTO staff_sessions (id, staff_id, state, created_at, expires_at, last_seen_at) \
-         VALUES ($1, 'stf_plain', 'authenticated', now(), now() + interval '12 hours', now())",
-    )
-    .bind(&session)
-    .execute(&pool)
-    .await?;
-
-    let err = sqlx::query(
-        "INSERT INTO oauth_authorization_codes (code_hash, client_id, staff_id, session_id, \
-         merchant_id, scope, code_challenge, code_challenge_method, redirect_uri, created_at, \
-         expires_at) \
-         VALUES ($1, 'vpay-dashboard', 'stf_plain', $2, 'merchant_a', 'dashboard:read', \
-         'challenge', 'plain', 'https://dash.example.test/cb', now(), now())",
-    )
-    .bind("d".repeat(64))
-    .bind(&session)
-    .execute(&pool)
-    .await
-    .expect_err("`plain` is what OAuth 2.1 forbids");
-
-    let db_err = err.as_database_error().expect("a database-level error");
-    eprintln!("observed rejection: {db_err}");
-    assert_eq!(
-        db_err.constraint(),
-        Some("oauth_authorization_codes_method_is_s256")
-    );
     Ok(())
 }
 
@@ -5018,7 +4848,22 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// claim is one raw statement, as `rate_limit_windows`' is), and a
 /// single-column CHECK and a plain index are reported where a schema does not
 /// spell them. `EXPECTED_DRIFTED_RELATIONS` moves 28 -> 29 for the same reason.
-const EXPECTED_DRIFT_CHANGES: u32 = 214;
+/// **214 -> 208 on 2026-10-27 (migration 0056, `console_keys`, VP-6a),
+/// measured** against a freshly migrated Postgres: `drift detected in 27
+/// table(s)/view(s) (208 change(s) total)`. Three relations left (`staff_sessions`
+/// and `oauth_authorization_codes`, four lines each, and `staff_sso_attempts`,
+/// five), one joined (`console_keys`, six `[safe]` lines: the CHECKs
+/// `console_keys_alg_enum_check`, `_id_length`, `_label_length`,
+/// `_public_key_shape` and `_thumbprint_format`, and the index
+/// `console_keys_staff_member_idx`), and `credentials` gained one
+/// (`credentials_password_and_totp_are_retired`, single-column, so reported):
+/// 214 - 13 + 6 + 1 = 208. `console_keys_lives_exactly_thirty_days` is
+/// two-column and costs nothing; it is in the multi-column list below instead.
+/// `model ConsoleKey` is born in `invoice_items`' shape (no `jsonb`, `bytea`,
+/// native enum, `int4` or writer-named DEFAULT), so every column is compared
+/// and `EXPECTED_UNMAPPABLE_COLUMNS` does not move; `EXPECTED_DRIFTED_RELATIONS`
+/// moves 29 -> 27 (-3 +1).
+const EXPECTED_DRIFT_CHANGES: u32 = 208;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -5114,7 +4959,7 @@ const EXPECTED_DRIFT_CHANGES: u32 = 214;
 /// **27 -> 28 on 2026-10-23 (migration 0053, measured):** `routing_decisions`
 /// joins the list *undeclared*, in the shape `jobs` is in, and `charges` stays
 /// one entry while it gains two lines.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 29;
+const EXPECTED_DRIFTED_RELATIONS: u32 = 27;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing
@@ -5590,6 +5435,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         observed,
         [
             ("checkout_sessions", "urls_match_ui_mode"),
+            // VP-6a, migration 0056 (ADR-0036): a console key lives exactly
+            // 720 hours from `paired_at`. Two columns, so the drift report is
+            // blind to it; `vpay-db`'s
+            // `a_console_key_lives_exactly_thirty_days_and_the_database_says_so`
+            // is what proves it fires. (`staff_sessions_token_expiry_is_paired`
+            // and `staff_sso_attempts_lifetime_is_positive` left this list with
+            // their tables in the same migration.)
+            ("console_keys", "console_keys_lives_exactly_thirty_days"),
             // ADR-0019, migration 0044. All three are multi-column and
             // therefore contribute NOTHING to `EXPECTED_DRIFT_CHANGES` —
             // the migration declares eleven CHECKs and the report sees
@@ -5741,18 +5594,6 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
             // unrepresentable, which is the only good reason to remove
             // one. `a_malformed_credential_is_refused_by_the_database`
             // pins the three that replaced it.
-            // Migration 0040, issue #88 item 1. A `/dash/v1` token and the
-            // instant it dies are one fact: a token with no expiry is one the
-            // dashboard cannot decide about and re-mints on every render,
-            // which is a credential operation per page view.
-            ("staff_sessions", "staff_sessions_token_expiry_is_paired"),
-            // ADR-0030, migration 0050: `expires_at > created_at`. Multi-column, so
-            // the drift report cannot see it; `the_sso_attempt_table_refuses_malformed_rows`
-            // in vpay-db asserts it fires.
-            (
-                "staff_sso_attempts",
-                "staff_sso_attempts_lifetime_is_positive"
-            ),
         ],
         "the multi-column CHECK constraints backends/migrations builds. This list is read from \
          the live database rather than from the report precisely because the report cannot see \
@@ -5760,7 +5601,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
          and the drift count below cannot"
     );
 
-    // None of the twenty-six reaches the report. (This line and the one below
+    // None of the twenty-five reaches the report. (This line and the one below
     // said "eleven" until 2026-09-10, and "eighteen" until 2026-09-15; the
     // list was twenty-five entries long when migration 0045 added the
     // twenty-sixth, so the correction of 2026-09-10 had itself gone stale by
@@ -5793,7 +5634,7 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
         );
     }
 
-    // Many of the twenty-six sit on tables the schema *does* model, so their
+    // Many of the twenty-five sit on tables the schema *does* model, so their
     // absence is not the table being skipped. Two of those tables are pinned
     // below: a single-column CHECK on each of `providers` and
     // `payment_intents` IS reported, which is what separates "the tool cannot

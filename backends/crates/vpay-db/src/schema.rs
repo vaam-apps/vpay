@@ -123,6 +123,44 @@ where
     )
 }
 
+/// The generated envelope layer for this schema's procedure transport
+/// (VP-6a): `ROUTE_TRANSPORTS` and `ACCEPTED_CONTRACTS` are this schema's, and
+/// private to this crate, so the layer that binds `POST /$procs/<name>` can only
+/// be built here.
+///
+/// **Required and JSON.** The transport is `procedure_router` over
+/// [`::cratestack_codec_json::JsonCodec`], so JSON is the one payload type in
+/// both directions; the generated layer defaults to CBOR alone, which this
+/// router would refuse. No optional mode: an unsigned procedure call is the
+/// layer's coarse `401`.
+///
+/// **`mount` is the path the procedure router is nested at** (`/dash/v1`), and
+/// it is required: the layer is applied to the inner router before
+/// `nest_service`, and the `MatchedPath` it sees is the nest's path joined to the
+/// route's (`/dash/v1/$procs/searchPaymentIntents`), not the route's alone. A
+/// layer built without it resolves nothing, and under `Required` answers every
+/// request with the "envelope misconfigured" `500`
+/// (`an_unsigned_caller_a_merchant_and_a_revoked_key_are_the_coarse_401` is the
+/// test that saw it). A client still binds the template without the mount,
+/// `/$procs/<name>`.
+///
+/// Applied by the caller as the router's **last** `.layer(..)`, after the
+/// tenancy step has been put inside it (`vpay_api::router`).
+pub(crate) fn dashboard_envelope_layer(
+    envelope: std::sync::Arc<dyn ::cratestack::envelope_layer::ServerEnvelope>,
+    audience: &str,
+    mount: &str,
+) -> Result<::cratestack::envelope_layer::EnvelopeLayer, ::cratestack::CratestackError> {
+    cratestack_schema::axum::envelope_layer(
+        envelope,
+        ::cratestack::envelope_layer::EnvelopeMode::Required,
+        audience,
+    )
+    .mount_prefix(mount)
+    .payload_media_types(["application/json"], ["application/json"])
+    .build()
+}
+
 #[cfg(test)]
 mod tests {
     //! No database. Every assertion here is either a question about the
@@ -376,7 +414,7 @@ mod tests {
         // never probe, and a name here the schema no longer declares is a
         // probe of nothing. Until 2026-09-23 this was a hand-kept
         // `[&str; 19]` of table names with no such check.
-        const MODEL_TABLES: [(&str, &str); 22] = [
+        const MODEL_TABLES: [(&str, &str); 20] = [
             ("Currency", "currencies"),
             ("Provider", "providers"),
             ("PaymentIntent", "payment_intents"),
@@ -390,8 +428,6 @@ mod tests {
             ("WebhookDelivery", "webhook_deliveries"),
             ("Customer", "customers"),
             ("StaffMember", "staff_members"),
-            ("StaffSession", "staff_sessions"),
-            ("OauthAuthorizationCode", "oauth_authorization_codes"),
             // Nineteenth, added when this branch's `model Credential`
             // (migration 0044) merged with Lane C's transport: a model
             // declared after this list was written is exactly the one whose
@@ -405,13 +441,14 @@ mod tests {
             // noticed until a skills re-verification did.
             ("ManualPayment", "manual_payments"),
             ("RateLimitWindow", "rate_limit_windows"),
-            // Twenty-first, 2026-10-20: `model StaffSsoAttempt` (migration
-            // 0050, ADR-0030), added in the same change that declared it —
-            // the lesson of the twentieth.
-            ("StaffSsoAttempt", "staff_sso_attempts"),
             // Twenty-second, 2026-10-26: `model EnvelopeNonce` (migration
             // 0055, VP-3), added in the same change that declared it.
             ("EnvelopeNonce", "envelope_nonces"),
+            // 2026-10-26, VP-6a: `model ConsoleKey` (migration 0056, ADR-0036),
+            // added in the same change that declared it. The same change
+            // removed `StaffSession`, `OauthAuthorizationCode` and
+            // `StaffSsoAttempt`, which is why the count fell by two.
+            ("ConsoleKey", "console_keys"),
         ];
 
         let mut listed: Vec<&str> = MODEL_TABLES.iter().map(|(model, _)| *model).collect();

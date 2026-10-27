@@ -22,11 +22,11 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
-use crate::authorization_codes::AuthorizationCodes;
 use crate::charges::Charges;
 use crate::checkout_sessions::CheckoutSessions;
 use crate::client_assertion::ClientAssertions;
 use crate::config_reconcile::ConfigReconcile;
+use crate::console_keys::ConsoleKeys;
 use crate::credentials::Credentials;
 use crate::customers::Customers;
 use crate::disabled_clients::DisabledClients;
@@ -46,8 +46,6 @@ use crate::refunds::Refunds;
 use crate::settlement::Settlement;
 use crate::signing_keys::SigningKeys;
 use crate::staff::Staff;
-use crate::staff_sessions::StaffSessions;
-use crate::staff_sso_attempts::StaffSsoAttempts;
 use crate::webhook_deliveries::WebhookDeliveries;
 
 /// A future that borrows the transaction it was handed, boxed so the closure
@@ -1099,6 +1097,7 @@ pub trait Repositories:
     + CheckoutSessions
     + ClientAssertions
     + ConfigReconcile
+    + ConsoleKeys
     + Credentials
     + Customers
     + DisabledClients
@@ -1117,9 +1116,6 @@ pub trait Repositories:
     + Settlement
     + SigningKeys
     + Staff
-    + StaffSessions
-    + StaffSsoAttempts
-    + AuthorizationCodes
     + TransactionSource
     + WebhookDeliveries
     + std::fmt::Debug
@@ -1167,6 +1163,29 @@ pub trait Repositories:
     /// See `docs/plans/2026-09-13-dashboard-nav-notes/transport.md` for why
     /// a closure is the whole of what this seam costs.
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router;
+
+    /// The signed-transport layer for [`Self::dashboard_procedure_router`]
+    /// (VP-6a): `Required`, JSON in and out, over the contract digests and route
+    /// descriptors CrateStack generated from `schemas/vpay.cstack`.
+    ///
+    /// On this trait for [`Self::dashboard_procedure_router`]'s reason: the
+    /// generated module is private to this crate, and so is the only place
+    /// these two tables can be named. The caller puts its tenancy step inside the
+    /// layer and applies this as the router's last `.layer(..)`.
+    ///
+    /// `mount` is the path the procedure router is nested at (`/dash/v1`):
+    /// `MatchedPath` carries it, and a layer without it resolves nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`] if cratestack refuses the configuration (an
+    /// empty audience).
+    fn dashboard_envelope_layer(
+        &self,
+        envelope: std::sync::Arc<dyn cratestack::envelope_layer::ServerEnvelope>,
+        audience: &str,
+        mount: &str,
+    ) -> Result<cratestack::envelope_layer::EnvelopeLayer, DbError>;
 }
 
 /// The only [`Repositories`].
@@ -1232,6 +1251,21 @@ impl Repositories for PgRepositories {
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router {
         let provider = crate::dashboard_transport::ExtensionAuthProvider(auth);
         crate::schema::dashboard_procedure_router(self.cs.clone(), provider)
+    }
+
+    fn dashboard_envelope_layer(
+        &self,
+        envelope: std::sync::Arc<dyn cratestack::envelope_layer::ServerEnvelope>,
+        audience: &str,
+        mount: &str,
+    ) -> Result<cratestack::envelope_layer::EnvelopeLayer, DbError> {
+        crate::schema::dashboard_envelope_layer(envelope, audience, mount).map_err(|error| {
+            DbError::from(crate::persistence::classify_cratestack(
+                "DashboardEnvelope",
+                "build",
+                error,
+            ))
+        })
     }
 }
 

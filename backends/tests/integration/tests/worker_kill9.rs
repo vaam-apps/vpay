@@ -841,8 +841,8 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
         // literal that hid a field would let one drift.
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
-        dashboard_client: None,
-        staff_auth: vpay_config::StaffAuth::default(),
+        dashboard: None,
+        service_clients: Vec::new(),
         routing: Default::default(),
     }
 }
