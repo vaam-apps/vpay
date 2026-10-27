@@ -793,3 +793,76 @@ service_clients:
 - `staff_auth:` and `dashboard_client:` are gone. A file that still carries
   either fails to load (`deny_unknown_fields`): the operator is told, at boot,
   that a sign-in they configured no longer exists.
+
+---
+
+## `auth:` — which ways of authenticating a deployment permits (ADR-0037)
+
+```yaml
+auth:
+  methods: [keypair, machine_tokens, hmac_webhooks, human_login]
+```
+
+vpay serves more than one application, so the ways in are the deployment's
+choice ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)).
+**Absent means all four**, which is what every file written before the key
+existed gets. The vaam deployment sets `[keypair]`, plus `hmac_webhooks` until
+sealed webhooks (VP-8). Order is irrelevant. The code is
+`backends/crates/vpay-config/src/auth.rs`; `Config::auth_methods()` is the
+resolved set and `vpay_api::ResourceConfig::auth_methods()` carries it to the
+router.
+
+| Method           | Permits                                                                    | Its block (refused when the method is off)                                               |
+| ---------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| `keypair`        | signed `/v1` requests, sealed answers, the console (`/dash/v1`, `/svc/v1`) | `merchant_clients[].cose_keys`, `dashboard`, `service_clients`                           |
+| `machine_tokens` | `Authorization: Bearer` on `/v1`, `/v1/oauth/token`, the MCP endpoint      | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences`                            |
+| `hmac_webhooks`  | merchant webhooks signed with a shared secret (`Vpay-Signature`)           | `merchant_clients[].webhooks`                                                            |
+| `human_login`    | staff password, TOTP and SSO sign-in                                       | `staff_auth`, `dashboard_client` (still retired keys: **not available in this release**) |
+
+### The rules
+
+Each is a boot refusal with its own `ConfigError` variant and a fixture
+(`tests/fixtures/auth-methods-*.yml`), and each exits `78`.
+
+| Rule                                                                                              | Variant                     |
+| ------------------------------------------------------------------------------------------------- | --------------------------- |
+| `methods: []`                                                                                     | `NoAuthMethods`             |
+| a name that is not a method                                                                       | `UnknownAuthMethod`         |
+| a method listed twice                                                                             | `DuplicateAuthMethod`       |
+| `human_login` named explicitly                                                                    | `AuthMethodUnavailable`     |
+| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                          | `NoWayIn`                   |
+| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                     | `McpNeedsMachineTokens`     |
+| `machine_tokens` named explicitly and no merchant has a `jwks`                                    | `AuthMethodNotConfigured`   |
+| a block from the table above, present while its method is off                                     | `AuthMethodDisabled`        |
+| `machine_tokens` permitted and a registration without `grant_types` (it used to be a shape error) | `MerchantGrantTypesMissing` |
+
+- **Permitted is not served.** A method with a block runs where the block is. An
+  absent `auth.methods` permits `machine_tokens` and still boots a file with no
+  `jwks`; only naming it explicitly demands one. `human_login` is the one method
+  nothing serves yet: the default permits it, `AuthMethods::served()` omits it,
+  and VPA-3 is the change that restores it.
+- **With `machine_tokens` off, the OAuth half of a registration is not
+  required**: `jwks`, `grant_types` and `allowed_audiences` may be omitted, and
+  `grant_types` now defaults to empty for that reason.
+- **`hmac_webhooks` off means no merchant webhooks** until VP-8 adds sealed
+  delivery: any `webhooks[]` entry is refused, not only one with `secrets`,
+  since an endpoint without a secret was already `WebhookSecretCount`.
+- **`keypair` may be off.** A legacy-only deployment is supported: `/v1` runs
+  with the envelope `Off`, and no console exists (`dashboard` and
+  `service_clients` are refused), so pairing is unavailable. The response keys
+  are still required at boot on a process that mounts `/v1`.
+
+### What each mode does on `/v1`
+
+| `keypair` | `machine_tokens` | `/v1` envelope | `/v1/oauth/token` | An unsigned `/v1` request   |
+| --------- | ---------------- | -------------- | ----------------- | --------------------------- |
+| yes       | no               | `Required`     | `404`             | the layer's coarse `401`    |
+| yes       | yes              | `Optional`     | mounted           | validated as a bearer token |
+| no        | yes              | `Off`          | mounted           | validated as a bearer token |
+
+`/v1/oauth/token` is mounted iff `machine_tokens` is permitted on a process that
+mounts the business surface; the JWKS and discovery documents are mounted there
+and on an `mcp` process. `GET /.well-known/vpay-auth` answers
+`{"methods": ["keypair", ...]}` on every process, unauthenticated: the methods
+permitted **and served**. See [signed-transport.md](../flows/signed-transport.md)
+for the request side.

@@ -17,6 +17,21 @@ deployment:
   livemode: false
   public_base_url: http://localhost:8080
 
+# Which ways of authenticating this deployment permits (ADR-0037). ABSENT means
+# all four, which is what this file means: `/v1` accepts a signed request or a
+# bearer token, `/v1/oauth/token` is mounted, and merchant webhooks are signed
+# with a shared secret. A deployment that serves one application and wants
+# fewer says so — vaam's overlay is `methods: [keypair]` (plus `hmac_webhooks`
+# until sealed webhooks, VP-8) — and every block belonging to a method it does
+# not permit must then go: boot refuses `jwks`, `grant_types` and
+# `allowed_audiences` without `machine_tokens`, `cose_keys`, `dashboard` and
+# `service_clients` without `keypair`, and `webhooks` without `hmac_webhooks`
+# (docs/reference/vpay-config.md, "`auth:`"). Not written here, on purpose:
+# writing it would turn this file's shipped behaviour off.
+#
+# auth:
+#   methods: [keypair, machine_tokens, hmac_webhooks]
+
 # Each entry may carry `enabled: false` to stop new charges being routed to
 # that rail while keeping its host and credentials loaded for the charges
 # already on it (boot step 4 writes it to `providers.enabled`). Absent means

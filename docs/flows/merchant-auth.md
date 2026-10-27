@@ -1,5 +1,14 @@
 # Merchant authentication and the SDK wire contract
 
+> **Restored by ADR-0037 (VPA-1), as one of two ways in.** A deployment whose
+> `auth.methods` permits `machine_tokens` (the default, when the key is absent)
+> accepts the bearer token this page's handshake mints on `/v1`, beside a signed
+> request; one that permits `keypair` alone (vaam) does not mount the token door
+> at all. The invariant below describes the `keypair`-only deployment. See
+> [signed-transport.md](signed-transport.md#both-ways-when-the-deployment-permits-it)
+> for the request side and
+> [ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md).
+
 ## The invariant
 
 > **No `/v1` request is handled unless it is a signed message from a key the
@@ -152,6 +161,13 @@ The SDKs surface this as a distinct authentication-error type carrying both
 fields; it is never retried automatically.
 
 ### 3. Using the token
+
+**Where this applies (ADR-0037).** On a deployment that permits `machine_tokens`
+and `keypair` both, a request that is not a signed message is read as a bearer
+call and checked as below; a request that is both signed and carries an
+`Authorization` header is `400`. The SDKs do not speak this half yet (their token
+modes return with VPA-6), so today a token caller is a plain HTTP client. The
+answer to it is plain JSON, never sealed.
 
 Every `/v1` request carries `Authorization: Bearer <access_token>`. The
 SDKs cache the token and reuse it until `expires_in` minus a safety margin

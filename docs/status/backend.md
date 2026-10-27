@@ -1673,3 +1673,42 @@ fallback.
   spec was deleted, not skipped, because it drove the deleted sign-in; the Helm
   render and the compose stack were **not run** where this was written (no
   `helm`/`kubeconform`, no stack images).
+
+## Authentication methods are deployment configuration (2026-10-27, ADR-0037, VPA-1)
+
+[ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)
+makes the ways in a YAML choice, and brings the bearer token back to `/v1`
+beside the signed message. **Built and proven by unit and fixture tests; not run
+against a real Postgres where this was written** (no Docker), so the sealed and
+token round trips against the real tables are CI's `merchant_token_flow.rs` and
+`signed_transport.rs`, both edited here and only compiled.
+
+- **`auth.methods`** (`vpay-config/src/auth.rs`): `keypair`, `machine_tokens`,
+  `hmac_webhooks`, `human_login`; absent means all four. Eight rules, one
+  `ConfigError` variant and one fixture (`auth-methods-*.yml`) each, listed in
+  [the config reference](../reference/vpay-config.md#auth--which-ways-of-authenticating-a-deployment-permits-adr-0037).
+  A block belonging to a method that is not permitted is refused, so a
+  `[keypair]` deployment must drop `jwks`, `grant_types` and
+  `allowed_audiences` from its merchant registrations.
+- **`/v1` mode follows the methods**: `[keypair]` is `Required` (as before),
+  `[keypair, machine_tokens]` is `Optional` with the unresolved mode pinned to
+  `Required`, `[machine_tokens]` is `Off`. In `merchant_scope` a verified
+  signer resolves through the key registry; otherwise a bearer token
+  (audience `vpay:v1`) resolves through `merchant_id_for` and the same
+  `required_scopes`; both together is `400`. Span field
+  `auth.method = keypair | machine_token`.
+- **`/v1/oauth/token` is mounted only with `machine_tokens`**; otherwise the
+  honest `404`. `GET /.well-known/vpay-auth` lists the permitted and served
+  methods.
+- **`hmac_webhooks` off refuses any `webhooks[]` entry at boot**: no merchant
+  webhooks until sealed delivery (VP-8).
+- **Tests**: 14 refusal fixtures and 4 loading ones in `vpay-config`, and 15
+  router cases in `vpay-api/src/auth_methods_tests.rs`, including a sealed call
+  through the real layer and the SDK next to a token call on one router; the
+  guard proofs are in
+  [verification/2026-10-27-vpa1-auth-methods.md](verification/2026-10-27-vpa1-auth-methods.md).
+- **Not done.** `human_login` is permitted by the default and served by nothing
+  (naming it is refused; VPA-3). The SDKs have no token mode (VPA-6). A
+  legacy-only (`keypair` off) deployment still loads the envelope response keys
+  at boot. A token caller is not protected the way a sealed one is
+  (ADR-0037, Consequences).
