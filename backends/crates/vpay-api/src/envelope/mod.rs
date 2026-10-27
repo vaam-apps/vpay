@@ -3,9 +3,13 @@
 //!
 //! Every `/v1` request is a COSE_Sign1 message from a merchant's registered
 //! Ed25519 key, and every answer to one is a COSE_Sign1 message from this
-//! process's key. There is no bearer token on `/v1`: an `Authorization` header
-//! is not read, because the layer that opens the request is in front of
-//! everything that could read one.
+//! process's key. **On a deployment that permits `keypair` alone** (`auth.methods`,
+//! ADR-0037) there is no bearer token on `/v1`: an `Authorization` header is
+//! not read, because the layer that opens the request is in front of
+//! everything that could read one. A deployment that also permits
+//! `machine_tokens` runs the layer in `Optional` mode and lets [`scope`] read a
+//! bearer token from a request that was not signed ([`SurfaceMode`]); one that
+//! permits it alone runs the layer `Off`.
 //!
 //! The management surface is the same mechanism with different keys, three
 //! layers in all, each its own resolver and its own contract table:
@@ -65,10 +69,13 @@
 //!
 //! # Fail closed
 //!
-//! A mode of `Required`, no optional or compat envelope: an unsigned request
-//! to a `/v1` operation is the layer's coarse `401`, whatever it carries. A
-//! missing server key or merchant key registry is not a degraded mode either;
-//! the process refuses to boot (`vpay-server`, exit `78`).
+//! Under `keypair` alone the mode is `Required`: an unsigned request to a `/v1`
+//! operation is the layer's coarse `401`, whatever it carries. Loosening it is
+//! the operator's explicit choice in `auth.methods`, never a fallback the code
+//! takes by itself, and `Optional` still refuses a signed request that fails to
+//! verify rather than reading it as unsigned. A missing server key or merchant
+//! key registry is not a degraded mode either; the process refuses to boot
+//! (`vpay-server`, exit `78`).
 
 pub mod binding;
 pub mod console;
@@ -79,10 +86,10 @@ pub(crate) mod service;
 
 use std::sync::Arc;
 
-use cratestack_axum::envelope_layer::{EnvelopeLayer, EnvelopeMode};
+use cratestack_axum::envelope_layer::{EnvelopeLayer, EnvelopeMode, PolicyRequest};
 use cratestack_core::AcceptedContracts;
 use cratestack_cose::{CoseEnvelope, CoseMode, CoseVerifierResolver};
-use vpay_config::{Config, ConfigError};
+use vpay_config::{AuthMethod, Config, ConfigError};
 use vpay_core::{Category, Classify};
 use vpay_db::Repositories;
 use vpay_wire::{DASH_CONTRACTS, DASH_MOUNT, SVC_CONTRACTS, SVC_MOUNT, V1_CONTRACTS, V1_MOUNT};
@@ -95,6 +102,8 @@ pub use nonces::PgNonceStore;
 use crate::merchant_keys::{
     MerchantKeyRegistry, MerchantKeyResolver, ServiceKeyRegistry, ServiceKeyResolver,
 };
+use crate::resource_auth::JwtValidator;
+use crate::v1::ResourceConfig;
 
 /// How much more than the `/v1` payload bound the layer will buffer of the
 /// COSE message that wraps it: protected header, claims, the 64-byte signature
@@ -170,45 +179,110 @@ fn cose_envelope(
     resolver: Arc<dyn CoseVerifierResolver>,
     repositories: &Arc<dyn Repositories>,
 ) -> Result<CoseEnvelope, V1EnvelopeError> {
-    CoseEnvelope::server(
-        CoseMode::Sign1,
-        keys.signer(),
+    cose_envelope_over(
+        keys,
         resolver,
         Arc::new(PgNonceStore::new(repositories.clone())),
     )
-    .build()
-    .map_err(layer_error)
+}
+
+/// [`cose_envelope`] over a replay cache the caller supplies.
+fn cose_envelope_over(
+    keys: &EnvelopeKeys,
+    resolver: Arc<dyn CoseVerifierResolver>,
+    nonces: Arc<dyn cratestack_core::NonceStore>,
+) -> Result<CoseEnvelope, V1EnvelopeError> {
+    CoseEnvelope::server(CoseMode::Sign1, keys.signer(), resolver, nonces)
+        .build()
+        .map_err(layer_error)
 }
 
 fn layer_error(error: cratestack_core::CratestackError) -> V1EnvelopeError {
     V1EnvelopeError::Layer(error.to_string())
 }
 
-/// One hand-written surface's layer: `Required`, bound by `binding` over
+/// One hand-written surface's layer in `mode`, bound by `binding` over
 /// `contracts`, mounted at `mount`, sealing in the types the binding declares.
+///
+/// `mode` is `Required` for every surface but `/v1`, whose mode is the
+/// deployment's choice ([`SurfaceMode`]).
 fn surface_layer(
     config: &Config,
     envelope: CoseEnvelope,
     contracts: AcceptedContracts,
     binding: TableBinding,
     mount: &str,
+    mode: SurfaceMode,
 ) -> Result<EnvelopeLayer, V1EnvelopeError> {
     let (request_types, response_types) = binding.payload_types();
-    EnvelopeLayer::builder(
+    let builder = EnvelopeLayer::builder(
         envelope,
         audience_for(&config.deployment.public_base_url),
         contracts,
     )
     .binding_resolver(binding)
-    .mount_prefix(mount)
-    .policy(EnvelopeMode::Required)
-    .payload_media_types(
-        request_types.iter().copied(),
-        response_types.iter().copied(),
-    )
-    .max_body_bytes(ENVELOPE_BODY_LIMIT_BYTES)
-    .build()
-    .map_err(layer_error)
+    .mount_prefix(mount);
+    let builder = match mode {
+        SurfaceMode::Required => builder.policy(EnvelopeMode::Required),
+        // A closure rather than the bare mode, and `unresolved_mode`
+        // pinned back to `Required`: a bare `Optional` answers
+        // `unresolved_mode` with itself, so a route the resolver could not
+        // bind would pass through unsigned instead of failing closed with the
+        // `500` (cratestack decision S2). Only the ops' own mode is loosened.
+        SurfaceMode::Optional => builder
+            .policy(|_request: &PolicyRequest<'_>| EnvelopeMode::Optional)
+            .unresolved_mode(EnvelopeMode::Required),
+        SurfaceMode::Off => builder.policy(EnvelopeMode::Off),
+    };
+    builder
+        .payload_media_types(
+            request_types.iter().copied(),
+            response_types.iter().copied(),
+        )
+        .max_body_bytes(ENVELOPE_BODY_LIMIT_BYTES)
+        .build()
+        .map_err(layer_error)
+}
+
+/// The envelope mode `/v1` runs in, decided by `auth.methods` (ADR-0037).
+///
+/// | `keypair` | `machine_tokens` | Mode | A request with no signature |
+/// |---|---|---|---|
+/// | yes | no | `Required` | the layer's coarse unsigned `401` |
+/// | yes | yes | `Optional` | runs; the scope step wants a bearer token |
+/// | no | yes | `Off` | runs; a COSE body is refused (`415`) |
+///
+/// The fourth row, neither, is refused at boot (`ConfigError::NoWayIn`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SurfaceMode {
+    /// Every request is signed (VP-3).
+    Required,
+    /// A signed request is opened and sealed; an unsigned one is let through
+    /// to the scope step, which accepts a bearer token.
+    Optional,
+    /// The envelope is off: a legacy-only deployment, which seals nothing.
+    Off,
+}
+
+impl SurfaceMode {
+    /// The mode `config`'s `auth.methods` selects.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError::NoWayIn`] when neither `keypair` nor `machine_tokens`
+    /// is permitted: unreachable for a `Config` that came from a file.
+    pub fn from_config(config: &Config) -> Result<Self, ConfigError> {
+        let methods = config.auth_methods()?;
+        match (
+            methods.permits(AuthMethod::Keypair),
+            methods.permits(AuthMethod::MachineTokens),
+        ) {
+            (true, false) => Ok(Self::Required),
+            (true, true) => Ok(Self::Optional),
+            (false, true) => Ok(Self::Off),
+            (false, false) => Err(ConfigError::NoWayIn),
+        }
+    }
 }
 
 /// Everything `router()` needs to put the signed transport in front of `/v1`:
@@ -221,6 +295,13 @@ fn surface_layer(
 pub struct V1Envelope {
     layer: EnvelopeLayer,
     merchants: Arc<MerchantKeyResolver>,
+    mode: SurfaceMode,
+    /// Whether `auth.methods` permits `machine_tokens`, and the validator the
+    /// scope step checks a bearer token with. `None` with the method permitted
+    /// is a router assembled without one: every unsigned request is then a
+    /// `500`, never an open door.
+    machine_tokens: bool,
+    validator: Option<JwtValidator>,
 }
 
 impl std::fmt::Debug for V1Envelope {
@@ -228,7 +309,9 @@ impl std::fmt::Debug for V1Envelope {
         f.debug_struct("V1Envelope")
             .field("layer", &self.layer)
             .field("merchants", &self.merchants)
-            .finish()
+            .field("mode", &self.mode)
+            .field("machine_tokens", &self.machine_tokens)
+            .finish_non_exhaustive()
     }
 }
 
@@ -262,22 +345,83 @@ impl V1Envelope {
         merchants: Arc<MerchantKeyResolver>,
     ) -> Result<Self, V1EnvelopeError> {
         let envelope = cose_envelope(keys, merchants.clone(), &repositories)?;
+        Self::assemble(config, envelope, merchants)
+    }
+
+    /// [`Self::with_resolver`] with an in-memory replay cache, for the unit
+    /// tests that open a real sealed request without a database. The cache is
+    /// the only difference: the layer, the mode and the scope step are the ones
+    /// that ship.
+    ///
+    /// # Errors
+    ///
+    /// [`V1EnvelopeError::Layer`].
+    #[cfg(test)]
+    pub(crate) fn with_replay_cache(
+        config: &Config,
+        keys: &EnvelopeKeys,
+        merchants: Arc<MerchantKeyResolver>,
+        nonces: Arc<dyn cratestack_core::NonceStore>,
+    ) -> Result<Self, V1EnvelopeError> {
+        let envelope = cose_envelope_over(keys, merchants.clone(), nonces)?;
+        Self::assemble(config, envelope, merchants)
+    }
+
+    fn assemble(
+        config: &Config,
+        envelope: CoseEnvelope,
+        merchants: Arc<MerchantKeyResolver>,
+    ) -> Result<Self, V1EnvelopeError> {
+        let mode = SurfaceMode::from_config(config)?;
         let layer = surface_layer(
             config,
             envelope,
             *V1_CONTRACTS,
             TableBinding::v1(),
             V1_MOUNT,
+            mode,
         )?;
-        Ok(Self { layer, merchants })
+        Ok(Self {
+            layer,
+            merchants,
+            mode,
+            machine_tokens: config.auth_methods()?.permits(AuthMethod::MachineTokens),
+            validator: None,
+        })
+    }
+
+    /// Hands the scope step the validator it checks a bearer token with.
+    ///
+    /// Separate from [`Self::new`] because the validator fetches this
+    /// process's own JWKS over loopback and so needs the bound address, which
+    /// exists only after the listener does. Meaningful only when
+    /// `auth.methods` permits `machine_tokens`; harmless otherwise, since the
+    /// scope step never consults it.
+    #[must_use]
+    pub fn with_machine_tokens(mut self, validator: JwtValidator) -> Self {
+        self.validator = Some(validator);
+        self
+    }
+
+    /// The mode `/v1` runs in, for the boot log.
+    #[must_use]
+    pub fn mode(&self) -> SurfaceMode {
+        self.mode
     }
 
     pub(crate) fn layer(&self) -> EnvelopeLayer {
         self.layer.clone()
     }
 
-    pub(crate) fn merchants(&self) -> Arc<MerchantKeyResolver> {
-        self.merchants.clone()
+    /// What the scope step needs, over `resource_config` (which maps a
+    /// token's `client_id` to a tenant).
+    pub(crate) fn scope_state(&self, resource_config: Arc<ResourceConfig>) -> scope::ScopeState {
+        scope::ScopeState {
+            merchants: self.merchants.clone(),
+            machine_tokens: self.machine_tokens,
+            validator: self.validator.clone(),
+            resource_config,
+        }
     }
 }
 
@@ -332,6 +476,7 @@ impl ManagementEnvelope {
             *DASH_CONTRACTS,
             TableBinding::dash(),
             DASH_MOUNT,
+            SurfaceMode::Required,
         )?;
         let procedures = repositories
             .dashboard_envelope_layer(
@@ -346,6 +491,7 @@ impl ManagementEnvelope {
             *SVC_CONTRACTS,
             TableBinding::svc(),
             SVC_MOUNT,
+            SurfaceMode::Required,
         )?;
         Ok(Self {
             dash,

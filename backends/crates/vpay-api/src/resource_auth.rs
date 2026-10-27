@@ -25,6 +25,8 @@ use std::sync::{Arc, Mutex, PoisonError, RwLock};
 use std::time::{Duration, Instant};
 
 use authkestra_resource::jwt::ValidationError;
+use axum::http::header;
+use axum::http::request::Parts;
 use axum::response::{IntoResponse, Response};
 use jsonwebtoken::{Algorithm, Validation, decode_header};
 use serde::Deserialize;
@@ -296,6 +298,33 @@ impl IntoResponse for AuthRejection {
     fn into_response(self) -> Response {
         ApiError::from(self).into_response()
     }
+}
+
+/// The bearer token of a request, or the reason there is none.
+///
+/// Header parsing and the rejection vocabulary belong together, so this stays
+/// in the crate: nothing outside it has business turning an `Authorization`
+/// header into anything but a rejection or a validated [`ResourceClaims`].
+/// The `/v1` scope step ([`crate::envelope::scope`]) calls it once per
+/// request, for a caller that did not sign.
+pub(crate) fn extract_bearer_token(parts: &Parts) -> Result<&str, AuthRejection> {
+    let value = parts
+        .headers
+        .get(header::AUTHORIZATION)
+        .ok_or(AuthRejection::MissingHeader)?
+        .to_str()
+        .map_err(|_error| AuthRejection::MalformedHeader)?;
+
+    let token = value
+        .strip_prefix("Bearer ")
+        .ok_or(AuthRejection::MalformedHeader)?
+        .trim();
+
+    if token.is_empty() {
+        return Err(AuthRejection::MalformedHeader);
+    }
+
+    Ok(token)
 }
 
 /// Validates bearer tokens for exactly one audience: one JWKS cache, one
@@ -580,19 +609,14 @@ impl JwtValidator {
 #[cfg(test)]
 mod tests {
     use std::sync::LazyLock;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use authkestra_resource::jwt::Jwk;
-    use base64::Engine as _;
-    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{EncodingKey, Header};
-    use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
-    use rsa::traits::PublicKeyParts;
     use serde_json::{Value, json};
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use wiremock::MockServer;
 
     use super::*;
+    use crate::test_fixtures::tokens::{generate_keypair, jwks_server, mint_token, now_secs};
 
     const ISSUER: &str = "https://op.vpay.test";
 
@@ -603,51 +627,6 @@ mod tests {
     /// suite fast without making any test's signature verification fake.
     static KEYPAIR: LazyLock<(EncodingKey, Jwk)> = LazyLock::new(|| generate_keypair("test-key-1"));
 
-    fn now_secs() -> u64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system clock is after the unix epoch")
-            .as_secs()
-    }
-
-    /// Generates a real 2048-bit RSA keypair and the JWK describing its
-    /// public half, so every test in this module signs and verifies against
-    /// actual cryptographic material — never a stubbed decoder.
-    fn generate_keypair(kid: &str) -> (EncodingKey, Jwk) {
-        let mut rng = rand::rngs::OsRng;
-        let private_key =
-            rsa::RsaPrivateKey::new(&mut rng, 2048).expect("rsa key generation succeeds");
-        let public_key = private_key.to_public_key();
-
-        let pem = private_key
-            .to_pkcs1_pem(LineEnding::LF)
-            .expect("pkcs1 pem encoding succeeds");
-        let encoding_key = EncodingKey::from_rsa_pem(pem.as_bytes())
-            .expect("jsonwebtoken accepts a pkcs1 rsa private-key pem");
-
-        // `Jwk` is `#[non_exhaustive]` since authkestra 0.6, so a test builds
-        // it through the constructor rather than a struct literal. `use` and
-        // `key_ops` stay unset: since 0.10 a key carrying either must allow
-        // signature verification, and a key carrying neither is accepted,
-        // which is the shape vpay's own JWKS publishes.
-        let jwk = Jwk::rsa(
-            URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be()),
-            URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be()),
-        )
-        .with_kid(kid)
-        .with_alg("RS256");
-
-        (encoding_key, jwk)
-    }
-
-    /// Signs `claims` with `encoding_key`, stamping `kid` onto the header —
-    /// exactly what the JWKS cache and `validate_with_jwks` key their lookup on.
-    fn mint_token(encoding_key: &EncodingKey, kid: &str, claims: &Value) -> String {
-        let mut header = Header::new(Algorithm::RS256);
-        header.kid = Some(kid.to_string());
-        jsonwebtoken::encode(&header, claims, encoding_key).expect("signing succeeds")
-    }
-
     fn valid_claims(aud: &str, sub: &str, scope: &str) -> Value {
         json!({
             "iss": ISSUER,
@@ -656,20 +635,6 @@ mod tests {
             "scope": scope,
             "exp": now_secs() + 300,
         })
-    }
-
-    /// Serves `{"keys": [jwk]}` at `/jwks.json` from a real local HTTP
-    /// server (wiremock), so `JwksCache` performs a real fetch — never an
-    /// injected/faked `Jwks` value. Per ADR-0006 (blessed by this crate's
-    /// own AGENTS.md as the pattern for a stubbed dependency in tests).
-    async fn jwks_server(jwk: &Jwk) -> MockServer {
-        let server = MockServer::start().await;
-        Mock::given(method("GET"))
-            .and(path("/jwks.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({ "keys": [jwk] })))
-            .mount(&server)
-            .await;
-        server
     }
 
     /// An audience that is not the MCP resource's: the registered client's own

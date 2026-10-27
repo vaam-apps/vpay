@@ -499,6 +499,18 @@ impl MerchantScope {
         Self { merchant_id }
     }
 
+    /// The **sixth** way, and the second that serves `/v1`: minted by
+    /// `crate::envelope::scope` from a validated bearer token, when
+    /// `auth.methods` permits `machine_tokens` (ADR-0037).
+    ///
+    /// The tenant is resolved from the token's `client_id` through
+    /// [`ResourceConfig::merchant_id_for`], as the pre-VP-3 bearer middleware
+    /// did, and `pub(crate)` and named for its caller for the reasons the
+    /// others give.
+    pub(crate) fn for_token(merchant_id: String) -> Self {
+        Self { merchant_id }
+    }
+
     /// The **fifth** way, minted by [`crate::mcp::MerchantOps`] for a merchant MCP tool call
     /// (ADR-0033), from the merchant `vpay-db`'s procedure body read off the
     /// authenticated context, which [`crate::mcp::MerchantMcpAuth`] built
@@ -813,6 +825,12 @@ pub struct ResourceConfig {
     /// question — "which of several dashboards is this?" — the configuration
     /// cannot ask.
     dashboard: Option<DashboardBinding>,
+    /// Which ways of authenticating this deployment permits (ADR-0037):
+    /// `auth.methods`, resolved. The router reads it to decide whether
+    /// `/v1/oauth/token` is mounted and what the discovery document says; the
+    /// `/v1` envelope's mode is decided from the same `Config` by
+    /// [`crate::envelope::V1Envelope::new`].
+    auth_methods: vpay_config::AuthMethods,
     /// This tenant's default `success_url`/`cancel_url` for
     /// `POST /v1/invoices/{id}/pay` (issue #91, D2).
     ///
@@ -1012,7 +1030,14 @@ impl ResourceConfig {
             }),
             invoice_urls_by_merchant_id,
             routing_weights: config.routing.weights(),
+            auth_methods: config.auth_methods()?,
         })
+    }
+
+    /// The ways of authenticating this deployment permits (`auth.methods`).
+    #[must_use]
+    pub fn auth_methods(&self) -> &vpay_config::AuthMethods {
+        &self.auth_methods
     }
 
     /// Ranks this deployment's rails for one payment of `method_type` in
@@ -1350,6 +1375,7 @@ mod tests {
             dashboard: None,
             service_clients: Vec::new(),
             routing: Default::default(),
+            auth: Default::default(),
         }
     }
 
@@ -1375,7 +1401,6 @@ mod tests {
             Method::DELETE,
             Method::OPTIONS,
         ] {
-            auth: Default::default(),
             assert_eq!(
                 required_scopes(&method),
                 [SCOPE_PAYMENTS_WRITE],
