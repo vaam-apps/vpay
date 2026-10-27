@@ -396,15 +396,24 @@ checkout:
 #       - public_key: ${VAAM_SERVICE_COSE_KEY}   # unpadded base64url Ed25519, 43 characters
 #         label: vaam-2026-10
 
-# The management console's one tenant (VP-6a). A person who reads `/dash/v1`
-# holds a console key (paired by vaam through `/svc/v1`, or by an operator with
-# `vpay-server staff pair-key`); this block says which merchant that key reads.
-dashboard:
-  # The ONE tenant `/dash/v1` reads. Every query is filtered by it, and boot
-  # refuses a value no `merchant_clients` entry registers
-  # (`ConfigError::DashboardUnknownMerchant`) — a typo here would otherwise be
-  # an empty payments table, which looks exactly like a merchant with no
-  # payments. A deployment whose staff must see a second tenant has an admin
-  # staff member (`staff add --admin`), whose requests may name one with
-  # `?merchant_id=` (ADR-0018); this field does not become a list.
-  merchant_id: acme-cameroon
+# The management console (VP-6a) is OFF in this file, on purpose: a deployment
+# that names no `dashboard:` mounts no `/dash/v1` and no `/svc/v1`, and boots
+# without a console (ADR-0036). To turn it on, add the block below to the
+# profile overlay (never here: the tenant it names has to exist in that
+# overlay's `merchant_clients`, and an overlay replaces that list wholesale).
+#
+# dashboard:
+#   # The ONE tenant `/dash/v1` reads. Every query is filtered by it, and boot
+#   # refuses a value no `merchant_clients` entry registers
+#   # (`ConfigError::DashboardUnknownMerchant`) — a typo here would otherwise
+#   # be an empty payments table, which looks exactly like a merchant with no
+#   # payments. A person who reads `/dash/v1` holds a console key (paired by a
+#   # `service_clients` entry through `/svc/v1`, or by an operator with
+#   # `vpay-server staff pair-key`). A paired key is a plain member of this
+#   # tenant; this field does not become a list.
+#   merchant_id: acme-cameroon
+#
+# Upgrading from before VP-6a: `dashboard_client` and `staff_auth` are refused
+# at boot even as a null. Delete the keys, then add `dashboard:` (above) and a
+# `service_clients:` entry (the example earlier in this file) to keep a console
+# (docs/flows/dashboard-auth.md, "Upgrading from before VP-6a").

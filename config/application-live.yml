@@ -79,8 +79,8 @@ providers:
     callback_url: http://localhost:8080/provider/mtn_momo/callback
 
 # The merchants this deployment authenticates. Replaces the base list, so
-# acme-cameroon is gone — dashboard_client.merchant_id below is repointed to
-# this one to keep the boot guard (DashboardUnknownMerchant) happy.
+# acme-cameroon is gone — `dashboard.merchant_id` below names this one to keep
+# the boot guard (DashboardUnknownMerchant) happy.
 #
 # live-merchant signs every `/v1` request with an Ed25519 key generated with:
 #     cargo xtask gen-envelope-key --out .e2e/live-merchant --name signing
@@ -123,8 +123,9 @@ merchant_clients:
     # allow_private_targets: true`, since a localhost receiver is a private
     # target — legal under livemode: false.)
 
-# Repoint the dashboard's tenant at the one merchant this profile
-# registers. Without this, the base file's `acme-cameroon` is unregistered
-# and the server refuses to boot (ConfigError::DashboardUnknownMerchant).
+# Serve the management console, reading the one merchant this profile
+# registers. The base file serves none (R4); a `dashboard:` naming a tenant this
+# profile does not register is a refusal to boot
+# (ConfigError::DashboardUnknownMerchant).
 dashboard:
   merchant_id: live-merchant

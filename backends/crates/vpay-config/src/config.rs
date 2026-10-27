@@ -2290,14 +2290,25 @@ fn resolve_string(s: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Strin
 }
 
 /// The top-level keys VP-6a deleted, and what replaced each.
+///
+/// The second column is the whole of the operator's instruction, so it says
+/// what to add as well as what to delete; [`ConfigError::RetiredKey`] supplies
+/// the "delete it, even as a null" half.
 const RETIRED_KEYS: [(&str, &str); 2] = [
     (
         "dashboard_client",
-        "the dashboard has no OAuth client; `dashboard:` names the one tenant it reads (ADR-0036)",
+        "The console has no OAuth client any more. To serve the console add \
+         `dashboard: {merchant_id: <the one tenant it reads>}` and a \
+         `service_clients:` entry for the service that pairs keys; to run \
+         without a console add nothing (ADR-0036)",
     ),
     (
         "staff_auth",
-        "there is no password, TOTP or SSO sign-in; a person reads the console with a paired key (ADR-0036)",
+        "There is no password, TOTP or SSO sign-in any more; a person reads the \
+         console with a paired key. To serve the console add `dashboard: \
+         {merchant_id: <the one tenant it reads>}` and a `service_clients:` \
+         entry for the service that pairs keys; to run without a console add \
+         nothing (ADR-0036)",
     ),
 ];
 
@@ -2434,10 +2445,9 @@ mod tests {
         );
         assert_eq!(merchant.client_secret, None);
 
-        let dashboard = config.dashboard.as_ref().expect("dashboard present");
-        assert_eq!(dashboard.merchant_id, "acme-cameroon");
-        // No service is registered by the example: with none, the only way a
-        // console key reaches a deployment is `staff pair-key`.
+        // The example serves no console (R4): `dashboard:` is something a
+        // deployment adds, with its `service_clients:`, to turn one on.
+        assert!(config.dashboard.is_none());
         assert!(config.service_clients.is_empty());
     }
 
@@ -2762,11 +2772,16 @@ merchant_clients:
     /// A block whose feature was deleted is refused, not dropped: `Config`
     /// ignores unknown keys, so without `reject_retired_keys` a deployment
     /// that still writes `staff_auth:` boots happily with no sign-in at all.
+    /// The null form (`dashboard_client: ~`) is refused as firmly: it is how an
+    /// overlay switched the old block off, and the message has to say that the
+    /// line itself goes.
     #[test]
     fn a_deleted_features_block_is_refused_not_ignored() {
         for (fixture, key) in [
             ("retired-key-dashboard-client.yml", "dashboard_client"),
             ("retired-key-staff-auth.yml", "staff_auth"),
+            ("retired-key-dashboard-client-null.yml", "dashboard_client"),
+            ("retired-key-staff-auth-null.yml", "staff_auth"),
         ] {
             let err = load_fixture(fixture).expect_err("a retired key must be refused");
             assert!(
@@ -2774,6 +2789,48 @@ merchant_clients:
                 "{fixture}: {err:?}"
             );
         }
+    }
+
+    /// The refusal is the operator's whole upgrade instruction: it names the
+    /// line to delete (null form included) and what to add instead.
+    #[test]
+    fn the_retired_key_refusal_says_what_to_delete_and_what_to_add() {
+        let err = load_fixture("retired-key-dashboard-client-null.yml")
+            .expect_err("a null retired key must be refused");
+        let message = err.to_string();
+        for needle in [
+            "`dashboard_client`",
+            "every profile overlay",
+            "even as a null",
+            "`dashboard_client: ~`",
+            "`dashboard: {merchant_id:",
+            "`service_clients:`",
+            "run without a console add nothing",
+        ] {
+            assert!(
+                message.contains(needle),
+                "{needle:?} missing from: {message}"
+            );
+        }
+    }
+
+    /// R4: the console is optional. A file with no `dashboard:` loads, carries
+    /// none, and the shipped base file is such a file — so a deployment that
+    /// writes nothing serves no `/dash/v1` and no `/svc/v1`.
+    #[test]
+    fn a_config_with_no_dashboard_block_loads_with_the_console_off() {
+        let env = example_env(BTreeMap::new());
+        let base = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("the shipped base file loads");
+        assert!(
+            base.dashboard.is_none(),
+            "the base file must not enable the console"
+        );
+        assert!(base.service_clients.is_empty());
+
+        // Retired keys removed, the fixture is an ordinary file with no console.
+        let bare = load_fixture("console-off.yml").expect("a file with no dashboard loads");
+        assert!(bare.dashboard.is_none());
     }
 
     #[test]
@@ -3352,6 +3409,13 @@ merchant_clients:
         assert_eq!(
             config.providers.first().map(|p| p.host.url.as_str()),
             Some("https://api.notchpay.co")
+        );
+        // The overlay turns the console on for its one merchant, and boot
+        // (`validate_all`, run by the load above) already proved that tenant
+        // registered: the base file serves no console, so this is the overlay's.
+        assert_eq!(
+            config.dashboard.as_ref().map(|d| d.merchant_id.as_str()),
+            Some("notchpay-sandbox-merchant")
         );
     }
 
@@ -5427,27 +5491,6 @@ providers:
             ConfigError::DashboardUnknownMerchant {
                 merchant_id: "typo-tenant".to_owned(),
             }
-        );
-    }
-
-    #[test]
-    fn the_example_config_binds_its_dashboard_to_a_registered_merchant() {
-        let env = example_env(BTreeMap::new());
-        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
-            .expect("the example config loads");
-        let dashboard = config
-            .dashboard
-            .as_ref()
-            .expect("the example has a dashboard");
-        assert!(
-            config
-                .merchant_clients
-                .iter()
-                .any(|merchant| merchant.merchant_id == dashboard.merchant_id),
-            // No config value in the message: CodeQL's cleartext-logging
-            // query follows `Config` from `validate_secret` into any format
-            // argument, and a merchant id is not worth that alert.
-            "the example's dashboard names no registered merchant"
         );
     }
 

@@ -484,7 +484,15 @@ pub enum ConfigError {
     /// binary silently drops is an operator who believes a sign-in exists that
     /// does not, with a password pepper and a TOTP key still sitting in their
     /// secrets store (ADR-0036).
-    #[error("the configuration carries `{key}`, which no longer exists: {instead}")]
+    ///
+    /// Naming the key at all is the refusal: `key: ~` (a null) trips it as
+    /// firmly as a populated block, because the deployment that nulled the old
+    /// block out of a base file has to take that line out in the same change.
+    #[error(
+        "the configuration names `{key}`, which no longer exists. Delete the `{key}:` \
+         key from the base file and from every profile overlay, even as a null \
+         (`{key}: ~` is refused too). {instead}"
+    )]
     RetiredKey {
         /// The key, as written.
         key: String,
