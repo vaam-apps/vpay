@@ -1,9 +1,12 @@
 # @vaam-apps/vpay-sdk
 
-The Node.js merchant SDK for vpay's `/v1` API. Implements the wire contract in
-[`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md) exactly —
-`private_key_jwt` client assertions, `client_credentials` token exchange and
-caching, the form-encoded resource calls, and outbound-webhook verification.
+The Node.js merchant SDK for vpay's `/v1` API. Every call is a COSE_Sign1
+message signed with your Ed25519 key, every answer is opened under vpay's
+pinned response keys, and the signing is **the Rust SDK's own**, compiled to
+WebAssembly (`sdks/rust/wasm`) — see "How a call is signed" below. The wire
+contract is [`docs/flows/signed-transport.md`](../../docs/flows/signed-transport.md);
+the resource calls, the form-encoded bodies and outbound-webhook verification
+are as documented in [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md).
 
 **On the registry since 2026-09-19.** `release.yml`'s `publish-node-sdk` job
 (added 2026-09-18) publishes it on every `v*` tag, and `npm view
@@ -16,13 +19,16 @@ server it talks to serves; see "Status" below.
 
 ## Install
 
-Inside this workspace:
+Inside this workspace (needs Rust, the `wasm32-unknown-unknown` target and
+`wasm-bindgen-cli` at the version `Cargo.lock` pins — `just wasm-build` says
+which to install if it is missing):
 
 ```bash
 pnpm --filter @vaam-apps/vpay-sdk build
 ```
 
-From the registry:
+From the registry (the published package ships the compiled `.wasm`; nothing to
+build):
 
 ```bash
 pnpm add @vaam-apps/vpay-sdk
@@ -30,30 +36,30 @@ pnpm add @vaam-apps/vpay-sdk
 
 Requires Node.js `>=22.11.0`.
 
-## The handshake, in prose
+## How a call is signed
 
-`/v1` never accepts an API key ([ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md)).
-Every merchant is a statically registered OAuth2 client authenticating with
-`client_credentials` (RFC 6749 §4.4) via a signed `private_key_jwt` assertion
-(RFC 7523). Concretely:
+`/v1` accepts no API key and no token ([ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md)).
+A merchant is a registered **Ed25519 public key** (`merchant_clients[].cose_keys`
+in vpay's configuration); vpay finds you by the key that signed. Concretely:
 
-1. **Mint an assertion.** The SDK signs a short-lived RS256 JWT with your
-   private key: `iss`/`sub` are your `client_id`, `aud` is the OP's own token
-   endpoint (see `assertionAudience`), `jti` is a fresh UUIDv4, and `exp` is
-   `now + assertionLifetimeSeconds` (default 60s, capped at 300s — the OP
-   refuses anything further out).
-2. **Exchange it for an access token.** The SDK `POST`s the assertion to the
-   token endpoint alongside `grant_type=client_credentials` and
-   `audience=vpay:v1`. No `client_secret` is ever sent — there is nothing to
-   send; vpay stores only your **public** key.
-3. **Call `/v1` with the token.** Every resource call carries
-   `Authorization: Bearer <access_token>`. The SDK caches the token until
-   shortly before it expires and reuses it across calls; concurrent calls
-   share one in-flight token request.
-4. **Re-authenticate on expiry or a 401.** There is no refresh token by
-   design. On a `401` from a resource route, the SDK discards the cached
-   token, repeats steps 1–2 once, and retries the original request exactly
-   once. A second `401` is returned to you as a `VpayApiError`.
+1. **Seal.** For each call the SDK builds a COSE_Sign1 message over the
+   payload and binds the audience, method, route template, path parameters,
+   canonical query, the operation's contract digest, the payload type and the
+   `Idempotency-Key`. The message **is the request body** — even for a `GET`.
+2. **Send.** On `node:http`/`node:https`, because `fetch` refuses a body on
+   `GET`. One attempt: a signed request is never retried by the SDK.
+3. **Open.** The answer is a COSE_Sign1 message too. The SDK verifies it under
+   `serverKeys.current` or `serverKeys.next`, and against _this_ request and
+   status, before it reads a byte of JSON. An answer that is not sealed at all
+   (vpay's coarse `401`, a proxy's error page) is `VpayUnsignedResponseError`;
+   one that claims to be and does not verify is `VpayUnverifiedResponseError`.
+
+There is no token to cache and no re-authentication. The sealing is not
+reimplemented in TypeScript: `wasm/` is `sdks/rust/wasm` built with
+`wasm-bindgen --target nodejs`, i.e. the same code path `vpay-sdk` (Rust) runs.
+Your private key either goes in as a seed (the module signs) or **stays in
+Node** behind a `crypto.KeyObject` or a `signer` callback, in which case the
+module only ever sees the bytes to sign.
 
 ## Usage
 
@@ -63,8 +69,16 @@ import { VpayClient } from "@vaam-apps/vpay-sdk";
 
 const vpay = new VpayClient({
   baseUrl: "https://api.vpay.example",
-  clientId: "merchant_a",
-  privateKey: readFileSync("./merchant_a.key.pem", "utf8"),
+  clientId: "merchant_a", // kept for logs; vpay finds you by your key
+  // Your Ed25519 seed (32 bytes, unpadded base64url — `cargo xtask
+  // gen-envelope-key` writes it), a PKCS#8 PEM or a crypto.KeyObject.
+  privateKey: readFileSync("./merchant_a.seed", "utf8"),
+  // The two response keys vpay publishes (it logs them at boot): the one it
+  // signs with now and the one it will after the next rotation.
+  serverKeys: {
+    current: readFileSync("./vpay-current.pub", "utf8").trim(),
+    next: readFileSync("./vpay-next.pub", "utf8").trim(),
+  },
 });
 
 const intent = await vpay.paymentIntents.create(
@@ -108,7 +122,8 @@ await vpay.refunds.create({
   reason: "requested_by_customer",
 });
 await vpay.events.list({ type: "payment_intent.succeeded", limit: 20 });
-await vpay.balance.retrieve();
+// vpay.balance.retrieve() is in the surface but no route serves it: it is
+// refused locally (VpayInvalidParamsError) before anything is signed.
 
 // Checkout Sessions (Step 9). A session references an intent you already
 // created; it never creates one, and it carries where the payer goes next.
@@ -155,81 +170,69 @@ get it to the browser at all.
 
 ## Configuration
 
-| Option                     | Default               | Notes                                                                                                                                                                                                                                                                                        |
-| -------------------------- | --------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `baseUrl`                  | —                     | Required, e.g. `https://api.vpay.example`.                                                                                                                                                                                                                                                   |
-| `clientId`                 | —                     | Required. Your registered OAuth2 `client_id`.                                                                                                                                                                                                                                                |
-| `privateKey`               | —                     | Required. PEM text or a `crypto.KeyObject`. Never logged, never serialized.                                                                                                                                                                                                                  |
-| `kid`                      | —                     | Required only if you registered more than one JWK.                                                                                                                                                                                                                                           |
-| `issuer`                   | `${baseUrl}/v1/oauth` | This default is what the server does: `vpay_api::op::issuer_for` builds the issuer as `{public_base_url}/v1/oauth` from the deployment YAML, and `vpay_api::router` mounts the OP there. Override only for a deployment behind a path prefix.                                                |
-| `tokenEndpoint`            | `${issuer}/token`     | The URL this package POSTs the token request to. A **reachability** setting: it must resolve from wherever your server runs. It is also the default `assertionAudience`, but the two are separate settings — see the row below.                                                              |
-| `assertionAudience`        | `tokenEndpoint`       | The client assertion's `aud` claim: the OP's own token endpoint (or issuer) **as vpay is configured publicly** — `{deployment.public_base_url}/v1/oauth/token`. Set it when your server reaches vpay by a different URL than payers do. See "Reaching vpay by an internal URL" below.        |
-| `audience`                 | `vpay:v1`             | The OAuth2 `audience` request parameter. Load-bearing: without it the OP mints a token whose `aud` is the `client_id`, which the resource server rejects. Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`; this package keeps its own copy, so the two must change together. |
-| `scope`                    | —                     | Omitted from the token request unless set.                                                                                                                                                                                                                                                   |
-| `assertionLifetimeSeconds` | `60`                  | Must be an integer in `1..=300`; anything else throws `VpayConfigError` at construction, not at request time. Keep the default — see the note below the table.                                                                                                                               |
-| `timeoutMs`                | `30000`               | Applies to both the token exchange and every resource call.                                                                                                                                                                                                                                  |
-| `fetch`                    | global `fetch`        | Injection point for tests or an outbound proxy.                                                                                                                                                                                                                                              |
-
-**Do not raise `assertionLifetimeSeconds` to 300.** 300 is not a comfortable
-maximum, it is the OP's exact refusal boundary
-(`MAX_CLIENT_ASSERTION_LIFETIME_SECS`), and the OP compares it against _its_
-clock. A merchant clock running even one second fast mints an `exp` the OP
-reads as 301 seconds out, and every assertion is refused — the failure looks
-like `invalid_client`, arrives all at once, and clears up on its own when the
-clocks drift back. The default of 60 leaves 240 seconds of headroom for a
-value that only has to outlive one HTTP round trip.
+| Option       | Default          | Notes                                                                                                                                                                                                                                                                                                                                         |
+| ------------ | ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `baseUrl`    | —                | Required, e.g. `https://api.vpay.example`.                                                                                                                                                                                                                                                                                                    |
+| `clientId`   | —                | Required. Your registered `client_id`. Not sent: vpay resolves the merchant from the signing key.                                                                                                                                                                                                                                             |
+| `privateKey` | —                | Exactly one of this and `signer`. An Ed25519 key as the 32-byte seed (bytes, or unpadded base64url text), PKCS#8 PEM text, or a `crypto.KeyObject`. An RSA or P-256 key is a `VpayConfigError` at construction. Never logged, never serialized.                                                                                               |
+| `signer`     | —                | `{ publicKey, sign(tbs) }` for a key this process cannot read (a KMS, an HSM). `sign` receives the exact bytes to sign and returns the 64-byte pure-Ed25519 signature (`crypto.sign(null, tbs, key)`). A signature that does not verify under `publicKey` is refused before it is sent, with the cause, instead of becoming the coarse `401`. |
+| `serverKeys` | —                | Required. `{ current, next? }`, each 32 bytes (bytes or unpadded base64url). An answer sealed by any other key is refused (`VpayUnverifiedResponseError`). Pin `next` before vpay rotates so a rotation is not a flag day.                                                                                                                    |
+| `audience`   | `baseUrl`        | What every signature is addressed to: vpay's `deployment.public_base_url`. Set it when your server reaches vpay by a different URL than payers do — see below.                                                                                                                                                                                |
+| `timeoutMs`  | `30000`          | Applies to every resource call.                                                                                                                                                                                                                                                                                                               |
+| `agent`      | the global agent | An `http.Agent`/`https.Agent` for a proxy or a pool. (There is no `fetch` option: a sealed `GET` has a body.)                                                                                                                                                                                                                                 |
 
 ### Reaching vpay by an internal URL
 
 Two things look like one and are not:
 
-- **`tokenEndpoint`** — where this process sends the HTTP request. It has to
-  be reachable from _your_ server: a compose service name, a private DNS
-  name, a service-mesh address.
-- **`assertionAudience`** — what the OP calls _itself_. The OP's
-  `authenticate_client` compares the assertion's `aud` claim against its own
-  two names, `{deployment.public_base_url}/v1/oauth/token` and
-  `{deployment.public_base_url}/v1/oauth`, and against nothing else. The URL
-  you happened to POST to is never consulted.
+- **`baseUrl`** — where this process sends the HTTP request. It has to be
+  reachable from _your_ server: a compose service name, a private DNS name, a
+  service-mesh address.
+- **`audience`** — what vpay calls _itself_. The signature binds
+  `deployment.public_base_url` as the server was configured with it, and a
+  server compares the string byte for byte. The URL you happened to POST to is
+  never consulted.
 
-They coincide for a merchant on the public internet, which is why
-`assertionAudience` defaults to `tokenEndpoint`. They do not coincide the
-moment your server reaches vpay by an internal name, and then every token
-request answers `invalid_client` (`InvalidAudience`) with nothing in the
-response pointing at the cause — the signature, the `client_id`, the `kid`
-and the lifetime are all correct.
+They coincide for a merchant on the public internet, which is why `audience`
+defaults to `baseUrl`. They do not coincide the moment your server reaches
+vpay by an internal name, and then every request is vpay's coarse unsigned
+`401` — the key, the signature and the `client_id` are all correct and the
+response says nothing about audiences.
 
 ```ts
 // The demo stack: the shop's container reaches vpay at the compose service
 // name, but vpay's `deployment.public_base_url` is the published host port.
 const vpay = new VpayClient({
   baseUrl: "http://vpay-server:8080",
-  assertionAudience: "http://localhost:8080/v1/oauth/token",
+  audience: "http://localhost:8080",
   clientId: "shop-merchant",
   privateKey,
+  serverKeys,
 });
 ```
-
-The issuer works too — `http://localhost:8080/v1/oauth` — because the OP
-accepts either.
 
 ## Error handling
 
 Every error extends `VpayError`, so `catch (err) { if (err instanceof VpayError) ... }`
 works as a catch-all; narrow further with `instanceof` on a specific subclass:
 
-| Class                         | When                                                                                                                                                                                                                                                                                                                       | Fields                                       |
-| ----------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| `VpayApiError`                | A non-2xx response from a `/v1` resource route.                                                                                                                                                                                                                                                                            | `status`, `type`, `code`, `message`, `param` |
-| `VpayAuthError`               | A `400`/`401` from the token endpoint (`invalid_client`, etc). Never retried.                                                                                                                                                                                                                                              | `error`, `errorDescription`                  |
-| `VpayUnexpectedResponseError` | A response that isn't the shape this SDK expects — a proxy's HTML 502, an empty body, or a token-endpoint 200 that is not `{ access_token, token_type: "Bearer", expires_in }` (a non-`Bearer` `token_type` lands here, not in `VpayAuthError`: nothing failed to authenticate, the SDK simply cannot present that token). | `status`, `bodyPrefix` (first 500 bytes)     |
-| `VpayTransportError`          | DNS, TLS, connection refused, timeout.                                                                                                                                                                                                                                                                                     | `cause` (the underlying error)               |
-| `VpayConfigError`             | The SDK was misconfigured — caught at construction where possible.                                                                                                                                                                                                                                                         | —                                            |
-| `VpayInvalidParamsError`      | A request parameter this SDK refuses to send, caught before anything is sent: an amount outside `0..=2^53-1`, a value the form encoder cannot put on the wire exactly (a non-safe-integer number, a `Date`, a `Map`), an empty or all-dots path `id`, a URL beside `outOfBand`. Not a `TypeError` (2026-10-21).            | `param`, `message`                           |
-| `WebhookSignatureError`       | `verifyWebhook` rejected a signature.                                                                                                                                                                                                                                                                                      | —                                            |
+| Class                         | When                                                                                                                                                                                                                                                                                                            | Fields                                       |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
+| `VpayApiError`                | A non-2xx response from a `/v1` resource route.                                                                                                                                                                                                                                                                 | `status`, `type`, `code`, `message`, `param` |
+| `VpayUnsignedResponseError`   | vpay refused the call before it was handled: the answer is not sealed (an unregistered or disabled key, a replayed message, the wrong audience — all the same bytes by design — or a proxy's error page). Never retried.                                                                                        | `status`                                     |
+| `VpayUnverifiedResponseError` | The answer claims to be sealed and does not verify under `serverKeys` (a stale pin after a rotation, or the wrong deployment).                                                                                                                                                                                  | —                                            |
+| `VpayUnexpectedResponseError` | A verified answer that isn't the shape this SDK expects — an empty body, or JSON that is not the Stripe-shaped error envelope on a non-2xx status.                                                                                                                                                              | `status`, `bodyPrefix` (first 500 bytes)     |
+| `VpayTransportError`          | DNS, TLS, connection refused, timeout (the cause is a `TimeoutError` when the timeout fired).                                                                                                                                                                                                                   | `cause` (the underlying error)               |
+| `VpayConfigError`             | The SDK was misconfigured — caught at construction where possible.                                                                                                                                                                                                                                              | —                                            |
+| `VpayInvalidParamsError`      | A request parameter this SDK refuses to send, caught before anything is sent: an amount outside `0..=2^53-1`, a value the form encoder cannot put on the wire exactly (a non-safe-integer number, a `Date`, a `Map`), an empty or all-dots path `id`, a URL beside `outOfBand`. Not a `TypeError` (2026-10-21). | `param`, `message`                           |
+| `WebhookSignatureError`       | `verifyWebhook` rejected a signature.                                                                                                                                                                                                                                                                           | —                                            |
 
 ```ts
-import { VpayApiError, VpayAuthError, VpayError } from "@vaam-apps/vpay-sdk";
+import {
+  VpayApiError,
+  VpayError,
+  VpayUnsignedResponseError,
+} from "@vaam-apps/vpay-sdk";
 
 try {
   await vpay.paymentIntents.create({
@@ -240,8 +243,8 @@ try {
 } catch (err) {
   if (err instanceof VpayApiError) {
     console.error(err.status, err.type, err.code, err.message, err.param);
-  } else if (err instanceof VpayAuthError) {
-    console.error("authentication failed:", err.error, err.errorDescription);
+  } else if (err instanceof VpayUnsignedResponseError) {
+    console.error("vpay refused the signature:", err.status);
   } else if (err instanceof VpayError) {
     console.error(err.name, err.message);
   }
@@ -322,28 +325,28 @@ createServer((req, res) => {
 
 vpay's `/v1` surface is Stripe-shaped, and the official
 [`stripe`](https://www.npmjs.com/package/stripe) Node SDK can talk to it —
-with an **empty API key** and a `config.authenticator` that performs the
-`private_key_jwt` handshake above. `@vaam-apps/vpay-sdk/stripe` is that authenticator:
+with a placeholder API key and a `config.httpClient` that seals each request
+and opens the answer. `@vaam-apps/vpay-sdk/stripe` is that client:
 
 ```js
 import { readFileSync } from "node:fs";
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
+import { createStripeHttpClient } from "@vaam-apps/vpay-sdk/stripe";
 
-const authenticator = createStripeAuthenticator({
-  baseUrl: "http://localhost:8080",
-  clientId: "acme-cameroon",
-  privateKey: readFileSync("./merchant-key.pem", "utf8"),
-  kid: "acme-cameroon-2026-08",
-});
-
-const stripe = new Stripe("", {
-  authenticator,
+const stripe = new Stripe("unused-placeholder", {
+  httpClient: createStripeHttpClient({
+    baseUrl: "http://localhost:8080",
+    clientId: "acme-cameroon",
+    privateKey: readFileSync("./merchant.seed", "utf8"),
+    serverKeys: {
+      current: readFileSync("./vpay-current.pub", "utf8").trim(),
+      next: readFileSync("./vpay-next.pub", "utf8").trim(),
+    },
+  }),
   host: "localhost",
   port: "8080",
   protocol: "http",
-  maxNetworkRetries: 2,
-  timeout: 30_000,
+  maxNetworkRetries: 0,
   telemetry: false,
 });
 
@@ -354,46 +357,63 @@ const intent = await stripe.paymentIntents.create({
 });
 ```
 
-`host`, `port` and `protocol` are not optional. The authenticator is bound to
+**Why `httpClient` and not `authenticator`.** The signature is the request
+_body_; stripe-node's `authenticator` is a hook that can add headers and
+nothing else. `httpClient` is the seam that is handed the finished request
+(`host`, `port`, `path`, `method`, `headers`, `requestData`, `protocol`,
+`timeout`) and returns a response. The client seals it, sends it, opens the
+answer, and returns the verified JSON as the response body, so everything above
+it — resource methods, typed results, `Stripe.errors.*` — behaves as it does
+against Stripe.
+
+`host`, `port` and `protocol` are not optional. The client is bound to
 `baseUrl`'s origin: a request addressed anywhere else throws `VpayConfigError`
-before a token is minted. Omit them and stripe-node addresses
+before anything is signed. Omit them and stripe-node addresses
 `api.stripe.com:443`, which is exactly the case this refusal exists to stop.
-Behind a reverse proxy, or on split-horizon DNS, set `baseUrl` to the origin
-this client actually connects to rather than the public one — both the token
-exchange and the binding follow `baseUrl`, so a mismatch either mints the
-token against an unreachable endpoint or refuses every request as addressed
-elsewhere.
+
+The first argument is a placeholder stripe-node insists on and that is never
+sent: the client forwards **only** the `Idempotency-Key` of what stripe-node
+set (`Authorization`, `Stripe-Version`, `X-Stripe-Client-User-Agent` and the
+rest are dropped; the signature binds the payload type itself). stripe-node
+only keys POSTs, and vpay requires a key on every write, so a `DELETE` is given
+a fresh one.
 
 `stripe` is an **optional peer dependency** of this package: install it
-yourself if you want this entry point, and `@vaam-apps/vpay-sdk`'s core entry never
-imports it. This package itself still has **zero runtime dependencies**.
+yourself if you want this entry point, and `@vaam-apps/vpay-sdk`'s core entry
+never imports it.
 
-The empty first argument is not a trick — stripe-node's `_setAuthenticator`
-refuses only _both_ an API key and an authenticator, or _neither_. The token
-cache, its single-flight refresh and its `expires_in` safety margin are the
-same ones `VpayClient` uses, not a second implementation.
+### When vpay refuses
 
-`authenticator.invalidate()` discards the cached token. You need it because an
-authenticator runs _before_ a request and its promise settles before any
-status code exists — it cannot see a `401` and re-auth the way `VpayClient`
-does:
+stripe-node retries every _rejection_ from an `httpClient` (`maxNetworkRetries`
+defaults to **2** on Node) and its public API cannot exempt one, so a refusal is
+not a rejection. A refused call (the unsigned `401`), an answer that does not
+verify and a body over 8 MiB are returned as Stripe-shaped error responses with
+`stripe-should-retry: false` and surface **once**: `StripeAuthenticationError`
+(`code: "unsigned_response"`) for the `401`, `StripeAPIError`
+(`"unverified_response"`, `"response_too_large"`) otherwise, the cause in
+`message`. A gateway's unsigned `5xx` stays retryable.
 
-```js
-try {
-  await stripe.paymentIntents.retrieve(id);
-} catch (err) {
-  if (err instanceof Stripe.errors.StripeAuthenticationError) {
-    authenticator.invalidate();
-  }
-  throw err;
-}
-```
+Two more are answered the same way, and neither can resolve as a result or be
+retried. A request the contract has no operation for (a `GET` on a `POST`-only
+path, a path outside `/v1`) is never sent: `StripeInvalidRequestError`, status
+`404`, `code: "unknown_operation"`. A sealed `4xx`/`5xx` that is not in the
+Stripe error envelope (the body bound's `413` is the one you can meet) is an
+error with its status and `code: "unexpected_error_response"`, or
+`"request_too_large"` for the `413` (a `StripeAPIError`, as stripe-node has no
+class for it); the `413` carries vpay's `request-id`.
+
+A real transport failure (DNS, TLS, a reset, a timeout) still rejects, is a
+`StripeConnectionError` with the original at `err.detail`, and is retried up to
+`maxNetworkRetries` times, re-sealed each time. A `POST` keeps the
+`Idempotency-Key` stripe-node chose; a `DELETE` has none from stripe-node and
+gets a new one per attempt, so set `maxNetworkRetries: 0` if a repeated `DELETE`
+answering `404` is not acceptable.
 
 ### Where vpay diverges from Stripe
 
-- **No API keys, ever.** `sk_live_…` means nothing here; authentication is the
-  OAuth2 `client_credentials` + `private_key_jwt` handshake above
-  ([ADR-0010](../../docs/adr/0010-merchant-auth-private-key-jwt.md)). There is
+- **No API keys, ever.** `sk_live_…` means nothing here; authentication is a signed
+  message under your Ed25519 key
+  ([ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md)). There is
   no publishable key and no Connect equivalent.
 - **`Idempotency-Key` is mandatory on every `/v1` POST**, not optional as at
   Stripe. This costs you nothing: stripe-node puts a
@@ -452,7 +472,7 @@ try {
   read as `undefined` at runtime while the type says otherwise, on every
   route including `create`/`retrieve`.
 - **`Stripe-Version`, `Stripe-Account`, `Stripe-Context` and the
-  `X-Stripe-Client-*` headers are accepted and ignored.** vpay advertises no
+  `X-Stripe-Client-*` headers are dropped before sealing.** vpay advertises no
   dated API version, so `obj.lastResponse.apiVersion` is `undefined` and
   pinning `apiVersion` has no effect.
 
@@ -497,100 +517,73 @@ const event = stripe.webhooks.constructEvent(
 it — prefer it in code you write from scratch, and use this package's own
 `verifyWebhook` if you are not otherwise using stripe-node.
 
-### A stripe-node defect you will hit if your key is wrong
-
-**Measured against `stripe@22.6.1`, not inferred.** When the vpay handshake
-fails — a bad key, an unregistered `client_id`, vpay unreachable — the
-authenticator rejects, as it must. stripe-node builds the right error from it
-(`StripeError: Unable to authenticate the request`, with the underlying
-`VpayAuthError` at `err.raw.exception`) but **throws it inside a detached
-promise chain that never calls its own callback**. The result: the error
-arrives as a process-level `unhandledRejection`, and the promise you awaited
-**never settles at all** — not even after `timeout`, because no HTTP request
-was ever started for a timeout to fire against.
-
-Two of the ways a key can be wrong no longer reach that path at all. A
-`privateKey` that `node:crypto` cannot read, and a `baseUrl` that is not an
-absolute URL, are both `VpayConfigError` thrown by `createStripeAuthenticator`
-**at construction** — before a `Stripe` instance exists, on the line the
-merchant wrote. What is left for the warning below is the set of failures only
-the OP can report: an unregistered `client_id`, a key whose public half vpay
-does not hold, a clock too far out, vpay unreachable.
-
-Until stripe-node fixes this, do not rely on `try`/`catch` around a call to
-surface a handshake failure. Two things that do work:
-
-- **Verify the handshake at startup**, where a rejection is yours to catch.
-  The authenticator is a plain function, so call it once against a throwaway
-  request object and let it throw before you serve traffic — a `VpayAuthError`
-  there names the OAuth2 reason (`invalid_client`, …) directly:
-
-  ```js
-  await authenticator({ headers: {} });
-  ```
-
-- **Install a process-level guard** so a mid-flight handshake failure is at
-  least logged and alerted on rather than silently hanging a request:
-  `process.on("unhandledRejection", …)`.
-
-`src/stripe-auth.test.ts` pins this behaviour, so if a future `stripe` release
-routes the failure to the caller the test fails and this warning gets deleted.
-
 ### Status
 
-`createStripeAuthenticator` is **built and tested**. Its tests run against a
-real `node:http` server and, for the end-to-end case, drive the **real
-`stripe` package**: `new Stripe("", { authenticator, host, port, protocol })`
-creating a PaymentIntent, with the stub asserting the `Authorization` header
-the authenticator minted, the form-encoded body, and stripe-node's
-auto-generated `Idempotency-Key`. The type-level assertion that the returned
-function is assignable to `Stripe.StripeConfig["authenticator"]` is checked by
+`createStripeHttpClient` is **built and tested**. Its tests run against a real
+`node:http` server that opens the sealed request under the merchant's key and
+seals its answer (cratestack's own server envelope, built from
+`sdks/rust/wasm`'s `responder` feature) and drive the **real `stripe`
+package**: `new Stripe("…", { httpClient, host, port, protocol })` creating,
+listing, retrieving and deleting. The type-level assertion that the returned
+client is assignable to `Stripe.StripeConfig["httpClient"]` is checked by
 `pnpm --filter @vaam-apps/vpay-sdk typecheck`.
 
 What is **not** proven here:
 
-- **Nothing in this package has run against a real `vpay-server`.** The
-  end-to-end test's server is a stub in this repository. What _has_ run
-  against a real one is
-  [`sdks/stripe-compat`](../stripe-compat/) — the official `stripe` package
-  driven through this authenticator against a live compose stack, 25 cases,
-  run by CI's `e2e (compose)` job. It is a separate package on purpose: it
-  needs a stack, and a suite that needs a stack must not be able to report
+- **Nothing in this package has run against a real `vpay-server`** from its
+  own tests. What _has_ is [`sdks/stripe-compat`](../stripe-compat/) — the
+  official `stripe` package driven through this client against a live compose
+  stack, run by CI's `e2e (compose)` job. It is a separate package on purpose:
+  it needs a stack, and a suite that needs a stack must not be able to report
   green in a job that has none.
 - **Every webhook verified so far was delivered to a WireMock receiver on a
-  compose network.** The _signature_ is now proven three ways — against this
+  compose network.** The _signature_ is proven three ways — against this
   package's own `verifyWebhook`, against `vpay_sdk::webhooks::verify_at`, and
   against the official `stripe` package's `constructEvent` — but **no merchant
-  endpoint has ever been POSTed to**, and there is no SSRF protection on the
-  destination ([`docs/flows/webhooks.md`](../../docs/flows/webhooks.md)).
+  endpoint has ever been POSTed to**.
 - **The `stripe` peer range (`^22.6.1`) is asserted, not derived.** It is the
   current major at the time of writing, tested against exactly `22.6.1`.
-  Nothing pins vpay against a future `stripe` release; a dependency bump is
-  what will surface a break.
 - **The server-side compatibility work is not in this package**, though it
-  has now landed beside it: the `request-id` response header stripe-node
-  reads, `stripe-should-retry` derived from `Classify::retry`, and refusing
-  `confirm: true` on create rather than ignoring it are all in `vpay-api`,
-  with their own unit and integration tests, and are exercised end to end by
-  `sdks/stripe-compat`. See
+  lives beside it: the `request-id` response header stripe-node reads,
+  `stripe-should-retry` derived from `Classify::retry`, and refusing
+  `confirm: true` on create rather than ignoring it are all in `vpay-api`. See
   [`docs/flows/stripe-sdk-compat.md`](../../docs/flows/stripe-sdk-compat.md).
 
-## `scripts/mint-assertion.mjs`
+## `scripts/vpay-call.mjs`
 
-Mints one assertion and prints it, alongside the public JWK derived from the
-same private key, as JSON on stdout — used to feed a real OP verifier (e.g. a
-Rust example driving `authkestra_op::client_assertion::verify_client_assertion`
-directly) without standing up a server:
+One signed `/v1` call from a shell — what `curl` cannot do, because the request
+is a COSE message and not a header on an ordinary one. The path is under `/v1`;
+the verified JSON goes to stdout, the HTTP status to stderr, and the exit code is
+0 for a 2xx:
 
 ```bash
 pnpm --filter @vaam-apps/vpay-sdk build
-VPAY_CLIENT_ID=merchant_a \
-VPAY_PRIVATE_KEY_FILE=./merchant_a.key.pem \
-VPAY_AUDIENCE=https://api.vpay.example/v1/oauth/token \
-  node sdks/nodejs/scripts/mint-assertion.mjs
+export VPAY_BASE_URL=http://localhost:8080
+export VPAY_MERCHANT_SIGNING_SEED_PATH=.e2e/demo-merchant/signing.seed
+export VPAY_SERVER_KEY_CURRENT_PATH=.e2e/envelope/current.pub
+node sdks/nodejs/scripts/vpay-call.mjs GET /payment_intents --query 'limit=3'
+node sdks/nodejs/scripts/vpay-call.mjs POST /payment_intents \
+  --data 'amount=5000&currency=xaf&payment_method_types[0]=mtn_momo' --key order-42
 ```
 
 ## Status
+
+**Breaking, 2026-10-26 (VP-7): `/v1` is signed, and this package signs it.**
+The `private_key_jwt` assertion, the token exchange, the token cache and the
+401 re-authentication retry are gone, with `mintClientAssertion`,
+`VpayAuthError`, `scripts/mint-assertion.mjs`, the `kid`, `issuer`,
+`tokenEndpoint`, `assertionAudience`, `audience` (now the signature's
+audience, a different thing), `scope`, `assertionLifetimeSeconds` and `fetch`
+options, and `createStripeAuthenticator` (replaced by `createStripeHttpClient`,
+for the reason given above). A client now needs an Ed25519 key and
+`serverKeys`; RSA keys are refused at construction. New errors:
+`VpayUnsignedResponseError`, `VpayUnverifiedResponseError`. The requests go out
+on `node:http(s)` rather than `fetch` (a sealed `GET` has a body), and the
+package needs `sdks/rust/wasm` compiled at build time. Nothing about a
+resource method's signature, a request's form body or a response's shape
+changed. `balance.retrieve()` is now refused locally: no route serves it and
+the operation table has no row to bind (it answered `404 unknown_route`
+before).
 
 **Breaking, 2026-10-21: every local refusal is a `VpayInvalidParamsError`,
 not a `TypeError`.** An amount outside `0..=2^53-1`, a value the form
@@ -666,9 +659,10 @@ package could catch earlier.
 **No test in _this package_ has ever talked to a vpay** — every server in
 these tests is a `node:http` stub started by the test. What has talked to a
 real one is `sdks/stripe-compat`, which drives the official `stripe` package
-through this package's own `createStripeAuthenticator` against a live
-compose stack (25 cases, CI's `e2e (compose)` job), and the Rust SDK's
-`backends/tests/integration/tests/merchant_token_flow.rs`. See
+through this package's own `createStripeHttpClient` against a live compose
+stack (CI's `e2e (compose)` job), and the Rust SDK's
+`backends/tests/integration/tests/customers.rs` and siblings (the real
+`EnvelopeLayer`). See
 [`docs/status.md`](../../docs/status.md),
 [`docs/flows/merchant-auth.md`](../../docs/flows/merchant-auth.md) and
 [`docs/flows/stripe-sdk-compat.md`](../../docs/flows/stripe-sdk-compat.md).
@@ -679,17 +673,23 @@ runs against a real `node:http` server started by the test (never a mocked
 the webhook verifier and the error-body bounding are pure unit tests, since
 none of them touches the network:
 
-- The client assertion this SDK mints has every claim and header field the
-  wire contract specifies, is a fresh `jti` per mint, and its RS256 signature
-  verifies with `node:crypto` against the matching public key — and fails
-  against a different one.
-- The full `client_credentials` + `private_key_jwt` token exchange: exact
-  form fields, content type, and the resulting `Authorization: Bearer`
-  header on the following resource call.
-- Token caching (`expires_in` minus the safety margin), single-flight
-  refresh under concurrent callers, and the single 401-triggered re-auth
-  retry (including that a second consecutive 401 surfaces as `VpayApiError`
-  without a third token request).
+- What a signature binds, driven straight at the sealing module with
+  cratestack's server envelope on the other end (`src/sealer.test.ts`): an
+  untouched message opens; the same bytes a second time are refused (a replay);
+  a changed byte, another audience, another route, another path parameter,
+  another method, another query (and the same pairs in another order are
+  _accepted_: the query is canonical), another `Idempotency-Key` and a key the
+  server does not hold are each refused; an operation no table row serves is
+  refused before anything is signed; an answer opens only against its own
+  request and status, and only once.
+- Signing end to end through `VpayClient` and a real `node:http` server that
+  verifies the way vpay does: a seed, a PEM, a `KeyObject` and a callback signer
+  all sign (and a callback signature that does not verify is refused with the
+  cause); an RSA key, a doubled or missing key, a malformed key (never quoted)
+  and a missing `serverKeys` are construction errors; the pinned `next` key
+  verifies an answer; a wrong pin is `VpayUnverifiedResponseError`; an
+  unregistered key and a wrong audience are `VpayUnsignedResponseError`; a
+  sealed request has no `Authorization` header and is the body of even a `GET`.
 - Every resource method's exact HTTP method, path, headers, and
   bracket-encoded body — including that a caller-supplied `Idempotency-Key`
   is honoured and one is generated when omitted.
@@ -713,19 +713,18 @@ none of them touches the network:
   `Date` in `metadata` — is a `VpayInvalidParamsError` naming its parameter,
   caught by `instanceof VpayError` and not a `TypeError`, with nothing sent.
 - That an empty or all-dots `id` throws `VpayInvalidParamsError` on all twenty-one
-  id-taking methods before any request, the token request included, with one
+  id-taking methods before any request, with one
   fixed message that never quotes it; that an id with dots in it that is not
   only dots (`a..b`, `.a`, `%2E%2E`) is still sent as exactly one segment;
   and, as the premise, that WHATWG `URL` resolves `..`, `%2E%2E` and `.%2e`
   alike.
-- Error mapping for a Stripe-shaped `400`, an unexpected `502` HTML body, a
-  connection failure, and a token-endpoint `401` (which is never retried).
+- Error mapping for a Stripe-shaped `400`, a sealed answer that is not the
+  error envelope, a proxy's unsigned `502` HTML page, and a connection failure.
 - Webhook verification: valid/invalid signatures, timestamp tolerance,
   multi-signature secret rotation, malformed headers, a one-byte body change,
   and that a `Buffer` body and its string form verify identically.
 - That `util.inspect(client)` and `JSON.stringify(client)` never contain the
-  private key, and that neither the client nor any error this SDK throws
-  carries an access token into `util.inspect` output.
+  signing seed or a PEM.
 - All thirteen invoice operations (S4b, added 2026-09-08): the exact body of
   `invoices.create` and of a create that supplies nothing but the two required
   fields (`customer` and `currency` — the second was optional for one day, and
@@ -759,18 +758,13 @@ none of them touches the network:
   do **not** claim them, and that an event body's empty `lines` decodes
   through the same `Invoice` type a `/v1` response's populated `lines` does.
 
-**Separately — and this is _not_ one of the tests above — the assertion has
-been checked against the real OP verifier by hand.** An assertion minted by
-this SDK was fed directly to
-`authkestra_op::client_assertion::verify_client_assertion` at the pinned
-`authkestra-op = "=0.7.1"`, against a `ClientRegistration` holding the
-corresponding public JWK, and was accepted — and again at `=0.13.1` on
-2026-10-26, when the pin moved. `just sdk-conformance-node`
-reproduces it: the recipe mints an assertion via `scripts/mint-assertion.mjs`
-and pipes it into `cargo run -p vpay-sdk --example verify_assertion`. It is a
-manual check, run on demand — it needs a Rust toolchain, it is not part of
-`pnpm test`, and no CI job gates on it. Nothing in the list above depends on
-it having been run.
+**There is no separate conformance check, and that is the point.** The old
+`just sdk-conformance-node` fed an assertion this package minted to the real
+OP verifier, because two implementations had to be shown to agree. The signing
+here is the Rust SDK's own code (`sdks/rust/wasm`), and the module's server half
+that these tests open requests with is cratestack's own server envelope, so
+there is one implementation to check, and `sdks/rust/tests/signing.rs` and the
+integration suites check it against the real `EnvelopeLayer`.
 
 What this does **not** prove: that any of this works against a real vpay
 deployment. ~~Nothing in this package has been run against `vpay-server`; the
@@ -784,9 +778,9 @@ _(Struck 2026-09-23. All three clauses had gone stale. **Run against
 `src/refunds.live.test.ts` on 2026-09-16, drives a real `vpay-server` over a
 socket, and CI's `e2e` job runs them (`pnpm --filter @vaam-apps/vpay-sdk
 test:live`). **The defaults:** those suites' preflight
-(`src/testing/live-preflight.ts`) builds its client from `baseUrl` alone, so
-every live run exercises the default `issuer` and `tokenEndpoint` against the
-server's own OP. **The routes:** every method's route is mounted except
+(`src/testing/live-preflight.ts`) builds its client from the live environment's `baseUrl` and keys, so
+every live run exercises the default `audience` against the server's own
+configured name. **The routes:** every method's route is mounted except
 `balance.retrieve`, which answers `404` by design
 ([`docs/sdks/parity.md`](../../docs/sdks/parity.md)). What still stands is the
 sentence this paragraph opens with. That stack is a compose stack with

@@ -12,14 +12,14 @@
  *
  * 1. `GET /healthz` answers `200` — the server is up and its database is
  *    reachable (that endpoint is a real `SELECT 1`, not a static "ok").
- * 2. the merchant handshake completes — the configured `client_id` and
- *    private key are the pair this stack registered. Done here rather than
- *    left to the first test because a `invalid_client` surfacing out of
- *    stripe-node is the one failure mode `@vaam-apps/vpay-sdk`'s README documents as
- *    *never settling* (a stripe-node defect), so a suite that discovers it
- *    inside a test hangs instead of reporting.
+ * 2. one signed read completes — the configured key is the one this stack
+ *    registered, the audience is the stack's own, and the pinned response keys
+ *    are the ones it signs with. Done here rather than left to the first test
+ *    because a refusal surfaces out of stripe-node as a connection error with
+ *    the real cause two levels down, and a suite that discovers it inside a
+ *    test reports a hundred of them instead of one.
  */
-import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
+import { createStripeHttpClient } from "@vaam-apps/vpay-sdk/stripe";
 
 import { readCompatEnv } from "./env.js";
 
@@ -51,33 +51,37 @@ export default async function preflight(): Promise<void> {
     );
   }
 
-  // The handshake, once, outside stripe-node — see the module doc.
-  const authenticator = createStripeAuthenticator({
+  // One signed read, outside stripe-node.
+  const client = createStripeHttpClient({
     baseUrl: env.baseUrl,
     clientId: env.clientId,
-    privateKey: env.privateKeyPem,
+    privateKey: env.signingSeed,
+    serverKeys: { current: env.serverKeyCurrent, next: env.serverKeyNext },
   });
-  const probe: { headers: Record<string, string | number | string[]> } = {
-    headers: {},
-  };
+  const url = new URL(env.baseUrl);
   try {
-    await authenticator(
-      // The authenticator reads `headers` and nothing else; the rest of
-      // stripe-node's `StripeRequest` is not needed to mint a token, and
-      // inventing values for it here would suggest it were.
-      probe,
+    const response = await client.makeRequest(
+      url.hostname,
+      env.port,
+      "/v1/events?limit=1",
+      "GET",
+      {},
+      "",
+      env.protocol,
+      HEALTHZ_TIMEOUT_MS,
     );
+    if (response.getStatusCode() !== 200) {
+      throw new Error(
+        `a signed GET /v1/events answered ${response.getStatusCode()}`,
+      );
+    }
   } catch (cause) {
     throw new Error(
-      `@vaam-apps/vpay-stripe-compat: the merchant handshake failed for client_id=${env.clientId} ` +
-        `using ${env.privateKeyPath}. The stack must be running the \`demo\` profile overlay ` +
-        `that registers this key's public half (\`just gen-demo-keys\` + \`-f compose.demo.yml\`).`,
+      `@vaam-apps/vpay-stripe-compat: a signed read failed for client_id=${env.clientId} ` +
+        `using ${env.signingSeedPath}. The stack must be running the \`demo\` profile overlay ` +
+        `that registers this key's public half (\`just gen-demo-keys\` + \`-f compose.demo.yml\`) ` +
+        `and the envelope keys under .e2e/envelope/.`,
       { cause },
-    );
-  }
-  if (typeof probe.headers["Authorization"] !== "string") {
-    throw new Error(
-      "@vaam-apps/vpay-stripe-compat: the handshake resolved but set no Authorization header.",
     );
   }
 }

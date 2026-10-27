@@ -241,4 +241,146 @@ mod tests {
             }]
         );
     }
+
+    // ---- the SDK's vendored copy (VP-5) --------------------------------------
+    //
+    // `sdks/rust` cannot depend on `vpay-wire` (it has to stay publishable
+    // without this workspace), so it carries its own copy of the table and of
+    // the digest derivation (`vpay_sdk::contracts`). These tests are where the
+    // copy is held to the original: they live in the one crate that can see both.
+
+    /// Every way the SDK's table and `vpay-wire`'s disagree: a row on one side
+    /// only, the same rows in a different order (the order is the file's, and
+    /// a reordering is a hand edit), and the two digests of a row.
+    fn sdk_table_gaps(sdk: &[(&str, &str)], wire: &[vpay_wire::V1Operation]) -> Vec<String> {
+        let mut gaps = Vec::new();
+        for (method, template) in sdk {
+            if !wire
+                .iter()
+                .any(|op| op.method == *method && op.path == *template)
+            {
+                gaps.push(format!("SDK only: {method} {template}"));
+            }
+        }
+        for op in wire {
+            if !sdk
+                .iter()
+                .any(|(method, template)| op.method == *method && op.path == *template)
+            {
+                gaps.push(format!("wire only: {} {}", op.method, op.path));
+            }
+        }
+        let same_order = sdk.len() == wire.len()
+            && sdk
+                .iter()
+                .zip(wire)
+                .all(|((method, template), op)| op.method == *method && op.path == *template);
+        if gaps.is_empty() && !same_order {
+            gaps.push("same rows, different order".to_owned());
+        }
+        for op in wire {
+            if vpay_sdk::contracts::contract_digest(op.method, op.path)
+                != vpay_wire::contract_digest(op.method, op.path)
+            {
+                gaps.push(format!("digest differs: {} {}", op.method, op.path));
+            }
+        }
+        gaps
+    }
+
+    /// The real tables agree: same rows, same order, same digests, same domain.
+    #[test]
+    fn the_sdks_vendored_table_is_the_wire_crates_table() {
+        assert_eq!(
+            vpay_sdk::contracts::CONTRACT_DOMAIN,
+            vpay_wire::CONTRACT_DOMAIN
+        );
+        assert_eq!(
+            sdk_table_gaps(vpay_sdk::contracts::OPERATIONS, V1_OPERATIONS),
+            Vec::<String>::new()
+        );
+    }
+
+    /// The same check **fails** on a copy that drifted — shown, not assumed. A
+    /// parity test that cannot fail is a comment.
+    #[test]
+    fn a_drifted_sdk_table_is_reported_in_every_direction() {
+        let sdk: Vec<(&str, &str)> = vpay_sdk::contracts::OPERATIONS.to_vec();
+
+        // A row the SDK has and the server does not.
+        let mut extra = sdk.clone();
+        extra.push(("GET", "/balance"));
+        assert_eq!(
+            sdk_table_gaps(&extra, V1_OPERATIONS),
+            ["SDK only: GET /balance"]
+        );
+
+        // A row the server has and the SDK lacks.
+        let missing: Vec<(&str, &str)> = sdk.iter().copied().skip(1).collect();
+        assert_eq!(
+            sdk_table_gaps(&missing, V1_OPERATIONS),
+            ["wire only: POST /payment_intents"]
+        );
+
+        // A verb changed: one row on each side.
+        let mut verb = sdk.clone();
+        *verb.get_mut(1).expect("the table has a second row") = ("PUT", "/payment_intents");
+        let gaps = sdk_table_gaps(&verb, V1_OPERATIONS);
+        assert!(
+            gaps.contains(&"SDK only: PUT /payment_intents".to_owned()),
+            "{gaps:?}"
+        );
+        assert!(
+            gaps.contains(&"wire only: GET /payment_intents".to_owned()),
+            "{gaps:?}"
+        );
+
+        // Same rows, shuffled.
+        let mut shuffled = sdk.clone();
+        shuffled.swap(0, 1);
+        assert_eq!(
+            sdk_table_gaps(&shuffled, V1_OPERATIONS),
+            ["same rows, different order"]
+        );
+    }
+
+    /// The SDK finds the same operation, with the same parameters, for a
+    /// concrete path as the server's router does for the route it matches: for
+    /// every `V1_ROUTES` row and method, a path built from the template binds
+    /// back to that template.
+    #[test]
+    fn the_sdk_binds_every_router_route_to_its_own_template() {
+        for route in V1_ROUTES {
+            for method in route.methods {
+                let concrete = route.path.replace("{id}", "x_1");
+                let bound = vpay_sdk::contracts::operation_for(method, &concrete)
+                    .unwrap_or_else(|error| panic!("{method} {concrete}: {error}"));
+                assert_eq!(bound.template, route.path, "{method} {concrete}");
+                assert_eq!(
+                    bound.params.len(),
+                    route.path.matches('{').count(),
+                    "{method} {concrete}"
+                );
+            }
+        }
+    }
+
+    /// And the converse: an operation the router does not serve is one the SDK
+    /// does not bind (`GET /balance` is declared in the wire contract and
+    /// mounted nowhere).
+    #[test]
+    fn the_sdk_binds_nothing_the_router_does_not_serve() {
+        for (method, path) in [
+            ("GET", "/balance"),
+            ("PUT", "/events"),
+            ("DELETE", "/events/e"),
+        ] {
+            assert!(vpay_sdk::contracts::operation_for(method, path).is_err());
+            assert!(
+                !V1_ROUTES.iter().any(|route| route.methods.contains(&method)
+                    && route.path.replace("{id}", "e") == path),
+                "{method} {path} is served after all"
+            );
+        }
+    }
 }

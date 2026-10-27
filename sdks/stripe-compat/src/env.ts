@@ -1,9 +1,9 @@
 /**
  * How this suite is told which vpay to talk to, and as whom.
  *
- * Five variables, and no defaults for the two that are credentials-shaped. A
+ * Six variables, and no defaults for those that are credentials-shaped. A
  * default `clientId` or key path would let the suite start against a stack
- * it was not configured for and fail somewhere deep inside a token exchange;
+ * it was not configured for and fail somewhere deep inside the first signed call;
  * a missing one should say so in its first line. `VPAY_BASE_URL` and
  * `VPAY_RECEIVER_URL` do have defaults because they name *locations*, not
  * identities, and getting either wrong is immediately visible.
@@ -19,7 +19,7 @@ import { readFileSync } from "node:fs";
 
 /** Everything the suite needs to build a `Stripe` client. */
 export interface CompatEnv {
-  /** e.g. `http://localhost:18080`. What `createStripeAuthenticator` derives the OP endpoints from. */
+  /** e.g. `http://localhost:18080`. What the signed requests are addressed to. */
   readonly baseUrl: string;
   /** `baseUrl` split up, because stripe-node takes the three separately. */
   readonly host: string;
@@ -27,10 +27,14 @@ export interface CompatEnv {
   readonly protocol: "http" | "https";
   /** The registered merchant `client_id` (`just gen-demo-keys` writes `demo-merchant`). */
   readonly clientId: string;
-  /** PEM text of that merchant's private key. Read once, never logged. */
-  readonly privateKeyPem: string;
+  /** The merchant's Ed25519 signing seed (unpadded base64url). Read once, never logged. */
+  readonly signingSeed: string;
   /** Where it was read from — for error messages only. */
-  readonly privateKeyPath: string;
+  readonly signingSeedPath: string;
+  /** vpay's current response key (public), pinned: an answer sealed by another is refused. */
+  readonly serverKeyCurrent: string;
+  /** The key vpay will use after the next rotation. */
+  readonly serverKeyNext: string;
   /**
    * The WireMock receiver `.e2e/application-demo.yml` points this merchant's
    * one webhook endpoint at, as published on the host.
@@ -69,8 +73,9 @@ function required(name: string): string {
   if (value === undefined || value.trim() === "") {
     throw new Error(
       `@vaam-apps/vpay-stripe-compat: ${name} is not set. This suite runs against a REAL vpay stack; ` +
-        `bring one up with \`just stripe-compat\`, which sets all three of VPAY_BASE_URL, ` +
-        `VPAY_MERCHANT_CLIENT_ID and VPAY_MERCHANT_PRIVATE_KEY_PATH for you.`,
+        `bring one up with \`just stripe-compat\`, which sets VPAY_BASE_URL, ` +
+        `VPAY_MERCHANT_CLIENT_ID, VPAY_MERCHANT_SIGNING_SEED_PATH and the two ` +
+        `VPAY_SERVER_KEY_*_PATH variables for you.`,
     );
   }
   return value;
@@ -95,17 +100,27 @@ export function readCompatEnv(): CompatEnv {
   const port = url.port !== "" ? url.port : protocol === "https" ? "443" : "80";
 
   const clientId = required("VPAY_MERCHANT_CLIENT_ID");
-  const privateKeyPath = required("VPAY_MERCHANT_PRIVATE_KEY_PATH");
-  let privateKeyPem: string;
-  try {
-    privateKeyPem = readFileSync(privateKeyPath, "utf8");
-  } catch (cause) {
-    throw new Error(
-      `@vaam-apps/vpay-stripe-compat: cannot read the merchant private key at ${privateKeyPath}. ` +
-        `\`just gen-demo-keys\` writes one to .e2e/demo-merchant/oauth-signing-key.pem.`,
-      { cause },
-    );
-  }
+  const signingSeedPath = required("VPAY_MERCHANT_SIGNING_SEED_PATH");
+  const read = (path: string, what: string): string => {
+    try {
+      return readFileSync(path, "utf8").trim();
+    } catch (cause) {
+      throw new Error(
+        `@vaam-apps/vpay-stripe-compat: cannot read ${what} at ${path}. ` +
+          `\`just gen-demo-keys\` writes them under .e2e/.`,
+        { cause },
+      );
+    }
+  };
+  const signingSeed = read(signingSeedPath, "the merchant signing seed");
+  const serverKeyCurrent = read(
+    required("VPAY_SERVER_KEY_CURRENT_PATH"),
+    "vpay's current response key",
+  );
+  const serverKeyNext = read(
+    required("VPAY_SERVER_KEY_NEXT_PATH"),
+    "vpay's next response key",
+  );
 
   const receiverUrl = new URL(
     process.env["VPAY_RECEIVER_URL"] ?? DEFAULT_RECEIVER_URL,
@@ -119,8 +134,10 @@ export function readCompatEnv(): CompatEnv {
     port,
     protocol,
     clientId,
-    privateKeyPem,
-    privateKeyPath,
+    signingSeed,
+    signingSeedPath,
+    serverKeyCurrent,
+    serverKeyNext,
     receiverUrl,
     webhookSecret,
   };

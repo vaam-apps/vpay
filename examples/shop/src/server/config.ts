@@ -2,7 +2,7 @@
  * The shop's environment, read once and validated loudly.
  *
  * Every value here is server-side. Nothing in this file may be imported from
- * a `'use client'` module: `VPAY_PRIVATE_KEY_FILE` names the merchant's
+ * a `'use client'` module: `VPAY_SIGNING_SEED_FILE` names the merchant's
  * signing key and `VPAY_WEBHOOK_SECRET` is an HMAC secret, and a client
  * import would put the whole record into the browser bundle. The two values
  * the browser legitimately needs (the publishable key and the checkout
@@ -98,24 +98,27 @@ export interface ShopConfig {
    */
   vpayBrowserApiUrl: string;
   /**
-   * The `aud` this shop signs its `private_key_jwt` client assertion with —
-   * vpay's OP as **vpay** names itself, `{deployment.public_base_url}/v1/oauth/token`
-   * (or that `/v1/oauth` issuer). Optional; `undefined` leaves the SDK's
-   * default, which is the URL the token request is POSTed to.
+   * What every signed request is addressed to: vpay's configured audience,
+   * its `deployment.public_base_url`, as **vpay** names itself. Optional;
+   * `undefined` leaves the SDK's default, which is {@link vpayApiUrl}.
    *
    * Two different facts, and the reason this is a variable of its own.
-   * {@link vpayApiUrl} has to be reachable from *this container*; the `aud`
-   * claim has to be a string vpay's `authenticate_client` recognises as its
-   * own name, and it compares against nothing else. Inside compose those
-   * differ — `http://vpay-server:8080` versus the published
-   * `http://localhost:8080` — and with this unset every token request is an
-   * `invalid_client` whose response says nothing about audiences.
+   * {@link vpayApiUrl} has to be reachable from *this container*; the
+   * audience is bound by the signature and has to be the string vpay was
+   * configured with. Inside compose those differ — `http://vpay-server:8080`
+   * versus the published `http://localhost:8080` — and with this unset every
+   * request is the coarse unsigned `401`, whose body says nothing about
+   * audiences.
    */
-  vpayOauthAudience: string | undefined;
+  vpayAudience: string | undefined;
   /** The shop's merchant `client_id`, as registered in vpay's config. */
   vpayClientId: string;
-  /** Path to the PEM holding the merchant's RSA private key. */
-  vpayPrivateKeyFile: string;
+  /** Path to the file holding the merchant's Ed25519 signing seed (unpadded base64url). */
+  vpaySigningSeedFile: string;
+  /** Path to vpay's current response key (public, unpadded base64url), which the shop pins. */
+  vpayServerKeyCurrentFile: string;
+  /** Path to the response key vpay will use after the next rotation. */
+  vpayServerKeyNextFile: string;
   /** `pk_…`. Public by name; rendered into the embedded page. */
   vpayPublishableKey: string;
   /** The checkout app's origin — vpay's `checkout.public_base_url`. */
@@ -279,12 +282,12 @@ export function loadShopConfig(env: EnvRecord = process.env): ShopConfig {
       "VPAY_BROWSER_API_URL",
     ),
     // Optional: unset means "the same URL we POST to", which is right
-    // whenever this server reaches vpay the way payers do. `origin()` is not
-    // applied — this is a full endpoint URL with a path, not an origin, and
-    // it must match vpay's own string byte for byte.
-    vpayOauthAudience: env["VPAY_OAUTH_AUDIENCE"]?.trim() || undefined,
+    // whenever this server reaches vpay the way payers do.
+    vpayAudience: env["VPAY_AUDIENCE"]?.trim() || undefined,
     vpayClientId: required(env, "VPAY_CLIENT_ID"),
-    vpayPrivateKeyFile: required(env, "VPAY_PRIVATE_KEY_FILE"),
+    vpaySigningSeedFile: required(env, "VPAY_SIGNING_SEED_FILE"),
+    vpayServerKeyCurrentFile: required(env, "VPAY_SERVER_KEY_CURRENT_FILE"),
+    vpayServerKeyNextFile: required(env, "VPAY_SERVER_KEY_NEXT_FILE"),
     vpayPublishableKey: required(env, "VPAY_PUBLISHABLE_KEY"),
     vpayCheckoutUrl: origin(
       required(env, "VPAY_CHECKOUT_URL"),

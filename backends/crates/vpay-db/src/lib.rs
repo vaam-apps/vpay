@@ -110,6 +110,7 @@ mod client_assertion;
 // the `cratestack::AuthProvider` impl itself.
 mod dashboard_transport;
 mod disabled_clients;
+mod envelope_nonces;
 mod error;
 // The CrateStack layer. Both modules are private and neither exports a
 // name: `schema` holds the generated `cratestack_schema` module, and
@@ -141,6 +142,7 @@ pub use customers::{
 };
 pub use dashboard_transport::DashboardAuthFn;
 pub use disabled_clients::DisabledClients;
+pub use envelope_nonces::EnvelopeNonces;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};
 pub use health::Health;

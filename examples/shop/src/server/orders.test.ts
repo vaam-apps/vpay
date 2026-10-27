@@ -10,7 +10,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { VpayClient } from "@vaam-apps/vpay-sdk";
 import { MemoryShopStore } from "../testing/memory-store";
-import { testPrivateKeyPem } from "../testing/keys";
 import {
   reply,
   startVpayTestServer,
@@ -117,9 +116,8 @@ async function deps(
     deps: {
       store,
       vpay: new VpayClient({
-        baseUrl: server.url,
+        ...server.clientOptions,
         clientId: "shop-merchant",
-        privateKey: testPrivateKeyPem(),
       }),
       shopPublicUrl: SHOP_URL,
       rails: { kind: "all", rails: ["mtn_momo", "orange_money"] },

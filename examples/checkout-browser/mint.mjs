@@ -33,9 +33,15 @@ const baseUrl = process.env.VPAY_BASE_URL ?? "http://localhost:8080";
 // by-id read is the uniform cross-tenant 404. Override the three variables
 // below to mint as the other merchant.
 const clientId = process.env.VPAY_MERCHANT_CLIENT_ID ?? "shop-merchant";
-const privateKeyPath =
-  process.env.VPAY_MERCHANT_PRIVATE_KEY_PATH ??
-  join(repoRoot, ".e2e", "shop-merchant", "oauth-signing-key.pem");
+const seedPath =
+  process.env.VPAY_MERCHANT_SIGNING_SEED_PATH ??
+  join(repoRoot, ".e2e", "shop-merchant", "signing.seed");
+const serverKeyCurrentPath =
+  process.env.VPAY_SERVER_KEY_CURRENT_PATH ??
+  join(repoRoot, ".e2e", "envelope", "current.pub");
+const serverKeyNextPath =
+  process.env.VPAY_SERVER_KEY_NEXT_PATH ??
+  join(repoRoot, ".e2e", "envelope", "next.pub");
 // Fixed, not read off the config file: `just gen-demo-keys` writes this
 // exact literal into `.e2e/application-demo.yml` (see that recipe's
 // comment on why it is fixed rather than generated), and this script exists
@@ -48,23 +54,29 @@ const checkoutPort = process.env.CHECKOUT_BROWSER_PORT ?? "4180";
 // docs/runbooks/live-sandbox-test.md sets MINT_CURRENCY=eur (docs/flows/money.md).
 const currency = process.env.MINT_CURRENCY ?? "xaf";
 
-let privateKeyPem;
-try {
-  privateKeyPem = readFileSync(privateKeyPath, "utf8");
-} catch (cause) {
-  console.error(
-    `checkout-browser/mint: cannot read the merchant private key at ${privateKeyPath}.\n` +
-      `Run \`just gen-demo-keys\` first (or \`just demo\`, which does it for you), or point\n` +
-      `VPAY_MERCHANT_PRIVATE_KEY_PATH at a different merchant's key.`,
-  );
-  process.exitCode = 1;
-  throw cause;
+function readKey(path, what) {
+  try {
+    return readFileSync(path, "utf8").trim();
+  } catch (cause) {
+    console.error(
+      `checkout-browser/mint: cannot read ${what} at ${path}.\n` +
+        `Run \`just gen-demo-keys\` first (or \`just demo\`, which does it for you), or point\n` +
+        `VPAY_MERCHANT_SIGNING_SEED_PATH, VPAY_SERVER_KEY_CURRENT_PATH and\n` +
+        `VPAY_SERVER_KEY_NEXT_PATH at a different merchant's keys.`,
+    );
+    process.exitCode = 1;
+    throw cause;
+  }
 }
 
 const vpay = new VpayClient({
   baseUrl,
   clientId,
-  privateKey: privateKeyPem,
+  privateKey: readKey(seedPath, "the merchant signing seed"),
+  serverKeys: {
+    current: readKey(serverKeyCurrentPath, "vpay's current response key"),
+    next: readKey(serverKeyNextPath, "vpay's next response key"),
+  },
 });
 
 async function main() {

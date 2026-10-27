@@ -63,7 +63,7 @@
 #     who you are. Anyone who can reach the port can place orders in the demo
 #     merchant's name and read every order in the database.
 #   * `vpay-shop` is also the one container in the stack with a **merchant
-#     private key mounted into it** (`/secrets/shop-merchant.pem`). It is
+#     private key mounted into it** (`/secrets/shop-signing.seed`). It is
 #     throwaway and regenerated per checkout, but a process that holds a
 #     signing key and answers unauthenticated HTTP is not a thing to expose
 #     to a network by default.
@@ -235,8 +235,8 @@ services:
       # Read-only, and world-readable on the host (`just gen-demo-keys` chmods
       # it 0644) because the scratch image runs as UID 65532. That is safe
       # here in a way the *signing* key's 0644 is not quite: this file holds
-      # only the merchant's PUBLIC JWK. The merchant's private key stays on
-      # the host in `.e2e/demo-merchant/`, mode 0600, and is never mounted
+      # only the merchant's PUBLIC keys (`cose_keys`). The merchant's signing
+      # seed stays on the host in `.e2e/demo-merchant/`, mode 0600, and is never mounted
       # into any container — the demo binary runs outside the stack, exactly
       # as a merchant's own process would.
       - ./.e2e/application-demo.yml:/config/application-demo.yml:ro
@@ -388,11 +388,11 @@ services:
     environment:
       VPAY_BROWSER_API_URL: http://localhost:${VPAY_DEMO_PORT:-8080}
       # Republished with the port, like the URL above and for a related
-      # reason: this is the `aud` the shop signs its client assertion with,
+      # reason: this is the audience the shop's signed envelope is bound to,
       # and it must be `deployment.public_base_url` (which `gen-demo-keys`
-      # writes as `http://localhost:{{demo_port}}`) plus `/v1/oauth/token`.
-      # A stale port here is an `invalid_client` on the shop's first call,
-      # with nothing in the response naming an audience.
-      VPAY_OAUTH_AUDIENCE: http://localhost:${VPAY_DEMO_PORT:-8080}/v1/oauth/token
+      # writes as `http://localhost:{{demo_port}}`). A stale port here is a
+      # coarse `401` on the shop's first call, with nothing in the response
+      # naming an audience.
+      VPAY_AUDIENCE: http://localhost:${VPAY_DEMO_PORT:-8080}
       VPAY_CHECKOUT_URL: http://localhost:${VPAY_DEMO_CHECKOUT_PORT:-3080}
       SHOP_PUBLIC_URL: http://localhost:${VPAY_DEMO_SHOP_PORT:-3001}

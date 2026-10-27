@@ -12,7 +12,7 @@ export const dynamic = "force-dynamic";
  * as props: the publishable key and the two origins are runtime
  * configuration of the container rather than values baked into the bundle by
  * `NEXT_PUBLIC_*` at build time, which is what lets one image serve the demo
- * stack and a real deployment. `VPAY_PRIVATE_KEY_FILE` and
+ * stack and a real deployment. `VPAY_SIGNING_SEED_FILE` and
  * `VPAY_WEBHOOK_SECRET` are read by the same module and stay on this side.
  */
 export default function CheckoutPage() {

@@ -65,17 +65,21 @@ signature scheme — while it talks underneath to mobile money rails that behave
 nothing like cards.
 
 **Authentication is the one place this comparison does not hold.** `/v1` does
-not accept an `sk_live_`/`sk_test_`-style API key. It authenticates merchants
-with OAuth2 `client_credentials` + `private_key_jwt` (RFC 7523): each merchant
-is a statically registered client, holding its own private key, configured
-directly in vpay's YAML — vpay stores only the public half
-([ADR-0010](docs/adr/0010-merchant-auth-private-key-jwt.md),
-[`docs/flows/merchant-auth.md`](docs/flows/merchant-auth.md)).
+not accept an `sk_live_`/`sk_test_`-style API key, and it does not accept a
+token either. Every request is a **signed message** (COSE_Sign1, Ed25519) and
+every answer is one signed by vpay: each merchant is a statically registered
+client, holding its own signing key, configured directly in vpay's YAML — vpay
+stores only the public half — and every merchant pins vpay's response keys
+([ADR-0035](docs/adr/0035-v1-is-a-signed-message-not-a-token.md),
+[`docs/flows/signed-transport.md`](docs/flows/signed-transport.md)). An
+unsigned request, a bearer token, a replay and an unknown key are the same
+coarse `401`.
 
-A Stripe SDK cannot do that handshake by itself, but it does not have to:
-`stripe-node` takes an arbitrary `config.authenticator`, and
-[`@vaam-apps/vpay-sdk/stripe`](sdks/nodejs/) supplies one, so `new Stripe("", {
-authenticator, host, port, protocol })` reaches vpay with an empty key. That is
+A Stripe SDK cannot do that by itself, but it does not have to:
+`stripe-node` takes an arbitrary `config.httpClient`, and
+[`@vaam-apps/vpay-sdk/stripe`](sdks/nodejs/) supplies one that seals each
+request and opens each answer, so `new Stripe("unused", { httpClient, host,
+port, protocol })` reaches vpay. That is
 proven by [`sdks/stripe-compat`](sdks/stripe-compat/), which drives the real
 `stripe` package against a live compose stack in CI's `e2e (compose)` job — as
 far as a confirmed intent polling through to `succeeded` and a delivered
@@ -147,8 +151,9 @@ of them, so a green run never overstates coverage.
 ## What is served on `/v1` today
 
 `GET /healthz`, the merchant OP (`POST /v1/oauth/token`,
-`GET /v1/oauth/.well-known/openid-configuration`, `GET /v1/oauth/jwks.json`),
-and behind a merchant bearer token and a scope check:
+`GET /v1/oauth/.well-known/openid-configuration`, `GET /v1/oauth/jwks.json`; it
+mints a token that opens nothing and is removed by VP-4), and behind a signed
+request and a scope check:
 
 | Resource                               | Methods                                                            |
 | -------------------------------------- | ------------------------------------------------------------------ |
@@ -210,7 +215,7 @@ repository has no specification to write one against. Both rails declare
 `supports_refunds: true`: that gap is vpay's, not the rails'.
 
 Two other surfaces exist: `/v1/browser`, which a payer's own page calls with a
-publishable key and an intent's `client_secret` instead of a bearer token
+publishable key and an intent's `client_secret` instead of a signature
 ([`docs/flows/browser-checkout.md`](docs/flows/browser-checkout.md)), and
 `POST /provider/{code}/callback`, the one route a rail calls — proven against
 WireMock, never called by MTN or Orange.
@@ -317,10 +322,10 @@ real merchant SDK.
 
 Six steps, the fourth of which is a table:
 
-1. the OP's discovery document and JWKS — its issuer and the `kid` it signs with;
-2. an access token obtained with `client_credentials` + `private_key_jwt`, shown
-   as its decoded `iss`/`aud`/`sub`/`exp` claims (never the token itself);
-3. a `/v1` call **without** a token — a `401` carrying vpay's error envelope,
+1. a **signed read**, opened under the response keys the demo pins;
+2. the same path with a **bearer token and no signature** — refused, because a
+   token opens nothing on `/v1`;
+3. the same path with **no signature at all** — vpay's coarse unsigned `401`,
    so you can see the authentication boundary is real;
 4. **six payments, on both rails, to every outcome each rail documents.** Each
    one creates a PaymentIntent through the SDK, reads it back, confirms it,
@@ -446,16 +451,23 @@ One binary since 2026-09-07 (issue #77): with no subcommand it serves the API,
 `worker` runs the job loop, and `staff add` creates a dashboard account. It was
 two packages and two images (`vpay-server`, `vpay-worker-bin`) before that.
 
-`vpay-server` signs merchant tokens, so it needs an RS256 signing key before it
-will start. Generate one once, offline:
+`vpay-server` needs three keys before it will start: an RS256 key for the
+merchant OP (until VP-4 removes the OP), and two Ed25519 response keys for the
+signed `/v1` — the one it signs answers with now, and the one it will sign with
+after the next rotation. Generate them once, offline:
 
 ```bash
 cargo xtask gen-signing-key --out ./secrets   # writes ./secrets/oauth-signing-key.pem
+cargo xtask gen-envelope-key --out ./secrets --name envelope-signing-key        # .seed and .pub
+cargo xtask gen-envelope-key --out ./secrets --name envelope-signing-key-next
 ```
 
-The private key stays in that file — nothing prints it, logs it or stores it in
-the database. In a real deployment it is a Kubernetes Secret and
-`--oauth-signing-key-file` points at the mount.
+The private keys stay in those files — nothing prints them, logs them or stores
+them in the database. In a real deployment they are a Kubernetes Secret and
+`--oauth-signing-key-file`, `--envelope-signing-key-file` and
+`--envelope-signing-key-next-file` point at the mount. The `.pub` files are what
+every merchant pins as `serverKeys`; a merchant's own key pair is registered in
+YAML as `cose_keys`.
 
 ```bash
 # The rail credentials in config/application.yml are ${VAR} placeholders, and
@@ -478,11 +490,14 @@ cargo run -p vpay-server -- \
   --config config/application.yml \
   --database-url postgres://vpay:vpay@localhost:5432/vpay \
   --oauth-signing-key-file ./secrets/oauth-signing-key.pem \
+  --envelope-signing-key-file ./secrets/envelope-signing-key.seed \
+  --envelope-signing-key-next-file ./secrets/envelope-signing-key-next.seed \
   --bind 127.0.0.1:8080 --log-format text
 ```
 
 Every one of those flags has an env var — `VPAY_CONFIG`, `DATABASE_URL`,
-`VPAY_OAUTH_SIGNING_KEY_FILE`, `VPAY_BIND`, `VPAY_LOG_FORMAT` — which is how
+`VPAY_OAUTH_SIGNING_KEY_FILE`, `VPAY_ENVELOPE_SIGNING_KEY_FILE`,
+`VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE`, `VPAY_BIND`, `VPAY_LOG_FORMAT` — which is how
 `compose.e2e.yml` drives the same binary; a test fails if one is renamed or
 dropped. The Postgres those URLs point at is the one `just up` starts.
 
@@ -498,10 +513,11 @@ a WireMock stub is a line in `config/application.yml`, and to date it has only
 ever been a stub.
 
 `--config` and `--database-url` are required by every mode and
-`--oauth-signing-key-file` by the serve mode alone (the worker issues no
-tokens and does not accept the flag); all three are genuinely consumed, and
-a missing one refuses to start before the port is bound. **All three exit
-`78`** (`EX_CONFIG` — "fix your configuration"), in `serve` and in `worker`
+`--oauth-signing-key-file`, `--envelope-signing-key-file` and
+`--envelope-signing-key-next-file` by the serve mode alone (the worker issues
+no tokens and seals no answers, and does not accept the flags); all are
+genuinely consumed, and a missing one refuses to start before the port is
+bound. **Each exits `78`** (`EX_CONFIG` — "fix your configuration"), in `serve` and in `worker`
 alike, so a supervisor may read `78` as "the operator forgot something" and
 `69` as "wait for Postgres". ~~Two of the three exit `78` and one does not:
 a missing `--database-url` exits **`1`**, because `main` raises a bare

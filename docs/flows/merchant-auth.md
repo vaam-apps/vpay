@@ -2,18 +2,24 @@
 
 ## The invariant
 
-> **No `/v1` request runs without a short-lived access token that vpay issued
-> against an assertion only the merchant's own private key could have signed.**
+> **No `/v1` request is handled unless it is a signed message from a key the
+> operator registered for a merchant. A bearer token, of any audience, is not a
+> credential on `/v1`.**
 
-`/v1` never accepts an API key ([ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md)).
-A merchant's backend is an OAuth2 client registered in vpay's YAML with its
-**public** JWK; it authenticates with `client_credentials` (RFC 6749 §4.4)
-using `private_key_jwt` client authentication (RFC 7523). This document is
-the wire contract the two merchant SDKs — [`sdks/rust`](../../sdks/rust) and
-[`sdks/nodejs`](../../sdks/nodejs) — implement, and the contract the server
-side (Phase 2/3 of the roadmap, removed 2026-09-16) must serve. Where the two
-disagree, the SDK is wrong _or_ the server is wrong; neither may quietly
-adapt to the other.
+**This page's handshake no longer authenticates `/v1`** (2026-10-26, VP-3,
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md)). `/v1` is the
+signed transport of [signed-transport.md](signed-transport.md): a merchant's
+backend seals each call with an Ed25519 key registered as
+`merchant_clients[].cose_keys`, and nothing on the wire is a token. What
+follows is the OP's token door, `/v1/oauth/*` — `private_key_jwt` client
+authentication (RFC 7523) and `client_credentials` (RFC 6749 §4.4) — which is
+still served until VP-4 deletes it, still mints a token for a registered
+client, and is still held to its own contract by `merchant_token_flow.rs`. The
+token it mints opens nothing: `merchant_token_flow.rs` (a) and (c) present it
+to `/v1` and read the unsigned `401`. The SDKs do not call it; they have no
+token code left. Read this page as the contract of the door that is closing, not
+as how to integrate. [ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md)
+records the earlier decision.
 
 Everything below was derived from what the pinned OP actually enforces —
 `authkestra-op = "=0.7.1"`, `src/client_assertion.rs` and
@@ -231,16 +237,24 @@ before you treat anything above as safe with money.
 
 ## Status
 
+**Updated 2026-10-26 (VP-3 + VP-5 + VP-7): `/v1` is signed; this page's
+handshake serves nothing on it.** The `EnvelopeLayer` is mounted on `/v1`
+(`Required`, `mount_prefix("/v1")`): an unsigned request, a bearer token, a
+disabled client, an unknown key and a replay are all the same coarse `401`.
+Both SDKs seal (`sdks/rust` natively, `sdks/nodejs` through the same code
+compiled to WebAssembly), the stripe-node adapter is a sealing `httpClient`, and
+the shop, the Cypress tasks and every example sign. The OP, its JWKS and its
+token endpoint remain only until VP-4. [signed-transport.md](signed-transport.md)
+has the mechanism and its Status.
+
 **Updated 2026-10-26 (VP-2): COSE keys registered; not yet verified on
 requests.** `merchant_clients[].cose_keys` takes a merchant's Ed25519 public keys
 (unpadded base64url, optional label) and boot refuses a malformed one or a
 thumbprint registered twice. A resolver over them
 (`vpay_api::merchant_keys`) maps a key to its merchant and scopes and treats a
 `disabled_clients` row as no key at all; `vpay-wire` holds the per-operation
-contract table a signed request will bind. **Nothing above this paragraph has
-changed and nothing reads any of it on a request**: `/v1` still takes a bearer
-token, `jwks` is still required, and the `EnvelopeLayer` is VP-3. The handshake
-on this page is the contract until VP-4 supersedes it.
+contract table a signed request will bind. **That was true on the day: nothing read
+the keys on a request until VP-3 (above).**
 [../status/backend.md](../status/backend.md), "Merchant Ed25519 keys are
 registered".
 

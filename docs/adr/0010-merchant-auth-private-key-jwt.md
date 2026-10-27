@@ -1,6 +1,6 @@
 # ADR-0010: `/v1` authenticates merchants with OAuth2 `client_credentials` + `private_key_jwt`, not API keys
 
-- **Status:** Accepted
+- **Status:** Accepted for the OP; **superseded for `/v1`** by [ADR-0035](0035-v1-is-a-signed-message-not-a-token.md) (2026-10-26) — `/v1` no longer accepts a token
 - **Date:** 2026-08-09
 - **Deciders:** vpay maintainers
 

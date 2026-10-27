@@ -29,7 +29,7 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { VpayClient } from "./client.js";
-import { readLiveEnv } from "./testing/live-env.js";
+import { liveClientOptions, readLiveEnv } from "./testing/live-env.js";
 import type { Customer } from "./types.js";
 
 let client: VpayClient;
@@ -37,11 +37,7 @@ let customer: Customer;
 
 beforeAll(async () => {
   const env = readLiveEnv();
-  client = new VpayClient({
-    baseUrl: env.baseUrl,
-    clientId: env.clientId,
-    privateKey: env.privateKey,
-  });
+  client = new VpayClient(liveClientOptions(env));
   customer = await client.customers.create({ phone: "+237670000001" });
 });
 

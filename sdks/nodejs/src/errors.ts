@@ -1,6 +1,6 @@
 /**
  * Error taxonomy for `@vaam-apps/vpay-sdk`, per docs/flows/merchant-auth.md's
- * "Errors" section and the token-endpoint error shape it documents.
+ * "Errors" section.
  *
  * Every error extends {@link VpayError} so callers can `catch (err) { if
  * (err instanceof VpayError) ... }` once and still narrow further by
@@ -48,21 +48,46 @@ export class VpayApiError extends VpayError {
 }
 
 /**
- * A `400`/`401` from the OAuth2 token endpoint:
- * `{ "error": "invalid_client", "error_description": "…" }`
- * (`TokenErrorResponse` in `authkestra-op`). Never retried automatically —
- * see docs/flows/merchant-auth.md, "Re-authentication".
+ * vpay refused the call before any handler saw it: the answer is not sealed.
+ *
+ * That is the signed transport's one coarse refusal — a `401` whose body is
+ * the same for **every** cause (a key nobody registered, a disabled client, a
+ * replayed message, the wrong audience, a request that was not signed at all),
+ * so that nothing in it helps someone guessing. The cause is in vpay's logs
+ * and in the operator's registration of this merchant's key, not here;
+ * `docs/flows/merchant-auth.md`, "When the answer is a plain 401", lists what
+ * to check, in order. A proxy's own error page lands here too: it is not
+ * sealed either.
+ *
+ * Never retried automatically: the same call would be refused for the same
+ * reason, and a replay refusal in particular must not be answered with another
+ * replay.
  */
-export class VpayAuthError extends VpayError {
-  /** The OAuth2 `error` code, e.g. `invalid_client`. */
-  readonly error: string;
-  /** Human-readable detail, when the server sent one. */
-  readonly errorDescription: string | undefined;
+export class VpayUnsignedResponseError extends VpayError {
+  /** The HTTP status the unsigned answer came with. */
+  readonly status: number;
 
-  constructor(error: string, errorDescription: string | undefined) {
-    super(errorDescription ? `${error}: ${errorDescription}` : error);
-    this.error = error;
-    this.errorDescription = errorDescription;
+  constructor(status: number) {
+    super(
+      `vpay answered ${status} without a signature: the call was refused before it was handled ` +
+        "(unregistered or disabled key, replayed message, wrong audience, or not vpay at all)",
+    );
+    this.status = status;
+  }
+}
+
+/**
+ * The answer claims to be sealed and does not verify under either pinned
+ * server key, or does not answer this request. The response is not trusted and
+ * nothing in it is read. Almost always a stale `serverKeys` after vpay rotated
+ * its response key without a `next` having been pinned first, or a client
+ * pointed at the wrong deployment.
+ */
+export class VpayUnverifiedResponseError extends VpayError {
+  constructor() {
+    super(
+      "the answer does not verify under the pinned server keys (serverKeys.current / serverKeys.next)",
+    );
   }
 }
 
@@ -126,15 +151,37 @@ export class VpayTransportError extends VpayError {
 }
 
 /**
+ * An answer's body exceeded {@link MAX_RESPONSE_BYTES}. Reading stopped at the
+ * bound and the connection was destroyed; nothing of the body was kept or
+ * opened. The honest server never sends one this large (a page of 100 objects
+ * is a few hundred kilobytes), so this is a misbehaving peer or proxy, and an
+ * unbounded read would let it make this process hold whatever it liked.
+ *
+ * A {@link VpayTransportError}, so a caller that handles transport failures
+ * already handles this one.
+ */
+export class VpayResponseTooLargeError extends VpayTransportError {
+  /** The bound that was exceeded, in bytes. */
+  readonly limit: number;
+  constructor(limit: number) {
+    super(`the response body exceeded ${limit} bytes and was not read further`);
+    this.limit = limit;
+  }
+}
+
+/**
  * The SDK was configured incorrectly — caught before any request is sent.
  *
- * Almost always at construction (a missing `clientId`, an unreadable
- * `privateKey`, an `assertionLifetimeSeconds` outside the OP's `1..=300`).
- * The one exception is `@vaam-apps/vpay-sdk/stripe`'s host binding: an authenticator
- * asked to sign a request addressed somewhere other than its `baseUrl`
- * throws this *per request*, because that is when the destination becomes
- * knowable. Still before anything is sent — no token is minted and no
- * `Authorization` header is written.
+ * Almost always at construction (a missing `clientId`, an unreadable or
+ * non-Ed25519 `privateKey`, a `serverKeys` entry that is not 32 bytes). The
+ * one exception is `@vaam-apps/vpay-sdk/stripe`'s host binding: an HTTP client
+ * asked to seal a request addressed somewhere other than its `baseUrl` throws
+ * this *per request*, because that is when the destination becomes knowable.
+ * Still before anything is sent — nothing is signed.
+ *
+ * Also thrown when the signing callback fails or returns a signature that does
+ * not verify under the registered public key: refused here, with the cause
+ * attached, instead of surfacing at vpay as the coarse 401.
  */
 export class VpayConfigError extends VpayError {}
 

@@ -90,15 +90,15 @@ use sqlx::PgPool;
 use std::sync::Arc;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
-    ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    PaymentMethodType, RequestOptions,
+    ConfirmPaymentIntentParams, CreatePaymentIntentParams, IntentStatus, PaymentMethodType,
+    RequestOptions,
 };
 
 mod support;
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client_with_publishable_keys,
@@ -225,12 +225,8 @@ struct Harness {
     /// (the port `compose.yml` publishes) that no container-per-test run can
     /// honour.
     orange_origin: String,
-    pem_a: String,
     jwks_a: Value,
     server_pem: String,
-    /// The server's own signer, for the one resource `vpay-sdk` does not
-    /// model — see [`Harness::bearer`].
-    signing_key: LoadedSigningKey,
 }
 
 impl Harness {
@@ -242,32 +238,10 @@ impl Harness {
         format!("{}{path}", self.base_url)
     }
 
-    /// A `/v1` bearer token for `CLIENT_A`, minted with the server's own
-    /// signer.
-    ///
-    /// Every other request in this file goes through `vpay-sdk`. Checkout
-    /// sessions cannot: the Rust SDK models no `checkout.sessions` resource
-    /// yet (Step 9, lane 5), so the two session-driven cases below drive raw
-    /// HTTP against the shipping route, exactly as
-    /// `tests/checkout_sessions.rs` does and for the same stated reason.
-    fn bearer(&self) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                CLIENT_A,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(vpay_config::MERCHANT_AUDIENCE.to_owned()),
-                std::collections::HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
-    }
-
     fn client_for(&self, base_url: &str) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
@@ -442,7 +416,7 @@ async fn harness() -> anyhow::Result<Harness> {
     let orange_url = format!("{orange_origin}/orange-money-webpay/dev");
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
 
     let mtn_setup = RailSetup::working(&mtn_url);
     let orange_setup = RailSetup::working(&orange_url);
@@ -463,10 +437,8 @@ async fn harness() -> anyhow::Result<Harness> {
         mtn_url,
         orange_url,
         orange_origin,
-        pem_a,
         jwks_a,
         server_pem,
-        signing_key: served.signing_key,
     })
 }
 
@@ -1080,9 +1052,9 @@ async fn a_direct_confirm_sends_the_merchants_return_url_to_the_rail() -> anyhow
 /// Raw HTTP for [`Harness::bearer`]'s reason: `vpay-sdk` models no
 /// `checkout.sessions` resource yet.
 async fn create_hosted_session(harness: &Harness, intent_id: &str) -> anyhow::Result<String> {
-    let response = reqwest::Client::new()
+    let response = SealedHttp::new()
         .post(harness.url("/v1/checkout/sessions"))
-        .bearer_auth(harness.bearer())
+        .signed_by(CLIENT_A)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .form(&[
             ("payment_intent", intent_id),
@@ -2694,15 +2666,13 @@ struct TwoStepHarness {
     base_url: String,
     /// The stub's origin, for its admin API.
     stub_origin: String,
-    pem_a: String,
 }
 
 impl TwoStepHarness {
     fn a(&self) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
@@ -2746,7 +2716,7 @@ async fn two_step_harness() -> anyhow::Result<TwoStepHarness> {
     );
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let rail_url = stub_origin.clone();
     let served = support::serve_with_adapters(
         &repositories,
@@ -2801,7 +2771,6 @@ async fn two_step_harness() -> anyhow::Result<TwoStepHarness> {
         pool,
         base_url: served.base_url,
         stub_origin,
-        pem_a,
     })
 }
 
@@ -3029,23 +2998,6 @@ fn excluded(rail: &str, reason: &str) -> Value {
     serde_json::json!({ "rail": rail, "excluded": reason })
 }
 
-/// A `/v1` bearer token for `CLIENT_A` from a server's own signer.
-///
-/// [`Harness::bearer`] for a **second** server: each one's issuer is its own
-/// base URL, so a token minted by the first is refused by the second.
-fn merchant_token(signing_key: &LoadedSigningKey) -> String {
-    signing_key
-        .token_manager()
-        .issue_client_token_with_extra(
-            CLIENT_A,
-            900,
-            Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-            Some(vpay_config::MERCHANT_AUDIENCE.to_owned()),
-            std::collections::HashMap::new(),
-        )
-        .expect("the server's own signer mints a merchant token")
-}
-
 /// A form `POST` to `{base_url}{path}` as merchant A, answering the status
 /// and the JSON body.
 ///
@@ -3062,7 +3014,6 @@ fn merchant_token(signing_key: &LoadedSigningKey) -> String {
 /// plain ASCII with nothing to encode.
 async fn post_form(
     base_url: &str,
-    token: &str,
     path: &str,
     form: &[(&str, &str)],
 ) -> anyhow::Result<(u16, Value)> {
@@ -3071,9 +3022,9 @@ async fn post_form(
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join("&");
-    let response = reqwest::Client::new()
+    let response = SealedHttp::new()
         .post(format!("{base_url}{path}"))
-        .bearer_auth(token)
+        .signed_by(CLIENT_A)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body(body)
@@ -3225,7 +3176,6 @@ fn notchpay_process_on(channel: &str) -> String {
 async fn a_method_type_confirm_is_routed_and_commits_its_decision_with_the_charge()
 -> anyhow::Result<()> {
     let harness = harness().await?;
-    let token = harness.bearer();
 
     let intent = harness
         .a()
@@ -3240,7 +3190,6 @@ async fn a_method_type_confirm_is_routed_and_commits_its_decision_with_the_charg
 
     let (status, body) = post_form(
         &harness.base_url,
-        &token,
         &format!("/v1/payment_intents/{}/confirm", intent.id),
         &[
             ("payment_method_data[type]", "mtn_wallet"),
@@ -3343,14 +3292,11 @@ async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_net
     )
     .await?;
     let client = harness.client_for(&served.base_url);
-    let token = merchant_token(&served.signing_key);
     let confirm = |intent_id: String, form: Vec<(&'static str, &'static str)>| {
         let base_url = served.base_url.clone();
-        let token = token.clone();
         async move {
             post_form(
                 &base_url,
-                &token,
                 &format!("/v1/payment_intents/{intent_id}/confirm"),
                 &form,
             )
@@ -3516,14 +3462,11 @@ async fn the_highest_score_wins_a_pin_overrides_it_and_notch_pay_is_told_the_net
 #[tokio::test]
 async fn a_type_this_deployment_cannot_take_is_a_400_naming_the_parameter() -> anyhow::Result<()> {
     let harness = harness().await?;
-    let token = harness.bearer();
     let create = |method_type: &'static str, currency: &'static str| {
         let base_url = harness.base_url.clone();
-        let token = token.clone();
         async move {
             post_form(
                 &base_url,
-                &token,
                 "/v1/payment_intents",
                 &[
                     ("amount", "5000"),
@@ -3577,7 +3520,6 @@ async fn a_type_this_deployment_cannot_take_is_a_400_naming_the_parameter() -> a
     let confirm_path = format!("/v1/payment_intents/{}/confirm", intent.id);
     let (status, body) = post_form(
         &harness.base_url,
-        &token,
         &confirm_path,
         &[
             ("payment_method_data[type]", "orange_wallet"),
@@ -3592,7 +3534,6 @@ async fn a_type_this_deployment_cannot_take_is_a_400_naming_the_parameter() -> a
     );
     let (status, body) = post_form(
         &harness.base_url,
-        &token,
         &confirm_path,
         &[
             ("payment_method_data[type]", "mtn_wallet"),

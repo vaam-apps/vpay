@@ -599,6 +599,30 @@ signingKey:
   # not observed in a running pod (nothing here has been).
   defaultMode: 0440
 
+envelopeKeys:
+  # Secret holding the two Ed25519 seeds the signed `/v1` transport seals every
+  # answer with (docs/flows/merchant-auth.md, "The signed transport"): the key
+  # in use now, and the one that replaces it at the next rotation. Clients pin
+  # BOTH public halves, so a rotation is: publish `next`'s public key to
+  # merchants, wait, swap the two seeds, generate a new `next`. Each is 32
+  # bytes as unpadded base64url, one line — what
+  # `cargo xtask gen-envelope-key --out <dir> --name <stem>` writes to
+  # `<stem>.seed`, with the public half to hand out in `<stem>.pub`.
+  #
+  # The server Deployment only. The worker takes neither flag (a serve-only
+  # flag on a worker is refused), and the management Deployment serves no
+  # `/v1`. `vpay-server` exits 78 without them when it serves the business
+  # surface; this chart generates no key, because a generated one would sign
+  # answers no other replica could, and no client pins.
+  existingSecret: vpay-envelope-keys
+  current: envelope-current.seed
+  next: envelope-next.seed
+  # A directory, not a file: both seeds land under it. The two variables
+  # `VPAY_ENVELOPE_SIGNING_KEY_FILE` and `..._NEXT_FILE` are `<mountPath>/<key>`.
+  mountPath: /secrets/envelope
+  # 0440 octal, for the reason `signingKey.defaultMode` is.
+  defaultMode: 0440
+
 rails:
   # Secret projected wholesale with `envFrom.secretRef` onto BOTH workloads.
   # It must carry one key per `${VAR}` placeholder in the baked

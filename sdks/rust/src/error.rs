@@ -1,19 +1,17 @@
 //! The SDK's error types.
 //!
-//! `docs/flows/merchant-auth.md` distinguishes five failure shapes on the
-//! wire — a builder-time misconfiguration, a token-endpoint rejection, a
-//! resource-route error envelope, a response that is neither, and a
-//! transport failure — plus webhook verification, which never touches the
+//! `docs/flows/merchant-auth.md` distinguishes the failure shapes on the
+//! wire — a builder-time misconfiguration, a resource-route error envelope, a
+//! response that is unsigned or does not verify, a response that is neither,
+//! and a transport failure — plus webhook verification, which never touches the
 //! network at all. Each gets its own variant rather than a single
 //! stringly-typed error, so a caller can match on `Error::Api { status, .. }`
 //! without parsing a message.
 
-use std::time::Duration;
-
 use thiserror::Error;
 
-/// A misconfiguration caught at [`crate::ClientBuilder::build`] time, or by
-/// [`crate::auth::mint_client_assertion`] when called directly.
+/// A misconfiguration caught at [`crate::ClientBuilder::build`] time, or while
+/// constructing [`crate::Credentials`] / [`crate::ServerKeys`].
 ///
 /// Deliberately a *different* type from [`enum@Error`], not a variant of it:
 /// every other `Error` variant describes something that happened on the
@@ -24,45 +22,30 @@ use thiserror::Error;
 #[non_exhaustive]
 pub enum ConfigError {
     /// [`crate::ClientBuilder::build`] was called with no
-    /// [`crate::Credentials`] — there is nothing to sign an assertion with.
+    /// [`crate::Credentials`] — there is nothing to sign requests with.
     #[error("no credentials configured — call ClientBuilder::credentials(..) before build()")]
     MissingCredentials,
 
-    /// Outside `1..=300` seconds. `docs/flows/merchant-auth.md` requires the
-    /// SDK to refuse this at construction rather than silently clamping it:
-    /// a clamped value would mint assertions whose `exp` differs from what
-    /// the caller asked for, for a reason invisible at the call site. The
-    /// bound itself mirrors `authkestra_engine::client_assertion::
-    /// MAX_CLIENT_ASSERTION_LIFETIME_SECS`, which the pinned OP verifier
-    /// enforces on the receiving end.
-    #[error(
-        "assertion lifetime must be between 1 and 300 seconds (see \
-         `crate::auth::MIN_ASSERTION_LIFETIME_SECS`/`MAX_ASSERTION_LIFETIME_SECS`), got {lifetime:?}"
-    )]
-    InvalidAssertionLifetime {
-        /// The lifetime that was rejected, for the caller's own error message.
-        lifetime: Duration,
-    },
+    /// [`crate::ClientBuilder::build`] was called with no
+    /// [`crate::ServerKeys`]. There is no default and no "trust the first key
+    /// you see": a client that did not know whose answers to believe would
+    /// believe anyone's.
+    #[error("no server keys pinned — call ClientBuilder::server_keys(..) before build()")]
+    MissingServerKeys,
 
-    /// [`crate::Credentials::rsa_pem`] was given a PEM `jsonwebtoken` could
-    /// not parse as an RSA key (PKCS#1 or PKCS#8).
-    #[error("invalid RSA private key: {0}")]
-    InvalidPrivateKey(String),
+    /// A seed that is not 32 bytes of unpadded base64url. Never quoted.
+    #[error("an Ed25519 seed is 32 bytes as unpadded base64url")]
+    InvalidSeed,
 
-    /// Signing the assertion itself failed — `jsonwebtoken::encode` returned
-    /// an error after the key parsed successfully. Kept distinct from
-    /// [`ConfigError::InvalidPrivateKey`] because a key that decodes but
-    /// then fails to sign points at a different bug than one that never
-    /// parsed at all.
-    #[error("failed to sign the client assertion: {0}")]
-    Signing(String),
+    /// A public key that is not 32 bytes of unpadded base64url, or not a point
+    /// on the curve. Never quoted.
+    #[error("an Ed25519 public key is 32 bytes as unpadded base64url, and a point on the curve")]
+    InvalidPublicKey,
 
-    /// The system clock reads before the Unix epoch. Not reachable on any
-    /// real deployment; kept as a named, non-panicking error rather than an
-    /// `unwrap` because this crate's lint policy denies both
-    /// (`docs/adr/0007-lint-policy.md`).
-    #[error("system clock is set before the Unix epoch")]
-    SystemClockBeforeEpoch,
+    /// The signed-transport envelope could not be assembled (an empty
+    /// audience, for instance).
+    #[error("failed to assemble the signed transport: {0}")]
+    Envelope(String),
 
     /// [`reqwest::ClientBuilder::build`] failed — TLS backend construction,
     /// almost always.
@@ -135,18 +118,35 @@ pub enum Error {
         param: Option<String>,
     },
 
-    /// A `TokenErrorResponse` from the token endpoint itself
-    /// (`{ "error": "invalid_client", "error_description": "…" }`).
-    /// Never retried automatically — `docs/flows/merchant-auth.md` §4 is
-    /// explicit that a `401` from the token endpoint is not the same event
-    /// as a `401` from a resource route.
-    #[error("token endpoint error: {error}")]
-    TokenEndpoint {
-        /// The OAuth2 `error` code, e.g. `invalid_client`.
-        error: String,
-        /// The OAuth2 `error_description`, if present.
-        description: Option<String>,
+    /// The response was not a signed message: a bare `401` from vpay's
+    /// envelope layer (an unknown or disabled key, a bad signature, a clock
+    /// more than five minutes off, a replayed `cti` — **deliberately the same
+    /// answer for every cause**, cratestack ADR 0006 §10), or something in
+    /// front of vpay (a proxy's HTML 502). Nothing in its body was read.
+    ///
+    /// A `401` here is almost always one of two things the merchant can fix:
+    /// the key is not the one registered under `cose_keys`, or this host's
+    /// clock is wrong.
+    #[error(
+        "the response was not signed (status {status}); for a 401 check the registered key and this host's clock"
+    )]
+    Unsigned {
+        /// The HTTP status code.
+        status: u16,
     },
+
+    /// A response that claimed to be signed did not verify under any pinned
+    /// server key. Treat it as hostile: either the pinned `{current, next}` is
+    /// stale (a rotation outran this client's configuration) or something other
+    /// than vpay answered.
+    #[error("the response's signature did not verify under any pinned server key")]
+    Unverified,
+
+    /// The request could not be sealed: the signer failed (a KMS callback
+    /// erroring, for instance) or the call is one the transport cannot carry.
+    /// Nothing was sent.
+    #[error("failed to seal the request: {0}")]
+    Seal(String),
 
     /// A non-2xx response that is not the Stripe-shaped envelope above — a
     /// proxy's HTML 502, for instance. Carries only a bounded prefix of the
@@ -164,6 +164,17 @@ pub enum Error {
     /// produced an HTTP response to classify.
     #[error("transport error: {0}")]
     Transport(String),
+
+    /// The answer's body exceeded [`crate::MAX_RESPONSE_BYTES`]. Reading stopped
+    /// at the bound; nothing of the body was kept or opened. The honest server
+    /// never sends one this large (a page of 100 objects is a few hundred
+    /// kilobytes), so this is a misbehaving peer or proxy, and an unbounded
+    /// read would let it make this process hold whatever it liked.
+    #[error("the response body exceeded {limit} bytes and was not read further")]
+    ResponseTooLarge {
+        /// The bound, in bytes.
+        limit: usize,
+    },
 
     /// A request parameter this SDK refuses to put on the wire, caught
     /// before the request was built: an amount outside `0..=2^53-1` (see
@@ -191,8 +202,7 @@ pub enum Error {
     },
 
     /// A [`ConfigError`] surfaced through a method that returns [`enum@Error`]
-    /// (token minting during a request, for instance) rather than through
-    /// [`crate::ClientBuilder::build`] directly.
+    /// rather than through [`crate::ClientBuilder::build`] directly.
     #[error("configuration error: {0}")]
     Config(#[from] ConfigError),
 

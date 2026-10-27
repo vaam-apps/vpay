@@ -1,7 +1,7 @@
 # merchant-demo
 
-The local demo `just demo` runs. It authenticates as a registered merchant with
-the shipping Rust SDK ([`sdks/rust`](../../sdks/rust/)) and then makes **six
+The local demo `just demo` runs. It signs every request as a registered merchant
+with the shipping Rust SDK ([`sdks/rust`](../../sdks/rust/)) and then makes **six
 payments, on both rails, to every outcome each rail documents** — each one
 walked from `create` all the way to the signed webhook the settlement produced,
 read back out of the receiver's own request journal and verified with the SDK.
@@ -18,31 +18,41 @@ the real output of a real run and a "what this proves / what it does not".
 `cargo run -p merchant-demo` on its own works too, against an already-running
 vpay:
 
-| Variable                  | Default                                    |
-| ------------------------- | ------------------------------------------ |
-| `VPAY_BASE_URL`           | `http://localhost:8080`                    |
-| `VPAY_CLIENT_ID`          | `demo-merchant`                            |
-| `VPAY_PRIVATE_KEY_FILE`   | `.e2e/demo-merchant/oauth-signing-key.pem` |
-| `VPAY_RECEIVER_URL`       | `http://localhost:8083`                    |
-| `MERCHANT_WEBHOOK_SECRET` | `wiremock-stub-webhook-secret-32-bytes`    |
+| Variable                       | Default                                 |
+| ------------------------------ | --------------------------------------- |
+| `VPAY_BASE_URL`                | `http://localhost:8080`                 |
+| `VPAY_CLIENT_ID`               | `demo-merchant`                         |
+| `VPAY_SIGNING_SEED_FILE`       | `.e2e/demo-merchant/signing.seed`       |
+| `VPAY_SERVER_KEY_CURRENT_FILE` | `.e2e/envelope/current.pub`             |
+| `VPAY_SERVER_KEY_NEXT_FILE`    | `.e2e/envelope/next.pub`                |
+| `VPAY_RECEIVER_URL`            | `http://localhost:8083`                 |
+| `MERCHANT_WEBHOOK_SECRET`      | `wiremock-stub-webhook-secret-32-bytes` |
 
-Exits `0` only when all four steps behave as expected — and step 4 is six
+The seed is the merchant's Ed25519 signing key and the two `.pub` files are the
+response keys vpay seals its answers with, which the demo pins; `just
+gen-demo-keys` writes all three (throwaway, under the git-ignored `.e2e/`). The
+audience the signature is addressed to is `deployment.public_base_url` in the
+generated overlay, which is `VPAY_BASE_URL` as `just demo` publishes it; a demo
+pointed at a stack that names itself differently gets the coarse unsigned `401`.
+
+Exits `0` only when all six steps behave as expected — and step 4 is six
 payments, every one of which must reach the exact status, `failure_code` and
 event type the table expects. It exits non-zero naming the outcome that did
 not.
 
-## The four steps
+## The six steps
 
-1. **discovery + JWKS** — the OP's issuer, token endpoint and the `kid` it
-   signs `/v1` access tokens with. If the issuer disagrees with the
-   `VPAY_BASE_URL` the SDK derives its endpoints from, this step says so,
-   because step 2 would otherwise fail with a bare `invalid_client`.
-2. **an access token** — `client_credentials` + `private_key_jwt`, shown as its
-   decoded `iss`/`aud`/`sub`/`exp`. Never verified here (the OP just signed it)
-   and never printed.
-3. **the `401`** — the same `/v1` path with no bearer token, carrying vpay's
-   error envelope, so the authentication boundary is visibly real.
+1. **a signed read** — the request is a COSE_Sign1 message under the demo
+   merchant's key, the answer is one signed by vpay, and the SDK opens it under
+   the pinned response keys.
+2. **a bearer token buys nothing** — the same path with an `Authorization:
+Bearer` header and no signature is refused.
+3. **the `401`** — the same `/v1` path with no signature at all, vpay's coarse
+   unsigned `401`, so the authentication boundary is visibly real.
 4. **the outcome table** — below.
+5. **one hosted and one embedded Checkout Session**, read back and printed as a
+   merchant would use them. It stops there: this program has no browser.
+6. **`GET /v1/account_holders`** — the three-way answer a name lookup has.
 
 ## The outcome table
 

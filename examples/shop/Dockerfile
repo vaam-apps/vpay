@@ -10,6 +10,49 @@
 # matches to zero packages and carries on (the same property
 # `frontends/Dockerfile` relies on for `examples/*`).
 
+# The Node SDK's sealing module, compiled here and nowhere else.
+#
+# `@vaam-apps/vpay-sdk` does not seal in TypeScript: its signing path is
+# `sdks/rust/wasm`, Rust compiled to WebAssembly, and the shop signs every
+# `/v1` call through it. The node builder below has no Rust toolchain, no
+# `bash` (`scripts/build-wasm.sh` is a bash script) and no `wasm-bindgen`, so
+# the module is built in this stage and copied across; the node stage then runs
+# only the SDK's `tsc` step (`build:ts`), never its `build:wasm`.
+#
+# The image is the one `backends/Dockerfile` names (rust-toolchain.toml's
+# 1.98.0), and `cargo xtask verify-toolchain` keeps this `FROM` equal to
+# that file's `channel`. The `wasm-bindgen` CLI is installed at the version
+# `Cargo.lock` pins for the crate, read from it rather than written here a
+# second time: the CLI and the crate agree on a private interface, and
+# `build-wasm.sh` refuses a mismatch.
+FROM rust:1.98.0-alpine3.22 AS sealer
+# Alpine package versions are not pinned: the base image's tag pins the
+# Alpine release, and an exact apk version disappears from the mirror at the
+# next security update, which would break the build rather than secure it.
+# hadolint ignore=DL3018
+RUN apk add --no-cache bash musl-dev pkgconfig
+WORKDIR /build
+COPY Cargo.lock ./
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo install wasm-bindgen-cli --locked \
+        --version "$(awk '/^name = "wasm-bindgen"$/ {getline; gsub(/version = |"/, ""); print; exit}' Cargo.lock)"
+RUN rustup target add wasm32-unknown-unknown
+# Cargo parses every workspace member's manifest before it builds one, so the
+# whole workspace's manifests have to be here even though one crate is built.
+COPY Cargo.toml clippy.toml rust-toolchain.toml ./
+COPY .cargo ./.cargo
+COPY .xtask ./.xtask
+COPY backends ./backends
+COPY schemas ./schemas
+COPY sdks/rust ./sdks/rust
+COPY examples/merchant-demo ./examples/merchant-demo
+COPY sdks/nodejs/scripts ./sdks/nodejs/scripts
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/build/target \
+    bash sdks/nodejs/scripts/build-wasm.sh
+
 FROM node:24-alpine AS builder
 # Prisma's engines are dynamically linked against OpenSSL 3 on musl. Prisma
 # left the request path at the ZenStack 3 upgrade but not the image: v3's
@@ -39,10 +82,16 @@ ENV CYPRESS_INSTALL_BINARY=0 \
 # `next build` type-checks against it. It is generated rather than committed,
 # for the reason .gitignore gives.
 RUN pnpm install --frozen-lockfile --filter @vpay-examples/shop...
-# A separate layer from the install on purpose (hadolint DL3059): a source
-# edit then rebuilds without re-resolving every dependency.
-# hadolint ignore=DL3059
-RUN pnpm --filter @vpay-examples/shop build
+# The sealing module, built above. `sdks/nodejs/wasm` is gitignored, so the
+# `COPY sdks` earlier did not bring one.
+COPY --from=sealer /build/sdks/nodejs/wasm ./sdks/nodejs/wasm
+# The shop's own `build` runs `build:deps`, which runs the SDK's `build`, which
+# runs `build:wasm` and so wants Rust and bash. Here the module already exists,
+# so the three steps `build` is made of are run without it: the SDK's `tsc`,
+# stripe-js's `tsc`, then `next build`.
+RUN pnpm --filter @vaam-apps/vpay-sdk run build:ts \
+    && pnpm --filter @vaam-apps/vpay-stripe-js build \
+    && pnpm --filter @vpay-examples/shop exec next build
 
 FROM node:24-alpine AS runner
 # Not version-pinned, for the reason the builder stage gives.

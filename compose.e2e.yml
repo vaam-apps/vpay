@@ -127,11 +127,22 @@ services:
       # `.e2e/`, which `just gen-e2e-signing-key` (or CI's openssl step)
       # fills with a throwaway key that is git-ignored and never reused.
       VPAY_OAUTH_SIGNING_KEY_FILE: /secrets/oauth-signing-key.pem
+      # The two Ed25519 keys the signed `/v1` transport seals every answer with
+      # (docs/signed-transport.md): `current` now, `next` after the following
+      # rotation, both pinned by every client. `vpay-server` refuses to start
+      # without them when it serves the business surface (exit 78). Files, for
+      # the reason the key above is one; `just gen-envelope-keys` (called by
+      # `gen-demo-keys`) writes them. The worker takes neither: they are
+      # serve-only flags and the worker refuses them.
+      VPAY_ENVELOPE_SIGNING_KEY_FILE: /secrets/envelope-current.seed
+      VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE: /secrets/envelope-next.seed
     volumes:
       # Read-only bind mount of the throwaway key. The image runs as UID
       # 65532, so the host file must be world-readable (0644) — acceptable
       # only because this key is generated per stack and thrown away.
       - ./.e2e/oauth-signing-key.pem:/secrets/oauth-signing-key.pem:ro
+      - ./.e2e/envelope/current.seed:/secrets/envelope-current.seed:ro
+      - ./.e2e/envelope/next.seed:/secrets/envelope-next.seed:ro
     depends_on:
       postgres: { condition: service_healthy }
       wiremock-mtn: { condition: service_started }
@@ -414,18 +425,19 @@ services:
       # vpay as a BROWSER reaches it: the published host port. The two differ
       # inside compose, which is the whole reason there are two variables.
       VPAY_BROWSER_API_URL: http://localhost:8080
-      # vpay as VPAY names itself — the `aud` of the shop's client assertion,
-      # and a THIRD value, not a copy of either URL above.
-      # `authenticate_client` compares that claim against
-      # `{deployment.public_base_url}/v1/oauth/token` and the `/v1/oauth`
-      # issuer built from the same setting, and against nothing else; the URL
-      # the shop POSTed to is never consulted. The generated overlay's
-      # `deployment.public_base_url` is `http://localhost:8080`, so this is
-      # that plus the token path. Unset, every token request from the shop is
-      # an `invalid_client` whose response says nothing about audiences.
-      VPAY_OAUTH_AUDIENCE: http://localhost:8080/v1/oauth/token
+      # vpay as VPAY names itself: the audience every signed request is
+      # addressed to, which is the server's `deployment.public_base_url` — a
+      # THIRD value, not a copy of either URL above. The signature binds it, and
+      # a request addressed to the URL the shop happened to POST to
+      # (`http://vpay-server:8080`) is the coarse unsigned 401 with nothing in
+      # it to say why. The generated overlay's `deployment.public_base_url` is
+      # `http://localhost:8080`.
+      VPAY_AUDIENCE: http://localhost:8080
       VPAY_CLIENT_ID: shop-merchant
-      VPAY_PRIVATE_KEY_FILE: /secrets/shop-merchant.pem
+      # The shop's Ed25519 signing seed and the two server keys it pins.
+      VPAY_SIGNING_SEED_FILE: /secrets/shop-signing.seed
+      VPAY_SERVER_KEY_CURRENT_FILE: /secrets/server-current.pub
+      VPAY_SERVER_KEY_NEXT_FILE: /secrets/server-next.pub
       VPAY_PUBLISHABLE_KEY: pk_test_shopmerchantsandbox1
       # The checkout app, as a browser reaches it (it is an iframe `src`).
       VPAY_CHECKOUT_URL: http://localhost:3080
@@ -438,11 +450,13 @@ services:
       # both rails, and the demo overlay puts both of them on XAF so both can
       # complete an XAF order. See `gen-demo-keys`'s `providers:` block.
     volumes:
-      # The merchant's PRIVATE key. Unlike `demo-merchant`'s, this one is
+      # The merchant's PRIVATE signing seed. Unlike `demo-merchant`'s, this one is
       # mounted into a container, because the shop is the merchant's own
       # server. Read-only; `just gen-demo-keys` chmods it 0644 (the image runs
       # as uid 1000, not root).
-      - ./.e2e/shop-merchant/oauth-signing-key.pem:/secrets/shop-merchant.pem:ro
+      - ./.e2e/shop-merchant/signing.seed:/secrets/shop-signing.seed:ro
+      - ./.e2e/envelope/current.pub:/secrets/server-current.pub:ro
+      - ./.e2e/envelope/next.pub:/secrets/server-next.pub:ro
     depends_on:
       postgres: { condition: service_healthy }
       vpay-server: { condition: service_started }

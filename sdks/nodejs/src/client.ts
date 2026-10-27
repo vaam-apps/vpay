@@ -1,9 +1,4 @@
 import { inspect } from "node:util";
-import {
-  resolveMerchantAuth,
-  type MerchantAuthOptions,
-  type TokenManager,
-} from "./auth.js";
 import { HttpClient } from "./http.js";
 import { AccountHoldersResource } from "./resources/account-holders.js";
 import { BalanceResource } from "./resources/balance.js";
@@ -16,53 +11,49 @@ import {
 } from "./resources/invoices.js";
 import { PaymentIntentsResource } from "./resources/payment-intents.js";
 import { RefundsResource } from "./resources/refunds.js";
+import { resolveMerchantAuth, type MerchantAuthOptions } from "./sealer.js";
 
 /**
  * Constructor options for {@link VpayClient} — see the package README's
  * configuration table.
  *
  * **This is {@link MerchantAuthOptions}**, which is also what
- * `createStripeAuthenticator` takes. The two entry points authenticate the
- * same way against the same endpoint with the same defaults
- * ({@link resolveMerchantAuth} is the single implementation), so they must
- * offer the same knobs — and an interface that merely *listed* the same
- * eleven properties would drift the first time one of them gained a twelfth.
- * Extending is what makes "the same options" checked rather than intended.
+ * `createStripeHttpClient` takes. The two entry points seal the same calls
+ * under the same keys with the same defaults ({@link resolveMerchantAuth} is the
+ * single implementation), so they must offer the same knobs — and an interface
+ * that merely *listed* the same properties would drift the first time one of
+ * them gained another. Extending is what makes "the same options" checked
+ * rather than intended.
  *
  * Every optional property is declared `?: T | undefined`, not `?: T`. Under
  * `exactOptionalPropertyTypes` (which this repo sets, and which consumers are
- * likely to) the shorter form rejects `{ kid: maybeKid }` where `maybeKid` is
- * `string | undefined` — forcing every consumer into conditional spreads for
- * options that are, semantically, simply optional. `src/types.test.ts` pins
- * this at the type level.
+ * likely to) the shorter form rejects `{ audience: maybeAudience }` where
+ * `maybeAudience` is `string | undefined` — forcing every consumer into
+ * conditional spreads for options that are, semantically, simply optional.
+ * `src/types.test.ts` pins this at the type level.
  */
 export interface VpayClientOptions extends MerchantAuthOptions {
-  /**
-   * Default 30000. Applies to **both** the token exchange and every resource
-   * call — the one place this client's reading of an inherited option is
-   * narrower than the base's, because `VpayClient` owns its resource
-   * transport and `createStripeAuthenticator` does not.
-   */
+  /** Default 30000, applied to every resource call. */
   timeoutMs?: number | undefined;
 }
 
 const INSPECT_CUSTOM = Symbol.for("nodejs.util.inspect.custom");
 
 /**
- * The vpay merchant SDK client. Mints `private_key_jwt` assertions, exchanges
- * and caches `/v1` access tokens, and exposes the resource namespaces below.
+ * The vpay merchant SDK client. Seals every `/v1` call as a COSE_Sign1 message
+ * under the merchant's Ed25519 key, opens the answer under the pinned server
+ * keys, and exposes the resource namespaces below.
  *
  * The private key never appears in `util.inspect(client)` or
- * `JSON.stringify(client)` output — this class never holds it. It is parsed
- * once by `resolveMerchantAuth` and kept by the {@link TokenManager} as a
- * `crypto.KeyObject`, whose own inspection reveals no key material; the two
- * redacted representations below are built by hand from the two fields that
- * are safe to print.
+ * `JSON.stringify(client)` output — this class never holds it. It is read once
+ * by `resolveMerchantAuth` and kept inside the sealer (a seed, in the wasm
+ * module's memory) or behind a `crypto.KeyObject`, whose own inspection
+ * reveals no key material; the two redacted representations below are built by
+ * hand from the two fields that are safe to print.
  */
 export class VpayClient {
   readonly #clientId: string;
   readonly #baseUrl: string;
-  readonly #tokenManager: TokenManager;
 
   readonly paymentIntents: PaymentIntentsResource;
   readonly checkout: CheckoutResource;
@@ -79,22 +70,15 @@ export class VpayClient {
   readonly accountHolders: AccountHoldersResource;
 
   constructor(options: VpayClientOptions) {
-    // Validation, defaulting and the `TokenManager` itself live in
-    // `resolveMerchantAuth`, shared with `@vaam-apps/vpay-sdk/stripe`'s authenticator:
-    // both entry points must mint the same assertion against the same
-    // endpoint with the same defaults, and one copy is how that stays true.
+    // Validation, defaulting and the sealer itself live in
+    // `resolveMerchantAuth`, shared with `@vaam-apps/vpay-sdk/stripe`'s HTTP
+    // client: both entry points must seal the same bytes under the same keys
+    // with the same defaults, and one copy is how that stays true.
     const auth = resolveMerchantAuth(options);
     this.#baseUrl = auth.baseUrl;
     this.#clientId = auth.clientId;
-    this.#tokenManager = auth.tokenManager;
 
-    const httpClient = new HttpClient({
-      baseUrl: `${this.#baseUrl}/v1`,
-      tokenManager: this.#tokenManager,
-      fetchImpl: auth.fetchImpl,
-      timeoutMs: auth.timeoutMs,
-      userAgent: auth.userAgent,
-    });
+    const httpClient = new HttpClient(auth);
 
     this.paymentIntents = new PaymentIntentsResource(httpClient);
     this.checkout = new CheckoutResource(httpClient);

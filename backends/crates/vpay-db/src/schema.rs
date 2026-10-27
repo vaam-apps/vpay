@@ -83,7 +83,7 @@ mod search_checkout_sessions;
 ///
 /// **`procedure_router`, never `router()`.** The generated `router()`
 /// merges `model_router(...)` — the CRUD CrateStack generates for every one
-/// of this schema's twenty-one models (twenty until `StaffSsoAttempt`, ADR-0030;
+/// of this schema's twenty-two models (twenty-one until `EnvelopeNonce`, VP-3; twenty until `StaffSsoAttempt`, ADR-0030;
 /// nineteen until `ManualPayment`, #251),
 /// creates/updates/deletes included,
 /// whether or not anything routes it — with `procedure_router(...)`
@@ -325,7 +325,7 @@ mod tests {
         );
     }
 
-    /// Walks candidate paths for every one of the twenty-one models' generated
+    /// Walks candidate paths for every one of the twenty-two models' generated
     /// CRUD, proving none of them is mounted through
     /// [`super::dashboard_procedure_router`] — the mechanical version of
     /// `DASH_ROUTES`' own doc's reason for keeping a route table at all:
@@ -340,7 +340,7 @@ mod tests {
     /// from `cratestack_schema::axum::procedure_router(...)` to
     /// `cratestack_schema::axum::router(...)` (the merged form that also
     /// mounts `model_router`) turns every one of the 168 route assertions
-    /// below red at once — twenty-one models, two paths each, four methods per
+    /// below red at once — twenty-two models, two paths each, four methods per
     /// path. _(This said "seventy-six" until 2026-09-23, which is nineteen
     /// times four and forgets the two paths; it said "seventy-two", eighteen
     /// times four, on the day it was written. Neither count was ever the
@@ -351,7 +351,7 @@ mod tests {
     /// `cratestack-macros-0.12.0/src/axum/model/routes.rs` is where those
     /// paths and that four-method set come from, and
     /// `docs/reference/vpay-db/cratestack.md`'s "the table name is decided
-    /// by the model name" is why the twenty-one table strings below are the same
+    /// by the model name" is why the twenty-two table strings below are the same
     /// ones `backends/migrations/*.sql` names as tables.
     #[tokio::test]
     async fn no_generated_model_route_is_mounted_only_the_one_procedure_is() {
@@ -359,7 +359,7 @@ mod tests {
 
         // A pool that never connects, exactly like every other test in this
         // module. Every probed request below is refused before a statement
-        // could run: the twenty-one models' paths never match any route at
+        // could run: the twenty-two models' paths never match any route at
         // all, and the one real procedure is asked with a method it does
         // not serve (`GET`, never `POST`) so this test proves routing
         // without needing the lazy pool to answer anything.
@@ -376,7 +376,7 @@ mod tests {
         // never probe, and a name here the schema no longer declares is a
         // probe of nothing. Until 2026-09-23 this was a hand-kept
         // `[&str; 19]` of table names with no such check.
-        const MODEL_TABLES: [(&str, &str); 21] = [
+        const MODEL_TABLES: [(&str, &str); 22] = [
             ("Currency", "currencies"),
             ("Provider", "providers"),
             ("PaymentIntent", "payment_intents"),
@@ -409,6 +409,9 @@ mod tests {
             // 0050, ADR-0030), added in the same change that declared it —
             // the lesson of the twentieth.
             ("StaffSsoAttempt", "staff_sso_attempts"),
+            // Twenty-second, 2026-10-26: `model EnvelopeNonce` (migration
+            // 0055, VP-3), added in the same change that declared it.
+            ("EnvelopeNonce", "envelope_nonces"),
         ];
 
         let mut listed: Vec<&str> = MODEL_TABLES.iter().map(|(model, _)| *model).collect();

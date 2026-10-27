@@ -3,42 +3,33 @@
  * internal name cannot do without.
  *
  * The shop reaches vpay at `VPAY_API_URL` — inside compose, the service name
- * `http://vpay-server:8080`. The client assertion's `aud` claim is a
- * different fact: vpay's OP compares it against its **own** two names for
- * itself, `{deployment.public_base_url}/v1/oauth/token` and that
- * `/v1/oauth` issuer (`vpay_api::op::issuer_for`), and against nothing else.
- * `VPAY_OAUTH_AUDIENCE` is what tells them apart.
+ * `http://vpay-server:8080`. The audience every signed request is addressed to
+ * is a different fact: it is vpay's configured `deployment.public_base_url`,
+ * the signature binds it, and a server that was configured with another name
+ * refuses the request with the coarse unsigned `401`. `VPAY_AUDIENCE` is what
+ * tells the two apart.
  *
  * These tests drive the real `VpayClient` against a real local HTTP server
- * (127.0.0.1 on an ephemeral port — an address reachable only from this
- * process, exactly like a compose service name) and read the assertion off
- * the wire.
+ * that verifies the signature the way vpay does (127.0.0.1 on an ephemeral
+ * port — an address reachable only from this process, exactly like a compose
+ * service name).
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createPublicKey, createPrivateKey, verify } from "node:crypto";
 import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { loadShopConfig, type EnvRecord } from "./config";
 import { createVpayClient } from "./vpay";
-import { testPrivateKeyPem } from "../testing/keys";
 import {
-  reply,
-  startVpayTestServer,
-  type VpayTestServer,
-} from "../testing/vpay-test-server";
+  startSealedServer,
+  type SealedTestServer,
+} from "../../../../sdks/nodejs/src/testing/test-server";
 
 /** vpay's `deployment.public_base_url` in the demo stack is the host port. */
-const PUBLIC_TOKEN_ENDPOINT = "http://localhost:8080/v1/oauth/token";
-const PUBLIC_ISSUER = "http://localhost:8080/v1/oauth";
-/** What `authenticate_client` passes as `expected_audiences`. */
-const OP_AUDIENCES = [PUBLIC_TOKEN_ENDPOINT, PUBLIC_ISSUER];
+const PUBLIC_AUDIENCE = "http://localhost:8080";
 
 const keyDir = mkdtempSync(join(tmpdir(), "vpay-shop-audience-"));
-const keyFile = join(keyDir, "shop-merchant.pem");
-writeFileSync(keyFile, testPrivateKeyPem(), "utf8");
-
-const servers: VpayTestServer[] = [];
+const servers: SealedTestServer[] = [];
 
 afterEach(async () => {
   await Promise.all(servers.splice(0).map((server) => server.close()));
@@ -48,171 +39,100 @@ afterAll(() => {
   rmSync(keyDir, { recursive: true, force: true });
 });
 
-function envFor(apiUrl: string, audience?: string): EnvRecord {
+/** A server that expects `audience` and answers an empty list. */
+async function startVpay(audience?: string): Promise<SealedTestServer> {
+  const server = await startSealedServer(
+    (_request, response) => {
+      response.writeHead(200, { "Content-Type": "application/json" });
+      response.end(
+        JSON.stringify({ object: "list", data: [], has_more: false }),
+      );
+    },
+    audience === undefined ? {} : { audience },
+  );
+  servers.push(server);
+  return server;
+}
+
+/** The environment a shop pointed at `server` is started with. */
+function envFor(server: SealedTestServer, audience?: string): EnvRecord {
+  const seed = join(keyDir, `seed-${server.identity.merchantPublic}`);
+  const current = join(keyDir, `current-${server.identity.serverPublic}`);
+  writeFileSync(seed, `${server.identity.merchantSeed}\n`, "utf8");
+  writeFileSync(current, `${server.identity.serverPublic}\n`, "utf8");
   return {
-    VPAY_API_URL: apiUrl,
+    VPAY_API_URL: server.url,
     VPAY_CLIENT_ID: "shop-merchant",
-    VPAY_PRIVATE_KEY_FILE: keyFile,
+    VPAY_SIGNING_SEED_FILE: seed,
+    VPAY_SERVER_KEY_CURRENT_FILE: current,
+    // Rotation is not this file's subject; the same key twice is a legal pin.
+    VPAY_SERVER_KEY_NEXT_FILE: current,
     VPAY_PUBLISHABLE_KEY: "pk_test_shopmerchantsandbox1",
     VPAY_CHECKOUT_URL: "http://localhost:3080",
     VPAY_WEBHOOK_SECRET: "whsec_shop",
     SHOP_PUBLIC_URL: "http://localhost:3001",
-    ...(audience === undefined ? {} : { VPAY_OAUTH_AUDIENCE: audience }),
+    ...(audience === undefined ? {} : { VPAY_AUDIENCE: audience }),
   };
 }
 
-/**
- * Drives one token exchange through the real SDK and returns the
- * `client_assertion` the shop actually put on the wire.
- */
-async function assertionSentBy(audience?: string): Promise<string> {
-  const server = await startVpayTestServer({
-    routes: {
-      "GET /v1/balance": reply(200, {
-        object: "balance",
-        available: [],
-        pending: [],
-      }),
-    },
-  });
-  servers.push(server);
-
-  const client = createVpayClient(loadShopConfig(envFor(server.url, audience)));
-  await client.balance.retrieve();
-
-  const tokenRequest = server.requestsTo("POST", "/v1/oauth/token")[0];
-  expect(tokenRequest).toBeDefined();
-  const assertion = tokenRequest!.form.get("client_assertion");
-  expect(assertion).toBeTruthy();
-  // The address this went to is loopback, not the OP's published name — the
-  // "internal URL" this whole file is about.
-  expect(server.url.startsWith("http://127.0.0.1:")).toBe(true);
-  return assertion!;
-}
-
-interface AssertionPayload {
-  iss: string;
-  sub: string;
-  aud: string;
-  exp: number;
-  iat: number;
-}
-
-/**
- * The audience check vpay's OP actually performs, reproduced.
- *
- * `authkestra_op::client_assertion::verify_client_assertion` is handed
- * `expected_audiences` by `authenticate_client`, and that list holds the OP's
- * own two names. The URL the merchant happened to POST to is never in it
- * unless it coincides with one of them. A shaped stand-in, not the real
- * verifier — `sdks/rust/tests/op_conformance.rs` runs the same case through
- * the pinned crate itself.
- */
-function verifyAsTheOpWould(
-  jwt: string,
-  expectedClientId: string,
-): { ok: true } | { ok: false; reason: string } {
-  const [headerPart, payloadPart, signaturePart] = jwt.split(".");
-  if (!headerPart || !payloadPart || !signaturePart) {
-    return { ok: false, reason: "MalformedAssertion" };
-  }
-  const publicKey = createPublicKey(createPrivateKey(testPrivateKeyPem()));
-  const signingInput = Buffer.from(`${headerPart}.${payloadPart}`, "utf8");
-  if (
-    !verify(
-      "sha256",
-      signingInput,
-      publicKey,
-      Buffer.from(signaturePart, "base64url"),
-    )
-  ) {
-    return { ok: false, reason: "InvalidSignature" };
-  }
-  const payload = JSON.parse(
-    Buffer.from(payloadPart, "base64url").toString("utf8"),
-  ) as AssertionPayload;
-  if (payload.iss !== expectedClientId || payload.sub !== expectedClientId) {
-    return { ok: false, reason: "InvalidIssuer" };
-  }
-  const now = Math.floor(Date.now() / 1000);
-  if (payload.exp <= now || payload.exp - now > 300) {
-    return { ok: false, reason: "InvalidLifetime" };
-  }
-  if (!OP_AUDIENCES.includes(payload.aud)) {
-    return { ok: false, reason: "InvalidAudience" };
-  }
-  return { ok: true };
-}
-
-describe("loadShopConfig and VPAY_OAUTH_AUDIENCE", () => {
-  it("is optional, and absent means the SDK's default", () => {
-    expect(
-      loadShopConfig(envFor("http://vpay-server:8080")).vpayOauthAudience,
-    ).toBeUndefined();
+describe("loadShopConfig and VPAY_AUDIENCE", () => {
+  it("is optional, and absent means the SDK's default", async () => {
+    const server = await startVpay();
+    expect(loadShopConfig(envFor(server)).vpayAudience).toBeUndefined();
   });
 
-  it("is read verbatim, path and all — it is not an origin", () => {
-    expect(
-      loadShopConfig(envFor("http://vpay-server:8080", PUBLIC_TOKEN_ENDPOINT))
-        .vpayOauthAudience,
-    ).toBe(PUBLIC_TOKEN_ENDPOINT);
+  it("is read verbatim", async () => {
+    const server = await startVpay();
+    expect(loadShopConfig(envFor(server, PUBLIC_AUDIENCE)).vpayAudience).toBe(
+      PUBLIC_AUDIENCE,
+    );
   });
 
-  it("treats a blank value as unset rather than signing an empty audience", () => {
-    expect(
-      loadShopConfig(envFor("http://vpay-server:8080", "   "))
-        .vpayOauthAudience,
-    ).toBeUndefined();
+  it("treats a blank value as unset rather than addressing an empty audience", async () => {
+    const server = await startVpay();
+    expect(loadShopConfig(envFor(server, "   ")).vpayAudience).toBeUndefined();
   });
 });
 
 describe("createVpayClient", () => {
-  it("reaches vpay at VPAY_API_URL and signs that URL when no audience is configured", async () => {
-    const assertion = await assertionSentBy();
-    const payload = JSON.parse(
-      Buffer.from(assertion.split(".")[1]!, "base64url").toString("utf8"),
-    ) as AssertionPayload;
-    // The default is the URL we POST to — right only when the shop reaches
-    // vpay the way payers do.
-    expect(payload.aud).toMatch(
-      /^http:\/\/127\.0\.0\.1:\d+\/v1\/oauth\/token$/,
-    );
-  });
+  it("signs for VPAY_API_URL when no audience is configured, and a server of that name accepts it", async () => {
+    const server = await startVpay();
 
-  it("passes a configured VPAY_OAUTH_AUDIENCE through to the assertion", async () => {
-    const assertion = await assertionSentBy(PUBLIC_TOKEN_ENDPOINT);
-    const payload = JSON.parse(
-      Buffer.from(assertion.split(".")[1]!, "base64url").toString("utf8"),
-    ) as AssertionPayload;
-    expect(payload.aud).toBe(PUBLIC_TOKEN_ENDPOINT);
+    const client = createVpayClient(loadShopConfig(envFor(server)));
+
+    await expect(client.paymentIntents.list()).resolves.toMatchObject({
+      object: "list",
+    });
+    expect(server.opened).toHaveLength(1);
   });
 });
 
 describe("a shop that reaches vpay by an internal name", () => {
-  it("is refused by the OP audience check with VPAY_OAUTH_AUDIENCE unset", async () => {
-    const verdict = verifyAsTheOpWould(
-      await assertionSentBy(),
-      "shop-merchant",
+  it("is refused with VPAY_AUDIENCE unset", async () => {
+    // The server was configured with its public name; the shop reaches it at
+    // 127.0.0.1. Everything else about the request is correct — the key is
+    // registered and the signature verifies — and the answer is still the
+    // coarse unsigned 401, which says nothing about audiences.
+    const server = await startVpay(PUBLIC_AUDIENCE);
+
+    const client = createVpayClient(loadShopConfig(envFor(server)));
+
+    await expect(client.paymentIntents.list()).rejects.toThrow(
+      /without a signature/u,
     );
-    // Everything else about the assertion is correct — the signature
-    // verifies, `iss`/`sub` are the client id, the lifetime is in range. The
-    // OP still answers `invalid_client`, and nothing in that response says
-    // why.
-    expect(verdict).toEqual({ ok: false, reason: "InvalidAudience" });
+    expect(server.opened).toHaveLength(0);
   });
 
-  it("authenticates once VPAY_OAUTH_AUDIENCE names vpay's own token endpoint", async () => {
-    expect(
-      verifyAsTheOpWould(
-        await assertionSentBy(PUBLIC_TOKEN_ENDPOINT),
-        "shop-merchant",
-      ),
-    ).toEqual({ ok: true });
-  });
+  it("is accepted once VPAY_AUDIENCE names vpay's public name", async () => {
+    const server = await startVpay(PUBLIC_AUDIENCE);
 
-  it("authenticates on the issuer form too, which the OP also accepts", async () => {
-    expect(
-      verifyAsTheOpWould(await assertionSentBy(PUBLIC_ISSUER), "shop-merchant"),
-    ).toEqual({ ok: true });
+    const client = createVpayClient(
+      loadShopConfig(envFor(server, PUBLIC_AUDIENCE)),
+    );
+
+    await expect(client.paymentIntents.list()).resolves.toMatchObject({
+      object: "list",
+    });
+    expect(server.opened).toHaveLength(1);
   });
 });

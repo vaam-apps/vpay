@@ -3,7 +3,7 @@
 //! real WireMock container (issue #47).
 //!
 //! ```text
-//!   raw reqwest + a merchant bearer token   (the merchant's own server)
+//!   a signing client (`support::sealed`)    (the merchant's own server)
 //!     -> GET /v1/account_holders?msisdn=…&payment_method_type=mtn_momo
 //!            -> MTN adapter -> HTTP -> WireMock
 //!            -> { object, payment_method_type, name, verified }
@@ -13,7 +13,7 @@
 //!
 //! It claims the four things only a real request can show:
 //!
-//! 1. the route is **mounted and authenticated** — no token is a `401`,
+//! 1. the route is **mounted and authenticated** — no signature is a `401`,
 //!    exactly as every other `/v1` path is;
 //! 2. a number the rail knows answers `200` with the projected name, and a
 //!    number it does not know answers `200` with `name: null` — over a
@@ -56,13 +56,13 @@ use anyhow::Context as _;
 use serde_json::Value;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 
 mod support;
 
 use support::{
-    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+    ensure_crypto_provider_installed, generate_key, merchant_client_with_scopes, migrated_postgres,
+    sealed::SealedHttp, serve,
 };
 
 const CLIENT_A: &str = "acme-cameroon";
@@ -104,7 +104,6 @@ struct Harness {
     _mtn: ContainerAsync<GenericImage>,
     server: tokio::task::JoinHandle<()>,
     base_url: String,
-    signing_key: LoadedSigningKey,
 }
 
 impl Harness {
@@ -112,40 +111,20 @@ impl Harness {
         format!("{}{path}", self.base_url)
     }
 
-    /// A `/v1` bearer token for `CLIENT_A`, minted with the server's own
-    /// signer.
-    ///
-    /// Raw HTTP rather than `vpay-sdk` here, unlike `confirm_rails.rs`: what
-    /// this file proves is the *server's* route, and the SDK's own coverage
-    /// of it is `sdks/rust/tests/resources.rs` against an HTTP stub of the
-    /// contract. Driving the SDK here would make one failure report two
-    /// things.
-    ///
-    /// **`payments:read`, not `payments:write`.** This is a `GET`, and
-    /// `required_scopes` says a read scope is enough for one — asserting it
-    /// with the write scope would leave the route's actual authorisation
-    /// untested, and a read-only credential is exactly what a merchant would
-    /// issue to the thing that checks nominated destinations.
-    fn bearer(&self) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                CLIENT_A,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                std::collections::HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
-    }
-
     async fn shutdown(self) {
         self.server.abort();
     }
 }
 
-/// A plain HTTP client, the way a merchant's own backend would hold one.
-fn merchant_http() -> reqwest::Client {
+/// A signing HTTP client, the way a merchant's own backend would hold one
+/// (`support::sealed`: cratestack's `ClientEnvelope`, not `vpay-sdk`).
+fn merchant_http() -> SealedHttp {
+    ensure_crypto_provider_installed();
+    SealedHttp::new()
+}
+
+/// A plain one, for the cases that are about what an unsigned caller gets.
+fn plain_http() -> reqwest::Client {
     ensure_crypto_provider_installed();
     reqwest::Client::builder()
         .timeout(Duration::from_secs(30))
@@ -222,7 +201,19 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
             code: "XAF".to_owned(),
             exponent: 0,
         }],
-        merchant_clients: vec![merchant_client(CLIENT_A, MERCHANT_A, jwks_a)],
+        // **`payments:read`, not `payments:write`.** This is a `GET`, and
+        // `required_scopes` says a read scope is enough for one — asserting it
+        // with the write scope would leave the route's actual authorisation
+        // untested, and a read-only credential is exactly what a merchant
+        // would issue to the thing that checks nominated destinations. (A
+        // bearer token carried its scope until VP-3; a signed request's scopes
+        // are its registration's.)
+        merchant_clients: vec![merchant_client_with_scopes(
+            CLIENT_A,
+            MERCHANT_A,
+            jwks_a,
+            &[vpay_api::SCOPE_PAYMENTS_READ],
+        )],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard_client: None,
@@ -266,7 +257,6 @@ async fn harness_with_mtn_at(mtn_url: Option<&str>) -> anyhow::Result<Harness> {
         _mtn: mtn,
         server: served.server,
         base_url: served.base_url,
-        signing_key: served.signing_key,
     })
 }
 
@@ -278,7 +268,7 @@ async fn harness() -> anyhow::Result<Harness> {
 async fn lookup(h: &Harness, msisdn: &str, rail: &str) -> anyhow::Result<(u16, Value)> {
     let response = merchant_http()
         .get(h.url("/v1/account_holders"))
-        .bearer_auth(h.bearer())
+        .signed_by(CLIENT_A)
         .query(&[("msisdn", msisdn), ("payment_method_type", rail)])
         .send()
         .await
@@ -444,9 +434,9 @@ async fn a_number_that_is_not_e164_is_refused_before_the_rail_is_asked() -> anyh
     Ok(())
 }
 
-/// The route is behind the same bearer boundary as every other `/v1` path.
+/// The route is behind the same signed boundary as every other `/v1` path.
 ///
-/// `payment_intents.rs`'s `every_registered_v1_path_answers_401_without_a_token`
+/// `signed_transport.rs`'s `every_v1_route_answers_the_unsigned_401_to_a_plain_request`
 /// walks `V1_ROUTES` and therefore already covers this one the moment it was
 /// added to the table — which is the point of that table being the router's
 /// source. This case is here anyway because *this* route returns a third
@@ -454,11 +444,12 @@ async fn a_number_that_is_not_e164_is_refused_before_the_rail_is_asked() -> anyh
 /// inference from a loop somewhere else, and a reader of this file should be
 /// able to see it.
 #[tokio::test]
-async fn the_route_is_not_reachable_without_a_token() -> anyhow::Result<()> {
+async fn the_route_is_not_reachable_without_a_signature() -> anyhow::Result<()> {
     let h = harness().await?;
 
-    let response = merchant_http()
+    let response = plain_http()
         .get(h.url("/v1/account_holders"))
+        .header("accept", "application/json")
         .query(&[
             ("msisdn", MSISDN_REGISTERED),
             ("payment_method_type", PUSH_RAIL),

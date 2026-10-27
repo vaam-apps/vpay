@@ -77,12 +77,11 @@ use testcontainers_modules::postgres::Postgres as PostgresImage;
 use uuid::Uuid;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator};
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
-    ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    PaymentMethodType, RequestOptions,
+    ConfirmPaymentIntentParams, CreatePaymentIntentParams, IntentStatus, PaymentMethodType,
+    RequestOptions,
 };
 use vpay_worker::{Adapters, Drain, RailConfigs, RecoveryPolicy};
 
@@ -224,7 +223,6 @@ struct Harness {
     /// state no repository method owns.
     pool: PgPool,
     base_url: String,
-    pem_a: String,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
 }
@@ -232,9 +230,8 @@ struct Harness {
 impl Harness {
     fn client(&self) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
@@ -335,7 +332,7 @@ async fn harness() -> anyhow::Result<Harness> {
     );
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
 
     let listener = tokio::net::TcpListener::bind(SocketAddr::from(([127, 0, 0, 1], 0)))
         .await
@@ -359,20 +356,9 @@ async fn harness() -> anyhow::Result<Harness> {
         signing_key.clone(),
         Arc::clone(&repositories),
     ));
-    let merchant_validator = MerchantJwtValidator(
-        JwtValidator::new(
-            format!("{base_url}/v1/oauth/jwks.json"),
-            Duration::from_secs(300),
-            merchant_op.issuer(),
-            vpay_config::MERCHANT_AUDIENCE,
-        )
-        .expect("the vendored-roots JWKS client builds"),
-    );
-
     let deps = router_deps(
         Arc::clone(&repositories),
         merchant_op,
-        merchant_validator,
         // No `dashboard_client` in either suite's configuration, so no
         // `/dash/v1` nest is mounted at all — see `support::router_deps`.
         None,
@@ -390,7 +376,6 @@ async fn harness() -> anyhow::Result<Harness> {
         repositories,
         pool,
         base_url,
-        pem_a,
         adapters: Arc::new(support::adapters_by_code()),
         rails: Arc::new(rail_configs(&config)),
     })
