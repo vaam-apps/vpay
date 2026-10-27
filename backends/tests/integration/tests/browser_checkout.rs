@@ -254,6 +254,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

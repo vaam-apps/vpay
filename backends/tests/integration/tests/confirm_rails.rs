@@ -363,6 +363,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

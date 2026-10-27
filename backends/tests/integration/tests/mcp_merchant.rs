@@ -299,6 +299,7 @@ fn config_with(base_url: &str, jwks: [Value; 4], surfaces: Option<Vec<String>>) 
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

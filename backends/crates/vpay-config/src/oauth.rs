@@ -370,7 +370,13 @@ pub struct MerchantClient {
     /// at boot ([`ConfigError::DisallowedMerchantGrant`](crate::ConfigError::DisallowedMerchantGrant)) —
     /// the device flow and refresh tokens are dropped outright, not merely
     /// discouraged.
+    ///
+    /// Defaults to empty so that a registration without the OAuth half
+    /// (`auth.methods` without `machine_tokens`, ADR-0037) need not write it;
+    /// with `machine_tokens` permitted an empty list still fails to mint a
+    /// token, exactly as before.
     #[garde(skip)]
+    #[serde(default)]
     pub grant_types: Vec<GrantType>,
     /// Scopes this client may request — **and**, since it is what a token
     /// carries when the client requests none, what it is actually authorised

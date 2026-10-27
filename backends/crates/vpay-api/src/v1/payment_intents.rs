@@ -3422,6 +3422,7 @@ mod tests {
             dashboard: None,
             service_clients: Vec::new(),
             routing: Default::default(),
+            auth: Default::default(),
         })
         .expect("the fixture's rails project onto the port")
     }

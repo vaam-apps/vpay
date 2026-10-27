@@ -1375,6 +1375,7 @@ mod tests {
             Method::DELETE,
             Method::OPTIONS,
         ] {
+            auth: Default::default(),
             assert_eq!(
                 required_scopes(&method),
                 [SCOPE_PAYMENTS_WRITE],

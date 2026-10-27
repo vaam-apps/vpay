@@ -1,0 +1,25 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-1).
+#
+# A webhook endpoint with `secrets` while `hmac_webhooks` is not permitted
+# (AuthMethodDisabled). Until sealed delivery lands (VP-8) this means no merchant
+# webhooks at all.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+    webhooks:
+      - id: primary
+        url: http://receiver.internal/webhooks
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

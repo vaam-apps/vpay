@@ -736,6 +736,11 @@ pub struct Config {
     #[garde(skip)]
     #[serde(default)]
     pub routing: Routing,
+    /// Which ways of authenticating this deployment permits (ADR-0037).
+    /// Absent permits all of them. See [`crate::auth`].
+    #[garde(skip)]
+    #[serde(default)]
+    pub auth: crate::auth::AuthConfig,
 }
 
 /// `routing:`: the deployment's inputs to the router's score.
@@ -964,7 +969,15 @@ impl Config {
         // resolution is discarded here on purpose — this call exists only
         // to fail boot early, and the router build (`vpay_api::router`) is
         // where the resolved value is actually used.
-        self.deployment.enabled_surfaces()?;
+        let surfaces = self.deployment.enabled_surfaces()?;
+
+        // Right after, for the same reason: which ways of authenticating are
+        // permitted (ADR-0037) decides which blocks may exist at all, so a
+        // contradiction is named here, not as whichever per-merchant rule
+        // would have tripped on the block first.
+        let auth_methods = self.auth.resolve()?;
+        crate::auth::validate_auth_methods(self, &auth_methods, surfaces)?;
+        let machine_tokens = auth_methods.permits(crate::auth::AuthMethod::MachineTokens);
 
         // Before any per-merchant rule, because it is not one: this is a
         // property of the whole deployment, and a file that carries it is
@@ -1125,7 +1138,7 @@ impl Config {
         }
 
         for merchant in &self.merchant_clients {
-            validate_merchant_client(merchant)?;
+            validate_merchant_client(merchant, machine_tokens)?;
             validate_publishable_keys(merchant, livemode)?;
             validate_display_name(merchant)?;
             validate_checkout_origins(merchant, livemode)?;
@@ -1492,12 +1505,26 @@ fn validate_required_rail_keys(provider: &ProviderHost, livemode: bool) -> Resul
 /// four that is about what a *correctly shaped* registration would go on to
 /// do at runtime, so a config that is malformed in a more basic way should
 /// be reported as that instead.
-fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError> {
+fn validate_merchant_client(
+    merchant: &MerchantClient,
+    machine_tokens: bool,
+) -> Result<(), ConfigError> {
     if merchant.client_secret.is_some() {
         return Err(ConfigError::ClientSecretPresent(merchant.client_id.clone()));
     }
+    // The OAuth half of a registration exists to mint and verify a bearer
+    // token. Without `machine_tokens` it is refused if present
+    // (`validate_auth_methods`) and not required here.
+    if !machine_tokens {
+        return Ok(());
+    }
     if !jwks_has_at_least_one_key(&merchant.jwks) {
         return Err(ConfigError::EmptyMerchantJwks(merchant.client_id.clone()));
+    }
+    if merchant.grant_types.is_empty() {
+        return Err(ConfigError::MerchantGrantTypesMissing {
+            client_id: merchant.client_id.clone(),
+        });
     }
     for grant in &merchant.grant_types {
         if *grant != GrantType::ClientCredentials {
@@ -2622,6 +2649,7 @@ mod tests {
     fn valid_config() -> Config {
         Config {
             routing: Default::default(),
+            auth: Default::default(),
             deployment: Deployment {
                 name: "test".to_owned(),
                 livemode: false,
@@ -2788,6 +2816,146 @@ merchant_clients:
                 "{fixture}: {err:?}"
             );
         }
+    }
+
+    // ------------------------------------------------------ auth.methods ---
+
+    /// ADR-0037, one fixture per rule: each file is valid in every respect but
+    /// the one it names, so the variant that comes back is the rule under test
+    /// and not whichever other rule tripped first.
+    #[test]
+    fn every_auth_methods_rule_refuses_its_fixture_with_its_own_variant() {
+        use crate::AuthMethod::{HmacWebhooks, HumanLogin, Keypair, MachineTokens};
+        let disabled = |method, key: &str| ConfigError::AuthMethodDisabled {
+            method,
+            key: key.to_owned(),
+        };
+        for (fixture, expected) in [
+            ("auth-methods-empty.yml", ConfigError::NoAuthMethods),
+            (
+                "auth-methods-unknown.yml",
+                ConfigError::UnknownAuthMethod("oauth".to_owned()),
+            ),
+            (
+                "auth-methods-duplicate.yml",
+                ConfigError::DuplicateAuthMethod(Keypair),
+            ),
+            (
+                "auth-methods-human-login.yml",
+                ConfigError::AuthMethodUnavailable(HumanLogin),
+            ),
+            ("auth-methods-no-way-in.yml", ConfigError::NoWayIn),
+            (
+                "auth-methods-mcp-without-tokens.yml",
+                ConfigError::McpNeedsMachineTokens,
+            ),
+            (
+                "auth-methods-tokens-not-configured.yml",
+                ConfigError::AuthMethodNotConfigured {
+                    method: MachineTokens,
+                    key: "merchant_clients[].jwks".to_owned(),
+                },
+            ),
+            (
+                "auth-methods-jwks-without-tokens.yml",
+                disabled(MachineTokens, "merchant_clients[acme-cameroon].jwks"),
+            ),
+            (
+                "auth-methods-grant-types-without-tokens.yml",
+                disabled(MachineTokens, "merchant_clients[acme-cameroon].grant_types"),
+            ),
+            (
+                "auth-methods-audiences-without-tokens.yml",
+                disabled(
+                    MachineTokens,
+                    "merchant_clients[acme-cameroon].allowed_audiences",
+                ),
+            ),
+            (
+                "auth-methods-cose-keys-without-keypair.yml",
+                disabled(Keypair, "merchant_clients[acme-cameroon].cose_keys"),
+            ),
+            (
+                "auth-methods-dashboard-without-keypair.yml",
+                disabled(Keypair, "dashboard"),
+            ),
+            (
+                "auth-methods-service-clients-without-keypair.yml",
+                disabled(Keypair, "service_clients"),
+            ),
+            (
+                "auth-methods-webhooks-without-hmac.yml",
+                disabled(
+                    HmacWebhooks,
+                    "merchant_clients[acme-cameroon].webhooks[primary]",
+                ),
+            ),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert_eq!(err, expected, "{fixture}");
+            assert_eq!(
+                vpay_core::Classify::category(&err).exit_code(),
+                78,
+                "{fixture}: a contradiction in auth.methods is a deploy to fix"
+            );
+        }
+    }
+
+    /// A misspelt key under `auth:` must not be dropped: a deployment that
+    /// believes it set `methods` and did not would permit all four.
+    #[test]
+    fn a_misspelt_key_under_auth_is_a_shape_error() {
+        let err = load_fixture("auth-methods-unknown-field.yml").expect_err("deny_unknown_fields");
+        assert!(
+            matches!(&err, ConfigError::Shape(m) if m.contains("method")),
+            "{err:?}"
+        );
+    }
+
+    /// The four shapes the key is for, each loading and resolving to exactly
+    /// what it names.
+    #[test]
+    fn the_supported_auth_shapes_load_and_resolve_to_what_they_name() {
+        use crate::AuthMethod::{HmacWebhooks, Keypair, MachineTokens};
+        for (fixture, expected) in [
+            ("auth-methods-keypair-only.yml", vec![Keypair]),
+            ("auth-methods-tokens-only.yml", vec![MachineTokens]),
+            (
+                "auth-methods-keypair-and-hmac.yml",
+                vec![Keypair, HmacWebhooks],
+            ),
+            (
+                "auth-methods-both-ways-on-v1.yml",
+                vec![Keypair, MachineTokens],
+            ),
+        ] {
+            let config = load_fixture(fixture).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let methods = config.auth_methods().expect("validate_all resolved it");
+            assert!(methods.is_explicit(), "{fixture}");
+            assert_eq!(
+                methods.permitted().collect::<Vec<_>>(),
+                expected,
+                "{fixture}"
+            );
+        }
+    }
+
+    /// Absent `auth.methods` is the all-four default, so every config written
+    /// before the key keeps booting: the shipped example file carries a `jwks`,
+    /// webhooks and `cose_keys` blocks, and none of them is refused.
+    #[test]
+    fn an_absent_auth_methods_permits_every_method_and_the_example_still_loads() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("the shipped example loads under the default");
+        let methods = config.auth_methods().expect("resolves");
+        assert!(!methods.is_explicit());
+        assert_eq!(methods.permitted().count(), 4);
+        // Permitted is not served: nothing restores staff sign-in yet.
+        assert!(
+            !methods.served().any(|m| m == crate::AuthMethod::HumanLogin),
+            "human_login is permitted by the default and served by nothing"
+        );
     }
 
     /// The refusal is the operator's whole upgrade instruction: it names the
@@ -4027,6 +4195,7 @@ merchant_clients:
     fn a_livemode_deployment_cannot_derive_a_plaintext_callback_url() {
         let config = Config {
             routing: Default::default(),
+            auth: Default::default(),
             deployment: Deployment {
                 name: "prod".to_owned(),
                 livemode: true,
@@ -5337,6 +5506,16 @@ providers:
         assert_eq!(
             err,
             ConfigError::EmptyMerchantJwks("acme-cameroon".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_merchant_client_with_no_grant_types_is_rejected_while_tokens_are_permitted() {
+        assert_eq!(
+            load_fixture("oauth-merchant-grant-types-missing.yml").err(),
+            Some(ConfigError::MerchantGrantTypesMissing {
+                client_id: "acme-cameroon".to_owned(),
+            })
         );
     }
 

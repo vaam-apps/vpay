@@ -191,6 +191,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

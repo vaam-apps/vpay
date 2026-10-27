@@ -19,11 +19,13 @@
 
 use serde::{Deserialize, Serialize};
 
+pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod console;
 pub mod oauth;
 pub mod signal;
+pub use auth::{AuthConfig, AuthMethod, AuthMethods};
 pub use cli::{
     CallbacksCommand, CommonArgs, LogFormat, ServerArgs, ServerCommand, StaffCommand, WorkerArgs,
 };
@@ -1495,6 +1497,100 @@ pub enum ConfigError {
          {SURFACE_BUSINESS}, {SURFACE_MANAGEMENT}, {SURFACE_MCP}"
     )]
     UnknownSurface(String),
+
+    /// A merchant registration with `machine_tokens` permitted declares no
+    /// `grant_types`. It used to be a missing-field shape error; the field
+    /// defaults to empty since ADR-0037 (a keypair-only registration has no
+    /// OAuth half), so the rule is named here instead of lost.
+    #[error(
+        "merchant_clients[{client_id}] declares no grant_types; with machine_tokens permitted it \
+         must declare [client_credentials]"
+    )]
+    MerchantGrantTypesMissing {
+        /// The registration.
+        client_id: String,
+    },
+
+    /// `auth.methods` is present and an empty list (ADR-0037). A deployment
+    /// that permits no way of authenticating is a misconfiguration; absent is
+    /// legal and permits every method (see [`AuthConfig`]).
+    #[error(
+        "auth.methods is present and empty; a deployment that permits no way of authenticating \
+         is a misconfiguration. Name one or more of: keypair, machine_tokens, hmac_webhooks \
+         (or delete the key to permit every method)"
+    )]
+    NoAuthMethods,
+
+    /// `auth.methods` names something that is not a method.
+    #[error(
+        "auth.methods contains an unknown value {0:?}; the legal set is: keypair, \
+         machine_tokens, hmac_webhooks, human_login"
+    )]
+    UnknownAuthMethod(String),
+
+    /// `auth.methods` names one method twice. Refused rather than merged: a
+    /// list that repeats itself was edited by someone who meant to change it.
+    #[error("auth.methods names {0} more than once; each method is listed at most once")]
+    DuplicateAuthMethod(AuthMethod),
+
+    /// `auth.methods` names a method this release cannot serve. Today that is
+    /// `human_login` alone: its blocks (`staff_auth`, `dashboard_client`) are
+    /// retired keys until staff sign-in is restored (VPA-3), so listing it
+    /// would promise a door that is not there. Delete it from the list.
+    #[error(
+        "auth.methods names {0}, which is not available in this release; delete it from the \
+         list (an absent auth.methods permits it without serving it)"
+    )]
+    AuthMethodUnavailable(AuthMethod),
+
+    /// `auth.methods` permits neither `keypair` nor `machine_tokens`, so
+    /// nothing could authenticate a caller of `/v1`. Refused rather than
+    /// booted into a deployment that answers 401 to everyone.
+    #[error(
+        "auth.methods permits neither keypair nor machine_tokens; nothing could authenticate a \
+         caller of /v1. Add one of them"
+    )]
+    NoWayIn,
+
+    /// `deployment.surfaces` names `mcp` and `auth.methods` does not permit
+    /// `machine_tokens`. The MCP endpoint is bearer-only (ADR-0033): it
+    /// validates a token this deployment's OP minted, so without the method it
+    /// would mount and refuse every call.
+    #[error(
+        "deployment.surfaces names mcp but auth.methods does not permit machine_tokens; the MCP \
+         endpoint authenticates a bearer token and could never accept a call. Add machine_tokens \
+         to auth.methods or remove mcp from deployment.surfaces"
+    )]
+    McpNeedsMachineTokens,
+
+    /// `auth.methods` names a method explicitly and the block that makes it
+    /// run is missing, e.g. `machine_tokens` with no `merchant_clients` entry
+    /// carrying a `jwks`. An absent `auth.methods` never raises this: it
+    /// permits a method and serves it only where its block is.
+    #[error(
+        "auth.methods names {method} but {key} is not configured; add it, or delete {method} \
+         from auth.methods"
+    )]
+    AuthMethodNotConfigured {
+        /// The method named.
+        method: AuthMethod,
+        /// The configuration it needs.
+        key: String,
+    },
+
+    /// A block is present for a method `auth.methods` does not permit.
+    /// Dormant configuration is refused so that a door an operator believes
+    /// is shut cannot be one that is only unwatched.
+    #[error(
+        "{key} is configured but auth.methods does not permit {method}; delete {key}, or add \
+         {method} to auth.methods"
+    )]
+    AuthMethodDisabled {
+        /// The method that is not permitted.
+        method: AuthMethod,
+        /// The configuration that belongs to it.
+        key: String,
+    },
 }
 
 impl vpay_core::Classify for ConfigError {

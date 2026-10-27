@@ -161,6 +161,7 @@ fn config_with(code: &str) -> Config {
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 
