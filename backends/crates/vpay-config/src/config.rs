@@ -4123,6 +4123,13 @@ merchant_clients:
                 "NOTCHPAY_SANDBOX_MERCHANT_JWK_N".to_owned(),
                 "placeholder-rsa-modulus".to_owned(),
             ),
+            // A throwaway Ed25519 public key (from `cargo xtask
+            // gen-envelope-key`; its seed was discarded): `cose_keys` must be
+            // a real curve point, which a placeholder string is not.
+            (
+                "NOTCHPAY_SANDBOX_MERCHANT_COSE_KEY".to_owned(),
+                "--wZufB1tlx1anIhfl_FRzdHGPehraNt7iWLaKIT5gU".to_owned(),
+            ),
         ]));
         let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "notchpay-sandbox", &env)
             .expect("the notchpay-sandbox overlay loads");

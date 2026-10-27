@@ -62,11 +62,14 @@ providers:
     callbacks:
       register: check
 
-# The one merchant this profile authenticates. Generate its keypair with
-#     cargo xtask gen-signing-key --out .e2e/notchpay-sandbox-merchant
-# and put the printed `kid` and modulus `n` in the env file as
-# NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / NOTCHPAY_SANDBOX_MERCHANT_JWK_N. vpay
-# holds the public half only (ADR-0010); `.e2e/` is git-ignored.
+# The one merchant this profile authenticates. It signs `/v1` requests with an
+# Ed25519 key generated with
+#     cargo xtask gen-envelope-key --out .e2e/notchpay-sandbox-merchant --name signing
+# whose printed public key goes in the env file as
+# NOTCHPAY_SANDBOX_MERCHANT_COSE_KEY (`cose_keys` below). The RS256
+# NOTCHPAY_SANDBOX_MERCHANT_JWK_KID / _JWK_N (from `cargo xtask gen-signing-key`)
+# are what the OP's token endpoint still checks until VP-4; nothing on `/v1`
+# reads them. vpay holds public halves only; `.e2e/` is git-ignored.
 merchant_clients:
   - client_id: notchpay-sandbox-merchant
     merchant_id: notchpay-sandbox-merchant
@@ -79,6 +82,9 @@ merchant_clients:
           alg: RS256
           n: ${NOTCHPAY_SANDBOX_MERCHANT_JWK_N}
           e: AQAB
+    cose_keys:
+      - public_key: ${NOTCHPAY_SANDBOX_MERCHANT_COSE_KEY}
+        label: notchpay-sandbox
     grant_types: [client_credentials]
     scopes: [payments:write, payments:read]
     allowed_audiences: ["vpay:v1"]

@@ -70,15 +70,13 @@ use sqlx::PgPool;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use uuid::Uuid;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::{PaymentIntents, Repositories};
-use vpay_sdk::{
-    CreatePaymentIntentParams, Credentials, IntentStatus, PaymentMethodType, RequestOptions,
-};
+use vpay_sdk::{CreatePaymentIntentParams, IntentStatus, PaymentMethodType, RequestOptions};
 use vpay_worker::{Adapters, RailConfigs, RecoveryPolicy};
 
 mod support;
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client_with_publishable_keys,
@@ -184,8 +182,6 @@ struct Harness {
     pool: PgPool,
     base_url: String,
     mtn_url: String,
-    pem_a: String,
-    signing_key: LoadedSigningKey,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
 }
@@ -194,30 +190,14 @@ impl Harness {
     /// Merchant A's own SDK client — the *merchant* half of every test here.
     fn a(&self) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
 
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
-    }
-
-    /// A `/v1` bearer token for `client_id`, minted with the server's own
-    /// signer — for the raw requests the SDK cannot make.
-    fn bearer(&self, client_id: &str) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                std::collections::HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
     }
 
     async fn shutdown(self) {
@@ -293,7 +273,7 @@ async fn harness() -> anyhow::Result<Harness> {
     );
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
     let mtn_for_config = mtn_url.clone();
@@ -321,8 +301,6 @@ async fn harness() -> anyhow::Result<Harness> {
         pool,
         base_url: served.base_url,
         mtn_url,
-        pem_a,
-        signing_key: served.signing_key,
         adapters: Arc::new(support::adapters_by_code()),
         rails: Arc::new(rail_configs(&config)),
     })
@@ -371,9 +349,9 @@ async fn create_intent(h: &Harness) -> anyhow::Result<(String, String)> {
         .map_err(|e| anyhow::anyhow!("creating a payment intent through the SDK: {e}"))?;
     assert_eq!(intent.status, IntentStatus::RequiresPaymentMethod);
 
-    let body: Value = browser()
+    let body: Value = SealedHttp::new()
         .get(h.url(&format!("/v1/payment_intents/{}", intent.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("reading the credential the SDK does not model")?
@@ -949,17 +927,19 @@ async fn every_browser_route_is_reachable_without_a_merchant_token() -> anyhow::
     assert_eq!(checked, 5, "five routes, one method each");
 
     // The contrast that makes the separation real rather than nominal: the
-    // *same* relative path is behind the token boundary under `/v1` and
+    // *same* relative path is behind the signature boundary under `/v1` and
     // outside it under `/v1/browser`. If the browser routes were ever folded
-    // into `V1_ROUTES`, the second answer here would become 401 — and
-    // `payment_intents.rs`'s boundary walk would insist that was correct.
+    // into `V1_ROUTES`, the first answer here would become 401 for a path that
+    // is not a merchant operation — and `payment_intents.rs`'s boundary walk
+    // would insist that was correct.
     //
     // Two of the five paths (`/checkout/sessions/{id}/return` and
-    // `/checkout/origins`) are mounted nowhere under `/v1`. They still answer
-    // 401 there, and that is the point: the `/v1` nest's authentication layer
-    // runs before axum matches a route, so *every* path under that prefix is
-    // behind the boundary — which is exactly why the browser nest has to be
-    // mounted outside it rather than as a path within it.
+    // `/checkout/origins`) are mounted nowhere under `/v1`. An unsigned
+    // request for them is the router's honest `404` (the envelope layer binds
+    // only the operations `V1_ROUTES` registers and lets a plain request for
+    // anything else through to the fallback, `V1Binding`'s `NotAnOp`), where
+    // a path that *is* a merchant operation is the coarse `401`. Either way it
+    // is not what the browser surface answers, which is the claim.
     for route in vpay_api::BROWSER_ROUTES {
         let path = concrete(route.path);
         for method in route.methods {
@@ -973,12 +953,18 @@ async fn every_browser_route_is_reachable_without_a_merchant_token() -> anyhow::
                     .body(""),
                 other => panic!("this test does not know how to send {other}"),
             };
-            let merchant = build(h.url(&format!("/v1{path}"))).send().await?;
+            let merchant = build(h.url(&format!("/v1{path}")))
+                .header("accept", "application/json")
+                .send()
+                .await?;
             let payer = build(h.url(&format!("/v1/browser{path}"))).send().await?;
+            let is_merchant_operation = vpay_api::V1_ROUTES
+                .iter()
+                .any(|r| r.path == route.path && r.methods.contains(method));
             assert_eq!(
                 merchant.status().as_u16(),
-                401,
-                "{method} /v1{path} is the merchant surface and must demand a token"
+                if is_merchant_operation { 401 } else { 404 },
+                "{method} /v1{path} is the merchant surface and must demand a signature if it is an operation there"
             );
             assert_ne!(
                 payer.status().as_u16(),
@@ -1010,9 +996,9 @@ async fn the_client_secret_is_on_create_and_retrieve_and_never_on_the_list() -> 
 
     // The merchant's own retrieve carries it too, so a merchant who lost the
     // create response can recover it without creating a second intent.
-    let retrieved: Value = browser()
+    let retrieved: Value = SealedHttp::new()
         .get(h.url(&format!("/v1/payment_intents/{id}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await?
         .json()
@@ -1023,9 +1009,9 @@ async fn the_client_secret_is_on_create_and_retrieve_and_never_on_the_list() -> 
         "{retrieved:#}"
     );
 
-    let listed: Value = browser()
+    let listed: Value = SealedHttp::new()
         .get(h.url("/v1/payment_intents"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await?
         .json()

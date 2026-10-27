@@ -47,15 +47,13 @@ use serde_json::Value;
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{
-    CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost,
-};
+use vpay_config::{CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::customers::{CreateCustomerParams, ListCustomersParams, UpdateCustomerParams};
-use vpay_sdk::{CreatePaymentIntentParams, Credentials, PaymentMethodType, RequestOptions};
+use vpay_sdk::{CreatePaymentIntentParams, PaymentMethodType, RequestOptions};
 
 mod support;
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client,
@@ -108,43 +106,23 @@ struct Harness {
     /// not — `touch_last_used` only ever moves the clock **forward**.
     pool: PgPool,
     base_url: String,
-    pem_a: String,
-    pem_b: String,
-    signing_key: LoadedSigningKey,
 }
 
 impl Harness {
-    fn sdk(&self, client_id: &str, pem: &str) -> vpay_sdk::Client {
+    fn sdk(&self, client_id: &str) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(client_id, pem).expect("the generated PEM parses as RSA"),
-            )
+            .credentials(support::sealed::sdk_credentials(client_id))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
 
     fn a(&self) -> vpay_sdk::Client {
-        self.sdk(CLIENT_A, &self.pem_a)
+        self.sdk(CLIENT_A)
     }
 
     fn b(&self) -> vpay_sdk::Client {
-        self.sdk(CLIENT_B, &self.pem_b)
-    }
-
-    /// A bearer token for `client_id`, for the raw requests the SDK cannot
-    /// make — the byte-level 404 comparison needs the response *bodies*, and
-    /// the SDK maps them into a typed error.
-    fn bearer(&self, client_id: &str) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
+        self.sdk(CLIENT_B)
     }
 
     fn url(&self, path: &str) -> String {
@@ -222,8 +200,8 @@ async fn harness() -> anyhow::Result<Harness> {
     let (container, repositories, pool) = migrated_postgres().await?;
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
-    let (pem_b, jwks_b) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
+    let (_pem_b, jwks_b) = generate_key();
 
     let served = serve(&repositories, &server_pem, |base_url| {
         config_with(base_url, jwks_a, jwks_b)
@@ -236,16 +214,11 @@ async fn harness() -> anyhow::Result<Harness> {
         repositories,
         pool,
         base_url: served.base_url,
-        pem_a,
-        pem_b,
-        signing_key: served.signing_key,
     })
 }
 
-fn raw_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .build()
-        .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed")
+fn raw_client() -> SealedHttp {
+    SealedHttp::new()
 }
 
 /// `CreateCustomerParams` with **only a phone number** — the maintainer's
@@ -505,9 +478,9 @@ async fn a_phone_only_customer_attaches_to_an_intent_and_the_intent_renders_it()
 async fn a_customer_naming_nobody_is_a_400_and_not_the_databases_503() -> anyhow::Result<()> {
     let h = harness().await?;
 
-    let response = raw_client()
+    let response = SealedHttp::new()
         .post(h.url("/v1/customers"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "cus-nobody")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body("")
@@ -649,7 +622,6 @@ async fn a_foreign_customer_and_a_missing_one_are_the_identical_404() -> anyhow:
         .expect("merchant B's customer");
 
     let client = raw_client();
-    let token = h.bearer(CLIENT_A);
 
     for (method, suffix) in [("GET", ""), ("POST", ""), ("DELETE", "")] {
         let mut bodies = Vec::new();
@@ -663,7 +635,7 @@ async fn a_foreign_customer_and_a_missing_one_are_the_identical_404() -> anyhow:
                     .body("name=Mallory"),
                 _ => client.delete(url),
             };
-            request = request.bearer_auth(&token);
+            request = request.signed_by(CLIENT_A);
             if method != "GET" {
                 // A distinct key per (method, id) pair: a replayed key would
                 // answer the *stored* response and this comparison would be
@@ -1057,9 +1029,9 @@ async fn an_address_round_trips_is_replaced_whole_and_is_cleared_by_an_empty_val
     // 3. `address=` clears it. Sent as the raw body rather than through the
     //    SDK's `Some(None)` as well, so this is a statement about the WIRE
     //    and not only about the SDK's encoding of it.
-    let cleared = raw_client()
+    let cleared = SealedHttp::new()
         .post(h.url(&format!("/v1/customers/{}", created.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "cus-address-3")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body("address=")
@@ -1107,9 +1079,9 @@ async fn a_country_that_is_not_alpha_2_is_a_400_and_not_the_databases_503() -> a
     let h = harness().await?;
 
     for refused in ["CMR", "Cameroon", "237"] {
-        let response = raw_client()
+        let response = SealedHttp::new()
             .post(h.url("/v1/customers"))
-            .bearer_auth(h.bearer(CLIENT_A))
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", format!("bad-country-{refused}"))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(format!(
@@ -1218,9 +1190,9 @@ async fn a_gps_point_round_trips_as_integers_and_is_replaced_and_cleared_with_th
     // 2. On the wire, as integers. Read raw rather than through the SDK,
     //    because the SDK's `i64` would decode `4061000.0` back to `4061000`
     //    and hide exactly the thing this asserts.
-    let raw = raw_client()
+    let raw = SealedHttp::new()
         .get(h.url(&format!("/v1/customers/{}", created.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("retrieving the customer with a point")?;
@@ -1328,9 +1300,9 @@ async fn a_gps_point_round_trips_as_integers_and_is_replaced_and_cleared_with_th
         Some(LATITUDE)
     );
 
-    let cleared = raw_client()
+    let cleared = SealedHttp::new()
         .post(h.url(&format!("/v1/customers/{}", created.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "cus-gps-4")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body("address=")
@@ -1402,9 +1374,9 @@ async fn a_malformed_or_half_written_coordinate_is_a_400_and_not_the_databases_5
         ("latitude-alone", "address[latitude_microdeg]=4061000"),
         ("longitude-alone", "address[longitude_microdeg]=9786000"),
     ] {
-        let response = raw_client()
+        let response = SealedHttp::new()
             .post(h.url("/v1/customers"))
-            .bearer_auth(h.bearer(CLIENT_A))
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", format!("bad-coordinate-{case}"))
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body(format!("phone={CANONICAL_PHONE}&{body}"))
@@ -1480,9 +1452,9 @@ async fn a_delete_removes_the_row_and_answers_the_stripe_deleted_shape() -> anyh
 
     // And the response body carries none of the payer's details — the whole
     // reason it is the deleted shape and not the customer.
-    let raw = raw_client()
+    let raw = SealedHttp::new()
         .delete(h.url(&format!("/v1/customers/{}", customer.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "del-again")
         .send()
         .await
@@ -1644,9 +1616,9 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
 
     // 3. The object still resolves, and says what happened. A `404` here
     //    would make every merchant record naming this `cus_…` dangle.
-    let raw = raw_client()
+    let raw = SealedHttp::new()
         .get(h.url(&format!("/v1/customers/{}", customer.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("retrieving an anonymised customer")?;
@@ -1667,9 +1639,9 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
     // 4a. It cannot be undone by an update. `at_least_one_identifier` would
     //     not object — `[redacted]` is not NULL — so this has to be refused
     //     above the statement or an erasure is reversible with one `POST`.
-    let refused = raw_client()
+    let refused = SealedHttp::new()
         .post(h.url(&format!("/v1/customers/{}", customer.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "un-erase-a-customer")
         .header("Content-Type", "application/x-www-form-urlencoded")
         .body("name=Ada%20Ngo")
@@ -1702,9 +1674,9 @@ async fn a_customer_with_payment_history_is_anonymised_rather_than_deleted() -> 
     // 5. A second DELETE is idempotent on the object's own state — not on the
     //    `Idempotency-Key`, which only covers a replay of the same request —
     //    and writes no second event.
-    let again = raw_client()
+    let again = SealedHttp::new()
         .delete(h.url(&format!("/v1/customers/{}", customer.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "erase-again-different-key")
         .send()
         .await
@@ -2639,9 +2611,9 @@ async fn an_erasure_through_a_session_never_reaches_an_intent_that_names_another
         "Y's charge starts out carrying Y's MSISDN"
     );
 
-    let erased = raw_client()
+    let erased = SealedHttp::new()
         .delete(h.url(&format!("/v1/customers/{x}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "erase-x-not-y")
         .send()
         .await
@@ -2669,9 +2641,9 @@ async fn an_erasure_through_a_session_never_reaches_an_intent_that_names_another
     assert!(y_is_live, "erasing X must not erase Y");
 
     // Y's own erasure still reaches Y's payment, through the intent.
-    let erased = raw_client()
+    let erased = SealedHttp::new()
         .delete(h.url(&format!("/v1/customers/{y}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "erase-y")
         .send()
         .await
@@ -2735,9 +2707,9 @@ async fn stage_contested_intent(
         .and_then(Value::as_str)
         .context("a session id")?
         .to_owned();
-    let expired = raw_client()
+    let expired = SealedHttp::new()
         .post(h.url(&format!("/v1/checkout/sessions/{old_session}/expire")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .send()
         .await
@@ -2779,9 +2751,9 @@ fn spawn_session_create(
     intent: &str,
     customer: &str,
 ) -> tokio::task::JoinHandle<anyhow::Result<(u16, Value)>> {
-    let pending = raw_client()
+    let pending = SealedHttp::new()
         .post(h.url("/v1/checkout/sessions"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .form(&[
             ("payment_intent", intent),
@@ -2802,9 +2774,9 @@ fn spawn_erasure(
     h: &Harness,
     customer: &str,
 ) -> tokio::task::JoinHandle<anyhow::Result<(u16, Value)>> {
-    let pending = raw_client()
+    let pending = SealedHttp::new()
         .delete(h.url(&format!("/v1/customers/{customer}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .send();
     tokio::spawn(async move {
@@ -3188,7 +3160,6 @@ async fn an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier(
     let h = harness().await?;
     let sdk = h.a();
     let client = raw_client();
-    let token = h.bearer(CLIENT_A);
 
     // `true` is the anonymise branch (an intent references the customer, so
     // the row survives with `[redacted]` on it); `false` is the hard delete.
@@ -3245,11 +3216,11 @@ async fn an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier(
         // (2) The update. It claims its key, then blocks on the lock above.
         let update = tokio::spawn({
             let url = h.url(&format!("/v1/customers/{}", customer.id));
-            let (client, token, key) = (client.clone(), token.clone(), key.clone());
+            let (client, key) = (client.clone(), key.clone());
             async move {
                 client
                     .post(url)
-                    .bearer_auth(token)
+                    .signed_by(CLIENT_A)
                     .header("Idempotency-Key", key)
                     .header("Content-Type", "application/x-www-form-urlencoded")
                     .body("metadata[race]=lost")
@@ -3276,11 +3247,11 @@ async fn an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier(
         // (4) The erasure, queued behind the update on the customer's row.
         let erase = tokio::spawn({
             let url = h.url(&format!("/v1/customers/{}", customer.id));
-            let (client, token, key) = (client.clone(), token.clone(), format!("del-{round}"));
+            let (client, key) = (client.clone(), format!("del-{round}"));
             async move {
                 client
                     .delete(url)
-                    .bearer_auth(token)
+                    .signed_by(CLIENT_A)
                     .header("Idempotency-Key", key)
                     .send()
                     .await
@@ -3386,7 +3357,7 @@ async fn an_update_that_loses_the_race_to_an_erasure_stores_no_payer_identifier(
         // row, and must not hand the payer back.
         let replayed = client
             .post(h.url(&format!("/v1/customers/{}", customer.id)))
-            .bearer_auth(&token)
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", &key)
             .header("Content-Type", "application/x-www-form-urlencoded")
             .body("metadata[race]=lost")
@@ -4041,9 +4012,9 @@ async fn create_session(
     client_id: &str,
     fields: &[(&str, &str)],
 ) -> anyhow::Result<(u16, Value)> {
-    let response = raw_client()
+    let response = SealedHttp::new()
         .post(h.url("/v1/checkout/sessions"))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .form(fields)
         .send()
@@ -4265,9 +4236,9 @@ async fn a_sessions_customer_is_inherited_supplied_or_a_refused_contradiction() 
         "this assertion is only about `checkout_sessions` if no intent names Y"
     );
 
-    let erased = raw_client()
+    let erased = SealedHttp::new()
         .delete(h.url(&format!("/v1/customers/{y}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("Idempotency-Key", "delete-a-session-customer")
         .send()
         .await

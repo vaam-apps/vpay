@@ -33,7 +33,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
+import { createStripeHttpClient } from "@vaam-apps/vpay-sdk/stripe";
 
 const BASE_URL = process.env.VPAY_BASE_URL ?? "http://localhost:18080";
 const CLIENT_ID = process.env.VPAY_MERCHANT_CLIENT_ID ?? "demo-merchant";
@@ -42,11 +42,19 @@ const CLIENT_ID = process.env.VPAY_MERCHANT_CLIENT_ID ?? "demo-merchant";
 // `gen-demo-keys` writes into the repository root's `.e2e/`. A bare relative
 // default would work from the root and fail from anywhere else — including
 // from the command the README gives.
-const KEY_PATH =
-  process.env.VPAY_MERCHANT_PRIVATE_KEY_PATH ??
+const SEED_PATH =
+  process.env.VPAY_MERCHANT_SIGNING_SEED_PATH ??
   fileURLToPath(
-    new URL("../../.e2e/demo-merchant/oauth-signing-key.pem", import.meta.url),
+    new URL("../../.e2e/demo-merchant/signing.seed", import.meta.url),
   );
+// The response keys vpay seals its answers with, pinned: an answer sealed by
+// anything else is refused. `gen-demo-keys` writes them next to the seeds.
+const SERVER_KEY_CURRENT_PATH =
+  process.env.VPAY_SERVER_KEY_CURRENT_PATH ??
+  fileURLToPath(new URL("../../.e2e/envelope/current.pub", import.meta.url));
+const SERVER_KEY_NEXT_PATH =
+  process.env.VPAY_SERVER_KEY_NEXT_PATH ??
+  fileURLToPath(new URL("../../.e2e/envelope/next.pub", import.meta.url));
 
 /**
  * EUR, not XAF, and it is the rail's property rather than a preference:
@@ -85,50 +93,36 @@ const POLL_INTERVAL_MS = 2_000;
 
 const url = new URL(BASE_URL);
 
-// --- the six lines this example exists for -------------------------------
+// --- the lines this example exists for -----------------------------------
 //
-// vpay accepts no API key (ADR-0010): every /v1 call carries a short-lived
-// bearer token minted from an RFC 7523 `private_key_jwt` client assertion.
-// stripe-node has no notion of that handshake, but `config.authenticator` is
-// arbitrary async code it invokes once per request attempt — so the handshake
-// goes there, and nothing else about the SDK changes.
-const authenticator = createStripeAuthenticator({
+// vpay accepts no API key and no token: every /v1 call is a COSE_Sign1 message
+// signed with your Ed25519 key, and every answer is one signed by vpay
+// (docs/signed-transport.md). The signature is the request *body*, which
+// stripe-node's `authenticator` seam (headers only) cannot carry; its
+// `httpClient` seam can. So the signing goes there, and nothing else about
+// the SDK changes. The first argument is a placeholder stripe-node insists
+// on and nothing sends.
+const httpClient = createStripeHttpClient({
   baseUrl: url.origin,
   clientId: CLIENT_ID,
-  privateKey: readFileSync(KEY_PATH, "utf8"),
+  privateKey: readFileSync(SEED_PATH, "utf8"),
+  serverKeys: {
+    current: readFileSync(SERVER_KEY_CURRENT_PATH, "utf8"),
+    next: readFileSync(SERVER_KEY_NEXT_PATH, "utf8"),
+  },
 });
 
-const stripe = new Stripe("", {
-  authenticator,
+const stripe = new Stripe("unused-placeholder", {
+  httpClient,
   host: url.hostname,
   port: url.port,
   protocol: url.protocol === "https:" ? "https" : "http",
   telemetry: false,
+  maxNetworkRetries: 0,
 });
 // -------------------------------------------------------------------------
 
-/**
- * The handshake, once, before anything else.
- *
- * Not decoration: when the vpay handshake fails, stripe-node builds the right
- * error and then throws it inside a detached promise chain that never calls
- * its own callback, so the promise you awaited never settles at all
- * (measured against stripe@22.6.1 — see sdks/nodejs/README.md). Calling the
- * authenticator directly is the one place a bad key surfaces as a normal
- * rejection you can catch.
- */
-async function verifyHandshake() {
-  const probe = { headers: {} };
-  await authenticator(probe);
-  if (typeof probe.headers["Authorization"] !== "string") {
-    throw new Error("the authenticator set no Authorization header");
-  }
-  console.log(`1. authenticated as ${CLIENT_ID} at ${url.origin}`);
-}
-
 async function main() {
-  await verifyHandshake();
-
   const intent = await stripe.paymentIntents.create({
     amount: AMOUNT,
     currency: CURRENCY,
@@ -140,7 +134,7 @@ async function main() {
     metadata: { order_id: "1234" },
   });
   console.log(
-    `2. created ${intent.id} — ${intent.status}, ${intent.amount} ${intent.currency}` +
+    `1. created ${intent.id} — ${intent.status}, ${intent.amount} ${intent.currency}` +
       ` (request-id ${intent.lastResponse.requestId})`,
   );
 
@@ -152,12 +146,12 @@ async function main() {
   });
   if (confirmed.status !== "processing") {
     throw new Error(
-      `3. confirm answered ${confirmed.status}; a push rail's one success ` +
+      `2. confirm answered ${confirmed.status}; a push rail's one success ` +
         `state is "processing"`,
     );
   }
   console.log(
-    `3. confirmed — ${confirmed.status}. The rail has the request; the payer ` +
+    `2. confirmed — ${confirmed.status}. The rail has the request; the payer ` +
       `would now approve it on their handset.`,
   );
 
@@ -179,7 +173,7 @@ async function main() {
     // `last_payment_error` set) are both terminal here.
     if (status !== "processing") {
       throw new Error(
-        `4. ${intent.id} settled as "${status}" rather than "succeeded"` +
+        `3. ${intent.id} settled as "${status}" rather than "succeeded"` +
           (polled.last_payment_error
             ? ` (${polled.last_payment_error.code}: ${polled.last_payment_error.message})`
             : "") +
@@ -192,7 +186,7 @@ async function main() {
 
   if (status !== "succeeded") {
     throw new Error(
-      `4. ${intent.id} was still "${status}" after ${POLL_WINDOW_MS / 1000}s ` +
+      `3. ${intent.id} was still "${status}" after ${POLL_WINDOW_MS / 1000}s ` +
         `and ${polls} polls. Nothing drove the charge to a terminal state — ` +
         `the usual cause is that the vpay-worker container is not running. ` +
         `Try \`docker compose logs vpay-worker\`.`,
@@ -200,7 +194,7 @@ async function main() {
   }
 
   console.log(
-    `4. settled — "${status}" after ${polls} polls ` +
+    `3. settled — "${status}" after ${polls} polls ` +
       `(~${Math.round((Date.now() - startedAt) / 1000)}s). The vpay-worker ` +
       `asked the rail whether the payer approved, and it said yes.`,
   );

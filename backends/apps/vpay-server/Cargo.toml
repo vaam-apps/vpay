@@ -82,6 +82,10 @@ rsa = "0.9"
 # Test-only: `rsa`'s key generation takes an `OsRng` from `rand` 0.8, which
 # is the workspace pin and is what `vpay-api`'s own key fixtures use.
 rand.workspace = true
+# Test-only: `tests/cli.rs` writes the two Ed25519 envelope seeds (VP-3) as
+# unpadded base64url, the format `--envelope-signing-key-file` reads. Already
+# in this binary's graph through `vpay-api`.
+base64 = "0.22"
 # Test-only, both of them: `exit_code_for`'s unit test constructs the two
 # `vpay_db::DbError` leaves whose exit codes must differ (a rollback to a
 # retired signing key -> 78, an unreachable database -> 69), and those

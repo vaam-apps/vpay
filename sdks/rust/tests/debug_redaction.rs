@@ -1,4 +1,4 @@
-//! The private key, the live access token, a `PaymentIntent`'s
+//! The signing seed, a `PaymentIntent`'s
 //! `client_secret` and a `CheckoutSession`'s must never reach a `{:?}`.
 //!
 //! This file is named by the `Debug` implementations of
@@ -6,7 +6,7 @@
 //! `CheckoutSession` themselves: they
 //! are hand-written rather than derived *because* of these tests, and
 //! replacing any of them with `#[derive(Debug)]` must fail here. A
-//! merchant's private key, bearer token, or payer credential in a log line
+//! merchant's signing seed or payer credential in a log line
 //! is not a formatting nit — it is the whole credential, and structured
 //! loggers print `{:?}` of whatever they are handed.
 
@@ -19,95 +19,68 @@
     clippy::indexing_slicing
 )]
 
-use std::sync::LazyLock;
-
+use base64::Engine as _;
+use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use vpay_sdk::payment_intents::PaymentMethodType;
 use vpay_sdk::refunds::{CreateRefundParams, RefundDestination};
-use vpay_sdk::{CheckoutSession, Client, Credentials, PaymentIntent};
-use wiremock::matchers::{method, path};
-use wiremock::{Mock, MockServer, ResponseTemplate};
+use vpay_sdk::{CheckoutSession, Client, Credentials, PaymentIntent, ServerKeys};
 
-mod support;
+/// A seed that is its own giveaway: 32 bytes of one value, so the base64url of
+/// it is a recognisable run and a `Debug` that printed the seed in any common
+/// encoding contains one of the strings below.
+const SEED: [u8; 32] = [0x5a; 32];
 
-static KEY: LazyLock<support::TestKey> = LazyLock::new(|| support::generate_key(Some("key-a")));
-
-/// Distinctive substrings of a PKCS#1 PEM. Checking for the base64 body as
-/// well as the header means a `Debug` that printed only the key *bytes*
-/// (without the armour) would still be caught.
+/// The forms a leaked seed would take: its base64url, its standard base64, its
+/// hex, and its `[u8; 32]` debug rendering.
 fn assert_no_key_material(rendered: &str) {
-    assert!(!rendered.contains("BEGIN"), "PEM armour leaked: {rendered}");
-    assert!(
-        !rendered.contains("PRIVATE KEY"),
-        "PEM label leaked: {rendered}"
-    );
-    for line in KEY.pem.lines().filter(|l| !l.starts_with("-----")) {
-        // Any full base64 line of the key is enough to matter.
+    let forms = [
+        URL_SAFE_NO_PAD.encode(SEED),
+        base64::engine::general_purpose::STANDARD.encode(SEED),
+        "5a".repeat(32),
+        format!("{SEED:?}"),
+    ];
+    for form in forms {
         assert!(
-            !rendered.contains(line),
-            "key material leaked into: {rendered}"
+            !rendered.contains(&form),
+            "the seed leaked as {form}: {rendered}"
         );
     }
 }
 
+fn keys() -> ServerKeys {
+    let public_of = |seed: u8| {
+        cratestack_client_rust::cose::Ed25519Signer::from_seed(&[seed; 32])
+            .verify_key()
+            .ed25519_bytes()
+            .expect("an Ed25519 key")
+    };
+    ServerKeys::new(public_of(1), public_of(2))
+}
+
 #[test]
-fn credentials_debug_shows_the_client_id_and_kid_but_no_key_material() {
-    let credentials = Credentials::rsa_pem("merchant_acme", &KEY.pem)
-        .unwrap()
-        .with_kid("key-a");
+fn credentials_debug_shows_the_client_id_and_the_public_key_but_no_key_material() {
+    let credentials = Credentials::ed25519_seed("merchant_acme", &SEED).unwrap();
 
     for rendered in [format!("{credentials:?}"), format!("{credentials:#?}")] {
         assert_no_key_material(&rendered);
-        // Still useful: the fields an operator actually needs are present.
+        // Still useful: the fields an operator actually needs are present, and
+        // the public half is what they register under `cose_keys`.
         assert!(rendered.contains("merchant_acme"));
-        assert!(rendered.contains("key-a"));
+        assert!(rendered.contains(&credentials.public_key_base64url()));
+        assert!(rendered.contains("[redacted]"));
     }
 }
 
 #[test]
 fn client_and_builder_debug_carry_no_key_material() {
     let builder = Client::builder("https://api.vpay.test")
-        .credentials(Credentials::rsa_pem("merchant_acme", &KEY.pem).unwrap());
+        .credentials(Credentials::ed25519_seed("merchant_acme", &SEED).unwrap())
+        .server_keys(keys());
     assert_no_key_material(&format!("{builder:?}"));
 
     let client = builder.build().unwrap();
     assert_no_key_material(&format!("{client:?}"));
     assert_no_key_material(&format!("{client:#?}"));
-}
-
-#[tokio::test]
-async fn a_cached_access_token_never_appears_in_the_clients_debug_output() {
-    let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/oauth/token"))
-        .respond_with(
-            ResponseTemplate::new(200)
-                .set_body_json(support::token_response("tok_super_secret_value", 300)),
-        )
-        .mount(&server)
-        .await;
-    Mock::given(method("GET"))
-        .and(path("/v1/balance"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
-            "object": "balance", "available": [], "pending": [],
-        })))
-        .mount(&server)
-        .await;
-
-    let client = Client::builder(server.uri())
-        .credentials(Credentials::rsa_pem("merchant_acme", &KEY.pem).unwrap())
-        .build()
-        .unwrap();
-    // Populate the cache first — a `Debug` written before any token exists
-    // would pass trivially.
-    client.balance().retrieve().await.unwrap();
-
-    let rendered = format!("{client:?}");
-    assert!(
-        !rendered.contains("tok_super_secret_value"),
-        "the cached bearer token leaked: {rendered}"
-    );
-    assert!(rendered.contains("[redacted]"));
-    assert_no_key_material(&rendered);
 }
 
 #[test]
@@ -194,18 +167,15 @@ fn a_checkout_session_without_a_secret_or_a_fragment_renders_no_redaction_marker
 }
 
 #[test]
-fn a_rejected_private_key_does_not_echo_the_key_into_the_error() {
+fn a_rejected_seed_does_not_echo_the_seed_into_the_error() {
     // The error path is the easiest place for a credential to escape: an
     // error string built from the input is a log line by another name.
-    let err = Credentials::rsa_pem(
-        "merchant_acme",
-        "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n",
-    )
-    .expect_err("a malformed PEM is refused");
+    let err = Credentials::ed25519_seed_base64url("merchant_acme", "SUPERSECRETSEEDTEXTxx")
+        .expect_err("a seed of the wrong length is refused");
     let rendered = format!("{err} / {err:?}");
     assert!(
-        !rendered.contains("not-a-key"),
-        "the supplied key material was echoed: {rendered}"
+        !rendered.contains("SUPERSECRETSEEDTEXT"),
+        "the supplied seed was echoed: {rendered}"
     );
 }
 

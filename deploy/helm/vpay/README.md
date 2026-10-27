@@ -57,12 +57,21 @@ It renders **no Secret** and **no database**. See
 ## Install
 
 ```bash
-# 1. The three Secrets this chart references but does not create.
+# 1. The four Secrets this chart references but does not create.
 kubectl create secret generic vpay-database \
   --from-literal=url='postgres://vpay:...@db.example:5432/vpay?sslmode=require'
 
 kubectl create secret generic vpay-oauth-signing-key \
   --from-file=oauth-signing-key.pem=./oauth-signing-key.pem
+
+# The signed /v1 transport's two Ed25519 response seeds (32 bytes, unpadded
+# base64url, one line each). Generate them off-cluster, keep the .pub halves —
+# merchants pin those — and NEVER reuse a throwaway key from `.e2e/`:
+#   cargo xtask gen-envelope-key --out ./envelope --name current
+#   cargo xtask gen-envelope-key --out ./envelope --name next
+kubectl create secret generic vpay-envelope-keys \
+  --from-file=envelope-current.seed=./envelope/current.seed \
+  --from-file=envelope-next.seed=./envelope/next.seed
 
 # One key per `${VAR}` in the baked config of the image you are deploying:
 #   grep -o '${[A-Z_]*}' config/application.yml | sort -u
@@ -260,13 +269,14 @@ There is no environment variable for it: step-6 decision (7) removes the inert
 
 ## Secrets: the chart creates none
 
-Three Secrets must exist in the release namespace before install.
+Four Secrets must exist in the release namespace before install.
 
-| Value                                            | Default name                                       | Shape                                                                                                           | Consequence if wrong            |
-| ------------------------------------------------ | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `database.existingSecret` / `.existingSecretKey` | `vpay-database` / `url`                            | one key holding a full `postgres://` URL                                                                        | both Deployments fail to start  |
-| `signingKey.existingSecret` / `.key`             | `vpay-oauth-signing-key` / `oauth-signing-key.pem` | PEM RSA private key (PKCS#8 or PKCS#1)                                                                          | the server Deployment exits 78  |
-| `rails.existingSecret`                           | `vpay-rails`                                       | one key per `${VAR}` in the deployed image's `config/application.yml` — read it at upgrade time, the list grows | exit 78 on **both** Deployments |
+| Value                                                | Default name                                                          | Shape                                                                                                           | Consequence if wrong            |
+| ---------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `database.existingSecret` / `.existingSecretKey`     | `vpay-database` / `url`                                               | one key holding a full `postgres://` URL                                                                        | both Deployments fail to start  |
+| `signingKey.existingSecret` / `.key`                 | `vpay-oauth-signing-key` / `oauth-signing-key.pem`                    | PEM RSA private key (PKCS#8 or PKCS#1)                                                                          | the server Deployment exits 78  |
+| `envelopeKeys.existingSecret` / `.current` / `.next` | `vpay-envelope-keys` / `envelope-current.seed` / `envelope-next.seed` | two keys, each a 32-byte Ed25519 seed as unpadded base64url; different keys                                     | the server Deployment exits 78  |
+| `rails.existingSecret`                               | `vpay-rails`                                                          | one key per `${VAR}` in the deployed image's `config/application.yml` — read it at upgrade time, the list grows | exit 78 on **both** Deployments |
 
 The signing key is mounted on the **server Deployment only**. The worker
 issues no token and reads no key, and mounting the Secret there would widen
@@ -461,6 +471,7 @@ still draining in-flight work. Set terminationGracePeriodSeconds to at least 30.
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `grace-period`                      | `terminationGracePeriodSeconds < shutdownGraceSeconds + 5`                                                                                                                                                                               | The kubelet kills the process mid-drain; every rolling update truncates in-flight work                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | `database-secret`                   | either `database.existingSecret` / `.existingSecretKey` is empty                                                                                                                                                                         | `DATABASE_URL` has no other source and the chart creates no Secret                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `envelope-keys-secret`              | `envelopeKeys.existingSecret`, `.current` or `.next` is empty, or `current` and `next` name the same key                                                                                                                                 | `vpay-server` exits 78 (and refuses an identical pair at boot); a chart-generated key would sign answers no client pinned                                                                                                                                                                                                                                                                                                                                                                                  |
 | `signing-key-secret`                | either `signingKey.existingSecret` / `.key` is empty                                                                                                                                                                                     | `vpay-server` exits 78; a chart-generated key would mint tokens other replicas cannot verify                                                                                                                                                                                                                                                                                                                                                                                                               |
 | `rails-secret`                      | `rails.existingSecret` is empty                                                                                                                                                                                                          | An unresolved `${VAR}` is exit 78 on **both** binaries. The guard checks a Secret is named, never which keys are in it — that list is the image's, not the chart's                                                                                                                                                                                                                                                                                                                                         |
 | `image-digest-format`               | a digest is set and is not `sha256:` + 64 hex                                                                                                                                                                                            | A truncated digest fails at image pull, in the cluster, not here                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -643,15 +654,18 @@ no HPA either — nothing has measured what would drive one.
 
 ### Secrets
 
-| Key                          | Default                          | Meaning                                                                                                                          |
-| ---------------------------- | -------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `database.existingSecret`    | `vpay-database`                  |                                                                                                                                  |
-| `database.existingSecretKey` | `url`                            |                                                                                                                                  |
-| `signingKey.existingSecret`  | `vpay-oauth-signing-key`         | Server only                                                                                                                      |
-| `signingKey.key`             | `oauth-signing-key.pem`          |                                                                                                                                  |
-| `signingKey.mountPath`       | `/secrets/oauth-signing-key.pem` | Becomes `VPAY_OAUTH_SIGNING_KEY_FILE`                                                                                            |
-| `signingKey.defaultMode`     | `0440` (288)                     | See above — **not** `0400`                                                                                                       |
-| `rails.existingSecret`       | `vpay-rails`                     | Projected with `envFrom` onto both workloads; carries `VPAY_STAFF_SSO_CLIENT_SECRET` only if the overlay writes `staff_auth.sso` |
+| Key                              | Default                                        | Meaning                                                                                                                                        |
+| -------------------------------- | ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `database.existingSecret`        | `vpay-database`                                |                                                                                                                                                |
+| `database.existingSecretKey`     | `url`                                          |                                                                                                                                                |
+| `signingKey.existingSecret`      | `vpay-oauth-signing-key`                       | Server only                                                                                                                                    |
+| `signingKey.key`                 | `oauth-signing-key.pem`                        |                                                                                                                                                |
+| `signingKey.mountPath`           | `/secrets/oauth-signing-key.pem`               | Becomes `VPAY_OAUTH_SIGNING_KEY_FILE`                                                                                                          |
+| `signingKey.defaultMode`         | `0440` (288)                                   | See above — **not** `0400`                                                                                                                     |
+| `envelopeKeys.existingSecret`    | `vpay-envelope-keys`                           | Server only; the worker refuses both flags                                                                                                     |
+| `envelopeKeys.current` / `.next` | `envelope-current.seed` / `envelope-next.seed` | Keys of the Secret; mounted under `envelopeKeys.mountPath` (`/secrets/envelope`) and become `VPAY_ENVELOPE_SIGNING_KEY_FILE` / `..._NEXT_FILE` |
+| `envelopeKeys.defaultMode`       | `0440` (288)                                   | For the reason `signingKey.defaultMode` is, above                                                                                              |
+| `rails.existingSecret`           | `vpay-rails`                                   | Projected with `envFrom` onto both workloads; carries `VPAY_STAFF_SSO_CLIENT_SECRET` only if the overlay writes `staff_auth.sso`               |
 
 ### Observability
 
@@ -984,9 +998,9 @@ Written 2026-09-03, step 6 block B.
 - `helm lint` passes on the defaults and on `ci/values-full.yaml`.
 - `helm template` renders 6 objects with the defaults and 14 with
   `ci/values-full.yaml`.
-- All **24** guards fire on their own values file, each with its own name in
-  the message, and `just helm-check` also checks that the twenty-four names it
-  expects are exactly the twenty-four files on disk — so deleting a guard _and_
+- All **25** guards fire on their own values file, each with its own name in
+  the message, and `just helm-check` also checks that the twenty-five names it
+  expects are exactly the twenty-five guard names on disk — so deleting a guard _and_
   its values file fails rather than passing quietly. (**This said "15" until
   2026-09-10** and had been wrong since the sixteenth landed; `worker-concurrency-pool`
   made it nineteen, `route-attachment` + `route-rate-limit` made it twenty-one,
@@ -999,7 +1013,7 @@ Written 2026-09-03, step 6 block B.
   remediation added `networkpolicy-management-route`, which makes it
   twenty-four. Measured:
   `25 fixtures, 24 guards, all fired by name (24 expected)` — twenty-five
-  because `connection-budget` has two fixtures, one per direction.) Proven negatively too, which is the
+  because `connection-budget` has two fixtures, one per direction. **2026-10-26**: `envelope-keys-secret` (VP-3) is the twenty-fifth guard and, like `connection-budget`, has a fixture per direction, so the count to expect is `27 fixtures, 25 guards, all fired by name (25 expected)`; `helm` was not available where it was added, so that line is derived, not measured.) Proven negatively too, which is the
   only thing that says these are checks rather than decoration: disabling the
   `grace-period` and `rate-limit-ordering` guards makes `just helm-check`
   fail, and so — verified in the Step 6 review pass, by neutering each `fail`

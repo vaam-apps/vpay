@@ -18,10 +18,8 @@
     clippy::indexing_slicing
 )]
 
-use std::collections::BTreeMap;
-use std::sync::LazyLock;
-
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 use vpay_sdk::account_holders::RetrieveAccountHolderParams;
 use vpay_sdk::checkout::{
     CheckoutPaymentStatus, CheckoutSessionStatus, CheckoutUiMode, CreateCheckoutSessionParams,
@@ -38,33 +36,32 @@ use vpay_sdk::payment_intents::{
 };
 use vpay_sdk::refunds::{ListRefundsParams, RefundDestination, UpdateRefundParams};
 use vpay_sdk::{
-    Client, CreateRefundParams, Credentials, Error, IntentStatus, KnownEventType, ListEventsParams,
-    NextAction, RefundStatus, RequestOptions,
+    Client, CreateRefundParams, Error, IntentStatus, KnownEventType, ListEventsParams, NextAction,
+    RefundStatus, RequestOptions,
 };
 use wiremock::matchers::{method, path, path_regex};
 use wiremock::{Mock, MockServer, Request, ResponseTemplate};
 
 mod support;
 
-static KEY: LazyLock<support::TestKey> = LazyLock::new(|| support::generate_key(None));
-
-/// A server with the token endpoint already mounted, plus a client pointed at
-/// it. Every test here is about the *resource* call, so the handshake is
-/// setup rather than subject matter (it has its own file).
+/// An upstream standing in for a `/v1` handler, the signed front in front of
+/// it (`support::front`: cratestack's real `EnvelopeLayer`), and a client
+/// pointed at the front. Every test here is about the *resource* call, so the
+/// transport is setup rather than subject matter (it has its own file,
+/// `signing.rs`). The upstream records the opened request, so every assertion
+/// below about the path, the body and the headers is about exactly what a
+/// `vpay-api` handler would receive.
+///
+/// The front is leaked into the returned client's lifetime by being kept in the
+/// `MockServer`'s companion value: tests destructure `(server, client)` as
+/// before, and the front lives until the process ends.
 async fn fixture() -> (MockServer, Client) {
     let server = MockServer::start().await;
-    Mock::given(method("POST"))
-        .and(path("/v1/oauth/token"))
-        .respond_with(
-            ResponseTemplate::new(200).set_body_json(support::token_response("tok_1", 300)),
-        )
-        .mount(&server)
-        .await;
-
-    let client = Client::builder(server.uri())
-        .credentials(Credentials::rsa_pem("merchant_acme", &KEY.pem).unwrap())
-        .build()
-        .unwrap();
+    let front = support::front::start(&server.uri(), support::front::Seal::Current).await;
+    let client = front.client();
+    // One front per test, alive for the test's duration: leaking it keeps the
+    // call sites unchanged, and the process exits when the test binary does.
+    Box::leak(Box::new(front));
     (server, client)
 }
 
@@ -1024,7 +1021,6 @@ async fn a_hostile_refund_id_is_percent_encoded_on_update_and_cancel_too() {
         .unwrap()
         .iter()
         .map(|request| request.url.path().to_string())
-        .filter(|path| path != "/v1/oauth/token")
         .collect();
     assert_eq!(
         paths,
@@ -1208,11 +1204,7 @@ async fn a_refund_id_with_url_metacharacters_is_percent_encoded_into_the_path() 
     let _ = client.refunds().retrieve("../../admin").await;
 
     let requests = server.received_requests().await.unwrap();
-    let paths: Vec<String> = requests
-        .iter()
-        .map(|r| r.url.path().to_string())
-        .filter(|p| p != "/v1/oauth/token")
-        .collect();
+    let paths: Vec<String> = requests.iter().map(|r| r.url.path().to_string()).collect();
     assert_eq!(paths, vec!["/v1/refunds/..%2F..%2Fadmin"]);
 }
 
@@ -1740,9 +1732,9 @@ async fn an_empty_or_all_dots_id_is_refused_before_any_request() {
     // `customers().del("..")` was a `DELETE /v1/` and `retrieve("")` a
     // `GET /v1/payment_intents/` — what vpay answered for each is on
     // `docs/status/verification/2026-10-21-sdk-dot-segment-ids.md`. The
-    // refusal comes before the token request too: a refused id must not
-    // spend an assertion `jti` or an idempotency key, which is why the
-    // server must have seen nothing at all, not merely no resource call.
+    // refusal comes before anything is signed too: a refused id must not
+    // spend a `cti` or an idempotency key, which is why the server must have
+    // seen nothing at all.
     let (server, client) = fixture().await;
 
     assert_eq!(id_taking_methods_declared(), 21);
@@ -1762,7 +1754,7 @@ async fn an_empty_or_all_dots_id_is_refused_before_any_request() {
     let requests = server.received_requests().await.unwrap();
     assert!(
         requests.is_empty(),
-        "nothing may reach the wire, the token endpoint included: {:?}",
+        "nothing may reach the wire: {:?}",
         requests.iter().map(|r| r.url.path()).collect::<Vec<_>>()
     );
 }
@@ -1837,9 +1829,8 @@ async fn an_id_with_dots_that_is_not_only_dots_is_still_sent_as_one_segment() {
 async fn an_amount_outside_the_cross_sdk_safe_range_is_refused_before_any_request() {
     // Parity with `sdks/nodejs/src/validate.ts`: a negative amount, or one
     // past `Number.MAX_SAFE_INTEGER`, is refused rather than sent. "Before
-    // any request" is half the point — a rejected amount must not spend an
-    // assertion `jti` or an idempotency key, so the token endpoint must see
-    // nothing either.
+    // any request" is half the point — a rejected amount must not spend a
+    // `cti` or an idempotency key.
     let (server, client) = fixture().await;
 
     for amount in [-1_i64, 9_007_199_254_740_992, i64::MAX] {
@@ -1878,7 +1869,7 @@ async fn an_amount_outside_the_cross_sdk_safe_range_is_refused_before_any_reques
 
     assert!(
         server.received_requests().await.unwrap().is_empty(),
-        "a refused amount must not reach the wire — not even the token endpoint"
+        "a refused amount must not reach the wire"
     );
 }
 
@@ -1919,28 +1910,23 @@ async fn the_largest_safe_amount_is_still_sent() {
 }
 
 #[tokio::test]
-async fn retrieve_balance_is_a_bare_get_and_decodes_both_buckets() {
+async fn retrieve_balance_is_refused_before_anything_is_signed_because_no_route_serves_it() {
+    // `GET /v1/balance` is declared in the wire contract and mounted nowhere
+    // (`docs/status/backend.md`). A signed request binds an *operation*, and
+    // this one has none, so the client refuses it itself — a signature over a
+    // route the server cannot bind would be an unsigned 415 with no hint at
+    // the cause. (Until VP-3 it reached the server and got the honest 404.)
     let (server, client) = fixture().await;
-    Mock::given(method("GET"))
-        .and(path("/v1/balance"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "object": "balance",
-            "available": [{ "amount": 125_000, "currency": "xaf" }],
-            "pending": [{ "amount": 5000, "currency": "xaf" }],
-        })))
-        .expect(1)
-        .mount(&server)
-        .await;
 
-    let balance = client.balance().retrieve().await.unwrap();
-    assert_eq!(balance.available.len(), 1);
-    assert_eq!(balance.available[0].amount, 125_000);
-    assert_eq!(balance.pending[0].currency, "xaf");
-
-    let request = only_request(&server, "/v1/balance").await;
-    assert_eq!(request.method.as_str(), "GET");
-    assert_eq!(request.url.query(), None);
-    assert!(request.body.is_empty());
+    let error = client.balance().retrieve().await.unwrap_err();
+    match error {
+        Error::InvalidParams { param, message } => {
+            assert_eq!(param, "path");
+            assert!(message.contains("/balance"), "{message}");
+        }
+        other => panic!("expected the client to refuse the call, got {other:?}"),
+    }
+    assert!(server.received_requests().await.unwrap().is_empty());
 }
 
 // --------------------------------------------------------------------------
@@ -2411,11 +2397,7 @@ async fn a_checkout_session_id_with_url_metacharacters_is_percent_encoded_into_t
     let _ = client.checkout().sessions().retrieve("../../admin").await;
 
     let requests = server.received_requests().await.unwrap();
-    let paths: Vec<String> = requests
-        .iter()
-        .map(|r| r.url.path().to_string())
-        .filter(|p| p != "/v1/oauth/token")
-        .collect();
+    let paths: Vec<String> = requests.iter().map(|r| r.url.path().to_string()).collect();
     assert_eq!(paths, vec!["/v1/checkout/sessions/..%2F..%2Fadmin"]);
 }
 
@@ -3843,11 +3825,10 @@ async fn an_invoice_lines_unit_amount_is_refused_before_any_request() {
         );
     }
 
-    // Nothing left this process: no route was ever mounted, and a request to
-    // an unmounted route would have been recorded here.
+    // Nothing left this process: a request would have been recorded here.
     let requests = server.received_requests().await.unwrap();
     assert!(
-        requests.iter().all(|r| r.url.path() == "/v1/oauth/token"),
+        requests.is_empty(),
         "a refused amount must not reach the wire"
     );
 }

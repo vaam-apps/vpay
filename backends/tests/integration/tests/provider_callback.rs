@@ -103,8 +103,8 @@ use uuid::Uuid;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
-    ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    PaymentMethodType, RequestOptions,
+    ConfirmPaymentIntentParams, CreatePaymentIntentParams, IntentStatus, PaymentMethodType,
+    RequestOptions,
 };
 use vpay_worker::{Adapters, Disposition, RailConfigs, RecoveryPolicy, Settled};
 
@@ -193,7 +193,6 @@ struct Harness {
     /// configured `base_url`, because Orange's carries a path prefix.
     mtn_origin: String,
     orange_origin: String,
-    pem_a: String,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
     /// The plain outbound client this suite uses *as a rail*: it POSTs the
@@ -207,9 +206,8 @@ struct Harness {
 impl Harness {
     fn client(&self) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
@@ -373,7 +371,7 @@ async fn harness() -> anyhow::Result<Harness> {
     let orange_base = format!("{orange_origin}/orange-money-webpay/dev");
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
 
     let jwks_for_server = jwks_a.clone();
     let mtn_for_server = mtn_origin.clone();
@@ -404,7 +402,6 @@ async fn harness() -> anyhow::Result<Harness> {
         base_url: served.base_url,
         mtn_origin,
         orange_origin,
-        pem_a,
         adapters: Arc::new(support::adapters_by_code()),
         rails: Arc::new(rail_configs(&config)),
         // The suite's own client, for the POSTs a rail would make; delivery
@@ -1198,7 +1195,6 @@ struct SigningHarness {
     pool: PgPool,
     base_url: String,
     stub_origin: String,
-    pem_a: String,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
     http: reqwest::Client,
@@ -1207,9 +1203,8 @@ struct SigningHarness {
 impl SigningHarness {
     fn client(&self) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
@@ -1346,7 +1341,7 @@ async fn signing_harness() -> anyhow::Result<SigningHarness> {
     );
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let make_config = |base_url: &str, jwks: Value| Config {
         providers: vec![signing_rail(&stub_origin)],
         ..config_with(base_url, jwks, "http://127.0.0.1:1", "http://127.0.0.1:1")
@@ -1369,7 +1364,6 @@ async fn signing_harness() -> anyhow::Result<SigningHarness> {
         pool,
         base_url: served.base_url,
         stub_origin,
-        pem_a,
         adapters: Arc::new(signing_adapters()),
         rails: Arc::new(rail_configs(&config)),
         http: reqwest::Client::new(),

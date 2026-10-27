@@ -1,55 +1,61 @@
-//! [`Client`] — the token-caching, retrying HTTP client for `/v1`, built via
-//! [`ClientBuilder`].
+//! [`Client`] — the signing HTTP client for `/v1`, built via [`ClientBuilder`].
 //!
-//! `docs/flows/merchant-auth.md` §3-4 pins the caching and re-auth behaviour
-//! this module implements: a token is reused until `expires_in` minus a
-//! safety margin, concurrent callers share one in-flight token request
-//! rather than each minting their own, and a `401` from a resource route is
-//! answered with exactly one re-auth-and-retry rather than an automatic
-//! retry loop.
+//! Every call is sealed as a COSE_Sign1 message under the merchant's Ed25519
+//! key and bound to the operation it calls, the `Idempotency-Key` it carries and
+//! the audience it is addressed to (`crate::contracts`, cratestack's
+//! `ClientEnvelope::seal_call`); every answer is opened against the server keys
+//! the client pinned (`PendingResponse::open`). The body inside the seal is the
+//! same `application/x-www-form-urlencoded` the bearer-token SDK sent, and the
+//! payload that comes out is the same JSON (owner's ruling D6: the Stripe shape
+//! is kept, carried inside the envelope by payload media types).
+//!
+//! There is **no token and no retry**: a sealed request is single-use (its
+//! `cti` is spent the moment the server opens it), so the old "re-authenticate
+//! and send once more on a 401" has no meaning here — the 401 is the same bytes
+//! for an unknown key, a bad signature, a stale clock and a replay, and sending
+//! again would only spend another `cti`. A caller that gets
+//! [`Error::Unsigned`] checks its registered key and its clock.
 
 use std::fmt;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
-use reqwest::{Method, StatusCode};
+use cratestack_client_rust::cose::{CoseEnvelope, CoseMode, StaticVerifierResolver};
+use cratestack_client_rust::{ClientEnvelope, ClientError, EnvelopeError, RouteRef, SealCall};
+use reqwest::Method;
+use reqwest::header::USER_AGENT;
 use serde::Deserialize;
 use serde::de::DeserializeOwned;
-use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 
-use crate::auth::{self, CLIENT_ASSERTION_TYPE_JWT_BEARER, Credentials};
+use crate::contracts;
+use crate::credentials::{Credentials, ServerKeys};
 use crate::error::{ConfigError, Error};
-use crate::form::FormValue;
 use crate::resources::{
     AccountHoldersResource, BalanceResource, CheckoutResource, CustomersResource, EventsResource,
     InvoiceItemsResource, InvoicesResource, PaymentIntentsResource, RefundsResource,
     RequestOptions,
 };
 
-/// The `aud` value `/v1` access tokens must carry. Requested by default on
-/// every token exchange — `docs/flows/merchant-auth.md`:
-/// "`audience=vpay:v1` is load-bearing, and no longer provisional".
-///
-/// Server-side the same string is `vpay_config::MERCHANT_AUDIENCE`, which
-/// `vpay_api::resource_auth::Surface::Merchant::audience()` returns. This is
-/// a deliberate second copy, not an oversight: this crate is what a merchant
-/// depends on, and it must not drag vpay's server crates in to learn one
-/// string. Changing the audience therefore means changing it in both places.
-pub const DEFAULT_AUDIENCE: &str = "vpay:v1";
+/// The payload type of every request body: the Stripe form, byte for byte what
+/// the bearer-token SDK put on the wire. Declared by every `/v1` operation on
+/// the server (`vpay_api::envelope::binding::REQUEST_TYPES`).
+const REQUEST_PAYLOAD_TYPE: &str = "application/x-www-form-urlencoded";
 
-/// How much a cached token's usable lifetime is shortened by, so a request
-/// never starts against a token that expires mid-flight. `docs/flows/
-/// merchant-auth.md` §3: "margin: 30s, or half of `expires_in` for very
-/// short TTLs — integer arithmetic only".
-const MAX_MARGIN_SECS: u64 = 30;
+/// The one payload type every answer is read in.
+const RESPONSE_PAYLOAD_TYPE: &str = "application/json";
 
 /// The maximum bytes of a non-JSON-envelope error body kept in
 /// [`Error::UnexpectedResponse`]. An unbounded prefix would let a
 /// misbehaving upstream hand this crate an unbounded amount of memory to
 /// hold in an error value.
 const BODY_PREFIX_LIMIT: usize = 500;
+
+/// The most of an answer's body this client will read, in bytes. A signed
+/// answer is a COSE message around JSON, and the largest honest one (a list of
+/// 100 objects) is a few hundred kilobytes; eight mebibytes is far above that
+/// and far below what a hostile peer could otherwise make this process hold.
+pub const MAX_RESPONSE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Mozilla's CA bundle as a rustls root store — see
 /// [`rustls_client_config`] for why the roots are vendored rather than read
@@ -170,19 +176,6 @@ fn bounded_prefix(bytes: &[u8]) -> String {
 }
 
 #[derive(Deserialize)]
-struct TokenResponse {
-    access_token: String,
-    expires_in: u64,
-}
-
-#[derive(Deserialize)]
-struct TokenErrorResponse {
-    error: String,
-    #[serde(default)]
-    error_description: Option<String>,
-}
-
-#[derive(Deserialize)]
 struct ApiErrorBody {
     #[serde(rename = "type")]
     kind: String,
@@ -198,60 +191,16 @@ struct ApiErrorEnvelope {
     error: ApiErrorBody,
 }
 
-/// A cached access token and the instant it stops being usable.
-///
-/// Deliberately holds no `Debug`/`Clone` derive that would put the token
-/// itself somewhere a stray `{:?}` could print it — [`Client`]'s own
-/// hand-written `Debug` never touches this type's fields.
-struct CachedToken {
-    access_token: String,
-    valid_until: Instant,
-}
-
-impl CachedToken {
-    /// `expires_in - margin`, where `margin = min(30, expires_in / 2)` —
-    /// integer division, matching `docs/flows/merchant-auth.md` §3 exactly
-    /// (workspace-wide `clippy::float_arithmetic = "deny"` rules out doing
-    /// this any other way regardless).
-    fn new(access_token: String, expires_in: u64) -> Self {
-        let margin = MAX_MARGIN_SECS.min(expires_in / 2);
-        let usable_secs = expires_in.saturating_sub(margin);
-        Self {
-            access_token,
-            valid_until: Instant::now() + Duration::from_secs(usable_secs),
-        }
-    }
-
-    fn is_valid(&self) -> bool {
-        Instant::now() < self.valid_until
-    }
-}
-
 struct Inner {
     http: reqwest::Client,
     credentials: Credentials,
-    /// Where the token request is POSTed — reachable from *this* process.
-    token_endpoint: String,
+    envelope: ClientEnvelope,
     resource_base: String,
-    /// The client assertion's `aud` claim: what the OP calls itself. Defaults
-    /// to [`Inner::token_endpoint`] at build time; see
-    /// [`ClientBuilder::assertion_audience`].
-    assertion_audience: String,
-    /// The OAuth2 `audience` **request parameter** (`vpay:v1`), not the `aud`
-    /// claim above. Two different strings with two different jobs.
     audience: String,
-    scope: Option<String>,
-    assertion_lifetime: Duration,
-    /// Guards the cache *and* doubles as the single-flight lock: a refresh
-    /// runs with the lock held across the `.await`, so concurrent callers
-    /// block on the mutex rather than each minting and spending their own
-    /// assertion `jti` for the same moment in time
-    /// (`docs/flows/merchant-auth.md` §3).
-    token_cache: AsyncMutex<Option<CachedToken>>,
 }
 
 /// A configured `/v1` API client. Cheap to clone — internally an `Arc`, so
-/// every clone shares the same token cache and connection pool.
+/// every clone shares the same connection pool and key.
 #[derive(Clone)]
 pub struct Client {
     inner: Arc<Inner>,
@@ -259,18 +208,12 @@ pub struct Client {
 
 impl fmt::Debug for Client {
     /// Hand-written, like [`Credentials`]'s own `Debug`: this must never
-    /// print the private key (via `credentials`) or a live bearer token (via
-    /// the cache) — see `tests/debug_redaction.rs`.
+    /// print the private key — see `tests/debug_redaction.rs`.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
             .field("credentials", &self.inner.credentials)
-            .field("token_endpoint", &self.inner.token_endpoint)
             .field("resource_base", &self.inner.resource_base)
-            .field("assertion_audience", &self.inner.assertion_audience)
             .field("audience", &self.inner.audience)
-            .field("scope", &self.inner.scope)
-            .field("assertion_lifetime", &self.inner.assertion_lifetime)
-            .field("cached_token", &"[redacted]")
             .finish()
     }
 }
@@ -278,8 +221,7 @@ impl fmt::Debug for Client {
 impl Client {
     /// Starts building a client against `base_url` (e.g.
     /// `"https://api.vpay.example"`). See [`ClientBuilder`] for the defaults
-    /// this derives (`docs/flows/merchant-auth.md`'s "Endpoint locations"
-    /// table).
+    /// this derives.
     #[must_use]
     pub fn builder(base_url: impl Into<String>) -> ClientBuilder {
         ClientBuilder::new(base_url)
@@ -344,184 +286,18 @@ impl Client {
         format!("{}{path}", self.inner.resource_base)
     }
 
-    async fn get_token(&self) -> Result<String, Error> {
-        let mut guard = self.inner.token_cache.lock().await;
-        if let Some(cached) = guard.as_ref()
-            && cached.is_valid()
-        {
-            return Ok(cached.access_token.clone());
-        }
-        // Held across this `.await`: the single-flight property depends on
-        // every other concurrent caller blocking here rather than racing to
-        // mint their own assertion.
-        //
-        // Emitted at `debug`, and naming only the endpoint and the client id:
-        // the assertion and the access token are credentials, and a
-        // structured logger will happily ship whatever it is handed to a
-        // log aggregator (`docs/flows/merchant-auth.md`; see also
-        // `tests/debug_redaction.rs`).
-        tracing::debug!(
-            token_endpoint = %self.inner.token_endpoint,
-            client_id = %self.inner.credentials.client_id(),
-            "no usable cached access token; performing the client_credentials exchange"
-        );
-        let fresh = self.fetch_token().await?;
-        let token = fresh.access_token.clone();
-        *guard = Some(fresh);
-        Ok(token)
-    }
-
-    /// Discards the cached token — but **only if** the cache still holds the
-    /// exact token that just got the `401`.
-    ///
-    /// A compare-and-swap, not a plain clear, because two concurrent callers
-    /// can hold the same token and be refused a moment apart:
-    ///
-    /// 1. A and B both send with `tok_1`; both get a `401`.
-    /// 2. A clears the cache and refreshes. Its refresh runs with the cache
-    ///    mutex held (that is the single-flight property), so it finishes by
-    ///    storing `tok_2`.
-    /// 3. B's `401` arrives second. An unconditional clear here would throw
-    ///    away `tok_2` — a token that is *valid and was never refused* —
-    ///    and B would mint a third assertion, spend a third `jti`, and leave
-    ///    any caller that had already read `tok_2` racing a cache that no
-    ///    longer matches.
-    ///
-    /// Comparing first makes step 3 a no-op: B's `tok_1` is not what the
-    /// cache holds, so B simply picks up `tok_2` and retries with it. The
-    /// comparison is a plain `==`, not a constant-time one: both sides are
-    /// this process's own cached copies of the same secret, so there is no
-    /// attacker-supplied operand and nothing to leak by timing.
-    async fn invalidate_if_current(&self, spent: &str) {
-        let mut guard = self.inner.token_cache.lock().await;
-        if guard
-            .as_ref()
-            .is_some_and(|cached| cached.access_token == spent)
-        {
-            *guard = None;
-        }
-    }
-
-    async fn fetch_token(&self) -> Result<CachedToken, Error> {
-        // `aud` is the OP's own name for itself, NOT the URL this line then
-        // POSTs to. `authkestra_op`'s `authenticate_client` compares the
-        // claim against `[token endpoint, issuer]` built from
-        // `deployment.public_base_url`; a merchant reaching vpay by an
-        // internal name has to say so (`ClientBuilder::assertion_audience`).
-        let assertion = auth::mint_client_assertion(
-            &self.inner.credentials,
-            &self.inner.assertion_audience,
-            self.inner.assertion_lifetime,
-        )?;
-
-        let mut fields = vec![
-            (
-                "grant_type".to_string(),
-                FormValue::from("client_credentials"),
-            ),
-            (
-                "client_id".to_string(),
-                FormValue::from(self.inner.credentials.client_id().to_string()),
-            ),
-            (
-                "client_assertion_type".to_string(),
-                FormValue::from(CLIENT_ASSERTION_TYPE_JWT_BEARER),
-            ),
-            ("client_assertion".to_string(), FormValue::from(assertion)),
-            (
-                "audience".to_string(),
-                FormValue::from(self.inner.audience.as_str()),
-            ),
-        ];
-        if let Some(scope) = &self.inner.scope {
-            fields.push(("scope".to_string(), FormValue::from(scope.as_str())));
-        }
-        let body = crate::form::encode_form(&FormValue::Object(fields));
-
-        let response = self
-            .inner
-            .http
-            .post(&self.inner.token_endpoint)
-            .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-            .header(ACCEPT, "application/json")
-            .header(USER_AGENT, user_agent())
-            .body(body)
-            .send()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
-
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
-
-        if status.is_success() {
-            let token: TokenResponse =
-                serde_json::from_slice(&bytes).map_err(|_| Error::UnexpectedResponse {
-                    status: status.as_u16(),
-                    body_prefix: bounded_prefix(&bytes),
-                })?;
-            Ok(CachedToken::new(token.access_token, token.expires_in))
-        } else if let Ok(err) = serde_json::from_slice::<TokenErrorResponse>(&bytes) {
-            Err(Error::TokenEndpoint {
-                error: err.error,
-                description: err.error_description,
+    /// Decodes an opened answer exactly as the bearer-token SDK decoded a
+    /// plain one: the typed body on a 2xx, the Stripe-shaped envelope on a
+    /// non-2xx, and a bounded prefix of anything else.
+    fn decode<T: DeserializeOwned>(status: u16, bytes: &[u8]) -> Result<T, Error> {
+        if (200..300).contains(&status) {
+            serde_json::from_slice(bytes).map_err(|_| Error::UnexpectedResponse {
+                status,
+                body_prefix: bounded_prefix(bytes),
             })
-        } else {
-            Err(Error::UnexpectedResponse {
-                status: status.as_u16(),
-                body_prefix: bounded_prefix(&bytes),
-            })
-        }
-    }
-
-    async fn execute(
-        &self,
-        method: Method,
-        url: &str,
-        body: Option<&str>,
-        token: &str,
-        idempotency_key: Option<&str>,
-    ) -> Result<reqwest::Response, Error> {
-        let mut request = self
-            .inner
-            .http
-            .request(method, url)
-            .header(AUTHORIZATION, format!("Bearer {token}"))
-            .header(ACCEPT, "application/json")
-            .header(USER_AGENT, user_agent());
-
-        if let Some(b) = body {
-            request = request
-                .header(CONTENT_TYPE, "application/x-www-form-urlencoded")
-                .body(b.to_string());
-        }
-        if let Some(key) = idempotency_key {
-            request = request.header("Idempotency-Key", key);
-        }
-
-        request
-            .send()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))
-    }
-
-    async fn decode_response<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, Error> {
-        let status = response.status();
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| Error::Transport(e.to_string()))?;
-
-        if status.is_success() {
-            serde_json::from_slice(&bytes).map_err(|_| Error::UnexpectedResponse {
-                status: status.as_u16(),
-                body_prefix: bounded_prefix(&bytes),
-            })
-        } else if let Ok(envelope) = serde_json::from_slice::<ApiErrorEnvelope>(&bytes) {
+        } else if let Ok(envelope) = serde_json::from_slice::<ApiErrorEnvelope>(bytes) {
             Err(Error::Api {
-                status: status.as_u16(),
+                status,
                 kind: envelope.error.kind,
                 code: envelope.error.code,
                 message: envelope.error.message,
@@ -529,17 +305,17 @@ impl Client {
             })
         } else {
             Err(Error::UnexpectedResponse {
-                status: status.as_u16(),
-                body_prefix: bounded_prefix(&bytes),
+                status,
+                body_prefix: bounded_prefix(bytes),
             })
         }
     }
 
-    /// Sends one authenticated `/v1` request, re-authenticating and retrying
-    /// exactly once on a `401` (`docs/flows/merchant-auth.md` §4). A second
-    /// consecutive `401` is decoded and returned to the caller like any
-    /// other error response — this function never retries more than once.
-    async fn send_authenticated<T: DeserializeOwned>(
+    /// Seals and sends one `/v1` request, opens the answer and decodes it.
+    ///
+    /// Exactly one attempt: see the module docs for why a signed request is
+    /// never retried here.
+    async fn send_signed<T: DeserializeOwned>(
         &self,
         method: Method,
         path: &str,
@@ -547,48 +323,65 @@ impl Client {
         query: Option<String>,
         idempotency_key: Option<String>,
     ) -> Result<T, Error> {
+        let bound =
+            contracts::operation_for(method.as_str(), path).map_err(|e| Error::InvalidParams {
+                param: "path".to_owned(),
+                message: e.to_string(),
+            })?;
+        let params: Vec<&str> = bound.params.iter().map(String::as_str).collect();
+        let digest = contracts::contract_digest(method.as_str(), bound.template);
+        let query = query.filter(|q| !q.is_empty());
+
+        let payload = body.as_deref().unwrap_or("").as_bytes();
+        let mut call = SealCall::new(
+            method.as_str(),
+            RouteRef::new(bound.template, &params),
+            digest,
+        )
+        .query(query.as_deref())
+        .payload(payload, REQUEST_PAYLOAD_TYPE)
+        .accept(RESPONSE_PAYLOAD_TYPE);
+        if let Some(key) = idempotency_key.as_deref() {
+            call = call.idempotency_key(key);
+        }
+        let sealed = self
+            .inner
+            .envelope
+            .seal_call(call)
+            .await
+            .map_err(|error| Error::Seal(error.to_string()))?;
+
         let mut url = self.resource_url(path);
-        if let Some(q) = &query
-            && !q.is_empty()
-        {
+        if let Some(q) = &query {
             url.push('?');
             url.push_str(q);
         }
-
-        let token = self.get_token().await?;
-        let response = self
-            .execute(
-                method.clone(),
-                &url,
-                body.as_deref(),
-                &token,
-                idempotency_key.as_deref(),
-            )
-            .await?;
-
-        if response.status() == StatusCode::UNAUTHORIZED {
-            // Worth a log line even though it is handled: a merchant seeing
-            // this on every request has a clock-skew or registration problem
-            // that the retry is quietly papering over.
-            tracing::debug!(
-                url = %url,
-                "401 from a resource route; discarding the cached token and retrying once"
-            );
-            self.invalidate_if_current(&token).await;
-            let retry_token = self.get_token().await?;
-            let retry_response = self
-                .execute(
-                    method,
-                    &url,
-                    body.as_deref(),
-                    &retry_token,
-                    idempotency_key.as_deref(),
-                )
-                .await?;
-            return Self::decode_response(retry_response).await;
+        let mut request = self
+            .inner
+            .http
+            .request(method, &url)
+            .header(USER_AGENT, user_agent())
+            .body(sealed.body);
+        for (name, value) in &sealed.headers {
+            request = request.header(name, value);
         }
+        let response = request
+            .send()
+            .await
+            .map_err(|e| Error::Transport(e.to_string()))?;
 
-        Self::decode_response(response).await
+        let status = response.status().as_u16();
+        let headers = response.headers().clone();
+        let bytes = read_bounded(response).await?;
+
+        match sealed.pending.open(status, &headers, bytes.into()).await {
+            Ok(opened) => Self::decode(status, &opened.body),
+            Err(ClientError::Envelope(EnvelopeError::Unsigned { status })) => {
+                Err(Error::Unsigned { status })
+            }
+            Err(ClientError::Envelope(EnvelopeError::Unverified)) => Err(Error::Unverified),
+            Err(other) => Err(Error::Seal(other.to_string())),
+        }
     }
 
     pub(crate) async fn get<T: DeserializeOwned>(
@@ -596,8 +389,7 @@ impl Client {
         path: &str,
         query: Option<String>,
     ) -> Result<T, Error> {
-        self.send_authenticated(Method::GET, path, None, query, None)
-            .await
+        self.send_signed(Method::GET, path, None, query, None).await
     }
 
     pub(crate) async fn post<T: DeserializeOwned>(
@@ -609,24 +401,19 @@ impl Client {
         let idempotency_key = opts
             .idempotency_key
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        self.send_authenticated(Method::POST, path, Some(body), None, Some(idempotency_key))
+        self.send_signed(Method::POST, path, Some(body), None, Some(idempotency_key))
             .await
     }
 
-    /// The one `DELETE` this API has: `DELETE /v1/customers/{id}` (S4a).
+    /// `DELETE`, which this API has on `/v1/customers/{id}`,
+    /// `/v1/invoices/{id}` and `/v1/invoice_items/{id}`.
     ///
     /// It carries an `Idempotency-Key` like a `POST`, and **no body**. Both
-    /// halves are the server's contract rather than this SDK being generous:
-    /// `/v1` requires the header on every write regardless of verb
-    /// (`docs/flows/merchant-auth.md`), and a `DELETE` is the write where a
-    /// replay is most confusing without one — the second call would otherwise
-    /// answer `404` for a deletion that succeeded, which a merchant retrying
-    /// a timed-out request cannot tell from "somebody else deleted it".
-    ///
-    /// `None` and not `Some(String::new())` for the body: an empty
-    /// `application/x-www-form-urlencoded` body and no body are different
-    /// requests to some proxies, and the request hash the server stores
-    /// against the idempotency key is taken over the bytes.
+    /// halves are the server's contract: `/v1` requires the header on every
+    /// write regardless of verb, and a `DELETE` is the write where a replay is
+    /// most confusing without one — the second call would otherwise answer
+    /// `404` for a deletion that succeeded. The key is bound by the signature,
+    /// as sent.
     pub(crate) async fn delete<T: DeserializeOwned>(
         &self,
         path: &str,
@@ -635,23 +422,46 @@ impl Client {
         let idempotency_key = opts
             .idempotency_key
             .unwrap_or_else(|| Uuid::new_v4().to_string());
-        self.send_authenticated(Method::DELETE, path, None, None, Some(idempotency_key))
+        self.send_signed(Method::DELETE, path, None, None, Some(idempotency_key))
             .await
     }
 }
 
-/// Builds a [`Client`]. See `docs/flows/merchant-auth.md`'s "Endpoint
-/// locations" table for the defaults `issuer`/`token_endpoint` derive from
-/// `base_url`, and for why they are each independently overridable.
+/// Reads a response body, stopping at [`MAX_RESPONSE_BYTES`].
+///
+/// Refuses on the declared `Content-Length` first (nothing is read), then
+/// counts what actually arrives, because the declaration can be absent
+/// (chunked) or false.
+async fn read_bounded(mut response: reqwest::Response) -> Result<Vec<u8>, Error> {
+    let too_large = Error::ResponseTooLarge {
+        limit: MAX_RESPONSE_BYTES,
+    };
+    if response
+        .content_length()
+        .is_some_and(|declared| declared > MAX_RESPONSE_BYTES as u64)
+    {
+        return Err(too_large);
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| Error::Transport(e.to_string()))?
+    {
+        if body.len().saturating_add(chunk.len()) > MAX_RESPONSE_BYTES {
+            return Err(too_large);
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
+}
+
+/// Builds a [`Client`].
 pub struct ClientBuilder {
     base_url: String,
     credentials: Option<Credentials>,
-    issuer: Option<String>,
-    token_endpoint: Option<String>,
-    assertion_audience: Option<String>,
-    audience: String,
-    scope: Option<String>,
-    assertion_lifetime: Duration,
+    server_keys: Option<ServerKeys>,
+    audience: Option<String>,
     timeout: Duration,
 }
 
@@ -662,12 +472,8 @@ impl fmt::Debug for ClientBuilder {
         f.debug_struct("ClientBuilder")
             .field("base_url", &self.base_url)
             .field("credentials", &self.credentials)
-            .field("issuer", &self.issuer)
-            .field("token_endpoint", &self.token_endpoint)
-            .field("assertion_audience", &self.assertion_audience)
+            .field("server_keys", &self.server_keys)
             .field("audience", &self.audience)
-            .field("scope", &self.scope)
-            .field("assertion_lifetime", &self.assertion_lifetime)
             .field("timeout", &self.timeout)
             .finish()
     }
@@ -678,17 +484,13 @@ impl ClientBuilder {
         Self {
             base_url: base_url.into(),
             credentials: None,
-            issuer: None,
-            token_endpoint: None,
-            assertion_audience: None,
-            audience: DEFAULT_AUDIENCE.to_string(),
-            scope: None,
-            assertion_lifetime: Duration::from_secs(60),
+            server_keys: None,
+            audience: None,
             timeout: Duration::from_secs(30),
         }
     }
 
-    /// The merchant's credentials. Required — [`ClientBuilder::build`]
+    /// The merchant's signing key. Required — [`ClientBuilder::build`]
     /// returns [`ConfigError::MissingCredentials`] without it.
     #[must_use]
     pub fn credentials(mut self, credentials: Credentials) -> Self {
@@ -696,85 +498,39 @@ impl ClientBuilder {
         self
     }
 
-    /// Overrides the default `{base_url}/v1/oauth` issuer.
+    /// The response keys to trust, `{current, next}`. Required —
+    /// [`ClientBuilder::build`] returns [`ConfigError::MissingServerKeys`]
+    /// without it.
     #[must_use]
-    pub fn issuer(mut self, issuer: impl Into<String>) -> Self {
-        self.issuer = Some(issuer.into());
+    pub fn server_keys(mut self, server_keys: ServerKeys) -> Self {
+        self.server_keys = Some(server_keys);
         self
     }
 
-    /// Overrides the default `{issuer}/token` token endpoint — the URL this
-    /// client POSTs the token request to.
+    /// The audience every request binds: vpay's configured public base URL
+    /// (`deployment.public_base_url`, without a trailing slash).
     ///
-    /// A **reachability** setting: it must resolve from wherever this process
-    /// runs. It is also the default [`ClientBuilder::assertion_audience`],
-    /// but the two are separate facts; see that method.
-    #[must_use]
-    pub fn token_endpoint(mut self, token_endpoint: impl Into<String>) -> Self {
-        self.token_endpoint = Some(token_endpoint.into());
-        self
-    }
-
-    /// The client assertion's `aud` claim: the OP's own token endpoint (or
-    /// issuer) **as vpay is configured publicly** —
-    /// `{deployment.public_base_url}/v1/oauth/token`, or that
-    /// `{deployment.public_base_url}/v1/oauth` issuer
-    /// (`vpay_api::op::issuer_for`). Set it when this server reaches vpay by
-    /// a different URL than payers do.
-    ///
-    /// Defaults to the token endpoint, which is correct only when the two are
-    /// the same string. When they are not — a merchant server calling
-    /// `http://vpay-server:8080` inside a compose network, or a private DNS
-    /// name in production — `authkestra_op`'s `authenticate_client` compares
-    /// the `aud` claim against its own `[token endpoint, issuer]` pair,
-    /// neither of which is the internal URL, and every token request answers
-    /// `invalid_client` / `InvalidAudience`. The signature, the `client_id`,
-    /// the `kid` and the lifetime are all correct in that failure, which is
-    /// why the symptom carries no hint at the cause.
-    ///
-    /// Distinct from [`ClientBuilder::audience`], which is the OAuth2
-    /// `audience` *request parameter* (`vpay:v1`) — a third string, naming
-    /// the resource server rather than the OP.
+    /// Defaults to `base_url`, which is correct only when this process reaches
+    /// vpay at the URL vpay publishes as its own. When it does not — a merchant
+    /// server calling `http://vpay-server:8080` inside a compose network, a
+    /// private DNS name in production — set it to the public one
+    /// (`vpay_api::envelope::audience_for`): the audience is a *name*, never the
+    /// `Host`, so that a request signed for one deployment cannot be replayed at
+    /// another, and a mismatch has no symptom but the coarse `401`.
     ///
     /// ```
-    /// # use vpay_sdk::{Client, Credentials};
-    /// # fn demo(credentials: Credentials) -> Result<Client, vpay_sdk::ConfigError> {
+    /// # use vpay_sdk::{Client, Credentials, ServerKeys};
+    /// # fn demo(credentials: Credentials, keys: ServerKeys) -> Result<Client, vpay_sdk::ConfigError> {
     /// Client::builder("http://vpay-server:8080")
     ///     .credentials(credentials)
-    ///     .assertion_audience("http://localhost:8080/v1/oauth/token")
+    ///     .server_keys(keys)
+    ///     .audience("https://api.vpay.example")
     ///     .build()
     /// # }
     /// ```
     #[must_use]
-    pub fn assertion_audience(mut self, assertion_audience: impl Into<String>) -> Self {
-        self.assertion_audience = Some(assertion_audience.into());
-        self
-    }
-
-    /// Overrides the default [`DEFAULT_AUDIENCE`] (`"vpay:v1"`) requested on
-    /// the token exchange — the OAuth2 `audience` **request parameter**,
-    /// naming the resource server. Not the assertion's `aud` claim; that is
-    /// [`ClientBuilder::assertion_audience`].
-    #[must_use]
     pub fn audience(mut self, audience: impl Into<String>) -> Self {
-        self.audience = audience.into();
-        self
-    }
-
-    /// A scope to request. Omitted from the token request entirely when
-    /// unset, per `docs/flows/merchant-auth.md`'s token-request table.
-    #[must_use]
-    pub fn scope(mut self, scope: impl Into<String>) -> Self {
-        self.scope = Some(scope.into());
-        self
-    }
-
-    /// How long a minted assertion's `exp` is set for. Must be `1..=300`
-    /// seconds; checked at [`ClientBuilder::build`], not here, so builder
-    /// calls can be chained in any order.
-    #[must_use]
-    pub fn assertion_lifetime(mut self, lifetime: Duration) -> Self {
-        self.assertion_lifetime = lifetime;
+        self.audience = Some(audience.into());
         self
     }
 
@@ -788,40 +544,43 @@ impl ClientBuilder {
     /// Validates configuration and constructs the [`Client`].
     ///
     /// # Errors
-    /// [`ConfigError::MissingCredentials`] if [`ClientBuilder::credentials`]
-    /// was never called; [`ConfigError::InvalidAssertionLifetime`] if
-    /// [`ClientBuilder::assertion_lifetime`] is outside `1..=300` seconds;
-    /// [`ConfigError::Http`] if the underlying `reqwest::Client` fails to
-    /// build.
+    /// [`ConfigError::MissingCredentials`] / [`ConfigError::MissingServerKeys`]
+    /// if either was never set; [`ConfigError::InvalidPublicKey`] for a pinned
+    /// key that is not a curve point; [`ConfigError::Envelope`] if the
+    /// transport cannot be assembled; [`ConfigError::Http`] if the underlying
+    /// `reqwest::Client` fails to build.
     pub fn build(self) -> Result<Client, ConfigError> {
         let credentials = self.credentials.ok_or(ConfigError::MissingCredentials)?;
-        auth::validate_lifetime_secs(self.assertion_lifetime)?;
+        let server_keys = self.server_keys.ok_or(ConfigError::MissingServerKeys)?;
 
         let base_url = self.base_url.trim_end_matches('/').to_string();
-        // A build-time intermediate, not client state: the issuer's only job
-        // is to supply the default token endpoint below. Nothing on the wire
-        // carries it — the assertion's `aud` is the token endpoint, and the
-        // resource base comes from `base_url` — so keeping a copy on `Inner`
-        // would be a field that could drift out of step with
-        // `token_endpoint` without any test noticing.
-        let issuer = self
-            .issuer
-            .unwrap_or_else(|| format!("{base_url}/v1/oauth"))
-            .trim_end_matches('/')
-            .to_string();
-        let token_endpoint = self
-            .token_endpoint
-            .unwrap_or_else(|| format!("{issuer}/token"));
-        // Defaults to the URL we POST to — unchanged behaviour for every
-        // merchant whose server reaches vpay at the URL vpay publishes as its
-        // own. A merchant reaching it by an internal name sets it explicitly.
-        let assertion_audience = self
-            .assertion_audience
-            .unwrap_or_else(|| token_endpoint.clone());
+        let audience = self
+            .audience
+            .map(|audience| audience.trim_end_matches('/').to_owned())
+            .unwrap_or_else(|| base_url.clone());
         let resource_base = format!("{base_url}/v1");
+
+        let resolver = server_keys
+            .verify_keys()?
+            .into_iter()
+            .fold(StaticVerifierResolver::new(), |resolver, key| {
+                resolver.with_key(key)
+            });
+        let cose = CoseEnvelope::client(CoseMode::Sign1, credentials.signer(), Arc::new(resolver))
+            .build()
+            .map_err(|e| ConfigError::Envelope(e.to_string()))?;
+        let envelope = ClientEnvelope::new(cose, audience.clone())
+            .map_err(|e| ConfigError::Envelope(e.to_string()))?;
 
         let http = reqwest::Client::builder()
             .timeout(self.timeout)
+            // **Never follow a redirect.** A sealed request is a body that is
+            // valid, once, for whoever receives it within the clock skew: a
+            // `307` to another origin would re-send the COSE message, its
+            // `Idempotency-Key` and its unspent `cti` there, and that origin
+            // could replay it to vpay. A redirect is an unsigned answer and
+            // surfaces as `Error::Unsigned { status }`; nothing is sent twice.
+            .redirect(reqwest::redirect::Policy::none())
             // The bare config, not `Some(config)`: `tls_backend_preconfigured`
             // wraps its argument in an `Option` itself before downcasting, so
             // an already-`Option` argument silently becomes
@@ -834,13 +593,9 @@ impl ClientBuilder {
             inner: Arc::new(Inner {
                 http,
                 credentials,
-                token_endpoint,
+                envelope,
                 resource_base,
-                assertion_audience,
-                audience: self.audience,
-                scope: self.scope,
-                assertion_lifetime: self.assertion_lifetime,
-                token_cache: AsyncMutex::new(None),
+                audience,
             }),
         })
     }
@@ -850,141 +605,91 @@ impl ClientBuilder {
 mod tests {
     use super::*;
 
-    const TEST_RSA_PEM: &str = include_str!("../tests/fixtures/test_rsa_key_pkcs8.pem");
-
     fn creds() -> Credentials {
-        Credentials::rsa_pem("svc-1", TEST_RSA_PEM).unwrap()
+        Credentials::ed25519_seed("svc-1", &[7; 32]).unwrap()
+    }
+
+    /// A real curve point: pinned keys are checked when the client is built.
+    fn public_of(seed: u8) -> [u8; 32] {
+        cratestack_client_rust::cose::Ed25519Signer::from_seed(&[seed; 32])
+            .verify_key()
+            .ed25519_bytes()
+            .expect("an Ed25519 key")
+    }
+
+    fn keys() -> ServerKeys {
+        ServerKeys::new(public_of(1), public_of(2))
+    }
+
+    fn builder(base: &str) -> ClientBuilder {
+        Client::builder(base)
+            .credentials(creds())
+            .server_keys(keys())
     }
 
     #[test]
     fn derives_the_documented_defaults() {
-        let client = Client::builder("https://api.vpay.example")
-            .credentials(creds())
-            .build()
-            .unwrap();
-        // The issuer's whole effect is this default; it is not kept on the
-        // client, so this is where it is observable.
-        assert_eq!(
-            client.inner.token_endpoint,
-            "https://api.vpay.example/v1/oauth/token"
-        );
+        let client = builder("https://api.vpay.example").build().unwrap();
         assert_eq!(client.inner.resource_base, "https://api.vpay.example/v1");
-        assert_eq!(client.inner.audience, DEFAULT_AUDIENCE);
+        assert_eq!(client.inner.audience, "https://api.vpay.example");
     }
 
     #[test]
-    fn strips_a_trailing_slash_from_base_url() {
-        let client = Client::builder("https://api.vpay.example/")
-            .credentials(creds())
+    fn strips_a_trailing_slash_from_base_url_and_audience() {
+        let client = builder("https://api.vpay.example/")
+            .audience("https://public.vpay.example/")
             .build()
             .unwrap();
         assert_eq!(client.inner.resource_base, "https://api.vpay.example/v1");
+        assert_eq!(client.inner.audience, "https://public.vpay.example");
     }
 
     #[test]
-    fn overriding_the_issuer_moves_the_default_token_endpoint_but_not_the_resource_base() {
-        let client = Client::builder("https://api.vpay.example")
-            .credentials(creds())
-            .issuer("https://auth.vpay.example")
+    fn an_explicit_audience_does_not_move_where_requests_go() {
+        let client = builder("http://vpay-server:8080")
+            .audience("https://api.vpay.example")
             .build()
             .unwrap();
-        assert_eq!(
-            client.inner.token_endpoint,
-            "https://auth.vpay.example/token"
-        );
-        assert_eq!(client.inner.resource_base, "https://api.vpay.example/v1");
-    }
-
-    #[test]
-    fn the_assertion_audience_defaults_to_the_token_endpoint() {
-        // Unchanged behaviour for every merchant that reaches vpay at the URL
-        // vpay publishes as its own: the option's existence changes nothing
-        // until it is set.
-        let client = Client::builder("https://api.vpay.example")
-            .credentials(creds())
-            .build()
-            .unwrap();
-        assert_eq!(client.inner.assertion_audience, client.inner.token_endpoint);
-        assert_eq!(
-            client.inner.assertion_audience,
-            "https://api.vpay.example/v1/oauth/token"
-        );
-    }
-
-    #[test]
-    fn an_explicit_assertion_audience_does_not_move_the_token_endpoint() {
-        // The whole point of the option: the URL we POST to must stay
-        // reachable from *this* process while the `aud` claim names the OP.
-        let client = Client::builder("http://vpay-server:8080")
-            .credentials(creds())
-            .assertion_audience("http://localhost:8080/v1/oauth/token")
-            .build()
-            .unwrap();
-        assert_eq!(
-            client.inner.token_endpoint,
-            "http://vpay-server:8080/v1/oauth/token"
-        );
-        assert_eq!(
-            client.inner.assertion_audience,
-            "http://localhost:8080/v1/oauth/token"
-        );
-        // And it is still not the `audience` request parameter, a third
-        // string with a third job.
-        assert_eq!(client.inner.audience, DEFAULT_AUDIENCE);
-    }
-
-    #[test]
-    fn an_overridden_token_endpoint_still_supplies_the_default_assertion_audience() {
-        let client = Client::builder("https://api.vpay.example")
-            .credentials(creds())
-            .token_endpoint("https://auth.vpay.example/oauth2/token")
-            .build()
-            .unwrap();
-        assert_eq!(
-            client.inner.assertion_audience,
-            "https://auth.vpay.example/oauth2/token"
-        );
+        assert_eq!(client.inner.resource_base, "http://vpay-server:8080/v1");
+        assert_eq!(client.inner.audience, "https://api.vpay.example");
     }
 
     #[test]
     fn build_fails_without_credentials() {
-        let result = Client::builder("https://api.vpay.example").build();
+        let result = Client::builder("https://api.vpay.example")
+            .server_keys(keys())
+            .build();
         assert!(matches!(result, Err(ConfigError::MissingCredentials)));
     }
 
     #[test]
-    fn build_rejects_an_assertion_lifetime_outside_one_to_three_hundred_seconds() {
-        let too_long = Client::builder("https://api.vpay.example")
+    fn build_fails_without_pinned_server_keys() {
+        let result = Client::builder("https://api.vpay.example")
             .credentials(creds())
-            .assertion_lifetime(Duration::from_secs(301))
             .build();
-        assert!(matches!(
-            too_long,
-            Err(ConfigError::InvalidAssertionLifetime { .. })
-        ));
-
-        let too_short = Client::builder("https://api.vpay.example")
-            .credentials(creds())
-            .assertion_lifetime(Duration::from_millis(0))
-            .build();
-        assert!(matches!(
-            too_short,
-            Err(ConfigError::InvalidAssertionLifetime { .. })
-        ));
+        assert!(matches!(result, Err(ConfigError::MissingServerKeys)));
     }
 
     #[test]
-    fn cached_token_margin_is_thirty_seconds_or_half_expires_in_whichever_is_smaller() {
-        let long = CachedToken::new("t".to_string(), 300);
-        let remaining = long.valid_until.saturating_duration_since(Instant::now());
-        // 300 - 30 = 270, allow scheduling slack.
-        assert!(remaining.as_secs() >= 268 && remaining.as_secs() <= 270);
-
-        let short = CachedToken::new("t".to_string(), 1);
-        // margin = min(30, 0) = 0, usable = 1.
-        let remaining_short = short.valid_until.saturating_duration_since(Instant::now());
-        assert!(remaining_short.as_secs() <= 1);
-        assert!(short.is_valid());
+    fn build_refuses_a_pinned_key_that_is_not_a_point() {
+        // About half of all y coordinates have no x on the curve: take the
+        // first one the library itself refuses.
+        let not_a_point = (2_u8..=255)
+            .map(|first| {
+                let mut bytes = [0_u8; 32];
+                bytes[0] = first;
+                bytes
+            })
+            .find(|bytes| cratestack_client_rust::cose::CoseVerifyKey::ed25519(bytes).is_err())
+            .expect("some y is not a curve point");
+        let result = Client::builder("https://api.vpay.example")
+            .credentials(creds())
+            .server_keys(ServerKeys::new(not_a_point, public_of(2)))
+            .build();
+        assert!(
+            matches!(result, Err(ConfigError::InvalidPublicKey)),
+            "{result:?}"
+        );
     }
 
     #[test]
@@ -1038,22 +743,17 @@ mod tests {
     }
 
     #[test]
-    fn client_debug_output_never_contains_the_pem_or_a_cached_token() {
-        let client = Client::builder("https://api.vpay.example")
-            .credentials(creds())
-            .build()
-            .unwrap();
+    fn client_debug_output_never_contains_the_seed() {
+        let client = builder("https://api.vpay.example").build().unwrap();
         let debug = format!("{client:?}");
-        assert!(!debug.contains("BEGIN"));
-        assert!(!debug.contains("PRIVATE KEY"));
         assert!(debug.contains("[redacted]"));
+        // The seed is [7; 32]; neither its base64url nor its raw bytes appear.
+        assert!(!debug.contains("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"));
     }
 
     #[test]
-    fn builder_debug_output_never_contains_the_pem() {
-        let builder = Client::builder("https://api.vpay.example").credentials(creds());
-        let debug = format!("{builder:?}");
-        assert!(!debug.contains("BEGIN"));
-        assert!(!debug.contains("PRIVATE KEY"));
+    fn builder_debug_output_never_contains_the_seed() {
+        let debug = format!("{:?}", builder("https://api.vpay.example"));
+        assert!(!debug.contains("BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"));
     }
 }

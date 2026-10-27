@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 54,
-        "all fifty-four migration files under backends/migrations should be recorded as applied \
+        applied, 55,
+        "all fifty-five migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -395,7 +395,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          decision for each routed charge, written in the transaction that \
          opens it (D10), and 0054, which copies the charge's rail and type \
          onto payment_intents.charge_rail and charge_method_type -- what /v1 \
-         renders as payment_method_details, D10 as amended on 2026-10-24.)"
+         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -5008,7 +5008,17 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// `charge_rail`'s foreign key onto `providers` costs nothing because foreign
 /// keys are not introspected at all. Both new columns are `TEXT`, so
 /// `EXPECTED_UNMAPPABLE_COLUMNS` does not move either.
-const EXPECTED_DRIFT_CHANGES: u32 = 212;
+/// **212 -> 214 on 2026-10-26 (migration 0055, `envelope_nonces`), measured.**
+/// `model EnvelopeNonce` declares the two columns and the primary key and
+/// nothing else, so `drift detected in 29 table(s)/view(s) (214 change(s)
+/// total)` reports exactly two new lines, both `[safe]`, under the one new
+/// relation: `CHECK envelope_nonces_id_length` and `index
+/// envelope_nonces_expires_at_idx` "exist in the live database but are not
+/// declared in the schema". The model carries no `@@allow` arm on purpose (the
+/// claim is one raw statement, as `rate_limit_windows`' is), and a
+/// single-column CHECK and a plain index are reported where a schema does not
+/// spell them. `EXPECTED_DRIFTED_RELATIONS` moves 28 -> 29 for the same reason.
+const EXPECTED_DRIFT_CHANGES: u32 = 214;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -5104,7 +5114,7 @@ const EXPECTED_DRIFT_CHANGES: u32 = 212;
 /// **27 -> 28 on 2026-10-23 (migration 0053, measured):** `routing_decisions`
 /// joins the list *undeclared*, in the shape `jobs` is in, and `charges` stays
 /// one entry while it gains two lines.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 28;
+const EXPECTED_DRIFTED_RELATIONS: u32 = 29;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing

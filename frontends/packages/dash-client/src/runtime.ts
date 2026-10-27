@@ -14,7 +14,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 // `tracing::warn!`, never a rejection. Empty when the CLI wasn't given a
 // schema fingerprint (e.g. this crate used as a library directly, or a
 // test) — the header is simply omitted in that case.
-export const SCHEMA_SHA256: string = "44c54a36e84fb788606764a7f4878bba1a559ce6c2072f8fa1f90e53f1d1108a";
+export const SCHEMA_SHA256: string = "7c3d8b7415ab579095f3daa250c7c7d67215abd37762752ca8a9625a5a2281e4";
 const SCHEMA_SHA_HEADER = "x-cratestack-schema-sha";
 
 // Per-op contract digests (binding version 2, cratestack#1123): what a signed
@@ -30,6 +30,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "DELETE /currencies/{id}": "d8038209df9ce3fc4bc56e89a9c270411830db9c9b12579082f6237afbf75d02",
   "DELETE /customers/{id}": "16ad1b08e99684697328d7954c04591edcbb8aa73ddd9987fa50f9d0a7044dce",
   "DELETE /disabled_clients/{id}": "4d6ba5f986b9a0951564638ca5a85604382d108f8e9d413484a838f226e27199",
+  "DELETE /envelope_nonces/{id}": "cf2458889804fe0b106c71ae615d9f67852d656b1871cbc0e7856ebf434ead99",
   "DELETE /events/{id}": "fec0bdf9952c4590cc4bebd6bbef88a62c3825bcac689d0eb215083e0e9f69bf",
   "DELETE /invoice_items/{id}": "1f1ffe104e677969d9ed634b2d666d31f6d2b68bdcc4c24837c1fe675b1e646f",
   "DELETE /invoices/{id}": "4d5abd01adaff77c36daf499095daceb286852a47f8782f4b4a02a749f0876c9",
@@ -57,6 +58,8 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "GET /customers/{id}": "c759651d49b58d1083bc82ced07da27238e9c05b3fb3a791514cfe1281ef4307",
   "GET /disabled_clients": "c0dcbb6e041307c965fd9bb19ff46bb7118454deae8fb587b13d8bcf67a15b0a",
   "GET /disabled_clients/{id}": "9ac9b1e37d74eded3a6e9bd0aeff88883ce101455d207f31d7b5633118af6cff",
+  "GET /envelope_nonces": "44db09f18848d96c9d9e12bb08bcedd8acbbb6418944e01d2c5f0204a07818c5",
+  "GET /envelope_nonces/{id}": "1ea53a4ec0114449ad5f36860c4cb92c46c77486090cb821d7837f0abbebce60",
   "GET /events": "58d70b640a2f1bdaf2ba1b12c727d052c67d97c84bac6009be02c5885633ae99",
   "GET /events/{id}": "ec4c54444c1c3fd47c9ab196aafb1c725066cc4408806c968abeed3e8e84a9ca",
   "GET /invoice_items": "4504deb1650e754b031acbcbd3aba2f773458460c30fe3181a08f3a05090427e",
@@ -93,6 +96,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "PATCH /currencies/{id}": "b548da2c13f54ad074abef47c057e6e7d7e3a89f9f68ed65fdb94447cd03e94c",
   "PATCH /customers/{id}": "b581ad203ec2f697a55b1f17065417ab1735d42aed3a77e5049c5ee30c289586",
   "PATCH /disabled_clients/{id}": "0ea4babb381dd900bcb0e6d4fd1f1fddd0f7dc2215aea09f11823cce94074b9f",
+  "PATCH /envelope_nonces/{id}": "d4b552876de54d4739079cc393d3b6c78b5c03e74b8744b12e5367014037e14a",
   "PATCH /events/{id}": "198617379aa63fe51ebb71d94f22fd48a7a1db25bf609e29d562a1068a8b7975",
   "PATCH /invoice_items/{id}": "ef87e51da8b2808c428bb69f6487ae3dd0dfec76680f909c36c20137d6e37321",
   "PATCH /invoices/{id}": "b0dae1fd8eb1c59d3741b8d78f83793646ec8d923c1350bb4648b6afa8d42323",
@@ -119,6 +123,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "POST /currencies": "61221dfb9028819f371d561cc792a1987ad3ebcb64ac81fb8af737e0474b78de",
   "POST /customers": "f7a893fbe52424cdb6a74a8c66c5d310120aeb07ad282b3dbfcc6022a214d093",
   "POST /disabled_clients": "fb0ab2f78b4cdbe135c24125320c738568b06701273920a6f0586831cf79d42c",
+  "POST /envelope_nonces": "e14adce0db4b909db024eddadc43452399df4fee3b83bcd5ed97e67c098c7d61",
   "POST /events": "7f101fe8ee4aa9c1bb40913dae74098168d802e9c0b49ce56d1ea88e0ff0d0a3",
   "POST /invoice_items": "bd6038e88e3065d487cf88102da32bda22efe1c1e1ffc547d31367566060d46d",
   "POST /invoices": "c9d1fc74d3f0ccd8a66d4bcb00a686e04ab61357d69010ad599d9baa524a0263",
@@ -136,7 +141,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "POST /webhook_deliveries": "313534735f7d8114795740a6a144bf641e1f055f7ccdc9407c946c0c60a35ba6",
 };
 // Hex of the whole-contract digest: moves when any op's contract does.
-export const CLIENT_CONTRACT_SHA256: string = "e3cfc53a96095ab664d24a3f8f3c5e74808c895d9ebbac7124a3818daa7b8435";
+export const CLIENT_CONTRACT_SHA256: string = "74b446cb8908c455408f8e1150f0d7abee1c5a509bf4dc5615eefd75d96cc0ac";
 
 export interface CratestackClientOptions {
   basePath?: string;

@@ -1,9 +1,13 @@
 //! Resource-server JWT validation for vpay's two protected HTTP surfaces:
 //! `/v1` (merchant, ADR-0010) and `/dash/v1` (dashboard, ADR-0009).
 //!
-//! STATUS, corrected 2026-09-06. The merchant half is live and guards real
-//! rows — [`crate::require_merchant_token`] validates through
-//! [`MerchantJwtValidator`] and is mounted in front of the whole `/v1` nest.
+//! STATUS, corrected 2026-10-26 (VP-3). **The merchant half is gone from the
+//! request path.** `/v1` is a signed transport now (`crate::envelope`): no
+//! bearer token is read there, `require_merchant_token` and the
+//! `AuthenticatedMerchant` extractor are deleted, and this module's
+//! [`Surface::Merchant`] audience is what the OP still mints tokens for until
+//! VP-4 removes the OP with it. Everything below that says "the merchant
+//! surface validates here" describes `/v1` as it stood on 2026-09-06.
 //!
 //! This paragraph used to say the dashboard half was unmounted, that no
 //! `/dash/v1/*` route existed and that nothing constructed a
@@ -29,8 +33,9 @@
 //! module header and `docs/flows/dashboard.md`.
 //!
 //! [`AuthenticatedDashboard`], the *extractor*, is genuinely mounted on
-//! nothing and remains so — `/dash/v1` validates once in middleware, for
-//! [`crate::require_merchant_token`]'s reason.
+//! nothing and remains so — `/dash/v1` validates once in middleware
+//! ([`crate::require_dashboard_token`]) so that the boundary and the handler
+//! cannot disagree about one token.
 //!
 //! Validation is local — `crate::jwks_cache` (private) caches the JWKS and every check
 //! after the first verifies the signature from memory. The one input that can
@@ -126,8 +131,8 @@ const UNKNOWN_KID_REFRESH_INTERVAL: Duration = Duration::from_secs(30);
 ///
 /// This enum survives the change because it still names something real —
 /// which surface a validator guards — even though nothing branches on it any
-/// more. It is what [`MerchantJwtValidator`] and [`DashboardJwtValidator`]
-/// document themselves against.
+/// more. It is what [`DashboardJwtValidator`] documents itself against (and
+/// what a `/v1` validator did until VP-3).
 ///
 /// [ADR-0009]: ../../../docs/adr/0009-dashboard-oidc-provider.md
 /// [ADR-0017]: ../../../docs/adr/0017-staff-authentication.md
@@ -152,8 +157,8 @@ pub struct ResourceClaims {
     ///
     /// * `client_credentials` (`/v1`): the OAuth2 **client**.
     ///   `TokenManager::issue_client_token` sets `sub` to the client id, so
-    ///   [`Self::subject`] is the merchant's credential and
-    ///   [`crate::require_merchant_token`] maps it to a tenant.
+    ///   [`Self::subject`] is the merchant's credential. (Until VP-3 that is
+    ///   what mapped it to a tenant; `/v1` is signed now.)
     /// * authorization code (`/dash/v1`): the **staff member**.
     ///   `default_handle_authorization_code` calls
     ///   `issue_user_token_with_extra(identity, …, Some(client_id))`, so
@@ -430,8 +435,8 @@ impl IntoResponse for AuthRejection {
 /// missing or malformed header rather than falling back to an
 /// unauthenticated path.
 ///
-/// `pub(crate)` because the `/v1` boundary is a *middleware* now, not an
-/// extractor (Step 2's D3): [`crate::require_merchant_token`] runs this and
+/// `pub(crate)` because the `/dash/v1` boundary is a *middleware*, not an
+/// extractor (Step 2's D3): [`crate::require_dashboard_token`] runs this and
 /// [`JwtValidator::validate`] exactly once per request and puts the result
 /// on the request's extensions. It stays private to the crate — the header
 /// parsing and the rejection vocabulary belong together, and a caller
@@ -740,85 +745,16 @@ impl JwtValidator {
     }
 }
 
-/// Newtype so a single router state can hold two [`JwtValidator`]s
-/// (merchant and dashboard) and axum's `FromRef` can still tell them apart.
-#[derive(Debug, Clone)]
-pub struct MerchantJwtValidator(pub JwtValidator);
-
-/// See [`MerchantJwtValidator`] — the `/dash/v1` counterpart.
+/// Newtype so router state can hold the `/dash/v1` [`JwtValidator`] under a type
+/// axum's `FromRef` can name. (It was one of two until VP-3: `/v1` verifies a
+/// signature now and holds no validator.)
 #[derive(Debug, Clone)]
 pub struct DashboardJwtValidator(pub JwtValidator);
 
-/// Extractor for `/v1` handlers:
-///
-/// ```text
-/// async fn create_payment_intent(
-///     AuthenticatedMerchant(claims): AuthenticatedMerchant,
-///     // ... other extractors ...
-/// ) -> impl IntoResponse {
-///     // claims.subject, claims.scope
-/// }
-/// ```
-///
-/// `text` rather than a compiled doctest, deliberately: making this one run
-/// means standing up a router, a JWKS server and a signed token, which is an
-/// integration test (`backends/tests/integration`) and not an illustration of a
-/// signature. A ```ignore``` block would have been the dishonest option — it
-/// looks compiled and is not.
-///
-/// # It reads a validated token; it does not validate one
-///
-/// The claims come from the request's extensions, where
-/// [`crate::require_merchant_token`] — the middleware in front of the whole
-/// `/v1` nest — put them after validating the token exactly once (Step 2's
-/// D3). This used to validate the token itself, which meant a request to a
-/// route using this extractor paid for two validations: one in
-/// `from_extractor_with_state`, whose extracted value axum 0.8 discards, and
-/// one here. Two validations is not merely wasteful — the JWKS cache can
-/// refresh between them, so the boundary and the handler could in principle
-/// disagree about the same token.
-///
-/// **Absent extensions fail closed** with [`ApiError::Internal`]: a 500 that
-/// pages, never an `Option<ResourceClaims>` a handler could treat as
-/// "unauthenticated but carry on". Reaching a handler with no claims means
-/// this extractor is mounted on a route the middleware does not cover, which
-/// is a routing bug in *this* crate and not something a caller can fix or
-/// should be told about. `router`'s own test walks every `/v1` path and
-/// asserts 401 without a token, so that bug cannot ship silently.
-///
-/// No `FromRef` bound any more: the state is not consulted at all. That is
-/// deliberate — an extractor that needed the validator could be tempted to
-/// use it.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct AuthenticatedMerchant(pub ResourceClaims);
-
-/// Extractor for `/dash/v1` handlers. See [`AuthenticatedMerchant`]; requires
-/// `FromRef<S> for DashboardJwtValidator` instead.
+/// Extractor for `/dash/v1` handlers; requires
+/// `FromRef<S> for DashboardJwtValidator`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthenticatedDashboard(pub ResourceClaims);
-
-impl<S> FromRequestParts<S> for AuthenticatedMerchant
-where
-    S: Send + Sync,
-{
-    type Rejection = ApiError;
-
-    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
-            .extensions
-            .get::<ResourceClaims>()
-            .cloned()
-            .map(AuthenticatedMerchant)
-            .ok_or_else(|| {
-                ApiError::Internal(
-                    "a /v1 handler asked for AuthenticatedMerchant on a request carrying no \
-                     validated claims: require_merchant_token is not mounted in front of this \
-                     route"
-                        .to_owned(),
-                )
-            })
-    }
-}
 
 impl<S> FromRequestParts<S> for AuthenticatedDashboard
 where
@@ -844,18 +780,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use authkestra_resource::jwt::Jwk;
-    use axum::body::Body;
-    use axum::http::Request;
-    use axum::http::StatusCode;
-    use axum::routing::get;
-    use axum::{Json, Router};
     use base64::Engine as _;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use jsonwebtoken::{EncodingKey, Header};
     use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
     use rsa::traits::PublicKeyParts;
     use serde_json::{Value, json};
-    use tower::ServiceExt as _;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -1158,263 +1088,6 @@ mod tests {
         assert!(matches!(error, AuthRejection::InvalidToken));
     }
 
-    // --- extractor + Stripe-shaped error envelope, over real HTTP ---
-
-    #[derive(Clone)]
-    struct TestState {
-        merchant: MerchantJwtValidator,
-        resource_config: std::sync::Arc<crate::ResourceConfig>,
-    }
-
-    impl FromRef<TestState> for MerchantJwtValidator {
-        fn from_ref(state: &TestState) -> Self {
-            state.merchant.clone()
-        }
-    }
-
-    /// [`crate::require_merchant_token`] resolves the token's `client_id` to
-    /// a tenant through this, exactly as the real router does.
-    impl FromRef<TestState> for std::sync::Arc<crate::ResourceConfig> {
-        fn from_ref(state: &TestState) -> Self {
-            std::sync::Arc::clone(&state.resource_config)
-        }
-    }
-
-    async fn probe(AuthenticatedMerchant(claims): AuthenticatedMerchant) -> Json<Value> {
-        Json(json!({ "subject": claims.subject, "scope": claims.scope }))
-    }
-
-    /// A one-route app behind the **real** `/v1` boundary.
-    ///
-    /// The middleware is `crate::require_merchant_token` itself, not a
-    /// stand-in: since D3 moved validation out of the extractor, an app that
-    /// mounted only the extractor would answer 500 to every request here and
-    /// would prove nothing about the boundary that ships. Every assertion in
-    /// this module is therefore about the same two pieces of code the router
-    /// composes — which is why `test_app` grew a layer rather than the tests
-    /// growing an expectation.
-    fn test_app(validator: JwtValidator) -> Router {
-        let state = TestState {
-            merchant: MerchantJwtValidator(validator),
-            resource_config: std::sync::Arc::new(
-                crate::ResourceConfig::from_config(&crate::test_fixtures::config_with(
-                    crate::test_fixtures::PUBLIC_BASE_URL,
-                    vec![crate::test_fixtures::merchant(
-                        TOKEN_SUBJECT,
-                        &["payments:write"],
-                    )],
-                ))
-                .expect("the fixture's rails project onto the port"),
-            ),
-        };
-        Router::new()
-            // Both methods on one path, because the scope rule is decided
-            // by the *method* (`crate::v1::required_scopes`) and a
-            // GET-only app could not tell a scope refusal from a routing
-            // one.
-            .route("/probe", get(probe).post(probe))
-            .layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                crate::require_merchant_token::<TestState>,
-            ))
-            .with_state(state)
-    }
-
-    /// The `sub` every valid token in this module carries, and therefore the
-    /// one client [`test_app`]'s configuration registers. Named so the two
-    /// cannot drift: a token for an unregistered client is 403, not 200, and
-    /// that is a different test.
-    const TOKEN_SUBJECT: &str = "merchant-123";
-
-    async fn envelope_of(response: axum::response::Response) -> Value {
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .expect("reading the response body succeeds");
-        serde_json::from_slice(&bytes).expect("the body is valid JSON")
-    }
-
-    /// `docs/status.md`'s own house style avoids `clippy::indexing_slicing`
-    /// entirely rather than allowing it locally — this mirrors that for
-    /// walking a JSON error envelope without `value["key"]` indexing.
-    fn error_field<'a>(envelope: &'a Value, field: &str) -> Option<&'a str> {
-        envelope.get("error")?.get(field)?.as_str()
-    }
-
-    #[tokio::test]
-    async fn a_missing_authorization_header_produces_the_stripe_shaped_envelope_with_401() {
-        let (_encoding_key, jwk) = &*KEYPAIR;
-        let server = jwks_server(jwk).await;
-        let app = test_app(merchant_validator(format!("{}/jwks.json", server.uri())));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/probe")
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("router does not fail to serve");
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let body = envelope_of(response).await;
-        assert_eq!(error_field(&body, "type"), Some("authentication_error"));
-        assert_eq!(error_field(&body, "code"), Some("missing_bearer_token"));
-        assert!(error_field(&body, "message").is_some());
-    }
-
-    #[tokio::test]
-    async fn a_malformed_authorization_header_produces_the_stripe_shaped_envelope_with_401() {
-        let (_encoding_key, jwk) = &*KEYPAIR;
-        let server = jwks_server(jwk).await;
-        let app = test_app(merchant_validator(format!("{}/jwks.json", server.uri())));
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/probe")
-                    // Not a "Bearer <token>" value at all.
-                    .header("Authorization", "Basic dXNlcjpwYXNz")
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("router does not fail to serve");
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let body = envelope_of(response).await;
-        assert_eq!(error_field(&body, "type"), Some("authentication_error"));
-        assert_eq!(
-            error_field(&body, "code"),
-            Some("malformed_authorization_header")
-        );
-    }
-
-    #[tokio::test]
-    async fn a_valid_bearer_token_reaches_the_handler_with_claims_attached() {
-        let (encoding_key, jwk) = &*KEYPAIR;
-        let server = jwks_server(jwk).await;
-        let app = test_app(merchant_validator(format!("{}/jwks.json", server.uri())));
-
-        let token = mint_token(
-            encoding_key,
-            "test-key-1",
-            &valid_claims(
-                vpay_config::MERCHANT_AUDIENCE,
-                "merchant-123",
-                crate::SCOPE_PAYMENTS_WRITE,
-            ),
-        );
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/probe")
-                    .header("Authorization", format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("router does not fail to serve");
-
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = envelope_of(response).await;
-        assert_eq!(
-            body.get("subject").and_then(Value::as_str),
-            Some("merchant-123"),
-            "on `/v1` the token's `sub` IS the client id — see ResourceClaims::subject for why \
-             the field stopped being called that"
-        );
-        assert_eq!(
-            body.get("scope"),
-            Some(&json!([crate::SCOPE_PAYMENTS_WRITE]))
-        );
-    }
-
-    /// The token is genuine and the client is registered; what it is missing
-    /// is a *scope*. That is 403, and specifically **not** 401.
-    ///
-    /// The distinction is the whole point of the test. A 401 tells a client
-    /// to go and get a credential — so an SDK that sees one drops its cached
-    /// token and re-authenticates, gets a token identical to the one it just
-    /// had, and retries: a loop that never terminates and never says what is
-    /// actually wrong. `sdks/rust`'s `Client` does exactly that on a 401.
-    /// 403 says "this credential, as issued, may not do this", which is both
-    /// true and actionable — the fix is in the merchant's registration.
-    #[tokio::test]
-    async fn a_token_without_the_required_scope_is_403_not_401() {
-        let (encoding_key, jwk) = &*KEYPAIR;
-        let server = jwks_server(jwk).await;
-
-        // Three tokens for the same registered client, differing only in
-        // what they were granted.
-        let token_of = |scope: &str| {
-            mint_token(
-                encoding_key,
-                "test-key-1",
-                &valid_claims(vpay_config::MERCHANT_AUDIENCE, TOKEN_SUBJECT, scope),
-            )
-        };
-        let none = token_of("");
-        let read = token_of(crate::SCOPE_PAYMENTS_READ);
-        let write = token_of(crate::SCOPE_PAYMENTS_WRITE);
-
-        // (method, token, expected status)
-        let cases = [
-            ("GET", &none, StatusCode::FORBIDDEN),
-            ("POST", &none, StatusCode::FORBIDDEN),
-            ("GET", &read, StatusCode::OK),
-            // A read-only credential must not be able to take a payment.
-            ("POST", &read, StatusCode::FORBIDDEN),
-            ("GET", &write, StatusCode::OK),
-            ("POST", &write, StatusCode::OK),
-        ];
-
-        for (method, token, expected) in cases {
-            let app = test_app(merchant_validator(format!("{}/jwks.json", server.uri())));
-            let response = app
-                .oneshot(
-                    Request::builder()
-                        .method(method)
-                        .uri("/probe")
-                        .header("Authorization", format!("Bearer {token}"))
-                        .body(Body::empty())
-                        .expect("valid request"),
-                )
-                .await
-                .expect("router does not fail to serve");
-
-            assert_eq!(
-                response.status(),
-                expected,
-                "{method} /probe with scope {:?}",
-                token_scope(token)
-            );
-            if expected == StatusCode::FORBIDDEN {
-                let body = envelope_of(response).await;
-                assert_eq!(error_field(&body, "type"), Some("invalid_request_error"));
-                assert_eq!(error_field(&body, "code"), Some("forbidden"));
-            }
-        }
-    }
-
-    /// The `scope` claim of a token, for the assertion messages above only —
-    /// decoding without verifying is fine for a diagnostic and would not be
-    /// anywhere near the validation path.
-    fn token_scope(token: &str) -> String {
-        let payload = token.split('.').nth(1).unwrap_or_default();
-        let bytes = URL_SAFE_NO_PAD.decode(payload).unwrap_or_default();
-        serde_json::from_slice::<Value>(&bytes)
-            .ok()
-            .and_then(|claims| {
-                claims
-                    .get("scope")
-                    .and_then(Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "<none>".to_owned())
-    }
-
     // --- the unknown-`kid` throttle (this module's header, and
     //     `UNKNOWN_KID_REFRESH_INTERVAL`) ---
 
@@ -1695,75 +1368,6 @@ mod tests {
         );
         assert_eq!(error.category(), Category::Storage);
         assert_eq!(error.retry(), vpay_core::Retry::AfterBackoff);
-    }
-
-    /// The same failure as an SDK sees it: 503 and the `api_error` envelope
-    /// the policy table gives [`Category::Storage`], not a 401 that reads as
-    /// "your token is stale".
-    #[tokio::test]
-    async fn a_jwks_outage_is_a_503_envelope_over_the_router() {
-        let (encoding_key, _jwk) = &*KEYPAIR;
-        let app = test_app(merchant_validator(unreachable_jwks_url()));
-
-        let token = mint_token(
-            encoding_key,
-            "test-key-1",
-            &valid_claims(vpay_config::MERCHANT_AUDIENCE, "merchant-123", ""),
-        );
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/probe")
-                    .header("Authorization", format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("router does not fail to serve");
-
-        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let body = envelope_of(response).await;
-        assert_eq!(error_field(&body, "type"), Some("api_error"));
-        assert_eq!(error_field(&body, "code"), Some("service_unavailable"));
-        assert_eq!(
-            error_field(&body, "message"),
-            Some("vpay is temporarily unavailable. Retry after a short delay."),
-            "the message must not tell a merchant to re-authenticate"
-        );
-    }
-
-    /// The control for the two tests above: a credential that really is bad
-    /// must still be 401, or `KeysUnavailable` would have swallowed the
-    /// authentication boundary rather than narrowed it.
-    #[tokio::test]
-    async fn a_bad_signature_is_still_a_401_over_the_router() {
-        let (_good_key, good_jwk) = &*KEYPAIR;
-        let (forged_key, _forged_jwk) = generate_keypair("test-key-1");
-        let server = jwks_server(good_jwk).await;
-        let app = test_app(merchant_validator(format!("{}/jwks.json", server.uri())));
-
-        let token = mint_token(
-            &forged_key,
-            "test-key-1",
-            &valid_claims(vpay_config::MERCHANT_AUDIENCE, "merchant-123", ""),
-        );
-
-        let response = app
-            .oneshot(
-                Request::builder()
-                    .uri("/probe")
-                    .header("Authorization", format!("Bearer {token}"))
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
-            .await
-            .expect("router does not fail to serve");
-
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
-        let body = envelope_of(response).await;
-        assert_eq!(error_field(&body, "type"), Some("authentication_error"));
-        assert_eq!(error_field(&body, "code"), Some("invalid_token"));
     }
 
     // --- audience confusion: the token the OP mints when none is requested ---

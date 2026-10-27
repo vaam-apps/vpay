@@ -104,6 +104,7 @@ pub mod browser;
 // route table shared with `/v1` would be one `V1Route` entry away from a
 // merchant token reaching a staff read.
 pub mod dash;
+pub mod envelope;
 pub mod error;
 pub mod form;
 pub mod idempotency;
@@ -155,7 +156,7 @@ pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use dash::{DASH_NEST, DASH_ROUTES, DashRoute};
 pub use error::ApiError;
 pub use provider_callback::{PROVIDER_CALLBACK_ROUTE, PROVIDER_NEST};
-pub use resource_auth::{DashboardJwtValidator, MerchantJwtValidator};
+pub use resource_auth::DashboardJwtValidator;
 /// The boot steps both binaries call, under the name to call them by.
 ///
 /// The module itself is [`v1::boot`] for historical reasons; nothing about
@@ -296,15 +297,25 @@ pub struct RouterDeps {
     /// because axum clones router state per request and the OP holds a
     /// signing key and a trait-object store that must not be duplicated.
     pub merchant_op: std::sync::Arc<op::MerchantOp>,
-    /// Validates the bearer tokens the OP above minted, in front of every
-    /// `/v1` route that is not part of the OP itself.
+    /// The signed transport `/v1` is wrapped in (VP-3): the `EnvelopeLayer`
+    /// that opens every request and seals every answer, and the resolver that
+    /// turns the key a request verified under into a tenant and its scopes.
     ///
-    /// Deliberately a separate value rather than something `router` derives
-    /// from `merchant_op`: the validator needs a *JWKS URL it can actually
-    /// reach*, which is a deployment fact (`vpay-server` points it at
-    /// loopback on the port it bound) and not something derivable from the
-    /// OP's public issuer. See [`op::MerchantOp::jwks_url`].
-    pub merchant_validator: MerchantJwtValidator,
+    /// Replaces what was here until VP-3, a bearer-token validator pointed at
+    /// this process's own JWKS: `/v1` no longer reads an `Authorization`
+    /// header at all.
+    ///
+    /// `Option` because a process that does not mount `/v1`
+    /// (`deployment.surfaces` without `business`) has no use for the
+    /// server's response key and `vpay-server` does not load it there. The
+    /// other half of that is not optional: **a process that mounts `/v1` and
+    /// has `None` here answers every `/v1` request with a `500`** (the nest is
+    /// mounted, and says plainly that it cannot serve) rather than serving
+    /// unsigned or not at all. `vpay-server` cannot produce that combination —
+    /// it refuses to boot without the keys — so the arm exists for a router
+    /// assembled by some other caller, and is pinned by
+    /// `a_business_process_with_no_envelope_refuses_every_v1_request`.
+    pub v1_envelope: Option<envelope::V1Envelope>,
     /// Every payment rail this process can reach, by `providers.code`.
     ///
     /// **Built by the binary, not by this crate.** `vpay-api` links no
@@ -329,9 +340,9 @@ pub struct RouterDeps {
     /// deployment configured no `dashboard_client`, and [`router`] then
     /// mounts **no `/dash/v1` nest at all**, so every path under it answers
     /// the honest 404 rather than a 401 that promises a credential would
-    /// help. A separate value from [`Self::merchant_validator`] for that
-    /// field's reason — the JWKS URL is a deployment fact — and a *second*
-    /// validator rather than one with two audiences, because a validator
+    /// help. A validator of its own because its JWKS URL is a deployment fact (it
+    /// points at this process's own `/v1/oauth/jwks.json`), and one validator
+    /// rather than one with two audiences, because a validator
     /// that accepted either audience is exactly the confusion
     /// [`resource_auth::Surface`] exists to prevent.
     pub dashboard_validator: Option<DashboardJwtValidator>,
@@ -380,7 +391,6 @@ pub struct RouterDeps {
 pub(crate) struct AppState {
     repositories: Arc<dyn Repositories>,
     merchant_op: std::sync::Arc<op::MerchantOp>,
-    merchant_validator: MerchantJwtValidator,
     dashboard_validator: Option<DashboardJwtValidator>,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
@@ -426,16 +436,8 @@ impl FromRef<AppState> for std::sync::Arc<op::MerchantOp> {
     }
 }
 
-/// So [`require_merchant_token`] resolves its validator out of router state
-/// — the bound that middleware requires.
-impl FromRef<AppState> for MerchantJwtValidator {
-    fn from_ref(state: &AppState) -> Self {
-        state.merchant_validator.clone()
-    }
-}
-
 /// So [`require_dashboard_token`] resolves its validator out of router
-/// state. `Option`, unlike [`MerchantJwtValidator`]'s impl: see
+/// state. `Option`: see
 /// [`RouterDeps::dashboard_validator`] — a deployment with no dashboard has
 /// no validator, and the middleware refuses rather than inventing one.
 impl FromRef<AppState> for Option<DashboardJwtValidator> {
@@ -444,8 +446,7 @@ impl FromRef<AppState> for Option<DashboardJwtValidator> {
     }
 }
 
-/// So [`require_merchant_token`] can map a token's `client_id` to a tenant,
-/// and so a `/v1` handler can take `State<Arc<ResourceConfig>>` and stay
+/// So a `/v1` handler can take `State<Arc<ResourceConfig>>` and stay
 /// independent of how this router is assembled.
 impl FromRef<AppState> for Arc<ResourceConfig> {
     fn from_ref(state: &AppState) -> Self {
@@ -813,130 +814,30 @@ async fn mirror_request_id_header(request: Request<Body>, next: Next) -> Respons
     response
 }
 
-/// The `/v1` authentication **and authorisation** boundary: validates the
-/// bearer token once, checks it carries a scope for what is being asked, and
-/// puts what it learned on the request.
+/// The answer of a `/v1` nest mounted by a process that was handed no signed
+/// transport: a plain `500`, for every route and the fallback.
 ///
-/// Two things go into the request's extensions, and both are read back by
-/// extractors that fail closed if they are missing
-/// ([`resource_auth::AuthenticatedMerchant`], [`MerchantScope`]):
-///
-/// - the validated [`ResourceClaims`](resource_auth::ResourceClaims) —
-///   `client_id` and `scope`;
-/// - the [`MerchantScope`] those claims resolve to, which is the tenant
-///   every `/v1` query is filtered by.
-///
-/// # Why the scope check is here and not in a handler
-///
-/// [`v1::required_scopes`] decides what the request's method needs, and a
-/// token carrying none of those scopes is [`ApiError::Forbidden`] — 403,
-/// not 404: this is a statement about the *credential*, which the caller can
-/// inspect for itself, so there is nothing to leak by saying so plainly.
-/// (Object-level tenancy is the opposite case and answers
-/// [`ApiError::NotFound`]; see that variant.)
-///
-/// It runs before the router matches a route, which is what makes it
-/// impossible for a new `/v1` handler to be added without it — the failure
-/// mode of a per-handler check is a handler that simply does not have one,
-/// and nothing in the type system notices. The cost is that the rule can
-/// only see the method, which is why it is expressed per-method.
-///
-/// # Why a middleware and not `from_extractor_with_state`
-///
-/// axum 0.8's `from_extractor_with_state::<AuthenticatedMerchant, _>`
-/// *discards* the value it extracted. It is a fine gate and a poor
-/// hand-off: every handler that then asked for the claims validated the
-/// same token a second time — a second JWKS cache consultation, which can
-/// legitimately return a different key set than the first one did if a
-/// refresh landed in between. One validation per request is both cheaper
-/// and the only way the boundary and the handler cannot disagree.
-///
-/// # Why an unknown `client_id` is 403 and not 401
-///
-/// The token is genuine: this process signed it, and it validates. What is
-/// missing is a *registration* — the deployment's YAML no longer maps this
-/// client to a tenant, which is what happens for the remaining TTL of a
-/// token minted before a config change that removed the client. 401 would
-/// tell the caller to present a credential, and it already has a valid one;
-/// 403 says the credential is not permitted to act here, which is the truth.
-/// (It is also what would happen if a token minted by a *different* vpay
-/// deployment sharing this issuer arrived, which is worth failing closed on
-/// rather than falling back to any tenant.)
-///
-/// Generic over the state so that `resource_auth`'s own tests mount this
-/// exact function rather than a copy of it — a middleware reimplemented in a
-/// test harness proves nothing about the one that ships.
-pub async fn require_merchant_token<S>(
-    State(state): State<S>,
-    request: Request<Body>,
-    next: Next,
-) -> Response
-where
-    S: Send + Sync + Clone + 'static,
-    MerchantJwtValidator: FromRef<S>,
-    Arc<ResourceConfig>: FromRef<S>,
-{
-    let (mut parts, body) = request.into_parts();
-
-    let claims = {
-        let token = match extract_bearer_token(&parts) {
-            Ok(token) => token,
-            Err(rejection) => return ApiError::from(rejection).into_response(),
-        };
-        match MerchantJwtValidator::from_ref(&state)
-            .0
-            .validate(token)
-            .await
-        {
-            Ok(claims) => claims,
-            Err(rejection) => return ApiError::from(rejection).into_response(),
-        }
-    };
-
-    let resource_config = Arc::<ResourceConfig>::from_ref(&state);
-    let Some(merchant_id) = resource_config.merchant_id_for(&claims.subject) else {
-        tracing::warn!(
-            client_id = %claims.subject,
-            "a validly signed /v1 token names a client this deployment has no registration for; \
-             refusing rather than guessing a tenant"
-        );
-        return ApiError::Forbidden.into_response();
-    };
-    let scope = MerchantScope {
-        merchant_id: merchant_id.to_owned(),
-    };
-
-    // The token says which client, and it also says what that client was
-    // authorised to do. Checked here rather than in each handler for the
-    // same reason the tenant is resolved here: a handler that forgot would
-    // be a silent hole, and there is nothing in a `pub(crate) async fn`'s
-    // signature to notice it is missing.
-    let required = v1::required_scopes(&parts.method);
-    if !required.iter().any(|scope| claims.has_scope(scope)) {
-        tracing::warn!(
-            client_id = %claims.subject,
-            method = %parts.method,
-            granted = ?claims.scope,
-            required = ?required,
-            "a /v1 token carries none of the scopes this request needs; refusing"
-        );
-        return ApiError::Forbidden.into_response();
-    }
-
-    parts.extensions.insert(claims);
-    parts.extensions.insert(scope);
-
-    next.run(Request::from_parts(parts, body)).await
+/// Unreachable from `vpay-server`, which refuses to boot without the keys
+/// (exit `78`); here for a router assembled by some other caller, so that the
+/// failure is "this cannot serve" and not "this serves without a signature".
+/// See [`RouterDeps::v1_envelope`].
+async fn refuse_v1_without_envelope(_request: Request<Body>, _next: Next) -> Response {
+    ApiError::Internal(
+        "the /v1 nest is mounted but was given no signed transport (RouterDeps::v1_envelope)"
+            .to_owned(),
+    )
+    .into_response()
 }
 
 /// The `/dash/v1` authentication **and** authorisation boundary — the
-/// mirror of [`require_merchant_token`], and different from it in exactly
-/// the three ways the dashboard is different from a merchant.
+/// bearer-token twin of what `/v1` did until VP-3 (`/v1` is signed now:
+/// `envelope::scope`), and different from it in exactly the three ways the
+/// dashboard is different from a merchant.
 ///
-/// | | `/v1` | `/dash/v1` |
+/// | | `/v1` (signed, VP-3) | `/dash/v1` |
 /// |---|---|---|
-/// | tenant | resolved from the token's `client_id` | **fixed** by `dashboard_client.merchant_id` |
-/// | credential | any registered merchant client | the **one** registered dashboard client |
+/// | tenant | resolved from the key that signed | **fixed** by `dashboard_client.merchant_id` |
+/// | credential | any registered merchant key | the **one** registered dashboard client |
 /// | methods | every method, scoped per verb | `GET`/`HEAD` only; everything else refused here |
 ///
 /// # What identifies the credential, after ADR-0017
@@ -1029,8 +930,8 @@ where
 /// there is no such route here. A `500` would claim vpay is broken when the
 /// truth is that this deployment does not run a dashboard.
 ///
-/// Generic over the state for [`require_merchant_token`]'s reason: a test
-/// mounts this exact function rather than a copy of it.
+/// Generic over the state so that a test mounts this exact function rather
+/// than a copy of it.
 pub async fn require_dashboard_token<S>(
     State(state): State<S>,
     request: Request<Body>,
@@ -1391,14 +1292,14 @@ where
 /// and still refuses a body an unauthenticated caller could use to make this
 /// process buffer megabytes — the limit layer is mounted *outside* the token
 /// check for exactly that reason.
-const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
+pub(crate) const V1_BODY_LIMIT_BYTES: usize = 64 * 1024;
 
 /// Builds the application router from [`RouterDeps`].
 ///
 /// Three route groups, and which group a path falls into is the whole security
 /// boundary of this process: the unauthenticated ones (`/healthz`, the whole
 /// `/v1/oauth` OP subtree, the two `/v1/browser` payer routes), everything else
-/// under `/v1` behind [`require_merchant_token`], and the honest 404 for
+/// under `/v1` behind the signed transport ([`envelope`]), and the honest 404 for
 /// anything else. `/livez` and `/metrics` are **not** served here at all — they
 /// belong to [`observability`], on a different port, because `/metrics` names
 /// every rail, route pattern and error code this deployment has.
@@ -1430,7 +1331,6 @@ pub fn router(deps: RouterDeps) -> Router {
     let state = AppState {
         repositories: deps.repositories,
         merchant_op: deps.merchant_op,
-        merchant_validator: deps.merchant_validator,
         dashboard_validator: deps.dashboard_validator,
         adapters: deps.adapters,
         resource_config: deps.resource_config,
@@ -1473,26 +1373,66 @@ pub fn router(deps: RouterDeps) -> Router {
 
     // Every route is mounted from `v1::V1_ROUTES` — see that constant, and
     // `v1::routes`, which also carries the fallback. `Router::layer` (not
-    // `route_layer`) is what puts the two layers below in front of that
-    // fallback as well as in front of the routes.
-    let v1 = v1::routes()
-        .layer(from_fn_with_state(
-            state.clone(),
-            require_merchant_token::<AppState>,
-        ))
-        // Outside the token check, deliberately: a body limit that only
-        // applied to authenticated callers would let an anonymous one make
-        // this process buffer a body before the 401. `RequestBodyLimitLayer`
-        // rather than axum's `DefaultBodyLimit` because the latter is
-        // applied per-handler through extractors and would not cover a body
-        // read by middleware.
-        .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
-        // Outermost of the three, and inside this nest rather than on the
-        // outer router: a `/v1` request's route pattern only exists once
-        // this router has matched, and a 401 decided by the layer above must
-        // still be counted against the route it was aimed at. See
-        // `track_http_metrics`.
-        .layer(from_fn(track_http_metrics));
+    // `route_layer`) is what puts the layers below in front of that fallback
+    // as well as in front of the routes — and, for the envelope, is what sets
+    // the `MatchedPath` its resolver binds the operation from.
+    //
+    // **Since VP-3 `/v1` is signed, not bearer-authenticated**, and the order
+    // below is `envelope`'s module header drawn upward: the first `.layer` runs
+    // last. Request path, outermost first: metrics, the envelope (opens the
+    // COSE message, verifies it, spends its `cti`), the body limit (on the
+    // OPENED payload), the merchant scope (signer to tenant and scopes), the
+    // handler.
+    let v1 = match deps.v1_envelope {
+        Some(envelope) => v1::routes()
+            // Innermost: the opened request's `VerifiedSigner` resolved to a
+            // `MerchantScope` — the work the bearer-token middleware did
+            // before VP-3. Inside the envelope so a refusal here is sealed.
+            //
+            // **`route_layer`, not `layer`, and the difference is load-bearing
+            // for the first time.** The bearer middleware wrapped the nest's
+            // fallback too, because every request had to be authenticated even
+            // if it matched nothing. This one needs a `VerifiedSigner`, and the
+            // only requests that reach the fallback are the ones the envelope
+            // let through *unsigned* because there is no operation to sign for
+            // (`V1Binding` answers `NotAnOp`): bare `/v1`, `/v1//x`, an unknown
+            // path. Wrapped around the fallback it would turn their honest 404
+            // into a 500 for the missing signer (measured, in
+            // `a_v1_path_that_is_not_an_operation_is_the_honest_404`). Around
+            // the routes alone it covers every handler, and a route reached
+            // with no signer is still the `MerchantScope` extractor's 500, so
+            // the boundary has not moved.
+            .route_layer(from_fn_with_state(
+                envelope.merchants(),
+                envelope::scope::merchant_scope,
+            ))
+            // Inside the envelope, on purpose, and with the same constant as
+            // ever: the bound is on what a handler reads, which is the opened
+            // payload. The bound on what an anonymous caller can make this
+            // process buffer before a signature is checked is the envelope's
+            // own (`envelope::ENVELOPE_BODY_LIMIT_BYTES`, this plus the COSE
+            // framing). `RequestBodyLimitLayer` rather than axum's
+            // `DefaultBodyLimit` because the latter is applied per-handler
+            // through extractors and would not cover a body read by
+            // middleware.
+            .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+            // The signed transport. **The last `.layer` of the pair before the
+            // metrics one, so it runs first of the two**, and applied to this
+            // router before it is nested, which is the only way it sees the
+            // matched route.
+            .layer(envelope.layer()),
+        // Mounted and refusing, never absent and never open: see
+        // `RouterDeps::v1_envelope`.
+        None => v1::routes().layer(from_fn(refuse_v1_without_envelope)),
+    }
+    // Outermost, and inside this nest rather than on the outer router: a
+    // `/v1` request's route pattern only exists once this router has matched,
+    // and a refusal decided by a layer above must still be counted against the
+    // route it was aimed at. It reads no body and no header, so it can sit
+    // ahead of the envelope; a sealed response keeps its real HTTP status, so
+    // the counters still say `401`, `404`, `409` and not a wall of `200`s. See
+    // `track_http_metrics`.
+    .layer(from_fn(track_http_metrics));
 
     // Unauthenticated by necessity too, and for a different reason from the
     // OP's: the caller is a payer's browser, which has no merchant
@@ -1816,14 +1756,38 @@ mod tests {
     /// request-id stack. The boundary has its own tests, further down.
     const UNROUTED_PATH: &str = "/not_a_vpay_route";
 
+    /// The layer's refusal and nothing else: the one coarse unsigned body,
+    /// `{"code":"UNAUTHORIZED"}`, and not the Stripe envelope a bearer-token
+    /// middleware (`missing_bearer_token`) or a tidied `merchant_scope` would
+    /// give. A bare status check passes for both, which is how a re-added
+    /// bearer layer, or mode `Optional` plus a handler that happens to answer
+    /// 401, would have gone unnoticed.
+    async fn assert_coarse_unsigned_401(response: Response, what: &str) {
+        let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+            .await
+            .expect("the refusal is small");
+        let text = String::from_utf8_lossy(&body);
+        assert!(
+            text.contains("UNAUTHORIZED"),
+            "{what}: the unsigned 401 must be the layer's coarse body, got {text:?}"
+        );
+        assert!(
+            !text.contains("\"error\"") && !text.contains("bearer"),
+            "{what}: a Stripe-shaped or bearer-shaped refusal is not the layer's: {text:?}"
+        );
+    }
+
     async fn get(uri: &str) -> Response {
+        request("GET", uri, &[]).await
+    }
+
+    async fn request(method: &str, uri: &str, headers: &[(&str, &str)]) -> Response {
+        let mut builder = Request::builder().method(method).uri(uri);
+        for (name, value) in headers {
+            builder = builder.header(*name, *value);
+        }
         router(deps())
-            .oneshot(
-                Request::builder()
-                    .uri(uri)
-                    .body(Body::empty())
-                    .expect("valid request"),
-            )
+            .oneshot(builder.body(Body::empty()).expect("valid request"))
             .await
             .expect("router does not fail to serve")
     }
@@ -2102,57 +2066,191 @@ mod tests {
         assert_eq!(get(UNROUTED_PATH).await.status(), StatusCode::NOT_FOUND);
     }
 
-    /// The security boundary, asserted from the outside: no bearer token, no
-    /// `/v1`.
+    /// The security boundary, asserted from the outside, over the table the
+    /// router is folded from: **every `V1_ROUTES` path, with every method it
+    /// answers, answers the unsigned `401` to a plain request.**
     ///
-    /// This is the decisive test for mounting the auth layer with
-    /// `Router::layer` rather than `route_layer` — `route_layer` does not
-    /// wrap a fallback, and since the `/v1` nest's only route *is* its
-    /// fallback, that spelling would answer 404 here and let every future
-    /// `/v1` resource inherit the hole. Removing the layer entirely fails
-    /// this test the same way.
+    /// This is the decisive test for mounting the envelope with
+    /// `Router::layer` and a resolver over `V1_ROUTES`: a route the resolver
+    /// did not bind would reach its handler unsigned (or, under `Required`,
+    /// answer the misconfiguration `500`), and a layer that was not mounted at
+    /// all would answer whatever the handler does. Walking the table rather
+    /// than a hand-kept list means a route added tomorrow is covered by
+    /// construction. It replaced `every_registered_v1_path_answers_401_without_a_token`
+    /// of the bearer-token era (VP-3).
     #[tokio::test]
-    async fn an_unauthenticated_v1_request_is_401_not_404() {
-        for path in [
-            "/v1/payment_intents",
-            "/v1/payment_intents/pi_x",
-            "/v1/refunds",
-            // `/v1` itself — `Router::nest` registers the bare prefix as
-            // well as `/v1/{*rest}`, so the boundary covers it.
-            "/v1",
-            // Two slashes: `{*rest}` captures `/payment_intents`, so a
-            // caller cannot slip past the boundary by doubling a separator.
-            "/v1//payment_intents",
-        ] {
-            let response = get(path).await;
-            assert_eq!(
-                response.status(),
-                StatusCode::UNAUTHORIZED,
-                "{path} must be behind the merchant authentication boundary"
+    async fn every_v1_route_answers_the_unsigned_401_to_a_plain_request() {
+        for route in V1_ROUTES {
+            for method in route.methods {
+                let path = format!("/v1{}", route.path.replace("{id}", "pi_x"));
+                let response = request(method, &path, &[]).await;
+                assert_eq!(
+                    response.status(),
+                    StatusCode::UNAUTHORIZED,
+                    "{method} {path} must be behind the signed transport"
+                );
+                assert_coarse_unsigned_401(response, &format!("{method} {path}")).await;
+            }
+        }
+    }
+
+    /// An anonymous `OPTIONS` to any `/v1` route is a `405`, not a page.
+    ///
+    /// cratestack 0.16.0's `EnvelopeLayer` passes a bodiless `OPTIONS` through
+    /// unsigned (a CORS preflight), and `route_layer` wraps a method router's
+    /// own `405` fallback, so the request reached `merchant_scope` with no
+    /// `VerifiedSigner` and was answered `Internal` — a `500` that fires
+    /// `VpayPageableErrorEvents` for anybody who asks. Walks the table, so a
+    /// route added tomorrow is covered; the scrape proves nothing was counted as
+    /// an error at all, which is what would have paged, and the `Allow` header
+    /// and empty body prove the answer is the router's and not a handler's.
+    #[test]
+    fn an_anonymous_options_to_any_v1_route_is_a_405_and_pages_nobody() {
+        let scrape = scrape_of(|| {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("a current-thread runtime builds");
+            for route in V1_ROUTES {
+                let path = format!("/v1{}", route.path.replace("{id}", "pi_x"));
+                let response = runtime.block_on(request("OPTIONS", &path, &[]));
+                assert_eq!(
+                    response.status(),
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "OPTIONS {path}: a method no /v1 operation serves"
+                );
+                assert!(
+                    response.headers().contains_key("allow"),
+                    "OPTIONS {path}: a 405 names what the path does serve"
+                );
+                let body = runtime
+                    .block_on(axum::body::to_bytes(response.into_body(), 64 * 1024))
+                    .expect("the answer is small");
+                assert!(
+                    body.is_empty(),
+                    "OPTIONS {path}: the router's bare 405, not an error envelope: {body:?}"
+                );
+            }
+        });
+        for line in scrape.lines() {
+            assert!(
+                !line.starts_with("vpay_alert_events_total{")
+                    && !line.starts_with("vpay_error_events_total{"),
+                "an anonymous OPTIONS raised an error event: {line}\n{scrape}"
             );
         }
     }
 
-    /// The 401 a merchant gets is this crate's own envelope, not axum's bare
-    /// rejection body — so an SDK decoding `error.code` sees something it can
-    /// branch on.
+    /// The same boundary for what a plain request can carry that used to
+    /// matter: a bearer token is not an alternative. `Authorization` is read
+    /// by nothing in front of the layer, so a syntactically perfect one gets
+    /// exactly the answer a missing one does.
     #[tokio::test]
-    async fn the_unauthenticated_v1_401_is_the_stripe_shaped_envelope() {
-        let response = get("/v1/payment_intents").await;
+    async fn a_bearer_token_buys_nothing_on_v1() {
+        for header in ["Bearer abc.def.ghi", "Basic dXNlcjpwdw==", "garbage"] {
+            let response =
+                request("GET", "/v1/payment_intents", &[("authorization", header)]).await;
+            assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{header}");
+            assert_coarse_unsigned_401(response, header).await;
+        }
+    }
+
+    /// What is under `/v1` and is **not** an operation is the honest 404 —
+    /// not the unsigned 500 a `Required` layer gives a matched route its
+    /// resolver does not know (which is what the bare `/v1` and the nest's
+    /// `/v1/{*rest}` catch-all were before `V1Binding` answered `NotAnOp`).
+    /// The doubled slash is the case the old boundary test named: `{*rest}`
+    /// captures `/payment_intents`, so a caller cannot slip past by doubling a
+    /// separator — and now it cannot reach a handler either, because the
+    /// catch-all is no operation.
+    #[tokio::test]
+    async fn a_v1_path_that_is_not_an_operation_is_the_honest_404() {
+        for path in [
+            "/v1",
+            "/v1//payment_intents",
+            "/v1//payment_intents/pi_x",
+            "/v1/not_a_route",
+            "/v1/payment_intents/pi_x/nonsense",
+            "/v1/balance",
+        ] {
+            let response = get(path).await;
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+            let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("the envelope is small");
+            let envelope: Value = serde_json::from_slice(&body).expect("the 404 body is JSON");
+            assert_eq!(
+                envelope
+                    .get("error")
+                    .and_then(|error| error.get("code"))
+                    .and_then(Value::as_str),
+                Some("unknown_route"),
+                "{path}: the nest's own Stripe-shaped 404, not the envelope layer's"
+            );
+        }
+    }
+
+    /// A method a `/v1` path does not serve is the layer's own `405` with
+    /// `Allow`, decided ahead of the signature question.
+    #[tokio::test]
+    async fn a_method_a_v1_path_does_not_serve_is_a_405_naming_what_it_does() {
+        let response = request("PUT", "/v1/payment_intents", &[]).await;
+        assert_eq!(response.status(), StatusCode::METHOD_NOT_ALLOWED);
+        let allow = response
+            .headers()
+            .get("allow")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        assert!(allow.contains("GET") && allow.contains("POST"), "{allow}");
+    }
+
+    /// A COSE body to something that is no operation is refused outright
+    /// (unsigned `415`), never forwarded.
+    #[tokio::test]
+    async fn a_signed_body_to_a_path_that_is_not_an_operation_is_refused() {
+        let response = request(
+            "POST",
+            "/v1/not_a_route",
+            &[("content-type", "application/cose; cose-type=\"cose-sign1\"")],
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+    }
+
+    /// The unsigned `401` is the envelope layer's coarse answer, **not** the
+    /// Stripe-shaped `authentication_error` the bearer layer gave (VP-3,
+    /// accepted by the maintainers on the flag day). It is deliberately the
+    /// same bytes for every cause — unknown key, bad signature, replayed
+    /// `cti`, stale `iat`, disabled merchant — because a peer that can tell
+    /// them apart has an oracle (cratestack ADR 0006 §10). A caller that wants
+    /// `error.code` branches only after the answer is sealed, i.e. once its
+    /// signature verified.
+    #[tokio::test]
+    async fn the_unsigned_v1_401_is_the_layers_coarse_answer_and_not_the_stripe_envelope() {
+        // Asked for JSON, which is what a curl user would ask for; the layer's
+        // refusal otherwise follows its own default (CBOR), another way it is
+        // not the Stripe envelope.
+        let response = request(
+            "GET",
+            "/v1/payment_intents",
+            &[("accept", "application/json")],
+        )
+        .await;
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
         let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
             .await
-            .expect("the envelope is small");
-        let envelope: Value = serde_json::from_slice(&body).expect("the 401 body is JSON");
-        let error = envelope.get("error").expect("error key");
+            .expect("the answer is small");
+        let answer: Value = serde_json::from_slice(&body).expect("the 401 body is JSON");
         assert_eq!(
-            error.get("type").and_then(Value::as_str),
-            Some("authentication_error")
+            answer.get("code").and_then(Value::as_str),
+            Some("UNAUTHORIZED"),
+            "{answer}"
         );
-        assert_eq!(
-            error.get("code").and_then(Value::as_str),
-            Some("missing_bearer_token")
+        assert!(
+            answer.get("error").is_none(),
+            "the Stripe `error` envelope belongs to answers a signature vouches for: {answer}"
         );
     }
 
@@ -2558,13 +2656,12 @@ mod tests {
     async fn neither_livez_nor_metrics_is_reachable_on_the_traffic_router() {
         for path in ["/livez", "/metrics", "/v1/livez", "/v1/metrics"] {
             let status = get(path).await.status();
-            let expected = if path.starts_with("/v1/") {
-                // Under the merchant boundary, an unauthenticated request is
-                // refused before routing — which is also "not served here".
-                StatusCode::UNAUTHORIZED
-            } else {
-                StatusCode::NOT_FOUND
-            };
+            // Under `/v1` too: the signed transport binds operations, and a
+            // path that is no `V1_ROUTES` row is not one (`V1Binding` answers
+            // `NotAnOp`), so a plain request reaches the nest's fallback — the
+            // honest 404, "not served here". Until VP-3 this was a 401 for the
+            // `/v1/…` pair, because the bearer layer wrapped the fallback.
+            let expected = StatusCode::NOT_FOUND;
             assert_eq!(
                 status, expected,
                 "{path} must not be served by the traffic router; it belongs to \
@@ -2941,9 +3038,14 @@ mod tests {
         use crate::{DASH_NEST, DASH_ROUTES, V1_ROUTES, router};
 
         async fn status_of(app: &Router, uri: &str) -> StatusCode {
+            status_of_as(app, "GET", uri).await
+        }
+
+        async fn status_of_as(app: &Router, method: &str, uri: &str) -> StatusCode {
             app.clone()
                 .oneshot(
                     Request::builder()
+                        .method(method)
                         .uri(uri)
                         .body(Body::empty())
                         .expect("valid request"),
@@ -3003,15 +3105,20 @@ mod tests {
                 );
             }
 
+            // Each route is asked with a method it answers: since VP-3 a
+            // method a path does not serve is the envelope layer's `405`,
+            // decided before the signature question the `401` answers.
             for route in V1_ROUTES {
-                let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
-                let status = status_of(&app, &path).await;
-                assert_eq!(
-                    status,
-                    StatusCode::UNAUTHORIZED,
-                    "{path} must still answer 401 without a token when deployment.surfaces = \
-                     [business]; got {status}"
-                );
+                for method in route.methods {
+                    let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
+                    let status = status_of_as(&app, method, &path).await;
+                    assert_eq!(
+                        status,
+                        StatusCode::UNAUTHORIZED,
+                        "{method} {path} must still answer 401 to an unsigned request when \
+                         deployment.surfaces = [business]; got {status}"
+                    );
+                }
             }
         }
 
@@ -3025,14 +3132,16 @@ mod tests {
             let app = router(deps_with_surfaces(None));
 
             for route in V1_ROUTES {
-                let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
-                let status = status_of(&app, &path).await;
-                assert_eq!(
-                    status,
-                    StatusCode::UNAUTHORIZED,
-                    "{path} must answer (401 without a token) when deployment.surfaces is \
-                     absent; got {status}"
-                );
+                for method in route.methods {
+                    let path = format!("/v1{}", route.path.replace("{id}", "pi_anything"));
+                    let status = status_of_as(&app, method, &path).await;
+                    assert_eq!(
+                        status,
+                        StatusCode::UNAUTHORIZED,
+                        "{method} {path} must answer (401 to an unsigned request) when \
+                         deployment.surfaces is absent; got {status}"
+                    );
+                }
             }
 
             for route in DASH_ROUTES {

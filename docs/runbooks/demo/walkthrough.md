@@ -2,6 +2,16 @@
 
 _Moved out of [docs/runbooks/demo.md](../demo.md) on 2026-09-11 by exp57, which split a 1 426-line runbook into the procedure and its steps. **The text below is the original, unedited** — every dated measurement, every struck-through claim and every correction is here as it was written; only the links changed: a `../` for the new depth, and, where a `§` cross-reference pointed at a section that is now on another page, the page it moved to._
 
+> **Superseded in part, 2026-10-26 (VP-3).** `/v1` is signed now, so the three
+> opening steps below are not what the program prints today. It prints
+> `[1/6] a signed read` (the request is a COSE_Sign1 message under the demo
+> merchant's Ed25519 key, `VPAY_SIGNING_SEED_FILE`; the answer is opened under
+> the pinned response keys), `[2/6]` the same path with a bearer token and no
+> signature, and `[3/6]` the same path with no signature at all, each refused
+> with vpay's coarse unsigned `401`. Steps 4 onward are unchanged in substance.
+> The transcript is left as the capture it is: hand-editing one labelled
+> verbatim would be worse than the staleness.
+
 ## 4. The walkthrough
 
 Real output of `just demo` — `demo-up` from nothing, then `demo-walk` — on the

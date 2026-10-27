@@ -49,6 +49,19 @@ a generated one would mint tokens no other replica could verify.
 {{- fail "vpay chart guard \"signing-key-secret\": signingKey.existingSecret and signingKey.key must both be set. vpay-server exits 78 without VPAY_OAUTH_SIGNING_KEY_FILE, and this chart deliberately generates no key." -}}
 {{- end -}}
 
+{{/* ---------------------------------------------------------------- 3b */}}
+{{/*
+envelope-keys-secret — `vpay-server` exits 78 without the two Ed25519 seeds the
+signed `/v1` transport seals every answer with (`VPAY_ENVELOPE_SIGNING_KEY_FILE`
+and `..._NEXT_FILE`). Like the OP key, no fallback and no generated key: a
+generated one would sign answers no other replica could, and no client would
+have pinned it. The two keys must also be different files of the Secret —
+the server refuses an identical pair at boot (`EnvelopeKeyError::SameKey`).
+*/}}
+{{- if or (empty .Values.envelopeKeys.existingSecret) (empty .Values.envelopeKeys.current) (empty .Values.envelopeKeys.next) (eq .Values.envelopeKeys.current .Values.envelopeKeys.next) -}}
+{{- fail "vpay chart guard \"envelope-keys-secret\": envelopeKeys.existingSecret, envelopeKeys.current and envelopeKeys.next must all be set, and current and next must name different keys of the Secret. vpay-server exits 78 without VPAY_ENVELOPE_SIGNING_KEY_FILE and VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE (and refuses an identical pair), and this chart deliberately generates no key." -}}
+{{- end -}}
+
 {{/* ---------------------------------------------------------------- 4 */}}
 {{/*
 rails-secret — the image's baked `config/application.yml` carries a `${VAR}`
@@ -317,6 +330,8 @@ matching edit here, and that is the one drift this guard has.
 {{- end -}}
 {{- $_ := set $reserved "VPAY_BIND" "deployment-server.yaml" -}}
 {{- $_ := set $reserved "VPAY_OAUTH_SIGNING_KEY_FILE" "deployment-server.yaml" -}}
+{{- $_ := set $reserved "VPAY_ENVELOPE_SIGNING_KEY_FILE" "deployment-server.yaml" -}}
+{{- $_ := set $reserved "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE" "deployment-server.yaml" -}}
 {{- $_ := set $reserved "VPAY_WORKER_CONCURRENCY" "deployment-worker.yaml" -}}
 {{- range $component := list "server" "worker" -}}
 {{- range $entry := (index $.Values $component).extraEnv -}}

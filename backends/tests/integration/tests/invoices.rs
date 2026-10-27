@@ -43,7 +43,7 @@
 // integration suites'.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use anyhow::Context as _;
@@ -51,13 +51,11 @@ use serde_json::Value;
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{
-    CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost,
-};
+use vpay_config::{CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 
 mod support;
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client,
@@ -135,31 +133,9 @@ struct Harness {
     /// rows rather than about responses.
     pool: PgPool,
     base_url: String,
-    signing_key: LoadedSigningKey,
-    http: reqwest::Client,
 }
 
 impl Harness {
-    /// A bearer token for `client_id`.
-    ///
-    /// Raw HTTP rather than the merchant SDK, unlike `customers.rs`: the SDK
-    /// has no invoice methods yet (`docs/sdks/parity.md` carries the dated
-    /// gap row), and writing this suite against a client that does not exist
-    /// would be the "test asserts the implementation back to itself" failure
-    /// this repository names in `CLAUDE.md`.
-    fn bearer(&self, client_id: &str) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
-    }
-
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
     }
@@ -183,10 +159,9 @@ impl Harness {
         form: &[(&str, &str)],
         key: &str,
     ) -> anyhow::Result<(reqwest::StatusCode, Value)> {
-        let response = self
-            .http
+        let response = SealedHttp::new()
             .post(self.url(path))
-            .bearer_auth(self.bearer(client_id))
+            .signed_by(client_id)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(form_body(form))
@@ -202,10 +177,9 @@ impl Harness {
         client_id: &str,
         path: &str,
     ) -> anyhow::Result<(reqwest::StatusCode, Value)> {
-        let response = self
-            .http
+        let response = SealedHttp::new()
             .get(self.url(path))
-            .bearer_auth(self.bearer(client_id))
+            .signed_by(client_id)
             .send()
             .await
             .context("reading the invoice surface")?;
@@ -217,10 +191,9 @@ impl Harness {
     /// cases: "the same 404" is a claim about bytes, and parsing then
     /// re-serialising would hide a difference in key order or in a message.
     async fn get_bytes(&self, client_id: &str, path: &str) -> anyhow::Result<(u16, String)> {
-        let response = self
-            .http
+        let response = SealedHttp::new()
             .get(self.url(path))
-            .bearer_auth(self.bearer(client_id))
+            .signed_by(client_id)
             .send()
             .await
             .context("reading the invoice surface")?;
@@ -233,10 +206,9 @@ impl Harness {
         client_id: &str,
         path: &str,
     ) -> anyhow::Result<(reqwest::StatusCode, Value)> {
-        let response = self
-            .http
+        let response = SealedHttp::new()
             .delete(self.url(path))
-            .bearer_auth(self.bearer(client_id))
+            .signed_by(client_id)
             .header("Idempotency-Key", fresh_key())
             .send()
             .await
@@ -520,10 +492,6 @@ async fn harness() -> anyhow::Result<Harness> {
         repositories,
         pool,
         base_url: served.base_url,
-        signing_key: served.signing_key,
-        http: reqwest::Client::builder()
-            .build()
-            .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed"),
     })
 }
 

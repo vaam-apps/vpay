@@ -86,7 +86,7 @@ pub fn registration_for(client: &MerchantClient) -> ClientRegistration {
         // unconditional on the authorization-code grant, which a merchant
         // client never uses). Still required to construct the struct, so it
         // is set and `allow`ed rather than worked around — matching
-        // `sdks/rust/tests/op_conformance.rs`, which builds the same shape.
+        // `backends/tests/integration/tests/merchant_token_flow.rs`, which builds the same shape.
         #[allow(deprecated)]
         require_pkce: false,
         allowed_audiences: client.allowed_audiences.clone(),
@@ -206,12 +206,36 @@ mod tests {
     use rsa::traits::PublicKeyParts as _;
     use serde_json::{Value, json};
     use vpay_config::MERCHANT_AUDIENCE;
-    use vpay_sdk::Credentials;
-    use vpay_sdk::auth::mint_client_assertion;
 
     use super::*;
 
     const CLIENT_ID: &str = "acme-cameroon";
+
+    /// A `private_key_jwt` assertion for `client_id`, RS256, 60 seconds.
+    ///
+    /// Local to this module since VP-5: the merchant SDK that used to mint these
+    /// (`vpay_sdk::auth`) signs with Ed25519 now and has no OAuth path. The OP
+    /// it was talking to survives until VP-4 and so do these two cases, which
+    /// are about *this crate's* registration, not about any client.
+    fn mint_client_assertion(pem: &str, client_id: &str, audience: &str) -> String {
+        use jsonwebtoken::{Algorithm, EncodingKey, Header, encode};
+        let now = time::OffsetDateTime::now_utc().unix_timestamp();
+        let claims = json!({
+            "iss": client_id,
+            "sub": client_id,
+            "aud": audience,
+            "jti": uuid::Uuid::new_v4().to_string(),
+            "exp": now + 60,
+            "iat": now,
+        });
+        encode(
+            &Header::new(Algorithm::RS256),
+            &claims,
+            &EncodingKey::from_rsa_pem(pem.as_bytes()).expect("the generated PEM parses"),
+        )
+        .expect("an assertion signs")
+    }
+
     const ISSUER: &str = "https://api.vpay.test/v1/oauth";
     const TOKEN_ENDPOINT: &str = "https://api.vpay.test/v1/oauth/token";
 
@@ -288,7 +312,7 @@ mod tests {
 
     /// What `handlers::token::authenticate_client` passes as
     /// `expected_audiences`: the OP's token endpoint URL and its issuer
-    /// identifier. Same shape as `sdks/rust/tests/op_conformance.rs`, so the
+    /// identifier. Same shape as `merchant_token_flow.rs`'s own assertion, so the
     /// two sides of this contract are verified against the same list.
     fn expected_audiences() -> Vec<String> {
         vec![TOKEN_ENDPOINT.to_owned(), ISSUER.to_owned()]
@@ -363,21 +387,16 @@ mod tests {
         );
     }
 
-    /// The decisive conformance case: an assertion minted by the real
-    /// merchant SDK is accepted by the real OP verifier when handed the
-    /// registration this module built from YAML. Same call shape as
-    /// `sdks/rust/tests/op_conformance.rs`, deliberately — that test proves
-    /// the SDK's half against a hand-written registration; this one proves
-    /// *this crate's* conversion is the same registration.
+    /// The decisive conformance case: an RS256 `private_key_jwt` assertion is
+    /// accepted by the real OP verifier when handed the registration this
+    /// module built from YAML. (Until VP-5 the assertion came from the
+    /// merchant SDK; see [`mint_client_assertion`].)
     #[test]
-    fn an_sdk_minted_assertion_verifies_against_the_registration_this_module_builds() {
+    fn an_assertion_verifies_against_the_registration_this_module_builds() {
         let (pem, jwks) = generate_key(None);
         let registration = registration_for(&merchant(jwks));
 
-        let credentials = Credentials::rsa_pem(CLIENT_ID, &pem).expect("the generated PEM parses");
-        let assertion =
-            mint_client_assertion(&credentials, TOKEN_ENDPOINT, Duration::from_secs(60))
-                .expect("the SDK mints an assertion");
+        let assertion = mint_client_assertion(&pem, CLIENT_ID, TOKEN_ENDPOINT);
 
         let verified = verify_client_assertion(&assertion, &registration, &expected_audiences())
             .expect("the real OP verifier accepts an assertion minted for this registration");
@@ -394,11 +413,7 @@ mod tests {
         let (other_pem, _other_jwks) = generate_key(None);
         let registration = registration_for(&merchant(registered_jwks));
 
-        let credentials =
-            Credentials::rsa_pem(CLIENT_ID, &other_pem).expect("the generated PEM parses");
-        let assertion =
-            mint_client_assertion(&credentials, TOKEN_ENDPOINT, Duration::from_secs(60))
-                .expect("the SDK mints an assertion");
+        let assertion = mint_client_assertion(&other_pem, CLIENT_ID, TOKEN_ENDPOINT);
 
         assert!(
             verify_client_assertion(&assertion, &registration, &expected_audiences()).is_err(),

@@ -31,12 +31,13 @@
 //! make a database failure look like a revocation to the merchant and like a
 //! merchant problem to the operator. Fail closed, and say which.
 //!
-//! # Not mounted yet
+//! # Where it is mounted
 //!
-//! Nothing in `router()` builds one of these, and `/v1` still authenticates
-//! with the bearer token. The `EnvelopeLayer` that will call it is VP-3; the OP
-//! and its JWKS are deleted in VP-4. Until then this module is exercised by
-//! its own tests alone.
+//! `vpay_api::envelope::V1Envelope` builds one and hands it to the
+//! `EnvelopeLayer` on `/v1` (VP-3), which asks it for the keys a signature may
+//! verify under; `envelope::scope::merchant_scope` asks it, once the signature
+//! has verified, which merchant and scopes that key stands for. `/v1` takes no
+//! bearer token. The OP and its JWKS are deleted in VP-4.
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;

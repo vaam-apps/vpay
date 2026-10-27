@@ -11716,6 +11716,207 @@ async fn the_rate_limit_table_grows_by_one_window_and_is_then_swept() -> anyhow:
     Ok(())
 }
 
+// ----------------------------------------------------- envelope_nonces ----
+//
+// Every nonce below is drawn at run time by `fresh_envelope_nonce`, once per
+// claim the test is about and then reused where the test needs the *same*
+// value twice (a replay, a race). A literal would be a hard-coded nonce in the
+// code's own words, which is what a static analyser reads it as, and it would
+// also make two tests against one database collide on the id by accident.
+
+/// `cose:<kid>:<cti>` in cratestack's own shape, 46 characters, new each call.
+fn fresh_envelope_nonce() -> String {
+    format!(
+        "cose:{:08x}:{}",
+        uuid::Uuid::new_v4().as_fields().0,
+        uuid::Uuid::new_v4().simple()
+    )
+}
+
+// The replay cache of the signed `/v1` transport (migration 0055, VP-3). The
+// two unit tests in `src/envelope_nonces.rs` read the statement's text; these
+// run it, because "atomic" and "spares a live row" are claims about Postgres.
+
+/// First use is recorded, and the same nonce again inside its window is a
+/// replay: `Ok(false)`, not an error, and the window is **not** extended by
+/// the attempt (a replay that renewed the row would let a captured request keep
+/// its own cache entry alive forever).
+#[tokio::test]
+async fn an_envelope_nonce_is_unseen_once_then_a_replay_and_the_replay_does_not_renew_it()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let first_window = time::OffsetDateTime::now_utc() + time::Duration::seconds(600);
+    let nonce = fresh_envelope_nonce();
+    let sibling = fresh_envelope_nonce();
+
+    assert!(
+        repositories
+            .record_envelope_nonce_if_unseen(&nonce, first_window)
+            .await?,
+        "the first use of a nonce is unseen"
+    );
+    assert!(
+        !repositories
+            .record_envelope_nonce_if_unseen(&nonce, first_window + time::Duration::seconds(3600))
+            .await?,
+        "the second use inside the window is a replay"
+    );
+
+    let stored: time::OffsetDateTime =
+        sqlx::query_scalar("SELECT expires_at FROM envelope_nonces WHERE id = $1")
+            .bind(&nonce)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        stored.unix_timestamp(),
+        first_window.unix_timestamp(),
+        "a refused replay must leave the live row exactly as it was"
+    );
+
+    // Another nonce of the same client is a different request.
+    assert!(
+        repositories
+            .record_envelope_nonce_if_unseen(&sibling, first_window)
+            .await?
+    );
+    Ok(())
+}
+
+/// A row whose window has closed and which the sweep has not reached yet is
+/// taken over, not treated as a replay: `NonceStore`'s contract says entries
+/// past `expires_at` stop counting, and a counter-shaped `cti` reuses small
+/// values.
+#[tokio::test]
+async fn an_envelope_nonce_past_its_window_is_taken_over_rather_than_refused() -> anyhow::Result<()>
+{
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let past = time::OffsetDateTime::now_utc() - time::Duration::seconds(5);
+    let future = time::OffsetDateTime::now_utc() + time::Duration::seconds(600);
+    let nonce = fresh_envelope_nonce();
+
+    assert!(
+        repositories
+            .record_envelope_nonce_if_unseen(&nonce, past)
+            .await?
+    );
+    assert!(
+        repositories
+            .record_envelope_nonce_if_unseen(&nonce, future)
+            .await?,
+        "an elapsed row is not a replay"
+    );
+    assert!(
+        !repositories
+            .record_envelope_nonce_if_unseen(&nonce, future)
+            .await?,
+        "and once taken over it is live again"
+    );
+    let rows: i64 = sqlx::query_scalar("SELECT count(*) FROM envelope_nonces WHERE id = $1")
+        .bind(&nonce)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(rows, 1, "taken over in place, not duplicated");
+    Ok(())
+}
+
+/// Atomicity, measured: ten replicas opening one captured request at once get
+/// exactly one `true` between them.
+#[tokio::test]
+async fn concurrent_claims_of_one_envelope_nonce_yield_exactly_one_unseen() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let expires_at = time::OffsetDateTime::now_utc() + time::Duration::seconds(600);
+
+    // Drawn once and shared: the point is ten claims of the SAME nonce.
+    let nonce = fresh_envelope_nonce();
+    const ATTEMPTS: usize = 10;
+    let mut handles = Vec::with_capacity(ATTEMPTS);
+    for _ in 0..ATTEMPTS {
+        let repositories = Arc::clone(&repositories);
+        let nonce = nonce.clone();
+        handles.push(tokio::spawn(async move {
+            repositories
+                .record_envelope_nonce_if_unseen(&nonce, expires_at)
+                .await
+        }));
+    }
+    let mut unseen = 0;
+    for handle in handles {
+        if handle.await.context("a claim task panicked")?? {
+            unseen += 1;
+        }
+    }
+    assert_eq!(
+        unseen, 1,
+        "exactly one of {ATTEMPTS} simultaneous claims may be the first"
+    );
+    Ok(())
+}
+
+/// The sweep removes what closed longer ago than the retention, on the
+/// database's clock, and nothing else.
+#[tokio::test]
+async fn the_envelope_nonce_sweep_takes_only_what_closed_before_the_retention() -> anyhow::Result<()>
+{
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    let (long_gone, just_closed, live) = (
+        fresh_envelope_nonce(),
+        fresh_envelope_nonce(),
+        fresh_envelope_nonce(),
+    );
+    for (id, offset) in [(&long_gone, -7200), (&just_closed, -10), (&live, 600)] {
+        sqlx::query("INSERT INTO envelope_nonces (id, expires_at) VALUES ($1, $2)")
+            .bind(id)
+            .bind(now + time::Duration::seconds(offset))
+            .execute(&pool)
+            .await?;
+    }
+
+    let removed = repositories
+        .delete_expired_envelope_nonces(std::time::Duration::from_secs(3600))
+        .await?;
+    assert_eq!(
+        removed, 1,
+        "only the row that closed two hours ago is past a one-hour retention"
+    );
+
+    let mut remaining: Vec<String> =
+        sqlx::query_scalar("SELECT id FROM envelope_nonces ORDER BY id")
+            .fetch_all(&pool)
+            .await?;
+    remaining.sort();
+    let mut survivors = vec![just_closed, live];
+    survivors.sort();
+    assert_eq!(remaining, survivors);
+
+    // Nothing left to take: a second sweep removes nothing.
+    assert_eq!(
+        repositories
+            .delete_expired_envelope_nonces(std::time::Duration::from_secs(3600))
+            .await?,
+        0
+    );
+    Ok(())
+}
+
+/// The table refuses a key outside the column's CHECK (1 to 64 characters),
+/// which is the bound the claim relies on, and the refusal is an error, never a
+/// silent "unseen".
+#[tokio::test]
+async fn an_envelope_nonce_longer_than_the_checked_length_is_refused_by_the_table()
+-> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let too_long = "x".repeat(65);
+    let outcome = repositories
+        .record_envelope_nonce_if_unseen(&too_long, time::OffsetDateTime::now_utc())
+        .await;
+    assert!(
+        outcome.is_err(),
+        "a 65-character key must be refused, never silently admitted: {outcome:?}"
+    );
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // ADR-0030: staff single sign-on — the pending flow, the federated lookup, and
 // the provisioning transaction.

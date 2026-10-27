@@ -402,7 +402,7 @@ export function vpayEslintConfig(options) {
     // because a signature or a destructuring demands it and is deliberately
     // not read — the same convention Rust uses, and what
     // `frontends/apps/checkout/src/lib/machine.ts` and
-    // `sdks/nodejs/src/stripe-auth.test.ts` already spell. Configuring the
+    // `sdks/nodejs/src/client.test.ts` already spell. Configuring the
     // rule to honour it, rather than switching the rule off.
     {
       files: ["**/*.ts", "**/*.tsx", "**/*.mts", "**/*.cts"],

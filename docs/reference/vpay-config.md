@@ -195,7 +195,10 @@ the `.context(..)` calls actually reach an operator.
 ## Optional flags that are required in practice
 
 `--config`/`VPAY_CONFIG`, `--database-url`/`DATABASE_URL` and (on the server)
-`--oauth-signing-key-file`/`VPAY_OAUTH_SIGNING_KEY_FILE` are all
+`--oauth-signing-key-file`/`VPAY_OAUTH_SIGNING_KEY_FILE`,
+`--envelope-signing-key-file`/`VPAY_ENVELOPE_SIGNING_KEY_FILE` and
+`--envelope-signing-key-next-file`/`VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE` (VP-3;
+wherever `/v1` is mounted) are all
 `Option<...>` at the clap level and all required by the binary that reads them.
 
 The split is deliberate. clap's own "required" would make the flag mandatory for
@@ -221,8 +224,9 @@ export a variable nothing reads.
 Which inputs a process requires is a property of _that process_, which is why
 `StartupError` is defined in the binary rather than in this crate. Which inputs
 a _mode_ requires is likewise a property of that mode, and the CLI still says
-so: `vpay-server worker --oauth-signing-key-file …` is a parse error, and
-`vpay-server --worker-concurrency …` with no subcommand is too.
+so: `vpay-server worker --oauth-signing-key-file …` is a parse error (so is either
+envelope key flag), and `vpay-server --worker-concurrency …` with no subcommand
+is too.
 
 ### serve-only flags are refused beside `worker`, in both positions
 
@@ -237,7 +241,9 @@ mechanisms, one outcome:
 | `vpay-server worker --oauth-signing-key-file …` | clap — the flag is on `ServerArgs`, is not `global`, and so is not on the subcommand |
 | `vpay-server --oauth-signing-key-file … worker` | `vpay_config::cli`'s `SERVE_ONLY_FLAGS`, checked in `ServerArgs::parse_checked`      |
 
-`--bind` is the second entry in that table and behaves identically: the job
+`SERVE_ONLY_FLAGS` also lists `--envelope-signing-key-file` and
+`--envelope-signing-key-next-file`, which behave exactly as the OAuth key's flag
+does (`the_worker_subcommand_is_not_handed_the_signing_key` asserts all three). `--bind` is the second entry in that table and behaves identically: the job
 loop routes no traffic, so a `--bind` on its command line would open a port
 nothing serves.
 
@@ -279,9 +285,13 @@ Statically registered OAuth2/OIDC clients
 [dashboard-auth.md](../flows/dashboard-auth.md)). Two kinds, both loaded from
 YAML (ADR-0003) and both, structurally, carrying no client secret:
 
-- `MerchantClient` — a merchant's `/v1` credential: `client_credentials` plus
-  `private_key_jwt` (RFC 7523). vpay never sees a merchant's private key, only
-  the **public** JWK set that verifies the assertion it signs.
+- `MerchantClient` — a merchant's `/v1` credential: since VP-3 one or more
+  Ed25519 public keys (`cose_keys`, 43 characters of unpadded base64url each,
+  optionally labelled), against which every request's signature verifies
+  ([signed-transport.md](../flows/signed-transport.md)). vpay never sees a
+  merchant's private key. The `jwks` set it also carries serves only the OP's
+  `client_credentials` + `private_key_jwt` token endpoint (RFC 7523), which
+  opens nothing on `/v1` and is removed by VP-4.
 - `DashboardClient` — the single `/dash/v1` client: authorization-code plus
   PKCE, a public client with no secret at all, requesting exactly one read-only
   scope.

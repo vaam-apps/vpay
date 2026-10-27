@@ -151,6 +151,9 @@ elements:
         table: disabled_clients
         column: disabled_at
       - kind: column
+        table: envelope_nonces
+        column: expires_at
+      - kind: column
         table: events
         column: created_at
       - kind: column
@@ -558,6 +561,9 @@ elements:
       - kind: column
         table: disabled_clients
         column: client_id
+      - kind: column
+        table: envelope_nonces
+        column: id
       - kind: column
         table: events
         column: id

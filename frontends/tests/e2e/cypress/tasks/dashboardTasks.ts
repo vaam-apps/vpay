@@ -9,7 +9,7 @@
  * under `.e2e/`. The spec is given the *path* through an environment variable
  * and never the value, so the credential is not in `Cypress.env`, not in a
  * `cypress run` argument list, and not in the runner's own log — the same
- * rule `checkoutTasks.ts` follows for the merchant private key.
+ * rule `checkoutTasks.ts` follows for the merchant signing key.
  *
  * **The codes** are RFC 6238, HMAC-SHA1 over a counter, which needs a keyed
  * hash. `node:crypto` has one; doing it in the page would mean either

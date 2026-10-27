@@ -19,6 +19,7 @@ members = [
     "backends/tests/conformance",
     ".xtask",
     "sdks/rust",
+    "sdks/rust/wasm",
     "examples/merchant-demo",
 ]
 
@@ -327,6 +328,22 @@ cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features 
 #   `default-features = false` drops `decimal-rust-decimal`, as on the facade.
 cratestack-cose = { version = "=0.16.0", default-features = false }
 cratestack-core = { version = "=0.16.0", default-features = false }
+# `cratestack-axum` taken directly by `vpay-api` (VP-3, 2026-10-26) for the
+# `EnvelopeLayer`, `BindingResolver` and `ResolvedRoute` that `vpay-api`'s
+# hand-written `/v1` is wrapped in. Already in the lock through the facade, so a
+# direct edge and no new package. Same `=0.16.0` pin, and
+# **`default-features = false`**: the crate's default is `decimal-rust-decimal`,
+# which `cratestack` above deliberately drops, and a second dependent turning it
+# back on would change `cratestack-core`'s `Decimal` for the whole graph by
+# feature unification. `envelope` and `cose` are what the facade already enables
+# on it.
+cratestack-axum = { version = "=0.16.0", default-features = false, features = ["envelope", "cose"] }
+# `cratestack-client-rust` taken directly by `vpay-sdk` (VP-5) for
+# `ClientEnvelope::seal_call` / `PendingResponse::open`. It is a non-optional
+# dependency of the facade already, so a direct edge and no new package.
+# `default-features = false` for the facade's reason; `cose` is the signed
+# transport and the only feature a `/v1` caller needs.
+cratestack-client-rust = { version = "=0.16.0", default-features = false, features = ["cose"] }
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
 # pulled in because `authkestra-op`'s own API is chrono-typed: every
 # `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that

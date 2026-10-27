@@ -45,7 +45,9 @@
 //! # or, against a stack you already have:
 //! VPAY_BASE_URL=http://localhost:18080 \
 //! VPAY_MERCHANT_CLIENT_ID=demo-merchant \
-//! VPAY_MERCHANT_PRIVATE_KEY_PATH=$PWD/.e2e/demo-merchant/oauth-signing-key.pem \
+//! VPAY_MERCHANT_SIGNING_SEED_PATH=$PWD/.e2e/demo-merchant/signing.seed \
+//! VPAY_SERVER_KEY_CURRENT_PATH=$PWD/.e2e/demo-merchant/server-key-current.pub \
+//! VPAY_SERVER_KEY_NEXT_PATH=$PWD/.e2e/demo-merchant/server-key-next.pub \
 //!   cargo nextest run -p vpay-sdk --features live-stack --test live_refunds
 //! ```
 #![expect(
@@ -65,7 +67,9 @@ use vpay_sdk::payment_intents::{
 use vpay_sdk::refunds::{
     CreateRefundParams, ListRefundsParams, RefundDestination, UpdateRefundParams,
 };
-use vpay_sdk::{Client, Credentials, Error, IntentStatus, RefundStatus, RequestOptions};
+use vpay_sdk::{
+    Client, Credentials, Error, IntentStatus, RefundStatus, RequestOptions, ServerKeys,
+};
 
 /// The payer the demo MTN stub settles for — `wiremock/mtn/mappings/`
 /// `requesttopay-scenario.json`'s `mtn-e2e-poll` walk, `PENDING` then
@@ -104,7 +108,7 @@ fn required(name: &str) -> String {
         panic!(
             "{name} is not set. This suite runs against a REAL vpay stack; `just sdk-live` \
              brings one up and sets VPAY_BASE_URL, VPAY_MERCHANT_CLIENT_ID and \
-             VPAY_MERCHANT_PRIVATE_KEY_PATH for you."
+             VPAY_MERCHANT_SIGNING_SEED_PATH, VPAY_SERVER_KEY_CURRENT_PATH and VPAY_SERVER_KEY_NEXT_PATH for you."
         )
     })
 }
@@ -118,22 +122,28 @@ fn required(name: &str) -> String {
 async fn live_client() -> Client {
     let base = required("VPAY_BASE_URL");
     let client_id = required("VPAY_MERCHANT_CLIENT_ID");
-    let key_path = required("VPAY_MERCHANT_PRIVATE_KEY_PATH");
-    let pem = std::fs::read_to_string(&key_path).unwrap_or_else(|error| {
-        panic!("cannot read the merchant private key at {key_path}: {error}")
-    });
+    let seed_path = required("VPAY_MERCHANT_SIGNING_SEED_PATH");
+    let read = |path: String| {
+        std::fs::read_to_string(&path).unwrap_or_else(|error| panic!("cannot read {path}: {error}"))
+    };
 
-    let credentials = Credentials::rsa_pem(&client_id, &pem)
-        .unwrap_or_else(|error| panic!("{key_path} is not a usable RSA private key: {error}"));
+    let credentials = Credentials::ed25519_seed_base64url(&client_id, &read(seed_path.clone()))
+        .unwrap_or_else(|error| panic!("{seed_path} is not a usable Ed25519 seed: {error}"));
+    let server_keys = ServerKeys::from_base64url(
+        &read(required("VPAY_SERVER_KEY_CURRENT_PATH")),
+        &read(required("VPAY_SERVER_KEY_NEXT_PATH")),
+    )
+    .unwrap_or_else(|error| panic!("the pinned server keys are unusable: {error}"));
     let client = Client::builder(&base)
         .credentials(credentials)
+        .server_keys(server_keys)
         .build()
         .expect("the client builds from a base URL and credentials");
 
     if let Err(error) = client.events().list(ListEventsParams::default()).await {
         panic!(
             "the preflight read of {base}/v1/events failed as {client_id}: {error}. Either no \
-             vpay is listening there, or {key_path} is not the key this stack registered. \
+             vpay is listening there, or {seed_path} is not the key this stack registered, or the pinned server keys are not the stack's. \
              `just sdk-live` brings up a stack whose `demo` overlay registers it."
         );
     }

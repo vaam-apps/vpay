@@ -15,7 +15,9 @@
  */
 import Stripe from "stripe";
 
-import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
+import { randomBytes } from "node:crypto";
+
+import { createStripeHttpClient } from "@vaam-apps/vpay-sdk/stripe";
 
 import { readCompatEnv } from "./env.js";
 
@@ -69,8 +71,11 @@ export const MSISDN = "237670000000";
  * How stripe-node is configured against vpay, in the exact shape the docs
  * tell merchants to use.
  *
- * `new Stripe("", { authenticator })` is supported: stripe-node throws only
- * if *both* a key and an authenticator are supplied, or neither.
+ * `new Stripe("placeholder", { httpClient })` is the supported shape: vpay
+ * takes no API key and no token (every call is a signed message), so the
+ * key stripe-node insists on is a placeholder that is never sent, and the
+ * `httpClient` seals each request and opens the answer. `authenticator` — a
+ * header hook — cannot carry a signature that is the request body.
  * `host`/`port`/`protocol` are the three config properties that move every
  * request off `api.stripe.com`; `basePath` is fixed at `/v1/` and is not
  * configurable, which is moot because the generated resources hardcode
@@ -80,44 +85,43 @@ export function stripeClient(
   overrides: Partial<Stripe.StripeConfig> = {},
 ): Stripe {
   const env = readCompatEnv();
-  const authenticator = createStripeAuthenticator({
-    baseUrl: env.baseUrl,
-    clientId: env.clientId,
-    privateKey: env.privateKeyPem,
-  });
-  return new Stripe("", {
-    authenticator,
+  return new Stripe("unused-placeholder", {
+    httpClient: createStripeHttpClient({
+      baseUrl: env.baseUrl,
+      clientId: env.clientId,
+      privateKey: env.signingSeed,
+      serverKeys: { current: env.serverKeyCurrent, next: env.serverKeyNext },
+    }),
     host: env.host,
     port: env.port,
     protocol: env.protocol,
     telemetry: false,
+    // A refused call is refused for the same reason the second time; the
+    // suite wants the first answer, not three of them.
+    maxNetworkRetries: 0,
     ...overrides,
   });
 }
 
 /**
- * A client whose authenticator writes a bearer token vpay will not accept.
+ * A client signing with a key vpay has never been told about.
  *
- * Deliberately a *well-formed request with a bad credential* rather than a
- * broken handshake: a handshake that rejects never settles through
- * stripe-node (a defect `@vaam-apps/vpay-sdk`'s README documents and pins), so it is
- * not a thing a conformance suite can await. What a merchant with an expired
- * or revoked credential actually meets is this — a `401` from `/v1` — and
- * that is what the case asserts.
+ * Deliberately a *well-formed signed request from an unregistered key* rather
+ * than an unsigned one: it is what a merchant with a revoked or mistyped key
+ * actually meets, and vpay answers it exactly as it answers every other
+ * refusal — the coarse unsigned `401`, with nothing in it to say why.
  */
-export function stripeClientWithBadCredential(): Stripe {
-  const env = readCompatEnv();
-  return new Stripe("", {
-    // stripe-node's `Authenticator` type is promise-returning; this one only
-    // sets a header.
-    // eslint-disable-next-line @typescript-eslint/require-await
-    authenticator: async (request) => {
-      request.headers["Authorization"] = "Bearer not-a-vpay-access-token";
-    },
-    host: env.host,
-    port: env.port,
-    protocol: env.protocol,
-    telemetry: false,
+export function stripeClientWithUnregisteredKey(): Stripe {
+  return stripeClient({
+    httpClient: createStripeHttpClient({
+      baseUrl: readCompatEnv().baseUrl,
+      clientId: "nobody",
+      privateKey: randomBytes(32),
+      serverKeys: {
+        current: readCompatEnv().serverKeyCurrent,
+        next: readCompatEnv().serverKeyNext,
+      },
+    }),
   });
 }
 

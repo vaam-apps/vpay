@@ -89,6 +89,12 @@ spec:
               value: {{ printf "0.0.0.0:%d" (int .Values.server.port) | quote }}
             - name: VPAY_OAUTH_SIGNING_KEY_FILE
               value: {{ .Values.signingKey.mountPath | quote }}
+            # The signed `/v1` transport's response keys (server only; the
+            # worker refuses both flags).
+            - name: VPAY_ENVELOPE_SIGNING_KEY_FILE
+              value: {{ printf "%s/%s" .Values.envelopeKeys.mountPath .Values.envelopeKeys.current | quote }}
+            - name: VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE
+              value: {{ printf "%s/%s" .Values.envelopeKeys.mountPath .Values.envelopeKeys.next | quote }}
             {{- with .Values.server.extraEnv }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -139,6 +145,9 @@ spec:
               mountPath: {{ .Values.signingKey.mountPath }}
               subPath: {{ .Values.signingKey.key }}
               readOnly: true
+            - name: envelope-keys
+              mountPath: {{ .Values.envelopeKeys.mountPath }}
+              readOnly: true
             {{- if $mountOverlay }}
             # `subPath`, NOT a directory mount: the image bakes `config/` at
             # /config, and mounting a ConfigMap at /config would replace the
@@ -162,6 +171,15 @@ spec:
             items:
               - key: {{ .Values.signingKey.key }}
                 path: {{ .Values.signingKey.key }}
+        - name: envelope-keys
+          secret:
+            secretName: {{ .Values.envelopeKeys.existingSecret | quote }}
+            defaultMode: {{ .Values.envelopeKeys.defaultMode }}
+            items:
+              - key: {{ .Values.envelopeKeys.current }}
+                path: {{ .Values.envelopeKeys.current }}
+              - key: {{ .Values.envelopeKeys.next }}
+                path: {{ .Values.envelopeKeys.next }}
         {{- if $mountOverlay }}
         - name: config-overlay
           configMap:

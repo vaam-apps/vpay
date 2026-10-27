@@ -1,9 +1,8 @@
 //! Shared fixtures for `vpay-sdk`'s integration tests.
 //!
-//! Two things live here rather than being repeated per test binary: real RSA
-//! keypair generation (the slow part of this suite — one keypair per test
-//! would dominate its runtime) and the small amount of `wiremock` plumbing
-//! every HTTP test needs.
+//! What lives here rather than being repeated per test binary: the signed
+//! transport's server half in front of a `wiremock` upstream ([`front`]) and the
+//! wire-shaped JSON fixtures every HTTP test decodes.
 //!
 //! Nothing in this module is reachable from the shipping crate: `tests/` is
 //! compiled only for `cargo test`/`cargo nextest`, and
@@ -27,69 +26,9 @@
     clippy::indexing_slicing
 )]
 
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rsa::pkcs1::{EncodeRsaPrivateKey, LineEnding};
-use rsa::traits::PublicKeyParts as _;
 use serde_json::{Value, json};
 
-/// An RSA keypair in the two shapes these tests need it: the private half as
-/// a PEM (what a merchant hands [`vpay_sdk::Credentials::rsa_pem`]) and the
-/// public half as a JWK (what vpay would hold in its YAML registration).
-///
-/// Real generated key material, never a hard-coded pair: a fixture keypair
-/// shared with the *verifier* under test would let a broken signature path
-/// still "verify", because both sides would be reading the same canned
-/// artefact.
-pub(crate) struct TestKey {
-    /// The `kid` stamped onto the JWK, if this key is one of several.
-    pub(crate) kid: Option<String>,
-    /// PKCS#1 PEM of the private half.
-    pub(crate) pem: String,
-    /// The public half as a JWK object (not a set).
-    pub(crate) jwk: Value,
-}
-
-/// Generates a 2048-bit RSA keypair and derives its public JWK.
-///
-/// 2048 rather than 3072/4096 purely for suite runtime; the property under
-/// test is that the OP verifier accepts a signature this SDK produced, and
-/// that is independent of modulus size.
-pub(crate) fn generate_key(kid: Option<&str>) -> TestKey {
-    // `OsRng` (not a seeded/deterministic RNG), matching
-    // `vpay_api::resource_auth`'s own test keypair helper.
-    let mut rng = rand::rngs::OsRng;
-    let private_key = rsa::RsaPrivateKey::new(&mut rng, 2048).expect("rsa key generation succeeds");
-    let public_key = private_key.to_public_key();
-
-    let pem = private_key
-        .to_pkcs1_pem(LineEnding::LF)
-        .expect("pkcs1 pem encoding succeeds")
-        .to_string();
-
-    let mut jwk = json!({
-        "kty": "RSA",
-        "use": "sig",
-        "alg": "RS256",
-        "n": URL_SAFE_NO_PAD.encode(public_key.n().to_bytes_be()),
-        "e": URL_SAFE_NO_PAD.encode(public_key.e().to_bytes_be()),
-    });
-    if let Some(kid) = kid {
-        jwk["kid"] = json!(kid);
-    }
-
-    TestKey {
-        kid: kid.map(str::to_string),
-        pem,
-        jwk,
-    }
-}
-
-/// Wraps JWKs into the `{"keys": [...]}` set shape
-/// `authkestra_op::client_assertion::select_key` expects.
-pub(crate) fn jwks(keys: &[&TestKey]) -> Value {
-    json!({ "keys": keys.iter().map(|k| k.jwk.clone()).collect::<Vec<_>>() })
-}
+pub(crate) mod front;
 
 /// The `application/x-www-form-urlencoded` pairs of a recorded request body,
 /// in wire order.
@@ -143,17 +82,6 @@ pub(crate) fn percent_decode(input: &str) -> String {
         }
     }
     String::from_utf8(out).expect("a decoded form value is UTF-8")
-}
-
-/// A `TokenResponse` body shaped exactly like
-/// `authkestra_op::handlers::token::TokenResponse`
-/// (`docs/flows/merchant-auth.md`, "Success response").
-pub(crate) fn token_response(access_token: &str, expires_in: u64) -> Value {
-    json!({
-        "access_token": access_token,
-        "token_type": "Bearer",
-        "expires_in": expires_in,
-    })
 }
 
 /// A `payment_intent` object with every field the wire contract lists.
