@@ -122,9 +122,9 @@ without naming.
 
 ### 1. Surface selection is a deployment concern, expressed in config
 
-> **Extended 2026-10-27 by [ADR-0033](0033-mcp-is-the-primary-agent-surface.md)
-> (Proposed), and built for the merchant half in
-> [#377](https://github.com/vaam-apps/vpay/pull/377).** `deployment.surfaces`
+> **Extended by [ADR-0033](0033-mcp-is-the-primary-agent-surface.md)
+> (dated 2026-10-26, Proposed), and built for the merchant half in
+> [#377](https://github.com/vaam-apps/vpay/pull/377) (merged 2026-10-27).** `deployment.surfaces`
 > takes a third value, `mcp`, which mounts the merchant MCP endpoint
 > `POST /mcp/v1` and its RFC 9728 metadata. It is **opt-in only**: it is not in
 > `EnabledSurfaces::ALL`, so an absent key (every deployment this ADR upgraded

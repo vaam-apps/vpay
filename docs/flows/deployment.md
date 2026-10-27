@@ -619,7 +619,7 @@ rather than at pull time.
 - **Deploy the dashboard.** The chart templates no dashboard workload; see the
   chart README for why.
 - **Serve the merchant MCP endpoint.** `deployment.surfaces` takes `mcp` since
-  2026-10-27 ([#377](https://github.com/vaam-apps/vpay/pull/377),
+  #377 merged on 2026-10-27 ([#377](https://github.com/vaam-apps/vpay/pull/377),
   [ADR-0033](../adr/0033-mcp-is-the-primary-agent-surface.md)), and nothing in
   the chart, its values schema, its NetworkPolicy, its Ingress or compose sets
   it. `mcp` is not in `EnabledSurfaces::ALL`, so every workload here leaves

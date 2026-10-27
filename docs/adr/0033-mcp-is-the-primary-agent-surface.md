@@ -50,11 +50,11 @@
   staff row on every request).
 
   **Both were superseded under this ADR while it was Proposed.**
-  - [ADR-0035](0035-v1-is-a-signed-message-not-a-token.md) (#380, 2026-10-26)
-    superseded ADR-0010 for `/v1`. The `private_key_jwt` grant survives only
+  - [ADR-0035](0035-v1-is-a-signed-message-not-a-token.md) (#380; dated
+    2026-10-26, merged 2026-10-27) superseded ADR-0010 for `/v1`. The `private_key_jwt` grant survives only
     as the way `/mcp/v1` gets its tokens (D9).
   - [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)
-    (#383, 2026-10-27) superseded ADR-0017 entirely. It deleted the staff OP,
+    (#383; dated 2026-10-26, merged 2026-10-27) superseded ADR-0017 entirely. It deleted the staff OP,
     the staff sessions and the PKCE client D9's staff design relies on. See
     "Left to the maintainer" item 5.
 
@@ -314,13 +314,13 @@ tenancy-safe ledger read does.
     and builds a principal context carrying the tenant, the scopes and the
     audience.
   - An `aud = vpay:v1` token is refused on `/mcp/v1`, and an MCP-audience
-    token is refused on `/v1`. Since VP-3 (#380, 2026-10-26), `/v1` refuses
+    token is refused on `/v1`. Since VP-3 (#380, merged 2026-10-27), `/v1` refuses
     every bearer token, because every `/v1` request is signed; the second
     half holds for that reason now.
   - The token endpoint stays on the business tier (ADR-0022 §2). The
     discovery routes mount on `mcp` pods too, so the loopback JWKS validator
     works there.
-- **Staff.** **Superseded 2026-10-27, and not replaced.** The two bullets
+- **Staff.** **Superseded when #383 merged on 2026-10-27, and not replaced.** The two bullets
   below assume ADR-0017's staff OP. #383 (ADR-0036) deleted that OP: the
   console now signs every `/dash/v1` request under a paired P-256 key, and no
   staff token exists. They are kept as what was designed, not as a plan. How

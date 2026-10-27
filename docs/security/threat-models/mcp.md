@@ -51,7 +51,8 @@
   a third party
 ```
 
-**The staff column is superseded (2026-10-27).** #383 (ADR-0036) deleted
+**The staff column is superseded (since #383 merged on 2026-10-27; ADR-0036
+is dated 2026-10-26).** #383 deleted
 `/dash/v1/oauth/*`, the staff OP and staff sessions; the console signs with a
 paired key instead. The staff side of this diagram is therefore what was
 designed, and nothing serves it. How a staff agent authenticates is
