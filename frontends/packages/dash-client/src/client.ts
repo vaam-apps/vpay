@@ -137,6 +137,11 @@ import type {
   RateLimitWindowWhere,
   RateLimitWindowOrderByClause,
   RateLimitWindowFindMany,
+  EnvelopeNonce,
+  UpdateEnvelopeNonceInput,
+  EnvelopeNonceWhere,
+  EnvelopeNonceOrderByClause,
+  EnvelopeNonceFindMany,
   SearchPaymentIntentsArgs,
   SearchRefundsArgs,
   SearchWebhookDeliveriesArgs,
@@ -179,6 +184,7 @@ import type {
   InvoiceItemSortField,
   ManualPaymentSortField,
   RateLimitWindowSortField,
+  EnvelopeNonceSortField,
   Page,
 } from "./models.js";
 import {
@@ -213,6 +219,7 @@ export class VpayDashClientClient {
   readonly invoiceItems: InvoiceItemApi;
   readonly manualPayments: ManualPaymentApi;
   readonly rateLimitWindows: RateLimitWindowApi;
+  readonly envelopeNonces: EnvelopeNonceApi;
 
   constructor(originOrRuntime: string | CratestackRuntime, options: CratestackClientOptions = {}) {
     this.runtime = typeof originOrRuntime === "string"
@@ -240,6 +247,7 @@ export class VpayDashClientClient {
     this.invoiceItems = new InvoiceItemApi(this.runtime);
     this.manualPayments = new ManualPaymentApi(this.runtime);
     this.rateLimitWindows = new RateLimitWindowApi(this.runtime);
+    this.envelopeNonces = new EnvelopeNonceApi(this.runtime);
   }
 }
 
@@ -1458,6 +1466,62 @@ export class RateLimitWindowApi {
 
   delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
     return this.runtime.delete<void>(`/rate_limit_windows/${encodeURIComponent(String(id))}`, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    });
+  }
+}
+
+export class EnvelopeNonceApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<EnvelopeNonce[]> {
+    return this.runtime.get<unknown>("/envelope_nonces", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'EnvelopeNonce') as EnvelopeNonce[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<EnvelopeNonce> {
+    return this.runtime.get<unknown>(`/envelope_nonces/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'EnvelopeNonce') as EnvelopeNonce);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<EnvelopeNonce>> {
+    return this.runtime.getWithResponse<unknown>(`/envelope_nonces/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'EnvelopeNonce') as EnvelopeNonce,
+      response: result.response,
+    }));
+  }
+
+  update(
+    id: string,
+    input: UpdateEnvelopeNonceInput,
+    options: CratestackWriteRequestConfig = {},
+  ): Promise<EnvelopeNonce> {
+    return this.runtime.patch<unknown>(`/envelope_nonces/${encodeURIComponent(String(id))}`, input, {
+      headers: withIfMatchHeader(options.headers, options.ifMatch),
+      signal: options.signal,
+    })
+      .then((value) => reviveWireFields(value, 'EnvelopeNonce') as EnvelopeNonce);
+  }
+
+  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
+    return this.runtime.delete<void>(`/envelope_nonces/${encodeURIComponent(String(id))}`, {
       headers: withIfMatchHeader(options.headers, options.ifMatch),
       signal: options.signal,
     });

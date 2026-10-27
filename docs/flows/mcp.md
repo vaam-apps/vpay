@@ -15,7 +15,9 @@ checks it.
    `POST {public_base_url}/mcp/v1`, and that URL is also the resource
    identifier.
 2. **The merchant opts in.** Its `merchant_clients[]` entry lists the resource
-   identifier in `allowed_audiences`, beside `vpay:v1`.
+   identifier in `allowed_audiences`. Since VP-3, `/v1` itself takes no
+   bearer token (every request is signed), so this endpoint is what the OP's
+   `client_credentials` grant now serves.
 3. **The agent gets a token.** It discovers the authorization server from
    `GET /.well-known/oauth-protected-resource/mcp/v1` (RFC 9728), which names
    `{public_base_url}/v1/oauth`. It then runs the usual `/v1` flow,
@@ -71,8 +73,12 @@ arguments)`. A replay returns the first answer. The same key with different
   key, and the `events` every write emits. An amount ceiling is undecided
   (ADR-0033, "Left to the maintainer").
 - **A token for the wrong audience** is answered `401` with a challenge naming
-  the metadata document. That covers a `vpay:v1` token on `/mcp/v1` and an MCP
-  token on `/v1`.
+  the metadata document. That covers a `vpay:v1` token on `/mcp/v1`. An MCP
+  token on `/v1` is the unsigned `401` every bearer token gets there.
+- **The OP is retired (VP-4) while MCP still needs it.** The merchant OP is the
+  only authorization server this endpoint has. VP-4 plans to remove `jwks` and
+  the token path, and doing that without a replacement would leave `/mcp/v1`
+  with no way to issue a token. ADR-0033 lists this for the maintainer.
 - **A tool that a route has but MCP lacks.** The parity table dates the gap,
   and the gate refuses a route with no row.
 

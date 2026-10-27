@@ -57,7 +57,6 @@ use sqlx::PgPool;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use time::OffsetDateTime;
-use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment};
 use vpay_db::{
     DeliveryRow, EventRow, JobRow, Jobs, NewEvent, Repositories, TxOutcome, UnitOfWork as _,
@@ -1117,7 +1116,7 @@ async fn events_are_listed_newest_first_scoped_to_the_merchant() {
     let (_postgres, repositories, _pool) = migrated_postgres().await.expect("postgres");
 
     let (server_pem, _) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
     let served = serve(&repositories, &server_pem, move |base_url| {
@@ -1149,7 +1148,8 @@ async fn events_are_listed_newest_first_scoped_to_the_merchant() {
         .expect("an event");
 
     let client = vpay_sdk::Client::builder(&served.base_url)
-        .credentials(vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the PEM parses"))
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
         .build()
         .expect("the SDK client builds");
 
@@ -1232,12 +1232,11 @@ async fn events_are_listed_newest_first_scoped_to_the_merchant() {
     assert_eq!(served_body.get("data"), delivered_value.get("data"));
 
     // Retrieve, and a foreign id.
-    let token = mint_read_token(&served.signing_key, CLIENT_A);
-    let http = reqwest::Client::new();
+    let http = support::sealed::SealedHttp::new();
 
     let response = http
         .get(format!("{}/v1/events/{}", served.base_url, oldest.id))
-        .bearer_auth(&token)
+        .signed_by(CLIENT_A)
         .send()
         .await
         .expect("the retrieve answers");
@@ -1251,7 +1250,7 @@ async fn events_are_listed_newest_first_scoped_to_the_merchant() {
 
     let response = http
         .get(format!("{}/v1/events/{}", served.base_url, theirs.id))
-        .bearer_auth(&token)
+        .signed_by(CLIENT_A)
         .send()
         .await
         .expect("the retrieve answers");
@@ -1280,7 +1279,7 @@ async fn reading_events_requires_a_scope() {
     let (_postgres, repositories, _pool) = migrated_postgres().await.expect("postgres");
 
     let (server_pem, _) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
     let served = serve(&repositories, &server_pem, move |base_url| {
@@ -1294,7 +1293,8 @@ async fn reading_events_requires_a_scope() {
         .expect("an event");
 
     let client = vpay_sdk::Client::builder(&served.base_url)
-        .credentials(vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the PEM parses"))
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
         .build()
         .expect("the SDK client builds");
 
@@ -1311,14 +1311,13 @@ async fn reading_events_requires_a_scope() {
         other => panic!("expected a 403, got {other:?}"),
     }
 
-    // The same request with a read scope. `mint_read_token` signs
-    // `payments:read` with the server's own key, which is what the OP would
-    // have minted for a client registered for it — the registration above is
-    // deliberately scopeless so the two answers differ only in the scope.
-    let token = mint_read_token(&served.signing_key, CLIENT_A);
-    let response = reqwest::Client::new()
+    // The same request from a client registered for `payments:read` — the
+    // only difference between the two answers is the registration's scope,
+    // which is where a signed call's scopes live (there is no token to carry
+    // one).
+    let response = support::sealed::SealedHttp::new()
         .get(format!("{}/v1/events", served.base_url))
-        .bearer_auth(token)
+        .signed_by(CLIENT_B)
         .send()
         .await
         .expect("the list answers");
@@ -1367,7 +1366,7 @@ async fn a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver(
     let h = harness().await.expect("harness");
 
     let (server_pem, _) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let receiver_url = h.receiver_url.clone();
     let served = serve(&h.repositories, &server_pem, move |base_url| {
         cancel_config(base_url, jwks_a, &receiver_url)
@@ -1376,7 +1375,8 @@ async fn a_cancel_emits_one_payment_intent_canceled_and_it_reaches_the_receiver(
     .expect("a server");
 
     let client = vpay_sdk::Client::builder(&served.base_url)
-        .credentials(vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the PEM parses"))
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
         .build()
         .expect("the SDK client builds");
 
@@ -1780,7 +1780,7 @@ async fn a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver()
     );
 
     let (server_pem, _) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let receiver_url = h.receiver_url.clone();
     let served = serve(&h.repositories, &server_pem, move |base_url| {
         decline_config(base_url, jwks_a, &receiver_url, &mtn_url)
@@ -1789,7 +1789,8 @@ async fn a_submit_decline_emits_one_payment_failed_and_it_reaches_the_receiver()
     .expect("a server");
 
     let client = vpay_sdk::Client::builder(&served.base_url)
-        .credentials(vpay_sdk::Credentials::rsa_pem(CLIENT_A, &pem_a).expect("the PEM parses"))
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
         .build()
         .expect("the SDK client builds");
 
@@ -1971,7 +1972,14 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
                 // in `browser_checkout.rs` is what proves.
                 Vec::new(),
             ),
-            merchant_client_with(CLIENT_B, MERCHANT_B, jwks_b, scopes, Vec::new(), Vec::new()),
+            merchant_client_with(
+                CLIENT_B,
+                MERCHANT_B,
+                jwks_b,
+                &[vpay_api::SCOPE_PAYMENTS_READ],
+                Vec::new(),
+                Vec::new(),
+            ),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
@@ -1979,28 +1987,6 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
         staff_auth: vpay_config::StaffAuth::default(),
         routing: Default::default(),
     }
-}
-
-/// A `/v1` access token carrying `payments:read`, signed with the server's
-/// own key.
-///
-/// The same shape the OP would mint — same issuer, same key, same `vpay:v1`
-/// audience — so a request carrying it is indistinguishable to `/v1` from
-/// one the SDK obtained. Minted directly rather than obtained because
-/// `GET /v1/events/{id}` has no SDK method to reach it with, and because
-/// `reading_events_requires_a_scope` needs a token whose scope differs from
-/// the registration's on purpose.
-fn mint_read_token(signing_key: &LoadedSigningKey, client_id: &str) -> String {
-    signing_key
-        .token_manager()
-        .issue_client_token_with_extra(
-            client_id,
-            900,
-            Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
-            Some(vpay_config::MERCHANT_AUDIENCE.to_owned()),
-            std::collections::HashMap::new(),
-        )
-        .expect("the server's own signer mints a merchant token")
 }
 
 // --------------------------------------------------------- the Node SDK ---

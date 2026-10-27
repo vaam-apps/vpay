@@ -82,6 +82,7 @@ use vpay_db::{NewPaymentIntent, Repositories, UnitOfWork as _};
 
 mod support;
 
+use support::sealed::SealedHttp;
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
 };
@@ -272,6 +273,21 @@ impl Harness {
 
     async fn get(&self, path: &str, token: Option<&str>) -> anyhow::Result<(u16, String)> {
         self.request(reqwest::Method::GET, path, token).await
+    }
+
+    /// A `/v1` read signed by `client_id`, as a merchant's backend makes it:
+    /// `/v1` is a signed message, so the merchant half of the contrast these
+    /// tests draw can no longer be a bearer token.
+    async fn v1_get(&self, client_id: &str, path: &str) -> anyhow::Result<(u16, String)> {
+        let response = SealedHttp::new()
+            .get(format!("{}{path}", self.base_url))
+            .signed_by(client_id)
+            .send()
+            .await
+            .context("sending a signed /v1 request")?;
+        let status = response.status().as_u16();
+        let body = response.text().await.context("reading the body")?;
+        Ok((status, body))
     }
 
     /// The same, with the method as an argument — for the one test that is
@@ -678,11 +694,10 @@ async fn a_merchant_audience_token_is_refused_on_dash_v1() -> anyhow::Result<()>
         "a merchant credential must not read the staff surface: {body}"
     );
 
-    // And the same token still works where it belongs, so the 401 above is
-    // about the surface rather than about a token this test minted wrongly.
-    let (v1_status, v1_body) = harness
-        .get("/v1/payment_intents", Some(&merchant_token))
-        .await?;
+    // And the merchant still reads `/v1` — signed, since a token opens nothing
+    // there — so the 401 above is about the surface rather than about a
+    // credential this test minted wrongly.
+    let (v1_status, v1_body) = harness.v1_get(CLIENT_A, "/v1/payment_intents").await?;
     assert_eq!(v1_status, 200, "{v1_body}");
     Ok(())
 }
@@ -935,9 +950,8 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
     // The *merchant* surface does render it, from the same row — so the
     // assertion above is about this handler's choice and not about the row
     // having no secret to leak.
-    let merchant_token = harness.machine_token(CLIENT_A, MERCHANT_AUDIENCE, "payments:read");
     let (v1_status, v1_body) = harness
-        .get("/v1/payment_intents/pi_dash_detail", Some(&merchant_token))
+        .v1_get(CLIENT_A, "/v1/payment_intents/pi_dash_detail")
         .await?;
     assert_eq!(v1_status, 200, "{v1_body}");
     assert!(

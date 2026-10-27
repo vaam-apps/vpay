@@ -146,8 +146,8 @@ use uuid::Uuid;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_sdk::{
-    ConfirmPaymentIntentParams, CreatePaymentIntentParams, Credentials, IntentStatus,
-    PaymentMethodType, RequestOptions,
+    ConfirmPaymentIntentParams, CreatePaymentIntentParams, IntentStatus, PaymentMethodType,
+    RequestOptions,
 };
 
 mod support;
@@ -763,6 +763,27 @@ impl Workspace {
         path
     }
 
+    /// The server's envelope seeds (VP-3) — the ones `support::sealed` pins in
+    /// every client it builds — as the base64url text a Secret mount holds.
+    fn write_envelope_keys(&self) -> (PathBuf, PathBuf) {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let write = |name: &str, seed: [u8; 32]| {
+            let path = self.0.join(name);
+            std::fs::write(&path, format!("{}\n", URL_SAFE_NO_PAD.encode(seed)))
+                .expect("writing an envelope seed");
+            path
+        };
+        (
+            write(
+                "envelope-current.seed",
+                support::sealed::server_seed_current(),
+            ),
+            write("envelope-next.seed", support::sealed::server_seed_next()),
+        )
+    }
+
     fn write_signing_key(&self, pem: &str) -> PathBuf {
         let path = self.0.join("oauth-signing-key.pem");
         std::fs::write(&path, pem).expect("writing the signing key");
@@ -878,9 +899,10 @@ fn create_params() -> CreatePaymentIntentParams {
     }
 }
 
-fn sdk_client(base_url: &str, pem: &str) -> vpay_sdk::Client {
+fn sdk_client(base_url: &str) -> vpay_sdk::Client {
     vpay_sdk::Client::builder(base_url)
-        .credentials(Credentials::rsa_pem(CLIENT_A, pem).expect("the generated PEM parses"))
+        .credentials(support::sealed::sdk_credentials(CLIENT_A))
+        .server_keys(support::sealed::sdk_server_keys())
         .build()
         .expect("the SDK client builds from a base URL and a credential")
 }
@@ -1493,7 +1515,7 @@ async fn a_worker_killed_mid_poll_settles_the_charge_exactly_once_after_its_leas
     let workspace = Workspace::new();
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
 
     // The API runs in-process here — it is not the process being killed —
     // but the configuration it boots from is the very same value the worker
@@ -1508,7 +1530,7 @@ async fn a_worker_killed_mid_poll_settles_the_charge_exactly_once_after_its_leas
     .await?;
     let config_path = workspace.write_config(&captured.expect("the harness built a configuration"));
 
-    let client = sdk_client(&served.base_url, &pem_a);
+    let client = sdk_client(&served.base_url);
     let created = client
         .payment_intents()
         .create(create_params(), RequestOptions::new())
@@ -1727,8 +1749,9 @@ async fn a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a
     let workspace = Workspace::new();
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let key_path = workspace.write_signing_key(&server_pem);
+    let (envelope_key, envelope_next_key) = workspace.write_envelope_keys();
 
     // The port has to be known before the configuration is written:
     // `deployment.public_base_url` is what the merchant OP derives its
@@ -1744,6 +1767,8 @@ async fn a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a
         .env("DATABASE_URL", &database_url)
         .env("VPAY_CONFIG", &config_path)
         .env("VPAY_OAUTH_SIGNING_KEY_FILE", &key_path)
+        .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", &envelope_key)
+        .env("VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE", &envelope_next_key)
         .env("VPAY_PROFILE", "kill9")
         .env("VPAY_LOG_FORMAT", "text")
         .env("RUST_LOG", "info")
@@ -1768,7 +1793,7 @@ async fn a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let client = sdk_client(&base_url, &pem_a);
+    let client = sdk_client(&base_url);
     let created = client
         .payment_intents()
         .create(create_params(), RequestOptions::new())
@@ -1781,10 +1806,9 @@ async fn a_server_killed_mid_submit_leaves_a_charge_the_worker_settles_without_a
     // merchant would experience.
     let confirming = {
         let base_url = base_url.clone();
-        let pem = pem_a.clone();
         let intent_id = created.id.clone();
         tokio::spawn(async move {
-            sdk_client(&base_url, &pem)
+            sdk_client(&base_url)
                 .payment_intents()
                 .confirm(
                     &intent_id,
@@ -1973,7 +1997,7 @@ async fn a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exac
     let workspace = Workspace::new();
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
 
     // As in the mid-poll case: the API is in-process because it is not the
     // process being signalled, but the configuration it boots from is the
@@ -1991,7 +2015,7 @@ async fn a_worker_sigtermed_mid_delivery_drains_it_and_the_merchant_is_told_exac
     let mut first = boot_worker("worker-1", &database_url, &config_path);
     let mut second = boot_worker("worker-2", &database_url, &config_path);
 
-    let client = sdk_client(&served.base_url, &pem_a);
+    let client = sdk_client(&served.base_url);
     let created = client
         .payment_intents()
         .create(create_params(), RequestOptions::new())
@@ -2310,7 +2334,7 @@ async fn a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_th
     let workspace = Workspace::new();
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
 
     let mut captured: Option<Config> = None;
     let served = support::serve(&repositories, &server_pem, |base_url| {
@@ -2345,7 +2369,7 @@ async fn a_drain_that_runs_out_of_grace_under_a_real_signal_exits_1_and_hands_th
         TIMED_OUT_GRACE_SECONDS,
     );
 
-    let client = sdk_client(&served.base_url, &pem_a);
+    let client = sdk_client(&served.base_url);
     let created = client
         .payment_intents()
         .create(create_params(), RequestOptions::new())

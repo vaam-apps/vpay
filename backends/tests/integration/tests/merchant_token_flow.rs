@@ -1,54 +1,43 @@
-//! The merchant token flow end to end: the real `vpay_api::router` on a real
-//! socket, backed by a real Postgres, driven by the real merchant SDK.
+//! The OP's token flow, and what `/v1` makes of its tokens, end to end: the
+//! real `vpay_api::router` on a real socket, backed by a real Postgres.
 //!
-//! This is the only place the whole of "Step 1: merchant tokens on `/v1`" is
-//! proved as one thing. Every piece has unit tests of its own —
-//! `op::clients` for the registry, `op::keys` for the signing key,
-//! `op::token` for the discovery document, `lib.rs` for the route tree — but
-//! each of those substitutes something: a lazy pool, a hand-built
-//! registration, a request that never presents a token. The claims that only
-//! this file can make are the ones that span all of them:
+//! `/v1` is signed now (`docs/signed-transport.md`): a merchant seals every
+//! call with its registered Ed25519 key, and no bearer token is a credential
+//! there. The OP (`/v1/oauth/*`) still exists until VP-4 and still mints
+//! tokens, and the cases below hold it to what it claims while it does:
 //!
-//! - **(a)** the SDK, configured exactly as a merchant would configure it,
-//!   obtains a token and reaches an authenticated `/v1` route — which
-//!   answers the honest 404 for an id no intent exists under; and the same
-//!   route with no bearer token answers the 401 envelope.
-//! - **(b)** `vpay_db::disable_client` takes effect on the *next token
-//!   request*, with no restart: `invalid_client`, HTTP 401.
-//! - **(c)** a token this server itself minted, but for the dashboard
-//!   audience, is refused on `/v1` — so the audience separation between the
-//!   two surfaces is real and not merely configured.
+//! - **(a)** a sealed request reaches the honest 404, and the token the OP
+//!   mints for the same merchant, presented as a bearer, gets the unsigned
+//!   401; a plain request gets the layer's coarse 401 too.
+//! - **(b)** `vpay_db::disable_client` takes effect on the *next* request, on
+//!   both doors: `invalid_client`/401 at the token endpoint, the unsigned 401
+//!   on a sealed `/v1` call.
+//! - **(c)** no bearer reaches `/v1`, whatever its audience — including the
+//!   one this OP mints when `audience` is left off.
 //! - **(d)** `/v1/oauth/jwks.json` publishes exactly the `kid` this process
 //!   signs with, and the discovery document names the endpoints this test
-//!   derives from the base URL independently of the server (that the *SDK*
-//!   derives the same ones is what case (a) shows, by using them).
+//!   derives from the base URL independently of the server.
 //! - **(e)** a `client_assertion` presented twice is refused the second
-//!   time — the proof that `vpay_db::client_assertion_store` is actually wired into
-//!   the store the token handler consults, which no unit test can show
-//!   because the wiring is the thing under test.
-//! - **(f)** a token request that omits `audience` is *accepted* by the
-//!   token endpoint and comes back addressed to the merchant's own
-//!   `client_id` — and `/v1` refuses that token. Only this file can show
-//!   it: the claim is about what `authkestra_op` actually mints, so a unit
-//!   test would have to assert it against a token the test itself
-//!   constructed, which proves nothing about the OP.
+//!   time — the proof that `vpay_db::client_assertion_store` is actually wired
+//!   into the store the token handler consults.
 //! - **(g)** a token request that omits the `client_id` form field — which
-//!   RFC 7523 §3 permits, since the assertion's `sub` names the client —
-//!   still receives its registration's default scope, and the token it gets
-//!   authorises a `/v1` call.
-//! - **(h)** that default widens nothing: a request naming a *narrower*
-//!   scope gets exactly that, one naming a scope the registration does not
-//!   hold is `invalid_scope`, and one naming none gets the registration.
+//!   RFC 7523 §3 permits — still receives its registration's default scope.
+//! - **(h)** that default widens nothing: a narrower named scope wins, an
+//!   unregistered one is `invalid_scope`, an omitted one yields the
+//!   registration.
+//! - **(i)** the three grants `/v1` does not serve are refused before any
+//!   store is consulted.
 //! - **(j)** a spent `jti` outlives the validator's leeway: an assertion
 //!   whose `exp` is 30 s in the past is still accepted (`jsonwebtoken`'s 60 s
 //!   default leeway, which `authkestra-op` 0.13.1 leaves alone), and its
 //!   replay is still refused after the worker's housekeeping sweep has run
 //!   ([ADR-0028](../../../../docs/adr/0028-a-spent-jti-outlives-the-validators-leeway.md)).
 //! - **(k)** the other half of that bargain: an assertion older than the
-//!   sweep's production horizon is refused by the validator, so no row the
-//!   sweep may delete belongs to an assertion that could still verify. This is
-//!   what fails when an `authkestra-op` or `jsonwebtoken` bump widens the
-//!   leeway past the horizon.
+//!   sweep's production horizon is refused by the validator.
+//!
+//! The client assertions are minted here with `jsonwebtoken`: the merchant
+//! SDK seals requests and no longer has a token endpoint to call, so a suite
+//! about the token endpoint cannot be driven through it.
 //!
 //! # What has actually been run
 //!
@@ -107,11 +96,11 @@ use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{JwtValidator, MerchantJwtValidator};
 use vpay_config::{Config, Deployment, MERCHANT_AUDIENCE};
-use vpay_sdk::Credentials;
 
 mod support;
+
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client_with_scopes, migrated_postgres,
@@ -172,23 +161,6 @@ impl Harness {
 
     fn token_endpoint(&self) -> String {
         format!("{}/token", self.issuer())
-    }
-
-    fn credentials(&self) -> Credentials {
-        Credentials::rsa_pem(CLIENT_ID, &self.merchant_pem)
-            .expect("the generated PEM is a parseable RSA key")
-    }
-
-    /// An SDK client configured exactly as `docs/flows/merchant-auth.md`
-    /// tells a merchant to configure one: a base URL and a credential.
-    /// Everything else — the issuer, the token endpoint, the `vpay:v1`
-    /// audience — the SDK derives on its own, which is what makes case (a)
-    /// a test of that derivation and not of a URL the test handed it.
-    fn sdk_client(&self) -> vpay_sdk::Client {
-        vpay_sdk::Client::builder(&self.base_url)
-            .credentials(self.credentials())
-            .build()
-            .expect("the SDK client builds from a base URL and a credential")
     }
 
     async fn shutdown(self) {
@@ -271,20 +243,9 @@ async fn harness_with_scopes(scopes: &[&str]) -> anyhow::Result<Harness> {
         signing_key.clone(),
         Arc::clone(&repositories),
     ));
-    let merchant_validator = MerchantJwtValidator(
-        JwtValidator::new(
-            format!("http://{bound}/v1/oauth/jwks.json"),
-            Duration::from_secs(300),
-            merchant_op.issuer(),
-            vpay_config::MERCHANT_AUDIENCE,
-        )
-        .expect("the vendored-roots JWKS client builds"),
-    );
-
     let deps = router_deps(
         Arc::clone(&repositories),
         merchant_op,
-        merchant_validator,
         // No `dashboard_client` in either suite's configuration, so no
         // `/dash/v1` nest is mounted at all — see `support::router_deps`.
         None,
@@ -452,82 +413,84 @@ fn access_token(status: u16, body: &Value) -> anyhow::Result<String> {
 
 // --------------------------------------------------------------- case (a)
 
-/// The whole happy path, and the honest answer at the end of it.
+/// The honest 404 behind the signature, and the credential kind that cannot
+/// reach it.
 ///
-/// The SDK obtains a token (proving: assertion minted, client resolved from
-/// YAML, `jti` recorded, token signed by the key announced in
-/// `oauth_signing_keys`) and reaches `/v1/payment_intents/pi_x` — which
-/// answers `404 resource_missing`, because this merchant has no intent under
-/// that id. That 404 **is** the assertion: the route is behind the
-/// authentication boundary and the query is filtered by the tenant the
-/// middleware resolved, so getting *this* 404 proves the token was minted,
-/// fetched back over loopback JWKS, validated, and mapped to a merchant.
-///
-/// The code matters, not just the status. Before Step 2 this answered
-/// `unknown_route` — the nest's fallback, from a route that did not exist.
-/// `resource_missing` is what says the route now exists and looked.
-/// `backends/tests/integration/tests/payment_intents.rs` is where the
-/// resource itself is proved; this file's claim is only that a token reaches
-/// it.
+/// A sealed request from the registered merchant reaches
+/// `/v1/payment_intents/pi_x` and gets `404 resource_missing` — sealed, with
+/// the code, because this merchant has no intent under that id. The access
+/// token this very server's OP mints for the same merchant, presented as a
+/// bearer on the same path, gets the layer's unsigned `401`. Both halves
+/// matter: the first says the route exists and looked; the second says the
+/// token the OP still issues until VP-4 retires it buys nothing on `/v1`.
 #[tokio::test]
-async fn an_sdk_client_authenticates_and_reaches_the_honest_404() -> anyhow::Result<()> {
+async fn a_sealed_request_reaches_the_honest_404_and_the_ops_token_does_not() -> anyhow::Result<()>
+{
     let harness = harness().await?;
+    let url = format!("{}/v1/payment_intents/pi_x", harness.base_url);
 
-    let error = harness
-        .sdk_client()
-        .payment_intents()
-        .retrieve("pi_x")
+    let sealed = SealedHttp::new()
+        .get(&url)
+        .signed_by(CLIENT_ID)
+        .send()
+        .await?;
+    assert!(sealed.is_sealed(), "the answer to a sealed call is sealed");
+    assert_eq!(sealed.status().as_u16(), 404);
+    let body: Value = sealed.json().await.context("the sealed body is JSON")?;
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("resource_missing"),
+        "got {body:#}"
+    );
+
+    let (status, token_body) =
+        post_token(&harness, &token_request_form(&mint_assertion(&harness)?)).await?;
+    let token = access_token(status, &token_body)?;
+    let refused = raw_client()
+        .get(&url)
+        .header("accept", "application/json")
+        .bearer_auth(&token)
+        .send()
         .await
-        .expect_err("no intent exists under `pi_x`; a 200 would be fabricated");
-
-    match error {
-        vpay_sdk::Error::Api {
-            status,
-            ref kind,
-            ref code,
-            ..
-        } => {
-            assert_eq!(status, 404, "authenticated, then no such object: {error:?}");
-            assert_eq!(kind, "invalid_request_error");
-            assert_eq!(code.as_deref(), Some("resource_missing"));
-        }
-        other => panic!(
-            "expected the vpay 404 envelope after a successful token exchange, got {other:?}"
-        ),
-    }
+        .context("the server answers")?;
+    assert_eq!(
+        refused.status().as_u16(),
+        401,
+        "a bearer token is not a credential on /v1"
+    );
 
     harness.shutdown().await;
     Ok(())
 }
 
-/// The other side of the boundary: the same path, no bearer token, over a
-/// raw client the SDK cannot impersonate (it always attaches a token).
+/// The other side of the boundary: the same path, nothing presented at all.
 ///
-/// 401 with `authentication_error`/`missing_bearer_token`, not 404 — a 404
-/// here would mean the authentication layer is not in front of the `/v1`
-/// nest's fallback, which is the exact hole `Router::route_layer` would
-/// have left.
+/// The layer's coarse `401` — `code: UNAUTHORIZED`, identical for every
+/// cause and no longer the Stripe `authentication_error` envelope the retired
+/// bearer middleware answered (`docs/reference/api.md`, "The unsigned answer"
+/// states the change). A `404` here would mean the envelope is not in front
+/// of the `/v1` nest's fallback.
 #[tokio::test]
-async fn a_v1_request_with_no_bearer_token_is_the_401_envelope() -> anyhow::Result<()> {
+async fn a_v1_request_that_is_not_signed_is_the_layers_coarse_401() -> anyhow::Result<()> {
     let harness = harness().await?;
 
     let response = raw_client()
         .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
+        .header("accept", "application/json")
         .send()
         .await
-        .context("the server answers an unauthenticated /v1 request")?;
+        .context("the server answers an unsigned /v1 request")?;
 
     assert_eq!(response.status().as_u16(), 401);
     let body: Value = response.json().await.context("the 401 body is JSON")?;
     assert_eq!(
-        body.pointer("/error/type").and_then(Value::as_str),
-        Some("authentication_error"),
+        body.get("code").and_then(Value::as_str),
+        Some("UNAUTHORIZED"),
         "got {body:#}"
     );
-    assert_eq!(
-        body.pointer("/error/code").and_then(Value::as_str),
-        Some("missing_bearer_token"),
-        "got {body:#}"
+    assert!(
+        body.pointer("/error/type").is_none(),
+        "the unsigned answer is the layer's, not the Stripe envelope: {body:#}"
     );
 
     harness.shutdown().await;
@@ -536,34 +499,33 @@ async fn a_v1_request_with_no_bearer_token_is_the_401_envelope() -> anyhow::Resu
 
 // --------------------------------------------------------------- case (b)
 
-/// The kill switch, end to end and with no restart in between.
+/// The kill switch, end to end and with no restart in between — on both
+/// doors a disabled client could still use.
 ///
-/// The same client that just obtained a token is refused the moment a row
-/// lands in `disabled_clients` — ADR-0010's "an operator flips a client to
-/// disabled and it takes effect immediately, no deploy required".
+/// The same merchant that just had a sealed call answered and a token minted
+/// is refused the moment a row lands in `disabled_clients` — ADR-0010's "an
+/// operator flips a client to disabled and it takes effect immediately, no
+/// deploy required":
 ///
-/// A *fresh* SDK client is built for the second attempt on purpose: the
-/// first client caches its token until expiry (by design —
-/// `docs/flows/merchant-auth.md` §3), so reusing it would prove nothing
-/// about the token endpoint. That the already-issued token stays valid for
-/// its remaining TTL is a real, documented property of a stateless bearer
-/// token and not something this test papers over.
-///
-/// Both the SDK's typed error and the raw HTTP status are asserted: the
-/// status is what `sdks/nodejs` and any third-party OAuth client branch on,
-/// and it is what `crate::op::token`'s status mapping exists to produce.
+/// - the token endpoint answers `invalid_client`/401 (the OP, which stays
+///   until VP-4), and
+/// - the sealed `/v1` call gets the unsigned `401` — the same coarse answer
+///   as a key nobody registered, so a disabled client is indistinguishable
+///   from an unknown one.
 #[tokio::test]
 async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::Result<()> {
     let harness = harness().await?;
+    let url = format!("{}/v1/payment_intents/pi_x", harness.base_url);
 
     // Proof the client works *before* the switch is flipped, so a failure
     // after it cannot be blamed on a broken fixture.
-    harness
-        .sdk_client()
-        .payment_intents()
-        .retrieve("pi_x")
-        .await
-        .expect_err("the honest 404 for a missing id — see the case (a) test");
+    let before = SealedHttp::new()
+        .get(&url)
+        .signed_by(CLIENT_ID)
+        .send()
+        .await?;
+    assert!(before.is_sealed());
+    assert_eq!(before.status().as_u16(), 404, "the honest 404 — case (a)");
 
     harness
         .repositories
@@ -571,33 +533,20 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
         .await
         .context("flipping the kill switch")?;
 
-    let error = harness
-        .sdk_client()
-        .payment_intents()
-        .retrieve("pi_x")
-        .await
-        .expect_err("a disabled client must not obtain a token");
-    match error {
-        vpay_sdk::Error::TokenEndpoint { ref error, .. } => {
-            assert_eq!(
-                error, "invalid_client",
-                "a disabled client must be indistinguishable from an unknown one: {error:?}"
-            );
-        }
-        other => panic!("expected an RFC 6749 token-endpoint error, got {other:?}"),
-    }
+    let after = SealedHttp::new()
+        .get(&url)
+        .signed_by(CLIENT_ID)
+        .send()
+        .await?;
+    assert!(
+        !after.is_sealed(),
+        "a disabled client's call is refused unsigned"
+    );
+    assert_eq!(after.status().as_u16(), 401);
 
-    // The status, separately: the SDK's own error decoding would report
-    // `TokenEndpoint` for a 400 just as happily as for a 401.
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting an assertion by hand")?;
     let response = raw_client()
         .post(harness.token_endpoint())
-        .form(&token_request_form(&assertion))
+        .form(&token_request_form(&mint_assertion(&harness)?))
         .send()
         .await
         .context("the token endpoint answers")?;
@@ -619,144 +568,87 @@ async fn a_disabled_client_is_refused_with_invalid_client_and_401() -> anyhow::R
 
 // --------------------------------------------------------------- case (c)
 
-/// Audience separation, proved with a token this very server signed.
+/// No bearer reaches `/v1`, whatever it is addressed to.
 ///
-/// The token is minted directly through the server's own `TokenManager`, so
-/// its signature verifies and its `kid` is in the JWKS — everything about it
-/// is right except the `aud`, which names the dashboard surface. `/v1` must
-/// still refuse it.
-///
-/// This is the test that would fail if `JwtValidator` were built without
-/// `set_audience`, or with both audiences, or if `Surface` were ever
-/// collapsed to one value. It cannot be written with the SDK, which requests
-/// `vpay:v1` and would in any case be refused `invalid_target` by the token
-/// endpoint for asking for an audience this merchant is not registered for
-/// — a *different* mechanism, and one that a resource server must not rely
-/// on.
+/// Both tokens are minted directly through the server's own `TokenManager`,
+/// so their signatures verify and their `kid` is in the JWKS — everything
+/// about them is right. One is addressed to the dashboard surface, the other
+/// to `vpay:v1`. Before the signed transport the audience was the whole
+/// difference between a `401` and the honest `404`; now neither is a
+/// credential at all and both are refused with the same unsigned answer,
+/// which is what the "no token fallback" ruling means in a test.
 #[tokio::test]
-async fn a_dashboard_audience_token_is_refused_on_v1() -> anyhow::Result<()> {
+async fn a_bearer_token_of_any_audience_is_refused_on_v1() -> anyhow::Result<()> {
     let harness = harness().await?;
 
-    let dashboard_token = harness
-        .signing_key
-        .token_manager()
-        .issue_client_token_with_extra(
-            CLIENT_ID,
-            900,
-            None,
-            Some(DASHBOARD_AUDIENCE.to_owned()),
-            HashMap::new(),
-        )
-        .context("minting a dashboard-audience token with the server's own signer")?;
-
-    let response = raw_client()
-        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
-        .bearer_auth(&dashboard_token)
-        .send()
-        .await
-        .context("the server answers")?;
-
-    assert_eq!(
-        response.status().as_u16(),
-        401,
-        "a correctly signed token for the wrong surface must not reach /v1"
-    );
-    let body: Value = response.json().await.context("the 401 body is JSON")?;
-    assert_eq!(
-        body.pointer("/error/code").and_then(Value::as_str),
-        Some("invalid_token"),
-        "got {body:#}"
-    );
-
-    // And the control: the same signer, the same TTL, the merchant
-    // audience — accepted, reaching the honest 404. Without this, the
-    // assertion above would also pass if `/v1` refused *every* token.
-    let merchant_token = harness
-        .signing_key
-        .token_manager()
-        .issue_client_token_with_extra(
-            CLIENT_ID,
-            900,
-            // The scope has to be named because this token is minted
-            // directly rather than obtained from the OP, which is where the
-            // registration's scopes are applied to a request that asks for
-            // none. Without it the control would be a `403` about
-            // authorisation, and this test's whole claim is that the *only*
-            // difference between the two tokens is the audience.
+    for (label, audience, scope) in [
+        ("dashboard", DASHBOARD_AUDIENCE, None),
+        (
+            "merchant",
+            MERCHANT_AUDIENCE,
             Some(vpay_api::SCOPE_PAYMENTS_READ.to_owned()),
-            Some(MERCHANT_AUDIENCE.to_owned()),
-            HashMap::new(),
-        )
-        .context("minting a merchant-audience token with the server's own signer")?;
-    let response = raw_client()
-        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
-        .bearer_auth(&merchant_token)
-        .send()
-        .await
-        .context("the server answers")?;
-    assert_eq!(
-        response.status().as_u16(),
-        404,
-        "the only difference from the refused token above is its `aud`"
-    );
+        ),
+    ] {
+        let token = harness
+            .signing_key
+            .token_manager()
+            .issue_client_token_with_extra(
+                CLIENT_ID,
+                900,
+                scope,
+                Some(audience.to_owned()),
+                HashMap::new(),
+            )
+            .context("minting a token with the server's own signer")?;
+
+        let response = raw_client()
+            .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
+            .header("accept", "application/json")
+            .bearer_auth(&token)
+            .send()
+            .await
+            .context("the server answers")?;
+        assert_eq!(
+            response.status().as_u16(),
+            401,
+            "a {label}-audience bearer must not reach /v1"
+        );
+    }
 
     harness.shutdown().await;
     Ok(())
 }
 
-/// The audience-confusion token this OP really mints, and the boundary
-/// refusing it.
-///
-/// Case (c) proves the boundary refuses a *dashboard*-audience token, which
-/// is a token nothing in this deployment produces by accident. This case is
-/// the one an integrator produces by accident: leave `audience` off the
-/// token request and `authkestra_op` mints a token whose `aud` is the
-/// client's own `client_id` (`authkestra-op-0.13.1/src/handlers/token.rs`:
-/// "No audience requested; defaulting client_credentials token audience to
-/// client_id"). It is signed by this server's active key, carries the right
-/// issuer and is inside its lifetime — everything about it is valid except
-/// that it is not addressed to `/v1`.
+/// The token this OP really mints when `audience` is left off, and what
+/// `/v1` makes of it.
 ///
 /// Three assertions, in the order they matter:
 ///
-/// 1. the token endpoint *accepts* the request (200) — the confusion is not
-///    prevented upstream, and a test that assumed it was would be asserting
-///    the wrong thing;
+/// 1. the token endpoint *accepts* the request (200) — the OP still issues
+///    it, until VP-4;
 /// 2. its `aud` is the `client_id`, read straight off the payload, so the
 ///    claim about what the OP mints is measured here rather than quoted from
-///    upstream's source;
-/// 3. `/v1` refuses it with the 401 envelope.
-///
-/// Decisive: widening `JwtValidator::new`'s `set_audience` — the shape this
-/// finding is about — makes step 3 answer 404 instead. The same property is
-/// pinned without Docker by
-/// `vpay_api::resource_auth`'s
-/// `a_token_whose_audience_is_the_client_id_is_refused_on_the_merchant_surface`,
-/// whose own doc comment records why *deleting* `set_audience` is not the
-/// decisive mutation for it.
+///    upstream's source
+///    (`authkestra-op-0.13.1/src/handlers/token.rs`: "No audience requested;
+///    defaulting client_credentials token audience to client_id");
+/// 3. `/v1` refuses it with the unsigned `401`.
 #[tokio::test]
 async fn a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_on_v1()
 -> anyhow::Result<()> {
     let harness = harness().await?;
 
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting an assertion for a token request with no audience")?;
-
     let response = raw_client()
         .post(harness.token_endpoint())
-        .form(&token_request_form_without_audience(&assertion))
+        .form(&token_request_form_without_audience(&mint_assertion(
+            &harness,
+        )?))
         .send()
         .await
         .context("the token endpoint answers a request with no audience")?;
     assert_eq!(
         response.status().as_u16(),
         200,
-        "a token request with no `audience` is accepted, which is why the resource server has to \
-         be the thing that refuses the token"
+        "a token request with no `audience` is accepted"
     );
     let body: Value = response.json().await.context("the token body is JSON")?;
     let token = body
@@ -772,57 +664,12 @@ async fn a_token_minted_with_no_audience_is_addressed_to_the_client_and_refused_
 
     let response = raw_client()
         .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
+        .header("accept", "application/json")
         .bearer_auth(token)
         .send()
         .await
         .context("the server answers")?;
-    assert_eq!(
-        response.status().as_u16(),
-        401,
-        "a token addressed to the client rather than to vpay:v1 must not reach /v1"
-    );
-    let body: Value = response.json().await.context("the 401 body is JSON")?;
-    assert_eq!(
-        body.pointer("/error/code").and_then(Value::as_str),
-        Some("invalid_token"),
-        "got {body:#}"
-    );
-
-    // The control, same as case (c)'s: the identical request *with* the
-    // audience reaches the honest 404, so the 401 above is about the `aud`
-    // claim and not about anything else in the exchange.
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting a second assertion (the first is spent)")?;
-    let body: Value = raw_client()
-        .post(harness.token_endpoint())
-        .form(&token_request_form(&assertion))
-        .send()
-        .await
-        .context("the token endpoint answers")?
-        .json()
-        .await
-        .context("the token body is JSON")?;
-    let token = body
-        .get("access_token")
-        .and_then(Value::as_str)
-        .context("the token response carries an access_token")?;
-    assert_eq!(unverified_aud(token), MERCHANT_AUDIENCE);
-
-    let response = raw_client()
-        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
-        .bearer_auth(token)
-        .send()
-        .await
-        .context("the server answers")?;
-    assert_eq!(
-        response.status().as_u16(),
-        404,
-        "the only difference from the refused token above is the `audience` form field"
-    );
+    assert_eq!(response.status().as_u16(), 401);
 
     harness.shutdown().await;
     Ok(())
@@ -937,12 +784,7 @@ async fn the_jwks_and_discovery_documents_describe_this_process() -> anyhow::Res
 async fn the_same_client_assertion_cannot_be_spent_twice() -> anyhow::Result<()> {
     let harness = harness().await?;
 
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting one assertion to send twice")?;
+    let assertion = mint_assertion(&harness).context("minting one assertion to send twice")?;
     let form = token_request_form(&assertion);
 
     let first = raw_client()
@@ -1013,12 +855,8 @@ async fn a_token_request_with_no_client_id_still_gets_its_registered_default_sco
     ])
     .await?;
 
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting an assertion for a request that names no client_id")?;
+    let assertion = mint_assertion(&harness)
+        .context("minting an assertion for a request that names no client_id")?;
 
     let (status, body) =
         post_token(&harness, &token_request_form_without_client_id(&assertion)).await?;
@@ -1033,27 +871,9 @@ async fn a_token_request_with_no_client_id_still_gets_its_registered_default_sco
          without them every /v1 call is a 403 the merchant cannot explain"
     );
 
-    // And the token works, which is the thing the merchant actually
-    // noticed: a 404 for a missing id rather than a 403 about scope.
-    let response = raw_client()
-        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
-        .bearer_auth(&token)
-        .send()
-        .await
-        .context("the server answers")?;
-    assert_eq!(
-        response.status().as_u16(),
-        404,
-        "the token must authorise a read; a 403 here is the bug this case exists for"
-    );
-
     // The control: the same request *with* `client_id` grants the same set.
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting a second assertion (the first is spent)")?;
+    let assertion =
+        mint_assertion(&harness).context("minting a second assertion (the first is spent)")?;
     let (status, body) = post_token(&harness, &token_request_form(&assertion)).await?;
     let with_client_id = access_token(status, &body)?;
     assert_eq!(
@@ -1090,13 +910,7 @@ async fn a_named_scope_narrows_and_an_unregistered_one_is_refused() -> anyhow::R
     ])
     .await?;
 
-    let mint = || {
-        vpay_sdk::auth::mint_client_assertion(
-            &harness.credentials(),
-            &harness.token_endpoint(),
-            Duration::from_secs(60),
-        )
-    };
+    let mint = || mint_assertion(&harness);
 
     // 1. Narrower wins. The client is registered to write; it asks only to
     //    read, and gets only read — the default must not put `payments:write`
@@ -1111,29 +925,6 @@ async fn a_named_scope_narrows_and_an_unregistered_one_is_refused() -> anyhow::R
         granted_scopes(&narrowed),
         vec![vpay_api::SCOPE_PAYMENTS_READ.to_owned()],
         "a client that asks for less must get exactly what it asked for"
-    );
-
-    // ...and the narrowed token really is narrower at the boundary, not
-    // merely in its claim: a read passes, a write does not.
-    let response = raw_client()
-        .get(format!("{}/v1/payment_intents/pi_x", harness.base_url))
-        .bearer_auth(&narrowed)
-        .send()
-        .await
-        .context("the server answers a read")?;
-    assert_eq!(response.status().as_u16(), 404, "a read scope reads");
-    let response = raw_client()
-        .post(format!("{}/v1/payment_intents", harness.base_url))
-        .bearer_auth(&narrowed)
-        .header("Idempotency-Key", "narrowed-tries-to-write")
-        .form(&[("amount", "5000"), ("currency", "xaf")])
-        .send()
-        .await
-        .context("the server answers a write")?;
-    assert_eq!(
-        response.status().as_u16(),
-        403,
-        "a token narrowed to `payments:read` must not be able to take a payment"
     );
 
     // 2. An unregistered scope is `invalid_scope`, not silently dropped and
@@ -1232,12 +1023,8 @@ async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> 
         // reusing one would make the second and third iterations
         // `invalid_client` and this loop would test replay protection three
         // times instead of the grant check once each.
-        let assertion = vpay_sdk::auth::mint_client_assertion(
-            &harness.credentials(),
-            &harness.token_endpoint(),
-            Duration::from_secs(60),
-        )
-        .context("minting an assertion for an unserved grant")?;
+        let assertion =
+            mint_assertion(&harness).context("minting an assertion for an unserved grant")?;
 
         let mut form = token_request_form(&assertion);
         form.retain(|(field, _)| *field != "grant_type");
@@ -1282,12 +1069,8 @@ async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> 
     // The control: the same harness still mints a token for the grant `/v1`
     // does serve. Without it, a harness that refused *everything* — a broken
     // registration, a mis-signed assertion — would pass the loop above.
-    let assertion = vpay_sdk::auth::mint_client_assertion(
-        &harness.credentials(),
-        &harness.token_endpoint(),
-        Duration::from_secs(60),
-    )
-    .context("minting an assertion for the one grant /v1 does serve")?;
+    let assertion = mint_assertion(&harness)
+        .context("minting an assertion for the one grant /v1 does serve")?;
     let (status, body) = post_token(&harness, &token_request_form(&assertion)).await?;
     access_token(status, &body)?;
 
@@ -1300,10 +1083,8 @@ async fn the_three_grants_vpay_does_not_serve_are_refused_before_any_store() -> 
 /// A client assertion signed by hand with `exp` set `exp_offset_secs` from the
 /// API's `now` (negative: already past).
 ///
-/// Hand-signed because `vpay_sdk::auth::mint_client_assertion` cannot look
-/// back — it takes a lifetime of `1..=300` seconds forward, and rightly: no
-/// merchant has a reason to mint an expired assertion. Everything else is the
-/// SDK's shape (`iss = sub = client_id`, the token endpoint as `aud`, a UUID
+/// Hand-signed, with the claims of a real assertion (`iss = sub = client_id`,
+/// the token endpoint as `aud`, a UUID
 /// `jti`, no `kid`), so the only thing that differs from a real assertion is
 /// the one claim under test. The API under test runs in this process, so
 /// "now" here is the API's clock.
@@ -1326,6 +1107,17 @@ fn assertion_with_exp(harness: &Harness, exp_offset_secs: i64) -> anyhow::Result
     )
     .context("signing a hand-built assertion")?;
     Ok((assertion, jti))
+}
+
+/// A fresh client assertion, valid for the next minute: what a merchant's
+/// client presents at the token endpoint.
+///
+/// Signed here with `jsonwebtoken` ([`assertion_with_exp`]) now that the
+/// merchant SDK no longer mints one — it seals requests instead and has no
+/// token endpoint to call. The OP stays until VP-4, and this file is what
+/// keeps it honest until then.
+fn mint_assertion(harness: &Harness) -> anyhow::Result<String> {
+    assertion_with_exp(harness, 60).map(|(assertion, _jti)| assertion)
 }
 
 /// Runs the shipping housekeeping job, `sweep_expired`, once — through

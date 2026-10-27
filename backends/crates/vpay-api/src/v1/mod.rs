@@ -120,10 +120,10 @@ pub(crate) mod return_trip;
 /// This constant is the vocabulary's only definition. It is the string an
 /// operator writes in a merchant registration's `scopes:`
 /// (`config/application.yml`, `vpay_config::oauth::MerchantClient::scopes`),
-/// the string the OP puts in the token's `scope` claim, and the string
-/// [`crate::require_merchant_token`] checks — three places that fail
-/// *silently* if they disagree: a token minted with a scope nothing checks
-/// authorises everything, and a check for a scope nothing mints refuses
+/// the string `envelope::scope` checks a signed request against (and, until
+/// VP-4, the string the OP puts in a token's `scope` claim) — places that fail
+/// *silently* if they disagree: a registration granting a scope nothing checks
+/// authorises everything, and a check for a scope nothing grants refuses
 /// everything. There is no schema tying them together, so a shared constant
 /// is what ties them.
 pub const SCOPE_PAYMENTS_WRITE: &str = "payments:write";
@@ -430,12 +430,12 @@ pub(crate) fn routes() -> Router<crate::AppState> {
         .fallback(crate::not_found)
 }
 
-/// The tenant a request acts for, resolved from the token's `client_id` by
-/// the authentication middleware and read from request extensions here.
+/// The tenant a request acts for, resolved from the key that signed it by
+/// `envelope::scope` and read from request extensions here.
 ///
-/// Constructed only by [`crate::require_merchant_token`]: the field is
-/// `pub(crate)` and the extractor below is the only public way to obtain
-/// one, so a handler cannot invent a tenant to query by. That is the point —
+/// Constructed only inside this crate, by the four `for_*` constructors below:
+/// the field is `pub(crate)` and the extractor below is the only public way to
+/// obtain one, so a handler cannot invent a tenant to query by. That is the point —
 /// see this module's docs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MerchantScope {
@@ -462,8 +462,8 @@ impl MerchantScope {
     ///
     /// What it means is unchanged: "queries may be filtered by this tenant".
     /// It carries no OAuth scope claim and never did — `/v1`'s scope check
-    /// happens in `crate::require_merchant_token`, before a `MerchantScope`
-    /// exists, and the browser surface needs none because it mounts two
+    /// happens in `crate::envelope::scope` (and, before VP-3, in a bearer-token
+    /// middleware), before a `MerchantScope` exists, and the browser surface needs none because it mounts two
     /// routes and both address one already-authorised intent.
     pub(crate) fn for_payer(merchant_id: String) -> Self {
         Self { merchant_id }
@@ -485,7 +485,21 @@ impl MerchantScope {
         Self { merchant_id }
     }
 
-    /// Minted by [`crate::mcp::MerchantOps`] for a merchant MCP tool call
+    /// The **fourth** way a scope comes into existence, and the only one that
+    /// serves `/v1` itself: minted by `crate::envelope::scope` from the
+    /// merchant that holds the key a signed request verified under.
+    ///
+    /// The tenant is *resolved from* something the request proved — possession
+    /// of a registered Ed25519 key — as the bearer-token path resolved it from
+    /// the token's `client_id`, and unlike [`Self::for_dashboard`] and
+    /// [`Self::for_payer`] it is not fixed by configuration or by a
+    /// credential for one row. `pub(crate)` and named for its caller for the
+    /// reasons the other two give.
+    pub(crate) fn for_signed(merchant_id: String) -> Self {
+        Self { merchant_id }
+    }
+
+    /// The **fifth** way, minted by [`crate::mcp::MerchantOps`] for a merchant MCP tool call
     /// (ADR-0033), from the merchant `vpay-db`'s procedure body read off the
     /// authenticated context, which [`crate::mcp::MerchantMcpAuth`] built
     /// from a validated token through the same
@@ -502,8 +516,8 @@ where
     type Rejection = ApiError;
 
     /// Fails closed with [`ApiError::Internal`] (500, paged) rather than
-    /// falling back to any other tenant, for the same reason
-    /// [`crate::resource_auth::AuthenticatedMerchant`] does: reaching a
+    /// falling back to any other tenant, for the same reason the
+    /// old bearer-token extractor did: reaching a
     /// handler with no scope on the request means the middleware is not
     /// mounted, and the safe answer to "which merchant's rows may I read"
     /// is none of them.

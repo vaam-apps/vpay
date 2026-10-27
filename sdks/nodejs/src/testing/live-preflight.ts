@@ -7,12 +7,12 @@
  *
  * 1. `GET /healthz` answers `200` — the server is up and its database is
  *    reachable (that endpoint is a real `SELECT 1`, not a static "ok").
- * 2. one authenticated read completes — the configured `client_id` and
- *    private key are the pair this stack registered.
+ * 2. one signed read completes — the configured key is the one this stack
+ *    registered, and the pinned response keys are the ones it signs with.
  */
 import { VpayClient } from "../client.js";
 
-import { readLiveEnv } from "./live-env.js";
+import { liveClientOptions, readLiveEnv } from "./live-env.js";
 
 /** How long the preflight waits for `/healthz`. */
 const HEALTHZ_TIMEOUT_MS = 10_000;
@@ -41,11 +41,7 @@ export default async function preflight(): Promise<void> {
     );
   }
 
-  const client = new VpayClient({
-    baseUrl: env.baseUrl,
-    clientId: env.clientId,
-    privateKey: env.privateKey,
-  });
+  const client = new VpayClient(liveClientOptions(env));
   try {
     await client.events.list({ limit: 1 });
   } catch (cause) {

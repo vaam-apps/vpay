@@ -9,18 +9,39 @@ credential model and its own section below.
 
 ## `/v1` — the merchant API (Stripe-shaped object model, not Stripe-shaped auth)
 
-Authenticated with OAuth2 `client_credentials` + `private_key_jwt` (RFC 7523) — **not** an API key. Each merchant is a statically registered OAuth2
-client, configured directly in vpay's YAML config
-([ADR-0003](../adr/0003-yaml-configuration.md)), holding its own private
-key; vpay stores only the merchant's **public** JWK. There is no
-`sk_live_`/`sk_test_` key, no database-stored secret, and no other way to
-authenticate **this** surface — `/v1/browser` below is a deliberately
-different surface, for a different caller, with its own credential model; it
-is not a second way in through this one. See
-[ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md), which supersedes
-the scope-boundary paragraph of
+Every request and every answer is a **signed message** (COSE_Sign1,
+Ed25519) — **not** an API key, and not a token. Each merchant is a statically
+registered client, configured directly in vpay's YAML config
+([ADR-0003](../adr/0003-yaml-configuration.md)), holding its own private key;
+vpay stores only the merchant's **public** key (`cose_keys`). There is no
+`sk_live_`/`sk_test_` key, no database-stored secret, no access token, no
+refresh token, and no other way to authenticate **this** surface —
+`/v1/browser` below is a deliberately different surface, for a different
+caller, with its own credential model; it is not a second way in through this
+one. The mechanism, what a signature binds and how the SDKs seal is
+[../flows/signed-transport.md](../flows/signed-transport.md); the decision is
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md), which supersedes
+[ADR-0010](../adr/0010-merchant-auth-private-key-jwt.md) for `/v1` (ADR-0010
+had superseded the scope-boundary paragraph of
 [ADR-0009](../adr/0009-dashboard-oidc-provider.md) that had kept `/v1` on
-Stripe-shaped API keys.
+Stripe-shaped API keys).
+
+**The body is a COSE message in both directions, even for a `GET`.** The
+request carries the sealed bytes as its body (a `GET` has a body, because the
+signature has to travel somewhere and `Authorization` is not read); a success
+or an error from a handler comes back sealed under vpay's response key. The
+**Stripe-shaped** part is what is inside the seal: form-encoded request fields
+in, JSON out.
+
+**An unsigned request is not Stripe-shaped, on purpose.** Whatever the cause —
+no signature, a bearer token, an unknown key, a disabled client, a signature
+that does not verify for this audience, route, query or digest, a replay — the
+answer is the same coarse `401` with an unsigned body (`{"code":"UNAUTHORIZED"}`
+as JSON, or the same code in CBOR if the caller asked for a sealed answer). It
+is not the `{ "error": { … } }` envelope below, because the envelope is an
+answer to a request vpay has opened and understood, and an answer that names a
+cause is an oracle for the cause. A client that gets one learns that it was
+refused, and nothing else.
 
 Everything else about `/v1` is still Stripe-shaped: form-encoded bodies,
 Stripe's object model, Stripe's error envelope, Stripe's idempotency
@@ -37,36 +58,34 @@ category → status/type/code table is in
 public message and never contains hosts, tables, library text or
 credentials; the full chain goes to the server log.
 
-**Status: the OAuth2 endpoints are served, and so is `/v1/payment_intents`
-— up to the rail, which does not exist.** As of 2026-09-03, `vpay-server`
-serves three unauthenticated OP endpoints plus five authenticated
-payment-intent routes. The OP endpoints are unauthenticated by necessity,
-not omission: requiring a bearer token to obtain a bearer token is
-circular, and a client that has never spoken to vpay has to be able to find
-the token endpoint and the keys.
+**Status: `/v1` is signed (VP-3, 2026-10-26).** `vpay-server` applies
+cratestack's `EnvelopeLayer` (`Required`, `mount_prefix("/v1")`) to the `/v1`
+router before nesting it, so every operation of the contract is behind a
+signature. The OP is **not** behind it: `/v1/oauth/token`, `/v1/oauth/jwks.json`
+and the discovery document are nested beside the `/v1` router
+(`router.nest("/v1/oauth", …)`), are still served until VP-4 removes them, and
+need no signature to reach, which is the point of a token endpoint. Nothing a
+merchant integration does touches them, and a token they mint opens nothing: it
+is refused on `/v1` (see [../flows/merchant-auth.md](../flows/merchant-auth.md),
+which now describes a door that is closing).
 
-| Method | Path                                         | Auth | What it does                                                                                                                                                                   |
-| ------ | -------------------------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| POST   | `/v1/oauth/token`                            | none | `client_credentials` + `private_key_jwt` only. RFC 6749 error JSON; `invalid_client` is 401, every other error 400.                                                            |
-| GET    | `/v1/oauth/.well-known/openid-configuration` | none | Hand-built, so it advertises only what this deployment serves — no `/authorize`, no `/userinfo`, no device or refresh grant, `private_key_jwt` as the only client-auth method. |
-| GET    | `/v1/oauth/jwks.json`                        | none | Every publishable signing key (the active one plus any retired-but-unexpired key inside the rotation window), `Cache-Control: public, max-age=300`.                            |
+| What a `/v1` request is            | What it gets                                                                                   |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Signed, known key, first sight     | The handler's answer, sealed under the server key                                              |
+| Signed, a path no operation serves | A sealed `404 unknown_route` (it was verified before it was routed)                            |
+| Anything else, for any reason      | The coarse unsigned `401` above, byte for byte the same whatever the cause                     |
+| A foreign tenant's resource id     | The same sealed `404 resource_missing` as one that never existed                               |
+| A replay inside its window         | The coarse `401`; the handler did not run a second time                                        |
+| Bare `/v1`, `/v1//payment_intents` | Not an operation of the contract: the router's own `404`/`401`, not a signature check's result |
 
-The issuer is `{deployment.public_base_url}/v1/oauth` and is a deployment
-setting, not a per-client one. `GET /v1/oauth/token` — the right path with
-the wrong method — returns axum's bare `405` with an empty body rather than
-the Stripe envelope; the status is correct and a `method_not_allowed`
-renderer for the whole surface is the fix, not a special case here.
-
-**Every other `/v1` path requires a merchant access token.** An
-unauthenticated request gets `401`
-`authentication_error`/`missing_bearer_token`
-(`every_registered_v1_path_answers_401_without_a_token` walks the router's
-own route table, `vpay_api::v1::V1_ROUTES`, so a route cannot exist without
-being covered); an authenticated request to a path with no route gets `404
-unknown_route`. A token must also carry a scope: `payments:write` for any
-non-read method, `payments:read` **or** `payments:write` for `GET`/`HEAD`,
-else `403` `forbidden`
+A client's scopes are the registered key's: `payments:write` for any non-read
+method, `payments:read` **or** `payments:write` for `GET`/`HEAD`, else a sealed
+`403` `forbidden`
 (`a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not`).
+`every_route_refuses_an_unsigned_request_with_the_coarse_401`
+(`backends/tests/integration/tests/signed_transport.rs`) walks the router's own
+route table, `vpay_api::v1::V1_ROUTES`, so a route cannot exist without being
+covered.
 
 ### Served today
 
@@ -769,8 +788,7 @@ branch on. Recorded in `ApiError::IdempotencyKeyInFlight`'s own doc comment.
 ### Error codes a `/v1` caller can actually receive
 
 `invalid_request` (400), `idempotency_key_in_use` (400),
-`idempotency_key_in_flight` (400), `invalid_token` /`missing_bearer_token`
-/`malformed_authorization_header` (401), `forbidden` (403),
+`idempotency_key_in_flight` (400), `forbidden` (403),
 `resource_missing` (404), `unknown_route` (404), `invalid_state` (409),
 `resource_conflict` (409, a database uniqueness refusal),
 `charge_declined` (409), `checkout_session_expired` (409),
@@ -807,24 +825,29 @@ the `code` is what an SDK branches on, and a merchant must be able to tell
 ### Using the official Stripe SDKs
 
 A merchant with an existing Stripe integration can point `stripe-node` at
-vpay: build it with an empty key and a `config.authenticator` that performs
-the `private_key_jwt` handshake.
+vpay: build it with an empty key and the sealing `httpClient`, which signs each
+request and opens each answer on `stripe-node`'s behalf.
 
 ```js
 import Stripe from "stripe";
-import { createStripeAuthenticator } from "@vaam-apps/vpay-sdk/stripe";
+import { createStripeHttpClient } from "@vaam-apps/vpay-sdk/stripe";
 
 const stripe = new Stripe("", {
-  authenticator: createStripeAuthenticator({
+  httpClient: createStripeHttpClient({
     baseUrl: "https://api.vpay.example",
     clientId: "acme-cameroon",
-    privateKey: readFileSync("./merchant-key.pem", "utf8"),
+    privateKey: readFileSync("./merchant.seed", "utf8"),
+    serverKeys: { current: process.env.VPAY_SERVER_KEY_CURRENT, next: process.env.VPAY_SERVER_KEY_NEXT },
   }),
   host: "api.vpay.example",
   port: "443",
   protocol: "https",
 });
 ```
+
+An `authenticator` can no longer do this: the signature is the request body, so
+the thing that signs has to own the transport. The adapter and its limits are
+[../flows/stripe-sdk-compat.md](../flows/stripe-sdk-compat.md).
 
 Two response headers exist for those clients specifically. Every response
 carries the request id under **`request-id`** as well as `x-request-id`, with
@@ -930,22 +953,23 @@ See [../status.md](../status.md) for the tests behind each claim above and
 for the state of the evidence.
 
 **Client-side, two SDKs implement this surface** — [`sdks/rust`](../../sdks/rust)
-(`vpay-sdk`) and [`sdks/nodejs`](../../sdks/nodejs) (`@vaam-apps/vpay-sdk`). They do
-the `private_key_jwt` handshake, token caching, the form-encoded resource
-calls in the table below and webhook verification. The exact wire contract
-they implement, and the server must serve, is
-[../flows/merchant-auth.md](../flows/merchant-auth.md). They are tested
-against HTTP stubs of that contract and against the real Authkestra
-assertion verifier. Since 2026-09-02 the **Rust** SDK completes the whole
-handshake against a real `vpay_api::router` in
-`backends/tests/integration/tests/merchant_token_flow.rs`, and since
-2026-09-03 it also drives the five served payment-intent methods above
-against a real router and a real Postgres in
+(`vpay-sdk`) and [`sdks/nodejs`](../../sdks/nodejs) (`@vaam-apps/vpay-sdk`). They
+seal each call, open each answer, make the form-encoded resource calls in the
+table below and verify webhooks. The Node SDK does not reimplement the
+envelope: it calls the Rust sealing path compiled to WebAssembly
+(`sdks/rust/wasm`). The mechanism they implement, and the server serves, is
+[../flows/signed-transport.md](../flows/signed-transport.md); the resource
+contract is [../flows/merchant-auth/resource-contract.md](../flows/merchant-auth/resource-contract.md).
+Since VP-5 the Rust SDK drives the served payment-intent methods above
+against a real `vpay_api::router` and a real Postgres in
 `backends/tests/integration/tests/payment_intents.rs`, its
 `client.events().list()` against the same in
-`backends/tests/integration/tests/webhooks.rs`, and — since 2026-09-05 —
+`backends/tests/integration/tests/webhooks.rs`, and
 `client.refunds().retrieve()` in
-`backends/tests/integration/tests/refunds.rs`.
+`backends/tests/integration/tests/refunds.rs`; the other suites in that
+directory seal through `support::sealed::SealedHttp`, a second implementation
+built on cratestack's client and the vendored operation table, so no suite
+trusts the SDK to be its own verifier.
 
 ~~Two of its eight resource methods still have no route to call~~
 **— corrected 2026-09-05 by counting them, and re-counted 2026-09-06 on the
@@ -1057,7 +1081,7 @@ Authenticated with **OIDC sessions** (authorization code + PKCE), never a
 merchant credential of any kind. Called server-side from Next.js only.
 
 Keeping these separate from `/v1` is deliberate, even though both surfaces
-are OAuth2-shaped now: a merchant's `client_credentials` token authenticates
+are signed or session-bound now: a merchant's signing key authenticates
 a _backend service_ with standing payment authority over its own account,
 while a dashboard session authenticates a _human_, scoped to one read-only
 capability, for as long as they stay logged in. Conflating the two would let
@@ -1095,8 +1119,8 @@ A fourth authenticated surface, for a merchant's **agent**: MCP revision
 `2026-07-28` over Streamable HTTP, mounted only when `deployment.surfaces`
 names `mcp`. It takes a bearer token from vpay's own OP whose audience is
 `{public_base_url}/mcp/v1`; a merchant opts in by listing that in its
-`allowed_audiences`. A `vpay:v1` token is refused here, and an MCP token is
-refused on `/v1`.
+`allowed_audiences`. A `vpay:v1` token is refused here. On `/v1`, which is
+signed since VP-3, every bearer token is refused, an MCP token included.
 
 Each tool runs the `/v1` route it stands for. Which routes have a tool is
 [mcp-parity.md](mcp-parity.md), and `cargo xtask verify-mcp-parity` keeps that

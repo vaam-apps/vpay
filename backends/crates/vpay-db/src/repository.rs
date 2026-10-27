@@ -30,6 +30,7 @@ use crate::config_reconcile::ConfigReconcile;
 use crate::credentials::Credentials;
 use crate::customers::Customers;
 use crate::disabled_clients::DisabledClients;
+use crate::envelope_nonces::EnvelopeNonces;
 use crate::error::DbError;
 use crate::events::Events;
 use crate::health::Health;
@@ -1101,6 +1102,7 @@ pub trait Repositories:
     + Credentials
     + Customers
     + DisabledClients
+    + EnvelopeNonces
     + Events
     + Health
     + Idempotency

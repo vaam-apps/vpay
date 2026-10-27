@@ -5,11 +5,11 @@
  * example by hand.
  *
  * Runs outside the browser sandbox `cy.task` exists for exactly this reason
- * — the spec needs a MERCHANT credential (the `shop-merchant` OAuth keypair
- * `just gen-demo-keys` writes to `.e2e/`) to create the intent, and that
+ * — the spec needs a MERCHANT credential (the `shop-merchant` Ed25519
+ * signing seed `just gen-demo-keys` writes to `.e2e/`) to create the intent, and that
  * credential must never reach the page under test: the whole point of
  * `/v1/browser` is that a payer's browser holds only a publishable key and a
- * `client_secret`, never the merchant's private key
+ * `client_secret`, never the merchant's signing key
  * (`docs/flows/browser-checkout.md`).
  *
  * # Why `shop-merchant` and not `demo-merchant`
@@ -44,7 +44,7 @@ export interface MintedCheckout {
  * A `VpayClient` bound to `shop-merchant` — same tenant `/dash/v1` reads
  * (`demo_dashboard_merchant`, exp51) — built once so both {@link
  * mintCheckoutPaymentIntent} and {@link mintPaymentIntentsForPaging} read
- * the private key exactly the same way and fail with the same message if it
+ * the signing seed exactly the same way and fail with the same message if it
  * is missing.
  */
 function shopMerchantClient(): {
@@ -54,28 +54,44 @@ function shopMerchantClient(): {
 } {
   const baseUrl = process.env["VPAY_BASE_URL"] ?? "http://localhost:8080";
   const clientId = process.env["VPAY_MERCHANT_CLIENT_ID"] ?? "shop-merchant";
-  const privateKeyPath =
-    process.env["VPAY_MERCHANT_PRIVATE_KEY_PATH"] ??
-    join(repoRoot, ".e2e", "shop-merchant", "oauth-signing-key.pem");
+  const seedPath =
+    process.env["VPAY_MERCHANT_SIGNING_SEED_PATH"] ??
+    join(repoRoot, ".e2e", "shop-merchant", "signing.seed");
+  const serverKeyCurrentPath =
+    process.env["VPAY_SERVER_KEY_CURRENT_PATH"] ??
+    join(repoRoot, ".e2e", "envelope", "current.pub");
+  const serverKeyNextPath =
+    process.env["VPAY_SERVER_KEY_NEXT_PATH"] ??
+    join(repoRoot, ".e2e", "envelope", "next.pub");
   // Fixed literal `just gen-demo-keys` writes into `.e2e/application-demo.yml`
   // — see that recipe's own comment on why it is fixed rather than generated.
   const publishableKey =
     process.env["CHECKOUT_PUBLISHABLE_KEY"] ?? "pk_test_shopmerchantsandbox1";
 
-  let privateKeyPem: string;
-  try {
-    privateKeyPem = readFileSync(privateKeyPath, "utf8");
-  } catch (cause) {
-    throw new Error(
-      `checkout.cy.ts: cannot read the merchant private key at ${privateKeyPath}. ` +
-        `Run \`just gen-demo-keys\` (or \`just demo\`, which does it for you) before ` +
-        `running this spec, or set VPAY_MERCHANT_PRIVATE_KEY_PATH.`,
-      { cause },
-    );
-  }
+  const read = (path: string, what: string): string => {
+    try {
+      return readFileSync(path, "utf8").trim();
+    } catch (cause) {
+      throw new Error(
+        `checkout.cy.ts: cannot read ${what} at ${path}. ` +
+          `Run \`just gen-demo-keys\` (or \`just demo\`, which does it for you) before ` +
+          `running this spec, or set VPAY_MERCHANT_SIGNING_SEED_PATH, ` +
+          `VPAY_SERVER_KEY_CURRENT_PATH and VPAY_SERVER_KEY_NEXT_PATH.`,
+        { cause },
+      );
+    }
+  };
 
   return {
-    vpay: new VpayClient({ baseUrl, clientId, privateKey: privateKeyPem }),
+    vpay: new VpayClient({
+      baseUrl,
+      clientId,
+      privateKey: read(seedPath, "the merchant signing seed"),
+      serverKeys: {
+        current: read(serverKeyCurrentPath, "vpay's current response key"),
+        next: read(serverKeyNextPath, "vpay's next response key"),
+      },
+    }),
     publishableKey,
     baseUrl,
   };

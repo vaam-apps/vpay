@@ -45,7 +45,7 @@ of this process:
 | `GET /v1/browser/payment_intents/{id}`           | none                                                             | A payer's browser has no merchant credential. The payment intent's own `client_secret` is what authorises it — see `vpay_api::browser`.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `POST /v1/browser/payment_intents/{id}/confirm`  | none                                                             | The same.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | **anything else under `/v1/browser`**            | none                                                             | Its own `.fallback(not_found)`, for the OP nest's reason: without one the path would match `/v1/{*rest}` and answer 401 to a caller that can never hold a token.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| **everything else under `/v1`**                  | `AuthenticatedMerchant`                                          | The merchant API.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| **everything else under `/v1`**                  | a signed message (`EnvelopeLayer`), then `MerchantScope`         | The merchant API, since VP-3 ([vpay-api/envelope.md](vpay-api/envelope.md)). Not a bearer token: a token of any audience is refused.                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `GET /dash/v1/payment_intents`                   | `require_dashboard_token`                                        | The staff dashboard's payments list. Mounted **only** when `dashboard_client` is configured; otherwise the path falls through to the outer 404. See [the dashboard surface](vpay-api/dashboard-surface.md#the-dashboard-surface-dash).                                                                                                                                                                                                                                                                                                                                                           |
 | `GET /dash/v1/payment_intents/{id}`              | `require_dashboard_token`                                        | The payment detail: the intent, its charge, its refunds, its event timeline.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | **anything else under `/dash/v1`**               | `require_dashboard_token`                                        | Its own `.fallback(not_found)`, for the OP nest's reason — and every non-read method is refused by the boundary before the router matches.                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -118,27 +118,32 @@ has no shipping caller, so no refund a merchant creates today is ever marked
 settled, regardless of what the rail does. See [status.md](../status.md). The
 boundary is observable in three answers —
 
-- `GET /v1/payment_intents/pi_x` with no bearer token → **401**, the
-  `ApiError::Auth` envelope;
-- the same request with a valid merchant token, for an id this merchant has no
-  intent under → **404**, the `resource_missing` envelope;
-- `GET /v1/balance` with a valid token → **404**, the `unknown_route` envelope.
+- `GET /v1/payment_intents/pi_x` unsigned → **401**, the layer's coarse unsigned
+  body (not the Stripe envelope: it answers no request vpay has opened);
+- the same request signed by a registered merchant, for an id this merchant has
+  no intent under → a sealed **404**, the `resource_missing` envelope;
+- `GET /v1/balance` signed → a sealed **404**, the `unknown_route` envelope
+  (unsigned, it is the `401`; the table has no row for it, so a client cannot
+  even seal it).
 
 — which is exactly what a merchant integrating against this deployment should
 get. Inventing a `/v1/balance` so the third answer could be a `200` is the
 failure mode `CLAUDE.md` names first.
 
-The authentication layer is `require_merchant_token` via `from_fn_with_state`
-(Step 2's D3 — that function's docs say why it is not
-`from_extractor_with_state`), mounted with `Router::layer` on the nested router
-so that it wraps that router's fallback too. `route_layer` is the wrong tool and
-axum says so: it does not apply to a fallback by design, so an unmatched
-`/v1/...` path would answer an _unauthenticated_ 404 and tell an anonymous
-caller which `/v1` resources exist. When this nest had no routes at all, axum
-refused that spelling outright ("Adding a route_layer before any routes is a
-no-op"); now that it has routes, the swap would compile and be silently wrong,
-which is why the choice is written down rather than left to the compiler —
-`an_unauthenticated_v1_request_is_401_not_404` is what actually catches it.
+The authentication layer is the `EnvelopeLayer`, applied with `Router::layer` to
+the `/v1` router before it is nested, so that it wraps that router's fallback
+too ([vpay-api/envelope.md](vpay-api/envelope.md), "Placement"). `route_layer` is
+the wrong tool and axum says so: it does not apply to a fallback by design, so
+an unmatched `/v1/...` path would answer an _unauthenticated_ 404 and tell an
+anonymous caller which `/v1` resources exist. The layer treats a request that
+names no operation of the contract (`NotAnOp`: bare `/v1`, `/v1//x`, a path no
+row serves) as plain traffic and lets the router answer its honest 404; a
+request that does name one is refused with the coarse `401` unless it is signed.
+`every_route_refuses_an_unsigned_request_with_the_coarse_401`
+(`backends/tests/integration/tests/signed_transport.rs`) walks the route table
+and is what catches a route added outside the layer. Until VP-3 this paragraph
+described `require_merchant_token`, a bearer-token middleware mounted the same
+way for the same reason.
 
 A path under `/v1/oauth` that matches no OP route (say `/v1/oauth/authorize`,
 which vpay does not serve) answers an unauthenticated 404 — and does so from
@@ -224,6 +229,7 @@ Nothing was summarised away and no dated measurement or correction was dropped.
 | Surface                                             | Page                                                                                   |
 | --------------------------------------------------- | -------------------------------------------------------------------------------------- |
 | The merchant OP (`op/`)                             | [vpay-api/merchant-op.md](vpay-api/merchant-op.md)                                     |
+| The signed `/v1` transport (`envelope/`)            | [vpay-api/envelope.md](vpay-api/envelope.md)                                           |
 | Resource-server JWT validation (`resource_auth.rs`) | [vpay-api/resource-auth.md](vpay-api/resource-auth.md)                                 |
 | The dashboard surface (`dash/`)                     | [vpay-api/dashboard-surface.md](vpay-api/dashboard-surface.md)                         |
 | The JWKS cache (`jwks_cache.rs`)                    | [vpay-api/jwks-cache.md](vpay-api/jwks-cache.md)                                       |

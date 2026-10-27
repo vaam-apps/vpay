@@ -22,6 +22,7 @@ application's side of them.
 - [CrateStack](#cratestack) — a pointer to
   [vpay-db/cratestack.md](vpay-db/cratestack.md) and its four sibling pages
 - [Migration 0038: `rate_limit_windows`, and the one model with no `@@allow`](#migration-0038-rate_limit_windows-and-the-one-model-with-no-allow)
+- [Migration 0055: `envelope_nonces`, the replay cache of the signed `/v1`](#migration-0055-envelope_nonces-the-replay-cache-of-the-signed-v1)
 
 _This list was a full table of contents of a 3 330-line page until 2026-09-11.
 It had also been wrong since 2026-09-06: it offered "`providers` cannot be
@@ -333,3 +334,47 @@ adds, which is what bounds a table an attacker fills by choosing fresh keys.
 The key itself is the SHA-256 of `<action>:<dimension>:<value>`, so the value
 — an email address that, on the interesting attempts, has no account — is
 never written down.
+
+---
+
+## Migration 0055: `envelope_nonces`, the replay cache of the signed `/v1`
+
+VP-3 ([signed-transport.md](../flows/signed-transport.md)). cratestack's
+`EnvelopeLayer` records `(kid, cti)` once a request's signature has verified and
+refuses a second request with the same pair until `iat + 2·skew + 1`. The table
+is that record, shared by every replica and both Deployments (ADR-0022); the
+module is `envelope_nonces.rs` and its one consumer is
+`vpay_api::envelope::PgNonceStore`.
+
+The shape is `rate_limit_windows`' again, and for the same reason: **one model,
+no `@@allow` arm, and a statement written by hand.** `model EnvelopeNonce`
+declares the two columns (`id`, the key `cose:<hex kid>:<hex cti>` at most 64
+characters, and `expires_at`) so the schema and the migration agree on them, and
+nothing queries it through the generated layer —
+`the_envelope_nonce_model_answers_no_rows_to_every_action` pins the absence of a
+policy. Drift moved 212 → 214 changes in 29 relations for the CHECK and the
+index the model does not spell ([status/cratestack.md](../status/cratestack.md)).
+
+### The claim, and what each part is for
+
+```sql
+INSERT INTO envelope_nonces (id, expires_at) VALUES ($1, $2)
+ON CONFLICT (id) DO UPDATE SET expires_at = EXCLUDED.expires_at
+  WHERE envelope_nonces.expires_at < now()
+RETURNING id
+```
+
+| Fragment                                   | Deleting it                                                                                                                                                         |
+| ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| it being one statement (a `SELECT` first)  | two replicas opening one captured request at the same instant both observe "unseen"; `concurrent_claims_of_one_envelope_nonce_yield_exactly_one_unseen` measures it |
+| `ON CONFLICT (id) DO UPDATE`               | there is no row lock for the replicas to serialise on                                                                                                               |
+| `WHERE envelope_nonces.expires_at < now()` | a live nonce is overwritten and a replay is admitted (`..._does_not_renew_it`); also what lets an elapsed row be taken over rather than refused                     |
+| `RETURNING id`                             | the row coming back is the only signal that this was the first use                                                                                                  |
+
+`now()` is the database's clock (ADR-0026): `expires_at` is a fact computed from
+the request's `iat`, and when it elapses is the database's to say. The sweep,
+`delete_expired_envelope_nonces(retain)`, takes a duration and no instant for
+the same reason, and the worker runs it with `ENVELOPE_NONCE_RETENTION`, five minutes past a row's own expiry, on the same schedule as the `jti` sweep.
+Correctness does not depend on it: an elapsed row is taken over by the next
+claim that names it. A claim that cannot be answered is an `Err`, and the layer
+refuses the request on it.

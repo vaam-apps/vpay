@@ -36,7 +36,10 @@ pub use callbacks::{
     CallbackPlan, RailCheck, RailPass, Registration, handle_ensure_callbacks, run_pass,
 };
 pub use error::{Decision, JobError, tracing_level};
-pub use handlers::{Adapters, CLIENT_ASSERTION_JTI_RETENTION, RailConfigs, WebhookContext, handle};
+pub use handlers::{
+    Adapters, CLIENT_ASSERTION_JTI_RETENTION, ENVELOPE_NONCE_RETENTION, RailConfigs,
+    WebhookContext, handle,
+};
 pub use jobs::{DeliverWebhookPayload, JobKind, Outcome, PollChargePayload, ResubmitPayload};
 pub use recovery::{RecoveryAction, RecoveryPolicy, SubmitAttempt, recovery_step};
 pub use run_loop::{

@@ -66,14 +66,12 @@ use serde_json::Value;
 use sqlx::PgPool;
 use testcontainers::{ContainerAsync, GenericImage};
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{
-    CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost,
-};
+use vpay_config::{CheckoutConfig, Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_db::Repositories;
 use vpay_worker::{Adapters, RailConfigs, RecoveryPolicy};
 
 mod support;
+use support::sealed::SealedHttp;
 
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client_with_checkout,
@@ -146,7 +144,6 @@ struct Harness {
     repositories: Arc<dyn Repositories>,
     pool: PgPool,
     base_url: String,
-    signing_key: LoadedSigningKey,
     adapters: Arc<Adapters>,
     rails: Arc<RailConfigs>,
 }
@@ -154,28 +151,6 @@ struct Harness {
 impl Harness {
     fn url(&self, path: &str) -> String {
         format!("{}{path}", self.base_url)
-    }
-
-    /// A `/v1` bearer token for `client_id`, minted with the server's own
-    /// signer.
-    ///
-    /// Raw HTTP rather than `vpay-sdk` throughout this suite, unlike
-    /// `browser_checkout.rs`'s merchant half: the Rust SDK models no
-    /// `checkout.sessions` resource yet (that is lane 5's work), so there is
-    /// nothing of it to exercise here. Stated rather than left implicit —
-    /// this file proves the *server*, and lane 5's own tests prove the SDK
-    /// speaks to it.
-    fn bearer(&self, client_id: &str) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                std::collections::HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
     }
 
     async fn shutdown(self) {
@@ -345,7 +320,6 @@ async fn harness_with(
         repositories,
         pool,
         base_url: served.base_url,
-        signing_key: served.signing_key,
         adapters: Arc::new(support::adapters_by_code()),
         rails: Arc::new(rail_configs(&config)),
     })
@@ -363,6 +337,13 @@ fn browser() -> reqwest::Client {
         .expect("a plain reqwest client builds")
 }
 
+/// The merchant's own server: the same client, sealing each call as the
+/// merchant it names with `.signed_by(..)`.
+fn merchant() -> SealedHttp {
+    ensure_crypto_provider_installed();
+    SealedHttp::new()
+}
+
 /// `POST /v1/payment_intents` as merchant A's own server does it.
 async fn create_intent(h: &Harness) -> anyhow::Result<String> {
     create_intent_for(h, CLIENT_A).await
@@ -378,9 +359,9 @@ async fn create_intent_for(h: &Harness, client_id: &str) -> anyhow::Result<Strin
     // which `vpay_api::form` reads as a scalar field named
     // `payment_method_types[0]` rather than as the first element of a list.
     // Every value here is URL-safe by construction.
-    let body: Value = browser()
+    let body: Value = SealedHttp::new()
         .post(h.url("/v1/payment_intents"))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!(
@@ -402,9 +383,9 @@ async fn create_intent_for(h: &Harness, client_id: &str) -> anyhow::Result<Strin
 /// one case that confirms an intent **no session was ever created for** — the
 /// only place a browser credential does not come out of a session read.
 async fn create_intent_with_secret(h: &Harness) -> anyhow::Result<(String, String)> {
-    let body: Value = browser()
+    let body: Value = SealedHttp::new()
         .post(h.url("/v1/payment_intents"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!(
@@ -425,9 +406,9 @@ async fn create_session(
     client_id: &str,
     fields: &[(&str, &str)],
 ) -> anyhow::Result<(u16, Value)> {
-    let response = browser()
+    let response = SealedHttp::new()
         .post(h.url("/v1/checkout/sessions"))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .form(fields)
         .send()
@@ -584,9 +565,9 @@ async fn merchant_confirm(
     intent_id: &str,
     idempotency_key: &str,
 ) -> anyhow::Result<(u16, Value)> {
-    let response = browser()
+    let response = SealedHttp::new()
         .post(h.url(&format!("/v1/payment_intents/{intent_id}/confirm")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("idempotency-key", idempotency_key)
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!(
@@ -604,9 +585,9 @@ async fn merchant_confirm(
 /// `GET /v1/payment_intents/{id}` through the shipping router, as the
 /// merchant that owns it.
 async fn retrieve_intent(h: &Harness, intent_id: &str) -> anyhow::Result<(u16, Value)> {
-    let response = browser()
+    let response = SealedHttp::new()
         .get(h.url(&format!("/v1/payment_intents/{intent_id}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("retrieving a payment intent")?;
@@ -666,9 +647,9 @@ async fn stored_session_stamp(
 
 /// `POST /v1/checkout/sessions/{id}/expire` as the merchant's own server.
 async fn expire_session(h: &Harness, id: &str) -> anyhow::Result<(u16, Value)> {
-    let response = browser()
+    let response = SealedHttp::new()
         .post(h.url(&format!("/v1/checkout/sessions/{id}/expire")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body("")
@@ -795,9 +776,9 @@ async fn a_hosted_session_answers_a_url_whose_secret_is_in_the_fragment() -> any
 
     // `retrieve` recovers both, so a merchant who lost the create response
     // does not have to create a second session.
-    let retrieved: Value = browser()
+    let retrieved: Value = SealedHttp::new()
         .get(h.url(&format!("/v1/checkout/sessions/{}", session.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await?
         .json()
@@ -813,9 +794,9 @@ async fn a_hosted_session_answers_a_url_whose_secret_is_in_the_fragment() -> any
     assert_eq!(field(&retrieved, "success_url")?, SUCCESS_URL);
 
     // The list carries neither the credential nor the url that carries it.
-    let listed: Value = browser()
+    let listed: Value = SealedHttp::new()
         .get(h.url("/v1/checkout/sessions"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await?
         .json()
@@ -843,9 +824,9 @@ async fn a_hosted_session_answers_a_url_whose_secret_is_in_the_fragment() -> any
     );
 
     // …and the `payment_intent` filter narrows it.
-    let filtered: Value = browser()
+    let filtered: Value = SealedHttp::new()
         .get(h.url("/v1/checkout/sessions"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .query(&[("payment_intent", session.intent_id.as_str())])
         .send()
         .await?
@@ -1183,9 +1164,9 @@ async fn every_url_rule_is_enforced_at_create_and_names_its_parameter() -> anyho
     // And a `POST` with no `Idempotency-Key` is refused before any of it —
     // D7 applies to this resource exactly as to every other `/v1` POST.
     let intent_id = create_intent(&h).await?;
-    let response = browser()
+    let response = SealedHttp::new()
         .post(h.url("/v1/checkout/sessions"))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .form(&[
             ("payment_intent", intent_id.as_str()),
             ("success_url", SUCCESS_URL),
@@ -1503,9 +1484,9 @@ async fn a_tenant_with_no_publishable_key_cannot_have_a_checkout_link_built() ->
     // Merchant B creates its own intent, so the refusal is about the key and
     // not about tenancy.
     let amount = AMOUNT.to_string();
-    let body: Value = browser()
+    let body: Value = SealedHttp::new()
         .post(h.url("/v1/payment_intents"))
-        .bearer_auth(h.bearer(CLIENT_B))
+        .signed_by(CLIENT_B)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!(
@@ -1701,11 +1682,10 @@ async fn expiring_a_session_is_a_compare_and_swap_and_a_live_charge_refuses_it()
 
     let expire = |id: String| {
         let url = h.url(&format!("/v1/checkout/sessions/{id}/expire"));
-        let token = h.bearer(CLIENT_A);
         async move {
-            let response = browser()
+            let response = merchant()
                 .post(url)
-                .bearer_auth(token)
+                .signed_by(CLIENT_A)
                 .header("idempotency-key", uuid::Uuid::new_v4().to_string())
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body("")
@@ -1744,9 +1724,9 @@ async fn expiring_a_session_is_a_compare_and_swap_and_a_live_charge_refuses_it()
     // Another merchant's session is the 404, not the 409 — the tenancy
     // property, on the write path.
     let session_b = hosted_session(&h).await?;
-    let response = browser()
+    let response = SealedHttp::new()
         .post(h.url(&format!("/v1/checkout/sessions/{}/expire", session_b.id)))
-        .bearer_auth(h.bearer(CLIENT_B))
+        .signed_by(CLIENT_B)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body("")
@@ -1862,9 +1842,9 @@ async fn an_intent_may_have_only_one_open_session() -> anyhow::Result<()> {
 
     // And once the first is expired, a second is allowed — the index is
     // partial on purpose.
-    browser()
+    merchant()
         .post(h.url(&format!("/v1/checkout/sessions/{}/expire", session.id)))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body("")
@@ -2533,9 +2513,9 @@ async fn delivery_job_keys(pool: &PgPool) -> anyhow::Result<Vec<String>> {
 
 /// `GET /v1/events` for a tenant, through the shipping router.
 async fn list_events(h: &Harness, client_id: &str) -> anyhow::Result<(u16, Value)> {
-    let response = browser()
+    let response = merchant()
         .get(h.url("/v1/events"))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .send()
         .await
         .context("listing events")?;
@@ -2546,9 +2526,9 @@ async fn list_events(h: &Harness, client_id: &str) -> anyhow::Result<(u16, Value
 
 /// `GET /v1/events/{id}` for a tenant, through the shipping router.
 async fn retrieve_event(h: &Harness, client_id: &str, id: &str) -> anyhow::Result<(u16, Value)> {
-    let response = browser()
+    let response = merchant()
         .get(h.url(&format!("/v1/events/{id}")))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .send()
         .await
         .context("retrieving an event")?;
@@ -3650,9 +3630,9 @@ async fn a_second_session_after_an_expiry_makes_the_intent_payable_again() -> an
 /// `POST /v1/customers` as `client_id`'s own server does it, answering the
 /// `cus_…`.
 async fn create_customer_for(h: &Harness, client_id: &str, name: &str) -> anyhow::Result<String> {
-    let body: Value = browser()
+    let body: Value = merchant()
         .post(h.url("/v1/customers"))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .form(&[("name", name)])
         .send()
@@ -3671,9 +3651,9 @@ async fn create_intent_with_customer(
     customer: Option<&str>,
 ) -> anyhow::Result<String> {
     let customer = customer.map_or_else(String::new, |id| format!("&customer={id}"));
-    let body: Value = browser()
+    let body: Value = merchant()
         .post(h.url("/v1/payment_intents"))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!(
@@ -3712,9 +3692,9 @@ async fn session_on(
 /// A raw `GET` as `client_id`: the status and the body **as bytes**, because
 /// the oracle and refusal comparisons below are byte comparisons.
 async fn get_raw(h: &Harness, client_id: &str, path: &str) -> anyhow::Result<(u16, String)> {
-    let response = browser()
+    let response = merchant()
         .get(h.url(path))
-        .bearer_auth(h.bearer(client_id))
+        .signed_by(client_id)
         .send()
         .await
         .with_context(|| format!("GET {path}"))?;
@@ -3941,9 +3921,9 @@ async fn the_customer_filter_reads_the_sessions_own_customer_and_is_not_an_oracl
     // ERASED (migration 0041). X is referenced by intents and sessions, so the
     // delete anonymises rather than removes it, and the id — and every
     // session naming it — stays.
-    let response = browser()
+    let response = merchant()
         .delete(h.url(&format!("/v1/customers/{x}")))
-        .bearer_auth(h.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .header("idempotency-key", uuid::Uuid::new_v4().to_string())
         .send()
         .await

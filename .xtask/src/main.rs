@@ -119,6 +119,9 @@
 //!
 //! * `gen-signing-key`  — generates the RS256 key the OP signs with, offline,
 //!   for an operator to load into a Kubernetes Secret.
+//! * `gen-envelope-key` — generates an Ed25519 seed for the signed `/v1`
+//!   transport (a merchant's signing key, or one of the server's two response
+//!   keys) and writes its public half beside it.
 //!
 //! # Dependencies
 //!
@@ -198,6 +201,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         "gen-signing-key" => gen_signing_key(&args),
+        "gen-envelope-key" => gen_envelope_key(&args),
         "help" | "--help" | "-h" => {
             println!(
                 "usage: cargo xtask \
@@ -207,7 +211,8 @@ fn main() -> ExitCode {
                  |verify-privacy-inventory|verify-security-inventory|verify-doc-counts|verify-mcp-parity|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
-                 \x20      cargo xtask gen-signing-key --out <dir>"
+                 \x20      cargo xtask gen-signing-key --out <dir>\n\
+                 \x20      cargo xtask gen-envelope-key --out <dir> --name <stem> [--world-readable]"
             );
             Ok(())
         }
@@ -5381,6 +5386,11 @@ const TOOLCHAIN_FILE: &str = "rust-toolchain.toml";
 /// build context exists.
 const TOOLCHAIN_IMAGE_FILE: &str = "backends/Dockerfile";
 
+/// The other Dockerfiles that compile Rust, held to the same pin. The shop's
+/// `sealer` stage builds `sdks/rust/wasm` (the Node SDK's signing module), and a
+/// second compiler for the same bytes is the drift this gate exists for.
+const TOOLCHAIN_OTHER_IMAGE_FILES: [&str; 1] = ["examples/shop/Dockerfile"];
+
 /// The directory where migration files are stored.
 const MIGRATIONS_DIR: &str = "backends/migrations";
 
@@ -5449,25 +5459,26 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
         )
     })?;
 
-    let dockerfile = fs::read_to_string(root.join(TOOLCHAIN_IMAGE_FILE))
-        .map_err(|e| format!("{TOOLCHAIN_IMAGE_FILE}: {e}"))?;
-    let images = rust_from_instructions(&dockerfile);
-    if images.is_empty() {
-        return Err(format!(
-            "{TOOLCHAIN_IMAGE_FILE}: no `FROM rust:<version>-...` instruction. This check exists to keep that line and {TOOLCHAIN_FILE}'s `channel` identical; with no such line it checks nothing, which is worse than not existing. If the builder image is no longer a `rust:` image, rewrite this check for whatever names the compiler now"
-        ));
-    }
-
     let mut problems = Vec::new();
     let mut agreed = Vec::new();
-    for (line_no, tag) in &images {
-        let version = tag.split('-').next().unwrap_or(tag);
-        if version == channel {
-            agreed.push(format!("rust:{tag}"));
-        } else {
-            problems.push(format!(
-                "{TOOLCHAIN_IMAGE_FILE}:{line_no}: `FROM rust:{tag}` builds with {version}, but {TOOLCHAIN_FILE} pins `channel = \"{channel}\"` — every Rust job in CI reads that file, so this image would be the one thing in the repository compiled by a different compiler"
+    let files = std::iter::once(TOOLCHAIN_IMAGE_FILE).chain(TOOLCHAIN_OTHER_IMAGE_FILES);
+    for file in files {
+        let dockerfile = fs::read_to_string(root.join(file)).map_err(|e| format!("{file}: {e}"))?;
+        let images = rust_from_instructions(&dockerfile);
+        if images.is_empty() {
+            return Err(format!(
+                "{file}: no `FROM rust:<version>-...` instruction. This check exists to keep that line and {TOOLCHAIN_FILE}'s `channel` identical; with no such line it checks nothing, which is worse than not existing. If the builder image is no longer a `rust:` image, rewrite this check for whatever names the compiler now"
             ));
+        }
+        for (line_no, tag) in &images {
+            let version = tag.split('-').next().unwrap_or(tag);
+            if version == channel {
+                agreed.push(format!("{file}: rust:{tag}"));
+            } else {
+                problems.push(format!(
+                    "{file}:{line_no}: `FROM rust:{tag}` builds with {version}, but {TOOLCHAIN_FILE} pins `channel = \"{channel}\"` — every Rust job in CI reads that file, so this image would be the one thing in the repository compiled by a different compiler"
+                ));
+            }
         }
     }
     if !problems.is_empty() {
@@ -5479,8 +5490,9 @@ fn verify_toolchain(root: &Path) -> Result<(), String> {
     }
 
     println!(
-        "verify-toolchain: ok — {TOOLCHAIN_FILE} pins {channel} and all {} `FROM rust:` instruction(s) in {TOOLCHAIN_IMAGE_FILE} name it ({})",
+        "verify-toolchain: ok — {TOOLCHAIN_FILE} pins {channel} and all {} `FROM rust:` instruction(s) in {} Dockerfile(s) name it ({})",
         agreed.len(),
+        1 + TOOLCHAIN_OTHER_IMAGE_FILES.len(),
         agreed.join(", ")
     );
     Ok(())
@@ -12226,6 +12238,103 @@ fn generate_signing_key(out_dir: &Path) -> Result<GeneratedSigningKey, String> {
     })
 }
 
+// ---------------------------------------------------------------------------
+// gen-envelope-key
+// ---------------------------------------------------------------------------
+
+/// `cargo xtask gen-envelope-key --out <dir> --name <stem> [--world-readable]`
+/// — writes `<stem>.seed` (32 random bytes, unpadded base64url, one line) and
+/// `<stem>.pub` (the matching Ed25519 public key in the same encoding) under
+/// `<dir>`, and prints the public half.
+///
+/// The seed is what `--envelope-signing-key-file` /
+/// `VPAY_ENVELOPE_SIGNING_KEY_FILE` (the server's response keys) and
+/// `vpay_sdk::Credentials::ed25519_seed_base64url` (a merchant's signing key)
+/// read; the public half is what a merchant's `cose_keys` entry holds and what
+/// a client pins as a server key. `.e2e/` and the chart's `ci/` values use
+/// this for throwaway keys; a real deployment generates its own the same way
+/// and keeps the seed in a Secret.
+///
+/// `--world-readable` writes mode 0644 instead of 0600, for exactly one case:
+/// the compose e2e stack bind-mounts the files into a `FROM scratch` container
+/// running as UID 65532. Never use it for a key that matters.
+fn gen_envelope_key(args: &[String]) -> Result<(), String> {
+    let out = flag_value(args, "--out")
+        .ok_or_else(|| "gen-envelope-key needs --out <dir>".to_string())?;
+    let name = flag_value(args, "--name")
+        .ok_or_else(|| "gen-envelope-key needs --name <stem>".to_string())?;
+    let world_readable = args.iter().any(|arg| arg == "--world-readable");
+
+    let public = generate_envelope_key(Path::new(&out), &name, world_readable)?;
+    println!("wrote {out}/{name}.seed (Ed25519 seed, unpadded base64url) and {out}/{name}.pub");
+    println!("public key: {public}");
+    Ok(())
+}
+
+/// The half of [`gen_envelope_key`] with no printing in it. Refuses to
+/// overwrite either file, for [`generate_signing_key`]'s reason: a clobbered
+/// signing key is unrecoverable, and the check-then-write version has a window.
+fn generate_envelope_key(
+    out_dir: &Path,
+    name: &str,
+    world_readable: bool,
+) -> Result<String, String> {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+    if name.is_empty() || name.contains(['/', '\\']) || name.starts_with('.') {
+        return Err(format!("--name {name:?} must be a plain file stem"));
+    }
+    fs::create_dir_all(out_dir).map_err(|e| format!("cannot create {}: {e}", out_dir.display()))?;
+
+    let seed: [u8; 32] = rand::random();
+    let signer = cratestack_cose::Ed25519Signer::from_seed(&seed);
+    let public = signer
+        .verify_key()
+        .ed25519_bytes()
+        .map(|bytes| URL_SAFE_NO_PAD.encode(bytes))
+        .ok_or_else(|| "an Ed25519 signer has an Ed25519 public key".to_string())?;
+
+    let write_new = |path: PathBuf, contents: &str, mode: u32| -> Result<(), String> {
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt as _;
+            options.mode(mode);
+        }
+        #[cfg(not(unix))]
+        let _ = mode;
+        let mut file = options.open(&path).map_err(|e| {
+            if e.kind() == std::io::ErrorKind::AlreadyExists {
+                format!(
+                    "{} already exists; refusing to overwrite a key. Move it aside first if you \
+                     really mean to replace it.",
+                    path.display()
+                )
+            } else {
+                format!("cannot write {}: {e}", path.display())
+            }
+        })?;
+        io::Write::write_all(&mut file, contents.as_bytes())
+            .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    };
+
+    // The public half first: if it already exists, no seed has been written
+    // that this run would then be unable to pair with it.
+    write_new(
+        out_dir.join(format!("{name}.pub")),
+        &format!("{public}\n"),
+        0o644,
+    )?;
+    write_new(
+        out_dir.join(format!("{name}.seed")),
+        &format!("{}\n", URL_SAFE_NO_PAD.encode(seed)),
+        if world_readable { 0o644 } else { 0o600 },
+    )?;
+    Ok(public)
+}
+
 /// The RFC 7638 §3 JWK thumbprint of an RSA public key: SHA-256 over
 /// `{"e":..,"kty":"RSA","n":..}` — those three members only, no whitespace,
 /// lexicographic order — base64url encoded without padding.
@@ -12410,6 +12519,78 @@ mod signing_key_tests {
             "expected mode 0600, found {:o}",
             mode & 0o777
         );
+    }
+
+    /// The envelope key round trip: the seed on disk is the 32 bytes the
+    /// server and the SDK read, and the `.pub` beside it is the Ed25519 public
+    /// key *they* derive from it — so a `cose_keys` entry copied from the file
+    /// is the key the matching seed signs with.
+    #[test]
+    fn an_envelope_key_pair_on_disk_is_one_ed25519_key() {
+        use base64::Engine as _;
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+
+        let dir = TempDir::new("envelope");
+        let printed = generate_envelope_key(&dir.0, "merchant", false).expect("generates");
+
+        let seed_text = fs::read_to_string(dir.0.join("merchant.seed")).expect("seed file");
+        let seed: [u8; 32] = URL_SAFE_NO_PAD
+            .decode(seed_text.trim())
+            .expect("unpadded base64url")
+            .try_into()
+            .expect("32 bytes");
+        let derived = cratestack_cose::Ed25519Signer::from_seed(&seed)
+            .verify_key()
+            .ed25519_bytes()
+            .expect("an Ed25519 key");
+        assert_eq!(URL_SAFE_NO_PAD.encode(derived), printed);
+        assert_eq!(
+            fs::read_to_string(dir.0.join("merchant.pub"))
+                .expect("pub file")
+                .trim(),
+            printed
+        );
+        assert_eq!(seed_text.matches('\n').count(), 1, "one line, one newline");
+    }
+
+    #[test]
+    fn an_envelope_key_is_never_overwritten_and_its_name_is_a_stem() {
+        let dir = TempDir::new("envelope-no-clobber");
+        generate_envelope_key(&dir.0, "k", false).expect("first");
+        let seed = fs::read_to_string(dir.0.join("k.seed")).expect("seed");
+
+        let error = generate_envelope_key(&dir.0, "k", false).expect_err("second refuses");
+        assert!(error.contains("refusing to overwrite"), "{error}");
+        assert_eq!(
+            fs::read_to_string(dir.0.join("k.seed")).expect("seed"),
+            seed
+        );
+
+        for bad in ["", "../x", "a/b", ".hidden"] {
+            assert!(
+                generate_envelope_key(&dir.0, bad, false).is_err(),
+                "{bad:?}"
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_envelope_seed_is_private_unless_the_e2e_stack_asks_otherwise() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let dir = TempDir::new("envelope-mode");
+        generate_envelope_key(&dir.0, "private", false).expect("generates");
+        generate_envelope_key(&dir.0, "shared", true).expect("generates");
+        let mode = |name: &str| {
+            fs::metadata(dir.0.join(name))
+                .expect("exists")
+                .permissions()
+                .mode()
+                & 0o777
+        };
+        assert_eq!(mode("private.seed"), 0o600);
+        assert_eq!(mode("shared.seed"), 0o644);
+        assert_eq!(mode("private.pub"), 0o644);
     }
 
     #[test]
@@ -13814,7 +13995,7 @@ mod sdk_parity_tests {
     }
 
     /// A test name containing a backtick is written with a double-backtick
-    /// span; `stripe-auth.test.ts` really does carry one.
+    /// span; the Node SDK's live tests really do carry one.
     #[test]
     fn a_test_name_carrying_a_backtick_is_readable_from_a_double_backtick_span() {
         let dir = synthetic_sdks("parity-backtick");
@@ -15512,7 +15693,7 @@ mod npm_scope_tests {
     /// `main` pointing at nothing. Measured on 2026-09-05 against the tree
     /// this gate was added to: with `sdks/nodejs/dist` removed, `pnpm pack`
     /// produced 14 934 bytes containing `LICENSE`, `package.json`,
-    /// `README.md` and `scripts/mint-assertion.mjs` — no JavaScript at all.
+    /// `README.md` and one script — no JavaScript at all.
     #[test]
     fn a_publishable_package_without_a_prepack_build_fails() {
         let manifest = publishable(|m| m.replace(",\n    \"prepack\": \"pnpm run build\"", ""));
@@ -16485,6 +16666,14 @@ mod toolchain_tests {
         .expect("the toolchain file is writable");
         fs::write(dir.path().join(TOOLCHAIN_IMAGE_FILE), dockerfile)
             .expect("the Dockerfile is writable");
+        for other in TOOLCHAIN_OTHER_IMAGE_FILES {
+            let path = dir.path().join(other);
+            fs::create_dir_all(path.parent().expect("a file has a parent"))
+                .expect("its directory is creatable");
+            // The same text, so a case about `backends/Dockerfile` is not
+            // also a case about the shop's.
+            fs::write(path, dockerfile).expect("the other Dockerfile is writable");
+        }
         dir
     }
 
@@ -16497,6 +16686,22 @@ FROM chef AS planner
 FROM chef AS builder
 FROM scratch AS server
 ";
+
+    /// The shop's `sealer` stage is held to the pin too: `backends/Dockerfile`
+    /// agreeing is not enough.
+    #[test]
+    fn a_second_dockerfile_on_another_compiler_fails_naming_it() {
+        let dir = tree("channel = \"1.98.0\"", FOUR_STAGES);
+        fs::write(
+            dir.path().join(TOOLCHAIN_OTHER_IMAGE_FILES[0]),
+            "FROM rust:1.97.0-alpine3.22 AS sealer\n",
+        )
+        .expect("the other Dockerfile is writable");
+        let error =
+            verify_toolchain(dir.path()).expect_err("the shop image is a different compiler");
+        assert!(error.contains(TOOLCHAIN_OTHER_IMAGE_FILES[0]), "{error}");
+        assert!(error.contains("1.97.0"), "{error}");
+    }
 
     #[test]
     fn a_dockerfile_naming_the_pinned_compiler_passes() {

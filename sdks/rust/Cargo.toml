@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Merchant SDK for vpay's /v1 API (client_credentials + private_key_jwt)"
+description = "Merchant SDK for vpay's /v1 API (signed transport: COSE_Sign1 under an Ed25519 key)"
 # The wire contract this crate implements (docs/flows/merchant-auth.md) has no
 # server to talk to yet — vpay-server serves only /healthz (see docs/status.md).
 # Publishing a client for an API nobody can reach would be actively
@@ -56,13 +56,20 @@ hmac.workspace = true
 sha2.workspace = true
 subtle.workspace = true
 tracing.workspace = true
-# `authkestra-op`'s own verifier derives the assertion's permitted algorithm
-# set from the *key* (never the header) and only ever accepts RSA/EC/EdDSA —
-# never HMAC — so `rust_crypto` (pure-Rust RSA/EC/EdDSA, no `ring`/`aws-lc-rs`
-# in the signing path) is both sufficient and the same backend `vpay-api`
-# already pins for the verifying side (see its Cargo.toml comment). Default
-# features stay on for `use_pem`, needed by `EncodingKey::from_rsa_pem`.
-jsonwebtoken = { version = "11", features = ["rust_crypto"] }
+# The signed transport (VP-5). `ClientEnvelope::seal_call` seals one call
+# (method, route, params, query, contract digest, payload, `Idempotency-Key`)
+# and `PendingResponse::open` verifies the answer against the pinned server
+# keys; this crate sends the bytes with its own `reqwest`, so nothing in
+# cratestack's HTTP stack is used. `cose` is the only feature taken, and
+# `default-features = false` drops `codec-json` and `decimal-rust-decimal`,
+# which a bare `/v1` caller has no use for (the facade the server takes does the
+# same). It replaces `jsonwebtoken`, and with it the whole `private_key_jwt`
+# path.
+cratestack-client-rust.workspace = true
+# `CratestackError`, the type an external signer callback returns.
+cratestack-core.workspace = true
+# Credentials and pinned keys are unpadded base64url, as in `cose_keys`.
+base64 = "0.22"
 # Hex encoding and decoding for the webhook signature comparison
 # (`Vpay-Signature: …,v1=<hex>`): the candidate is decoded to bytes before the
 # constant-time compare, so a same-length mismatch takes the same time
@@ -76,7 +83,7 @@ hex = "0.4"
 # module doc says why byte-parity with `sdks/nodejs` is the requirement.
 
 [dev-dependencies]
-tokio = { workspace = true, features = ["test-util", "macros"] }
+tokio = { workspace = true, features = ["test-util", "macros", "net", "io-util"] }
 # Dev-only, for `tests/tls.rs`: asserts that no process-wide `CryptoProvider`
 # is installed — the precondition under which reqwest 0.13's own client
 # builder would panic, and the one this crate's preconfigured `ClientConfig`
@@ -84,20 +91,16 @@ tokio = { workspace = true, features = ["test-util", "macros"] }
 # say the tests read it too.
 rustls.workspace = true
 wiremock.workspace = true
-# Dev-only: generates the RSA keypair the OP-conformance test signs with and
-# derives its public JWK from — never used by shipping SDK code, which only
-# ever *consumes* a merchant-supplied PEM (`Credentials::rsa_pem`).
-rsa = "0.9"
-base64 = "0.22"
-# Dev-only: the CSPRNG `rsa`'s key generation draws from. Same pin and same
-# role as `vpay-api`'s own test keypair helper.
+# Dev-only: the CSPRNG the test keys are drawn from — a generated seed per test
+# process, never a canned one, so a signing bug cannot hide behind a fixture
+# both sides read.
 rand.workspace = true
-# The real Authkestra OP verifier: proves the assertion this crate mints is
-# actually accepted by `authkestra_op::client_assertion::verify_client_assertion`
-# at the pinned version, not merely "looks right by inspection". Dev-only —
-# see docs/flows/merchant-auth.md's Status section for exactly what this does
-# and does not prove.
-authkestra-op.workspace = true
+axum.workspace = true
+# Dev-only: the server half of the signed transport, for the test front in
+# `tests/support/front.rs` — the real `EnvelopeLayer` in front of a `wiremock`
+# upstream, so the SDK is exercised against cratestack's own verifier and not
+# against a copy of its sealing code.
+cratestack-axum.workspace = true
 
 # The live suite, off by default. `just sdk-live` (and CI's `e2e` job) turn it
 # on; nothing else compiles it, so `just verify-ignored`'s test-binary count is

@@ -2324,6 +2324,28 @@ model RateLimitWindow {
   updated_at DateTime
 }
 
+// --- signed transport (VP-3) -----------------------------------------------
+
+// `envelope_nonces` (migration 0055) — the replay cache of the `/v1`
+// `EnvelopeLayer`: one row per `(kid, cti)` a verified merchant request has used.
+//
+// NO `@@allow` ARM, for `RateLimitWindow`'s reason and one more. The statement
+// has no builder (`INSERT … ON CONFLICT (id) DO UPDATE … WHERE expires_at < now()
+// RETURNING id` — a conflict arm with a predicate is not something a generated
+// `Create…Input` renders), and the rows decide whether a captured request is
+// accepted a second time, so a standing permission over them is worse than none.
+// The model is here so the drift report compares the table.
+// `vpay_db::envelope_nonces::tests::the_envelope_nonce_model_answers_no_rows_to_every_action`
+// pins the arms' absence.
+model EnvelopeNonce {
+  // cratestack's nonce key, `cose:<hex kid>:<hex cti>`: at most 5 + 16 + 1 + 32
+  // characters for an 8-byte kid and a 16-byte cti. The migration states the
+  // bound as a CHECK; this states it as a length, `RateLimitWindow.id`'s split.
+  id String @id @length(min: 1, max: 64)
+  // NO `@default`, 0034's rule: the writer names it.
+  expires_at DateTime
+}
+
 // --- procedures ----------------------------------------------------------
 
 // THE FIRST `procedure` IN THIS FILE (2026-09-11). Everything above is a

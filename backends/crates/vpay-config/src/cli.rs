@@ -311,6 +311,43 @@ pub struct ServerArgs {
     #[arg(long, env = "VPAY_OAUTH_SIGNING_KEY_FILE")]
     pub oauth_signing_key_file: Option<PathBuf>,
 
+    /// Path to the file holding the Ed25519 seed this process seals `/v1`
+    /// responses with (VP-3): 32 bytes, as unpadded base64url text on one
+    /// line, a trailing newline allowed.
+    ///
+    /// Every `/v1` request is a COSE_Sign1 message from a registered merchant
+    /// key and every answer is one from this key, which a merchant pins
+    /// (`{current, next}`) so a response from anyone else is refused. It is
+    /// the transport's own identity and has nothing to do with
+    /// [`Self::oauth_signing_key_file`]'s RS256 key, which mints the tokens
+    /// `/v1` no longer reads and goes with the OP in VP-4.
+    ///
+    /// Required wherever `/v1` is mounted (`deployment.surfaces` includes
+    /// `business`); `vpay_api::envelope::EnvelopeKeys::from_files` refuses its
+    /// absence, an unreadable or malformed file, and a file that holds the
+    /// same seed as [`Self::envelope_signing_key_next_file`], all at boot and
+    /// all `78`. A management-only process mounts no `/v1` and reads neither.
+    ///
+    /// Serve-only and not `global`, exactly as the OAuth key is: the worker
+    /// seals nothing, and `compose` / Helm mount the Secret on the server
+    /// Deployment alone. See that field for the full argument, which applies
+    /// word for word; the environment variable is ignored beside `worker` for
+    /// the same reason.
+    #[arg(long, env = "VPAY_ENVELOPE_SIGNING_KEY_FILE")]
+    pub envelope_signing_key_file: Option<PathBuf>,
+
+    /// Path to the seed of the key that **will** seal responses after the next
+    /// rotation, same format as [`Self::envelope_signing_key_file`].
+    ///
+    /// This process does not sign with it. It is loaded so that a seed that is
+    /// not a seed, or that equals the current one (a rotation prepared with a
+    /// copy of the old key rotates nothing), fails the boot that would have
+    /// shipped it, and so that the boot log carries both public keys an
+    /// operator hands to merchants to pin. Rotating is: move this file's seed
+    /// into the current slot, mint a new next, redeploy.
+    #[arg(long, env = "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE")]
+    pub envelope_signing_key_next_file: Option<PathBuf>,
+
     /// An operator subcommand instead of serving traffic.
     ///
     /// `None` — no subcommand — is the ordinary case and starts the server.
@@ -350,9 +387,14 @@ pub struct ServerArgs {
 ///
 /// Adding a row here is a decision about one flag. Do not add a `CommonArgs`
 /// field to it — those are read by every mode by construction.
-const SERVE_ONLY_FLAGS: [(&str, &str); 2] = [
+const SERVE_ONLY_FLAGS: [(&str, &str); 4] = [
     ("bind", "--bind"),
     ("oauth_signing_key_file", "--oauth-signing-key-file"),
+    ("envelope_signing_key_file", "--envelope-signing-key-file"),
+    (
+        "envelope_signing_key_next_file",
+        "--envelope-signing-key-next-file",
+    ),
 ];
 
 impl ServerArgs {
@@ -690,9 +732,17 @@ mod tests {
     /// `the_worker_subcommand_is_not_handed_the_signing_key` below is what
     /// fails if it is ever made `global` for symmetry with the rest of
     /// `CommonArgs`.
-    const SERVER_ONLY_ENV_VARS: [(&str, &str); 2] = [
+    const SERVER_ONLY_ENV_VARS: [(&str, &str); 4] = [
         ("bind", "VPAY_BIND"),
         ("oauth_signing_key_file", "VPAY_OAUTH_SIGNING_KEY_FILE"),
+        (
+            "envelope_signing_key_file",
+            "VPAY_ENVELOPE_SIGNING_KEY_FILE",
+        ),
+        (
+            "envelope_signing_key_next_file",
+            "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+        ),
     ];
 
     /// Asserts a single arg on a built [`clap::Command`] declares exactly
@@ -943,6 +993,14 @@ mod tests {
         for (spelling, value) in [
             ("--bind", "0.0.0.0:8080"),
             ("--oauth-signing-key-file", "/secrets/oauth-signing-key.pem"),
+            (
+                "--envelope-signing-key-file",
+                "/secrets/envelope-signing-key",
+            ),
+            (
+                "--envelope-signing-key-next-file",
+                "/secrets/envelope-signing-key-next",
+            ),
         ] {
             let error =
                 ServerArgs::try_parse_checked_from(["vpay-server", spelling, value, "worker"])
@@ -1057,6 +1115,8 @@ mod tests {
         );
         assert_eq!(args.bind, "0.0.0.0:8080".parse().expect("valid addr"));
         assert_eq!(args.oauth_signing_key_file, None);
+        assert_eq!(args.envelope_signing_key_file, None);
+        assert_eq!(args.envelope_signing_key_next_file, None);
         assert_eq!(args.common.database_url, None);
         assert_eq!(args.common.profile, "sandbox");
         assert_eq!(args.common.config, None);
@@ -1106,6 +1166,32 @@ mod tests {
         );
     }
 
+    /// The envelope keys parse as paths and reach the fields the server reads
+    /// them from, under the spellings a Helm chart passes.
+    #[test]
+    fn the_envelope_key_flags_parse_to_the_paths_they_were_given() {
+        let args = ServerArgs::parse_from([
+            "vpay-server",
+            "--envelope-signing-key-file",
+            "/etc/vpay/secrets/envelope-signing-key",
+            "--envelope-signing-key-next-file",
+            "/etc/vpay/secrets/envelope-signing-key-next",
+        ]);
+
+        assert_eq!(
+            args.envelope_signing_key_file,
+            Some(std::path::PathBuf::from(
+                "/etc/vpay/secrets/envelope-signing-key"
+            ))
+        );
+        assert_eq!(
+            args.envelope_signing_key_next_file,
+            Some(std::path::PathBuf::from(
+                "/etc/vpay/secrets/envelope-signing-key-next"
+            ))
+        );
+    }
+
     /// The worker mints no tokens, so `vpay-server worker
     /// --oauth-signing-key-file …` must be refused rather than ignored. This
     /// fails if the flag is ever made `global = true` for symmetry with
@@ -1142,6 +1228,28 @@ mod tests {
             .is_err(),
             "`vpay-server worker --oauth-signing-key-file` must be a parse error"
         );
+
+        // The envelope keys are the same shape of secret: the worker seals no
+        // response, so a flag naming one on it would be a knob reading nothing.
+        for (id, spelling) in [
+            ("envelope_signing_key_file", "--envelope-signing-key-file"),
+            (
+                "envelope_signing_key_next_file",
+                "--envelope-signing-key-next-file",
+            ),
+        ] {
+            assert!(
+                !worker
+                    .get_arguments()
+                    .any(|arg| arg.get_id().as_str() == id),
+                "the worker seals nothing; `{spelling}` on it would read nothing"
+            );
+            assert!(
+                ServerArgs::try_parse_from(["vpay-server", "worker", spelling, "/secrets/k"])
+                    .is_err(),
+                "`vpay-server worker {spelling}` must be a parse error"
+            );
+        }
     }
 
     /// A path is not a secret and stays visible in `Debug` — the flip side

@@ -1,10 +1,15 @@
 //! ADR-0033 step 3: the merchant MCP endpoint, end to end.
 //!
 //! A real `vpay-server` router, over a real Postgres, with tokens minted by
-//! the server's own signer (and one by the real OP's `/v1/oauth/token`),
+//! the server's own signer (and some by the real OP's `/v1/oauth/token`),
 //! called with the JSON-RPC requests an MCP client sends on the wire
 //! (revision `2026-07-28`, Streamable HTTP). Each test names the threat-model
 //! row it proves (`docs/security/threat-models/mcp.md`).
+//!
+//! Since VP-3, `/v1` is signed rather than token-authenticated, so every `/v1`
+//! call here is sealed through [`support::sealed::SealedHttp`] as the merchant
+//! whose MCP token the same case uses. The OAuth OP now serves this endpoint
+//! alone.
 //!
 //! The rails here are unreachable by design, as in `payment_intents.rs`:
 //! this suite is about the surface. A confirm that a rail settles is
@@ -27,6 +32,7 @@ use vpay_api::op::keys::LoadedSigningKey;
 use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
 use vpay_db::Repositories;
 
+use support::sealed::SealedHttp;
 use support::{
     ensure_crypto_provider_installed, generate_key, merchant_client, merchant_client_with_scopes,
     migrated_postgres, serve,
@@ -196,6 +202,31 @@ fn text_at(value: &Value, pointer: &str) -> String {
         .and_then(Value::as_str)
         .unwrap_or_default()
         .to_owned()
+}
+
+/// A client assertion (RFC 7523) as a merchant's client presents it at the
+/// token endpoint: `iss = sub = client_id`, the endpoint as `aud`, a fresh
+/// `jti`, valid for a minute.
+///
+/// Signed here with `jsonwebtoken`, as `merchant_token_flow.rs` signs its own,
+/// because the merchant SDK no longer mints one: it seals `/v1` requests
+/// instead (VP-5).
+fn client_assertion(client_id: &str, pem: &str, token_endpoint: &str) -> String {
+    let now = time::OffsetDateTime::now_utc().unix_timestamp();
+    let claims = json!({
+        "iss": client_id,
+        "sub": client_id,
+        "aud": token_endpoint,
+        "jti": uuid::Uuid::new_v4().to_string(),
+        "iat": now,
+        "exp": now + 60,
+    });
+    jsonwebtoken::encode(
+        &jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256),
+        &claims,
+        &jsonwebtoken::EncodingKey::from_rsa_pem(pem.as_bytes()).expect("the PEM is an RSA key"),
+    )
+    .expect("signing a client assertion")
 }
 
 fn raw_client() -> reqwest::Client {
@@ -401,9 +432,9 @@ async fn an_intent_created_over_mcp_is_the_one_v1_serves() -> anyhow::Result<()>
             .await?,
     );
 
-    let v1 = raw_client()
+    let v1 = SealedHttp::new()
         .get(format!("{}/v1/payment_intents/{id}", harness.base_url))
-        .bearer_auth(harness.token(CLIENT_A, MERCHANT_AUDIENCE, vpay_api::SCOPE_PAYMENTS_READ))
+        .signed_by(CLIENT_A)
         .send()
         .await?
         .json::<Value>()
@@ -536,6 +567,8 @@ async fn each_surface_accepts_only_its_own_audience() -> anyhow::Result<()> {
         .await?;
     assert_eq!(status, 401, "a vpay:v1 token on /mcp/v1: {body}");
 
+    // Since VP-3 `/v1` takes no bearer token of any audience: an MCP token
+    // there is the same coarse unsigned 401 as any other.
     let mcp_token = harness.mcp_token(CLIENT_A, vpay_api::SCOPE_PAYMENTS_WRITE);
     let v1 = raw_client()
         .get(format!("{}/v1/payment_intents", harness.base_url))
@@ -594,14 +627,7 @@ async fn the_op_mints_an_mcp_token_only_for_a_client_that_opted_in() -> anyhow::
     let harness = harness().await?;
     let token_endpoint = format!("{}/v1/oauth/token", harness.base_url);
     let request = |client_id: &'static str, pem: &str| {
-        let credentials = vpay_sdk::Credentials::rsa_pem(client_id, pem)
-            .expect("the generated PEM parses as RSA");
-        let assertion = vpay_sdk::auth::mint_client_assertion(
-            &credentials,
-            &token_endpoint,
-            std::time::Duration::from_secs(60),
-        )
-        .expect("minting an assertion");
+        let assertion = client_assertion(client_id, pem, &token_endpoint);
         raw_client().post(&token_endpoint).form(&[
             ("grant_type", "client_credentials".to_owned()),
             ("client_id", client_id.to_owned()),
@@ -646,14 +672,7 @@ async fn an_rfc_8707_resource_is_the_audience_it_names() -> anyhow::Result<()> {
     let harness = harness().await?;
     let token_endpoint = format!("{}/v1/oauth/token", harness.base_url);
     let request = |client_id: &'static str, pem: &str| {
-        let credentials = vpay_sdk::Credentials::rsa_pem(client_id, pem)
-            .expect("the generated PEM parses as RSA");
-        let assertion = vpay_sdk::auth::mint_client_assertion(
-            &credentials,
-            &token_endpoint,
-            std::time::Duration::from_secs(60),
-        )
-        .expect("minting an assertion");
+        let assertion = client_assertion(client_id, pem, &token_endpoint);
         raw_client().post(&token_endpoint).form(&[
             ("grant_type", "client_credentials".to_owned()),
             ("client_id", client_id.to_owned()),
@@ -847,9 +866,9 @@ async fn the_refund_tools_reach_v1s_refund_code() -> anyhow::Result<()> {
             .call(&a, "retrieve_refund", json!({ "id": refund_id }))
             .await?,
     );
-    let v1 = raw_client()
+    let v1 = SealedHttp::new()
         .get(format!("{}/v1/refunds/{refund_id}", harness.base_url))
-        .bearer_auth(harness.token(CLIENT_A, MERCHANT_AUDIENCE, vpay_api::SCOPE_PAYMENTS_READ))
+        .signed_by(CLIENT_A)
         .send()
         .await?
         .json::<Value>()

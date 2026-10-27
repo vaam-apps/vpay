@@ -23,6 +23,8 @@
 #![allow(dead_code)]
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
+pub(crate) mod sealed;
+
 use std::collections::BTreeMap;
 use std::net::{IpAddr, SocketAddr, TcpListener};
 use std::sync::{Arc, Once};
@@ -37,11 +39,12 @@ use serde_json::{Value, json};
 use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
+use vpay_api::envelope::{EnvelopeKeys, V1Envelope};
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::LoadedSigningKey;
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator};
 use vpay_api::{ResourceConfig, RouterDeps};
-use vpay_config::oauth::{GrantType, MerchantClient, WebhookEndpoint};
+use vpay_config::oauth::{CoseKey, GrantType, MerchantClient, WebhookEndpoint};
 use vpay_config::{Config, MERCHANT_AUDIENCE};
 use vpay_core::ProviderFlow;
 use vpay_db::{CurrencySeed, ProviderSeed, Repositories, TxOutcome, UnitOfWork as _};
@@ -299,7 +302,13 @@ pub(crate) fn merchant_client_with(
     MerchantClient {
         client_id: client_id.to_owned(),
         merchant_id: merchant_id.to_owned(),
-        cose_keys: Vec::new(),
+        // The public half of the key this suite signs this merchant's requests
+        // with (`sealed::merchant_seed`, derived from the `client_id`): the
+        // registration the signed `/v1` resolves a verified signature against.
+        cose_keys: vec![CoseKey {
+            public_key: sealed::merchant_public_b64(client_id),
+            label: Some("it".to_owned()),
+        }],
         jwks: Some(jwks),
         grant_types: vec![GrantType::ClientCredentials],
         scopes: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
@@ -420,7 +429,6 @@ pub(crate) fn adapters_by_code() -> BTreeMap<String, Box<dyn ProviderAdapter>> {
 pub(crate) fn router_deps(
     repositories: Arc<dyn Repositories>,
     merchant_op: Arc<MerchantOp>,
-    merchant_validator: MerchantJwtValidator,
     dashboard_validator: Option<DashboardJwtValidator>,
     signing_key: &LoadedSigningKey,
     config: &Config,
@@ -428,7 +436,6 @@ pub(crate) fn router_deps(
     router_deps_with(
         repositories,
         merchant_op,
-        merchant_validator,
         dashboard_validator,
         signing_key,
         config,
@@ -441,17 +448,17 @@ pub(crate) fn router_deps(
 pub(crate) fn router_deps_with(
     repositories: Arc<dyn Repositories>,
     merchant_op: Arc<MerchantOp>,
-    merchant_validator: MerchantJwtValidator,
     dashboard_validator: Option<DashboardJwtValidator>,
     signing_key: &LoadedSigningKey,
     config: &Config,
     adapters: BTreeMap<String, Box<dyn ProviderAdapter>>,
 ) -> RouterDeps {
     let repositories_for_login = Arc::clone(&repositories);
+    let v1_envelope = v1_envelope_for(config, &repositories);
     RouterDeps {
         repositories,
         merchant_op,
-        merchant_validator,
+        v1_envelope: Some(v1_envelope),
         dashboard_validator,
         adapters: Arc::new(adapters),
         resource_config: Arc::new(
@@ -478,6 +485,22 @@ pub(crate) fn router_deps_with(
         // mounts no MCP endpoint.
         merchant_mcp: None,
     }
+}
+
+/// The signed transport `vpay-server`'s `main` builds, with the test server's
+/// two response seeds ([`sealed::server_seed_current`] / `_next`).
+pub(crate) fn v1_envelope_for(config: &Config, repositories: &Arc<dyn Repositories>) -> V1Envelope {
+    let seed = |seed: [u8; 32]| URL_SAFE_NO_PAD.encode(seed);
+    V1Envelope::new(
+        config,
+        EnvelopeKeys::from_seeds(
+            &seed(sealed::server_seed_current()),
+            &seed(sealed::server_seed_next()),
+        )
+        .expect("two distinct seeds"),
+        Arc::clone(repositories),
+    )
+    .expect("the suite's merchants project onto a key registry")
 }
 
 /// `vpay-server`'s own `staff_login`, for a suite's harness.
@@ -1005,22 +1028,11 @@ pub(crate) async fn serve_with_adapters(
         signing_key.clone(),
         Arc::clone(repositories),
     ));
-    let merchant_validator = MerchantJwtValidator(
-        JwtValidator::new(
-            format!("{base_url}/v1/oauth/jwks.json"),
-            Duration::from_secs(300),
-            merchant_op.issuer(),
-            vpay_config::MERCHANT_AUDIENCE,
-        )
-        .expect("the vendored-roots JWKS client builds"),
-    );
-
     let dashboard_validator = dashboard_validator_for(&base_url, merchant_op.issuer(), &config);
     let issuer = merchant_op.issuer().to_owned();
     let mut deps = router_deps_with(
         Arc::clone(repositories),
         merchant_op,
-        merchant_validator,
         dashboard_validator,
         &signing_key,
         &config,

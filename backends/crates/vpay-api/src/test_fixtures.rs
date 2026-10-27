@@ -31,10 +31,11 @@ use vpay_config::{Config, Deployment, EnabledSurfaces, MERCHANT_AUDIENCE};
 use vpay_db::Repositories;
 
 use crate::RouterDeps;
+use crate::envelope::{EnvelopeKeys, V1Envelope};
 use crate::op::MerchantOp;
 use crate::op::keys::LoadedSigningKey;
 use crate::resource_auth::DashboardJwtValidator;
-use crate::resource_auth::{JwtValidator, MerchantJwtValidator};
+use crate::resource_auth::JwtValidator;
 
 /// The base URL every fixture below derives its issuer and endpoints from.
 /// A real `https` URL, not `localhost`: `Config::validate_all` treats the
@@ -220,18 +221,30 @@ pub(crate) fn merchant_op() -> Arc<MerchantOp> {
     ))
 }
 
-/// The same [`RouterDeps`] `vpay-server`'s `main` builds, with a
-/// generated key instead of a Secret mount and a deliberately unreachable
-/// JWKS URL.
+/// The signed transport over `config` and a lazy pool, sealing with two fixed
+/// seeds.
 ///
-/// The URL never resolves and no test in this crate makes it try: every
-/// `/v1` assertion is about a request with a missing or malformed
-/// `Authorization` header, which `resource_auth::extract_bearer_token`
-/// refuses before the JWKS cache is consulted. A test that *did* present a
-/// syntactically valid token would fail here on a refused connection — the
-/// loud failure, rather than a quiet pass. Proving the whole token round
-/// trip needs a real server on a real port, which is
-/// `backends/tests/integration/tests/merchant_token_flow.rs`.
+/// Every `/v1` assertion in this crate is about a request the layer refuses
+/// before any key lookup, nonce write or handler: an unsigned one, or one it
+/// cannot bind. The pool is lazy and never connects, so a test that *did*
+/// present a signed request would fail here on a refused connection — the loud
+/// failure, rather than a quiet pass. Proving the whole sealed round trip needs
+/// a real server and a real Postgres, which is
+/// `backends/tests/integration/tests/signed_transport.rs`.
+pub(crate) fn v1_envelope(config: &Config) -> V1Envelope {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let seed = |byte: u8| URL_SAFE_NO_PAD.encode([byte; 32]);
+    V1Envelope::new(
+        config,
+        EnvelopeKeys::from_seeds(&seed(0x11), &seed(0x22)).expect("two distinct seeds"),
+        lazy_repositories(),
+    )
+    .expect("the fixture's merchants project onto a key registry")
+}
+
+/// The same [`RouterDeps`] `vpay-server`'s `main` builds, with generated keys
+/// instead of Secret mounts.
 pub(crate) fn deps() -> RouterDeps {
     RouterDeps {
         repositories: lazy_repositories(),
@@ -245,15 +258,7 @@ pub(crate) fn deps() -> RouterDeps {
             crate::ResourceConfig::from_config(&config())
                 .expect("the fixture's rails project onto the port"),
         ),
-        merchant_validator: MerchantJwtValidator(
-            JwtValidator::new(
-                "http://127.0.0.1:1/v1/oauth/jwks.json",
-                Duration::from_secs(300),
-                ISSUER,
-                vpay_config::MERCHANT_AUDIENCE,
-            )
-            .expect("the vendored-roots JWKS client builds"),
-        ),
+        v1_envelope: Some(v1_envelope(&config())),
         // `None`, matching `config()`'s `dashboard_client: None`: this
         // crate's own tests are about `/v1`, and a fixture that mounted the
         // dashboard nest would make every `/dash/v1` path in them answer
@@ -295,11 +300,11 @@ pub(crate) fn dashboard_client(merchant_id: &str) -> DashboardClient {
 /// whatever the caller passes — `None` for "absent" (both surfaces, the
 /// backward-compatibility case), `Some(vec![...])` for an explicit list.
 ///
-/// Both the merchant and the dashboard validators point at dead loopback
-/// JWKS URLs, exactly as [`deps`] above does and for the same reason: every
-/// assertion in that test module is about which *route* answers, driven by
-/// requests carrying no `Authorization` header at all, so the auth layer
-/// refuses before either validator's cache is ever consulted.
+/// The dashboard validator points at a dead loopback JWKS URL and the `/v1`
+/// envelope is the one [`deps`] builds, for the same reason: every assertion in
+/// that test module is about which *route* answers, driven by requests carrying
+/// no credential at all, so the auth layers refuse before a key is ever looked
+/// up.
 ///
 /// # Panics
 /// If `surfaces` is empty or names an unknown value — the two cases
@@ -329,15 +334,7 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
             crate::ResourceConfig::from_config(&config)
                 .expect("the fixture's rails project onto the port"),
         ),
-        merchant_validator: MerchantJwtValidator(
-            JwtValidator::new(
-                "http://127.0.0.1:1/v1/oauth/jwks.json",
-                Duration::from_secs(300),
-                ISSUER,
-                vpay_config::MERCHANT_AUDIENCE,
-            )
-            .expect("the vendored-roots JWKS client builds"),
-        ),
+        v1_envelope: Some(v1_envelope(&config)),
         dashboard_validator: Some(DashboardJwtValidator(
             JwtValidator::new(
                 "http://127.0.0.1:1/dash/v1/oauth/jwks.json",

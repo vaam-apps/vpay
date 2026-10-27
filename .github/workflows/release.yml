@@ -723,6 +723,25 @@ jobs:
           # costs seconds, not minutes.
           package-manager-cache: false
 
+      # The package ships a WebAssembly module: its signed transport is
+      # `sdks/rust/wasm`, compiled here by `pnpm run build`, so the publish job
+      # needs the repository's pinned Rust toolchain with the wasm target, and
+      # the `wasm-bindgen` CLI at the version `Cargo.lock` pins (`just
+      # wasm-tools`, the recipe `ci.yml` runs too). The module is a build
+      # output and is not in git; a publish that skipped this would pack a
+      # package whose `import` fails at load time.
+      - id: toolchain
+        run: echo "channel=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)" >> "$GITHUB_OUTPUT"
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master, 2026-08-05, the commit ci.yml pins
+        with:
+          toolchain: ${{ steps.toolchain.outputs.channel }}
+          targets: wasm32-unknown-unknown
+      - uses: taiki-e/install-action@9114bf4d891761788c546334fd37538eae1bf8b3 # v2.87.16, the commit ci.yml pins
+        with:
+          tool: just
+      - name: Install the wasm-bindgen CLI
+        run: just wasm-tools
+
       - name: Install dependencies
         working-directory: sdks/nodejs
         run: pnpm install --frozen-lockfile

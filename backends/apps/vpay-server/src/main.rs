@@ -39,9 +39,10 @@ use std::time::Duration;
 use anyhow::Context as _;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use mimalloc::MiMalloc;
+use vpay_api::envelope::{EnvelopeKeyError, EnvelopeKeys, V1Envelope, V1EnvelopeError};
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
-use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator, MerchantJwtValidator};
+use vpay_api::resource_auth::{DashboardJwtValidator, JwtValidator};
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -143,6 +144,21 @@ enum StartupError {
     )]
     MissingSigningKeyFile,
 
+    /// An envelope signing key flag was not supplied on a process that mounts
+    /// `/v1` (VP-3). Names the flag in both spellings, because the message is
+    /// the entire fix. Carries which of the two was missing so an operator who
+    /// mounted one Secret key and not the other is told the right one.
+    #[error(
+        "{flag} is required: vpay-server seals every /v1 response with the envelope signing key \
+         and cannot serve the merchant API without it (VP-3). A process that mounts no /v1 \
+         (deployment.surfaces without `business`) needs neither envelope key"
+    )]
+    MissingEnvelopeKeyFile {
+        /// `--envelope-signing-key-file / VPAY_ENVELOPE_SIGNING_KEY_FILE` or its
+        /// `-next-` twin.
+        flag: &'static str,
+    },
+
     /// `--worker-concurrency` / `VPAY_WORKER_CONCURRENCY` was zero. The
     /// message is `vpay_config::WorkerArgs::concurrency`'s, which names both
     /// spellings, because the message is the entire fix.
@@ -220,6 +236,8 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
         .map(|e| e.category())
         .or_else(|| find_in_chain::<ConfigError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<SigningKeyError>(error.chain()).map(|e| e.category()))
+        .or_else(|| find_in_chain::<EnvelopeKeyError>(error.chain()).map(|e| e.category()))
+        .or_else(|| find_in_chain::<V1EnvelopeError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
         .unwrap_or(Category::Internal);
     // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
@@ -242,6 +260,11 @@ struct Booted {
     adapters: BTreeMap<String, Box<dyn vpay_provider::ProviderAdapter>>,
     repositories: Arc<dyn vpay_db::Repositories>,
     merchant_op: Arc<MerchantOp>,
+    /// The signed transport `/v1` is wrapped in, or `None` on a process that
+    /// mounts no `/v1` (`deployment.surfaces` without `business`), which
+    /// therefore loaded no envelope keys. `Some` on every process that does:
+    /// `boot` refuses to return otherwise.
+    v1_envelope: Option<V1Envelope>,
     /// Everything the staff sign-in routes need, or `None`.
     ///
     /// `None` in three configurations, and all three are legal: no
@@ -316,7 +339,6 @@ async fn run() -> anyhow::Result<()> {
     let bound = listener
         .local_addr()
         .context("reading the bound address back off the listener")?;
-    let merchant_validator = loopback_validator(bound, &booted.merchant_op)?;
     let dashboard_validator =
         loopback_dashboard_validator(bound, &booted.merchant_op, &booted.config)?;
 
@@ -428,7 +450,7 @@ async fn run() -> anyhow::Result<()> {
     let deps = RouterDeps {
         repositories: booted.repositories,
         merchant_op: booted.merchant_op,
-        merchant_validator,
+        v1_envelope: booted.v1_envelope,
         dashboard_validator,
         adapters,
         resource_config,
@@ -594,6 +616,11 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     vpay_api::boot::warn_about_rotations_in_flight(&config);
 
     let signing_key = load_signing_key(args, &config)?;
+    // Before the database for the same reason: reading a file needs no network
+    // round trip, and a Secret that was not mounted should fail in
+    // milliseconds rather than after a migration run this process is about to
+    // throw away.
+    let envelope_keys = load_envelope_keys(args, &config)?;
 
     // `--database-url` / `DATABASE_URL` stays `Option<String>` at the clap
     // level and is required here — see docs/reference/vpay-config.md
@@ -615,6 +642,16 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
 
     announce_signing_key(&signing_key, repositories.as_ref()).await?;
 
+    // After the database: the replay cache is a table, and the layer is built
+    // over the repositories that reach it. Still before the listener binds, so
+    // a merchant registry or layer configuration cstack refuses is `78`.
+    let v1_envelope = envelope_keys
+        .map(|keys| {
+            V1Envelope::new(&config, keys, Arc::clone(&repositories))
+                .context("assembling the signed /v1 transport (VP-3)")
+        })
+        .transpose()?;
+
     // Built before `MerchantOp::new` takes the key by value. Both halves of
     // one OP sign with one key, and `LoadedSigningKey::token_manager` hands
     // out an `Arc` of the same `TokenManager` either way.
@@ -631,8 +668,63 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
         adapters,
         repositories,
         merchant_op,
+        v1_envelope,
         staff_login,
     })
+}
+
+/// The Ed25519 keys `/v1` responses are sealed with, read from the Secret
+/// mounts named by `--envelope-signing-key-file` and
+/// `--envelope-signing-key-next-file`, or `None` when this process mounts no
+/// `/v1` (VP-3).
+///
+/// Loaded wherever `deployment.surfaces` includes `business` — the surface
+/// that mounts `/v1` — and nowhere else: a management-only pod seals nothing
+/// and the chart does not mount the Secret there. Refused rather than
+/// defaulted when absent, malformed, or the two are one seed
+/// ([`EnvelopeKeys::from_files`]); a server that booted without them would
+/// answer `/healthz` with a cheerful 200 and refuse every real request.
+///
+/// Both **public** keys go to the log, at `info`: they are what an operator
+/// hands a merchant to pin (`{current, next}`), and the seeds themselves reach
+/// no log line, database column or error message.
+///
+/// # Errors
+///
+/// [`StartupError::MissingEnvelopeKeyFile`] when a flag is absent,
+/// [`EnvelopeKeyError`] for a file that is not there or not a seed, or two
+/// that are one seed. All `78`.
+fn load_envelope_keys(
+    args: &ServerArgs,
+    config: &vpay_config::Config,
+) -> anyhow::Result<Option<EnvelopeKeys>> {
+    let surfaces = config
+        .deployment
+        .enabled_surfaces()
+        .context("resolving deployment.surfaces for the envelope keys")?;
+    if !surfaces.business {
+        return Ok(None);
+    }
+    let current =
+        args.envelope_signing_key_file
+            .as_deref()
+            .ok_or(StartupError::MissingEnvelopeKeyFile {
+                flag: "--envelope-signing-key-file / VPAY_ENVELOPE_SIGNING_KEY_FILE",
+            })?;
+    let next = args.envelope_signing_key_next_file.as_deref().ok_or(
+        StartupError::MissingEnvelopeKeyFile {
+            flag: "--envelope-signing-key-next-file / VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+        },
+    )?;
+    let keys =
+        EnvelopeKeys::from_files(current, next).context("loading the /v1 envelope signing keys")?;
+    let (current_public, next_public) = keys.public_keys_base64url();
+    tracing::info!(
+        %current_public,
+        %next_public,
+        "/v1 envelope signing keys loaded; merchants pin these two public keys"
+    );
+    Ok(Some(keys))
 }
 
 /// The RS256 key every `/v1` access token is signed with, read from the Secret
@@ -721,44 +813,15 @@ async fn announce_signing_key(
     Ok(())
 }
 
-/// The `/v1` token validator, pointed at this process's own JWKS over loopback.
-///
-/// Why loopback rather than the public URL the discovery document advertises is
-/// [`loopback_jwks_url`]'s doc comment.
-///
-/// # Errors
-///
-/// Whatever building the JWKS client fails with — in practice only a TLS or
-/// client-construction failure, since no request is made here.
-fn loopback_validator(
-    bound: SocketAddr,
-    merchant_op: &MerchantOp,
-) -> anyhow::Result<MerchantJwtValidator> {
-    let jwks_url = loopback_jwks_url(bound);
-    tracing::info!(
-        %jwks_url,
-        public_jwks_url = %merchant_op.jwks_url(),
-        "validating /v1 tokens against this process's own JWKS over loopback"
-    );
-    Ok(MerchantJwtValidator(
-        JwtValidator::new(
-            jwks_url,
-            JWKS_REFRESH_INTERVAL,
-            merchant_op.issuer(),
-            vpay_config::MERCHANT_AUDIENCE,
-        )
-        .context("building the JWKS client the /v1 token validator fetches with")?,
-    ))
-}
-
 /// The merchant MCP endpoint's token validator (ADR-0033 D9).
 ///
-/// [`loopback_validator`]'s JWKS, issuer and loopback URL, and a **different
-/// audience**: the MCP resource identifier, which a merchant client lists in
-/// its `allowed_audiences` to opt in. A second validator rather than one with
-/// both audiences, for [`loopback_dashboard_validator`]'s reason: a validator
-/// configured with two audiences accepts a token for either, so a `/v1` token
-/// would pass here and an MCP token on `/v1`.
+/// This process's own JWKS over loopback ([`loopback_jwks_url`]), the merchant
+/// OP's issuer, and the MCP resource identifier as the **only** audience: a
+/// merchant client lists that identifier in its `allowed_audiences` to opt in.
+/// Since VP-3, `/v1` takes no bearer token at all (every request is signed), so
+/// the OP's client-credentials grant serves this endpoint and the `vpay:v1`
+/// audience no other; a `vpay:v1` token is refused here because its audience is
+/// not this one.
 fn loopback_mcp_validator(
     bound: SocketAddr,
     merchant_op: &MerchantOp,
@@ -776,21 +839,19 @@ fn loopback_mcp_validator(
 /// The `/dash/v1` token validator, or `None` when this deployment registers
 /// no `dashboard_client`.
 ///
-/// Same JWKS, same issuer, same loopback URL as [`loopback_validator`] —
+/// Pointed at this process's own JWKS over loopback, with the OP's issuer —
 /// vpay runs one OP for both surfaces (ADR-0009), so there is one key set to
-/// fetch — and a **different `Surface`**, which is the only thing separating
-/// the two audiences. Deliberately a second `JwtValidator` rather than one
-/// configured with both audiences: `jsonwebtoken`'s `set_audience` takes a
-/// set and accepts a token matching *any* member, so one validator for both
-/// surfaces would let a `/v1` token through on `/dash/v1` and vice versa.
+/// fetch — and the dashboard's audience. (Until VP-3 a second validator
+/// guarded `/v1` with the merchant audience; `/v1` is signed now and holds
+/// none, so this is the only token validator in the process.)
 ///
 /// `None` propagates all the way to `vpay_api::router`, which then mounts no
 /// `/dash/v1` nest at all — see `RouterDeps::dashboard_validator`.
 ///
 /// # Errors
 ///
-/// Whatever building the JWKS client fails with, exactly as
-/// [`loopback_validator`].
+/// Whatever building the JWKS client fails with — in practice only a TLS or
+/// client-construction failure, since no request is made here.
 /// Runs an operator subcommand and returns, without binding anything.
 ///
 /// It takes a [`vpay_config::StaffCommand`] rather than the whole
@@ -1214,7 +1275,7 @@ async fn start_observability(
     Ok((task, shutdown_tx))
 }
 
-/// How often the `/v1` validator re-fetches the JWKS.
+/// How often the `/dash/v1` validator re-fetches the JWKS.
 ///
 /// 300 s, matching [`vpay_api::op::jwks::JWKS_CACHE_MAX_AGE`] — the
 /// `Cache-Control: max-age` the document is served with. Two different
@@ -1228,7 +1289,7 @@ async fn start_observability(
 /// usable one.
 const JWKS_REFRESH_INTERVAL: Duration = Duration::from_secs(300);
 
-/// The URL this process's own `/v1` validator fetches the JWKS from: always
+/// The URL this process's own `/dash/v1` validator fetches the JWKS from: always
 /// loopback, on the port actually bound.
 ///
 /// **Deliberately not `public_base_url`**, and deliberately not `--bind` either

@@ -60,7 +60,7 @@
 // integration suites'.
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -69,19 +69,17 @@ use sqlx::PgPool;
 use testcontainers::ContainerAsync;
 use testcontainers::GenericImage;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
-use vpay_api::op::keys::LoadedSigningKey;
-use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, MERCHANT_AUDIENCE, ProviderHost};
+use vpay_config::{Config, CurrencyEntry, Deployment, HostEntry, ProviderHost};
 use vpay_core::{Money, ProviderFlow};
 use vpay_db::{NewEvent, Repositories, TxOutcome, UnitOfWork as _};
 use vpay_provider::{
     CallbackRef, Capabilities, ChargeRef, ChargeStatus, ProviderAdapter, ProviderConfig,
     ProviderError, RefExtra, RefundDestination, RefundTarget, Refunded, Submitted,
 };
-use vpay_sdk::{
-    CreatePaymentIntentParams, Credentials, PaymentMethodType, RefundStatus, RequestOptions,
-};
+use vpay_sdk::{CreatePaymentIntentParams, PaymentMethodType, RefundStatus, RequestOptions};
 
 mod support;
+use support::sealed::SealedHttp;
 
 use support::{
     adapters_by_code, ensure_crypto_provider_installed, generate_key, merchant_client,
@@ -119,38 +117,19 @@ struct Harness {
     /// but is not reachable from `/v1` — see the module header.
     pool: PgPool,
     base_url: String,
-    pem_a: String,
-    signing_key: LoadedSigningKey,
 }
 
 impl Harness {
-    fn sdk(&self, client_id: &str, pem: &str) -> vpay_sdk::Client {
+    fn sdk(&self, client_id: &str) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(client_id, pem).expect("the generated PEM parses as RSA"),
-            )
+            .credentials(support::sealed::sdk_credentials(client_id))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds from a base URL and a credential")
     }
 
     fn a(&self) -> vpay_sdk::Client {
-        self.sdk(CLIENT_A, &self.pem_a)
-    }
-
-    /// A bearer token for `client_id`, minted with the server's own signer —
-    /// the same shape the OP mints, for the raw requests the SDK cannot make
-    /// (a byte-level body comparison, and a `POST` to an unrouted path).
-    fn bearer(&self, client_id: &str) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
+        self.sdk(CLIENT_A)
     }
 
     fn url(&self, path: &str) -> String {
@@ -224,7 +203,7 @@ async fn harness() -> anyhow::Result<Harness> {
     let (container, repositories, pool) = migrated_postgres().await?;
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     // Merchant B is registered so its bearer token resolves to a real
     // tenant, and is never driven through the SDK: every request it makes
     // below is a raw one, because what those cases compare is bytes.
@@ -241,15 +220,11 @@ async fn harness() -> anyhow::Result<Harness> {
         repositories,
         pool,
         base_url: served.base_url,
-        pem_a,
-        signing_key: served.signing_key,
     })
 }
 
-fn raw_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .build()
-        .expect("a plain-HTTP reqwest client builds once a CryptoProvider is installed")
+fn raw_client() -> SealedHttp {
+    SealedHttp::new()
 }
 
 fn create_params() -> CreatePaymentIntentParams {
@@ -383,9 +358,9 @@ async fn a_stored_refund_reads_back_through_the_sdk() -> anyhow::Result<()> {
 
     // The raw body carries exactly ten keys and no eleventh: the SDK's typed
     // struct would silently ignore one it does not model.
-    let response = raw_client()
+    let response = SealedHttp::new()
         .get(harness.url(&format!("/v1/refunds/{refund_id}")))
-        .bearer_auth(harness.bearer(CLIENT_A))
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("the same read over raw HTTP")?;
@@ -445,12 +420,11 @@ async fn merchant_b_cannot_read_merchant_as_refund() -> anyhow::Result<()> {
     let intent_id = seed_intent(&harness.a()).await?;
     let refund_id = seed_refund(&harness.pool, &intent_id, "pending", None).await?;
 
-    let bearer_b = harness.bearer(CLIENT_B);
     let http = raw_client();
 
     let foreign = http
         .get(harness.url(&format!("/v1/refunds/{refund_id}")))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .send()
         .await
         .context("merchant B asks for merchant A's refund")?;
@@ -459,7 +433,7 @@ async fn merchant_b_cannot_read_merchant_as_refund() -> anyhow::Result<()> {
 
     let missing = http
         .get(harness.url(&format!("/v1/refunds/{MISSING_REFUND_ID}")))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .send()
         .await
         .context("merchant B asks for an id that never existed")?;
@@ -500,7 +474,7 @@ async fn merchant_b_cannot_read_merchant_as_refund() -> anyhow::Result<()> {
     // changes nothing a caller can see.
     let wrong_shape = http
         .get(harness.url(&format!("/v1/refunds/{intent_id}")))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .send()
         .await
         .context("a pi_ id sent to the refund route")?;
@@ -590,11 +564,10 @@ async fn a_refund_id_without_the_re_prefix_is_never_looked_up() -> anyhow::Resul
     assert_eq!(stored, 1, "the row this case is about must exist");
 
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let refused = http
         .get(harness.url(&format!("/v1/refunds/{mis_prefixed}")))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("merchant A asks for its own mis-prefixed refund")?;
@@ -607,7 +580,7 @@ async fn a_refund_id_without_the_re_prefix_is_never_looked_up() -> anyhow::Resul
 
     let missing = http
         .get(harness.url(&format!("/v1/refunds/{MISSING_REFUND_ID}")))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("merchant A asks for an id that never existed")?;
@@ -694,11 +667,10 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
     .context("serialising the rendered refund")?;
 
     let http = raw_client();
-    let bearer = harness.bearer(CLIENT_A);
 
     let refund_bytes = http
         .get(harness.url(&format!("/v1/refunds/{refund_id}")))
-        .bearer_auth(&bearer)
+        .signed_by(CLIENT_A)
         .send()
         .await
         .context("the refund read")?
@@ -732,7 +704,7 @@ async fn the_api_response_and_an_events_payload_for_one_refund_are_byte_identica
 
         let event_bytes = http
             .get(harness.url(&format!("/v1/events/{}", event.id)))
-            .bearer_auth(&bearer)
+            .signed_by(CLIENT_A)
             .send()
             .await
             .context("the event read")?
@@ -1969,8 +1941,6 @@ struct RailHarness {
     server: tokio::task::JoinHandle<()>,
     pool: PgPool,
     base_url: String,
-    pem_a: String,
-    signing_key: LoadedSigningKey,
     /// What the `Origin` rail was handed, in call order. Empty, and never
     /// read, on [`rail_harness`].
     origin_refunds: Arc<Mutex<Vec<RecordedRefund>>>,
@@ -1981,24 +1951,10 @@ impl RailHarness {
         format!("{}{path}", self.base_url)
     }
 
-    fn bearer(&self, client_id: &str) -> String {
-        self.signing_key
-            .token_manager()
-            .issue_client_token_with_extra(
-                client_id,
-                900,
-                Some(vpay_api::SCOPE_PAYMENTS_WRITE.to_owned()),
-                Some(MERCHANT_AUDIENCE.to_owned()),
-                HashMap::new(),
-            )
-            .expect("the server's own signer mints a merchant token")
-    }
-
     fn a(&self) -> vpay_sdk::Client {
         vpay_sdk::Client::builder(&self.base_url)
-            .credentials(
-                Credentials::rsa_pem(CLIENT_A, &self.pem_a).expect("the generated PEM parses"),
-            )
+            .credentials(support::sealed::sdk_credentials(CLIENT_A))
+            .server_keys(support::sealed::sdk_server_keys())
             .build()
             .expect("the SDK client builds")
     }
@@ -2240,9 +2196,9 @@ impl RailHarness {
     }
 
     async fn post(&self, path: &str, body: &str, key: &str) -> anyhow::Result<Answer> {
-        let response = raw_client()
+        let response = SealedHttp::new()
             .post(self.url(path))
-            .bearer_auth(self.bearer(CLIENT_A))
+            .signed_by(CLIENT_A)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body.to_owned())
@@ -2255,9 +2211,9 @@ impl RailHarness {
     }
 
     async fn get_json(&self, path: &str) -> anyhow::Result<Answer> {
-        let response = raw_client()
+        let response = SealedHttp::new()
             .get(self.url(path))
-            .bearer_auth(self.bearer(CLIENT_A))
+            .signed_by(CLIENT_A)
             .send()
             .await
             .with_context(|| format!("GET {path}"))?;
@@ -2439,7 +2395,7 @@ async fn rail_harness() -> anyhow::Result<RailHarness> {
     );
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
     let mtn_url = mtn_origin.clone();
@@ -2455,8 +2411,6 @@ async fn rail_harness() -> anyhow::Result<RailHarness> {
         server: served.server,
         pool,
         base_url: served.base_url,
-        pem_a,
-        signing_key: served.signing_key,
         origin_refunds: Arc::new(Mutex::new(Vec::new())),
     })
 }
@@ -2628,7 +2582,7 @@ async fn origin_harness() -> anyhow::Result<RailHarness> {
     let (container, repositories, pool) = migrated_postgres().await?;
 
     let (server_pem, _server_jwks) = generate_key();
-    let (pem_a, jwks_a) = generate_key();
+    let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
 
     let refunds: Arc<Mutex<Vec<RecordedRefund>>> = Arc::new(Mutex::new(Vec::new()));
@@ -2661,8 +2615,6 @@ async fn origin_harness() -> anyhow::Result<RailHarness> {
         server: served.server,
         pool,
         base_url: served.base_url,
-        pem_a,
-        signing_key: served.signing_key,
         origin_refunds: refunds,
     })
 }
@@ -2914,10 +2866,9 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
 
     // Merchant B's customer and intent, over B's own credential, so the id
     // the oracle case uses is one B really holds.
-    let bearer_b = harness.bearer(CLIENT_B);
     let z: Value = http
         .post(harness.url("/v1/customers"))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .form(&[("name", "Zita")])
         .send()
@@ -2931,7 +2882,7 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
         .to_owned();
     let iz: Value = http
         .post(harness.url("/v1/payment_intents"))
-        .bearer_auth(&bearer_b)
+        .signed_by(CLIENT_B)
         .header("Idempotency-Key", uuid::Uuid::new_v4().to_string())
         .header("content-type", "application/x-www-form-urlencoded")
         .body(format!(
@@ -2971,21 +2922,20 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
     let rx1b = at(x1.clone(), 5).await?;
     let rz = at(iz.clone(), 6).await?;
 
-    let bearer_a = harness.bearer(CLIENT_A);
-    let raw = |bearer: String, query: String| {
+    let raw = |client: &'static str, query: String| {
         let request = http
             .get(harness.url(&format!("/v1/refunds?{query}")))
-            .bearer_auth(bearer);
+            .signed_by(client);
         async move {
             let response = request.send().await?;
             let status = response.status().as_u16();
             let body = response.text().await?;
-            Ok::<_, reqwest::Error>((status, body))
+            Ok::<_, anyhow::Error>((status, body))
         }
     };
     let page = |query: String| {
         let raw = &raw;
-        let bearer = bearer_a.clone();
+        let bearer = CLIENT_A;
         async move {
             let (status, body) = raw(bearer, query.clone()).await?;
             anyhow::ensure!(status == 200, "GET /v1/refunds?{query}: {body}");
@@ -3037,17 +2987,13 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
     assert_eq!(ids, vec![ry.clone()]);
 
     // THE ORACLE. Z is real: B's own list finds B's refund through it…
-    let (status, theirs) = raw(bearer_b.clone(), format!("customer={z}")).await?;
+    let (status, theirs) = raw(CLIENT_B, format!("customer={z}")).await?;
     assert_eq!(status, 200, "{theirs}");
     assert!(theirs.contains(&rz), "{theirs}");
     // …and from A's side it is byte for byte an id nobody ever had.
-    let foreign = raw(bearer_a.clone(), format!("customer={z}")).await?;
-    let unknown = raw(
-        bearer_a.clone(),
-        "customer=cus_00000000000000000000000x".to_owned(),
-    )
-    .await?;
-    let unused = raw(bearer_a.clone(), format!("customer={w}")).await?;
+    let foreign = raw(CLIENT_A, format!("customer={z}")).await?;
+    let unknown = raw(CLIENT_A, "customer=cus_00000000000000000000000x".to_owned()).await?;
+    let unused = raw(CLIENT_A, format!("customer={w}")).await?;
     assert_eq!(foreign.0, 200, "{}", foreign.1);
     assert_eq!(
         foreign, unknown,
@@ -3066,10 +3012,10 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
 
     // A MALFORMED value: the bytes `GET /v1/invoices` answers.
     for malformed in [rx1a.as_str(), "cus_tooshort"] {
-        let ours = raw(bearer_a.clone(), format!("customer={malformed}")).await?;
+        let ours = raw(CLIENT_A, format!("customer={malformed}")).await?;
         let response = http
             .get(harness.url(&format!("/v1/invoices?customer={malformed}")))
-            .bearer_auth(&bearer_a)
+            .signed_by(CLIENT_A)
             .send()
             .await?;
         let invoices = (response.status().as_u16(), response.text().await?);

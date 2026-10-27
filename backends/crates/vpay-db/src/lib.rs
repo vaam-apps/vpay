@@ -114,6 +114,7 @@ mod dashboard_transport;
 // private; their public types are re-exported below, and no CrateStack type
 // is among them.
 mod disabled_clients;
+mod envelope_nonces;
 mod error;
 mod mcp_transport;
 mod merchant_operations;
@@ -147,6 +148,7 @@ pub use customers::{
 };
 pub use dashboard_transport::DashboardAuthFn;
 pub use disabled_clients::DisabledClients;
+pub use envelope_nonces::EnvelopeNonces;
 pub use error::DbError;
 pub use events::{EventRow, Events, NewEvent};
 pub use health::Health;

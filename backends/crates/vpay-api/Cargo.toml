@@ -49,6 +49,10 @@ vpay-wire.workspace = true
 # `CratestackError` the resolver trait's signature returns.
 cratestack-cose.workspace = true
 cratestack-core.workspace = true
+# `envelope`: the `EnvelopeLayer` `/v1` is wrapped in, its `BindingResolver`
+# over `V1_ROUTES`, and the `VerifiedSigner` it records (VP-3). See the root
+# manifest for why this is a workspace pin with `default-features = false`.
+cratestack-axum.workspace = true
 axum.workspace = true
 tokio.workspace = true
 # `ServiceBuilder`, so `router()`'s middleware order is written top-down in
@@ -245,7 +249,7 @@ metrics-exporter-prometheus.workspace = true
 # `version` is required alongside `path`: `deny.toml` sets `wildcards =
 # "deny"`, and a path-only dependency is a wildcard requirement as far as
 # `cargo deny check bans` is concerned — it fails the supply-chain gate.
-vpay-sdk = { path = "../../../sdks/rust", version = "0.14.2" } # x-release-please-version
+vpay-sdk = { path = "../../../sdks/rust", version = "0.15.0" } # x-release-please-version
 # Test-only: captures `tracing` output into a buffer so the log/body split
 # above is asserted on what an operator would actually see, rather than on the
 # arguments this crate passed to a macro.

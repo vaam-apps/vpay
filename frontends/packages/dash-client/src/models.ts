@@ -106,6 +106,7 @@ export const wireShapes: Readonly<Record<string, WireShape>> = {
   InvoiceItem: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   ManualPayment: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   RateLimitWindow: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  EnvelopeNonce: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   PaymentIntentSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   PaymentIntentListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   RefundSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
@@ -942,6 +943,12 @@ export const RateLimitWindowSortFieldValues = [
   "attempts",
   "updated_at",
 ] as const satisfies readonly RateLimitWindowSortField[];
+
+export type EnvelopeNonceSortField = 'id' | 'expires_at';
+export const EnvelopeNonceSortFieldValues = [
+  "id",
+  "expires_at",
+] as const satisfies readonly EnvelopeNonceSortField[];
 
 export interface PaymentIntentSummary {
   id: string;
@@ -2304,6 +2311,30 @@ export interface RateLimitWindowOrderByClause {
 export interface RateLimitWindowFindMany {
   where?: RateLimitWindowWhere;
   orderBy?: RateLimitWindowOrderByClause[];
+}
+
+export interface EnvelopeNonce {
+  id?: string;
+  expires_at?: string;
+}
+
+export interface UpdateEnvelopeNonceInput {
+  expires_at?: string;
+}
+
+export interface EnvelopeNonceWhere {
+  id?: StringFilter;
+  expires_at?: DateTimeFilter;
+}
+
+export interface EnvelopeNonceOrderByClause {
+  field: EnvelopeNonceSortField;
+  direction: SortDirection;
+}
+
+export interface EnvelopeNonceFindMany {
+  where?: EnvelopeNonceWhere;
+  orderBy?: EnvelopeNonceOrderByClause[];
 }
 
 export interface SearchPaymentIntentsArgs {

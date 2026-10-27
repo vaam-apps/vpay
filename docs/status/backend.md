@@ -1458,7 +1458,10 @@ except `/v1`.
 Every write runs the `/v1` route's own operation, with a required
 `idempotency_key` claimed in vpay's own store. The tokens come from vpay's
 own OP, with the MCP resource as audience; the OP now honours RFC 8707
-`resource`. `/dash/v1/$procs` serves only the dashboard's five procedures.
+`resource`. Since VP-3 (#380) `/v1` is signed and takes no bearer token, so
+the OP's `client_credentials` grant serves this endpoint alone.
+`/dash/v1/$procs` serves only the dashboard's five procedures, and the
+dashboard's wrapper over the generated client hands out only those five.
 
 **Proven:** `mcp_merchant.rs`, 12 cases, against a real Postgres, the real
 router and the real OP. They cover tenancy, scope, both audience directions,
@@ -1475,8 +1478,12 @@ case; [the flow page](../flows/mcp.md) has the list.
 - No MCP case drives a confirm to `succeeded`.
 - No real MCP client has called it.
 - No pod has run it.
+- **What issues its tokens after VP-4 is undecided.** VP-4 plans to retire the
+  OP's token path, which this endpoint is the last user of (ADR-0033, "Left to
+  the maintainer" item 4).
 
-A new gate, `verify-mcp-parity`, makes `just verify` sixteen gates.
+A new gate, `verify-mcp-parity`, makes `just verify` seventeen gates, after
+#356's `verify-security-inventory`. CI's `self-checks` job runs it too.
 [verification/2026-10-26-mcp-step-3.md](verification/2026-10-26-mcp-step-3.md).
 
 ## Merchant Ed25519 keys are registered, and `/v1` has a contract table; neither is verified on a request yet (2026-10-26, VP-2)
@@ -1525,3 +1532,80 @@ path are untouched (VP-4/VP-6); the Rust SDK does not depend on `vpay-wire`
 (`sdks/rust` is meant to be publishable without this workspace, so whether
 `vpay-wire` is published or its table vendored is VP-6's decision). No route
 moved and no `NotImplemented` token moved.
+
+## `/v1` is a signed message in both directions (2026-10-26, VP-3)
+
+cratestack's `EnvelopeLayer` is mounted on `/v1` in mode `Required`
+(`mount_prefix("/v1")`, applied to the `/v1` router before it is nested), so the
+registered keys and the contract table of the section above are read on every
+request. [signed-transport.md](../flows/signed-transport.md) is the mechanism,
+[ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md) the decision,
+[../reference/vpay-api/envelope.md](../reference/vpay-api/envelope.md) the module
+reasoning. No optional or compatibility mode exists, and no token fallback.
+
+- **What `/v1` now does.** Opens a COSE_Sign1 request bound to audience, method,
+  route template, path parameters, canonical query, contract digest, payload
+  type and `Idempotency-Key`; resolves the signer to a merchant, tenant and
+  scopes (`vpay_api::envelope::scope::MerchantScope`, replacing
+  `require_merchant_token`, `MerchantJwtValidator` and `AuthenticatedMerchant`,
+  which are deleted); runs the handler on a plain form request; seals the
+  answer under the server's response key. Every refusal before the handler is
+  one coarse unsigned `401` (no body that names a cause); a foreign tenant's id
+  is the same sealed `404` as an unknown one.
+- **The replay cache** is `envelope_nonces` (migration `0055`,
+  `vpay_db::EnvelopeNonces`), one atomic `INSERT … ON CONFLICT … WHERE expired
+… RETURNING`, swept by the worker. A database that cannot answer refuses the
+  request. Drift: 212 → 214 changes, 28 → 29 relations
+  ([cratestack.md](cratestack.md)).
+- **Server keys.** `--envelope-signing-key-file` and
+  `--envelope-signing-key-next-file` (serve only, wherever `/v1` is mounted):
+  exit `78` when missing, malformed or identical; the chart takes them from
+  `envelopeKeys.existingSecret` and generates none.
+- **Proven** against a real Postgres and the shipping router, in
+  `backends/tests/integration/tests/signed_transport.rs` (7 cases: every route
+  refuses unsigned with the coarse `401`; a replay is refused and the handler
+  ran once; a disabled client is refused on its next call like an unknown one; a
+  foreign tenant gets the uniform sealed `404`; a sealed form `POST` round-trips;
+  every cause of a refusal is the same bytes; a client pinning the wrong server
+  key refuses the answer), and in the five rewritten token-era suites
+  (`merchant_token_flow.rs`: a sealed request reaches the honest `404` while the
+  OP's token as a bearer gets `401`). Every integration suite now seals through
+  `support::sealed::SealedHttp`, built on cratestack's client and the vendored
+  operation table, **not** on the SDK, so no suite trusts the SDK to be its own
+  verifier. The five `vpay-db` nonce cases (claim, replay does not renew,
+  takeover of an elapsed row, ten-way race, sweep) are in `repositories.rs`.
+- **Guard proofs** (each mutation made, the named test seen to fail, then
+  reverted): see the PR description; the mutations are the replay store
+  admitting a duplicate, `disabled_clients` ignored by the resolver, the tenant
+  taken from the signer's YAML entry for the wrong client, and the layer mounted
+  with `Optional`.
+- **Not done.** The OP, `jwks`, the RS256 key flag and `oauth_client_assertion_jtis`
+  remain until VP-4. A refund's second, Authorization-key signature (Q8) is not
+  in this change. The compose end-to-end stack and the Helm render were **not
+  run** where this was written (no Docker daemon with the stack's images, no
+  `helm`/`kubeconform`); CI's `e2e` and `helm` jobs are the evidence for those
+  halves.
+
+### Review follow-ups to the signed `/v1` (2026-10-26, same PR)
+
+- **An anonymous `OPTIONS` on `/v1` is a `405`, not a page.** cratestack 0.16.0
+  passes a bodiless `OPTIONS` through the layer unsigned (CORS preflight), axum's
+  `route_layer` wraps a method router's own `405` fallback, and `merchant_scope`
+  then found no signer and answered `Internal` (`Severity::Page`:
+  `VpayPageableErrorEvents` for anyone who asks; it was a `401` on master). It now
+  lets the router answer its own `405` with `Allow`. No browser caller of `/v1`
+  is expected (`/v1/browser` is the payer's surface), so no preflight is
+  answered. `an_anonymous_options_to_any_v1_route_is_a_405_and_pages_nobody`
+  walks `V1_ROUTES` and asserts the `405`, `Allow`, an empty body and no
+  `vpay_error_events_total` / `vpay_alert_events_total` series.
+- **The unsigned-401 tests now check the body**, not only the status
+  (`every_v1_route_answers_the_unsigned_401_to_a_plain_request`,
+  `a_bearer_token_buys_nothing_on_v1`): a re-added bearer middleware, or mode
+  `Optional` plus a tidied `merchant_scope`, answers a Stripe-shaped `401` and
+  now fails them.
+- **Both SDKs refuse redirects and bound the body they read** (8 MiB, typed
+  error). See [../sdks/parity.md](../sdks/parity.md), "Signing".
+- **The worker's nonce sweep no longer takes the checkout-session expiry down
+  with it**: a failed delete is logged at `error` and the sweep carries on.
+- **Left as they were, on purpose:** the key-id probe's database lookup is not
+  cached, seeds are not zeroized, and the env-var naming stands.

@@ -10,18 +10,20 @@ environment variable, with an explicit flag beating its env var. The two
 binaries share one `CommonArgs` (`#[command(flatten)]`), so they cannot drift
 on a flag's name, env var, or default.
 
-| Flag                                            | Env var                       | Default        |
-| ----------------------------------------------- | ----------------------------- | -------------- |
-| `--bind` (`vpay-server` only)                   | `VPAY_BIND`                   | `0.0.0.0:8080` |
-| `--database-url`                                | `DATABASE_URL`                | none           |
-| `--profile`                                     | `VPAY_PROFILE`                | `sandbox`      |
-| `--config`                                      | `VPAY_CONFIG`                 | none           |
-| `--observability-bind`                          | `VPAY_OBSERVABILITY_BIND`     | `0.0.0.0:9090` |
-| `--oauth-signing-key-file` (`vpay-server` only) | `VPAY_OAUTH_SIGNING_KEY_FILE` | none           |
-| `--log-filter`                                  | `RUST_LOG`                    | `info`         |
-| `--log-format` (`json`\|`text`)                 | `VPAY_LOG_FORMAT`             | `json`         |
-| `--shutdown-grace-seconds`                      | `VPAY_SHUTDOWN_GRACE_SECONDS` | `25`           |
-| `--worker-concurrency` (`worker` mode only)     | `VPAY_WORKER_CONCURRENCY`     | `4`            |
+| Flag                                                    | Env var                               | Default        |
+| ------------------------------------------------------- | ------------------------------------- | -------------- |
+| `--bind` (`vpay-server` only)                           | `VPAY_BIND`                           | `0.0.0.0:8080` |
+| `--database-url`                                        | `DATABASE_URL`                        | none           |
+| `--profile`                                             | `VPAY_PROFILE`                        | `sandbox`      |
+| `--config`                                              | `VPAY_CONFIG`                         | none           |
+| `--observability-bind`                                  | `VPAY_OBSERVABILITY_BIND`             | `0.0.0.0:9090` |
+| `--oauth-signing-key-file` (`vpay-server` only)         | `VPAY_OAUTH_SIGNING_KEY_FILE`         | none           |
+| `--envelope-signing-key-file` (`vpay-server` only)      | `VPAY_ENVELOPE_SIGNING_KEY_FILE`      | none           |
+| `--envelope-signing-key-next-file` (`vpay-server` only) | `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE` | none           |
+| `--log-filter`                                          | `RUST_LOG`                            | `info`         |
+| `--log-format` (`json`\|`text`)                         | `VPAY_LOG_FORMAT`                     | `json`         |
+| `--shutdown-grace-seconds`                              | `VPAY_SHUTDOWN_GRACE_SECONDS`         | `25`           |
+| `--worker-concurrency` (`worker` mode only)             | `VPAY_WORKER_CONCURRENCY`             | `4`            |
 
 `--observability-bind` is on **both** binaries — the worker had no HTTP
 listener at all before it — and serves exactly two paths, `GET /livez` and
@@ -46,6 +48,19 @@ for the compose stack. The _path_ is deliberately visible in `Debug` output
 (`the_signing_key_path_stays_visible_in_debug_output`) — a path is not a
 secret, and "which file did it try" is the first thing an operator needs —
 while the file's contents never enter the CLI types at all.
+
+`--envelope-signing-key-file` and `--envelope-signing-key-next-file` name the two
+Ed25519 seeds (32 random bytes, unpadded base64url, one line) the signed `/v1`
+seals its answers with (VP-3, [signed-transport.md](signed-transport.md)). Every
+merchant pins both public halves, so a rotation is a pair swap and not a flag
+day: promote `next` to `current`, mint a new `next`, and nobody's pinned set
+stops verifying. They are `vpay-server` only, **files** for the Secret-mount
+reason above, and required only when `deployment.surfaces` includes `business`
+(the surface that mounts `/v1`; a management-only pod seals nothing and the
+chart does not mount them there). `cargo xtask gen-envelope-key --out <dir>
+--name <stem>` writes `<stem>.seed` and `<stem>.pub`; `just gen-envelope-keys`
+does it for the compose stack. A merchant's own signing key is a different
+pair, registered in the YAML as `merchant_clients[].cose_keys`.
 
 **This is CLI/env plumbing, not the boot sequence below.** Every flag in the
 table is now consumed by something; the one that was not — `--public-base-url`
@@ -172,6 +187,15 @@ pins it, empty string included.
    A server that cannot sign can mint no merchant token; it would bind a
    port, answer `/healthz` with a cheerful 200, and refuse every real
    request.
+   3b. **Load the two Ed25519 envelope keys** from `--envelope-signing-key-file` and
+   `--envelope-signing-key-next-file` (when this process mounts `/v1`). A missing
+   flag, a missing file, a file that is not a seed, or the same seed in both exit
+   `78`, again before the database and without echoing a byte of the file
+   (`a_missing_envelope_key_flag_is_exit_78_naming_the_flag`,
+   `identical_or_malformed_envelope_keys_are_exit_78_without_echoing_them`). Both
+   public keys are logged at `info`; they are what an operator hands a merchant to
+   pin. The layer itself is assembled after the database (its replay cache is a
+   table), still before the listener binds.
 4. Connect to Postgres and run migrations. Unreachable → exit `69`.
 5. **Reconcile `currencies` and `providers` from configuration**
    (`vpay_db::ConfigReconcile::reconcile`, one transaction, advisory-locked

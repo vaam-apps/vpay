@@ -9,7 +9,9 @@ import {
 const COMPLETE: EnvRecord = {
   VPAY_API_URL: "http://vpay-server:8080",
   VPAY_CLIENT_ID: "shop-merchant",
-  VPAY_PRIVATE_KEY_FILE: "/secrets/shop-merchant.pem",
+  VPAY_SIGNING_SEED_FILE: "/secrets/shop-signing.seed",
+  VPAY_SERVER_KEY_CURRENT_FILE: "/secrets/server-current.pub",
+  VPAY_SERVER_KEY_NEXT_FILE: "/secrets/server-next.pub",
   VPAY_PUBLISHABLE_KEY: "pk_test_shopmerchantsandbox1",
   VPAY_CHECKOUT_URL: "http://localhost:4200",
   VPAY_WEBHOOK_SECRET: "whsec_shop",

@@ -396,8 +396,9 @@ pub fn issuer_for(config: &Config) -> String {
 /// `authkestra_op`'s `client_credentials` handler grants exactly what was
 /// asked for: no `scope` parameter means a token with **no** `scope` claim.
 /// That is one of the two behaviours RFC 6749 §3.3 permits, and it is the
-/// wrong one for vpay, because `/v1` now refuses a request whose token
-/// carries no scope for it (`vpay_api::require_merchant_token`). Without a
+/// wrong one for vpay, because `/v1` refused a request whose token
+/// carried no scope for it (until VP-3; a signed `/v1` checks the
+/// registration's YAML scopes instead, and nothing reads this token there). Without a
 /// default, every merchant that does not explicitly ask — which is every
 /// caller of both SDKs' defaults, and `examples/merchant-curl`'s documented
 /// `curl` — would get a token that authenticates and then authorises

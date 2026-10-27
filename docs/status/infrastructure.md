@@ -100,6 +100,12 @@ Measured, 2026-09-16.)_
 
 ## Migrations
 
+**55 as of 2026-10-26.** `0055_create-envelope-nonces.sql` (VP-3) creates
+`envelope_nonces`, the replay cache of the signed `/v1`: `id` (CHECK
+`envelope_nonces_id_length`, 1 to 64 characters), `expires_at` and an index on
+it for the sweep. It is a new table, so nothing is backfilled and no earlier
+migration changed ([../reference/vpay-db.md](../reference/vpay-db.md)).
+
 **54 as of 2026-10-24.** `0054_payment-intents-charge-rail.sql` (the
 maintainer's "Both" on routed refunds, second half; ADR-0029 D10 as amended
 that day) adds `payment_intents.charge_rail` (a foreign key onto

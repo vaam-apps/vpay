@@ -2,8 +2,8 @@
 
 The **official `stripe` package**, driven against a **real vpay stack**,
 asserting that a merchant's existing Stripe integration works once
-[`createStripeAuthenticator`](../nodejs/) is plugged into
-`config.authenticator`.
+[`createStripeHttpClient`](../nodejs/) is plugged into
+`config.httpClient`.
 
 This is a conformance suite, not a library. It ships nothing and is
 `private: true`.
@@ -14,7 +14,7 @@ This is a conformance suite, not a library. It ships nothing and is
 just demo_port=18080 stripe-compat
 ```
 
-That recipe generates the demo merchant's throwaway key pair and profile
+That recipe generates the demo merchant's throwaway signing seed, vpay's response keys and the profile
 overlay, brings up Postgres + both WireMock rails + the WireMock webhook
 receiver + `vpay-server` + `vpay-worker`, waits for `/healthz`, and runs the
 suite. Tear the stack down with `just demo-down`.
@@ -30,17 +30,21 @@ pnpm --filter @vaam-apps/vpay-sdk build     # the suite imports @vaam-apps/vpay-
 VPAY_BASE_URL=http://localhost:18080 \
 VPAY_RECEIVER_URL=http://localhost:8083 \
 VPAY_MERCHANT_CLIENT_ID=demo-merchant \
-VPAY_MERCHANT_PRIVATE_KEY_PATH="$PWD/.e2e/demo-merchant/oauth-signing-key.pem" \
+VPAY_MERCHANT_SIGNING_SEED_PATH="$PWD/.e2e/demo-merchant/signing.seed" \
+VPAY_SERVER_KEY_CURRENT_PATH="$PWD/.e2e/envelope/current.pub" \
+VPAY_SERVER_KEY_NEXT_PATH="$PWD/.e2e/envelope/next.pub" \
   pnpm --filter @vaam-apps/vpay-stripe-compat compat
 ```
 
-| Variable                         | Default                                                                                                              |
-| -------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| `VPAY_BASE_URL`                  | `http://localhost:18080`                                                                                             |
-| `VPAY_MERCHANT_CLIENT_ID`        | _required_                                                                                                           |
-| `VPAY_MERCHANT_PRIVATE_KEY_PATH` | _required_ — an absolute path, or one relative to the cwd `pnpm` uses (this package)                                 |
-| `VPAY_RECEIVER_URL`              | `http://localhost:8083` — the WireMock webhook receiver, read for its request journal                                |
-| `MERCHANT_WEBHOOK_SECRET`        | the placeholder `compose.e2e.yml` gives both binaries; a stub value for a stub receiver on a `livemode: false` stack |
+| Variable                          | Default                                                                                                              |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| `VPAY_BASE_URL`                   | `http://localhost:18080`                                                                                             |
+| `VPAY_MERCHANT_CLIENT_ID`         | _required_                                                                                                           |
+| `VPAY_MERCHANT_SIGNING_SEED_PATH` | _required_ — an absolute path, or one relative to the cwd `pnpm` uses (this package)                                 |
+| `VPAY_SERVER_KEY_CURRENT_PATH`    | _required_ — vpay's current response key (public)                                                                    |
+| `VPAY_SERVER_KEY_NEXT_PATH`       | _required_ — the key it will use after the next rotation                                                             |
+| `VPAY_RECEIVER_URL`               | `http://localhost:8083` — the WireMock webhook receiver, read for its request journal                                |
+| `MERCHANT_WEBHOOK_SECRET`         | the placeholder `compose.e2e.yml` gives both binaries; a stub value for a stub receiver on a `livemode: false` stack |
 
 ## It cannot skip
 
