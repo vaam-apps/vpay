@@ -1,0 +1,23 @@
+# Fixture for `a_misplaced_auth_key_is_refused_at_any_depth`
+# (backends/crates/vpay-config/src/config.rs, ADR-0037, VPA-1 follow-up).
+#
+# `auth` is a top-level key. Under `checkout:` it is not read (`checkout` does not deny
+# unknown fields), so the deployment would permit all four methods while its
+# operator believed they had narrowed them.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+checkout:
+  public_base_url: http://localhost:8080
+  auth:
+    methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
