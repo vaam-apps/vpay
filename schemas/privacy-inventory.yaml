@@ -211,6 +211,15 @@ elements:
         table: manual_payments
         column: received_at
       - kind: column
+        table: oauth_authorization_codes
+        column: consumed_at
+      - kind: column
+        table: oauth_authorization_codes
+        column: created_at
+      - kind: column
+        table: oauth_authorization_codes
+        column: expires_at
+      - kind: column
         table: oauth_client_assertion_jtis
         column: created_at
       - kind: column
@@ -279,6 +288,24 @@ elements:
       - kind: column
         table: staff_members
         column: updated_at
+      - kind: column
+        table: staff_sessions
+        column: access_token_expires_at
+      - kind: column
+        table: staff_sessions
+        column: created_at
+      - kind: column
+        table: staff_sessions
+        column: expires_at
+      - kind: column
+        table: staff_sessions
+        column: last_seen_at
+      - kind: column
+        table: staff_sso_attempts
+        column: created_at
+      - kind: column
+        table: staff_sso_attempts
+        column: expires_at
       - kind: column
         table: webhook_deliveries
         column: created_at
@@ -380,6 +407,12 @@ elements:
         table: manual_payments
         column: paid_out_of_band
       - kind: column
+        table: oauth_authorization_codes
+        column: nonce
+      - kind: column
+        table: oauth_authorization_codes
+        column: scope
+      - kind: column
         table: oauth_clients
         column: allowed_audiences
       - kind: column
@@ -448,6 +481,12 @@ elements:
       - kind: column
         table: staff_members
         column: status
+      - kind: column
+        table: staff_sessions
+        column: state
+      - kind: column
+        table: staff_sso_attempts
+        column: is_retry
       - kind: column
         table: webhook_deliveries
         column: state
@@ -622,6 +661,18 @@ elements:
         table: manual_payments
         column: merchant_id
       - kind: column
+        table: oauth_authorization_codes
+        column: client_id
+      - kind: column
+        table: oauth_authorization_codes
+        column: merchant_id
+      - kind: column
+        table: oauth_authorization_codes
+        column: session_id
+      - kind: column
+        table: oauth_authorization_codes
+        column: staff_id
+      - kind: column
         table: oauth_clients
         column: client_id
       - kind: column
@@ -672,6 +723,12 @@ elements:
       - kind: column
         table: staff_members
         column: merchant_id
+      - kind: column
+        table: staff_sessions
+        column: id
+      - kind: column
+        table: staff_sessions
+        column: staff_id
       - kind: column
         table: webhook_deliveries
         column: endpoint_id
@@ -751,6 +808,9 @@ elements:
       - kind: column
         table: ledger_entries
         column: direction
+      - kind: column
+        table: oauth_authorization_codes
+        column: code_challenge_method
       - kind: column
         table: oauth_codes
         column: code_challenge_method
@@ -863,6 +923,9 @@ elements:
       - kind: column
         table: checkout_sessions
         column: success_url
+      - kind: column
+        table: oauth_authorization_codes
+        column: redirect_uri
       - kind: column
         table: oauth_codes
         column: redirect_uri
@@ -1116,6 +1179,12 @@ elements:
     control: forbid
     copies:
       - kind: column
+        table: oauth_authorization_codes
+        column: code_challenge
+      - kind: column
+        table: oauth_authorization_codes
+        column: code_hash
+      - kind: column
         table: oauth_client_assertion_jtis
         column: jti
       - kind: column
@@ -1145,6 +1214,18 @@ elements:
       - kind: column
         table: oauth_refresh_tokens
         column: token
+      - kind: column
+        table: staff_sso_attempts
+        column: code_verifier
+      - kind: column
+        table: staff_sso_attempts
+        column: id
+      - kind: column
+        table: staff_sso_attempts
+        column: nonce_hash
+      - kind: column
+        table: staff_sso_attempts
+        column: state_hash
   oauth_signing_key:
     subject: system
     purpose: token-signing
@@ -1187,6 +1268,19 @@ elements:
       - kind: column
         table: staff_members
         column: email
+  staff_oauth_token:
+    subject: staff
+    purpose: session-auth
+    necessary: true
+    tenant_boundary: merchant
+    recipients: []
+    retention: auth
+    owner: operator
+    control: forbid
+    copies:
+      - kind: column
+        table: staff_sessions
+        column: access_token
   staff_console_key:
     subject: staff
     purpose: session-auth
