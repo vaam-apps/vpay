@@ -2,36 +2,59 @@
 //! — how a subject proved who they are, as its own object
 //! ([ADR-0019](../../../../docs/adr/0019-credential-model.md)).
 //!
-//! # What this module does not know
+//! # What this module does not know, and that is the whole design
 //!
-//! It **never hashes, never verifies and never decrypts**, and since VP-6a
-//! (migration 0056) it holds no secret at all: the `password` and `totp` rows
-//! were deleted with the sign-in that checked them, and
-//! `credentials_password_and_totp_are_retired` refuses a new one.
-//! [`CredentialRow::material`] stays an opaque `Option<String>` for the kinds
-//! the table can still hold.
+//! It **never hashes, never verifies and never decrypts**. [`CredentialRow::material`]
+//! is an opaque string on the way in and on the way out, whatever the kind:
+//! an argon2id PHC string for `password`, an AES-256-GCM sealed RFC 6238
+//! secret for `totp`, a base64url COSE public key for `webauthn` when that
+//! exists. `vpay_api::staff_auth` owned argon2id, RFC 6238 and the AEAD,
+//! because those need deployment secrets this crate has no business holding; it
+//! was deleted with the sign-in in VP-6a and comes back in VPA-3.
 //!
-//! # What is live: one kind, [`CredentialKind::Oidc`]
+//! That property is [`crate::staff`]'s, carried over verbatim in spirit — it
+//! stated it for two named columns, and the point of the split is that it now
+//! holds for a column whose contents this module could not interpret even if
+//! it wanted to. It extends one step further than it used to: this module
+//! also **never fetches a JWKS**. A federated credential's material is the
+//! issuer's public keys, which live behind `vpay_api`'s `jwks_cache`, and
+//! this table holds only the `(issuer, subject)` pair that names the identity.
 //!
-//! A federated link is `(issuer, subject)` and nothing secret. It is how a
-//! person vaam vouches for is found again: the first pairing provisions a
-//! staff member and writes the link (`issuer = "vaam"`, `subject = <the vaam
-//! user id>`), and every later pairing finds the same member through
-//! [`Credentials::find_federated`]. The accepted issuers are configuration, not
-//! data: a row whose issuer the caller does not ask for verifies nothing.
+//! The one credential rule that **is** here is the replay guard, and it is
+//! here for the reason it always was: it is a compare-and-swap on a row, and
+//! two concurrent presentations of the same six digits are exactly the race a
+//! read-then-write would lose. See [`Credentials::advance_counter`].
 //!
 //! # Declaring a kind is not implementing it
 //!
-//! [`CredentialKind`] has **six** variants; one is reachable. The others are
-//! shapes the schema can hold. A reader who finds
+//! [`CredentialKind`] has **eight** variants and this deployment can store
+//! **two** that it could not between migrations 0056 and 0058:
+//! [`CredentialKind::Password`] and [`CredentialKind::Totp`] (VPA-2). Nothing
+//! mints any of the other six, and since VP-6a nothing mints or verifies those
+//! two either until VPA-3 restores `vpay_api::staff_auth`. They are shapes the
+//! schema can hold. A reader who finds
 //! [`CredentialKind::Webauthn`] here must not conclude vpay supports WebAuthn;
 //! `docs/status.md` carries the gap.
 //!
+//! # Where this stands (VPA-2)
+//!
+//! Migration 0056 deleted every `password` and `totp` row and closed both kinds
+//! with `credentials_password_and_totp_are_retired`; migration 0058 drops that
+//! constraint (owner ruling R5), so [`CredentialKind::Password`] and
+//! [`CredentialKind::Totp`] are back in the vocabulary and the replay guard
+//! ([`Credentials::advance_counter`]) is back with them. The rows are **not**
+//! back: a deployment that ran 0056 re-enrols its staff. `oidc` rows were never
+//! touched. Nothing in the workspace calls the restored methods yet; the sign-in
+//! that does is VPA-3.
+//!
 //! # A subject may hold no credential at all
 //!
-//! There is no invariant that a staff member has a credential: `vpay-server
-//! staff add` writes none, and a member created that way is reached only through
-//! a console key (`crate::console_keys`).
+//! There is no invariant that a staff member has a credential and none that
+//! they have a password — no `NOT NULL`, no CHECK, and nothing in this module
+//! that assumes one. Just-in-time SSO provisioning creates a member who has
+//! never had a password and never will, so every read here answers `None`
+//! rather than erroring, and the caller decides what a missing credential
+//! means on its own path.
 
 use std::fmt;
 
@@ -65,6 +88,12 @@ const MODEL: &str = "Credential";
 /// material this module cannot read.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum CredentialKind {
+    /// An argon2id PHC string, peppered from configuration. **Storable**
+    /// (migration 0058); nothing writes or checks one until VPA-3.
+    Password,
+    /// The AES-256-GCM sealed RFC 6238 shared secret. **Storable**
+    /// (migration 0058); nothing writes or checks one until VPA-3.
+    Totp,
     /// RFC 4226's counter-based cousin. Declared, not implemented.
     Hotp,
     /// A single-use link mailed to the subject. Declared, not implemented;
@@ -92,10 +121,12 @@ pub enum CredentialKind {
     Oidc,
 }
 
-/// The stored spelling of [`CredentialKind::Hotp`], one of the six names that
-/// `credentials_kind_is_known` admits and `credentials_password_and_totp_are_retired`
-/// leaves open (the other two of the eight, `password` and `totp`, are closed
-/// by migration 0056).
+/// The stored spelling of [`CredentialKind::Password`], and one of the eight
+/// `credentials_kind_is_known` admits.
+const KIND_PASSWORD: &str = "password";
+/// The stored spelling of [`CredentialKind::Totp`].
+const KIND_TOTP: &str = "totp";
+/// The stored spelling of [`CredentialKind::Hotp`].
 const KIND_HOTP: &str = "hotp";
 /// The stored spelling of [`CredentialKind::MagicLink`].
 const KIND_MAGIC_LINK: &str = "magic_link";
@@ -109,14 +140,15 @@ const KIND_WEBAUTHN: &str = "webauthn";
 const KIND_OIDC: &str = "oidc";
 
 impl CredentialKind {
-    /// Every variant, in the order `credentials_kind_is_known` lists them (minus
-    /// the two migration 0056 retired).
+    /// Every variant, in the order `credentials_kind_is_known` lists them.
     ///
     /// Public because the vocabulary is a **contract with a CHECK
     /// constraint**, and a test that walks it is how the two are kept in
     /// step; `a_kind_spelled_here_is_a_kind_the_database_admits` in
     /// `vpay-db/tests/repositories.rs` inserts one row per entry.
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 8] = [
+        Self::Password,
+        Self::Totp,
         Self::Hotp,
         Self::MagicLink,
         Self::EmailOtp,
@@ -129,6 +161,8 @@ impl CredentialKind {
     #[must_use]
     pub fn as_wire_str(self) -> &'static str {
         match self {
+            Self::Password => KIND_PASSWORD,
+            Self::Totp => KIND_TOTP,
             Self::Hotp => KIND_HOTP,
             Self::MagicLink => KIND_MAGIC_LINK,
             Self::EmailOtp => KIND_EMAIL_OTP,
@@ -148,6 +182,8 @@ impl CredentialKind {
     #[must_use]
     pub fn parse(value: &str) -> Option<Self> {
         match value {
+            KIND_PASSWORD => Some(Self::Password),
+            KIND_TOTP => Some(Self::Totp),
             KIND_HOTP => Some(Self::Hotp),
             KIND_MAGIC_LINK => Some(Self::MagicLink),
             KIND_EMAIL_OTP => Some(Self::EmailOtp),
@@ -175,7 +211,7 @@ impl CredentialKind {
     /// a different index.
     #[must_use]
     pub fn is_singleton_per_subject(self) -> bool {
-        matches!(self, Self::Hotp)
+        matches!(self, Self::Password | Self::Totp | Self::Hotp)
     }
 
     /// Whether this kind's material is a secret this deployment stores.
@@ -220,15 +256,14 @@ pub struct CredentialRow {
     /// counter, or `0`. Never `NULL`: see [`Credentials::advance_counter`].
     pub counter: i64,
     /// Whether this material was issued by an operator and must be replaced
-    /// by material the subject chose. Only ever `true` on a password, and
-    /// there are none since migration 0056, so it is always `false`
-    /// (`credentials_only_a_password_may_require_change`).
+    /// by material the subject chose. Only ever `true` on a password —
+    /// `credentials_only_a_password_may_require_change`.
     pub must_change: bool,
     /// When a transient credential stops being presentable. `None` for every
     /// row this deployment can write, because nothing writes a transient kind.
     pub expires_at: Option<OffsetDateTime>,
-    /// When the row was created. For a federated link this **is** the date of
-    /// the first pairing.
+    /// When the row was created. For a `totp` row this **is** the enrolment
+    /// date: under the split, enrolment is the existence of the row.
     pub created_at: OffsetDateTime,
     /// When it last changed.
     pub updated_at: OffsetDateTime,
@@ -318,13 +353,68 @@ impl fmt::Debug for NewCredential {
     }
 }
 
-/// Reads of the `credentials` table. One method since VP-6a: the password and
-/// TOTP credentials, and with them `create`, `advance_counter`,
-/// `replace_material` and the per-member read, went with the sign-in that
-/// used them. The only writer left is the just-in-time provisioning
-/// transaction ([`crate::staff::provision_federated_in_tx`]).
+/// Reads and writes of the `credentials` table.
+///
+/// Four methods, every one of them through CrateStack, and every one of them
+/// **credential-agnostic**: none takes or returns anything but an opaque
+/// string, a kind and a counter.
 #[async_trait]
 pub trait Credentials {
+    /// Inserts one credential.
+    ///
+    /// `create`, not `upsert`, and the choice is load-bearing on this table
+    /// in a way it was only defensive on `staff_members`. An upsert would
+    /// make a second enrolment **silently replace a working second factor**
+    /// with one the caller had just been shown, which is a second-factor
+    /// reset with no authentication in front of it. A create raises instead,
+    /// and the partial unique index
+    /// `credentials_one_singleton_kind_per_staff_member` is what it collides
+    /// with.
+    ///
+    /// That index **replaces** `Staff::enrol_totp`'s old
+    /// `totp_enrolled_at IS NULL` guard. The guard was a `WHERE` clause a
+    /// future edit could drop with nothing to say so; the index is the
+    /// database refusing.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`] — [`crate::PersistenceError::Unique`] when
+    /// the id is taken or a per-kind uniqueness rule fires,
+    /// [`crate::PersistenceError::Check`] when the kind is outside the
+    /// vocabulary, when a bound is exceeded, or when the material/identity
+    /// combination does not match the kind,
+    /// [`crate::PersistenceError::Denied`] if `model Credential` loses its
+    /// `@@allow("create", …)` (loud: the create path evaluates its policies
+    /// in Rust before any SQL), [`crate::PersistenceError::Backend`]
+    /// otherwise.
+    async fn create(&self, new: NewCredential) -> Result<(), DbError>;
+
+    /// The credential of one kind held by one staff member, or `None`.
+    ///
+    /// **`None` is an ordinary answer and not an error**, because a subject
+    /// may hold no credential of a given kind and, after just-in-time SSO
+    /// provisioning, may hold no secret-bearing credential at all. A caller
+    /// that treats `None` as "impossible" is a caller that will panic on the
+    /// first federated staff member.
+    ///
+    /// Only meaningful for a kind where
+    /// [`CredentialKind::is_singleton_per_subject`] is `true`: for the
+    /// others, several rows are correct and this answers with whichever the
+    /// index returns first. It is deliberately not `find_all_for` — nothing
+    /// needs that yet, and a repository method with no caller is a claim
+    /// `docs/status.md` would have to carry.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::CredentialKindUnknown`] if the stored `kind` is outside the
+    /// vocabulary (only reachable if `credentials_kind_is_known` were
+    /// dropped), [`DbError::Persistence`] otherwise.
+    async fn find_for_staff_member(
+        &self,
+        staff_member_id: &str,
+        kind: CredentialKind,
+    ) -> Result<Option<CredentialRow>, DbError>;
+
     /// The federated link for `(issuer, subject)`, or `None`.
     ///
     /// **The only way a federated identity is ever looked up**, and the key is
@@ -346,10 +436,113 @@ pub trait Credentials {
         issuer: &str,
         subject: &str,
     ) -> Result<Option<CredentialRow>, DbError>;
+
+    /// **The replay guard.** Records `counter` as the last accepted one, but
+    /// only if it is strictly greater than what is stored.
+    ///
+    /// `false` means the code was already spent — the caller refuses the
+    /// sign-in. This is the whole of the replay defence and it is a
+    /// compare-and-swap on a row rather than a check in Rust, because two
+    /// concurrent presentations of the same six digits are exactly the race a
+    /// read-then-write would lose.
+    ///
+    /// It is `crate::staff::Staff::record_totp_step` moved, with its
+    /// reasoning intact and its name generalised: the same statement serves
+    /// RFC 6238's time step and RFC 4226's counter, because both are
+    /// "strictly greater than the last accepted".
+    ///
+    /// # Why a missing `@@allow("update", …)` is the most dangerous edit in
+    /// this crate
+    ///
+    /// `update_many`'s policy is compiled into the statement's own `WHERE`,
+    /// so an empty allow list renders `FALSE`, the statement matches zero
+    /// rows and this returns `Ok(false)` — **with no error anywhere**.
+    /// `Ok(false)` is refuse-the-code, so the immediate effect is fail-closed
+    /// and nobody can sign in; the danger is the fix somebody reaches for
+    /// when every sign-in starts failing. It is pinned by
+    /// [`tests::every_action_this_module_calls_has_an_allow_arm`], which
+    /// names the slot rather than the symptom.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`].
+    async fn advance_counter(
+        &self,
+        id: &str,
+        counter: i64,
+        now: OffsetDateTime,
+    ) -> Result<bool, DbError>;
+
+    /// Replaces the opaque material and clears [`CredentialRow::must_change`].
+    ///
+    /// `false` means no such credential. `crate::staff::Staff::set_password`
+    /// moved and generalised: it takes no "old material" parameter for that
+    /// method's reason — the caller has already authenticated the session
+    /// making the change, and re-checking material this method would then
+    /// overwrite would be a second copy of that check in the wrong layer.
+    ///
+    /// Note what `false` now means that it could not before. It used to mean
+    /// "no such staff member", which the caller had already ruled out. It now
+    /// **also** means "this staff member holds no credential of that kind",
+    /// which is reachable the moment a member is provisioned through SSO and
+    /// has never had a password. A caller must render that as a refusal, not
+    /// as an impossibility.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`].
+    async fn replace_material(
+        &self,
+        id: &str,
+        material: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DbError>;
 }
 
 #[async_trait]
 impl Credentials for crate::repository::PgRepositories {
+    async fn create(&self, new: NewCredential) -> Result<(), DbError> {
+        // THROUGH CRATESTACK. Every column of the table is named here, which
+        // is what migration 0044's "no DEFAULT on any column a writer names"
+        // buys: `cratestack-macros` drops every `@default(...)` field from
+        // `CreateCredentialInput`, so a defaulted column would be one this
+        // literal could not set and the row would carry whatever the DDL
+        // invented.
+        self.cs
+            .credential()
+            .create(create_input(new))
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "create", error)))?;
+
+        Ok(())
+    }
+
+    async fn find_for_staff_member(
+        &self,
+        staff_member_id: &str,
+        kind: CredentialKind,
+    ) -> Result<Option<CredentialRow>, DbError> {
+        // `find_many().limit(1)` and not `find_unique`, because the key here
+        // is `(staff_member_id, kind)` under a partial unique index and not
+        // the primary key. `Staff::find_by_email`'s argument for the LIMIT
+        // holds verbatim: with the index in place there can only be one, and
+        // without it this must still not decode an arbitrary number of
+        // credentials into memory because somebody dropped a constraint.
+        let rows = self
+            .cs
+            .credential()
+            .find_many()
+            .where_(credential::staff_member_id().eq(staff_member_id.to_owned()))
+            .where_(credential::kind().eq(kind.as_wire_str().to_owned()))
+            .limit(1)
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "read", error)))?;
+
+        rows.into_iter().next().map(row_from_model).transpose()
+    }
+
     async fn find_federated(
         &self,
         issuer: &str,
@@ -369,10 +562,64 @@ impl Credentials for crate::repository::PgRepositories {
 
         rows.into_iter().next().map(row_from_model).transpose()
     }
+
+    async fn advance_counter(
+        &self,
+        id: &str,
+        counter: i64,
+        now: OffsetDateTime,
+    ) -> Result<bool, DbError> {
+        // `lt(counter)` on the *stored* value, i.e. "the stored counter is
+        // below this one". That is the compare half of the compare-and-swap
+        // and it is the reason the column is NOT NULL: `NULL < counter` is
+        // NULL, so a nullable column would refuse every first code.
+        let summary = self
+            .cs
+            .credential()
+            .update_many()
+            .where_(credential::id().eq(id.to_owned()))
+            .where_(credential::counter().lt(counter))
+            .set(cratestack_schema::UpdateCredentialInput {
+                counter: Some(counter),
+                updated_at: Some(to_chrono(now)),
+                ..cratestack_schema::UpdateCredentialInput::default()
+            })
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
+
+        Ok(summary.ok == 1)
+    }
+
+    async fn replace_material(
+        &self,
+        id: &str,
+        material: &str,
+        now: OffsetDateTime,
+    ) -> Result<bool, DbError> {
+        let summary = self
+            .cs
+            .credential()
+            .update_many()
+            .where_(credential::id().eq(id.to_owned()))
+            .set(cratestack_schema::UpdateCredentialInput {
+                material: Some(Some(material.to_owned())),
+                must_change: Some(false),
+                updated_at: Some(to_chrono(now)),
+                ..cratestack_schema::UpdateCredentialInput::default()
+            })
+            .run(&system_context())
+            .await
+            .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
+
+        Ok(summary.ok == 1)
+    }
 }
 
-/// The whole `INSERT` for one credential, used by the just-in-time
-/// provisioning transaction ([`crate::staff::provision_federated_in_tx`]).
+/// The whole `INSERT` for one credential, shared by [`Credentials::create`]
+/// and the just-in-time provisioning transaction
+/// ([`crate::staff::provision_federated_in_tx`]) so the two cannot disagree
+/// about a column.
 pub(crate) fn create_input(new: NewCredential) -> cratestack_schema::CreateCredentialInput {
     cratestack_schema::CreateCredentialInput {
         id: new.id,
@@ -381,8 +628,9 @@ pub(crate) fn create_input(new: NewCredential) -> cratestack_schema::CreateCrede
         material: new.material,
         issuer: new.issuer,
         subject: new.subject,
-        // NOT NULL since migration 0044, seeded to 0; no kind still in use
-        // reads it (it was the TOTP replay guard).
+        // The seed migration 0044 requires, and the reason it is not
+        // nullable: `NULL < step` is NULL in SQL, so a nullable
+        // column would refuse this subject's first code forever.
         counter: 0,
         must_change: new.must_change,
         expires_at: new.expires_at.map(to_chrono),
@@ -425,30 +673,30 @@ mod tests {
     /// Every `@@allow` slot this module's calls need is occupied — asked of
     /// the descriptor rather than of a database, so it costs milliseconds.
     ///
-    /// `read` serves `find_federated`, and `create` serves the just-in-time
-    /// provisioning transaction ([`crate::staff::provision_federated_in_tx`]).
-    /// `update` and `delete` have no caller since VP-6a (the TOTP replay guard
-    /// and the password change went with the sign-in), and are kept for the
-    /// reason the model states: customer erasure will need `delete`.
+    /// [`crate::staff`]'s equivalent, moved with the thing that makes it
+    /// urgent: the TOTP replay guard is [`Credentials::advance_counter`] now,
+    /// so the silent-and-dangerous `update` slot is **this** model's.
     #[test]
     fn every_action_this_module_calls_has_an_allow_arm() {
         use cratestack_schema::models::CREDENTIAL_MODEL as descriptor;
 
         assert!(
             !descriptor.read_allow_policies.is_empty(),
-            "model Credential lost @@allow(\"read\", …): find_federated would answer `no such \
-             link` for every identity, because a read policy is compiled into the WHERE clause \
-             and an empty allow list renders FALSE — every vaam pairing would provision a \
-             second member"
+            "model Credential lost @@allow(\"read\", …): find_for_staff_member would answer `no \
+             such credential` for every subject, because a read policy is compiled into the \
+             WHERE clause and an empty allow list renders FALSE — every sign-in would fail"
         );
         assert!(
             !descriptor.create_allow_policies.is_empty(),
-            "model Credential lost @@allow(\"create\", …): a first pairing would fail with a \
-             Forbidden naming the model"
+            "model Credential lost @@allow(\"create\", …): `vpay-server staff add` would fail \
+             with a Forbidden naming the model, and TOTP enrolment with it"
         );
         assert!(
             !descriptor.update_allow_policies.is_empty(),
-            "model Credential lost @@allow(\"update\", …)"
+            "model Credential lost @@allow(\"update\", …): advance_counter is an update_many, its \
+             policy is part of the statement's own WHERE, and an empty allow list renders \
+             FALSE — the TOTP replay guard would match zero rows and answer Ok(false) with no \
+             error anywhere"
         );
         assert!(
             !descriptor.delete_allow_policies.is_empty(),
@@ -476,17 +724,13 @@ mod tests {
         for kind in CredentialKind::ALL {
             assert_eq!(CredentialKind::parse(kind.as_wire_str()), Some(kind));
         }
-        assert_eq!(CredentialKind::parse("Oidc"), None, "case matters");
-        // Retired by migration 0056: the database refuses both, so a row of
-        // either is one this crate must not decode as anything.
-        assert_eq!(CredentialKind::parse("password"), None);
-        assert_eq!(CredentialKind::parse("totp"), None);
+        assert_eq!(CredentialKind::parse("Password"), None, "case matters");
         assert_eq!(CredentialKind::parse(""), None);
         assert_eq!(CredentialKind::parse("magiclink"), None);
         assert_eq!(CredentialKind::parse("saml"), None);
     }
 
-    /// Six distinct spellings, and the two rules that are *not* one rule.
+    /// Eight distinct spellings, and the two rules that are *not* one rule.
     ///
     /// The second assertion is the federation amendment written as a test:
     /// "one password per subject" and "many federated links per subject, at
@@ -499,12 +743,18 @@ mod tests {
             .iter()
             .map(|kind| kind.as_wire_str())
             .collect();
-        assert_eq!(spellings.len(), 6, "two kinds share a stored spelling");
+        assert_eq!(spellings.len(), 8, "two kinds share a stored spelling");
 
-        assert!(
-            CredentialKind::Hotp.is_singleton_per_subject(),
-            "Hotp is one-per-subject"
-        );
+        for kind in [
+            CredentialKind::Password,
+            CredentialKind::Totp,
+            CredentialKind::Hotp,
+        ] {
+            assert!(
+                kind.is_singleton_per_subject(),
+                "{kind:?} is one-per-subject"
+            );
+        }
         for kind in [
             CredentialKind::Webauthn,
             CredentialKind::MagicLink,
@@ -548,7 +798,7 @@ mod tests {
         let secret_bearing = CredentialRow {
             id: "cred_1".to_owned(),
             staff_member_id: Some("stf_1".to_owned()),
-            kind: CredentialKind::Webauthn,
+            kind: CredentialKind::Password,
             material: Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".to_owned()),
             issuer: None,
             subject: None,
@@ -569,16 +819,16 @@ mod tests {
         assert!(rendered.contains("stf_1"));
         assert!(rendered.contains("42"), "the counter is not a secret");
 
-        // A sealed counter seed is material too, and the redaction is by column
+        // A sealed TOTP seed is material too, and the redaction is by column
         // rather than by kind precisely so this needs no second branch.
         let sealed = CredentialRow {
-            kind: CredentialKind::Hotp,
+            kind: CredentialKind::Totp,
             material: Some("bm9uY2VzZWFsZWQ".to_owned()),
             ..secret_bearing.clone()
         };
         assert!(
             !format!("{sealed:?}").contains("bm9uY2VzZWFsZWQ"),
-            "a sealed counter secret reached a Debug"
+            "a sealed TOTP secret reached a Debug"
         );
 
         // And the other direction: an operator debugging SSO must be able to
@@ -608,7 +858,7 @@ mod tests {
         let new = NewCredential {
             id: "cred_1".to_owned(),
             staff_member_id: Some("stf_1".to_owned()),
-            kind: CredentialKind::Webauthn,
+            kind: CredentialKind::Password,
             material: Some("$argon2id$v=19$m=19456,t=2,p=1$c2FsdA$aGFzaA".to_owned()),
             issuer: None,
             subject: None,
@@ -619,7 +869,7 @@ mod tests {
         let rendered = format!("{new:?}");
         assert!(
             !rendered.contains("$argon2id") && !rendered.contains("aGFzaA"),
-            "NewCredential's Debug leaked the material: {rendered}"
+            "NewCredential's Debug leaked the one-time password's hash: {rendered}"
         );
         assert!(rendered.contains("cred_1"));
     }

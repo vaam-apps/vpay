@@ -22,6 +22,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
+use crate::authorization_codes::AuthorizationCodes;
 use crate::charges::Charges;
 use crate::checkout_sessions::CheckoutSessions;
 use crate::client_assertion::ClientAssertions;
@@ -46,6 +47,8 @@ use crate::refunds::Refunds;
 use crate::settlement::Settlement;
 use crate::signing_keys::SigningKeys;
 use crate::staff::Staff;
+use crate::staff_sessions::StaffSessions;
+use crate::staff_sso_attempts::StaffSsoAttempts;
 use crate::webhook_deliveries::WebhookDeliveries;
 
 /// A future that borrows the transaction it was handed, boxed so the closure
@@ -1132,6 +1135,9 @@ pub trait Repositories:
     + Settlement
     + SigningKeys
     + Staff
+    + StaffSessions
+    + StaffSsoAttempts
+    + AuthorizationCodes
     + TransactionSource
     + WebhookDeliveries
     + std::fmt::Debug
