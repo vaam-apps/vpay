@@ -5,7 +5,10 @@ _Moved out of [docs/runbooks/demo.md](../demo.md) on 2026-09-11 by exp57, which 
 > **Superseded in part, 2026-10-26 (VP-3).** The first bullet below described the
 > token handshake. `/v1` is signed now: the demo proves a **signed read** opens
 > under the response keys it pins, that a **bearer token buys nothing**, and that
-> a request with **no signature** gets vpay's coarse unsigned `401`. See
+> a request with **no signature** gets vpay's coarse unsigned `401`. The last
+> two hold because the demo stack runs `auth.methods: [keypair, hmac_webhooks]`
+> (ADR-0037, written by `just gen-demo-keys`); a deployment that also permits
+> `machine_tokens` answers both from the token path. See
 > [../../flows/signed-transport.md](../../flows/signed-transport.md).
 
 ## 5. What this proves, and what it does not

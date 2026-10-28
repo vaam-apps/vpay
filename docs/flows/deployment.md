@@ -623,7 +623,8 @@ rather than at pull time.
   [ADR-0033](../adr/0033-mcp-is-the-primary-agent-surface.md)), and nothing in
   the chart, its values schema, its NetworkPolicy, its Ingress or compose sets
   it. `mcp` is not in `EnabledSurfaces::ALL`, so every workload here leaves
-  `/mcp/v1` unmounted. An `<release>-mcp` Deployment is ADR-0033 step 6, not
+  `/mcp/v1` unmounted; setting it also needs `auth.methods` to permit
+  `machine_tokens` (ADR-0037, `McpNeedsMachineTokens`). An `<release>-mcp` Deployment is ADR-0033 step 6, not
   built, and so is its place in the connection-budget guard.
 - **Be pulled from anywhere.** ~~§2 describes a workflow that has never run.
   There is no image at `ghcr.io/vaam-apps/vpay-server`, none at `-worker`,

@@ -337,6 +337,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn_url: &str, orange_url: &str) -
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 

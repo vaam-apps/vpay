@@ -1461,8 +1461,10 @@ except `/v1`.
 Every write runs the `/v1` route's own operation, with a required
 `idempotency_key` claimed in vpay's own store. The tokens come from vpay's
 own OP, with the MCP resource as audience; the OP now honours RFC 8707
-`resource`. Since VP-3 (#380) `/v1` is signed and takes no bearer token, so
-the OP's `client_credentials` grant serves this endpoint alone.
+`resource`. From VP-3 (#380) the OP's `client_credentials` grant served this
+endpoint alone; since ADR-0037 (#384, 2026-10-27) it serves `/v1` too
+wherever `auth.methods` permits `machine_tokens`, and `mcp` needs
+`machine_tokens` to boot (`McpNeedsMachineTokens`).
 `/dash/v1/$procs` serves only the dashboard's five procedures, and the
 dashboard's wrapper over the generated client hands out only those five.
 
@@ -1677,3 +1679,54 @@ fallback.
   spec was deleted, not skipped, because it drove the deleted sign-in; the Helm
   render and the compose stack were **not run** where this was written (no
   `helm`/`kubeconform`, no stack images).
+
+## Authentication methods are deployment configuration (2026-10-27, ADR-0037, VPA-1)
+
+[ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)
+makes the ways in a YAML choice, and brings the bearer token back to `/v1`
+beside the signed message. **Built and proven by unit and fixture tests; not run
+against a real Postgres where this was written** (no Docker), so the sealed and
+token round trips against the real tables are CI's `merchant_token_flow.rs` and
+`signed_transport.rs`, both edited here and only compiled.
+
+- **`auth.methods`** (`vpay-config/src/auth.rs`): `keypair`, `machine_tokens`,
+  `hmac_webhooks`, `human_login`; absent means all four. Eight rules (and the per-merchant credential rule), one
+  `ConfigError` variant and one fixture (`auth-methods-*.yml`) each, listed in
+  [the config reference](../reference/vpay-config.md#auth--which-ways-of-authenticating-a-deployment-permits-adr-0037).
+  A block belonging to a method that is not permitted is refused, so a
+  `[keypair]` deployment must drop `jwks`, `grant_types` and
+  `allowed_audiences` from its merchant registrations. A merchant needs
+  `cose_keys` or a `jwks`; the three of `jwks`, `grant_types` and
+  `allowed_audiences` are required only together with a `jwks`, so a
+  `cose_keys`-only merchant boots under the default. A null `methods:` is
+  refused (it is not the absent key), as are `auth_methods:`-style near misses
+  in any letter case (`Auth:`) and an `auth:` written under `deployment:`
+  (`deployment` denies unknown fields). `grant_types` or `allowed_audiences`
+  without a `jwks` is refused as a dormant OAuth half
+  (`MerchantOauthWithoutJwks`). Every `vpay-server` mode logs the resolved
+  methods at `info` at boot.
+- **`/v1` mode follows the methods**: `[keypair]` is `Required` (as before),
+  `[keypair, machine_tokens]` is `Optional` with the unresolved mode pinned to
+  `Required`, `[machine_tokens]` is `Off`. In `merchant_scope` a verified
+  signer resolves through the key registry; otherwise a bearer token
+  (audience `vpay:v1`) resolves through `merchant_id_for` (from memory, before
+  the kill switch is asked) and the same `required_scopes`, held to the
+  registration's **current** YAML `scopes` as well as the token's own claim;
+  both together is `400`. `disable_client` reaches a bearer token on `/v1` and
+  on the merchant MCP endpoint (`MerchantMcpAuth` asks the same
+  `DisabledClients` port). Span field `auth.method = keypair | machine_token`.
+- **`/v1/oauth/token` is mounted only with `machine_tokens`**; otherwise the
+  honest `404`. `GET /.well-known/vpay-auth` lists the permitted and served
+  methods.
+- **`hmac_webhooks` off refuses any `webhooks[]` entry at boot**: no merchant
+  webhooks until sealed delivery (VP-8).
+- **Tests**: 20 refusal fixtures and 5 loading ones in `vpay-config`, and 17 router cases in
+  `vpay-api/src/auth_methods_tests.rs`, including a sealed call
+  through the real layer and the SDK next to a token call on one router; the
+  guard proofs are in
+  [verification/2026-10-27-vpa1-auth-methods.md](verification/2026-10-27-vpa1-auth-methods.md).
+- **Not done.** `human_login` is permitted by the default and served by nothing
+  (naming it is refused; VPA-3). The SDKs have no token mode (VPA-6). A
+  legacy-only (`keypair` off) deployment still loads the envelope response keys
+  at boot. A token caller is not protected the way a sealed one is
+  (ADR-0037, Consequences).

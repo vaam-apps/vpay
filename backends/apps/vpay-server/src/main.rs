@@ -46,7 +46,7 @@ use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
 use vpay_api::resource_auth::JwtValidator;
 use vpay_api::{ResourceConfig, RouterDeps};
-use vpay_config::{ConfigError, LogFormat, ServerArgs, ShutdownSignals};
+use vpay_config::{AuthMethod, ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
 use vpay_db::DbError;
 
@@ -445,10 +445,39 @@ async fn run() -> anyhow::Result<()> {
         false => None,
     };
 
+    // ADR-0037: a deployment that permits `machine_tokens` accepts a bearer
+    // token on `/v1` beside a signed request, validated against this
+    // process's own JWKS over loopback like the MCP endpoint's.
+    let v1_envelope = match booted.v1_envelope {
+        Some(envelope)
+            if resource_config
+                .auth_methods()
+                .permits(AuthMethod::MachineTokens) =>
+        {
+            Some(
+                envelope
+                    .with_machine_tokens(loopback_merchant_validator(bound, &booted.merchant_op)?),
+            )
+        }
+        other => other,
+    };
+    if let Some(envelope) = &v1_envelope {
+        tracing::info!(
+            mode = ?envelope.mode(),
+            methods = %resource_config
+                .auth_methods()
+                .served()
+                .map(AuthMethod::as_str)
+                .collect::<Vec<_>>()
+                .join(","),
+            "/v1 authentication (auth.methods)"
+        );
+    }
+
     let deps = RouterDeps {
         repositories: booted.repositories,
         merchant_op: booted.merchant_op,
-        v1_envelope: booted.v1_envelope,
+        v1_envelope,
         management_envelope: booted.management_envelope,
         adapters,
         resource_config,
@@ -830,24 +859,38 @@ async fn announce_signing_key(
 /// The merchant MCP endpoint's token validator (ADR-0033 D9).
 ///
 /// This process's own JWKS over loopback ([`loopback_jwks_url`]), the merchant
-/// OP's issuer, and the MCP resource identifier as the **only** audience: a
-/// merchant client lists that identifier in its `allowed_audiences` to opt in.
-/// Since VP-3, `/v1` takes no bearer token at all (every request is signed), so
-/// the OP's client-credentials grant serves this endpoint and the `vpay:v1`
-/// audience no other; a `vpay:v1` token is refused here because its audience is
-/// not this one.
+/// OP's issuer, and the MCP resource identifier as the **only** audience (built
+/// by `vpay_api::resource_auth::mcp_token_validator`): a merchant client lists
+/// that identifier in its `allowed_audiences` to opt in. A `vpay:v1` token is
+/// refused here because its audience is not this one, and the reverse.
 fn loopback_mcp_validator(
     bound: SocketAddr,
     merchant_op: &MerchantOp,
     public_base_url: &str,
 ) -> anyhow::Result<JwtValidator> {
-    JwtValidator::new(
+    vpay_api::resource_auth::mcp_token_validator(
         loopback_jwks_url(bound),
         JWKS_REFRESH_INTERVAL,
         merchant_op.issuer(),
-        vpay_api::mcp::merchant_resource(public_base_url),
+        public_base_url,
     )
     .context("building the JWKS client the MCP token validator fetches with")
+}
+
+/// The `/v1` bearer-token validator (ADR-0037): this process's own JWKS over
+/// loopback and the merchant OP's issuer, built by
+/// `vpay_api::resource_auth::merchant_token_validator`, whose audience
+/// (`vpay:v1`, the only one) is tested in `vpay-api` and not typed here.
+fn loopback_merchant_validator(
+    bound: SocketAddr,
+    merchant_op: &MerchantOp,
+) -> anyhow::Result<JwtValidator> {
+    vpay_api::resource_auth::merchant_token_validator(
+        loopback_jwks_url(bound),
+        JWKS_REFRESH_INTERVAL,
+        merchant_op.issuer(),
+    )
+    .context("building the JWKS client the /v1 token validator fetches with")
 }
 
 /// Runs an operator subcommand and returns, without binding anything.

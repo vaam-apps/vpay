@@ -1,0 +1,21 @@
+# Fixture for `a_case_variant_of_the_auth_key_is_refused_not_ignored`
+# (backends/crates/vpay-config/src/config.rs, ADR-0037, VPA-1).
+#
+# `Auth:` is not the key `auth`: YAML keys are case-sensitive, so `Config` would
+# drop it and the deployment would permit all four methods while its operator
+# believed they had narrowed them.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+Auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci

@@ -503,6 +503,12 @@ config:
   #         capabilities: [console_pairing]
   #         cose_keys:
   #           - public_key: <vaam's Ed25519 public key, 43 characters of base64url>
+  # Which ways of authenticating the deployment permits is the overlay's too
+  # (ADR-0037, `docs/reference/vpay-config.md`, "`auth:`"): `auth.methods` is
+  # YAML like everything above and is not a value of this chart. Absent, every
+  # method is permitted. A deployment that serves one application writes its own,
+  # e.g. `auth: {methods: [keypair, hmac_webhooks]}`, and must then drop the blocks of the
+  # methods it left out (boot names each one it finds).
   createOverlayConfigMap: false
   overlay: ""
 

@@ -128,7 +128,8 @@ without naming.
 > takes a third value, `mcp`, which mounts the merchant MCP endpoint
 > `POST /mcp/v1` and its RFC 9728 metadata. It is **opt-in only**: it is not in
 > `EnabledSurfaces::ALL`, so an absent key (every deployment this ADR upgraded
-> unchanged) never mounts it. `mcp_staff`, the staff endpoint's value, is
+> unchanged) never mounts it, and it refuses to boot unless `auth.methods`
+> permits `machine_tokens` ([ADR-0037](0037-authentication-methods-are-deployment-configuration.md), `McpNeedsMachineTokens`). `mcp_staff`, the staff endpoint's value, is
 > designed in ADR-0033 and **not built**. Nothing in the chart or compose sets
 > `mcp`: the workloads this section's tiers imply for it are ADR-0033 step 6,
 > also not built. Nothing else this section decides changed.

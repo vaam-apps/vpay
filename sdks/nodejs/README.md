@@ -38,7 +38,12 @@ Requires Node.js `>=22.11.0`.
 
 ## How a call is signed
 
-`/v1` accepts no API key and no token ([ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md)).
+`/v1` accepts no API key, and this SDK sends no token: it only seals
+([ADR-0035](../../docs/adr/0035-v1-is-a-signed-message-not-a-token.md)). A
+deployment whose `auth.methods` also permits `machine_tokens` accepts a bearer
+token from other callers beside a signed request
+([ADR-0037](../../docs/adr/0037-authentication-methods-are-deployment-configuration.md));
+this SDK does not speak that half.
 A merchant is a registered **Ed25519 public key** (`merchant_clients[].cose_keys`
 in vpay's configuration); vpay finds you by the key that signed. Concretely:
 

@@ -736,6 +736,11 @@ pub struct Config {
     #[garde(skip)]
     #[serde(default)]
     pub routing: Routing,
+    /// Which ways of authenticating this deployment permits (ADR-0037).
+    /// Absent permits all of them. See [`crate::auth`].
+    #[garde(skip)]
+    #[serde(default)]
+    pub auth: crate::auth::AuthConfig,
 }
 
 /// `routing:`: the deployment's inputs to the router's score.
@@ -964,7 +969,15 @@ impl Config {
         // resolution is discarded here on purpose — this call exists only
         // to fail boot early, and the router build (`vpay_api::router`) is
         // where the resolved value is actually used.
-        self.deployment.enabled_surfaces()?;
+        let surfaces = self.deployment.enabled_surfaces()?;
+
+        // Right after, for the same reason: which ways of authenticating are
+        // permitted (ADR-0037) decides which blocks may exist at all, so a
+        // contradiction is named here, not as whichever per-merchant rule
+        // would have tripped on the block first.
+        let auth_methods = self.auth.resolve()?;
+        crate::auth::validate_auth_methods(self, &auth_methods, surfaces)?;
+        let machine_tokens = auth_methods.permits(crate::auth::AuthMethod::MachineTokens);
 
         // Before any per-merchant rule, because it is not one: this is a
         // property of the whole deployment, and a file that carries it is
@@ -1125,7 +1138,7 @@ impl Config {
         }
 
         for merchant in &self.merchant_clients {
-            validate_merchant_client(merchant)?;
+            validate_merchant_client(merchant, machine_tokens)?;
             validate_publishable_keys(merchant, livemode)?;
             validate_display_name(merchant)?;
             validate_checkout_origins(merchant, livemode)?;
@@ -1481,32 +1494,74 @@ fn validate_required_rail_keys(provider: &ProviderHost, livemode: bool) -> Resul
     Ok(())
 }
 
-/// ADR-0010's merchant-client rules: no client secret, ever; a non-empty,
-/// non-degenerate JWK set (`private_key_jwt` with no key can never
-/// authenticate); `client_credentials` as the only permitted grant; and
+/// ADR-0010's merchant-client rules: no client secret, ever; **a credential**
+/// (`cose_keys` or `jwks`, [`ConfigError::MerchantNoCredential`]); and, for a
+/// registration that has a `jwks` while `machine_tokens` is permitted, a
+/// non-empty, non-degenerate JWK set (`private_key_jwt` with no key can never
+/// authenticate), `client_credentials` as the only permitted grant, and
 /// [`MERCHANT_AUDIENCE`] present in `allowed_audiences`, without which the
 /// client's `/v1` tokens are unusable in a way nothing downstream can
-/// diagnose (see [`ConfigError::MerchantMissingV1Audience`]).
+/// diagnose (see [`ConfigError::MerchantMissingV1Audience`]). A registration
+/// with `cose_keys` alone is exempt from all of those (ADR-0037).
 ///
 /// The audience rule is checked last on purpose: it is the only one of the
 /// four that is about what a *correctly shaped* registration would go on to
 /// do at runtime, so a config that is malformed in a more basic way should
 /// be reported as that instead.
-fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError> {
+fn validate_merchant_client(
+    merchant: &MerchantClient,
+    machine_tokens: bool,
+) -> Result<(), ConfigError> {
     if merchant.client_secret.is_some() {
         return Err(ConfigError::ClientSecretPresent(merchant.client_id.clone()));
+    }
+    // A registration is a way to authenticate. With neither a signing key nor
+    // a `jwks` there is none, whichever methods the deployment permits.
+    // `jwks: {keys: []}` is *present* and stays `EmptyMerchantJwks` below.
+    if merchant.jwks.is_none() && merchant.cose_keys.is_empty() {
+        return Err(ConfigError::MerchantNoCredential(
+            merchant.client_id.clone(),
+        ));
+    }
+    // The OAuth half of a registration exists to mint and verify a bearer
+    // token. Without `machine_tokens` it is refused if present
+    // (`validate_auth_methods`) and not required here.
+    if !machine_tokens {
+        return Ok(());
+    }
+    // A merchant with `cose_keys` alone has no OAuth half and may omit all
+    // three of `jwks`, `grant_types` and `allowed_audiences`: it cannot use a
+    // token, which is the deployment's default offering and not its demand.
+    // The three are required together, and only for a merchant that has a
+    // `jwks` (ADR-0037).
+    if merchant.jwks.is_none() {
+        // ...and a half is not a half-door but dormant configuration, refused
+        // for ADR-0037 decision 4's reason: a registration is the OAuth half
+        // whole or not at all.
+        let dormant = if !merchant.grant_types.is_empty() {
+            Some("grant_types")
+        } else if !merchant.allowed_audiences.is_empty() {
+            Some("allowed_audiences")
+        } else {
+            None
+        };
+        if let Some(key) = dormant {
+            return Err(ConfigError::MerchantOauthWithoutJwks {
+                client_id: merchant.client_id.clone(),
+                key,
+            });
+        }
+        return Ok(());
     }
     if !jwks_has_at_least_one_key(&merchant.jwks) {
         return Err(ConfigError::EmptyMerchantJwks(merchant.client_id.clone()));
     }
-    for grant in &merchant.grant_types {
-        if *grant != GrantType::ClientCredentials {
-            return Err(ConfigError::DisallowedMerchantGrant {
-                client_id: merchant.client_id.clone(),
-                grant: *grant,
-            });
-        }
+    if merchant.grant_types.is_empty() {
+        return Err(ConfigError::MerchantGrantTypesMissing {
+            client_id: merchant.client_id.clone(),
+        });
     }
+    validate_grants(merchant)?;
     if !merchant
         .allowed_audiences
         .iter()
@@ -1520,6 +1575,21 @@ fn validate_merchant_client(merchant: &MerchantClient) -> Result<(), ConfigError
     // a constant. (It moved to `Config::validate_all` on 2026-09-07 for
     // ADR-0017's dashboard client id; ADR-0036 deleted that client, and the
     // check with it.)
+    Ok(())
+}
+
+/// Whatever `grant_types` a registration does declare is
+/// `[client_credentials]` and nothing else (ADR-0010), whether or not it has a
+/// `jwks` to mint with.
+fn validate_grants(merchant: &MerchantClient) -> Result<(), ConfigError> {
+    for grant in &merchant.grant_types {
+        if *grant != GrantType::ClientCredentials {
+            return Err(ConfigError::DisallowedMerchantGrant {
+                client_id: merchant.client_id.clone(),
+                grant: *grant,
+            });
+        }
+    }
     Ok(())
 }
 
@@ -2311,6 +2381,26 @@ const RETIRED_KEYS: [(&str, &str); 2] = [
     ),
 ];
 
+/// Top-level keys that are near misses of a real one, and what the real one is.
+/// Matched without regard to case, as is `auth` itself (only the exact lowercase
+/// `auth` is the key).
+///
+/// `Config` ignores unknown top-level keys, and for `auth.methods` that is a
+/// fail-open: a deployment that wrote `auth_methods: [keypair]` believes it
+/// narrowed the list and permitted all four. Add a spelling here only when it
+/// was or plausibly will be written by someone who meant the real key.
+const NEAR_MISS_KEYS: [(&str, &str); 5] = [
+    ("auth_methods", AUTH_KEY_MEANT),
+    ("auth-methods", AUTH_KEY_MEANT),
+    ("authentication", AUTH_KEY_MEANT),
+    ("authmethods", AUTH_KEY_MEANT),
+    // `auth:`'s own child, written with the parent forgotten.
+    ("methods", AUTH_KEY_MEANT),
+];
+
+/// What every near miss of `auth` was meant to be.
+const AUTH_KEY_MEANT: &str = "auth: {methods: [...]}";
+
 /// Refuses a document that still carries a retired top-level key.
 ///
 /// `Config` does not set `deny_unknown_fields` (an overlay may carry keys a
@@ -2328,7 +2418,82 @@ fn reject_retired_keys(raw: &figment::value::Value) -> Result<(), ConfigError> {
             });
         }
     }
+    // Case-insensitively: YAML keys are case-sensitive, so `Auth:` is a key
+    // `Config` does not read and would drop, with the same fail-open. The exact
+    // `auth` is the key and is the one spelling that passes.
+    for written in document.keys() {
+        let lowered = written.to_ascii_lowercase();
+        let meant = if lowered == "auth" && written != "auth" {
+            Some(AUTH_KEY_MEANT)
+        } else {
+            NEAR_MISS_KEYS
+                .iter()
+                .find(|(near, _)| *near == lowered)
+                .map(|(_, meant)| *meant)
+        };
+        if let Some(meant) = meant {
+            return Err(ConfigError::NearMissKey {
+                key: written.clone(),
+                meant,
+            });
+        }
+    }
+    // Below the top level `auth` is read nowhere, and only `deployment` denies
+    // unknown fields, so one mis-indented under any other section is dropped
+    // with the same fail-open. Names the first, in alphabetical key order:
+    // figment's `Dict` is a `BTreeMap`, so the document's own order is gone.
+    if let Some(path) = misplaced_auth_path(raw, "") {
+        return Err(ConfigError::MisplacedAuthKey { path });
+    }
     Ok(())
+}
+
+/// The path of the first key spelt `auth` (in any case) below the top level of
+/// `value`, or `None`. `prefix` is the path of `value` itself, empty for the
+/// document, so that the document's own `auth` (the one real key) is depth 1
+/// and never matched; every mapping inside it, and every array item on the way
+/// (`merchant_clients[0].auth`), is one level deeper.
+///
+/// The contents of `providers[*].settings` and `providers[*].credentials` are
+/// not walked: they are free-form maps keyed by each adapter, so a future rail
+/// may legitimately need a setting or a credential named `auth`. The map's own
+/// key is still checked, and so is everything else under the provider
+/// (`providers[0].auth` is refused).
+fn misplaced_auth_path(value: &figment::value::Value, prefix: &str) -> Option<String> {
+    use figment::value::Value;
+    match value {
+        Value::Dict(_, dict) => dict.iter().find_map(|(key, child)| {
+            let path = if prefix.is_empty() {
+                key.clone()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            if !prefix.is_empty() && key.eq_ignore_ascii_case("auth") {
+                return Some(path);
+            }
+            if is_adapter_defined_map(prefix, key) {
+                return None;
+            }
+            misplaced_auth_path(child, &path)
+        }),
+        Value::Array(_, items) => items
+            .iter()
+            .enumerate()
+            .find_map(|(index, child)| misplaced_auth_path(child, &format!("{prefix}[{index}]"))),
+        _ => None,
+    }
+}
+
+/// Whether `key` under the mapping at `prefix` is one of the two free-form
+/// maps an adapter defines the keys of: `providers[<n>].settings` and
+/// `providers[<n>].credentials` (`ProviderHost`'s `BTreeMap<String, String>`
+/// fields). The names are exact, as serde reads them.
+fn is_adapter_defined_map(prefix: &str, key: &str) -> bool {
+    matches!(key, "settings" | "credentials")
+        && prefix
+            .strip_prefix("providers[")
+            .and_then(|rest| rest.strip_suffix(']'))
+            .is_some_and(|index| !index.is_empty() && index.bytes().all(|b| b.is_ascii_digit()))
 }
 
 #[cfg(test)]
@@ -2622,6 +2787,7 @@ mod tests {
     fn valid_config() -> Config {
         Config {
             routing: Default::default(),
+            auth: Default::default(),
             deployment: Deployment {
                 name: "test".to_owned(),
                 livemode: false,
@@ -2788,6 +2954,542 @@ merchant_clients:
                 "{fixture}: {err:?}"
             );
         }
+    }
+
+    // ------------------------------------------------------ auth.methods ---
+
+    /// ADR-0037, one fixture per rule: each file is valid in every respect but
+    /// the one it names, so the variant that comes back is the rule under test
+    /// and not whichever other rule tripped first.
+    #[test]
+    fn every_auth_methods_rule_refuses_its_fixture_with_its_own_variant() {
+        use crate::AuthMethod::{HmacWebhooks, HumanLogin, Keypair, MachineTokens};
+        let disabled = |method, key: &str| ConfigError::AuthMethodDisabled {
+            method,
+            key: key.to_owned(),
+        };
+        for (fixture, expected) in [
+            ("auth-methods-empty.yml", ConfigError::NoAuthMethods),
+            // `methods:` with every item commented out is a null, which is
+            // not the absent key and must not read as the all-four default.
+            ("auth-methods-null.yml", ConfigError::NoAuthMethods),
+            (
+                "auth-methods-unknown.yml",
+                ConfigError::UnknownAuthMethod("oauth".to_owned()),
+            ),
+            (
+                "auth-methods-duplicate.yml",
+                ConfigError::DuplicateAuthMethod(Keypair),
+            ),
+            (
+                "auth-methods-human-login.yml",
+                ConfigError::AuthMethodUnavailable(HumanLogin),
+            ),
+            ("auth-methods-no-way-in.yml", ConfigError::NoWayIn),
+            (
+                "auth-methods-mcp-without-tokens.yml",
+                ConfigError::McpNeedsMachineTokens,
+            ),
+            (
+                "auth-methods-tokens-not-configured.yml",
+                ConfigError::AuthMethodNotConfigured {
+                    method: MachineTokens,
+                    key: "merchant_clients[].jwks".to_owned(),
+                },
+            ),
+            (
+                "auth-methods-jwks-without-tokens.yml",
+                disabled(MachineTokens, "merchant_clients[acme-cameroon].jwks"),
+            ),
+            (
+                "auth-methods-grant-types-without-tokens.yml",
+                disabled(MachineTokens, "merchant_clients[acme-cameroon].grant_types"),
+            ),
+            (
+                "auth-methods-audiences-without-tokens.yml",
+                disabled(
+                    MachineTokens,
+                    "merchant_clients[acme-cameroon].allowed_audiences",
+                ),
+            ),
+            (
+                "auth-methods-cose-keys-without-keypair.yml",
+                disabled(Keypair, "merchant_clients[acme-cameroon].cose_keys"),
+            ),
+            (
+                "auth-methods-dashboard-without-keypair.yml",
+                disabled(Keypair, "dashboard"),
+            ),
+            (
+                "auth-methods-service-clients-without-keypair.yml",
+                disabled(Keypair, "service_clients"),
+            ),
+            (
+                "auth-methods-webhooks-without-hmac.yml",
+                disabled(
+                    HmacWebhooks,
+                    "merchant_clients[acme-cameroon].webhooks[primary]",
+                ),
+            ),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert_eq!(err, expected, "{fixture}");
+            assert_eq!(
+                vpay_core::Classify::category(&err).exit_code(),
+                78,
+                "{fixture}: a contradiction in auth.methods is a deploy to fix"
+            );
+        }
+    }
+
+    /// A merchant needs a credential, whichever methods are permitted; and under
+    /// the default a merchant with `cose_keys` alone loads, with none of the
+    /// OAuth half (`jwks`, `grant_types`, `allowed_audiences`) that a merchant
+    /// minting tokens needs.
+    #[test]
+    fn a_merchant_needs_a_credential_and_cose_keys_alone_is_enough_under_the_default() {
+        let config = load_fixture("auth-methods-default-cose-keys-only.yml")
+            .expect("the default must not demand an OAuth half from a keypair merchant");
+        let methods = config.auth_methods().expect("resolves");
+        assert!(!methods.is_explicit(), "the fixture writes no auth key");
+        assert!(methods.permits(crate::AuthMethod::MachineTokens));
+        let merchant = config.merchant_clients.first().expect("one merchant");
+        assert!(merchant.jwks.is_none() && merchant.grant_types.is_empty());
+
+        for fixture in [
+            "auth-methods-merchant-no-credential.yml",
+            "auth-methods-keypair-only-merchant-no-credential.yml",
+        ] {
+            assert_eq!(
+                load_fixture(fixture).err(),
+                Some(ConfigError::MerchantNoCredential(
+                    "acme-cameroon".to_owned()
+                )),
+                "{fixture}"
+            );
+        }
+    }
+
+    /// The OAuth half is required together and only for a merchant that has a
+    /// `jwks`: a `jwks` with no `grant_types` is still refused under the default
+    /// (`oauth-merchant-grant-types-missing.yml`); `grant_types` or
+    /// `allowed_audiences` without a `jwks` is a dormant half and is refused
+    /// (ADR-0037 decision 4); and a grant declared next to a `jwks` is held to
+    /// the one permitted value.
+    #[test]
+    fn grant_types_without_a_jwks_are_still_only_client_credentials() {
+        let mut config = valid_config();
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.cose_keys = vec![cose_key(COSE_KEY_A, Some("ci"))];
+        assert!(
+            config.validate_all(&RawSecrets::default()).is_ok(),
+            "the fixture with its jwks is valid"
+        );
+
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.grant_types = vec![crate::oauth::GrantType::AuthorizationCode];
+        assert!(matches!(
+            config.validate_all(&RawSecrets::default()),
+            Err(ConfigError::DisallowedMerchantGrant { .. })
+        ));
+
+        // Without a `jwks` the same declarations are dormant, not a grant to check.
+        let merchant = config.merchant_clients.first_mut().expect("one merchant");
+        merchant.jwks = None;
+        merchant.allowed_audiences.clear();
+        merchant.grant_types = vec![crate::oauth::GrantType::ClientCredentials];
+        assert_eq!(
+            config.validate_all(&RawSecrets::default()).err(),
+            Some(ConfigError::MerchantOauthWithoutJwks {
+                client_id: "acme-cameroon".to_owned(),
+                key: "grant_types",
+            })
+        );
+    }
+
+    /// A dormant OAuth half is refused: `grant_types` or `allowed_audiences`
+    /// with no `jwks` while tokens are permitted configures a door nothing can
+    /// open, which is how an operator comes to believe it is shut or open.
+    #[test]
+    fn an_oauth_half_without_a_jwks_is_refused() {
+        for (fixture, key) in [
+            ("auth-methods-grant-types-without-jwks.yml", "grant_types"),
+            (
+                "auth-methods-audiences-without-jwks.yml",
+                "allowed_audiences",
+            ),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert_eq!(
+                err,
+                ConfigError::MerchantOauthWithoutJwks {
+                    client_id: "acme-cameroon".to_owned(),
+                    key,
+                },
+                "{fixture}"
+            );
+            assert_eq!(vpay_core::Classify::category(&err).exit_code(), 78);
+        }
+    }
+
+    /// The dormant-OAuth-half rule and `AuthMethodDisabled` never compete for a
+    /// file, and neither relies on the other running first: the merchant check
+    /// is told whether `machine_tokens` is permitted and has no verdict when it
+    /// is not. The fixture is read without validation so each rule is asked
+    /// alone, then the whole load shows which variant the operator sees.
+    #[test]
+    fn the_dormant_oauth_half_rule_does_not_depend_on_the_method_rules_running_first() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/auth-methods-grant-types-without-tokens.yml");
+        let text = std::fs::read_to_string(path).expect("fixture");
+        let config: Config = serde_yaml_ng::from_str(&text).expect("a shape that parses");
+        let merchant = config.merchant_clients.first().expect("one merchant");
+        assert_eq!(
+            merchant.jwks, None,
+            "the fixture is the half without a jwks"
+        );
+        assert!(!merchant.grant_types.is_empty());
+
+        assert_eq!(
+            validate_merchant_client(merchant, false),
+            Ok(()),
+            "tokens off: no verdict from the merchant rule, whatever ran before it"
+        );
+        assert!(
+            matches!(
+                validate_merchant_client(merchant, true),
+                Err(ConfigError::MerchantOauthWithoutJwks { .. })
+            ),
+            "tokens on: the same registration is the dormant half"
+        );
+        assert!(
+            matches!(
+                load_fixture("auth-methods-grant-types-without-tokens.yml"),
+                Err(ConfigError::AuthMethodDisabled { .. })
+            ),
+            "the whole load names the method rule, not the dormant half"
+        );
+    }
+
+    /// `Config` ignores unknown top-level keys, so `auth_methods:` or
+    /// `authentication:` would be dropped and the deployment would permit all
+    /// four while its operator believed it had narrowed them.
+    #[test]
+    fn a_near_miss_of_the_auth_key_is_refused_not_ignored() {
+        for (fixture, key) in [
+            ("near-miss-key-auth-methods.yml", "auth_methods"),
+            ("near-miss-key-authentication.yml", "authentication"),
+            ("near-miss-key-methods.yml", "methods"),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert!(
+                matches!(&err, ConfigError::NearMissKey { key: k, .. } if k == key),
+                "{fixture}: {err:?}"
+            );
+            assert!(err.to_string().contains("auth: {methods:"), "{err}");
+        }
+    }
+
+    /// YAML keys are case-sensitive, so `Auth:` is a key `Config` does not read
+    /// and would drop: the same fail-open as `auth_methods:`. Every case
+    /// variant of `auth`, and of each spelling in `NEAR_MISS_KEYS`, is refused;
+    /// the exact `auth` is the key and stays valid.
+    #[test]
+    fn a_case_variant_of_the_auth_key_is_refused_not_ignored() {
+        let err = load_fixture("near-miss-key-auth-capitalised.yml").expect_err("`Auth:`");
+        assert!(
+            matches!(&err, ConfigError::NearMissKey { key, .. } if key == "Auth"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("auth: {methods:"), "{err}");
+
+        for key in [
+            "AUTH",
+            "aUTH",
+            "Auth_Methods",
+            "AUTH-METHODS",
+            "Authentication",
+            "AuthMethods",
+            "Methods",
+            "METHODS",
+        ] {
+            let raw: figment::value::Value = figment::Figment::from(
+                figment::providers::Yaml::string(&format!("{key}:\n  methods: [keypair]\n")),
+            )
+            .extract()
+            .expect("a document");
+            assert!(
+                matches!(
+                    reject_retired_keys(&raw),
+                    Err(ConfigError::NearMissKey { key: ref k, .. }) if k == key
+                ),
+                "{key}"
+            );
+        }
+
+        let exact: figment::value::Value = figment::Figment::from(
+            figment::providers::Yaml::string("auth:\n  methods: [keypair]\n"),
+        )
+        .extract()
+        .expect("a document");
+        assert!(
+            reject_retired_keys(&exact).is_ok(),
+            "the exact key is the key"
+        );
+    }
+
+    /// `auth` is a top-level key. Under `deployment:` it would be dropped and
+    /// the deployment would permit all four methods. The walk over the raw
+    /// document names it before `deployment`'s `deny_unknown_fields` is asked;
+    /// that attribute is exercised by the next test, with a key that is not
+    /// `auth`.
+    #[test]
+    fn an_auth_block_under_deployment_is_refused_not_ignored() {
+        let err = load_fixture("deployment-auth-nested.yml").expect_err("auth under deployment");
+        assert_eq!(
+            err,
+            ConfigError::MisplacedAuthKey {
+                path: "deployment.auth".to_owned()
+            },
+            "{err:?}"
+        );
+    }
+
+    /// Any other key `Deployment` does not know (`surface:` for `surfaces:`) is
+    /// a shape error from `deny_unknown_fields`, the second line of defence
+    /// behind the `auth` walk: it is the only thing that catches it, since the
+    /// walk looks for `auth` alone.
+    #[test]
+    fn a_stray_key_under_deployment_is_a_shape_error() {
+        let err = load_fixture("deployment-unknown-key.yml").expect_err("deny_unknown_fields");
+        assert!(
+            matches!(&err, ConfigError::Shape(m) if m.contains("unknown field") && m.contains("surface")),
+            "{err:?}"
+        );
+    }
+
+    /// `Config` does not deny unknown fields below the top level (an overlay may
+    /// carry a key a later release reads), so an `auth:` mis-indented under
+    /// `checkout`, `webhooks[]`, `dashboard`, `providers[]` or
+    /// `merchant_clients[]` would be dropped and the deployment would permit
+    /// all four methods. Refused at any depth, arrays counting as a level, and
+    /// the error names the path.
+    #[test]
+    fn a_misplaced_auth_key_is_refused_at_any_depth() {
+        for (fixture, path) in [
+            ("misplaced-auth-checkout.yml", "checkout.auth"),
+            (
+                "misplaced-auth-merchant-client.yml",
+                "merchant_clients[0].auth",
+            ),
+        ] {
+            let err = load_fixture(fixture).expect_err(fixture);
+            assert_eq!(
+                err,
+                ConfigError::MisplacedAuthKey {
+                    path: path.to_owned()
+                },
+                "{fixture}"
+            );
+            assert!(err.to_string().contains(path), "{err}");
+            assert_eq!(vpay_core::Classify::category(&err).exit_code(), 78);
+        }
+    }
+
+    /// The same walk over documents built in place: every section the review
+    /// named, a case variant, a key two levels down and an array inside an
+    /// array, each naming its own path; and what must keep loading past it.
+    #[test]
+    fn the_misplaced_auth_walk_names_the_path_and_spares_what_is_not_a_key() {
+        let raw = |yaml: &str| -> figment::value::Value {
+            figment::Figment::from(figment::providers::Yaml::string(yaml))
+                .extract()
+                .expect("a document")
+        };
+        for (yaml, path) in [
+            ("webhooks:\n  - id: a\n    auth: {}\n", "webhooks[0].auth"),
+            (
+                "dashboard:\n  auth: {methods: [keypair]}\n",
+                "dashboard.auth",
+            ),
+            (
+                "providers:\n  - code: x\n  - code: y\n    auth: ~\n",
+                "providers[1].auth",
+            ),
+            ("checkout:\n  AUTH: {}\n", "checkout.AUTH"),
+            ("checkout:\n  Auth: ~\n", "checkout.Auth"),
+            ("a:\n  b:\n    auth: 1\n", "a.b.auth"),
+            ("a:\n  - - auth: 1\n", "a[0][0].auth"),
+            ("auth:\n  auth: {}\n", "auth.auth"),
+            // The free-form maps are skipped, nothing else under a provider is.
+            (
+                "providers:\n  - code: x\n    auth: {}\n",
+                "providers[0].auth",
+            ),
+            (
+                "providers:\n  - code: x\n    host:\n      auth: 1\n",
+                "providers[0].host.auth",
+            ),
+            // Only a `providers` array's items hold such maps: a `settings` or
+            // `credentials` anywhere else is not adapter-defined.
+            (
+                "checkout:\n  settings:\n    auth: 1\n",
+                "checkout.settings.auth",
+            ),
+            (
+                "webhooks:\n  - credentials:\n      auth: 1\n",
+                "webhooks[0].credentials.auth",
+            ),
+        ] {
+            assert_eq!(
+                reject_retired_keys(&raw(yaml)),
+                Err(ConfigError::MisplacedAuthKey {
+                    path: path.to_owned()
+                }),
+                "{yaml}"
+            );
+        }
+        for yaml in [
+            "auth:\n  methods: [keypair]\n",
+            "checkout:\n  name: auth\n  authorization: x\n  oauth: {}\n",
+            "merchant_clients:\n  - client_id: auth\n    labels: [auth]\n",
+            "providers:\n  - code: x\n    credentials:\n      auth: ${X}\n",
+            "providers:\n  - code: x\n    settings:\n      auth: v\n      Auth: v\n",
+        ] {
+            assert!(
+                reject_retired_keys(&raw(yaml)).is_ok(),
+                "a value, a longer word, the exact top-level key or an adapter-defined map's entry is not a misplaced key: {yaml}"
+            );
+        }
+    }
+
+    /// `providers[*].settings` and `providers[*].credentials` are free-form maps
+    /// whose keys each adapter defines, so a rail that needs a credential named
+    /// `auth` must still load; the provider's own `auth` key is the same
+    /// fail-open as anywhere else and stays refused.
+    #[test]
+    fn an_adapters_own_auth_setting_or_credential_is_not_a_misplaced_key() {
+        let raw = |yaml: &str| -> figment::value::Value {
+            figment::Figment::from(figment::providers::Yaml::string(yaml))
+                .extract()
+                .expect("a document")
+        };
+        for map in ["credentials", "settings"] {
+            let yaml = format!("providers:\n  - code: x\n    {map}:\n      auth: ${{X}}\n");
+            assert_eq!(
+                reject_retired_keys(&raw(&yaml)),
+                Ok(()),
+                "providers[0].{map}.auth"
+            );
+        }
+        let both = "providers:\n  - code: x\n    settings: {auth: a}\n    credentials: {auth: b}\n    auth: {methods: [keypair]}\n";
+        assert_eq!(
+            reject_retired_keys(&raw(both)),
+            Err(ConfigError::MisplacedAuthKey {
+                path: "providers[0].auth".to_owned()
+            }),
+            "the skip covers the two maps and nothing beside them"
+        );
+    }
+
+    /// Every profile file tracked under `config/` still loads past the walk:
+    /// none carries a legitimate nested `auth` key. The directory is globbed,
+    /// so a profile file added later is checked without anyone remembering to
+    /// list it; the floor on the count keeps a glob that matched nothing (a
+    /// moved directory, a wrong extension) from passing for a clean answer.
+    ///
+    /// Only tracked files are read. The demo overlay under `.e2e/` is
+    /// git-ignored and exists only after `just gen-demo-keys`, so a test that
+    /// read it would panic on a clean checkout, which is what CI has.
+    #[test]
+    fn no_shipped_configuration_carries_a_nested_auth_key() {
+        let config_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../config");
+        let mut shipped: Vec<std::path::PathBuf> = std::fs::read_dir(&config_dir)
+            .expect("the shipped config directory")
+            .map(|entry| entry.expect("a directory entry").path())
+            .filter(|path| path.is_file() && path.extension().is_some_and(|e| e == "yml"))
+            .collect();
+        shipped.sort();
+        let names: Vec<_> = shipped
+            .iter()
+            .filter_map(|path| path.file_name()?.to_str())
+            .collect();
+        for expected in [
+            "application.yml",
+            "application-live.yml",
+            "application-sandbox.yml",
+            "application-notchpay-sandbox.yml",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "the glob over config/*.yml missed {expected}: found {names:?}"
+            );
+        }
+        for path in &shipped {
+            let text = std::fs::read_to_string(path).expect("a readable file");
+            let raw: figment::value::Value =
+                figment::Figment::from(figment::providers::Yaml::string(&text))
+                    .extract()
+                    .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+            assert_eq!(reject_retired_keys(&raw), Ok(()), "{}", path.display());
+        }
+    }
+
+    /// A misspelt key under `auth:` must not be dropped: a deployment that
+    /// believes it set `methods` and did not would permit all four.
+    #[test]
+    fn a_misspelt_key_under_auth_is_a_shape_error() {
+        let err = load_fixture("auth-methods-unknown-field.yml").expect_err("deny_unknown_fields");
+        assert!(
+            matches!(&err, ConfigError::Shape(m) if m.contains("method")),
+            "{err:?}"
+        );
+    }
+
+    /// The four shapes the key is for, each loading and resolving to exactly
+    /// what it names.
+    #[test]
+    fn the_supported_auth_shapes_load_and_resolve_to_what_they_name() {
+        use crate::AuthMethod::{HmacWebhooks, Keypair, MachineTokens};
+        for (fixture, expected) in [
+            ("auth-methods-keypair-only.yml", vec![Keypair]),
+            ("auth-methods-tokens-only.yml", vec![MachineTokens]),
+            (
+                "auth-methods-keypair-and-hmac.yml",
+                vec![Keypair, HmacWebhooks],
+            ),
+            (
+                "auth-methods-both-ways-on-v1.yml",
+                vec![Keypair, MachineTokens],
+            ),
+        ] {
+            let config = load_fixture(fixture).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let methods = config.auth_methods().expect("validate_all resolved it");
+            assert!(methods.is_explicit(), "{fixture}");
+            assert_eq!(
+                methods.permitted().collect::<Vec<_>>(),
+                expected,
+                "{fixture}"
+            );
+        }
+    }
+
+    /// Absent `auth.methods` is the all-four default, so every config written
+    /// before the key keeps booting: the shipped example file carries a `jwks`,
+    /// webhooks and `cose_keys` blocks, and none of them is refused.
+    #[test]
+    fn an_absent_auth_methods_permits_every_method_and_the_example_still_loads() {
+        let env = example_env(BTreeMap::new());
+        let config = Config::load_with_env(Some(Path::new(EXAMPLE_BASE)), "does-not-exist", &env)
+            .expect("the shipped example loads under the default");
+        let methods = config.auth_methods().expect("resolves");
+        assert!(!methods.is_explicit());
+        assert_eq!(methods.permitted().count(), 4);
+        // Permitted is not served: nothing restores staff sign-in yet.
+        assert!(
+            !methods.served().any(|m| m == crate::AuthMethod::HumanLogin),
+            "human_login is permitted by the default and served by nothing"
+        );
     }
 
     /// The refusal is the operator's whole upgrade instruction: it names the
@@ -4027,6 +4729,7 @@ merchant_clients:
     fn a_livemode_deployment_cannot_derive_a_plaintext_callback_url() {
         let config = Config {
             routing: Default::default(),
+            auth: Default::default(),
             deployment: Deployment {
                 name: "prod".to_owned(),
                 livemode: true,
@@ -5337,6 +6040,16 @@ providers:
         assert_eq!(
             err,
             ConfigError::EmptyMerchantJwks("acme-cameroon".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_merchant_client_with_no_grant_types_is_rejected_while_tokens_are_permitted() {
+        assert_eq!(
+            load_fixture("oauth-merchant-grant-types-missing.yml").err(),
+            Some(ConfigError::MerchantGrantTypesMissing {
+                client_id: "acme-cameroon".to_owned(),
+            })
         );
     }
 

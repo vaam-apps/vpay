@@ -297,12 +297,26 @@ impl<G> KeyResolver<G> {
         Self { registry, disabled }
     }
 
-    async fn is_disabled(&self, client_id: &str) -> Result<bool, DbError> {
+    /// Whether `client_id` is switched off in `disabled_clients`.
+    ///
+    /// The one question every door asks: a signature's key resolves through it
+    /// here, a `/v1` bearer token's `client_id` through `crate::envelope`'s scope
+    /// step, and an MCP bearer token's through `crate::mcp::MerchantMcpAuth` (which
+    /// asks the same `DisabledClients` port), so `disable_client` is instant for a
+    /// signer and a token caller alike (a token minted earlier is otherwise good
+    /// until it expires).
+    ///
+    /// # Errors
+    ///
+    /// [`DbError`] if the lookup fails. A caller treats that as an error and
+    /// never as "not disabled": admitting the request would make a database
+    /// outage a revocation bypass.
+    pub(crate) async fn is_disabled(&self, client_id: &str) -> Result<bool, DbError> {
         let disabled = self.disabled.is_client_disabled(client_id).await?;
         if disabled {
             tracing::warn!(
                 client_id,
-                "refusing a configured key: the client is disabled via the \
+                "refusing a configured credential: the client is disabled via the \
                  disabled_clients kill switch"
             );
         }

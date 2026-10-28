@@ -499,6 +499,18 @@ impl MerchantScope {
         Self { merchant_id }
     }
 
+    /// The **sixth** way, and the second that serves `/v1`: minted by
+    /// `crate::envelope::scope` from a validated bearer token, when
+    /// `auth.methods` permits `machine_tokens` (ADR-0037).
+    ///
+    /// The tenant is resolved from the token's `client_id` through
+    /// [`ResourceConfig::merchant_id_for`], as the pre-VP-3 bearer middleware
+    /// did, and `pub(crate)` and named for its caller for the reasons the
+    /// others give.
+    pub(crate) fn for_token(merchant_id: String) -> Self {
+        Self { merchant_id }
+    }
+
     /// The **fifth** way, minted by [`crate::mcp::MerchantOps`] for a merchant MCP tool call
     /// (ADR-0033), from the merchant `vpay-db`'s procedure body read off the
     /// authenticated context, which [`crate::mcp::MerchantMcpAuth`] built
@@ -720,6 +732,11 @@ impl WebhookEndpointConfig {
 pub struct ResourceConfig {
     livemode: bool,
     merchant_id_by_client_id: BTreeMap<String, String>,
+    /// The scopes each registration's YAML grants, keyed on `client_id` like
+    /// [`Self::merchant_id_by_client_id`]. A bearer token's own `scope` claim is
+    /// what the OP stamped at issue time; this is what the registration grants
+    /// now, and [`Self::token_holds`] holds a token to both.
+    scopes_by_client_id: BTreeMap<String, Vec<String>>,
     currency_codes: BTreeSet<String>,
     rails: BTreeMap<String, RailConfig>,
     /// Keyed on `events.merchant_id`, **not** on `client_id` like
@@ -813,6 +830,12 @@ pub struct ResourceConfig {
     /// question — "which of several dashboards is this?" — the configuration
     /// cannot ask.
     dashboard: Option<DashboardBinding>,
+    /// Which ways of authenticating this deployment permits (ADR-0037):
+    /// `auth.methods`, resolved. The router reads it to decide whether
+    /// `/v1/oauth/token` is mounted and what the discovery document says; the
+    /// `/v1` envelope's mode is decided from the same `Config` by
+    /// [`crate::envelope::V1Envelope::new`].
+    auth_methods: vpay_config::AuthMethods,
     /// This tenant's default `success_url`/`cancel_url` for
     /// `POST /v1/invoices/{id}/pay` (issue #91, D2).
     ///
@@ -893,6 +916,11 @@ impl ResourceConfig {
             .merchant_clients
             .iter()
             .map(|client| (client.client_id.clone(), client.merchant_id.clone()))
+            .collect();
+        let scopes_by_client_id = config
+            .merchant_clients
+            .iter()
+            .map(|client| (client.client_id.clone(), client.scopes.clone()))
             .collect();
         let currency_codes = config
             .currencies
@@ -982,6 +1010,7 @@ impl ResourceConfig {
         Ok(Self {
             livemode: config.deployment.livemode,
             merchant_id_by_client_id,
+            scopes_by_client_id,
             currency_codes,
             rails,
             endpoints_by_merchant_id,
@@ -1012,7 +1041,14 @@ impl ResourceConfig {
             }),
             invoice_urls_by_merchant_id,
             routing_weights: config.routing.weights(),
+            auth_methods: config.auth_methods()?,
         })
+    }
+
+    /// The ways of authenticating this deployment permits (`auth.methods`).
+    #[must_use]
+    pub fn auth_methods(&self) -> &vpay_config::AuthMethods {
+        &self.auth_methods
     }
 
     /// Ranks this deployment's rails for one payment of `method_type` in
@@ -1070,6 +1106,25 @@ impl ResourceConfig {
         self.merchant_id_by_client_id
             .get(client_id)
             .map(String::as_str)
+    }
+
+    /// Whether a bearer token may exercise `scope`: its own `scope` claim
+    /// **and** the registration's current YAML `scopes` both hold it.
+    ///
+    /// The signed path reads the registration's scopes live
+    /// (`MerchantKeyResolver::merchant_for_thumbprint`), so a scope removed from
+    /// the YAML and applied by a restart takes effect on the next request. A
+    /// token minted before the restart still carries the scope it was issued
+    /// with, and trusting that claim alone would keep the scope alive for the
+    /// token's remaining lifetime; the intersection makes the two doors agree.
+    /// A client with no registration holds nothing.
+    #[must_use]
+    pub fn token_holds(&self, claims: &crate::resource_auth::ResourceClaims, scope: &str) -> bool {
+        claims.has_scope(scope)
+            && self
+                .scopes_by_client_id
+                .get(&claims.subject)
+                .is_some_and(|granted| granted.iter().any(|held| held == scope))
     }
 
     /// This tenant's configured default forwarding URLs for
@@ -1350,7 +1405,42 @@ mod tests {
             dashboard: None,
             service_clients: Vec::new(),
             routing: Default::default(),
+            auth: Default::default(),
         }
+    }
+
+    /// A token is held to its own `scope` claim **and** the registration's
+    /// current YAML `scopes`: removing a scope from the YAML takes it away from
+    /// every token, an extra claim on a token adds nothing, and a client with
+    /// no registration holds nothing.
+    #[test]
+    fn a_token_holds_only_what_its_claim_and_the_registrations_yaml_both_name() {
+        use crate::resource_auth::ResourceClaims;
+        let mut config = config();
+        config.merchant_clients = vec![crate::test_fixtures::merchant(
+            "acme-cameroon",
+            &[SCOPE_PAYMENTS_READ],
+        )];
+        let resource_config = ResourceConfig::from_config(&config).expect("projects");
+        let claims = |sub: &str, scopes: &[&str]| ResourceClaims {
+            subject: sub.to_owned(),
+            scope: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+        };
+
+        let both = claims(
+            "acme-cameroon",
+            &[SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE],
+        );
+        assert!(resource_config.token_holds(&both, SCOPE_PAYMENTS_READ));
+        assert!(
+            !resource_config.token_holds(&both, SCOPE_PAYMENTS_WRITE),
+            "the token claims write; the YAML no longer grants it"
+        );
+        let write_only = claims("acme-cameroon", &[SCOPE_PAYMENTS_WRITE]);
+        assert!(!resource_config.token_holds(&write_only, SCOPE_PAYMENTS_READ));
+        assert!(!resource_config.token_holds(&write_only, SCOPE_PAYMENTS_WRITE));
+        let stranger = claims("someone-else", &[SCOPE_PAYMENTS_READ]);
+        assert!(!resource_config.token_holds(&stranger, SCOPE_PAYMENTS_READ));
     }
 
     /// Every method the surface can be reached with, and what it costs.

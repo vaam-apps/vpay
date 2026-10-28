@@ -1,0 +1,20 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-1).
+#
+# Neither `keypair` nor `machine_tokens`: nothing could authenticate a /v1 caller (NoWayIn).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [hmac_webhooks]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    webhooks:
+      - id: primary
+        url: http://receiver.internal/webhooks
+        secrets: ["${MERCHANT_WEBHOOK_SECRET}"]

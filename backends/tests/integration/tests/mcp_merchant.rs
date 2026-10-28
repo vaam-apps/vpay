@@ -6,10 +6,10 @@
 //! (revision `2026-07-28`, Streamable HTTP). Each test names the threat-model
 //! row it proves (`docs/security/threat-models/mcp.md`).
 //!
-//! Since VP-3, `/v1` is signed rather than token-authenticated, so every `/v1`
-//! call here is sealed through [`support::sealed::SealedHttp`] as the merchant
-//! whose MCP token the same case uses. The OAuth OP now serves this endpoint
-//! alone.
+//! Every `/v1` call here is sealed through [`support::sealed::SealedHttp`]
+//! (VP-3) as the merchant whose MCP token the same case uses. Since ADR-0037,
+//! `/v1` also takes a `vpay:v1` bearer token where `auth.methods` permits
+//! `machine_tokens`; an MCP token is still refused there.
 //!
 //! The rails here are unreachable by design, as in `payment_intents.rs`:
 //! this suite is about the surface. A confirm that a rail settles is
@@ -56,6 +56,9 @@ struct Harness {
     _container: ContainerAsync<PostgresImage>,
     server: tokio::task::JoinHandle<()>,
     pool: PgPool,
+    /// The same repositories the server holds, so a test can flip the kill
+    /// switch (`disable_client`) the way an operator does.
+    repositories: Arc<dyn Repositories>,
     base_url: String,
     pem_a: String,
     pem_v1: String,
@@ -299,6 +302,7 @@ fn config_with(base_url: &str, jwks: [Value; 4], surfaces: Option<Vec<String>>) 
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        auth: Default::default(),
     }
 }
 
@@ -319,6 +323,7 @@ async fn harness_with(surfaces: Option<Vec<String>>) -> anyhow::Result<Harness> 
         _container: container,
         server: served.server,
         pool,
+        repositories,
         base_url: served.base_url,
         pem_a,
         pem_v1,
@@ -554,6 +559,87 @@ async fn a_read_scoped_token_cannot_call_a_mutation() -> anyhow::Result<()> {
     Ok(())
 }
 
+/// ADR-0037: `disable_client` reaches an MCP token on its next request, as it
+/// reaches a signer and a `/v1` token. A token minted before the switch flipped
+/// is otherwise good until it expires (900 s here). The switch is per client:
+/// another merchant's token is untouched.
+#[tokio::test]
+async fn a_token_minted_before_disable_client_is_refused_after_it() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token_a = harness.mcp_token(CLIENT_A, vpay_api::SCOPE_PAYMENTS_WRITE);
+    let token_b = harness.mcp_token(CLIENT_B, vpay_api::SCOPE_PAYMENTS_WRITE);
+    let search = json!({ "page": {}, "filter": {} });
+
+    // The control: both tokens work while the clients are enabled.
+    for token in [&token_a, &token_b] {
+        harness
+            .call(token, "search_payment_intents", search.clone())
+            .await?;
+    }
+
+    harness
+        .repositories
+        .disable_client(CLIENT_A, Some("mcp_merchant test"))
+        .await
+        .context("flipping the kill switch")?;
+
+    let (status, body) = harness
+        .rpc(
+            Some(&token_a),
+            None,
+            "tools/call",
+            Some("search_payment_intents"),
+            json!({ "name": "search_payment_intents", "arguments": search }),
+        )
+        .await?;
+    assert_eq!(
+        status, 401,
+        "a token minted before the switch is refused the moment it flips: {body}"
+    );
+    harness
+        .call(&token_b, "search_payment_intents", search)
+        .await
+        .context("another client's token is untouched")?;
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// ADR-0037: a token's scopes are held to the registration's YAML. This token
+/// claims `payments:write`; its registration (`CLIENT_R`) grants `payments:read`
+/// alone, so it reads and cannot write, whatever the token says.
+#[tokio::test]
+async fn a_token_claiming_more_than_its_registration_grants_cannot_write() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let token = harness.mcp_token(
+        CLIENT_R,
+        &format!(
+            "{} {}",
+            vpay_api::SCOPE_PAYMENTS_READ,
+            vpay_api::SCOPE_PAYMENTS_WRITE
+        ),
+    );
+    let refused = envelope(
+        &harness
+            .call(
+                &token,
+                "create_payment_intent",
+                create_args("k-widened", 100),
+            )
+            .await?,
+    );
+    assert_eq!(at(&refused, "/code"), json!("FORBIDDEN"), "{refused}");
+    assert_eq!(harness.intents_of(MERCHANT_R).await?, 0);
+    harness
+        .call(
+            &token,
+            "search_payment_intents",
+            json!({ "page": {}, "filter": {} }),
+        )
+        .await?;
+    harness.shutdown().await;
+    Ok(())
+}
+
 /// Threat model § 1: each surface accepts only its own audience, in both
 /// directions, and a request without a token is the 401 challenge naming
 /// the metadata document.
@@ -567,8 +653,9 @@ async fn each_surface_accepts_only_its_own_audience() -> anyhow::Result<()> {
         .await?;
     assert_eq!(status, 401, "a vpay:v1 token on /mcp/v1: {body}");
 
-    // Since VP-3 `/v1` takes no bearer token of any audience: an MCP token
-    // there is the same coarse unsigned 401 as any other.
+    // `/v1` takes a bearer token only for `vpay:v1` (ADR-0037, and only where
+    // `machine_tokens` is permitted): an MCP token there is a 401, whichever
+    // refusal this deployment's `auth.methods` gives it.
     let mcp_token = harness.mcp_token(CLIENT_A, vpay_api::SCOPE_PAYMENTS_WRITE);
     let v1 = raw_client()
         .get(format!("{}/v1/payment_intents", harness.base_url))

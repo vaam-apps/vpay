@@ -1,8 +1,8 @@
 # Using the official Stripe SDKs against vpay
 
 vpay's `/v1` object model, form encoding, error envelope and idempotency
-semantics are Stripe's. Its **authentication is not**: there is no API key and
-no token. Every call is a signed message and every answer is a signed message
+semantics are Stripe's. Its **authentication is not**: there is no API key, and the SDKs send no
+token. Every call is a signed message and every answer is a signed message
 ([signed-transport.md](signed-transport.md),
 [ADR-0035](../adr/0035-v1-is-a-signed-message-not-a-token.md)).
 

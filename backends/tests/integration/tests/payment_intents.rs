@@ -311,6 +311,13 @@ fn config_with(
         dashboard: None,
         service_clients: Vec::new(),
         routing: Default::default(),
+        // `keypair` alone: this suite signs every call, and its boundary case
+        // (`every_registered_v1_path_answers_401_without_a_token`) is about
+        // `Required`, where nothing unsigned reaches a handler. The default
+        // (every method) answers an unsigned request from the bearer path.
+        auth: vpay_config::AuthConfig {
+            methods: Some(vec!["keypair".to_owned()]),
+        },
     }
 }
 

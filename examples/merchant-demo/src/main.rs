@@ -10,6 +10,13 @@
 //!    an `Authorization: Bearer` header and no signature is refused.
 //! 3. Show that the same `/v1` path **with no signature at all** is vpay's
 //!    coarse `401`, so the boundary is real.
+//!
+//!    Steps 2 and 3 describe a deployment that permits `keypair` alone
+//!    (`auth.methods`, ADR-0037), which is what `just gen-demo-keys` writes the
+//!    demo stack's overlay to be. Against a deployment that also permits
+//!    `machine_tokens` (the default, with the key absent) `/v1` answers both
+//!    from the token path (`missing_bearer_token`, `invalid_token`) and the
+//!    steps fail with a message saying so.
 //! 4. Drive [`OUTCOMES`] — **six payments, on both rails, to every outcome
 //!    each rail documents**. Each one creates a PaymentIntent through the
 //!    merchant SDK, reads it back, confirms it, waits for `vpay-worker` to
@@ -573,12 +580,11 @@ async fn step_1_signed_read(client: &Client) -> anyhow::Result<()> {
 
 // ------------------------------------------------------------------ step 2
 
-/// A bearer token is not a credential on `/v1`.
+/// A bearer token is not a credential on `/v1` of a deployment that permits
+/// `keypair` alone (the demo stack's, see the module docs).
 ///
-/// The old authentication (`client_credentials` + `private_key_jwt`, an
-/// access token on every call) is gone from `/v1`; a request that still
-/// carries one is simply unsigned. Asking for JSON makes the layer answer in a
-/// form this program can print.
+/// There a request that carries one is simply unsigned. Asking for JSON makes
+/// the layer answer in a form this program can print.
 async fn step_2_bearer_token(http: &reqwest::Client, base_url: &str) -> anyhow::Result<()> {
     const STEP: &str = "step 2 (a bearer token buys nothing)";
 
@@ -653,6 +659,16 @@ fn expect_coarse_401(step: &str, url: &str, status: u16, body: &str) -> anyhow::
         .with_context(|| format!("{step}: the 401 body is not JSON: {}", bounded(body)))?;
     match envelope.get("code").and_then(Value::as_str) {
         Some("UNAUTHORIZED") => Ok(()),
+        // The token path's Stripe-shaped refusal: this deployment permits
+        // `machine_tokens`, so an unsigned request is answered by the bearer
+        // check and not by the signed transport's layer.
+        None if envelope.pointer("/error/code").is_some() => bail!(
+            "{step}: this deployment accepts a bearer token beside a signature \
+             (`auth.methods` permits `machine_tokens`, ADR-0037), so the 401 is the token \
+             path's, not the signed transport's: {}. The demo stack runs `[keypair, \
+             hmac_webhooks]`; regenerate its overlay with `just gen-demo-keys`",
+            bounded(body)
+        ),
         other => bail!(
             "{step}: expected `code` = UNAUTHORIZED in the 401 body, got {other:?}: {}",
             bounded(body)

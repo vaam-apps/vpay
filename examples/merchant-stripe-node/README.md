@@ -2,8 +2,9 @@
 
 One payment, driven by the **official `stripe` package** against a real vpay.
 
-vpay accepts no API key and no token: every `/v1` call is a COSE_Sign1 message
-signed with your Ed25519 key, and every answer is one signed by vpay
+vpay accepts no API key, and this example sends no token: every `/v1` call is a
+COSE_Sign1 message signed with your Ed25519 key (a deployment may also accept a
+bearer token from other callers, [ADR-0037](../../docs/adr/0037-authentication-methods-are-deployment-configuration.md)), and every answer is one signed by vpay
 ([signed transport](../../docs/flows/signed-transport.md)). The signature is the
 request body, which `config.authenticator` (headers only) cannot carry, so the
 client is built with a `config.httpClient` that seals each request and opens the

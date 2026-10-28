@@ -51,8 +51,10 @@
 
   **Both were superseded under this ADR while it was Proposed.**
   - [ADR-0035](0035-v1-is-a-signed-message-not-a-token.md) (#380; dated
-    2026-10-26, merged 2026-10-27) superseded ADR-0010 for `/v1`. The `private_key_jwt` grant survives only
-    as the way `/mcp/v1` gets its tokens (D9).
+    2026-10-26, merged 2026-10-27) superseded ADR-0010 for `/v1`. The `private_key_jwt` grant then survived only
+    as the way `/mcp/v1` gets its tokens (D9), until [ADR-0037](0037-authentication-methods-are-deployment-configuration.md) (#384, merged
+    2026-10-27) made a `/v1` bearer token a deployment choice again
+    (`auth.methods` names `machine_tokens`).
   - [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)
     (#383; dated 2026-10-26, merged 2026-10-27) superseded ADR-0017 entirely. It deleted the staff OP,
     the staff sessions and the PKCE client D9's staff design relies on. See
@@ -314,9 +316,10 @@ tenancy-safe ledger read does.
     and builds a principal context carrying the tenant, the scopes and the
     audience.
   - An `aud = vpay:v1` token is refused on `/mcp/v1`, and an MCP-audience
-    token is refused on `/v1`. Since VP-3 (#380, merged 2026-10-27), `/v1` refuses
-    every bearer token, because every `/v1` request is signed; the second
-    half holds for that reason now.
+    token is refused on `/v1`. Since ADR-0037 (#384, merged 2026-10-27), `/v1`
+    takes a bearer token only for `vpay:v1`, and only where `auth.methods`
+    permits `machine_tokens`, so an MCP token there is a `401` either way.
+    From VP-3 (#380) until #384, `/v1` refused every bearer token.
   - The token endpoint stays on the business tier (ADR-0022 §2). The
     discovery routes mount on `mcp` pods too, so the loopback JWKS validator
     works there.
@@ -402,8 +405,11 @@ it:
    one; nothing here decides it.
 3. Whether staff MCP ever gets writes. That would supersede ADR-0008's
    write boundary, and this ADR does not.
-4. What issues `/mcp/v1`'s tokens after VP-4. Since VP-3, the merchant OP's
-   `client_credentials` grant serves this endpoint alone, and VP-4 plans to
+4. What issues `/mcp/v1`'s tokens after VP-4. The merchant OP's `client_credentials`
+   grant is this endpoint's only token source. It also serves `/v1` again
+   where `machine_tokens` is permitted (ADR-0037, since 2026-10-27; it served
+   this endpoint alone from VP-3 until then), and `mcp` refuses to boot
+   without `machine_tokens` (`McpNeedsMachineTokens`). VP-4 plans to
    retire `jwks` and the token path. MCP's authorization specification needs
    an OAuth authorization server, so either VP-4 keeps the OP for MCP, or
    this endpoint gets another one first. Removing the OP with nothing in its
@@ -413,5 +419,7 @@ it:
    OAuth bearer token, and ADR-0036's console signs messages under a paired
    key and holds no token. Either a staff agent gets an OAuth client again,
    for this endpoint alone, or the staff endpoint uses the paired-key
-   transport, which MCP clients do not speak today. Nothing is built either
+   transport, which MCP clients do not speak today. ADR-0037 (2026-10-27)
+   says staff sign-in returns under `human_login` in VPA-3, which may be the
+   first of those; it is not built in this release. Nothing is built either
    way.
