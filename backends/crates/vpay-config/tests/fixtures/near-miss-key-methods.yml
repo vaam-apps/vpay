@@ -1,4 +1,4 @@
-# Fixture for `a_top_level_methods_key_is_refused_not_ignored`
+# Fixture for `a_near_miss_of_the_auth_key_is_refused_not_ignored`
 # (backends/crates/vpay-config/src/config.rs, ADR-0037, VPA-1 follow-up).
 #
 # `methods:` written at the top level, with its `auth:` parent forgotten, is not read:
