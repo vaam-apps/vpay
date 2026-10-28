@@ -876,7 +876,11 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
   match is case-insensitive, and `MisplacedAuthKey` names the path as written
   (`checkout.auth`, `merchant_clients[0].auth`). The exact top-level `auth` is the
   one place the key is read, and a value or a longer word (`authorization`) is not
-  a key named `auth`.
+  a key named `auth`. The one place the walk does not look is inside
+  `providers[*].settings` and `providers[*].credentials`: they are free-form maps
+  whose keys each adapter defines, so a rail may need a credential named `auth`.
+  The map's entries are skipped, nothing beside them is (`providers[0].auth` is
+  still refused), and the skip covers a `providers` item only.
 - **Boot says what it resolved.** Every `vpay-server` mode logs one `info` line,
   `authentication methods`, with `permitted`, `served` and `explicit` (names only,
   never a key or a secret), so an operator sees an absent key permitting all four.
