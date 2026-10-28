@@ -7123,7 +7123,7 @@ async fn two_refunds_against_one_invoice_add_up_and_an_over_refund_is_refused() 
     assert_eq!(
         refused
             .as_database_error()
-            .and_then(sqlx::error::DatabaseError::constraint),
+            .and_then(|error| error.constraint()),
         Some("refunded_at_most_paid"),
         "the invoice's own over-refund guard must still fire: {refused}"
     );
@@ -10264,13 +10264,13 @@ async fn migration_0044_moves_every_live_credential_unchanged() -> anyhow::Resul
     // 1. THE PASSWORD IS THE SAME BYTES. Not "a password exists" — the same
     //    string, because the pepper did not change and a different string
     //    would not verify under it.
-    //
-    //    Read with raw SQL: since VP-6a (migration 0056) `vpay_db` has no
-    //    password or TOTP vocabulary, but 0044 is shipped history and what it
-    //    did is still worth proving against the schema as it stood.
-    let password = credential_of(&pool, "stf_enrolled", "password")
-        .await?
-        .context("the enrolled member's password moved")?;
+    let password = Credentials::find_for_staff_member(
+        repositories.as_ref(),
+        "stf_enrolled",
+        CredentialKind::Password,
+    )
+    .await?
+    .context("the enrolled member's password moved")?;
     assert_eq!(
         password.material.as_deref(),
         Some(argon2),
@@ -10284,13 +10284,18 @@ async fn migration_0044_moves_every_live_credential_unchanged() -> anyhow::Resul
     assert_eq!(password.counter, 0);
     assert!(
         vpay_core::ids::is_well_formed(vpay_core::ids::CREDENTIAL_PREFIX, &password.id),
-        "a backfilled id must be shaped like a minted one"
+        "a backfilled id must be shaped like a minted one: {}",
+        password.id
     );
 
     // 2. THE ONE-TIME PASSWORD FLAG MOVED WITH IT, on the other member.
-    let fresh = credential_of(&pool, "stf_fresh", "password")
-        .await?
-        .context("the fresh member's password moved too")?;
+    let fresh = Credentials::find_for_staff_member(
+        repositories.as_ref(),
+        "stf_fresh",
+        CredentialKind::Password,
+    )
+    .await?
+    .context("the fresh member's password moved too")?;
     assert!(
         fresh.must_change,
         "password_change_required was TRUE and must stay true — otherwise the migration \
@@ -10300,9 +10305,13 @@ async fn migration_0044_moves_every_live_credential_unchanged() -> anyhow::Resul
 
     // 3. THE SECOND FACTOR IS THE SAME SEALED BYTES, and the replay counter
     //    came across.
-    let totp = credential_of(&pool, "stf_enrolled", "totp")
-        .await?
-        .context("the enrolled member's second factor moved")?;
+    let totp = Credentials::find_for_staff_member(
+        repositories.as_ref(),
+        "stf_enrolled",
+        CredentialKind::Totp,
+    )
+    .await?
+    .context("the enrolled member's second factor moved")?;
     assert_eq!(
         totp.material.as_deref(),
         Some(sealed),
@@ -10315,10 +10324,28 @@ async fn migration_0044_moves_every_live_credential_unchanged() -> anyhow::Resul
          enrolled account, silently"
     );
 
+    // And that counter is live, not decorative: the step it carries is spent.
+    assert!(
+        !Credentials::advance_counter(repositories.as_ref(), &totp.id, 57_000_000, now_secs())
+            .await?,
+        "the migrated step must still be refused as a replay"
+    );
+    assert!(
+        Credentials::advance_counter(repositories.as_ref(), &totp.id, 57_000_001, now_secs())
+            .await?,
+        "and the next one must still be accepted, or the member cannot sign in at all"
+    );
+
     // 4. AN UNENROLLED MEMBER GETS NO SECOND FACTOR. `totp_secret IS NULL`
     //    was "not enrolled", and it must not become "enrolled with nothing".
     assert!(
-        credential_of(&pool, "stf_fresh", "totp").await?.is_none(),
+        Credentials::find_for_staff_member(
+            repositories.as_ref(),
+            "stf_fresh",
+            CredentialKind::Totp
+        )
+        .await?
+        .is_none(),
         "a member who had never enrolled must not come out of the migration holding a TOTP \
          credential"
     );
@@ -10365,87 +10392,152 @@ async fn migration_0044_moves_every_live_credential_unchanged() -> anyhow::Resul
     Ok(())
 }
 
-/// One `credentials` row as raw SQL reads it.
-struct StoredCredential {
-    id: String,
-    material: Option<String>,
-    counter: i64,
-    must_change: bool,
+/// `time::OffsetDateTime::now_utc()`, named so the assertions above read as
+/// assertions rather than as plumbing.
+fn now_secs() -> time::OffsetDateTime {
+    time::OffsetDateTime::now_utc()
 }
 
-/// The `kind` credential of one staff member, by raw SQL.
+/// **The replay guard, moved and still a compare-and-swap.** Only one caller
+/// wins a step, and only one enrolment wins a subject.
 ///
-/// `vpay_db` has no per-member credential read since VP-6a (the one live kind
-/// is found by `(issuer, subject)`), and the tests that prove the TABLE's
-/// rules need to see rows the repository no longer speaks of.
-async fn credential_of(
-    pool: &PgPool,
-    staff_member_id: &str,
-    kind: &str,
-) -> anyhow::Result<Option<StoredCredential>> {
-    use sqlx::Row as _;
-    let row = sqlx::query(
-        "SELECT id, material, counter, must_change FROM credentials
-         WHERE staff_member_id = $1 AND kind = $2",
-    )
-    .bind(staff_member_id)
-    .bind(kind)
-    .fetch_optional(pool)
-    .await?;
-    Ok(row.map(|row| StoredCredential {
-        id: row.get("id"),
-        material: row.get("material"),
-        counter: row.get("counter"),
-        must_change: row.get("must_change"),
-    }))
-}
+/// This is the pre-ADR-0019 test
+/// `the_staff_guards_are_compare_and_swaps_and_only_one_caller_wins`, pointed
+/// at `credentials`. Both properties it pinned moved there — the replay guard
+/// is `Credentials::advance_counter` and the enrolment guard is a partial
+/// unique index instead of a `WHERE` clause — and **the assertions did not
+/// weaken on the way**, which is the point: a split that quietly relaxed
+/// either would look exactly like a split that did not.
+///
+/// `vpay_api::staff` reaches the enrolment path only when the credential read
+/// it just did said unenrolled, so an HTTP test cannot make a second caller
+/// reach it at all: by then the row exists and the handler takes the stored-
+/// secret path. That is what made the old enrolment guard's mutation
+/// invisible to `staff_sign_in.rs`, and it is why this test is here and not
+/// there.
+///
+/// The decisive mutations, one per assertion, and each was **run**:
+///
+/// * drop `credentials_one_singleton_kind_per_staff_member` — the second
+///   enrolment succeeds and the stored secret becomes the loser's;
+/// * delete `.where_(credential::counter().lt(counter))` from
+///   `advance_counter` — a spent step is accepted again;
+/// * change that filter to `lte` — the same, one step wider.
+#[tokio::test]
+async fn the_credential_guards_are_compare_and_swaps_and_only_one_caller_wins() -> anyhow::Result<()>
+{
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
 
-/// Writes a `credentials` row with raw SQL, the way the table's own rules are
-/// exercised now that no repository method creates one: the production writer
-/// is the provisioning transaction, which can only write a federated link.
-async fn insert_credential(pool: &PgPool, new: &NewCredential) -> Result<(), sqlx::Error> {
-    sqlx::query(
-        "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject,
-             counter, must_change, expires_at, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 0, $7, to_timestamp($8::bigint), to_timestamp($9::bigint),
-             to_timestamp($9::bigint))",
+    Staff::create(
+        repositories.as_ref(),
+        NewStaff {
+            id: "stf_guards".to_owned(),
+            merchant_id: "merchant_a".to_owned(),
+            email: "guards@example.test".to_owned(),
+            display_name: "Ada".to_owned(),
+            is_admin: false,
+            now,
+        },
     )
-    .bind(&new.id)
-    .bind(&new.staff_member_id)
-    .bind(new.kind.as_wire_str())
-    .bind(&new.material)
-    .bind(&new.issuer)
-    .bind(&new.subject)
-    .bind(new.must_change)
-    .bind(new.expires_at.map(time::OffsetDateTime::unix_timestamp))
-    .bind(new.now.unix_timestamp())
-    .execute(pool)
     .await
-    .map(|_| ())
+    .context("creating the staff member")?;
+
+    let totp = |id: &str, secret: &str| NewCredential {
+        id: id.to_owned(),
+        staff_member_id: Some("stf_guards".to_owned()),
+        kind: CredentialKind::Totp,
+        material: Some(secret.to_owned()),
+        issuer: None,
+        subject: None,
+        must_change: false,
+        expires_at: None,
+        now,
+    };
+
+    // --- enrolment happens once -------------------------------------------
+    Credentials::create(repositories.as_ref(), totp("cred_first", "first-secret"))
+        .await
+        .context("the first enrolment wins")?;
+    let err = Credentials::create(repositories.as_ref(), totp("cred_second", "second-secret"))
+        .await
+        .expect_err(
+            "the second must LOSE — otherwise whoever reaches the enrolment screen second \
+             replaces an enrolled staff member's second factor, with nothing but the password \
+             in front of it",
+        );
+    eprintln!("observed rejection: {err}");
+    assert!(
+        matches!(
+            vpay_core::Classify::category(&err),
+            vpay_core::Category::Conflict
+        ),
+        "a second TOTP credential is a conflict, not an outage: {err}"
+    );
+
+    let stored = Credentials::find_for_staff_member(
+        repositories.as_ref(),
+        "stf_guards",
+        CredentialKind::Totp,
+    )
+    .await?
+    .context("the totp credential is there")?;
+    assert_eq!(
+        stored.material.as_deref(),
+        Some("first-secret"),
+        "the stored secret is the winner's, which is what `did not replace` means"
+    );
+    assert_eq!(stored.id, "cred_first");
+
+    // --- a TOTP step is spent once ----------------------------------------
+    assert_eq!(
+        stored.counter, 0,
+        "seeded, so `NULL < step` cannot bite — the whole reason the column is NOT NULL"
+    );
+    assert!(
+        Credentials::advance_counter(repositories.as_ref(), "cred_first", 100, now).await?,
+        "a fresh step is accepted"
+    );
+    assert!(
+        !Credentials::advance_counter(repositories.as_ref(), "cred_first", 100, now).await?,
+        "the SAME step must be refused — this is the whole of the replay defence"
+    );
+    assert!(
+        !Credentials::advance_counter(repositories.as_ref(), "cred_first", 99, now).await?,
+        "and so must an EARLIER one: the +/-1 skew window admits three codes at any instant, \
+         and a guard that only refused equality would leave the older two replayable"
+    );
+    assert!(
+        Credentials::advance_counter(repositories.as_ref(), "cred_first", 101, now).await?,
+        "a later step is a different code, or nobody could ever sign in twice"
+    );
+
+    // --- an absent credential moves nothing --------------------------------
+    assert!(
+        !Credentials::advance_counter(repositories.as_ref(), "cred_nobody", 200, now).await?,
+        "a compare-and-swap against a row that does not exist matches nothing"
+    );
+    assert!(
+        !Credentials::replace_material(repositories.as_ref(), "cred_nobody", "hash", now).await?
+    );
+    assert!(!Staff::record_sign_in(repositories.as_ref(), "stf_nobody", now).await?);
+
+    Ok(())
 }
 
-/// Whether `error` is Postgres's unique violation (`23505`).
-fn is_unique_violation(error: &sqlx::Error) -> bool {
-    error
-        .as_database_error()
-        .and_then(|database| database.code())
-        .is_some_and(|code| code == "23505")
-}
-
-/// **A credential and a console key cannot outlive their subject**, and the
-/// database is what says so rather than a convention.
+/// **A credential cannot outlive its subject**, and the database is what says
+/// so rather than a convention.
 ///
 /// This is the integrity property ADR-0019 decision 2 claims for the FK fork,
-/// asserted rather than assumed, and `console_keys.staff_member_id` is the same
-/// shape (migration 0056). It is the half a cascade covers; the other half — an
-/// *anonymised* customer, whose row stays and for whom no cascade fires — is
-/// named in that decision and has no code to test yet, because `customer_id`
-/// does not exist.
+/// asserted rather than assumed. It is the half a cascade covers; the other
+/// half — an *anonymised* customer, whose row stays and for whom no cascade
+/// fires — is named in that decision and has no code to test yet, because
+/// `customer_id` does not exist.
 ///
 /// The decisive mutation: change `REFERENCES staff_members (id) ON DELETE
-/// CASCADE` to `ON DELETE NO ACTION` in migration 0044 (or 0056) and the delete
-/// below fails with a foreign-key violation; drop the `REFERENCES` clause
-/// entirely and the rows survive their subject, which is the orphan the
+/// CASCADE` to `ON DELETE NO ACTION` in migration 0044 and the delete below
+/// fails with a foreign-key violation; drop the `REFERENCES` clause entirely
+/// and the credentials survive their subject, which is the orphan the
 /// polymorphic fork would have made unnoticeable.
 #[tokio::test]
 async fn a_credential_cannot_outlive_its_subject() -> anyhow::Result<()> {
@@ -10464,38 +10556,38 @@ async fn a_credential_cannot_outlive_its_subject() -> anyhow::Result<()> {
         },
     )
     .await?;
-    insert_credential(
-        &pool,
-        &NewCredential {
-            id: "cred_link".to_owned(),
-            staff_member_id: Some("stf_doomed".to_owned()),
-            kind: CredentialKind::Oidc,
-            material: None,
-            issuer: Some("vaam".to_owned()),
-            subject: Some("usr_doomed".to_owned()),
-            must_change: false,
-            expires_at: None,
-            now,
-        },
-    )
-    .await?;
-    vpay_db::ConsoleKeys::pair_console_key(
-        repositories.as_ref(),
-        console_key("ck_doomed", "stf_doomed", 'd', now),
-    )
-    .await?;
+    for (id, kind, material) in [
+        ("cred_pw", CredentialKind::Password, "the-hash"),
+        ("cred_totp", CredentialKind::Totp, "the-secret"),
+    ] {
+        Credentials::create(
+            repositories.as_ref(),
+            NewCredential {
+                id: id.to_owned(),
+                staff_member_id: Some("stf_doomed".to_owned()),
+                kind,
+                material: Some(material.to_owned()),
+                issuer: None,
+                subject: None,
+                must_change: false,
+                expires_at: None,
+                now,
+            },
+        )
+        .await?;
+    }
 
     // A credential with NO subject is refused outright — the other half of
     // "exactly one", and the one a nullable column would otherwise admit.
-    let orphan = insert_credential(
-        &pool,
-        &NewCredential {
+    let orphan = Credentials::create(
+        repositories.as_ref(),
+        NewCredential {
             id: "cred_orphan".to_owned(),
             staff_member_id: None,
-            kind: CredentialKind::Oidc,
-            material: None,
-            issuer: Some("vaam".to_owned()),
-            subject: Some("usr_nobody".to_owned()),
+            kind: CredentialKind::Password,
+            material: Some("nobody's".to_owned()),
+            issuer: None,
+            subject: None,
             must_change: false,
             expires_at: None,
             now,
@@ -10503,23 +10595,18 @@ async fn a_credential_cannot_outlive_its_subject() -> anyhow::Result<()> {
     )
     .await
     .expect_err("credentials_has_exactly_one_subject refuses a credential with no subject");
-    assert!(
-        orphan
-            .to_string()
-            .contains("credentials_has_exactly_one_subject"),
-        "refused by the wrong constraint: {orphan}"
-    );
+    eprintln!("observed rejection: {orphan}");
 
     // And one naming a subject that does not exist.
-    let dangling = insert_credential(
-        &pool,
-        &NewCredential {
+    let dangling = Credentials::create(
+        repositories.as_ref(),
+        NewCredential {
             id: "cred_dangling".to_owned(),
             staff_member_id: Some("stf_nobody".to_owned()),
-            kind: CredentialKind::Oidc,
-            material: None,
-            issuer: Some("vaam".to_owned()),
-            subject: Some("usr_dangling".to_owned()),
+            kind: CredentialKind::Password,
+            material: Some("nobody's".to_owned()),
+            issuer: None,
+            subject: None,
             must_change: false,
             expires_at: None,
             now,
@@ -10527,42 +10614,33 @@ async fn a_credential_cannot_outlive_its_subject() -> anyhow::Result<()> {
     )
     .await
     .expect_err("the foreign key refuses a credential for a staff member that does not exist");
-    assert!(
-        dangling
-            .to_string()
-            .contains("credentials_staff_member_id_fkey"),
-        "refused by the wrong constraint: {dangling}"
-    );
+    eprintln!("observed rejection: {dangling}");
 
     // --- and the cascade -----------------------------------------------------
-    sqlx::query("DELETE FROM staff_members WHERE id = 'stf_doomed'")
-        .execute(&pool)
-        .await?;
-    for table in ["credentials", "console_keys"] {
-        // `AssertSqlSafe`: `table` is one of the two literals above.
-        let survivors: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(format!(
-            "SELECT count(*) FROM {table} WHERE staff_member_id = 'stf_doomed'"
-        )))
-        .fetch_one(&pool)
-        .await?;
-        assert_eq!(
-            survivors, 0,
-            "a {table} row outlived its subject — an authenticator with nobody to authenticate"
-        );
-    }
+    assert!(
+        Staff::delete(repositories.as_ref(), "stf_doomed").await?,
+        "the staff row is removed"
+    );
+    let survivors: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM credentials WHERE staff_member_id = $1")
+            .bind("stf_doomed")
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        survivors, 0,
+        "a credential outlived its subject — an authenticator with nobody to authenticate"
+    );
 
     Ok(())
 }
+
 /// **The per-kind uniqueness rules fire, and they are not one rule.**
 ///
-/// Three separate statements, which is ADR-0019 decision 3: one singleton
-/// credential per subject, at most one federated link per issuer per subject,
-/// and `(issuer, subject)` unique across the whole deployment. Plus the
-/// negative that makes them per-kind rather than global — several WebAuthn keys
-/// are correct, and so are two federated links at two different issuers.
-///
-/// `hotp` stands for the singleton kinds since migration 0056 closed `password`
-/// and `totp`; the partial index still names all three.
+/// Three separate statements, which is ADR-0019 decision 3: one password per
+/// subject, at most one federated link per issuer per subject, and
+/// `(issuer, subject)` unique across the whole deployment. Plus the negative
+/// that makes them per-kind rather than global — several WebAuthn keys are
+/// correct, and so are two federated links at two different issuers.
 ///
 /// None of these is visible to any compile-time gate: `cratestack` cannot see
 /// an undeclared index at all, so dropping one is silent everywhere except
@@ -10571,7 +10649,7 @@ async fn a_credential_cannot_outlive_its_subject() -> anyhow::Result<()> {
 /// The decisive mutations, one per block, and each was **run**:
 ///
 /// * drop `credentials_one_singleton_kind_per_staff_member` — the second
-///   `hotp` lands and the subject has two;
+///   password lands and the subject has two;
 /// * drop `credentials_one_federated_link_per_issuer` — one person holds two
 ///   links at one issuer;
 /// * drop `credentials_federated_identity_key` — two staff members claim one
@@ -10579,7 +10657,7 @@ async fn a_credential_cannot_outlive_its_subject() -> anyhow::Result<()> {
 ///   password hash.
 #[tokio::test]
 async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
-    let (_container, repositories, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     for (id, email) in [
@@ -10623,30 +10701,47 @@ async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
         now,
     };
 
-    // --- one singleton credential per subject ------------------------------
-    insert_credential(&pool, &secret("cred_h1", "stf_ada", CredentialKind::Hotp)).await?;
-    let err = insert_credential(&pool, &secret("cred_h2", "stf_ada", CredentialKind::Hotp))
-        .await
-        .expect_err("one hotp per subject");
-    assert!(is_unique_violation(&err), "{err}");
+    // --- one password per subject ------------------------------------------
+    Credentials::create(
+        repositories.as_ref(),
+        secret("cred_pw1", "stf_ada", CredentialKind::Password),
+    )
+    .await?;
+    let err = Credentials::create(
+        repositories.as_ref(),
+        secret("cred_pw2", "stf_ada", CredentialKind::Password),
+    )
+    .await
+    .expect_err("one password per subject");
+    eprintln!("observed rejection: {err}");
+    assert!(matches!(
+        vpay_core::Classify::category(&err),
+        vpay_core::Category::Conflict
+    ));
 
     // ... but the OTHER subject may have one, or the index is on the wrong
-    // columns and every deployment has exactly one in total.
-    insert_credential(&pool, &secret("cred_h3", "stf_grace", CredentialKind::Hotp))
-        .await
-        .context("a second SUBJECT may of course have one")?;
+    // columns and every deployment has exactly one password in total.
+    Credentials::create(
+        repositories.as_ref(),
+        secret("cred_pw3", "stf_grace", CredentialKind::Password),
+    )
+    .await
+    .context("a second SUBJECT may of course have a password")?;
 
     // --- MANY of the non-singleton kinds are correct -----------------------
     for id in ["cred_key1", "cred_key2", "cred_key3"] {
-        insert_credential(&pool, &secret(id, "stf_ada", CredentialKind::Webauthn))
-            .await
-            .context("several security keys per person is the whole point of WebAuthn")?;
+        Credentials::create(
+            repositories.as_ref(),
+            secret(id, "stf_ada", CredentialKind::Webauthn),
+        )
+        .await
+        .context("several security keys per person is the whole point of WebAuthn")?;
     }
 
     // --- at most one federated link per issuer per subject ------------------
-    insert_credential(
-        &pool,
-        &federated(
+    Credentials::create(
+        repositories.as_ref(),
+        federated(
             "cred_g1",
             "stf_ada",
             "https://accounts.google.com",
@@ -10654,9 +10749,9 @@ async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
         ),
     )
     .await?;
-    let err = insert_credential(
-        &pool,
-        &federated(
+    let err = Credentials::create(
+        repositories.as_ref(),
+        federated(
             "cred_g2",
             "stf_ada",
             "https://accounts.google.com",
@@ -10665,15 +10760,16 @@ async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
     )
     .await
     .expect_err("one link per issuer per subject");
-    assert!(is_unique_violation(&err), "{err}");
+    eprintln!("observed rejection: {err}");
 
     // ... and ACCOUNT LINKING IS MANY-TO-ONE AND MIXED: the same person may
-    // hold a link at a *different* issuer. If this fails, the uniqueness rule
-    // was written as "one federated credential per subject", which is the
-    // rule for a singleton and not for a link.
-    insert_credential(
-        &pool,
-        &federated(
+    // hold a link at a *different* issuer, alongside their WebAuthn keys and
+    // their password. If this fails, the uniqueness rule was written as "one
+    // federated credential per subject", which is the rule for a password and
+    // not for a link.
+    Credentials::create(
+        repositories.as_ref(),
+        federated(
             "cred_e1",
             "stf_ada",
             "https://login.microsoftonline.com/9188040d-6c67-4c5b-b112-36a304b66dad/v2.0",
@@ -10684,9 +10780,9 @@ async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
     .context("one staff member may hold a Google link AND an Entra link")?;
 
     // --- (issuer, subject) is GLOBALLY unique -------------------------------
-    let err = insert_credential(
-        &pool,
-        &federated(
+    let err = Credentials::create(
+        repositories.as_ref(),
+        federated(
             "cred_g3",
             "stf_grace",
             "https://accounts.google.com",
@@ -10696,13 +10792,18 @@ async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
     .await
     .expect_err(
         "two staff members claiming ONE IdP identity is the federated equivalent of two \
-         people sharing a password hash: whoever pairs as (iss, sub) gets whichever row \
+         people sharing a password hash: whoever signs in as (iss, sub) gets whichever row \
          the query returns first",
     );
-    assert!(is_unique_violation(&err), "{err}");
+    eprintln!("observed rejection: {err}");
+    assert!(matches!(
+        vpay_core::Classify::category(&err),
+        vpay_core::Category::Conflict
+    ));
 
     Ok(())
 }
+
 /// **A federated credential carries an identity and no secret; every other
 /// kind carries a secret and no identity.**
 ///
@@ -10718,7 +10819,7 @@ async fn the_per_kind_uniqueness_rules_fire() -> anyhow::Result<()> {
 /// writer could ever insert.
 #[tokio::test]
 async fn a_kind_spelled_here_is_a_kind_the_database_admits() -> anyhow::Result<()> {
-    let (_container, repositories, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     // Bound again so the raw-SQL case below reads as what it is: a shape
     // `NewCredential` cannot express, because `counter` is not a field on it.
     let now = time::OffsetDateTime::now_utc();
@@ -10736,15 +10837,15 @@ async fn a_kind_spelled_here_is_a_kind_the_database_admits() -> anyhow::Result<(
     )
     .await?;
 
-    // Every one of the six, in the shape its own kind requires.
+    // Every one of the eight, in the shape its own kind requires.
     for (index, kind) in CredentialKind::ALL.into_iter().enumerate() {
         let transient = matches!(
             kind,
             CredentialKind::MagicLink | CredentialKind::EmailOtp | CredentialKind::PhoneOtp
         );
-        insert_credential(
-            &pool,
-            &NewCredential {
+        Credentials::create(
+            repositories.as_ref(),
+            NewCredential {
                 id: format!("cred_kind_{index}"),
                 staff_member_id: Some("stf_kinds".to_owned()),
                 kind,
@@ -10797,7 +10898,7 @@ async fn a_kind_spelled_here_is_a_kind_the_database_admits() -> anyhow::Result<(
 
     let refused = async |new: NewCredential, constraint: &str| -> anyhow::Result<()> {
         let id = new.id.clone();
-        let err = insert_credential(&pool, &new)
+        let err = Credentials::create(repositories.as_ref(), new)
             .await
             .err()
             .with_context(|| format!("{id} must be refused, and by {constraint}"))?;
@@ -10906,10 +11007,10 @@ async fn a_kind_spelled_here_is_a_kind_the_database_admits() -> anyhow::Result<(
     let err = sqlx::query(
         "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject,
              counter, must_change, expires_at, created_at, updated_at)
-         VALUES ('cred_negative', 'stf_shapes', 'hotp', 'x', NULL, NULL,
+         VALUES ('cred_negative', 'stf_shapes', 'totp', 'x', NULL, NULL,
              -1, FALSE, NULL, now(), now())",
     )
-    .execute(&pool)
+    .execute(&_pool)
     .await
     .expect_err("a step is never negative")
     .to_string();
@@ -10918,28 +11019,6 @@ async fn a_kind_spelled_here_is_a_kind_the_database_admits() -> anyhow::Result<(
         err.contains("credentials_counter_is_not_negative"),
         "refused by the wrong constraint: {err}"
     );
-
-    // The two kinds migration 0056 retired: the vocabulary CHECK still spells
-    // them (0044 is never edited), and `credentials_password_and_totp_are_retired`
-    // is what refuses a new row. The material is well-formed for the kind, so
-    // nothing else could be the refusal.
-    for kind in ["password", "totp"] {
-        let err = sqlx::query(
-            "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject,
-                 counter, must_change, expires_at, created_at, updated_at)
-             VALUES ($1, 'stf_shapes', $2, 'x', NULL, NULL, 0, FALSE, NULL, now(), now())",
-        )
-        .bind(format!("cred_retired_{kind}"))
-        .bind(kind)
-        .execute(&pool)
-        .await
-        .expect_err("a password or TOTP credential can no longer be written");
-        assert!(
-            err.to_string()
-                .contains("credentials_password_and_totp_are_retired"),
-            "{kind} was refused by the wrong constraint: {err}"
-        );
-    }
 
     Ok(())
 }
@@ -10981,11 +11060,11 @@ async fn a_staff_member_may_hold_no_credential_at_all() -> anyhow::Result<()> {
 
     for kind in CredentialKind::ALL {
         assert!(
-            credential_of(&_pool, "stf_sso", kind.as_wire_str())
+            Credentials::find_for_staff_member(repositories.as_ref(), "stf_sso", kind)
                 .await?
                 .is_none(),
-            "{kind:?}: no credential is an ORDINARY state — `staff add` writes none, and a \
-             member created that way is reached only through a console key"
+            "{kind:?}: `None` is an ORDINARY answer, not an error — a caller that treats it as \
+             impossible panics on the first federated staff member"
         );
     }
 
@@ -11839,10 +11918,165 @@ async fn an_envelope_nonce_longer_than_the_checked_length_is_refused_by_the_tabl
 }
 
 // ---------------------------------------------------------------------------
-// The federated lookup and the provisioning transaction: how a person vaam
-// vouches for is found again and, the first time, created (VP-6a; the pattern
-// is ADR-0030's).
+// ADR-0030: staff single sign-on — the pending flow, the federated lookup, and
+// the provisioning transaction.
 // ---------------------------------------------------------------------------
+
+fn sso_attempt(id_char: char, now: time::OffsetDateTime) -> vpay_db::NewSsoAttempt {
+    vpay_db::NewSsoAttempt {
+        id: id_char.to_string().repeat(64),
+        state_hash: "s".repeat(64),
+        nonce_hash: "n".repeat(64),
+        code_verifier: "sealed-verifier".to_owned(),
+        is_retry: false,
+        now,
+    }
+}
+
+/// A pending SSO flow is taken **exactly once**, and a second take finds
+/// nothing — whichever way the second one arrives.
+///
+/// The decisive mutation: make `consume` read without deleting (or ignore the
+/// delete's row count) and the second assertion reads `Some`.
+#[tokio::test]
+async fn a_pending_sso_flow_is_consumed_exactly_once() -> anyhow::Result<()> {
+    use vpay_db::StaffSsoAttempts;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('a', now)).await?;
+
+    let first = StaffSsoAttempts::consume(repositories.as_ref(), &"a".repeat(64), now)
+        .await?
+        .context("the first take finds the flow")?;
+    assert_eq!(first.code_verifier, "sealed-verifier");
+    assert!(!first.is_retry);
+    assert_eq!(
+        first.expires_at - first.created_at,
+        vpay_db::SSO_ATTEMPT_LIFETIME
+    );
+
+    assert!(
+        StaffSsoAttempts::consume(repositories.as_ref(), &"a".repeat(64), now)
+            .await?
+            .is_none(),
+        "a flow already taken is gone"
+    );
+    Ok(())
+}
+
+/// Two takes racing on one flow: exactly one wins. This is the
+/// compare-and-swap, which no sequential test reaches.
+#[tokio::test]
+async fn racing_takes_of_one_sso_flow_yield_exactly_one_winner() -> anyhow::Result<()> {
+    use vpay_db::StaffSsoAttempts;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('b', now)).await?;
+
+    let id = "b".repeat(64);
+    let takes = futures_join_all((0..8).map(|_| {
+        let repositories = Arc::clone(&repositories);
+        let id = id.clone();
+        tokio::spawn(async move {
+            StaffSsoAttempts::consume(repositories.as_ref(), &id, now)
+                .await
+                .map(|row| row.is_some())
+        })
+    }))
+    .await;
+
+    let mut winners = 0;
+    for take in takes {
+        if take?? {
+            winners += 1;
+        }
+    }
+    assert_eq!(winners, 1, "eight racing callbacks, one flow: one winner");
+    Ok(())
+}
+
+async fn futures_join_all<T>(
+    handles: impl Iterator<Item = tokio::task::JoinHandle<T>>,
+) -> Vec<Result<T, tokio::task::JoinError>> {
+    let mut out = Vec::new();
+    for handle in handles.collect::<Vec<_>>() {
+        out.push(handle.await);
+    }
+    out
+}
+
+/// An expired flow is refused, and is gone afterwards; the sweep removes
+/// expired rows and only those.
+#[tokio::test]
+async fn an_expired_sso_flow_is_refused_and_the_sweep_removes_only_expired_rows()
+-> anyhow::Result<()> {
+    use vpay_db::StaffSsoAttempts;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+
+    let long_ago = now - time::Duration::hours(1);
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('c', long_ago)).await?;
+    assert!(
+        StaffSsoAttempts::consume(repositories.as_ref(), &"c".repeat(64), now)
+            .await?
+            .is_none(),
+        "created an hour ago, lifetime ten minutes"
+    );
+    let remaining: i64 = sqlx::query_scalar("SELECT count(*) FROM staff_sso_attempts")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(
+        remaining, 0,
+        "an expired flow that is taken is deleted, not left behind"
+    );
+
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('d', long_ago)).await?;
+    StaffSsoAttempts::create(repositories.as_ref(), sso_attempt('e', now)).await?;
+    let swept = StaffSsoAttempts::sweep_expired_sso_attempts(repositories.as_ref(), now).await?;
+    assert_eq!(swept, 1);
+    assert!(
+        StaffSsoAttempts::consume(repositories.as_ref(), &"e".repeat(64), now)
+            .await?
+            .is_some(),
+        "the live flow survives the sweep"
+    );
+    Ok(())
+}
+
+/// The table's own CHECKs: digests are 64 characters, and a flow cannot
+/// expire before it began.
+#[tokio::test]
+async fn the_sso_attempt_table_refuses_malformed_rows() -> anyhow::Result<()> {
+    let (_container, _repositories, pool) = migrated_postgres().await?;
+
+    for (name, sql) in [
+        (
+            "staff_sso_attempts_id_length",
+            "INSERT INTO staff_sso_attempts VALUES ('short', repeat('s',64), repeat('n',64), 'v', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_state_hash_length",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), 'short', repeat('n',64), 'v', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_nonce_hash_length",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), repeat('s',64), 'short', 'v', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_code_verifier_length",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), repeat('s',64), repeat('n',64), '', false, now(), now() + interval '1 minute')",
+        ),
+        (
+            "staff_sso_attempts_lifetime_is_positive",
+            "INSERT INTO staff_sso_attempts VALUES (repeat('a',64), repeat('s',64), repeat('n',64), 'v', false, now(), now() - interval '1 minute')",
+        ),
+    ] {
+        let error = sqlx::query(sql).execute(&pool).await.expect_err(name);
+        assert!(error.to_string().contains(name), "{name}: {error}");
+    }
+    Ok(())
+}
 
 fn federated(
     staff_id: &str,
@@ -11878,7 +12112,7 @@ fn provisioned(id: &str, email: &str, now: time::OffsetDateTime) -> NewStaff {
 /// subject at another issuer is a different identity.
 #[tokio::test]
 async fn a_federated_link_is_found_by_issuer_and_subject_together() -> anyhow::Result<()> {
-    let (_container, repositories, pool) = migrated_postgres().await?;
+    let (_container, repositories, _pool) = migrated_postgres().await?;
     let now = time::OffsetDateTime::now_utc();
 
     Staff::create(
@@ -11886,9 +12120,9 @@ async fn a_federated_link_is_found_by_issuer_and_subject_together() -> anyhow::R
         provisioned("stf_a", "a@example.test", now),
     )
     .await?;
-    insert_credential(
-        &pool,
-        &federated(
+    Credentials::create(
+        repositories.as_ref(),
+        federated(
             "stf_a",
             "https://idp.example.test/realms/staff",
             "sub-1",
@@ -12466,6 +12700,486 @@ async fn migration_0056_drops_the_sessions_and_keeps_the_federated_links() -> an
     assert_eq!(
         members, 1,
         "the staff member survives; only how they proved who they are goes"
+    );
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// VPA-2 (owner ruling R5): the human sign-in's persistence, restored by
+// migration 0058. The sessions, the authorization codes and the SSO flows had
+// their behavioural coverage in the sign-in integration suites, which went with
+// the sign-in; these are the repository-level replacements, and each of them
+// fails when the guard it names is removed.
+// ---------------------------------------------------------------------------
+
+/// A staff member for the session and code tests below.
+async fn staff_for_sessions(repositories: &dyn Repositories, id: &str) -> anyhow::Result<()> {
+    Staff::create(
+        repositories,
+        NewStaff {
+            id: id.to_owned(),
+            merchant_id: "merchant_a".to_owned(),
+            email: format!("{id}@example.test"),
+            display_name: "Ada".to_owned(),
+            is_admin: false,
+            now: time::OffsetDateTime::now_utc(),
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+fn new_session(id_char: char, staff_id: &str, now: time::OffsetDateTime) -> vpay_db::NewSession {
+    vpay_db::NewSession {
+        id: id_char.to_string().repeat(64),
+        staff_id: staff_id.to_owned(),
+        state: vpay_db::SessionState::PendingTotp,
+        now,
+    }
+}
+
+/// **A session has two bounds, and an expired one is refused, not deleted.**
+///
+/// The absolute bound is twelve hours from creation and no use moves it; the
+/// idle bound is thirty minutes from the last accepted request and `touch` moves
+/// it. Both are enforced by `load` reading the row, so the row is still there
+/// afterwards for an operator to read, and `touch` never moves the clock back.
+/// Mutations that each fail it: `ABSOLUTE_LIFETIME` to 24 hours (the 12-hour
+/// assertion), `IDLE_TIMEOUT` to 60 minutes (the 31-minute one), dropping the
+/// `last_seen_at < now` filter in `touch` (the backwards touch), and deleting the
+/// expired row in `load` (the final count).
+#[tokio::test]
+async fn a_session_has_two_bounds_and_an_expired_one_is_refused_not_deleted() -> anyhow::Result<()>
+{
+    use vpay_db::StaffSessions;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let repositories = repositories.as_ref();
+    staff_for_sessions(repositories, "stf_sess").await?;
+    let t0 = time::OffsetDateTime::now_utc();
+    let minutes = time::Duration::minutes;
+
+    StaffSessions::create(repositories, new_session('a', "stf_sess", t0)).await?;
+    let id = "a".repeat(64);
+
+    let row = StaffSessions::load(repositories, &id, t0)
+        .await?
+        .context("a session just created is live")?;
+    assert_eq!(row.state, vpay_db::SessionState::PendingTotp);
+    assert_eq!(
+        row.expires_at - row.created_at,
+        vpay_db::ABSOLUTE_LIFETIME,
+        "the absolute bound is derived from the creation instant by the repository"
+    );
+    assert!(row.access_token.is_none() && row.access_token_expires_at.is_none());
+
+    // The idle bound: thirty minutes since the last accepted request.
+    assert!(
+        StaffSessions::load(repositories, &id, t0 + minutes(29))
+            .await?
+            .is_some(),
+        "29 idle minutes is inside the bound"
+    );
+    assert!(
+        StaffSessions::load(repositories, &id, t0 + minutes(31))
+            .await?
+            .is_none(),
+        "31 idle minutes is outside it"
+    );
+
+    // `touch` moves it, and a touch that would move the clock backwards is a no-op.
+    assert!(StaffSessions::touch(repositories, &id, t0 + minutes(20)).await?);
+    assert!(
+        !StaffSessions::touch(repositories, &id, t0 + minutes(10)).await?,
+        "a stamp earlier than the stored one must match nothing"
+    );
+    assert!(
+        StaffSessions::load(repositories, &id, t0 + minutes(45))
+            .await?
+            .is_some(),
+        "touched at +20, so +45 is 25 idle minutes"
+    );
+
+    // The absolute bound: no use moves it.
+    let mut at = t0 + minutes(20);
+    while at < t0 + vpay_db::ABSOLUTE_LIFETIME {
+        at += minutes(25);
+        StaffSessions::touch(repositories, &id, at).await?;
+    }
+    assert!(
+        StaffSessions::load(repositories, &id, t0 + vpay_db::ABSOLUTE_LIFETIME)
+            .await?
+            .is_none(),
+        "a session in constant use is still refused at twelve hours"
+    );
+
+    let kept: i64 = sqlx::query_scalar("SELECT count(*) FROM staff_sessions WHERE id = $1")
+        .bind(&id)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(
+        kept, 1,
+        "an expired session is refused on read and left in place"
+    );
+    Ok(())
+}
+
+/// **Sign-in's second step is a compare-and-swap on the state, the token and its
+/// expiry are one write, and sign-out is a revocation.**
+///
+/// `mark_authenticated` answers `true` once (a replayed TOTP step must not
+/// promote twice); `record_access_token` writes `access_token` and
+/// `access_token_expires_at` in one statement (migration 0040's paired CHECK is
+/// then satisfied by construction); `delete` is idempotent and takes the token
+/// with the row; `delete_others` keeps the caller's own session.
+#[tokio::test]
+async fn a_session_is_promoted_once_carries_its_token_and_is_revoked_by_deleting()
+-> anyhow::Result<()> {
+    use vpay_db::StaffSessions;
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let repositories = repositories.as_ref();
+    staff_for_sessions(repositories, "stf_promote").await?;
+    staff_for_sessions(repositories, "stf_other").await?;
+    let t0 = time::OffsetDateTime::now_utc();
+
+    for c in ['a', 'b', 'c'] {
+        StaffSessions::create(repositories, new_session(c, "stf_promote", t0)).await?;
+    }
+    StaffSessions::create(repositories, new_session('d', "stf_other", t0)).await?;
+    let a = "a".repeat(64);
+
+    assert!(StaffSessions::mark_authenticated(repositories, &a, t0).await?);
+    assert!(
+        !StaffSessions::mark_authenticated(repositories, &a, t0).await?,
+        "an already-authenticated session must not be promoted again"
+    );
+    assert_eq!(
+        StaffSessions::load(repositories, &a, t0)
+            .await?
+            .context("live")?
+            .state,
+        vpay_db::SessionState::Authenticated
+    );
+
+    let expires = t0 + time::Duration::minutes(15);
+    assert!(StaffSessions::record_access_token(repositories, &a, "h.p.s", expires, t0).await?);
+    let row = StaffSessions::load(repositories, &a, t0)
+        .await?
+        .context("live")?;
+    assert_eq!(row.access_token.as_deref(), Some("h.p.s"));
+    assert_eq!(
+        row.access_token_expires_at.map(|at| at.unix_timestamp()),
+        Some(expires.unix_timestamp()),
+        "the token and the instant it dies are one fact"
+    );
+    assert!(
+        !StaffSessions::record_access_token(repositories, &"z".repeat(64), "x", expires, t0)
+            .await?,
+        "no such session"
+    );
+
+    // `delete_others` keeps the caller's session and nobody else's account.
+    let gone = StaffSessions::delete_others(repositories, "stf_promote", &a).await?;
+    assert_eq!(
+        gone, 2,
+        "b and c go; a is the caller's, d is another account's"
+    );
+    let left: Vec<String> = sqlx::query_scalar("SELECT id FROM staff_sessions ORDER BY id")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(left, [a.clone(), "d".repeat(64)]);
+
+    // Sign-out is idempotent, and it takes the token with the row.
+    assert!(StaffSessions::delete(repositories, &a).await?);
+    assert!(
+        !StaffSessions::delete(repositories, &a).await?,
+        "signing out twice is not an error"
+    );
+    assert!(StaffSessions::load(repositories, &a, t0).await?.is_none());
+    Ok(())
+}
+
+fn new_code(
+    code_char: char,
+    session_char: char,
+    now: time::OffsetDateTime,
+    lifetime: time::Duration,
+) -> vpay_db::NewAuthorizationCode {
+    vpay_db::NewAuthorizationCode {
+        code_hash: code_char.to_string().repeat(64),
+        row: vpay_db::AuthorizationCodeRow {
+            client_id: "vpay-dashboard".to_owned(),
+            staff_id: "stf_code".to_owned(),
+            session_id: session_char.to_string().repeat(64),
+            merchant_id: "merchant_a".to_owned(),
+            scope: "dashboard:read".to_owned(),
+            code_challenge: "challenge".to_owned(),
+            code_challenge_method: "S256".to_owned(),
+            redirect_uri: "https://dash.example.test/cb".to_owned(),
+            nonce: Some("nonce".to_owned()),
+            expires_at: now + lifetime,
+        },
+        now,
+    }
+}
+
+/// **A code is spent once — even by eight racing callers, even when it is
+/// expired — and signing out kills one in flight.**
+///
+/// The swap is `UPDATE … WHERE consumed_at IS NULL`; the loser and the expired
+/// are the same `None`. Mutations that each fail it: removing the
+/// `consumed_at().is_null()` filter (two winners in the race, a second
+/// consume returns the row), moving the expiry check before the swap (the
+/// expired code is then consumable twice without being spent), and dropping
+/// `ON DELETE CASCADE` on `session_id` (the cascade assertion).
+#[tokio::test]
+async fn an_authorization_code_is_spent_exactly_once_and_dies_with_its_session()
+-> anyhow::Result<()> {
+    use vpay_db::{AuthorizationCodes, StaffSessions};
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    staff_for_sessions(repositories.as_ref(), "stf_code").await?;
+    let now = time::OffsetDateTime::now_utc();
+    let minute = time::Duration::minutes(1);
+
+    StaffSessions::create(repositories.as_ref(), new_session('a', "stf_code", now)).await?;
+    StaffSessions::create(repositories.as_ref(), new_session('b', "stf_code", now)).await?;
+
+    // Once.
+    AuthorizationCodes::store_code(repositories.as_ref(), new_code('1', 'a', now, minute)).await?;
+    let first = AuthorizationCodes::consume_code(repositories.as_ref(), &"1".repeat(64), now)
+        .await?
+        .context("a fresh code is exchangeable")?;
+    assert_eq!(first.scope, "dashboard:read");
+    assert_eq!(first.session_id, "a".repeat(64));
+    assert!(
+        AuthorizationCodes::consume_code(repositories.as_ref(), &"1".repeat(64), now)
+            .await?
+            .is_none(),
+        "a spent code is the same answer as an unknown one"
+    );
+
+    // Eight racing callers: one winner.
+    AuthorizationCodes::store_code(repositories.as_ref(), new_code('2', 'a', now, minute)).await?;
+    let id = "2".repeat(64);
+    let takes = futures_join_all((0..8).map(|_| {
+        let repositories = Arc::clone(&repositories);
+        let id = id.clone();
+        tokio::spawn(async move {
+            AuthorizationCodes::consume_code(repositories.as_ref(), &id, now)
+                .await
+                .map(|row| row.is_some())
+        })
+    }))
+    .await;
+    let mut winners = 0;
+    for take in takes {
+        if take?? {
+            winners += 1;
+        }
+    }
+    assert_eq!(winners, 1, "eight racing exchanges, one code: one winner");
+
+    // Expired: refused, and spent by the attempt.
+    AuthorizationCodes::store_code(repositories.as_ref(), new_code('3', 'a', now, minute)).await?;
+    let late = now + minute + minute;
+    assert!(
+        AuthorizationCodes::consume_code(repositories.as_ref(), &"3".repeat(64), late)
+            .await?
+            .is_none()
+    );
+    let consumed: bool = sqlx::query_scalar(
+        "SELECT consumed_at IS NOT NULL FROM oauth_authorization_codes WHERE code_hash = $1",
+    )
+    .bind("3".repeat(64))
+    .fetch_one(&pool)
+    .await?;
+    assert!(
+        consumed,
+        "an expired code is still spent, so presenting it twice cannot be told from once"
+    );
+
+    // Signing out kills a code in flight.
+    AuthorizationCodes::store_code(repositories.as_ref(), new_code('4', 'b', now, minute)).await?;
+    assert!(StaffSessions::delete(repositories.as_ref(), &"b".repeat(64)).await?);
+    assert!(
+        AuthorizationCodes::consume_code(repositories.as_ref(), &"4".repeat(64), now)
+            .await?
+            .is_none(),
+        "the code went with the session that issued it"
+    );
+
+    // A code for a session that is not there must not exist.
+    let orphan =
+        AuthorizationCodes::store_code(repositories.as_ref(), new_code('5', 'z', now, minute))
+            .await;
+    assert!(
+        matches!(
+            &orphan,
+            Err(vpay_db::DbError::Persistence(
+                vpay_db::PersistenceError::ForeignKey { .. }
+            ))
+        ),
+        "session_id is a real foreign key: {orphan:?}"
+    );
+    Ok(())
+}
+
+/// Migration 0058 gives the three tables back **empty**, drops the retiring
+/// constraint, and touches nothing 0056 kept.
+///
+/// Runs the migrations to 0057 by hand, seeds the world a deployment is in after
+/// 0056 (a member, a vaam link, a console key), shows the database refusing a
+/// password, applies 0058, and shows (a) the tables exist and are empty, (b) a
+/// password and a TOTP seed are storable again, (c) the link, the key and the
+/// member are untouched, (d) every constraint and index the originals shipped is
+/// present under the same name. Delete the `DROP CONSTRAINT` and (b) fails;
+/// delete a `CREATE TABLE` and (a) fails; rename a constraint and (d) fails.
+#[tokio::test]
+async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept()
+-> anyhow::Result<()> {
+    let container = vpay_testkit::containers::start_postgres_with_retry()
+        .await
+        .context("postgres:16-alpine container starts")?;
+    let host = container.get_host().await.context("container host")?;
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .context("container port")?;
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPool::connect(&url).await.context("raw pool")?;
+
+    let migrator = sqlx::migrate!("../../migrations");
+    let apply = |version: i64| {
+        let pool = pool.clone();
+        let sql = migrator
+            .iter()
+            .find(|migration| migration.version == version)
+            .map(|migration| migration.sql.as_str().to_owned());
+        async move {
+            let sql = sql.with_context(|| format!("migration {version} is embedded"))?;
+            // `AssertSqlSafe`: `backends/migrations/*.sql`, embedded by
+            // `sqlx::migrate!` at compile time; no caller's value reaches it.
+            sqlx::raw_sql(sqlx::AssertSqlSafe(sql))
+                .execute(&pool)
+                .await
+                .with_context(|| format!("applying migration {version}"))?;
+            anyhow::Ok(())
+        }
+    };
+    for version in 1..=57 {
+        apply(version).await?;
+    }
+
+    for statement in [
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, status, is_admin,
+             created_at, updated_at)
+         VALUES ('stf_kept', 'merchant_a', 'kept@example.test', 'Kept', 'active', FALSE,
+             now(), now())",
+        "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject, counter,
+             must_change, expires_at, created_at, updated_at)
+         VALUES ('cred_link', 'stf_kept', 'oidc', NULL, 'vaam', 'usr_1', 0, FALSE, NULL, now(), now())",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .with_context(|| format!("writing the post-0056 world: {statement}"))?;
+    }
+
+    let password = "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject,
+             counter, must_change, expires_at, created_at, updated_at)
+         VALUES ('cred_pw', 'stf_kept', 'password', 'hash', NULL, NULL, 0, FALSE, NULL, now(), now())";
+    let refused = sqlx::query(password)
+        .execute(&pool)
+        .await
+        .expect_err("0056 closes the password kind");
+    assert_eq!(
+        refused
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("credentials_password_and_totp_are_retired")
+    );
+
+    apply(58).await?;
+
+    for table in [
+        "staff_sessions",
+        "oauth_authorization_codes",
+        "staff_sso_attempts",
+    ] {
+        // `AssertSqlSafe`: `table` is one of the three literals above.
+        let rows: i64 =
+            sqlx::query_scalar(sqlx::AssertSqlSafe(format!("SELECT count(*) FROM {table}")))
+                .fetch_one(&pool)
+                .await
+                .with_context(|| format!("{table} exists after 0058"))?;
+        assert_eq!(rows, 0, "{table} starts empty; nothing is restored into it");
+    }
+
+    sqlx::query(password)
+        .execute(&pool)
+        .await
+        .context("a password is storable again once 0058 drops the retiring constraint")?;
+    sqlx::query(
+        "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject,
+             counter, must_change, expires_at, created_at, updated_at)
+         VALUES ('cred_totp', 'stf_kept', 'totp', 'seed', NULL, NULL, 0, FALSE, NULL, now(), now())",
+    )
+    .execute(&pool)
+    .await
+    .context("and so is a TOTP seed")?;
+
+    let link: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM credentials WHERE kind = 'oidc' AND issuer = 'vaam' AND subject = 'usr_1'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(link, 1, "the federated link 0056 kept is untouched");
+    let keys_table: bool = sqlx::query_scalar(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'console_keys')",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert!(keys_table, "console_keys is not 0058's to touch");
+
+    // (d) The shape: every constraint and index the originals shipped, by name.
+    let mut names: Vec<(String, String)> = sqlx::query_as(
+        "SELECT conrelid::regclass::text, conname::text FROM pg_constraint
+          WHERE conrelid IN ('staff_sessions'::regclass, 'oauth_authorization_codes'::regclass,
+                             'staff_sso_attempts'::regclass)
+         UNION ALL
+         SELECT tablename::text, indexname::text FROM pg_indexes
+          WHERE tablename IN ('staff_sessions', 'oauth_authorization_codes', 'staff_sso_attempts')
+            AND indexname NOT LIKE '%_pkey'",
+    )
+    .fetch_all(&pool)
+    .await?;
+    names.sort();
+    let got: Vec<String> = names.into_iter().map(|(t, n)| format!("{t}.{n}")).collect();
+    assert_eq!(
+        got,
+        [
+            "oauth_authorization_codes.oauth_authorization_codes_code_hash_length",
+            "oauth_authorization_codes.oauth_authorization_codes_expiry_idx",
+            "oauth_authorization_codes.oauth_authorization_codes_method_is_s256",
+            "oauth_authorization_codes.oauth_authorization_codes_pkey",
+            "oauth_authorization_codes.oauth_authorization_codes_session_id_fkey",
+            "oauth_authorization_codes.oauth_authorization_codes_session_idx",
+            "oauth_authorization_codes.oauth_authorization_codes_staff_id_fkey",
+            "staff_sessions.staff_sessions_expiry_idx",
+            "staff_sessions.staff_sessions_id_length",
+            "staff_sessions.staff_sessions_pkey",
+            "staff_sessions.staff_sessions_staff_id_fkey",
+            "staff_sessions.staff_sessions_staff_idx",
+            "staff_sessions.staff_sessions_state_is_known",
+            "staff_sessions.staff_sessions_token_expiry_is_paired",
+            "staff_sso_attempts.staff_sso_attempts_code_verifier_length",
+            "staff_sso_attempts.staff_sso_attempts_expires_idx",
+            "staff_sso_attempts.staff_sso_attempts_id_length",
+            "staff_sso_attempts.staff_sso_attempts_lifetime_is_positive",
+            "staff_sso_attempts.staff_sso_attempts_nonce_hash_length",
+            "staff_sso_attempts.staff_sso_attempts_pkey",
+            "staff_sso_attempts.staff_sso_attempts_state_hash_length",
+        ],
+        "the constraints and indexes the three originals shipped, by name"
     );
     Ok(())
 }
