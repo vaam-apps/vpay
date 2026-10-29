@@ -13,6 +13,16 @@ _Moved out of [docs/reference/vpay-db.md](../vpay-db.md) on 2026-09-11 by exp57,
 > `revoke_console_key` (`update_many().where_(thumbprint).where_(revoked_at.is_null())`).
 > The registry was not re-measured; the counts in the paragraphs after this one
 > are the 2026-09-10 snapshot.
+>
+> **Restored 2026-10-28 (VPA-2, migration `0058`).** The three tables are back,
+> empty, with the models and the repositories that read them
+> (`vpay_db::{StaffSessions, StaffSsoAttempts, AuthorizationCodes}`), and
+> `staff_members` has its `delete` arm and `record_sign_in`/`delete` methods
+> again; `credentials` has `create`, `find_for_staff_member`, `advance_counter`
+> and `replace_material` and the `password` and `totp` kinds back. So the nine
+> rows below are the statements that stand again, unchanged, and
+> `console_keys`' four sit beside them. Nothing calls the restored ones until
+> VPA-3.
 
 This page carries the seam itself. **The per-step record is on four sibling pages**,
 and the text below jumps straight from "Re-checked at 0.12.0" to "Why the generated

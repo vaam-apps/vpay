@@ -309,7 +309,7 @@ whose `subject` is a person are:
 | `staff_display_name`      | `staff_members.display_name`                                                                                                                                 | `none`   |
 | `staff_credential_secret` | `credentials.material`/`subject`/`issuer` (migration 0044 moved the staff credential columns here from `staff_members`)                                      | `forbid` |
 | `staff_oauth_token`       | `staff_sessions.access_token` (migration `0058` created the table again, empty; nothing writes it until VPA-3)                                               | `forbid` |
-| `staff_console_key`       | `console_keys.public_key`/`thumbprint`/`label` (migration `0056`, 2026-10-26; sits beside `staff_oauth_token` since `0058`, 2026-10-28)    | `none`   |
+| `staff_console_key`       | `console_keys.public_key`/`thumbprint`/`label` (migration `0056`, 2026-10-26; sits beside `staff_oauth_token` since `0058`, 2026-10-28)                      | `none`   |
 | `session_oauth_code`      | `oauth_codes`, `oauth_refresh_tokens`, `oauth_device_codes`, `oauth_authorization_codes`, `oauth_client_assertion_jtis`, `oauth_dpop_jti`                    | `forbid` |
 | `webhook_url`             | `webhook_deliveries.url`, `checkout_sessions.success_url`/`cancel_url`/`return_url`, `oauth_*redirect_uri`, `charges.redirect_url`/`return_url`              | `forbid` |
 | `oauth_signing_key`       | `oauth_signing_keys.kid`/`public_jwk`                                                                                                                        | `forbid` |

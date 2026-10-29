@@ -39,7 +39,7 @@ just helm-check                          # helm lint + template + 24 guards + ku
 helm template <release> deploy/helm/vpay -f my-values.yaml | less   # read it
 ```
 
-Three things the tooling will not check for you:
+Four things the tooling will not check for you:
 
 1. **The digest is pinned.** Since issue #77 (2026-09-07) there is one
    backend image and both Deployments run it, so "pinned together" is now
@@ -60,6 +60,21 @@ Three things the tooling will not check for you:
    `Config::load_with_env` merges the overlay only `if overlay_path.is_file()`.
    Check the rendered mount path against `VPAY_PROFILE` in the output of the
    `helm template` above.
+4. **Upgrading from v0.15.0 or earlier deletes staff passwords and TOTP
+   seeds.** The release that carries migrations 0056 (console keys) and 0058
+   (human-login tables, VPA-2) runs both, in order, and 0056 executes
+   `DELETE FROM credentials WHERE kind IN ('password', 'totp')` and drops
+   `staff_sessions`, `staff_sso_attempts` and `oauth_authorization_codes`. 0058
+   creates those three tables again **empty** and drops
+   `credentials_password_and_totp_are_retired`, but it cannot bring back a row a
+   delete removed. So after the upgrade: every staff member who signed in with a
+   password and a TOTP code must be enrolled again (a new one-time password and
+   a new authenticator), everybody is signed out, and a half-finished SSO
+   sign-in must be started over. **`oidc` credentials were kept**, so staff who
+   sign in through an identity provider, and people vaam paired, resume without
+   anything. A database that applied 0056 from a pre-release build has already
+   lost the passwords and seeds. Take a backup first
+   ([restore-from-backup.md](restore-from-backup.md)) if you may want them.
 
 ## 2. Upgrading
 
