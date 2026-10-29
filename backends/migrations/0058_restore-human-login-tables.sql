@@ -42,9 +42,19 @@
 --     docs/runbooks/deploy-and-rollback.md, section 1 item 4, has the exact
 --     statements, the column list and the order, and
 --     `a_credential_export_taken_before_0056_is_restored_after_0058` runs
---     them. A deployment that did not export has no way back and must enrol
---     those staff members again (a new one-time password and a new
---     authenticator).
+--     them. A deployment that did not export can still recover from a backup
+--     taken before 0056, by the same runbook section ("If 0056 already ran");
+--     one with neither must enrol those staff members again (a new one-time
+--     password and a new authenticator).
+--   * KEEP `staff_auth.password_pepper` AND `staff_auth.totp_encryption_key`.
+--     This release refuses a `staff_auth:` config block, so the block is
+--     removed, but the two values in it are the only key material under which
+--     an exported argon2id hash or sealed TOTP seed ever verifies again. Put
+--     them in the secret store and do not rotate them until VPA-3.
+--   * HOLD A HUMAN-LOGIN DEPLOYMENT UNTIL VPA-3. No route reads or writes
+--     these tables in a release cut before VPA-3 (#383 removed the sign-in
+--     routes), so on one nobody signs in by password, TOTP or an identity
+--     provider whatever was restored. Do not upgrade such a deployment to it.
 --   * The `oidc` credentials were KEPT by 0056: an SSO staff member signs in
 --     again as before and needs nothing.
 --

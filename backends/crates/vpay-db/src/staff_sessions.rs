@@ -495,7 +495,6 @@ impl StaffSessions for crate::repository::PgRepositories {
 /// The generated model row, in vpay's own types.
 fn row_from_model(model: cratestack_schema::models::StaffSession) -> Result<SessionRow, DbError> {
     let state = SessionState::parse(&model.state).ok_or_else(|| DbError::SessionStateUnknown {
-        id: model.id.clone(),
         state: model.state.clone(),
     })?;
 

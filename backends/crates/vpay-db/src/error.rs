@@ -496,13 +496,16 @@ pub enum DbError {
     /// sign-in: only reachable if that CHECK were dropped, and deliberately
     /// not a default, because a default would read a session the database
     /// stopped constraining as being at some particular stage of sign-in.
+    ///
+    /// It carries no id. `staff_sessions.id` is the SHA-256 of the session
+    /// token, which `schemas/privacy-inventory.yaml` classes as
+    /// `session_oauth_code`, a value that must not reach a log line or a
+    /// `Debug` print; the stored `state` is enough to find the row by.
     #[error(
-        "staff session {id} has state {state}, which is neither `pending_totp` nor \
+        "a staff session has state {state}, which is neither `pending_totp` nor \
          `authenticated`"
     )]
     SessionStateUnknown {
-        /// The session's primary key — already a digest, so safe to log.
-        id: String,
         /// The stored value, quoted back.
         state: String,
     },

@@ -52,10 +52,16 @@ does not.
 3. **To run without a console, add nothing.** With no `dashboard:` the process
    mounts neither `/dash/v1` nor `/svc/v1` (both answer the honest `404`), and
    every `vpay-server` mode boots (owner ruling R4).
-4. **Retire the secrets the sign-in used**: the password pepper, the TOTP key and
-   the SSO client secret are read by nothing now. The migration signs everyone
-   out (it drops `oauth_authorization_codes`, `staff_sessions` and
-   `staff_sso_attempts` and deletes the `password` and `totp` credentials).
+4. **Retire the SSO client secret, but keep the password pepper and the TOTP
+   key.** Nothing reads any of the three now, yet the first two are the only way
+   the stored password hashes and sealed TOTP seeds ever verify again. Take
+   `staff_auth.password_pepper` and `staff_auth.totp_encryption_key` out of the
+   configuration file (the block must go, step 1) but keep their values in the
+   secret store until the sign-in routes return (VPA-3), and do not rotate them.
+   The migration signs everyone out (it drops `oauth_authorization_codes`,
+   `staff_sessions` and `staff_sso_attempts` and deletes the `password` and
+   `totp` credentials); the deletion can be undone only from an export, see
+   [Keeping staff passwords across 0056 and 0058](../runbooks/deploy-and-rollback.md#keeping-staff-passwords-across-0056-and-0058).
 5. **Helm**: `dashboard.clientId`, `dashboard.redirectUri` and `dashboard.scope`
    are gone from the chart values. A split release (`management.enabled`) serves
    `/svc/v1` from `-server`, so list the calling service in

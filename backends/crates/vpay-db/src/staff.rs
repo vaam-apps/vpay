@@ -233,12 +233,14 @@ impl fmt::Debug for NewStaff {
 /// deliberately **no** `list` and no `disable`: a repository method with no
 /// caller is a claim `docs/status.md` would have to carry.
 ///
-/// Of the five, `create` is the one with a caller today: `vpay-server staff add`
-/// writes one `staff_members` row and no credential. `find_by_email`, `find`,
-/// `record_sign_in` and `delete` are restored for VPA-3, the sign-in routes,
-/// and have no caller yet. They are exercised by this crate's own suites
-/// against a real database, which is the only thing that stops a method with no
-/// caller from rotting.
+/// Of the five, `create` has a caller (`vpay-server staff add` writes one
+/// `staff_members` row and no credential), and so do `find_by_email` and
+/// `find`: `vpay-server staff pair-key` resolves `--staff` through them
+/// (`backends/apps/vpay-server/src/main.rs`), and they were never removed.
+/// `record_sign_in` and `delete` are restored for VPA-3, the sign-in routes, and
+/// have no caller yet. They are exercised by this crate's own suites against a
+/// real database, which is the only thing that stops a method with no caller
+/// from rotting.
 ///
 /// It was six until migration 0044. `enrol_totp`, `record_totp_step` and
 /// `set_password` are `crate::credentials`' `create`, `advance_counter` and
