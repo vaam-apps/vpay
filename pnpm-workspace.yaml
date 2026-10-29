@@ -255,7 +255,6 @@ overrides:
   "chevrotain>lodash": ^4.18.1
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1
-  "cypress>systeminformation": "^5.33.18"
 
 # ---------------------------------------------------------------------------
 # allowBuilds
@@ -345,12 +344,9 @@ minimumReleaseAgeExclude:
 # GHSA-3f7j-7jwc-fxfj: systeminformation <5.33.16, high, RCE in getgrnam.
 #   Reached only through `frontends__tests__e2e > cypress > systeminformation`,
 #   a path that is exclusively a test dependency (Cypress e2e suite). It is
-#   not present in the production dependency graph. A `cypress` override has
-#   been added to force `^5.33.18` (see overrides above); this entry covers
-#   any residual finding while the override propagates.
+#   not present in the production dependency graph.
 #   REMOVE WHEN: `cypress` publishes a version that bumps its `systeminformation`
-#   floor to >=5.33.16, or when the override above is confirmed by `pnpm why
-#   systeminformation` to be resolving the transitive pin.
+#   floor to >=5.33.16.
 #
 # GHSA-7648-jmwf-vw7j: systeminformation <5.33.13, moderate, DoS in WiFi
 #   scanning. Same path as GHSA-3f7j above (test-only dep via cypress).
