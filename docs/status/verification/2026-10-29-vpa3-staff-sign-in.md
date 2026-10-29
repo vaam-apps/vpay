@@ -20,7 +20,7 @@ run, what broke it on purpose, and what could not be run.
 | `cargo test -p vpay-tests-integration --test staff_sign_in`  | 28 passed against a native PostgreSQL 16 (27 restored or adapted, 1 new) |
 | `cargo test -p vpay-server --test cli`                       | 51 passed against a native PostgreSQL 16                                 |
 | the other `/dash/v1` and envelope integration suites         | see below                                                                |
-| `just verify`                                                | see the last section                                                     |
+| `just verify`                                                | the seventeen gates passed (`verify-docs` is advisory)                   |
 
 The other integration suites that build a `Config` or a router, run the same way:
 `boot_coherence` 1, `console_pairing` 11, `dashboard_procedure_transport` 6,
@@ -36,6 +36,11 @@ and was reverted before the commits; the data directory was deleted. One run of
 `staff_sign_in` lost a test to the patch itself (`pg_ctl start` failed: the free
 port it had picked was taken before the server bound it); the same suite, run
 again, passed 28 of 28.
+
+`just verify` failed twice on the way, both for the documents and neither for the
+code: `verify-links` named the new flow page while it was still untracked, and
+`verify-doc-counts` found `docs/flows` holding six directories where its README
+said five (the sentence now says why the sixth exists).
 
 ## What the tests found
 
