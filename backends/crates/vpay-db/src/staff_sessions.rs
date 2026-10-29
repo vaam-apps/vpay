@@ -23,9 +23,10 @@
 //! # The id in this table is never the credential
 //!
 //! The caller holds an opaque token; the primary key is its SHA-256, as hex.
-//! Hashing is the caller's ([`vpay_api::staff_auth`]), not this crate's, for
-//! [`crate::staff`]'s reason — but the *contract* is here, because it is what
-//! makes a dump of this table yield no usable session.
+//! Hashing is the caller's (`vpay_api::staff_auth`, which VP-6a deleted and
+//! VPA-3 restores), not this crate's, for [`crate::staff`]'s reason — but the
+//! *contract* is here, because it is what makes a dump of this table yield no
+//! usable session.
 //!
 //! # Where this stands (VPA-2)
 //!
@@ -139,12 +140,15 @@ pub struct SessionRow {
 }
 
 /// Redacts the access token, which is a live bearer credential for the length
-/// of its TTL. The id is already a digest and the staff id is opaque, so both
-/// are printed: they are what an operator debugging a session needs.
+/// of its TTL, and the id, the digest of the session's own token. A digest
+/// presents nothing, but the inventory classes every digest of this plane's
+/// tokens as `session_oauth_code` and hides them all alike
+/// (`schemas/privacy-inventory.yaml`). The staff id is opaque and printed: it
+/// is what an operator debugging a session needs.
 impl fmt::Debug for SessionRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SessionRow")
-            .field("id", &self.id)
+            .field("id", &"[redacted]")
             .field("staff_id", &self.staff_id)
             .field("state", &self.state)
             .field("created_at", &self.created_at)
@@ -180,7 +184,7 @@ impl SessionRow {
 }
 
 /// Everything the login handler supplies for one session.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NewSession {
     /// The SHA-256 of the token this session was minted with, hex.
     pub id: String,
@@ -195,6 +199,18 @@ pub struct NewSession {
     /// [`ABSOLUTE_LIFETIME`], here rather than by the caller, so the two
     /// cannot drift.
     pub now: OffsetDateTime,
+}
+
+/// Redacts the id for [`SessionRow`]'s reason.
+impl fmt::Debug for NewSession {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewSession")
+            .field("id", &"[redacted]")
+            .field("staff_id", &self.staff_id)
+            .field("state", &self.state)
+            .field("now", &self.now)
+            .finish()
+    }
 }
 
 /// Reads and writes of `staff_sessions`. Every method through CrateStack.
@@ -578,7 +594,8 @@ mod tests {
         assert_eq!(SessionState::parse(""), None);
     }
 
-    /// The access token never reaches a `{:?}`.
+    /// The access token and the digest of the session's own token never reach
+    /// a `{:?}`, on the row or on the insert.
     #[test]
     fn debug_does_not_leak_the_access_token() {
         let row = SessionRow {
@@ -594,6 +611,21 @@ mod tests {
 
         let rendered = format!("{row:?}");
         assert!(!rendered.contains("eyJhbGciOiJSUzI1NiJ9"), "{rendered}");
+        assert!(!rendered.contains(&"b".repeat(64)), "{rendered}");
         assert!(rendered.contains("[redacted]"), "{rendered}");
+        assert!(
+            rendered.contains("stf_1"),
+            "the staff id is what a log needs"
+        );
+
+        let new = NewSession {
+            id: "d".repeat(64),
+            staff_id: "stf_1".to_owned(),
+            state: SessionState::PendingTotp,
+            now: OffsetDateTime::UNIX_EPOCH,
+        };
+        let rendered = format!("{new:?}");
+        assert!(!rendered.contains(&"d".repeat(64)), "{rendered}");
+        assert!(rendered.contains("stf_1"), "{rendered}");
     }
 }

@@ -74,12 +74,14 @@ pub struct SsoAttemptRow {
     pub expires_at: OffsetDateTime,
 }
 
-/// Redacts the sealed verifier; the digests and instants are what an operator
+/// Redacts the sealed verifier and every digest, the flow token's own among
+/// them (`schemas/privacy-inventory.yaml` classes them all as
+/// `session_oauth_code`); the flag and the instants are what an operator
 /// debugging a stuck sign-in reads.
 impl fmt::Debug for SsoAttemptRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("SsoAttemptRow")
-            .field("id", &self.id)
+            .field("id", &"[redacted]")
             .field("state_hash", &"[redacted]")
             .field("nonce_hash", &"[redacted]")
             .field("code_verifier", &"[redacted]")
@@ -112,7 +114,7 @@ pub struct NewSsoAttempt {
 impl fmt::Debug for NewSsoAttempt {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("NewSsoAttempt")
-            .field("id", &self.id)
+            .field("id", &"[redacted]")
             .field("is_retry", &self.is_retry)
             .field("now", &self.now)
             .finish_non_exhaustive()
@@ -292,7 +294,32 @@ mod tests {
         };
         let printed = format!("{row:?}");
         assert!(!printed.contains("sealed-verifier-bytes"), "{printed}");
+        assert!(
+            !printed.contains(&"a".repeat(64)),
+            "the flow token's digest: {printed}"
+        );
         assert!(!printed.contains(&"b".repeat(64)), "{printed}");
+        assert!(!printed.contains(&"c".repeat(64)), "{printed}");
+        assert!(printed.contains("is_retry"), "{printed}");
+    }
+
+    /// The insert hides the same things its row does.
+    #[test]
+    fn the_insert_never_prints_the_verifier_or_a_digest() {
+        let new = NewSsoAttempt {
+            id: "a".repeat(64),
+            state_hash: "b".repeat(64),
+            nonce_hash: "c".repeat(64),
+            code_verifier: "sealed-verifier-bytes".to_owned(),
+            is_retry: true,
+            now: OffsetDateTime::UNIX_EPOCH,
+        };
+        let printed = format!("{new:?}");
+        assert!(!printed.contains("sealed-verifier-bytes"), "{printed}");
+        for digest in ["a", "b", "c"] {
+            assert!(!printed.contains(&digest.repeat(64)), "{printed}");
+        }
+        assert!(printed.contains("is_retry"), "{printed}");
     }
 
     #[test]

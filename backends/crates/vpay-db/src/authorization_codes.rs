@@ -81,15 +81,16 @@ pub struct AuthorizationCodeRow {
 }
 
 /// Redacts the challenge, which is a hash of the verifier the caller is about
-/// to present, and the nonce. Neither is a bearer credential on its own —
-/// the *code* is, and the code is never in this struct — but both are inputs
-/// to a check, and a log line is not where a check's inputs belong.
+/// to present, the nonce, and the id of the session that issued the code (the
+/// digest of that session's token). None is a bearer credential on its own —
+/// the *code* is, and the code is never in this struct — but all are inputs to
+/// a check or digests of a token, and a log line is not where either belongs.
 impl fmt::Debug for AuthorizationCodeRow {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AuthorizationCodeRow")
             .field("client_id", &self.client_id)
             .field("staff_id", &self.staff_id)
-            .field("session_id", &self.session_id)
+            .field("session_id", &"[redacted]")
             .field("merchant_id", &self.merchant_id)
             .field("scope", &self.scope)
             .field("code_challenge", &"[redacted]")
@@ -102,7 +103,7 @@ impl fmt::Debug for AuthorizationCodeRow {
 }
 
 /// Everything `/dash/v1/oauth/authorize` supplies for one code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct NewAuthorizationCode {
     /// The SHA-256 of the code, hex. Never the code.
     pub code_hash: String,
@@ -110,6 +111,18 @@ pub struct NewAuthorizationCode {
     pub row: AuthorizationCodeRow,
     /// When it was issued.
     pub now: OffsetDateTime,
+}
+
+/// Redacts the code's digest. The row beside it prints through its own
+/// `Debug`, which hides the rest.
+impl fmt::Debug for NewAuthorizationCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NewAuthorizationCode")
+            .field("code_hash", &"[redacted]")
+            .field("row", &self.row)
+            .field("now", &self.now)
+            .finish()
+    }
 }
 
 /// Reads and writes of `oauth_authorization_codes`. Every method through
@@ -297,9 +310,10 @@ mod tests {
         );
     }
 
-    /// Neither the challenge nor the nonce reaches a `{:?}`.
+    /// Neither the challenge, the nonce nor the issuing session's digest
+    /// reaches a `{:?}`, and neither does the code's own digest on the insert.
     #[test]
-    fn debug_redacts_the_pkce_challenge_and_the_nonce() {
+    fn debug_redacts_the_pkce_challenge_the_nonce_and_the_digests() {
         let row = AuthorizationCodeRow {
             client_id: "vpay-dashboard".to_owned(),
             staff_id: "stf_1".to_owned(),
@@ -316,6 +330,24 @@ mod tests {
         let rendered = format!("{row:?}");
         assert!(!rendered.contains("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
         assert!(!rendered.contains("n-0S6_WzA2Mj"));
-        assert!(rendered.contains("stf_1"), "the ids are what a log needs");
+        assert!(!rendered.contains(&"c".repeat(64)), "{rendered}");
+        assert!(
+            rendered.contains("stf_1"),
+            "the staff id is what a log needs"
+        );
+
+        let new = NewAuthorizationCode {
+            code_hash: "f".repeat(64),
+            row,
+            now: OffsetDateTime::UNIX_EPOCH,
+        };
+        let rendered = format!("{new:?}");
+        assert!(
+            !rendered.contains(&"f".repeat(64)),
+            "the code's digest: {rendered}"
+        );
+        assert!(!rendered.contains("E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM"));
+        assert!(!rendered.contains("n-0S6_WzA2Mj"));
+        assert!(rendered.contains("stf_1"), "{rendered}");
     }
 }
