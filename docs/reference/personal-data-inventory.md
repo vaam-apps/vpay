@@ -77,8 +77,12 @@ a claim that it is safe):
 - ~~`vpay-api/src/staff/mod.rs` `LoginRequest` and `PasswordRequest` (a
   plaintext password), `vpay-api/src/staff_auth/tokens.rs` `MintedToken` and
   `vpay-api/src/staff/oauth.rs` `TokenResponse` still **derive** `Debug`.~~ All
-  four were deleted with their sign-in on 2026-10-26 (VP-6a): there is no
-  password, session or token type left in `vpay-api` to derive anything.
+  four were deleted with their sign-in on 2026-10-26 (VP-6a). **They came back
+  on VPA-3 with a hand-written `Debug` each**, a canary test each, and an entry
+  in `debug_protections`, together with every other type of the restored sign-in
+  that holds a password, a code, a token, a seed or a digest (`LoginResponse`,
+  `TotpRequest`, `SessionResponse`, `AuthorizeQuery`, `TokenForm`,
+  `StaffCredentials`, `Totp`, and `vpay_config::StaffAuth`).
 - `reqwest::Error`'s **`Display`** ends in `for url (…)`, so
   `vpay_core::error::source_chain` — what the worker records in durable
   `last_error`-shaped columns — still carries a rail request's full URL. MTN's
@@ -297,27 +301,27 @@ named in the table above.)_
 Not an exhaustive table here — the authoritative copy is the YAML. The elements
 whose `subject` is a person are:
 
-| Element                   | Copies (DB)                                                                                                                                                  | Control  |
-| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------- |
-| `payer_msisdn`            | `customers.phone`, `charges.payer_ref`, `charges.payer_ref_masked`                                                                                           | `redact` |
-| `customer_name`           | `customers.name`                                                                                                                                             | `redact` |
-| `customer_email`          | `customers.email`                                                                                                                                            | `redact` |
-| `address_formal`          | `customers.address_line1`…`address_country`                                                                                                                  | `redact` |
-| `address_gps`             | `customers.address_latitude_microdeg`, `customers.address_longitude_microdeg`                                                                                | `redact` |
-| `rail_failure_text`       | `charges.failure_raw`, `refunds.failure_raw`, `webhook_deliveries.response_excerpt`, `payment_intents.last_payment_error*`, `provider_requests.error_kind`   | `redact` |
-| `staff_email`             | `staff_members.email`                                                                                                                                        | `redact` |
-| `staff_display_name`      | `staff_members.display_name`                                                                                                                                 | `none`   |
-| `staff_credential_secret` | `credentials.material`/`subject`/`issuer` (migration 0044 moved the staff credential columns here from `staff_members`)                                      | `forbid` |
-| `staff_oauth_token`       | `staff_sessions.access_token` (migration `0058` created the table again, empty; nothing writes it until VPA-3)                                               | `forbid` |
-| `staff_console_key`       | `console_keys.public_key`/`thumbprint`/`label` (migration `0056`, 2026-10-26; sits beside `staff_oauth_token` since `0058`, 2026-10-28)                      | `none`   |
-| `session_oauth_code`      | `oauth_codes`, `oauth_refresh_tokens`, `oauth_device_codes`, `oauth_authorization_codes`, `oauth_client_assertion_jtis`, `oauth_dpop_jti`                    | `forbid` |
-| `webhook_url`             | `webhook_deliveries.url`, `checkout_sessions.success_url`/`cancel_url`/`return_url`, `oauth_*redirect_uri`, `charges.redirect_url`/`return_url`              | `forbid` |
-| `oauth_signing_key`       | `oauth_signing_keys.kid`/`public_jwk`                                                                                                                        | `forbid` |
-| `oauth_client_secret`     | `oauth_clients.client_secret_hash`/`jwks`, `checkout_sessions.publishable_key`/`client_secret_suffix`/`return_token`, `payment_intents.client_secret_suffix` | `forbid` |
-| `merchant_metadata`       | `customers.metadata`, `payment_intents.metadata`/`description`, `refunds.metadata`, `invoices.metadata`                                                      | `none`   |
-| `stored_api_body`         | `events.data`, `idempotency_keys.response_body`                                                                                                              | `redact` |
-| `merchant_note`           | `refunds.reason`, `invoices.description`, `invoice_items.description`                                                                                        | `none`   |
-| `payment_reference`       | `manual_payments.reference` (migration `0049`, 2026-09-23)                                                                                                   | `redact` |
+| Element                   | Copies (DB)                                                                                                                                                                   | Control  |
+| ------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| `payer_msisdn`            | `customers.phone`, `charges.payer_ref`, `charges.payer_ref_masked`                                                                                                            | `redact` |
+| `customer_name`           | `customers.name`                                                                                                                                                              | `redact` |
+| `customer_email`          | `customers.email`                                                                                                                                                             | `redact` |
+| `address_formal`          | `customers.address_line1`…`address_country`                                                                                                                                   | `redact` |
+| `address_gps`             | `customers.address_latitude_microdeg`, `customers.address_longitude_microdeg`                                                                                                 | `redact` |
+| `rail_failure_text`       | `charges.failure_raw`, `refunds.failure_raw`, `webhook_deliveries.response_excerpt`, `payment_intents.last_payment_error*`, `provider_requests.error_kind`                    | `redact` |
+| `staff_email`             | `staff_members.email`                                                                                                                                                         | `redact` |
+| `staff_display_name`      | `staff_members.display_name`                                                                                                                                                  | `none`   |
+| `staff_credential_secret` | `credentials.material`/`subject`/`issuer` (migration 0044 moved the staff credential columns here from `staff_members`)                                                       | `forbid` |
+| `staff_oauth_token`       | `staff_sessions.access_token` (migration `0058` created the table again, empty; written by `POST /dash/v1/oauth/token` only where `auth.methods` serves `human_login`, VPA-3) | `forbid` |
+| `staff_console_key`       | `console_keys.public_key`/`thumbprint`/`label` (migration `0056`, 2026-10-26; sits beside `staff_oauth_token` since `0058`, 2026-10-28)                                       | `none`   |
+| `session_oauth_code`      | `oauth_codes`, `oauth_refresh_tokens`, `oauth_device_codes`, `oauth_authorization_codes`, `oauth_client_assertion_jtis`, `oauth_dpop_jti`                                     | `forbid` |
+| `webhook_url`             | `webhook_deliveries.url`, `checkout_sessions.success_url`/`cancel_url`/`return_url`, `oauth_*redirect_uri`, `charges.redirect_url`/`return_url`                               | `forbid` |
+| `oauth_signing_key`       | `oauth_signing_keys.kid`/`public_jwk`                                                                                                                                         | `forbid` |
+| `oauth_client_secret`     | `oauth_clients.client_secret_hash`/`jwks`, `checkout_sessions.publishable_key`/`client_secret_suffix`/`return_token`, `payment_intents.client_secret_suffix`                  | `forbid` |
+| `merchant_metadata`       | `customers.metadata`, `payment_intents.metadata`/`description`, `refunds.metadata`, `invoices.metadata`                                                                       | `none`   |
+| `stored_api_body`         | `events.data`, `idempotency_keys.response_body`                                                                                                                               | `redact` |
+| `merchant_note`           | `refunds.reason`, `invoices.description`, `invoice_items.description`                                                                                                         | `none`   |
+| `payment_reference`       | `manual_payments.reference` (migration `0049`, 2026-09-23)                                                                                                                    | `redact` |
 
 **`payment_reference` is a merchant's free text and is still `subject: payer`,
 and that is the difference from `merchant_note`** (added 2026-09-23, RFC-0004

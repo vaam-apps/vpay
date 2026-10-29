@@ -78,16 +78,22 @@ Four things the tooling will not check for you:
    [below](#keeping-staff-passwords-across-0056-and-0058). That release also
    refuses a `staff_auth:` config block, so the block goes, but its
    `password_pepper` and `totp_encryption_key` **values are kept** (the export
-   is useless without them). A database that applied 0056 from a pre-release
+   is useless without them). **That is true of the releases between VP-6a and
+   VPA-3 only: a release that carries VPA-3 accepts the block again**, as one of
+   the two blocks of the `human_login` method (step 3), and a deployment that
+   wants staff to sign in with a password keeps it. A database that applied 0056 from a pre-release
    build has already lost the rows; the same section says how to take them from
    a backup.
 
-   **A deployment that relies on human login must not upgrade to any
-   release cut before VPA-3 ships.** #383 removed the sign-in routes, and
-   VPA-2 (migration 0058) restores only the persistence under them: no route
-   reads or writes those tables yet. On such a release nobody signs in by
-   password, TOTP or identity provider, whatever you restore, and the export
-   below keeps the data safe without making login work.
+   **A deployment that relies on human login must not upgrade to a release cut
+   before VPA-3.** #383 removed the sign-in routes, and VPA-2 (migration 0058)
+   restored only the persistence under them: on such a release no route reads or
+   writes those tables, nobody signs in by password or TOTP whatever you restore,
+   and the export below keeps the data safe without making login work. VPA-3
+   restores the password, TOTP, session and authorization-code routes behind
+   `auth.methods` (`human_login`); **staff SSO is still not served** (VPA-4), so
+   a deployment that signs staff in through an identity provider waits for that
+   release too.
 
 ### Keeping staff passwords across 0056 and 0058
 
@@ -131,18 +137,32 @@ guaranteed to undo. Make no credential change by any other door
 (`vpay-server staff add` writes none, but a script or a SQL session can) until
 step 6 has succeeded.
 
-**3. Keep the pepper and the TOTP key; remove the `staff_auth` block.** The
-new release refuses a `staff_auth:` block when it loads its configuration,
-before it runs a migration: the process exits `78` with `ConfigError::RetiredKey`
-and no pod becomes ready. So the block must be gone from the base file and
-every profile overlay in the values you hand to step 5 (not earlier: the old
-release reads its configuration again if a pod restarts). **But the block
-holds `staff_auth.password_pepper` and `staff_auth.totp_encryption_key`, and
-the exported argon2id hashes and sealed TOTP seeds verify only under those two
-values.** Copy both into your secret store now, unchanged, and keep them until
-VPA-3 restores sign-in. Nothing in the new release reads them; destroying or
-rotating either makes the file in step 4 unusable
-([ADR-0017](../adr/0017-staff-authentication.md) says what losing each costs).
+**3. Keep the pepper and the TOTP key, and decide where they live.** What the
+new release does with a `staff_auth:` block depends on whether it carries VPA-3.
+
+- **A release that carries VPA-3 accepts `staff_auth` and `dashboard_client`
+  again**, as the two blocks of the `human_login` method of `auth.methods`
+  ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)).
+  To keep staff signing in with a password and a TOTP code, leave both blocks in
+  the values you hand to step 5, **unchanged**, and the pepper and the TOTP key
+  with them: the exported argon2id hashes and sealed TOTP seeds verify only under
+  those two values. The method must be permitted (`auth.methods` absent, or
+  naming `human_login`), and the blocks must be **both** there: one without the
+  other, or a block with `human_login` left out of an explicit list, exits `78`
+  at boot (`AuthMethodNotConfigured`, `AuthMethodDisabled`). A `staff_auth.sso`
+  block is refused as an unknown key until VPA-4: delete it. To stop serving the
+  sign-in instead, delete both blocks, as the next bullet.
+- **A release cut between VP-6a and VPA-3 refuses a `staff_auth:` block** when it
+  loads its configuration, before it runs a migration: the process exits `78`
+  with `ConfigError::RetiredKey` and no pod becomes ready. So the block must be
+  gone from the base file and every profile overlay in the values you hand to
+  step 5 (not earlier: the old release reads its configuration again if a pod
+  restarts), **but the block holds `staff_auth.password_pepper` and
+  `staff_auth.totp_encryption_key`**: copy both into your secret store now,
+  unchanged, and keep them until you upgrade to a release that carries VPA-3.
+  Destroying or rotating either makes the file in step 4 unusable
+  ([ADR-0017](../adr/0017-staff-authentication.md) says what losing each costs).
+
 [dashboard-auth.md](../flows/dashboard-auth.md#upgrading-from-before-vp-6a)
 step 4 says the same.
 
@@ -166,7 +186,7 @@ sealed TOTP seeds: keep it off shared storage, and delete it once step 6 has
 succeeded.
 
 **5. Upgrade, and wait for 0058.** `helm upgrade` as in §2, with the
-`staff_auth` block removed (step 3). Confirm the migration ran before step 6:
+`staff_auth` block as step 3 decided. Confirm the migration ran before step 6:
 
 ```sql
 SELECT max(version) FROM _sqlx_migrations;  -- 58 or higher

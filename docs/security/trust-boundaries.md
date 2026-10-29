@@ -88,8 +88,21 @@ where the surface provides them; where it does not, the document says so.
   (`POST /svc/v1/console_keys`, callable only by a registered service holding
   `console_pairing`) or by an operator (`vpay-server staff pair-key`); it lives
   30 days and a revocation takes effect on the next request.
-- **Session:** none. No cookie, no token, no server-side session row; the
-  signature is the credential and the replay cache is `envelope_nonces`.
+- **Session:** none by default. No cookie, no token, no server-side session
+  row; the signature is the credential and the replay cache is
+  `envelope_nonces`.
+- **A second door, only where `auth.methods` serves `human_login`
+  ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)):**
+  a password with Argon2id and a server-side pepper plus mandatory TOTP,
+  an authorization code with PKCE, and a short-lived access token (audience the
+  dashboard client, tenant claim, one scope) presented as `Authorization:
+Bearer`. vpay sets no cookie; the session is a `staff_sessions` row keyed by
+  the SHA-256 of an opaque token, and the dashboard holds the token server-side.
+  The envelope layer then runs `Optional` on `/dash/v1`, a request that is signed
+  **and** carries a bearer is refused, and a session is held to the same member
+  re-read and tenant resolution as a key. Where the method is off, none of this
+  is mounted and `/dash/v1` takes a signature alone. Staff SSO is not served
+  (VPA-4).
 - **Authorization:** Cross-tenant access is restricted to read-only views
   ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
 

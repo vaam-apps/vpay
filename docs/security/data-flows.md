@@ -99,6 +99,38 @@ is looked up in `console_keys` on every request, so a revocation or expiry takes
 effect on the next one. There is no session, cookie, token or authorization
 code, and no identity provider.
 
+### 4. Staff sign-in, only where `human_login` is served (ADR-0037)
+
+```text
+Staff browser     Dashboard app (server)         vpay-server /dash/v1                Postgres
+      │                  │                                │                             │
+      │ 1. email + password                              │                             │
+      ├─────────────────▶│ 2. POST /staff/login           │                             │
+      │                  ├───────────────────────────────▶│ 3. rate-limit windows,      │
+      │                  │                                │    argon2id + pepper        │
+      │                  │                                ├────────────────────────────▶│ 4. staff_sessions
+      │                  │◀───────────────────────────────┤    (pending_totp, SHA-256   │    row
+      │ 5. TOTP code     │ 6. POST /staff/totp            │     of the session token)   │
+      ├─────────────────▶├───────────────────────────────▶│ 7. RFC 6238, replay guard   │
+      │                  │                                ├────────────────────────────▶│    (authenticated)
+      │                  │ 8. GET /oauth/authorize (PKCE) │                             │
+      │                  ├───────────────────────────────▶│ 9. one 60 s single-use code │
+      │                  │◀─────── 302 ?code= ────────────┤                             │
+      │                  │ 10. POST /oauth/token          │                             │
+      │                  ├───────────────────────────────▶│ 11. consume the code (CAS), │
+      │                  │◀──── access token (Bearer) ────┤     PKCE S256               │
+      │                  │ 12. GET /payment_intents       │                             │
+      │                  ├───────────────────────────────▶│ 13. validate the token,     │
+      │                  │                                │     re-read the member      │
+```
+
+The app follows the `302` itself, so a browser never sees a code, a verifier or
+a token. The same `/dash/v1` also takes a signed console key, one credential per
+request; a request that presents both is refused. Where the method is off the
+sign-in routes answer `404` and `/dash/v1` takes a signature alone.
+[dashboard-auth/human-login.md](../flows/dashboard-auth/human-login.md) has the
+state machine and the refusals.
+
 ## Security Controls Embedded in Flows
 
 1. **Replay defence:** Every verified `/v1` envelope claims its nonce in
@@ -109,9 +141,14 @@ code, and no identity provider.
 3. **Data redaction:** Payer MSISDN and other personal data are protected in
    logs and error structures by `vpay-core::privacy` and the privacy inventory
    ([ADR-0020](../adr/0020-privacy-controls-and-evidence.md)).
-4. **Pairing is a signed service call:** only a `service_clients` key holding
+4. **Staff sign-in is a deployment's choice, and a bounded one:** one answer for
+   every refusal, per-email and per-source-address limits spent in
+   `rate_limit_windows`, a TOTP code usable once per step, and the member
+   re-read on every `/dash/v1` request
+   ([ADR-0017](../adr/0017-staff-authentication.md)).
+5. **Pairing is a signed service call:** only a `service_clients` key holding
    `console_pairing` can pair or revoke a console key, and a pairing can never
    create or upgrade an administrator
    ([ADR-0036](../adr/0036-the-console-is-a-signed-message-under-a-paired-key.md)).
-5. **Egress control:** Merchant webhook delivery refuses redirects, private
+6. **Egress control:** Merchant webhook delivery refuses redirects, private
    targets by default, and vets the resolved address before connecting.
