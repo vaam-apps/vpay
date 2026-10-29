@@ -25,18 +25,18 @@ references.
 `just ci` is the recipe a contributor runs before opening a pull request, and
 the `ci.yml` workflow runs the same set on every pull request. In order:
 
-| Step (recipe)                       | What it refuses                                                                                  | Evidence of it passing |
-| ----------------------------------- | ------------------------------------------------------------------------------------------------ | ---------------------- |
-| `fmt-check`                         | rustfmt drift                                                                                    | green `just ci`        |
-| `clippy`                            | a warning, a denied lint, an `unsafe`, `unwrap`/`expect`/`panic`/`todo` in production code        | green `just ci`        |
-| `verify`                            | the seventeen invariant gates (below)                                                            | green `just ci`        |
-| `test-rust`                         | a failing Rust test (`cargo nextest run --workspace`)                                            | green `just ci`        |
-| `test-doc`                          | a failing doctest (`cargo test --doc --workspace`)                                               | green `just ci`        |
-| `verify-ignored`                    | a test skipped without a reason                                                                  | green `just ci`        |
-| `lint-web`                          | a TypeScript/Prettier lint failure                                                               | green `just ci`        |
-| `test-web`                          | a failing Vitest case, including the jsdom axe suites and the Storybook a11y gate lock           | green `just ci`        |
-| `audit-web`                         | a `pnpm audit` finding at `moderate`, `high` or `critical` in the workspace or its production graph | green `just ci`      |
-| `deny`                              | a `cargo deny check` finding (bans, licenses, sources, advisories)                               | green `just ci`        |
+| Step (recipe)                       | What it refuses                                                                                     | Evidence of it passing |
+| ----------------------------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
+| `fmt-check`                         | rustfmt drift                                                                                       | green `just ci`        |
+| `clippy`                            | a warning, a denied lint, or `unsafe`/`unwrap`/`expect`/`panic`/`todo`                              | green `just ci`        |
+| `verify`                            | the seventeen invariant gates (below)                                                               | green `just ci`        |
+| `test-rust`                         | a failing Rust test (`cargo nextest run --workspace`)                                               | green `just ci`        |
+| `test-doc`                          | a failing doctest (`cargo test --doc --workspace`)                                                  | green `just ci`        |
+| `verify-ignored`                    | a test skipped without a reason                                                                     | green `just ci`        |
+| `lint-web`                          | a TypeScript/Prettier lint failure                                                                  | green `just ci`        |
+| `test-web`                          | a failing Vitest case, including the jsdom axe suites and the Storybook a11y gate lock              | green `just ci`        |
+| `audit-web`                         | a `pnpm audit` finding at `moderate`, `high` or `critical` in the workspace or its production graph | green `just ci`        |
+| `deny`                              | a `cargo deny check` finding (bans, licenses, sources, advisories)                                  | green `just ci`        |
 
 Beyond `just ci`, CI runs `helm-check` and `test-alert-rules` on the `deploy`
 job, `test-storybook` on the `web` job, and the supply-chain scans (CodeQL,
