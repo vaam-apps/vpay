@@ -13487,7 +13487,10 @@ async fn a_credential_export_taken_before_0056_is_restored_after_0058() -> anyho
         ["cred_new_ben", "cred_pw_ada", "cred_totp_ada"],
         "Ada's two come back; Ben keeps the newer password and the old one stays out"
     );
-    assert_eq!(after_staging[0].1, "newer-hash");
+    assert_eq!(
+        after_staging.first().map(|(_, material)| material.as_str()),
+        Some("newer-hash")
+    );
 
     // STEP 4: the plain import, once nothing is in its way.
     sqlx::query("DELETE FROM credentials WHERE kind IN ('password', 'totp')")
