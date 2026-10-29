@@ -30,7 +30,7 @@ use authkestra_engine::store::StoreError;
 use authkestra_op::client_assertion::ClientAssertionStore;
 use chrono::Utc;
 use serde_json::json;
-use sqlx::PgPool;
+use sqlx::{Connection as _, PgPool};
 use testcontainers::ContainerAsync;
 use testcontainers_modules::postgres::Postgres as PostgresImage;
 use vpay_db::{
@@ -13029,10 +13029,12 @@ async fn an_authorization_code_is_spent_exactly_once_and_dies_with_its_session()
 /// Runs the migrations to 0057 by hand, seeds the world a deployment is in after
 /// 0056 (a member, a vaam link, a console key), shows the database refusing a
 /// password, applies 0058, and shows (a) the tables exist and are empty, (b) a
-/// password and a TOTP seed are storable again, (c) the link, the key and the
-/// member are untouched, (d) every constraint and index the originals shipped is
-/// present under the same name. Delete the `DROP CONSTRAINT` and (b) fails;
-/// delete a `CREATE TABLE` and (a) fails; rename a constraint and (d) fails.
+/// password and a TOTP seed are storable again, (c) the link, the console key
+/// (by id, member and thumbprint) and the member are untouched, (d) every
+/// constraint and index the originals shipped is present under the same name.
+/// Delete the `DROP CONSTRAINT` and (b) fails; delete a `CREATE TABLE` and (a)
+/// fails; rename a constraint and (d) fails; make 0058 drop `console_keys` and
+/// (c) fails.
 #[tokio::test]
 async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept()
 -> anyhow::Result<()> {
@@ -13077,6 +13079,11 @@ async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept
         "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject, counter,
              must_change, expires_at, created_at, updated_at)
          VALUES ('cred_link', 'stf_kept', 'oidc', NULL, 'vaam', 'usr_1', 0, FALSE, NULL, now(), now())",
+        // 0056's own table, holding a key: 0058 must leave it exactly as it is.
+        "INSERT INTO console_keys (id, staff_member_id, alg, public_key, thumbprint, label,
+             paired_at, expires_at, revoked_at)
+         VALUES ('ck_kept', 'stf_kept', 'esp256', 'B' || repeat('A', 86), repeat('d', 64),
+             'kept', now(), now() + interval '720 hours', NULL)",
     ] {
         sqlx::query(statement)
             .execute(&pool)
@@ -13084,10 +13091,10 @@ async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept
             .with_context(|| format!("writing the post-0056 world: {statement}"))?;
     }
 
-    let password = "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject,
-             counter, must_change, expires_at, created_at, updated_at)
+    let retired_kind_insert = "INSERT INTO credentials (id, staff_member_id, kind, material, issuer,
+             subject, counter, must_change, expires_at, created_at, updated_at)
          VALUES ('cred_pw', 'stf_kept', 'password', 'hash', NULL, NULL, 0, FALSE, NULL, now(), now())";
-    let refused = sqlx::query(password)
+    let refused = sqlx::query(retired_kind_insert)
         .execute(&pool)
         .await
         .expect_err("0056 closes the password kind");
@@ -13114,7 +13121,7 @@ async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept
         assert_eq!(rows, 0, "{table} starts empty; nothing is restored into it");
     }
 
-    sqlx::query(password)
+    sqlx::query(retired_kind_insert)
         .execute(&pool)
         .await
         .context("a password is storable again once 0058 drops the retiring constraint")?;
@@ -13133,12 +13140,16 @@ async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept
     .fetch_one(&pool)
     .await?;
     assert_eq!(link, 1, "the federated link 0056 kept is untouched");
-    let keys_table: bool = sqlx::query_scalar(
-        "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'console_keys')",
+    let kept_key: Vec<(String, String, String)> = sqlx::query_as(
+        "SELECT id, staff_member_id, thumbprint FROM console_keys WHERE revoked_at IS NULL",
     )
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await?;
-    assert!(keys_table, "console_keys is not 0058's to touch");
+    assert_eq!(
+        kept_key,
+        [("ck_kept".to_owned(), "stf_kept".to_owned(), "d".repeat(64))],
+        "the console key 0056 added is not 0058's to touch"
+    );
 
     // (d) The shape: every constraint and index the originals shipped, by name.
     let mut names: Vec<(String, String)> = sqlx::query_as(
@@ -13181,5 +13192,344 @@ async fn migration_0058_restores_the_three_tables_empty_and_keeps_what_0056_kept
         ],
         "the constraints and indexes the three originals shipped, by name"
     );
+    Ok(())
+}
+
+/// The runbook the export-and-restore test below reads, so the statements it
+/// runs are the ones an operator is told to run.
+const UPGRADE_RUNBOOK: &str = include_str!("../../../../docs/runbooks/deploy-and-rollback.md");
+
+/// Every column of `credentials`, in table order. The restore names them in
+/// both directions, and the test below proves this list is the whole table.
+const CREDENTIAL_COLUMNS: &str = "id, staff_member_id, kind, material, issuer, subject, counter, \
+     must_change, expires_at, created_at, updated_at";
+
+/// The one line of the runbook that starts with `prefix`.
+///
+/// Exactly one, so a second copy of a statement cannot drift from the first
+/// without this failing.
+fn runbook_line(prefix: &str) -> anyhow::Result<&'static str> {
+    let mut found = UPGRADE_RUNBOOK
+        .lines()
+        .filter(|line| line.starts_with(prefix));
+    let line = found
+        .next()
+        .with_context(|| format!("the runbook has no line starting `{prefix}`"))?;
+    anyhow::ensure!(
+        found.next().is_none(),
+        "the runbook has two lines starting `{prefix}`"
+    );
+    Ok(line)
+}
+
+/// What `psql` sends for a `\copy` line: the same `COPY`, with the client's
+/// file replaced by the wire. `psql` does exactly this substitution.
+fn copy_statement_for(psql_line: &str) -> anyhow::Result<String> {
+    let body = psql_line
+        .strip_prefix("\\copy ")
+        .with_context(|| format!("not a \\copy line: {psql_line}"))?;
+    let wire = if body.contains(" TO 'creds.csv' ") {
+        body.replace(" TO 'creds.csv' ", " TO STDOUT ")
+    } else {
+        body.replace(" FROM 'creds.csv' ", " FROM STDIN ")
+    };
+    anyhow::ensure!(
+        wire != body,
+        "the line names neither TO nor FROM 'creds.csv': {psql_line}"
+    );
+    Ok(format!("COPY {wire}"))
+}
+
+/// Everything a `COPY ... TO STDOUT` streams, in one buffer.
+async fn copy_out(connection: &mut sqlx::PgConnection, statement: &str) -> anyhow::Result<Vec<u8>> {
+    use futures_util::StreamExt as _;
+
+    let mut stream = connection
+        .copy_out_raw(statement)
+        .await
+        .with_context(|| format!("starting {statement}"))?;
+    let mut data = Vec::new();
+    while let Some(chunk) = stream.next().await {
+        data.extend_from_slice(&chunk.context("reading the COPY stream")?);
+    }
+    Ok(data)
+}
+
+/// A `COPY ... FROM STDIN` of `data`, answering the rows copied or the error
+/// the server raised. A connection that got an error is not reusable, so each
+/// caller that expects one opens its own.
+async fn copy_in(
+    connection: &mut sqlx::PgConnection,
+    statement: &str,
+    data: &[u8],
+) -> Result<u64, sqlx::Error> {
+    let mut copy = connection.copy_in_raw(statement).await?;
+    copy.send(data).await?;
+    copy.finish().await
+}
+
+/// **The credentials 0056 deletes can be exported before the upgrade and put
+/// back after 0058, hashes and TOTP counters intact.**
+///
+/// This is the procedure in `docs/runbooks/deploy-and-rollback.md` §1: the test
+/// reads that page and runs the statements it prints, so the page cannot say
+/// one thing and the database do another. It builds the world as it stood at
+/// 0055 (migrations recorded the ordinary way, so the runbook's own
+/// `_sqlx_migrations` queries run), seeds a password and a TOTP seed with a
+/// counter, a one-time password that must be changed, and an `oidc` link,
+/// exports, applies 0056 to 0058, and shows:
+///
+/// 1. the loss is real: after 0058 only the `oidc` link is left, and the three
+///    members are still there;
+/// 2. the import is refused, whole, when a member has been given a newer
+///    password since (the singleton-kind index), and inserts nothing for
+///    anybody;
+/// 3. the staging variant restores everyone else and keeps the newer password;
+/// 4. the plain import brings back every column of every row, byte for byte
+///    (`to_jsonb` of the row), which includes the argon2id digest, the sealed
+///    seed, `must_change`, the counter and both timestamps.
+///
+/// The mutations that make it worth having, each **run** and each red: drop
+/// 0058's `DROP CONSTRAINT` (the import is refused by
+/// `credentials_password_and_totp_are_retired`); leave a column out of the
+/// import line of the runbook (the "names every column" assertion fails); let
+/// the export `SELECT` stop at `password` (the export has two rows, not
+/// three).
+#[tokio::test]
+async fn a_credential_export_taken_before_0056_is_restored_after_0058() -> anyhow::Result<()> {
+    let container = vpay_testkit::containers::start_postgres_with_retry()
+        .await
+        .context("postgres:16-alpine container starts")?;
+    let host = container.get_host().await.context("container host")?;
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .context("container port")?;
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPool::connect(&url).await.context("raw pool")?;
+
+    // The statements, as the operator reads them.
+    let check_before = runbook_line("SELECT version FROM _sqlx_migrations WHERE version >= 56;")?;
+    let check_after = runbook_line("SELECT max(version) FROM _sqlx_migrations;")?;
+    let export = copy_statement_for(runbook_line("\\copy (SELECT ")?)?;
+    let import = copy_statement_for(runbook_line("\\copy credentials (")?)?;
+    let stage_table = runbook_line("CREATE TEMP TABLE credentials_restore")?;
+    let stage_in = copy_statement_for(runbook_line("\\copy credentials_restore (")?)?;
+    let stage_move = runbook_line("INSERT INTO credentials (")?;
+
+    // The old world: migrations through 0055, recorded the ordinary way.
+    let migrator = sqlx::migrate!("../../migrations");
+    migrator
+        .run_to(55, &pool)
+        .await
+        .context("migrations through 0055")?;
+    // The list is the whole table, in table order, and every statement names it.
+    let actual: String = sqlx::query_scalar(
+        "SELECT string_agg(column_name, ', ' ORDER BY ordinal_position)
+           FROM information_schema.columns WHERE table_name = 'credentials'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        actual, CREDENTIAL_COLUMNS,
+        "credentials gained or lost a column: update the runbook's lists and this constant"
+    );
+    for line in [&export, &import, &stage_in] {
+        assert!(
+            line.contains(CREDENTIAL_COLUMNS),
+            "the runbook's statement does not name every column: {line}"
+        );
+    }
+    for statement in [
+        "INSERT INTO staff_members (id, merchant_id, email, display_name, status, is_admin,
+             created_at, updated_at)
+         VALUES ('stf_ada', 'merchant_a', 'ada@example.test', 'Ada', 'active', FALSE, now(), now()),
+                ('stf_ben', 'merchant_a', 'ben@example.test', 'Ben', 'active', FALSE, now(), now()),
+                ('stf_cy',  'merchant_a', 'cy@example.test',  'Cy',  'active', FALSE, now(), now())",
+        // An argon2id PHC string has commas in it, which is what makes the CSV
+        // quoting part of what is proved.
+        "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject, counter,
+             must_change, expires_at, created_at, updated_at)
+         VALUES
+          ('cred_pw_ada', 'stf_ada', 'password',
+           '$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo', NULL, NULL, 0, FALSE, NULL,
+           '2026-03-01 10:11:12.123456+00', '2026-03-02 10:11:12.654321+00'),
+          ('cred_totp_ada', 'stf_ada', 'totp', 'bm9uY2U6c2VhbGVkLXNlZWQ', NULL, NULL, 58123456,
+           FALSE, NULL, '2026-03-01 10:15:00.000001+00', '2026-03-03 09:00:00.5+00'),
+          ('cred_pw_ben', 'stf_ben', 'password',
+           '$argon2id$v=19$m=19456,t=2,p=1$b3RoZXJzYWx0$b3RoZXJoYXNo', NULL, NULL, 0, TRUE, NULL,
+           '2026-04-01 08:00:00+00', '2026-04-01 08:00:00+00'),
+          ('cred_link_cy', 'stf_cy', 'oidc', NULL, 'https://vaam.example.test', 'usr_9', 0, FALSE,
+           NULL, '2026-03-05 12:00:00+00', '2026-03-05 12:00:00+00')",
+    ] {
+        sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .with_context(|| format!("seeding the pre-0056 world: {statement}"))?;
+    }
+    // `AssertSqlSafe`: the statement is a line of the runbook this crate
+    // embeds at compile time; no caller's value reaches it.
+    let applied: Vec<i64> = sqlx::query_scalar(sqlx::AssertSqlSafe(check_before.to_owned()))
+        .fetch_all(&pool)
+        .await
+        .context("the runbook's `has 0056 run?` query")?;
+    assert!(
+        applied.is_empty(),
+        "the runbook's step 1 must find nothing before the upgrade: {applied:?}"
+    );
+
+    let snapshot = || async {
+        sqlx::query_scalar::<_, String>(
+            "SELECT to_jsonb(c)::text FROM credentials c
+              WHERE kind IN ('password', 'totp') ORDER BY id",
+        )
+        .fetch_all(&pool)
+        .await
+    };
+    let before = snapshot().await?;
+    assert_eq!(
+        before.len(),
+        3,
+        "a password and a TOTP seed for Ada, a password for Ben"
+    );
+
+    // STEP 2: export, on the old schema.
+    let mut exporter = <sqlx::PgConnection as sqlx::Connection>::connect(&url).await?;
+    let csv = copy_out(&mut exporter, &export).await?;
+    exporter.close().await?;
+    let csv_text = String::from_utf8(csv.clone()).context("the export is UTF-8")?;
+    assert!(
+        csv_text.starts_with(&format!("{CREDENTIAL_COLUMNS}\n").replace(", ", ",")),
+        "the export starts with its header row: {csv_text}"
+    );
+    assert_eq!(
+        csv_text.lines().count(),
+        4,
+        "a header and the three secret-bearing rows, and not the oidc link: {csv_text}"
+    );
+
+    // STEP 3: the upgrade.
+    migrator
+        .run_to(58, &pool)
+        .await
+        .context("migrations 0056 through 0058")?;
+    let top: i64 = sqlx::query_scalar(sqlx::AssertSqlSafe(check_after.to_owned()))
+        .fetch_one(&pool)
+        .await?;
+    assert!(top >= 58, "the runbook's step 3 query: {top}");
+
+    // The loss is real, and it is only the secrets.
+    let kinds: Vec<String> = sqlx::query_scalar("SELECT kind FROM credentials ORDER BY kind")
+        .fetch_all(&pool)
+        .await?;
+    assert_eq!(
+        kinds,
+        ["oidc"],
+        "0056 deleted the passwords and the TOTP seed"
+    );
+    let members: i64 = sqlx::query_scalar("SELECT count(*) FROM staff_members")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(members, 3, "staff_members rows survive 0056");
+
+    // STEP 4, refused: somebody was given a newer password since the upgrade.
+    sqlx::query(
+        "INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject, counter,
+             must_change, expires_at, created_at, updated_at)
+         VALUES ('cred_new_ben', 'stf_ben', 'password', 'newer-hash', NULL, NULL, 0, FALSE, NULL,
+             now(), now())",
+    )
+    .execute(&pool)
+    .await?;
+    let mut importer = <sqlx::PgConnection as sqlx::Connection>::connect(&url).await?;
+    let refused = copy_in(&mut importer, &import, &csv)
+        .await
+        .expect_err("a member who holds a newer password cannot be given the old one beside it");
+    assert_eq!(
+        refused
+            .as_database_error()
+            .and_then(sqlx::error::DatabaseError::constraint),
+        Some("credentials_one_singleton_kind_per_staff_member"),
+        "{refused}"
+    );
+    drop(importer);
+    let secret_rows: Vec<String> = sqlx::query_scalar(
+        "SELECT id FROM credentials WHERE kind IN ('password', 'totp') ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(
+        secret_rows,
+        ["cred_new_ben"],
+        "the import is one COPY: Ada's rows, which came first in the file, were not kept"
+    );
+
+    // The staging variant: everyone else comes back, and Ben keeps the newer one.
+    let mut stager = <sqlx::PgConnection as sqlx::Connection>::connect(&url).await?;
+    sqlx::query(sqlx::AssertSqlSafe(stage_table.to_owned()))
+        .execute(&mut stager)
+        .await?;
+    copy_in(&mut stager, &stage_in, &csv).await?;
+    sqlx::query(sqlx::AssertSqlSafe(stage_move.to_owned()))
+        .execute(&mut stager)
+        .await?;
+    stager.close().await?;
+    let after_staging: Vec<(String, String)> = sqlx::query_as(
+        "SELECT id, material FROM credentials WHERE kind IN ('password', 'totp') ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(
+        after_staging
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        ["cred_new_ben", "cred_pw_ada", "cred_totp_ada"],
+        "Ada's two come back; Ben keeps the newer password and the old one stays out"
+    );
+    assert_eq!(after_staging[0].1, "newer-hash");
+
+    // STEP 4: the plain import, once nothing is in its way.
+    sqlx::query("DELETE FROM credentials WHERE kind IN ('password', 'totp')")
+        .execute(&pool)
+        .await?;
+    let mut importer = <sqlx::PgConnection as sqlx::Connection>::connect(&url).await?;
+    let copied = copy_in(&mut importer, &import, &csv)
+        .await
+        .context("the runbook's import applies to the upgraded database")?;
+    importer.close().await?;
+    assert_eq!(copied, 3);
+
+    let after = snapshot().await?;
+    assert_eq!(
+        after, before,
+        "every column of every exported row is back exactly as it was"
+    );
+    // The same, said in the terms the operator cares about.
+    let (hash, counter, must_change): (String, i64, bool) = sqlx::query_as(
+        "SELECT p.material, t.counter, b.must_change
+           FROM credentials p, credentials t, credentials b
+          WHERE p.id = 'cred_pw_ada' AND t.id = 'cred_totp_ada' AND b.id = 'cred_pw_ben'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        hash,
+        "$argon2id$v=19$m=19456,t=2,p=1$c2FsdHNhbHQ$aGFzaGhhc2hoYXNo"
+    );
+    assert_eq!(
+        counter, 58_123_456,
+        "the replay guard's step is not reset to 0"
+    );
+    assert!(
+        must_change,
+        "a one-time password is still a one-time password"
+    );
+    let link: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM credentials WHERE kind = 'oidc' AND subject = 'usr_9'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(link, 1, "the oidc link was never touched");
     Ok(())
 }

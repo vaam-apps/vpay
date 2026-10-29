@@ -144,6 +144,12 @@ anyhow.workspace = true
 # checks; vpay-testkit itself depends only on vpay-core/vpay-provider, so this
 # adds no cycle back into vpay-db.
 vpay-testkit.workspace = true
+# `repositories.rs`'s `a_credential_export_taken_before_0056_is_restored_after_0058`
+# drains sqlx's `COPY ... TO STDOUT` stream, which is a `futures` `Stream` and
+# needs `StreamExt::next` to be read. Already in `Cargo.lock` (sqlx depends on
+# it), so this adds no crate to the build; dev-only like the rest of this
+# block, and no feature is needed for `next`.
+futures-util = { version = "0.3", default-features = false }
 # `tower::ServiceExt::oneshot`, for
 # `schema::tests::no_generated_model_route_is_mounted_only_the_one_procedure_is`
 # — the container-free proof that `dashboard_procedure_router` mounts

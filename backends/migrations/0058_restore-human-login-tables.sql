@@ -24,18 +24,27 @@
 -- touched. Each statement below is the original's, comments included, so the
 -- reasoning that shaped it is read where it is written.
 --
--- WHAT IS NOT COMING BACK, AND A DEPLOYMENT THAT RAN 0056 MUST KNOW IT.
+-- WHAT THIS MIGRATION DOES NOT BRING BACK, AND A DEPLOYMENT MUST KNOW IT.
 --
---   * The rows. 0056 dropped the three tables, and their rows with them: every
---     session, every authorization code and every SSO flow in flight was
---     deleted, and these tables start empty. All three are short-lived by
---     construction (a code lives minutes, a session twelve hours, an SSO flow
---     ten minutes), so only the sign-out is felt.
---   * The `password` and `totp` credentials. 0056 ran
---     `DELETE FROM credentials WHERE kind IN ('password', 'totp')` and this
---     migration cannot undo a delete. A staff member who signed in with a
---     password and a TOTP code must be enrolled again (a new one-time password
---     and a new authenticator), and an upgrader should plan for that.
+--   * The rows of the three tables. 0056 dropped them, and their rows with
+--     them: every session, every authorization code and every SSO flow in
+--     flight was deleted, and these tables start empty. All three are
+--     short-lived by construction (a code lives minutes, a session twelve
+--     hours, an SSO flow ten minutes), so only the sign-out is felt.
+--   * The `password` and `totp` credentials, UNLESS THEY WERE EXPORTED FIRST.
+--     0056 ran `DELETE FROM credentials WHERE kind IN ('password', 'totp')`,
+--     and this migration never saw those rows, so it cannot undo the delete.
+--     A copy taken BEFORE 0056 runs can be put back AFTER this migration,
+--     because the CHECK dropped below is the only thing that refused them and
+--     `staff_members` survived 0056: `\copy` the rows out of `credentials` on
+--     the old schema, upgrade, `\copy` them back in. That keeps the argon2id
+--     hashes and the TOTP counters and enrols nobody again.
+--     docs/runbooks/deploy-and-rollback.md, section 1 item 4, has the exact
+--     statements, the column list and the order, and
+--     `a_credential_export_taken_before_0056_is_restored_after_0058` runs
+--     them. A deployment that did not export has no way back and must enrol
+--     those staff members again (a new one-time password and a new
+--     authenticator).
 --   * The `oidc` credentials were KEPT by 0056: an SSO staff member signs in
 --     again as before and needs nothing.
 --
