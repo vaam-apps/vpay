@@ -900,7 +900,7 @@ async fn discovery_lists_the_methods_a_deployment_serves() {
     assert_eq!(
         methods(config_with_auth(None)).await,
         json!({ "methods": ["keypair", "machine_tokens", "hmac_webhooks"] }),
-        "the default permits human_login and no release serves it yet"
+        "the default permits human_login, and the fixture writes neither of its blocks"
     );
 }
 

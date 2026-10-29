@@ -1187,8 +1187,9 @@ pub trait Repositories:
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router;
 
     /// The signed-transport layer for [`Self::dashboard_procedure_router`]
-    /// (VP-6a): `Required`, JSON in and out, over the contract digests and route
-    /// descriptors CrateStack generated from `schemas/vpay.cstack`.
+    /// (VP-6a): JSON in and out, over the contract digests and route descriptors
+    /// CrateStack generated from `schemas/vpay.cstack`, in the mode `signing`
+    /// names (`Required` unless the deployment serves `human_login`, ADR-0037).
     ///
     /// On this trait for [`Self::dashboard_procedure_router`]'s reason: the
     /// generated module is private to this crate, and so is the only place
@@ -1207,6 +1208,7 @@ pub trait Repositories:
         envelope: std::sync::Arc<dyn cratestack::envelope_layer::ServerEnvelope>,
         audience: &str,
         mount: &str,
+        signing: crate::ProcedureSigning,
     ) -> Result<cratestack::envelope_layer::EnvelopeLayer, DbError>;
 
     /// The merchant MCP endpoint (ADR-0033), ready to merge into the root
@@ -1299,14 +1301,17 @@ impl Repositories for PgRepositories {
         envelope: std::sync::Arc<dyn cratestack::envelope_layer::ServerEnvelope>,
         audience: &str,
         mount: &str,
+        signing: crate::ProcedureSigning,
     ) -> Result<cratestack::envelope_layer::EnvelopeLayer, DbError> {
-        crate::schema::dashboard_envelope_layer(envelope, audience, mount).map_err(|error| {
-            DbError::from(crate::persistence::classify_cratestack(
-                "DashboardEnvelope",
-                "build",
-                error,
-            ))
-        })
+        crate::schema::dashboard_envelope_layer(envelope, audience, mount, signing).map_err(
+            |error| {
+                DbError::from(crate::persistence::classify_cratestack(
+                    "DashboardEnvelope",
+                    "build",
+                    error,
+                ))
+            },
+        )
     }
 
     fn merchant_mcp_router(

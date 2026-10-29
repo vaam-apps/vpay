@@ -1,0 +1,27 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-3).
+#
+# `dashboard_client` configured while `auth.methods` does not permit
+# `human_login`: refused (AuthMethodDisabled, naming `dashboard_client`).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-cameroon-tenant
+  redirect_uris:
+    - http://localhost:3000/dash/v1/callback
+  scope: dashboard:read

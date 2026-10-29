@@ -1,0 +1,31 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-3).
+#
+# `human_login` permitted by an explicit list and both blocks present: loads,
+# and the method is served.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair, human_login]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-cameroon-tenant
+  redirect_uris:
+    - http://localhost:3000/dash/v1/callback
+  scope: dashboard:read
+
+staff_auth:
+  password_pepper: fixture-pepper
+  totp_encryption_key: fixture-key

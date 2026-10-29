@@ -249,6 +249,8 @@ async fn harness_configured(scopes: &[&str], methods: Option<&[&str]>) -> anyhow
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: vpay_config::AuthConfig {
             methods: methods.map(|names| names.iter().map(|name| (*name).to_owned()).collect()),

@@ -17,7 +17,7 @@
 //! | Surface | Whose key | Where it is registered | Resolver |
 //! |---|---|---|---|
 //! | `/v1` | a merchant's backend (Ed25519) | `merchant_clients[].cose_keys` | [`MerchantKeyResolver`] |
-//! | `/dash/v1`, `/dash/v1/$procs/*` | a person's console (P-256) | `console_keys`, in the database | [`console::ConsoleKeyResolver`] |
+//! | `/dash/v1`, `/dash/v1/$procs/*` | a person's console (P-256), or a staff session when `human_login` is served | `console_keys`, in the database | [`console::ConsoleKeyResolver`] |
 //! | `/svc/v1` | a service, vaam (Ed25519) | `service_clients[].cose_keys` | [`ServiceKeyResolver`] |
 //!
 //! A key of one kind is no key at another: each resolver reads its own registry
@@ -264,6 +264,10 @@ fn surface_layer(
 /// | no | yes | `Off` | runs; a COSE body is refused (`415`) |
 ///
 /// The fourth row, neither, is refused at boot (`ConfigError::NoWayIn`).
+///
+/// `/dash/v1` follows the same table with `human_login` served standing where
+/// `machine_tokens` does ([`SurfaceMode::for_dashboard`]); `/svc/v1` is always
+/// `Required`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SurfaceMode {
     /// Every request is signed (VP-3).
@@ -292,6 +296,48 @@ impl SurfaceMode {
             (true, true) => Ok(Self::Optional),
             (false, true) => Ok(Self::Off),
             (false, false) => Err(ConfigError::NoWayIn),
+        }
+    }
+
+    /// The mode `/dash/v1` and its procedure transport run in (ADR-0037):
+    ///
+    /// | `keypair` | `human_login` served | Mode | A request with no signature |
+    /// |---|---|---|---|
+    /// | yes | no | `Required` | the layer's coarse unsigned `401` |
+    /// | yes | yes | `Optional` | runs; the scope step wants a staff access token |
+    /// | no | yes | `Off` | runs; a COSE body is refused (`415`), a key is no credential |
+    /// | no | no | `Required` | the nests are not mounted at all |
+    ///
+    /// `Optional` iff the sign-in is **served**, not merely permitted: the
+    /// absent-key default permits `human_login`, and a deployment that never
+    /// wrote its blocks must stay signed-only.
+    ///
+    /// # Errors
+    ///
+    /// [`ConfigError`] from resolving `auth.methods`: unreachable for a `Config`
+    /// that came from a file.
+    pub fn for_dashboard(config: &Config) -> Result<Self, ConfigError> {
+        let methods = config.auth_methods()?;
+        Ok(
+            match (
+                methods.permits(AuthMethod::Keypair),
+                methods.human_login_served(),
+            ) {
+                (true, true) => Self::Optional,
+                (false, true) => Self::Off,
+                (_, false) => Self::Required,
+            },
+        )
+    }
+
+    /// The same decision for the procedure transport, which names the mode in
+    /// `vpay_db`'s own vocabulary.
+    #[must_use]
+    pub fn procedure_signing(self) -> vpay_db::ProcedureSigning {
+        match self {
+            Self::Required => vpay_db::ProcedureSigning::Required,
+            Self::Optional => vpay_db::ProcedureSigning::Optional,
+            Self::Off => vpay_db::ProcedureSigning::Off,
         }
     }
 }
@@ -452,12 +498,18 @@ pub struct ManagementEnvelope {
     procedures: EnvelopeLayer,
     svc: EnvelopeLayer,
     services: Arc<ServiceKeyResolver>,
+    /// The mode `/dash/v1` runs in: `Optional` iff `human_login` is served.
+    dash_mode: SurfaceMode,
+    /// The validator the console scope step checks a staff access token with.
+    /// `None` is every deployment that does not serve `human_login`.
+    sessions: Option<JwtValidator>,
 }
 
 impl std::fmt::Debug for ManagementEnvelope {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ManagementEnvelope")
             .field("services", &self.services)
+            .field("dash_mode", &self.dash_mode)
             .finish_non_exhaustive()
     }
 }
@@ -481,19 +533,23 @@ impl ManagementEnvelope {
             repositories.clone(),
         ));
 
+        // `Optional` iff `human_login` is served (ADR-0037); `/svc/v1` below is
+        // `Required` whatever the deployment serves.
+        let dash_mode = SurfaceMode::for_dashboard(config)?;
         let dash = surface_layer(
             config,
             cose_envelope(keys, console.clone(), &repositories)?,
             *DASH_CONTRACTS,
             TableBinding::dash(),
             DASH_MOUNT,
-            SurfaceMode::Required,
+            dash_mode,
         )?;
         let procedures = repositories
             .dashboard_envelope_layer(
                 Arc::new(cose_envelope(keys, console, &repositories)?),
                 &audience_for(&config.deployment.public_base_url),
                 DASH_MOUNT,
+                dash_mode.procedure_signing(),
             )
             .map_err(|error| V1EnvelopeError::Layer(error.to_string()))?;
         let svc = surface_layer(
@@ -509,7 +565,45 @@ impl ManagementEnvelope {
             procedures,
             svc,
             services,
+            dash_mode,
+            sessions: None,
         })
+    }
+
+    /// Hands the console scope step the validator it checks a staff access token
+    /// with (`human_login`, ADR-0037).
+    ///
+    /// Separate from [`Self::new`] for [`V1Envelope::with_machine_tokens`]'
+    /// reason: the validator fetches this process's own JWKS over loopback and
+    /// so needs the bound address. Meaningful only when `human_login` is served;
+    /// harmless otherwise, since the scope step then refuses an unsigned request
+    /// before it consults the validator.
+    #[must_use]
+    pub fn with_staff_sessions(mut self, validator: JwtValidator) -> Self {
+        self.sessions = Some(validator);
+        self
+    }
+
+    /// The mode `/dash/v1` runs in, for the boot log.
+    #[must_use]
+    pub fn dash_mode(&self) -> SurfaceMode {
+        self.dash_mode
+    }
+
+    /// What the console scope step needs, over `repositories` and
+    /// `resource_config`, for the router it will guard.
+    pub(crate) fn dash_scope_state(
+        &self,
+        repositories: Arc<dyn Repositories>,
+        resource_config: Arc<ResourceConfig>,
+        surface: console::DashSurface,
+    ) -> console::DashScopeState {
+        console::DashScopeState {
+            repositories,
+            resource_config,
+            surface,
+            sessions: self.sessions.clone(),
+        }
     }
 
     pub(crate) fn dash_layer(&self) -> EnvelopeLayer {

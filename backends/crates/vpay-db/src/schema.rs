@@ -133,11 +133,19 @@ where
 /// private to this crate, so the layer that binds `POST /$procs/<name>` can only
 /// be built here.
 ///
-/// **Required and JSON.** The transport is `procedure_router` over
-/// [`::cratestack_codec_json::JsonCodec`], so JSON is the one payload type in
-/// both directions; the generated layer defaults to CBOR alone, which this
-/// router would refuse. No optional mode: an unsigned procedure call is the
-/// layer's coarse `401`.
+/// **JSON, and `Required` unless `signing` says otherwise.** The transport is
+/// `procedure_router` over [`::cratestack_codec_json::JsonCodec`], so JSON is the
+/// one payload type in both directions; the generated layer defaults to CBOR
+/// alone, which this router would refuse. `signing` is the deployment's choice
+/// (ADR-0037) and is `Required` for a deployment that serves no `human_login`:
+/// an unsigned procedure call is then the layer's coarse `401`.
+///
+/// **`Optional` is built the way `/v1`'s is** (`vpay_api::envelope`), for the
+/// reasons given there: a closure policy with `unresolved_mode` pinned back to
+/// `Required`, so a route the resolver cannot bind still fails closed instead
+/// of passing unsigned (cratestack decision S2), and a response seal policy that
+/// never seals an unsigned request's answer, because that seal binds a nonce and
+/// a payload and not a caller.
 ///
 /// **`mount` is the path the procedure router is nested at** (`/dash/v1`), and
 /// it is required: the layer is applied to the inner router before
@@ -155,15 +163,24 @@ pub(crate) fn dashboard_envelope_layer(
     envelope: std::sync::Arc<dyn ::cratestack::envelope_layer::ServerEnvelope>,
     audience: &str,
     mount: &str,
+    signing: crate::ProcedureSigning,
 ) -> Result<::cratestack::envelope_layer::EnvelopeLayer, ::cratestack::CratestackError> {
-    cratestack_schema::axum::envelope_layer(
-        envelope,
-        ::cratestack::envelope_layer::EnvelopeMode::Required,
-        audience,
-    )
-    .mount_prefix(mount)
-    .payload_media_types(["application/json"], ["application/json"])
-    .build()
+    use ::cratestack::envelope_layer::{EnvelopeMode, PolicyRequest, UnsignedRequest};
+
+    let builder =
+        cratestack_schema::axum::envelope_layer(envelope, EnvelopeMode::Required, audience);
+    let builder = match signing {
+        crate::ProcedureSigning::Required => builder,
+        crate::ProcedureSigning::Optional => builder
+            .policy(|_request: &PolicyRequest<'_>| EnvelopeMode::Optional)
+            .unresolved_mode(EnvelopeMode::Required)
+            .response_seal_policy(|_request: &UnsignedRequest<'_>| false),
+        crate::ProcedureSigning::Off => builder.policy(EnvelopeMode::Off),
+    };
+    builder
+        .mount_prefix(mount)
+        .payload_media_types(["application/json"], ["application/json"])
+        .build()
 }
 
 /// The merchant MCP endpoint (ADR-0033): the generated tool table served

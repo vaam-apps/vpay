@@ -461,7 +461,28 @@ pub(crate) fn router_deps_with(
         ),
         false => v1_envelope,
     };
-    let management_envelope = management_envelope_for(config, &repositories);
+    let management_envelope = management_envelope_for(config, &repositories).map(|envelope| {
+        // As `vpay-server`'s `main` does it: a deployment that serves
+        // `human_login` accepts a staff access token on `/dash/v1` beside a key,
+        // validated against this server's own JWKS with the dashboard client's
+        // id as the only audience.
+        match config
+            .dashboard_client
+            .as_ref()
+            .filter(|_| config.auth_methods().is_ok_and(|m| m.human_login_served()))
+        {
+            Some(client) => envelope.with_staff_sessions(
+                vpay_api::resource_auth::dashboard_token_validator(
+                    format!("{}/jwks.json", merchant_op.issuer()),
+                    Duration::from_secs(300),
+                    merchant_op.issuer(),
+                    client.client_id.as_str(),
+                )
+                .expect("the vendored-roots JWKS client builds"),
+            ),
+            None => envelope,
+        }
+    });
     RouterDeps {
         repositories,
         merchant_op,
@@ -472,6 +493,10 @@ pub(crate) fn router_deps_with(
         // writes none gets `None` here, and `/dash/v1`, the procedure transport
         // and `/svc/v1` are then nests the router does not mount at all.
         management_envelope,
+        // Filled by `serve_with_adapters`, which holds the signing key the
+        // dashboard half of the OP signs with; every other suite gets `None`,
+        // which is what makes `/dash/v1/staff/login` a `404` in all of them.
+        staff_login: None,
         adapters: Arc::new(adapters),
         resource_config: Arc::new(
             ResourceConfig::from_config(config)
@@ -511,16 +536,67 @@ pub(crate) fn v1_envelope_for(config: &Config, repositories: &Arc<dyn Repositori
 
 /// The management surface's signed transport (`/dash/v1`, the procedure
 /// transport under it, `/svc/v1`), or `None` when the configuration registers
-/// no `dashboard:` — `vpay-server`'s own condition, in one line.
+/// no `dashboard:` and serves no `human_login` — `vpay-server`'s own condition,
+/// in one line.
 pub(crate) fn management_envelope_for(
     config: &Config,
     repositories: &Arc<dyn Repositories>,
 ) -> Option<ManagementEnvelope> {
-    config.dashboard.as_ref()?;
+    let human_login = config
+        .auth_methods()
+        .expect("the suite's auth.methods is valid")
+        .human_login_served();
+    (config.dashboard.is_some() || human_login).then_some(())?;
     Some(
         ManagementEnvelope::new(config, &test_envelope_keys(), Arc::clone(repositories))
             .expect("the suite's service clients project onto a key registry"),
     )
+}
+
+/// `vpay-server`'s own `build_staff_login`, for a suite's harness: `Some` exactly
+/// when `auth.methods` serves `human_login`.
+///
+/// Copied rather than shared, because `main.rs`'s version logs operator-facing
+/// lines this has no business emitting into a test's output, and a helper in
+/// `vpay-api` that both called would be a shipping function whose only caller
+/// shape is a test. What must not drift is the *condition*, and it is one line
+/// in both: `human_login` served, or `None`.
+pub(crate) fn staff_login_for(
+    config: &Config,
+    signing_key: &LoadedSigningKey,
+    repositories: &Arc<dyn Repositories>,
+) -> Option<Arc<vpay_api::staff::StaffLogin>> {
+    if !config.auth_methods().ok()?.human_login_served() {
+        return None;
+    }
+    let dashboard = config.dashboard_client.as_ref()?;
+    let staff_auth = config.staff_auth.as_ref()?;
+    let (pepper, totp_key) = staff_auth.both()?;
+    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
+        .expect("the suite's staff_auth secrets are usable");
+
+    Some(Arc::new(vpay_api::staff::StaffLogin {
+        credentials: Arc::new(credentials),
+        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
+            config,
+            dashboard,
+            staff_auth,
+            signing_key,
+            Arc::clone(repositories),
+        )),
+        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(staff_auth.rate_limits),
+        // The suite's own `staff_auth.trusted_proxies`, parsed exactly as
+        // `main.rs` parses it. `expect` rather than a fallible return, because
+        // a suite that wrote an unparseable allow-list has a bug in its fixture
+        // and must say so rather than quietly booting a server that trusts
+        // nobody, which would make a trusted-proxy assertion pass for the wrong
+        // reason.
+        trusted_proxies: vpay_api::staff::client_address::TrustedProxies::parse(
+            &staff_auth.trusted_proxies,
+        )
+        .expect("the suite's staff_auth.trusted_proxies are parseable"),
+        issuer_label: config.deployment.name.clone(),
+    }))
 }
 
 /// Boot step 4, run against a test's own configuration.
@@ -965,6 +1041,7 @@ pub(crate) async fn serve_with_adapters(
     ));
     let issuer = merchant_op.issuer().to_owned();
     let mut deps = router_deps_with(Arc::clone(repositories), merchant_op, &config, adapters());
+    deps.staff_login = staff_login_for(&config, &signing_key, repositories);
     // The merchant MCP endpoint (ADR-0033), built exactly as `vpay-server`'s
     // `main` builds it — only when `deployment.surfaces` names `mcp`, over
     // a validator whose audience is the MCP resource and whose JWKS is this
