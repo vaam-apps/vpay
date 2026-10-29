@@ -1155,9 +1155,10 @@ async fn staff_add(
         staff_id = %id,
         merchant_id = %merchant,
         is_admin = admin,
-        password_issued = one_time_password.is_some(),
-        "created a staff member; the one-time password (when one was issued) is on stdout and \
-         is not logged. Otherwise attach a console key with `vpay-server staff pair-key`"
+        credential_issued = one_time_password.is_some(),
+        "created a staff member; the one-time sign-in credential, when one was issued, is on \
+         stdout and is not logged. Otherwise attach a console key with `vpay-server staff \
+         pair-key`"
     );
 
     // stdout, alone, and never through `tracing`. `print_stdout` is a
