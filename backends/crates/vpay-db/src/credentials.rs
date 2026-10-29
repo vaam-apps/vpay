@@ -355,9 +355,14 @@ impl fmt::Debug for NewCredential {
 
 /// Reads and writes of the `credentials` table.
 ///
-/// Four methods, every one of them through CrateStack, and every one of them
+/// Five methods, every one of them through CrateStack, and every one of them
 /// **credential-agnostic**: none takes or returns anything but an opaque
 /// string, a kind and a counter.
+///
+/// None has a caller outside this crate's own suites today: they are restored
+/// for VPA-3, the sign-in routes, which read, enrol and advance them. The one
+/// writer reachable from a binary, `vpay-server staff pair-key`, writes
+/// `console_keys`, not this table.
 #[async_trait]
 pub trait Credentials {
     /// Inserts one credential.
@@ -688,8 +693,8 @@ mod tests {
         );
         assert!(
             !descriptor.create_allow_policies.is_empty(),
-            "model Credential lost @@allow(\"create\", …): `vpay-server staff add` would fail \
-             with a Forbidden naming the model, and TOTP enrolment with it"
+            "model Credential lost @@allow(\"create\", …): a credential could not be \
+             created: every enrolment would fail with a Forbidden naming the model"
         );
         assert!(
             !descriptor.update_allow_policies.is_empty(),

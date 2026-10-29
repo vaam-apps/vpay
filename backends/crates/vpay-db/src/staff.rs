@@ -228,11 +228,17 @@ impl fmt::Debug for NewStaff {
 
 /// Reads and writes of the `staff_members` table.
 ///
-/// Four methods, every one of them through CrateStack. There is deliberately
-/// **no** `list`, no `disable` and no `delete`: the only writer of this table
-/// is the operator CLI, ADR-0017 gives it exactly one subcommand, and a
-/// repository method with no caller is a claim `docs/status.md` would have to
-/// carry.
+/// Five methods, every one of them through CrateStack; `provision_federated_in_tx`
+/// below writes the table too, on a transaction the caller owns. There is
+/// deliberately **no** `list` and no `disable`: a repository method with no
+/// caller is a claim `docs/status.md` would have to carry.
+///
+/// Of the five, `create` is the one with a caller today: `vpay-server staff add`
+/// writes one `staff_members` row and no credential. `find_by_email`, `find`,
+/// `record_sign_in` and `delete` are restored for VPA-3, the sign-in routes,
+/// and have no caller yet. They are exercised by this crate's own suites
+/// against a real database, which is the only thing that stops a method with no
+/// caller from rotting.
 ///
 /// It was six until migration 0044. `enrol_totp`, `record_totp_step` and
 /// `set_password` are `crate::credentials`' `create`, `advance_counter` and
@@ -327,34 +333,25 @@ pub trait Staff {
     /// [`DbError::Persistence`].
     async fn record_sign_in(&self, id: &str, now: OffsetDateTime) -> Result<bool, DbError>;
 
-    /// Deletes one staff member, and by cascade their sessions, their
-    /// authorization codes and their credentials.
+    /// Deletes one staff member, and by cascade everything that names them.
     ///
-    /// # This exists for exactly one caller, and it is a compensation
+    /// **Restored for VPA-3; no caller yet.** Nothing in the workspace calls
+    /// it today: `vpay-server staff add` writes one `staff_members` row and no
+    /// credential, so it has nothing to compensate for. It stays because the
+    /// sign-in routes VPA-3 restores need an account-removal path, and
+    /// because `model StaffMember`'s `@@allow("delete", …)` arm is what admits
+    /// it.
     ///
-    /// This trait's doc says there is deliberately no `delete`, and that was
-    /// right while `staff add` was **one** insert. ADR-0019 makes it two — a
-    /// `staff_members` row and a `credentials` row — and two inserts that are
-    /// not one statement have a window between them. A failure in that window
-    /// leaves a staff member **who can never sign in and whose address is
-    /// taken**: the email unique index refuses a second `staff add` for them,
-    /// so the operator cannot even retry.
+    /// # What the cascade removes
     ///
-    /// So `staff add` compensates, and this is what it calls. It is not a
-    /// general account-removal facility and there is no surface that reaches
-    /// it; `model StaffMember`'s `@@allow("delete", …)` arm, which had no
-    /// caller until now, is what admits it.
+    /// Every table that names the member through an `ON DELETE CASCADE` key:
+    /// `staff_sessions.staff_id`, `oauth_authorization_codes.staff_id` (and,
+    /// through the session, any code that session issued), `credentials.staff_member_id`
+    /// (passwords, TOTP seeds and federated links alike) and
+    /// `console_keys.staff_member_id`. The member's email address is freed at
+    /// the same moment, so a later `staff add` for it succeeds.
     ///
-    /// **A real transaction would be better** and is not available here:
-    /// `TxRepositories` is a hand-curated trait of raw `sqlx` statements, and
-    /// putting these two inserts in it would take both tables off the
-    /// generated data layer — which is the property migration 0035 and
-    /// migration 0044 were both shaped to buy. The residual is stated where
-    /// it is paid, in `staff add` itself: if the compensating delete *also*
-    /// fails, the operator is shown both errors and the `stf_…` to remove.
-    ///
-    /// `false` means no such row, which for the compensating caller means the
-    /// insert it is compensating for did not land either.
+    /// `false` means no such row.
     ///
     /// # Errors
     ///
@@ -443,14 +440,11 @@ impl Staff for crate::repository::PgRepositories {
 
     async fn delete(&self, id: &str) -> Result<bool, DbError> {
         // `delete_many().where_(id)` and not a `delete_unique`, so that the
-        // answer is a row count rather than an error for "no such row": the
-        // one caller is compensating for a failed insert and "there was
-        // nothing to remove" is a success for it.
+        // answer is a row count rather than an error for "no such row": a
+        // caller removing an account that is already gone has nothing to
+        // handle.
         //
-        // The cascades do the rest. `staff_sessions.staff_id`,
-        // `oauth_authorization_codes.staff_id` and `credentials.staff_member_id`
-        // are all ON DELETE CASCADE, so a half-created account takes every
-        // row that names it.
+        // The cascades do the rest; the trait method's doc lists them.
         let summary = self
             .cs
             .staff_member()
@@ -469,19 +463,20 @@ impl Staff for crate::repository::PgRepositories {
 /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)),
 /// and the one a first pairing through vaam makes (ADR-0036).
 ///
-/// # Why this is a transaction and `staff add` is not
+/// **Restored for VPA-3; no caller yet.** The sign-in and pairing code that
+/// calls it was deleted with the routes (VP-6a) and returns with them.
 ///
-/// `vpay-server staff add` is two inserts with a compensating delete, and
-/// says why: the transaction seam is a hand-curated trait and putting both
-/// tables in it would take them off the generated data layer. That is no
-/// longer the trade here. CrateStack's `run_in_tx` runs the *same* generated
-/// statements on a transaction the caller owns (`customers::erase_in_tx` and
+/// # Why this is a transaction
+///
+/// A member and their first credential are two inserts, and two inserts that
+/// are not one statement have a window between them: a failure in it leaves a
+/// member nobody can sign in as, holding an email address nobody else can now
+/// be given. CrateStack's `run_in_tx` runs the *same* generated statements on
+/// a transaction the caller owns (`customers::erase_in_tx` and
 /// `webhook_deliveries::create_in_tx` already do), so the data-layer property
-/// survives and the window does not exist: a person provisioned by their first
-/// sign-in either has a member **and** the link that lets them sign in again,
-/// or has neither. The failure the compensation exists for — a member nobody
-/// can sign in as, holding an email address nobody else can now be given — is
-/// not reachable.
+/// of going through the generated model survives and the window does not
+/// exist: a person provisioned by their first sign-in either has a member
+/// **and** the link that lets them sign in again, or has neither.
 ///
 /// A unique violation on `staff_members_email_key` (the address belongs to
 /// somebody else) or on `credentials_federated_identity_key` (a concurrent
