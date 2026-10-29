@@ -12767,7 +12767,7 @@ async fn a_session_has_two_bounds_and_an_expired_one_is_refused_not_deleted() ->
     assert_eq!(row.state, vpay_db::SessionState::PendingTotp);
     assert_eq!(
         row.expires_at - row.created_at,
-        vpay_db::ABSOLUTE_LIFETIME,
+        time::Duration::hours(12),
         "the absolute bound is derived from the creation instant by the repository"
     );
     assert!(row.access_token.is_none() && row.access_token_expires_at.is_none());
@@ -12801,12 +12801,12 @@ async fn a_session_has_two_bounds_and_an_expired_one_is_refused_not_deleted() ->
 
     // The absolute bound: no use moves it.
     let mut at = t0 + minutes(20);
-    while at < t0 + vpay_db::ABSOLUTE_LIFETIME {
+    while at < t0 + time::Duration::hours(12) {
         at += minutes(25);
         StaffSessions::touch(repositories, &id, at).await?;
     }
     assert!(
-        StaffSessions::load(repositories, &id, t0 + vpay_db::ABSOLUTE_LIFETIME)
+        StaffSessions::load(repositories, &id, t0 + time::Duration::hours(12))
             .await?
             .is_none(),
         "a session in constant use is still refused at twelve hours"
