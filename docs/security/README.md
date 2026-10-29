@@ -32,6 +32,9 @@ Personal data has its own inventory, which a gate checks:
 Security assets, trust boundaries and ISO 27001 control evidence are documented
 in:
 
+- [../flows/sdlc.md](../flows/sdlc.md) — the secure development life cycle
+  policy: the change-to-production path, the threat-assessment trigger, the
+  advisory scanning gate and its exception path, and the remediation SLA
 - [trust-boundaries.md](trust-boundaries.md) — five trust tiers and their
   crossing controls
 - [data-flows.md](data-flows.md) — payment, webhook and console-key pairing data-flow maps
