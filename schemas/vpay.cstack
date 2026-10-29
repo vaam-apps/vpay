@@ -1607,14 +1607,17 @@ model Customer {
 
 // --- staff sign-in (ADR-0017) --------------------------------------------
 
-// `staff_members` (migration 0035) — the people who may reach `/dash/v1`. Its
-// companions `staff_sessions` and `oauth_authorization_codes` (and, from
-// migration 0050, `staff_sso_attempts`) were dropped by migration 0056 (VP-6a):
-// a person is found by their console key now (`model ConsoleKey`, below), not
-// by a session or a code.
+// `staff_members`, `staff_sessions` and `oauth_authorization_codes` (migration 0035)
+// — the three tables that let a human reach `/dash/v1` — and, from migration 0050,
+// `staff_sso_attempts`. Migration 0056 (VP-6a) dropped the last three; migration
+// 0058 (VPA-2, owner ruling R5: authentication methods are deployment
+// configuration) creates them again, EMPTY, with the DDL they shipped with. A
+// person is found by a console key (`model ConsoleKey`, below) or, where a
+// deployment permits human login, by a session or a code; this file declares
+// both.
 //
-// THE FIRST MODELS IN THIS FILE WHOSE EVERY REPOSITORY
-// METHOD RUNS THROUGH CRATESTACK were this family and `Credential`. `DisabledClient` got there for three
+// THESE ARE THE MODELS IN THIS FILE WHOSE EVERY REPOSITORY
+// METHOD RUNS THROUGH CRATESTACK, with `Credential`. `DisabledClient` got there for three
 // methods and `Customer` for two of seven; here it is all of them, and that
 // is a property of migration 0035 rather than of ambition: the tables were
 // shaped so it would be true. No `jsonb` column (which is what keeps five of
@@ -1623,9 +1626,10 @@ model Customer {
 // below can carry every column the writer has to set.
 //
 // The cost of that is stated where it is paid: the encrypted TOTP secret is
-// base64url `TEXT` rather than `BYTEA`, because of what 0.11.1 can express
-// (the TOTP secret that said so is gone with the password and TOTP sign-in;
-// `ConsoleKey.public_key` keeps the rule).
+// base64url `TEXT` rather than `BYTEA` (see `Staff.totp_secret`), and the
+// code store's single-use guard is a nullable `consumed_at` compare-and-swap
+// (see `OauthAuthorizationCode.consumed_at`), both because of what 0.11.1
+// can express.
 //
 // NO `@db_enforce` ANYWHERE BELOW, for `model Event`'s measured reason: the
 // live CHECKs are hand-named, `@db_enforce` would generate
@@ -1636,7 +1640,7 @@ model Customer {
 // validator list regardless, and every generated write path calls it before
 // any SQL runs.
 //
-// NO ENUM TYPE for `Staff.status`, `ConsoleKey.alg` or (once) `StaffSession.state`, although all are
+// NO ENUM TYPE for `Staff.status`, `StaffSession.state` or `ConsoleKey.alg`, although all are
 // closed vocabularies with a live CHECK. A `.cstack` enum would give the
 // column type `Enum("StaffStatus")` against a live `Scalar("String")` — one
 // permanent `column type differs` drift line per column, which is what every
@@ -1713,7 +1717,7 @@ model StaffMember {
   updated_at DateTime
   last_sign_in_at DateTime?
 
-  // Three arms, one per action `vpay_db::staff` calls, each separately
+  // Four arms, one per action `vpay_db::staff` calls, each separately
   // droppable — `model DisabledClient`'s reason for four lines rather than
   // one `@@allow("all", …)`. The runtime effects are the asymmetry that
   // module's table measured, and here they are:
@@ -1729,14 +1733,126 @@ model StaffMember {
   //             `WHERE`, so a missing arm makes `record_sign_in` match zero
   //             rows and leave `last_sign_in_at` stale. The TOTP replay guard
   //             moved to `Credential` with the credential columns.
-  //   delete -> NO ARM, since VP-6a. Nothing deletes a staff row (`staff add`
-  //             was two inserts and needed a compensating delete while one was
-  //             a password; it is one now), and a delete would cascade a
-  //             person's console keys and federated link.
+  //   delete -> SILENT. Nothing in vpay deletes a staff row today; the arm is
+  //             here because `staff_sessions`' and
+  //             `oauth_authorization_codes`' cascades name this table, and an
+  //             operator deleting an account through a future surface must
+  //             not be told it worked while the row stayed. It cascades a
+  //             person's console keys and federated link too.
   @@allow("read", auth().isSystem())
   @@allow("create", auth().isSystem())
   @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
 }
+
+model StaffSession {
+  // The SHA-256 of the opaque session token, lower-case hex — never the
+  // token. 64 characters exactly, which migration 0035 states as an equality
+  // CHECK and this states as a bound, for the reason above: no
+  // `@db_enforce`, so the two never have to converge on a name, and the
+  // generated `input.validate()` still refuses a writer that got the width
+  // wrong before any SQL runs.
+  id String @id @length(min: 64, max: 64)
+  staff_id String @length(min: 1, max: 64)
+  state String
+  created_at DateTime
+  expires_at DateTime
+  last_seen_at DateTime
+  // The `/dash/v1` access token, once the exchange has minted one.
+  // `@sensitive` for `Staff.password_hash`'s reason and more urgently: this
+  // is a live bearer credential for the length of its TTL.
+  access_token String? @sensitive
+  // When that token stops being accepted (migration 0040, issue #88 item 1).
+  // NULL exactly when `access_token` is — migration 0040's
+  // `staff_sessions_token_expiry_is_paired`, which is multi-column and
+  // therefore invisible to `cratestack migrate baseline`, so `postgres_smoke.rs`
+  // asserts it directly. Not `@sensitive`: an expiry is a timestamp, and
+  // redacting it would hide the one field an operator debugging a re-mint
+  // loop needs to read.
+  access_token_expires_at DateTime?
+
+  // No `@relation` to `Staff`, although `staff_sessions.staff_id` is a real
+  // foreign key. 0.11.1's `@relation` needs both ends declared and side-loads
+  // rows this crate never wants side-loaded: every read here is by primary
+  // key and the staff row is fetched separately, deliberately, so that a
+  // disabled account is re-checked on the session read rather than trusted
+  // from a join taken when the session was created.
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
+// An SSO sign-in in flight (migration 0050,
+// [ADR-0030](../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+//
+// `StaffSsoAttempt` and not `StaffSsoFlow` or the like because the name decides
+// the TABLE name (`StaffSession`'s reason): 0.15 derives it with
+// `pluralize(to_snake_case(model))` and has no `@@map`, so this reads and
+// writes `staff_sso_attempts`.
+//
+// NOT a `StaffSession` with a third state, and NOT nullable `staff_id`:
+// nobody exists yet when a first sign-in begins. Migration 0050's header has
+// the argument.
+model StaffSsoAttempt {
+  // SHA-256 of the pending-flow token, hex — never the token.
+  id String @id @length(min: 64, max: 64)
+  // SHA-256 of the `state` sent to the provider.
+  state_hash String @length(min: 64, max: 64)
+  // SHA-256 of the `nonce` sent to the provider.
+  nonce_hash String @length(min: 64, max: 64)
+  // The PKCE verifier, AES-256-GCM sealed (not hashed: the token request must
+  // present the raw value). `@sensitive` for `StaffSession.access_token`'s
+  // reason.
+  code_verifier String @length(min: 1, max: 1024) @sensitive
+  // Whether this flow is the single `prompt=login` retry.
+  is_retry Boolean
+  created_at DateTime
+  expires_at DateTime
+
+  // Four arms, one per action `vpay_db::staff_sso_attempts` calls. `read` and
+  // `delete` are SILENT when missing (the policy compiles into the WHERE and
+  // matches nothing, so every callback answers "no such flow"); `create` is
+  // LOUD.
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
+model OauthAuthorizationCode {
+  code_hash String @id @length(min: 64, max: 64)
+  client_id String @length(min: 1, max: 256)
+  staff_id String @length(min: 1, max: 64)
+  session_id String @length(min: 64, max: 64)
+  merchant_id String @length(min: 1, max: 128)
+  scope String
+  code_challenge String @length(min: 1, max: 256)
+  code_challenge_method String
+  redirect_uri String @length(min: 1, max: 2048)
+  nonce String?
+  created_at DateTime
+  expires_at DateTime
+  // THE SINGLE-USE GUARD, and one nullable column is all of it. The consume
+  // is a compare-and-swap —
+  // `update_many().where_(code_hash).where_(consumed_at().is_null())
+  // .set(consumed_at)` — so `BatchSummary::ok == 1` is the atomic answer to
+  // "did I win the race", which is the property
+  // `AuthorizationCodeStore::consume_code`'s own doc calls "the single most
+  // important correctness property in this crate".
+  //
+  // `is_null()` is a `cratestack_sql::FieldRef` method on an optional column
+  // (`filter/field_ref.rs:163`); `.eq(None)` is NOT — `Option<T>` does not
+  // implement `IntoSqlValue`, which is a compile error rather than a silent
+  // mismatch, and is how this was found.
+  consumed_at DateTime?
+
+  @@allow("read", auth().isSystem())
+  @@allow("create", auth().isSystem())
+  @@allow("update", auth().isSystem())
+  @@allow("delete", auth().isSystem())
+}
+
 
 // --- credentials (ADR-0019) -----------------------------------------------
 

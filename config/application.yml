@@ -431,4 +431,7 @@ checkout:
 # Upgrading from before VP-6a: `dashboard_client` and `staff_auth` are refused
 # at boot even as a null. Delete the keys, then add `dashboard:` (above) and a
 # `service_clients:` entry (the example earlier in this file) to keep a console
-# (docs/flows/dashboard-auth.md, "Upgrading from before VP-6a").
+# (docs/flows/dashboard-auth.md, "Upgrading from before VP-6a"). Before deleting
+# `staff_auth`, copy out `staff_auth.password_pepper` and
+# `staff_auth.totp_encryption_key` and keep them (the secret store): exported
+# staff passwords and TOTP seeds never verify again without them.

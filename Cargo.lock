@@ -5263,6 +5263,7 @@ dependencies = [
  "chrono",
  "cratestack-codec-json",
  "cratestack-pg",
+ "futures-util",
  "metrics",
  "metrics-exporter-prometheus",
  "serde",

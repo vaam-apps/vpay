@@ -14,7 +14,7 @@
 //!
 //! **A transport serves it.** `crate::schema::dashboard_procedure_router`
 //! mounts `procedure_router` — never `router()`, which would also mount the
-//! generated CRUD for every one of this schema's twenty models (nineteen
+//! generated CRUD for every one of this schema's twenty-three models (nineteen
 //! until `ManualPayment`, #251) — behind
 //! the signed `/dash/v1` envelope and `vpay-api`'s `dash_scope`, over a context
 //! built by `crate::dashboard_transport::ExtensionAuthProvider` from the tenant

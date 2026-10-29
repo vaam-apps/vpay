@@ -1724,3 +1724,49 @@ token round trips against the real tables are CI's `merchant_token_flow.rs` and
   legacy-only (`keypair` off) deployment still loads the envelope response keys
   at boot. A token caller is not protected the way a sealed one is
   (ADR-0037, Consequences).
+
+## The human sign-in's tables are back, empty, and nothing writes them (2026-10-28, VPA-2)
+
+Owner ruling R5 (2026-10-27) makes the ways in a deployment permits a YAML
+choice ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)),
+and the default keeps the legacy ones, human login among them. VPA-2 is that
+ruling's **persistence only**: the database tables, the CrateStack models, the
+repositories and the inventories that migration 0056 removed. **Built and
+proven by the repository tests below; no sign-in uses any of it.**
+
+- **Migration `0058_restore-human-login-tables.sql`** creates `staff_sessions`,
+  `oauth_authorization_codes` and `staff_sso_attempts` again, with the DDL of
+  0035, 0040 and 0050 (measured identical: `pg_dump -s` of the three tables on a
+  database migrated through 0055 and on one migrated through 0058 differ in
+  nothing but pg_dump's per-run `\restrict` token), and drops
+  `credentials_password_and_totp_are_retired`. Forward-only, by the owner's
+  ruling: 0056 is untouched and `console_keys` stays.
+- **The data is not restored, and cannot be.** A deployment that ran 0056 has
+  lost its `password` and `totp` credentials (every staff member who signed in
+  that way must be enrolled again) and every session, authorization code and
+  pending SSO flow. `oidc` credentials were kept. The upgrade note is
+  [deploy-and-rollback.md](../runbooks/deploy-and-rollback.md) §1, item 4:
+  no tagged release contains 0056, so an upgrader from v0.15.0 meets 0056 and
+  0058 together.
+- **`vpay-db`** has `StaffSessions`, `StaffSsoAttempts` and `AuthorizationCodes`
+  again (on `Repositories`, implemented only by the `pub(crate)`
+  `PgRepositories`), `Staff::record_sign_in` and `Staff::delete`, and
+  `Credentials::{create, find_for_staff_member, advance_counter,
+replace_material}` with `CredentialKind::{Password, Totp}`. Models
+  `StaffSession`, `OauthAuthorizationCode` and `StaffSsoAttempt` are in
+  `schemas/vpay.cstack` (23 models), and `StaffMember` has its `delete` arm.
+- **Tests:** the restored 0044/credential/SSO suites in
+  `vpay-db/tests/repositories.rs`, four new ones (two session bounds and
+  revocation, a code spent exactly once and dying with its session, the
+  migration's shape and what it keeps), and the restored `postgres_smoke.rs`
+  cases for the three tables' CHECKs and cascade. The guard proofs are in
+  [verification/2026-10-28-vpa2-human-login-persistence.md](verification/2026-10-28-vpa2-human-login-persistence.md).
+- **Not done (VPA-3).** The routes, `staff_auth`, `staff add`'s password, the
+  `staff_auth`/`dashboard_client` configuration (still refused at boot) and the
+  `human_login` method (named explicitly, still refused as unavailable). The
+  OP's authorization-code slot is still `RefusingAuthorizationCodeStore`
+  (`vpay-api/src/op/mod.rs`, `refusing_stores.rs`): VPA-3 restores
+  `op/dashboard.rs`'s store over `vpay_db::AuthorizationCodes` and must put it in
+  that slot (`MerchantOp::new` fills all three with the refusing types today). The security
+  inventory's three `staff_auth.*` secret classes were not restored, because
+  their configuration keys do not exist yet.

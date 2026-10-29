@@ -211,6 +211,15 @@ elements:
         table: manual_payments
         column: received_at
       - kind: column
+        table: oauth_authorization_codes
+        column: consumed_at
+      - kind: column
+        table: oauth_authorization_codes
+        column: created_at
+      - kind: column
+        table: oauth_authorization_codes
+        column: expires_at
+      - kind: column
         table: oauth_client_assertion_jtis
         column: created_at
       - kind: column
@@ -279,6 +288,24 @@ elements:
       - kind: column
         table: staff_members
         column: updated_at
+      - kind: column
+        table: staff_sessions
+        column: access_token_expires_at
+      - kind: column
+        table: staff_sessions
+        column: created_at
+      - kind: column
+        table: staff_sessions
+        column: expires_at
+      - kind: column
+        table: staff_sessions
+        column: last_seen_at
+      - kind: column
+        table: staff_sso_attempts
+        column: created_at
+      - kind: column
+        table: staff_sso_attempts
+        column: expires_at
       - kind: column
         table: webhook_deliveries
         column: created_at
@@ -380,6 +407,9 @@ elements:
         table: manual_payments
         column: paid_out_of_band
       - kind: column
+        table: oauth_authorization_codes
+        column: scope
+      - kind: column
         table: oauth_clients
         column: allowed_audiences
       - kind: column
@@ -448,6 +478,12 @@ elements:
       - kind: column
         table: staff_members
         column: status
+      - kind: column
+        table: staff_sessions
+        column: state
+      - kind: column
+        table: staff_sso_attempts
+        column: is_retry
       - kind: column
         table: webhook_deliveries
         column: state
@@ -622,6 +658,15 @@ elements:
         table: manual_payments
         column: merchant_id
       - kind: column
+        table: oauth_authorization_codes
+        column: client_id
+      - kind: column
+        table: oauth_authorization_codes
+        column: merchant_id
+      - kind: column
+        table: oauth_authorization_codes
+        column: staff_id
+      - kind: column
         table: oauth_clients
         column: client_id
       - kind: column
@@ -672,6 +717,9 @@ elements:
       - kind: column
         table: staff_members
         column: merchant_id
+      - kind: column
+        table: staff_sessions
+        column: staff_id
       - kind: column
         table: webhook_deliveries
         column: endpoint_id
@@ -751,6 +799,9 @@ elements:
       - kind: column
         table: ledger_entries
         column: direction
+      - kind: column
+        table: oauth_authorization_codes
+        column: code_challenge_method
       - kind: column
         table: oauth_codes
         column: code_challenge_method
@@ -863,6 +914,9 @@ elements:
       - kind: column
         table: checkout_sessions
         column: success_url
+      - kind: column
+        table: oauth_authorization_codes
+        column: redirect_uri
       - kind: column
         table: oauth_codes
         column: redirect_uri
@@ -1105,6 +1159,14 @@ elements:
       - kind: column
         table: jobs
         column: payload
+  # The staff sign-in's one-time and bearer-derived values: the PKCE challenge
+  # and verifier, the replay nonces, and the SHA-256 digest of every token the
+  # plane hands out (a session's `id`, the `session_id` that names it in a
+  # code, an authorization code's `code_hash`, a pending SSO flow's `id`). A
+  # digest of a 256-bit CSPRNG token presents nothing, but all of them are
+  # classed alike on purpose, and their Debug impls hide all of them alike:
+  # one rule an auditor can read in a line, with no "this digest is fine to
+  # print and that one is not" left to be decided per column.
   session_oauth_code:
     subject: staff
     purpose: session-auth
@@ -1115,6 +1177,18 @@ elements:
     owner: operator
     control: forbid
     copies:
+      - kind: column
+        table: oauth_authorization_codes
+        column: code_challenge
+      - kind: column
+        table: oauth_authorization_codes
+        column: code_hash
+      - kind: column
+        table: oauth_authorization_codes
+        column: nonce
+      - kind: column
+        table: oauth_authorization_codes
+        column: session_id
       - kind: column
         table: oauth_client_assertion_jtis
         column: jti
@@ -1145,6 +1219,21 @@ elements:
       - kind: column
         table: oauth_refresh_tokens
         column: token
+      - kind: column
+        table: staff_sessions
+        column: id
+      - kind: column
+        table: staff_sso_attempts
+        column: code_verifier
+      - kind: column
+        table: staff_sso_attempts
+        column: id
+      - kind: column
+        table: staff_sso_attempts
+        column: nonce_hash
+      - kind: column
+        table: staff_sso_attempts
+        column: state_hash
   oauth_signing_key:
     subject: system
     purpose: token-signing
@@ -1187,6 +1276,19 @@ elements:
       - kind: column
         table: staff_members
         column: email
+  staff_oauth_token:
+    subject: staff
+    purpose: session-auth
+    necessary: true
+    tenant_boundary: merchant
+    recipients: []
+    retention: auth
+    owner: operator
+    control: forbid
+    copies:
+      - kind: column
+        table: staff_sessions
+        column: access_token
   staff_console_key:
     subject: staff
     purpose: session-auth
@@ -1333,6 +1435,36 @@ debug_protections:
   - type: StoredResponse
     file: backends/crates/vpay-db/src/idempotency.rs
     elements: [stored_api_body]
+  # The human sign-in's rows (VPA-2, restored by migration 0058). A session
+  # carries a live `/dash/v1` bearer token and the digest of its own token; a
+  # code and an SSO flow carry the PKCE challenge or sealed verifier, the nonce
+  # and the digests. The credential pair hides `material` (an argon2id digest or
+  # a sealed TOTP seed); its `issuer` and `subject` stay visible, because they
+  # are public identifiers and what an operator debugging an SSO link reads.
+  - type: SessionRow
+    file: backends/crates/vpay-db/src/staff_sessions.rs
+    elements: [staff_oauth_token, session_oauth_code]
+  - type: NewSession
+    file: backends/crates/vpay-db/src/staff_sessions.rs
+    elements: [session_oauth_code]
+  - type: SsoAttemptRow
+    file: backends/crates/vpay-db/src/staff_sso_attempts.rs
+    elements: [session_oauth_code]
+  - type: NewSsoAttempt
+    file: backends/crates/vpay-db/src/staff_sso_attempts.rs
+    elements: [session_oauth_code]
+  - type: AuthorizationCodeRow
+    file: backends/crates/vpay-db/src/authorization_codes.rs
+    elements: [session_oauth_code]
+  - type: NewAuthorizationCode
+    file: backends/crates/vpay-db/src/authorization_codes.rs
+    elements: [session_oauth_code]
+  - type: CredentialRow
+    file: backends/crates/vpay-db/src/credentials.rs
+    elements: [staff_credential_secret]
+  - type: NewCredential
+    file: backends/crates/vpay-db/src/credentials.rs
+    elements: [staff_credential_secret]
   # vpay-api wire objects.
   - type: LastPaymentErrorObject
     file: backends/crates/vpay-api/src/model.rs

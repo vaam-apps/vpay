@@ -2374,10 +2374,12 @@ const RETIRED_KEYS: [(&str, &str); 2] = [
     (
         "staff_auth",
         "There is no password, TOTP or SSO sign-in any more; a person reads the \
-         console with a paired key. To serve the console add `dashboard: \
-         {merchant_id: <the one tenant it reads>}` and a `service_clients:` \
-         entry for the service that pairs keys; to run without a console add \
-         nothing (ADR-0036)",
+         console with a paired key. Keep the values of `staff_auth.password_pepper` \
+         and `staff_auth.totp_encryption_key` somewhere that is not this file (the \
+         secret store): exported password hashes and TOTP seeds verify only under \
+         them. To serve the console add `dashboard: {merchant_id: <the one tenant \
+         it reads>}` and a `service_clients:` entry for the service that pairs \
+         keys; to run without a console add nothing (ADR-0036)",
     ),
 ];
 

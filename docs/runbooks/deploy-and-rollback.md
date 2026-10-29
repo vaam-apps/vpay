@@ -39,7 +39,7 @@ just helm-check                          # helm lint + template + 24 guards + ku
 helm template <release> deploy/helm/vpay -f my-values.yaml | less   # read it
 ```
 
-Three things the tooling will not check for you:
+Four things the tooling will not check for you:
 
 1. **The digest is pinned.** Since issue #77 (2026-09-07) there is one
    backend image and both Deployments run it, so "pinned together" is now
@@ -60,6 +60,166 @@ Three things the tooling will not check for you:
    `Config::load_with_env` merges the overlay only `if overlay_path.is_file()`.
    Check the rendered mount path against `VPAY_PROFILE` in the output of the
    `helm template` above.
+4. **Upgrading from v0.15.0 or earlier deletes staff passwords and TOTP
+   seeds, unless you export them first.** The release that carries migrations
+   0056 (console keys) and 0058 (human-login tables, VPA-2) runs both, in
+   order. 0056 deletes the `password` and `totp` rows of `credentials` and drops
+   `staff_sessions`, `staff_sso_attempts` and `oauth_authorization_codes`;
+   0058 creates those three tables again **empty** and drops
+   `credentials_password_and_totp_are_retired`, but it cannot bring back a row
+   a delete removed. So after the upgrade everybody
+   is signed out and a half-finished SSO sign-in must be started over, and,
+   **if you did not export**, every staff member who signed in with a
+   password and a TOTP code must be enrolled again (a new one-time password
+   and a new authenticator). **`oidc` credentials are kept**, so staff who
+   sign in through an identity provider, and people vaam paired, resume
+   without anything. **The passwords and seeds can be kept:** export them
+   before the upgrade and put them back after it, as
+   [below](#keeping-staff-passwords-across-0056-and-0058). That release also
+   refuses a `staff_auth:` config block, so the block goes, but its
+   `password_pepper` and `totp_encryption_key` **values are kept** (the export
+   is useless without them). A database that applied 0056 from a pre-release
+   build has already lost the rows; the same section says how to take them from
+   a backup.
+
+   **A deployment that relies on human login must not upgrade to any
+   release cut before VPA-3 ships.** #383 removed the sign-in routes, and
+   VPA-2 (migration 0058) restores only the persistence under them: no route
+   reads or writes those tables yet. On such a release nobody signs in by
+   password, TOTP or identity provider, whatever you restore, and the export
+   below keeps the data safe without making login work.
+
+### Keeping staff passwords across 0056 and 0058
+
+`staff_members` rows survive 0056, and 0058 drops the one CHECK that refused a
+`password` or `totp` row, so the rows can be copied out of `credentials`
+before the upgrade and copied back after it. That keeps the argon2id hashes
+and the TOTP counters, and no staff member is enrolled again.
+`a_credential_export_taken_before_0056_is_restored_after_0058` in
+`backends/crates/vpay-db/tests/repositories.rs` runs these statements against
+a real database and asserts every column of every row comes back; it also
+reads this page and fails if the statements below drift from the ones it ran.
+
+**Anything changed after the export is undone by the import.** The file is a
+photograph of `credentials` at one moment, and step 6 puts that moment back.
+See step 2.
+
+**1. Check the database has not run 0056 yet.** It must return no row:
+
+```sql
+SELECT version FROM _sqlx_migrations WHERE version >= 56;
+```
+
+**2. Freeze credential changes, then keep the export unchanged until step 6
+has succeeded.** The old release serves sign-ins until the new one replaces
+it, and a sign-in advances the member's TOTP counter. A password reset, a
+forced password change, a new authenticator or a sign-in made after the export
+is **not** in the file, and step 6 reverts it:
+
+- a reset password stops working and the old hash is back (with the old
+  `must_change`);
+- an authenticator enrolled after the export is gone, because 0056 deletes it
+  and the file does not have it;
+- the TOTP counter returns to the exported step, so a code already used since
+  the export can be used again until its time window passes.
+
+So stop the old release from serving sign-ins before you export: take its
+server out of the route, or scale it down. Whichever you choose, check after
+step 5 that `kubectl get deploy/<release>-server` shows the replicas your values
+ask for, because a manual scale-down is not something `helm upgrade` is
+guaranteed to undo. Make no credential change by any other door
+(`vpay-server staff add` writes none, but a script or a SQL session can) until
+step 6 has succeeded.
+
+**3. Keep the pepper and the TOTP key; remove the `staff_auth` block.** The
+new release refuses a `staff_auth:` block when it loads its configuration,
+before it runs a migration: the process exits `78` with `ConfigError::RetiredKey`
+and no pod becomes ready. So the block must be gone from the base file and
+every profile overlay in the values you hand to step 5 (not earlier: the old
+release reads its configuration again if a pod restarts). **But the block
+holds `staff_auth.password_pepper` and `staff_auth.totp_encryption_key`, and
+the exported argon2id hashes and sealed TOTP seeds verify only under those two
+values.** Copy both into your secret store now, unchanged, and keep them until
+VPA-3 restores sign-in. Nothing in the new release reads them; destroying or
+rotating either makes the file in step 4 unusable
+([ADR-0017](../adr/0017-staff-authentication.md) says what losing each costs).
+[dashboard-auth.md](../flows/dashboard-auth.md#upgrading-from-before-vp-6a)
+step 4 says the same.
+
+**4. Export, before any process of the new release starts.** Migrations run at
+boot, in the first process of the new image to start, **in any mode** — `serve`,
+`worker`, and a one-off `vpay-server staff add` alike; there is no separate
+migrate job. So export before `helm upgrade`, not during it. Run `psql` as a
+role that can read `credentials`, after `umask 077` so the file is private.
+`\copy` is one line, and writes the file on the machine running `psql`; the
+`SET` pins the date style so the timestamps are written in the one form that
+step 6 reads back, whatever the role's or the server's default is:
+
+```text
+SET datestyle = ISO;
+\copy (SELECT id, staff_member_id, kind, material, issuer, subject, counter, must_change, expires_at, created_at, updated_at FROM credentials WHERE kind IN ('password', 'totp') ORDER BY id) TO 'creds.csv' CSV HEADER
+```
+
+The eleven columns are every column of `credentials`, and the test fails if a
+migration adds a twelfth without this page. The file holds argon2id digests and
+sealed TOTP seeds: keep it off shared storage, and delete it once step 6 has
+succeeded.
+
+**5. Upgrade, and wait for 0058.** `helm upgrade` as in §2, with the
+`staff_auth` block removed (step 3). Confirm the migration ran before step 6:
+
+```sql
+SELECT max(version) FROM _sqlx_migrations;  -- 58 or higher
+```
+
+**6. Import.** After the migration, never before it: until 0058 drops
+`credentials_password_and_totp_are_retired`, the database refuses the rows. Use
+the same `SET` as step 4, in the same `psql` session:
+
+```text
+SET datestyle = ISO;
+\copy credentials (id, staff_member_id, kind, material, issuer, subject, counter, must_change, expires_at, created_at, updated_at) FROM 'creds.csv' CSV HEADER
+```
+
+It is one `COPY`, so it lands whole or not at all. It fails, and inserts
+nothing for anybody, in two cases, and the staging form below handles both:
+
+- **The singleton-kind rule.** A staff member holds at most one `password` and
+  one `totp`: `credentials_one_singleton_kind_per_staff_member` is a unique
+  index on `(staff_member_id, kind)` for those kinds. If a member was given a
+  new password or authenticator between step 5 and step 6, the import fails on
+  that index.
+- **A member who no longer exists.** A row whose `staff_member_id` is not in
+  `staff_members` fails the foreign key.
+
+Either delete the offending rows and run the import again, or load the file
+into a staging table and let the database skip what cannot be restored. The
+staging form restores a row only if its member still exists, and a row that
+collides with one already in `credentials` (on its id or on the singleton
+index) is skipped and the existing row is kept. The decision is **per row, not
+per member**: a member can get the password back and not the authenticator, or
+the reverse. The last statement lists every exported row that did not come back
+as it was exported, whatever the reason:
+
+```text
+SET datestyle = ISO;
+CREATE TEMP TABLE credentials_restore (LIKE credentials);
+\copy credentials_restore (id, staff_member_id, kind, material, issuer, subject, counter, must_change, expires_at, created_at, updated_at) FROM 'creds.csv' CSV HEADER
+INSERT INTO credentials (id, staff_member_id, kind, material, issuer, subject, counter, must_change, expires_at, created_at, updated_at) SELECT id, staff_member_id, kind, material, issuer, subject, counter, must_change, expires_at, created_at, updated_at FROM credentials_restore WHERE staff_member_id IN (SELECT id FROM staff_members) ON CONFLICT DO NOTHING;
+SELECT r.id, r.staff_member_id, r.kind FROM credentials_restore r WHERE NOT EXISTS (SELECT 1 FROM credentials c WHERE to_jsonb(c) = to_jsonb(r)) ORDER BY r.id;
+```
+
+Each row the last statement lists is a credential that member must be given
+again (a new one-time password or a new authenticator), or whose existing
+credential you keep on purpose.
+
+**If 0056 already ran,** the rows are gone from this database and only a backup
+can supply them. Restore one taken before 0056 into a scratch instance
+([restore-from-backup.md](restore-from-backup.md) §2), run the export of step 4
+against it, and load it into the production database, after 0058, with the
+**staging form**: it restores only the staff members who still exist there and
+lists the rest. The pepper and the TOTP key of step 3 must be the ones in force
+when the backup was taken.
 
 ## 2. Upgrading
 
