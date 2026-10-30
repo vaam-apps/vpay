@@ -52,7 +52,7 @@ const PATTERNS: readonly { readonly name: string; readonly re: RegExp }[] = [
   },
   {
     name: "a popup component",
-    re: /\b(Select\w*|DropdownMenu\w*|Popover\w*|CommandMenu\w*|DatePicker\w*|DateRangePicker\w*|Dropdown\w*|PopupMenu\w*)\b(?=[\s,}<(]|$)/,
+    re: /\b(Select\w*|DropdownMenu\w*|Popover\w*|CommandMenu\w*|DatePicker\w*|DateRangePicker\w*|Dropdown\w*|PopupMenu\w*)\b(?=[\s,}<(>]|$)/,
   },
   {
     name: "a headless popup import",
@@ -143,6 +143,18 @@ describe("the scan itself", () => {
     ["a DatePicker", "<DatePickerContent />"],
     ["a DateRangePicker", "<DateRangePicker value={v} />"],
     ["a Dropdown identifier", "const Dropdown = () => null;"],
+    // The lookahead used to stop at `<`, `(`, `,`, `}` and whitespace, so a
+    // namespace import read `UI.Select>` and slipped through unseen.
+    ["a namespace-imported Select", "<UI.Select>x</UI.Select>"],
+    ["a namespace-imported Select with no children", "<UI.Select></UI.Select>"],
+    [
+      "a namespace-imported DropdownMenu",
+      "<ui.DropdownMenu>x</ui.DropdownMenu>",
+    ],
+    [
+      "a namespace-imported Popover as a type argument",
+      "const r = useRef<UI.Popover>(null);",
+    ],
     ["a Radix select import", 'import * as S from "@radix-ui/react-select";'],
     [
       "a headless Listbox import",
@@ -163,6 +175,8 @@ describe("the scan itself", () => {
     ["a word in a block comment", "/* aria-haspopup is banned */ const x = 1;"],
     ["a word in a JSX comment", "<p>{/* <select> is banned */}</p>"],
     ["a plain word", "const selected = Selection.of(options);"],
+    ["a plain word closing a tag", "<Chip>selected</Chip>"],
+    ["an attribute named like the word", "<Chip selectable>x</Chip>"],
     ["a URL", 'const url = "https://example.test/select";'],
   ])("does not trip on %s", (_name, text) => {
     expect(violation(text)).toBeNull();
