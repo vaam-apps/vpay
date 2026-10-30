@@ -65,6 +65,7 @@ Per `task.md` Section 3, implementation proceeds without waiting for pending mai
 
 ## 4. Mutation Testing Record
 
-| Mutation                                                  | Expected Failing Test | Result |
-| --------------------------------------------------------- | --------------------- | ------ |
-| One `/v1` route's declared scope policy removed (set to ` | _                     | &[]`)  | `v1::tests::every_mounted_v1_route_has_a_declared_scope_policy` | PASS (panicked at `route /payment_intents POST has an empty declared scope policy`) |
+| Mutation                                                             | Expected Failing Test                                                               | Result                                                                                                    |
+| -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| One `/v1` route's declared scope policy removed (set to `\|_\| &[]`) | `v1::tests::every_mounted_v1_route_has_a_declared_scope_policy`                     | PASS (panicked at `route /payment_intents POST has an empty declared scope policy`)                       |
+| `CallerCredential` default-constructed when missing                  | `envelope::scope::tests::caller_credential_extraction_refuses_when_absent_with_500` | PASS (panicked at `missing credential must fail: CallerCredential { kind: MachineToken, id: "default" }`) |

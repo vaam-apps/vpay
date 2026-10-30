@@ -171,6 +171,7 @@ pub use vpay_provider::http as http_client;
 
 pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use dash::{DASH_NEST, DASH_ROUTES, DashRoute};
+pub use envelope::{CallerCredential, CredentialKind};
 pub use error::ApiError;
 pub use provider_callback::{PROVIDER_CALLBACK_ROUTE, PROVIDER_NEST};
 pub use svc::{SVC_NEST, SVC_ROUTES, SvcRoute};

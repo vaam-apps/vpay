@@ -81,7 +81,7 @@ pub mod binding;
 pub mod console;
 pub mod keys;
 pub mod nonces;
-pub(crate) mod scope;
+pub mod scope;
 pub(crate) mod service;
 
 use std::sync::Arc;
@@ -101,6 +101,7 @@ pub use binding::TableBinding;
 pub use console::ConsoleKeyResolver;
 pub use keys::{EnvelopeKeyError, EnvelopeKeys};
 pub use nonces::PgNonceStore;
+pub use scope::{CallerCredential, CredentialKind};
 
 use crate::merchant_keys::{
     MerchantKeyRegistry, MerchantKeyResolver, ServiceKeyRegistry, ServiceKeyResolver,
