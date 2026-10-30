@@ -383,8 +383,10 @@ just made.~~ **Corrected 2026-09-23:** wrong since exp28 (2026-09-07), when the
 dashboard gained staff sign-in and joined `demo_services`. It starts with the
 rest of the demo: `/dash/v1` serves **one** merchant's payments, refunds,
 deliveries, customers and checkout sessions to a signed request under a paired
-console key (`just demo-staff` creates the member; **the dashboard application
-cannot sign in until VP-6b**, see the runbook). It shows the **shop's** tenant,
+console key (`just demo-staff` creates the member and keeps the one-time
+password it prints; **the dashboard application signs in with that password
+since VPA-5a and the demo overlay serves it since VPA-5c, but reads none of
+`/dash/v1` until VP-6b**, see the runbook). It shows the **shop's** tenant,
 not the walkthrough's, on purpose.
 [docs/runbooks/demo/dashboard-sign-in.md](docs/runbooks/demo/dashboard-sign-in.md)
 is how to get in and why. It is read-only, and it has never run in a

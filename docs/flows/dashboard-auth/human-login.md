@@ -106,11 +106,11 @@ origin, `__Host-vpay_dash_session` and `__Host-vpay_dash_enrolment`
 them, and so a sibling subdomain or a plain-`http` response cannot plant or
 overwrite it.
 
-| Where the dashboard is reached                                    | What happens                                                                                                                                                                                                             |
-| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `https://…`                                                       | stored                                                                                                                                                                                                                   |
-| `http://localhost:3000` (`next dev`, the compose stacks, Cypress) | stored by Chrome and Firefox, which treat localhost as a secure context. Safari has historically refused a `Secure` cookie over plain `http`; it was not tried                                                           |
-| `http://` on any other host                                       | **stored by no browser.** The sign-in action succeeds and redirects, the next request carries no cookie, and `/` sends the browser back to `/login`: the sign-in does not stick. `Secure` was already unconditional here |
+| Where the dashboard is reached                                    | What happens                                                                                                                                                                                                                              |
+| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `https://…`                                                       | stored                                                                                                                                                                                                                                    |
+| `http://localhost:3000` (`next dev`, the compose stacks, Cypress) | stored by Chrome and Firefox, which treat localhost as a secure context (under Cypress, VPA-5c's spec asserts it and has not yet been seen to run). Safari has historically refused a `Secure` cookie over plain `http`; it was not tried |
+| `http://` on any other host                                       | **stored by no browser.** The sign-in action succeeds and redirects, the next request carries no cookie, and `/` sends the browser back to `/login`: the sign-in does not stick. `Secure` was already unconditional here                  |
 
 The sign-in does not branch on the environment to make the last row work
 (AGENTS.md forbids it). Put the dashboard behind TLS, or reach it on
@@ -215,16 +215,33 @@ named in [status/backend.md](../../status/backend.md).
 
 The pages that read `/dash/v1` and the signed reader they need
 (VP-6b), a command to remove a member, disable one or reset a password (none
-exists; see the section above for the SQL), and any proof against a deployment
-that is running (the end-to-end cases are VPA-5c). The dashboard application's
+exists; see the section above for the SQL), any proof of single sign-on against
+a running stack (the e2e stack has no provider; [sso.md](sso.md), "Status"), and
+any proof against a cluster. The dashboard application's
 password sign-in, authenticator step, forced password change, account page and
 sign-out are built (VPA-5a), and so are its two SSO routes and its
 single-sign-on button (VPA-5b, [sso.md](sso.md)): [`frontends/apps/dashboard/README.md`](../../../frontends/apps/dashboard/README.md)
 says how, and [status/frontend.md](../../status/frontend.md) says what was
-measured.
+measured. **The password sign-in's end-to-end cases are written (VPA-5c,
+below) and CI's `e2e (compose)` job runs them; this page does not claim a
+passing run until one is recorded in
+[the VPA-5c page](../../status/verification/2026-10-30-vpa5c-dashboard-e2e.md).**
 
 ## Tests
 
+- `frontends/tests/e2e/cypress/e2e/dashboard-human-login.cy.ts` (VPA-5c): the
+  dashboard in a real browser against the compose stack (`compose.e2e.yml` and
+  `compose.demo.yml`, the `demo` overlay that `just gen-demo-keys` writes with
+  `human_login` served). Nothing is stubbed: discovery says `human_login`
+  and `/login` does not say "paired key"; a wrong password and an address nobody
+  has are refused with the same sentence; the one-time password signs in and a
+  TOTP code computed from the secret the enrolment screen displayed enrols the
+  authenticator; the forced password change refuses a wrong current password and
+  accepts the printed one; the cookie is `__Host-`, `httpOnly`, `Secure` and
+  `SameSite=Lax` as the browser reports it and no JWT is in the page; sign-out
+  makes vpay refuse the same session token (asked directly) as well as clearing
+  the cookie; a second sign-in with the chosen password needs a code and no QR.
+  Needs `just demo-staff` and the stack on `localhost`.
 - `backends/tests/integration/tests/staff_sign_in.rs`: the real router on a real
   socket over Postgres, from `staff add` to a read, including
   `a_session_bearer_and_a_console_key_both_read_dash_v1` and

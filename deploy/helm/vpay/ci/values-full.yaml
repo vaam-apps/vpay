@@ -16,9 +16,19 @@
 # render" would otherwise skip the one workload that took the longest to
 # become templatable. `publicOrigin` is required once `enabled` is true (the
 # "dashboard-public-origin" guard).
+#
+# VPA-5c: the sign-in's client registration, rendered into the Deployment's
+# env only when set (`just helm-check` asserts both shapes). They point at
+# nothing real, like every other value here: the shape is what is tested.
+# `redirectUri` is one of `dashboard_client.redirect_uris` byte for byte and is
+# never visited; `ssoIssuer` is `staff_auth.sso.issuer`.
 dashboard:
   enabled: true
   publicOrigin: "https://dash.example"
+  clientId: "vpay-dashboard"
+  redirectUri: "https://dash.example/dash/v1/callback"
+  scope: "dashboard:read"
+  ssoIssuer: "https://idp.example/realms/vpay"
   podAnnotations:
     example.vpay/rendered-by: ci
 

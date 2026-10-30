@@ -127,7 +127,35 @@ the button silently.
 
 The BFF (`app/api/dash`), `middleware.ts`, `src/dash/*`'s providers and Refine
 auth are deleted and stay so. `@vpay/dash-client` may be imported for its types
-only (`eslint.config.js`). The end-to-end cases are VPA-5c, and the pages that read `/dash/v1` come with VP-6b.
+only (`eslint.config.js`). The pages that read `/dash/v1` come with VP-6b.
+
+### Against a running stack (VPA-5c)
+
+The sign-in has end-to-end cases that drive this app in a real browser against
+`compose.e2e.yml` + `compose.demo.yml`:
+`frontends/tests/e2e/cypress/e2e/dashboard-human-login.cy.ts`. They are written;
+CI's `e2e (compose)` job is where they run, and no run has been recorded yet
+([the verification page](../../../docs/status/verification/2026-10-30-vpa5c-dashboard-e2e.md)).
+Things to know if you run them or point a stack at this app:
+
+- **Reach the app on `localhost`.** The cookies are `__Host-` and `Secure`;
+  over `http` a browser stores them only on a secure context, which `localhost`
+  is and any other name (`http://dashboard:3000`) is not.
+- **The stack sets the three client variables and not the issuer.**
+  `compose.e2e.yml` gives the container `VPAY_DASHBOARD_CLIENT_ID`,
+  `VPAY_DASHBOARD_REDIRECT_URI` and `VPAY_DASHBOARD_SCOPE`, equal to the
+  generated overlay's `dashboard_client`. There is no `VPAY_DASHBOARD_SSO_ISSUER`
+  there (no provider), so `/login` draws no button and single sign-on has no
+  case.
+- **The member's password is a file.** `just demo-staff` keeps the one-time
+  password `staff add` prints in `.e2e/<project>/staff-password.txt`; the spec
+  is given the path and never the value.
+- **On Kubernetes** the chart renders the four variables from
+  `dashboard.clientId`, `redirectUri`, `scope` and `ssoIssuer` when set
+  ([the chart's README](../../../deploy/helm/vpay/README.md)).
+
+An axe pass runs on each sign-in screen inside the spec (WCAG A and AA, not
+`color-contrast`; `src/a11y.test.tsx` and Storybook own the rest).
 
 ## What is kept, and why
 

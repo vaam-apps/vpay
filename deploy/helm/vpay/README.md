@@ -327,9 +327,11 @@ process. Update the Secret, then `kubectl rollout restart deploy/<release>-serve
 
 vpay can let dashboard staff sign in through an external OpenID Connect provider
 (ADR-0030), served with `human_login` where the overlay writes `staff_auth.sso`
-([the flow](../../../docs/flows/dashboard-auth/sso.md)). **It is configured in the
+([the flow](../../../docs/flows/dashboard-auth/sso.md)). **The provider block is configured in the
 profile overlay, not in a value of this chart**: the overlay is opaque text to
-Helm, and this chart templates nothing for the block itself. What the chart does
+Helm, and this chart templates nothing for `staff_auth.sso` itself. The one
+thing it does carry is the dashboard's side of the same setting,
+`dashboard.ssoIssuer` (above). What the chart does
 own is the one consequence for the network: the pod that serves `/dash/v1` now
 makes outbound HTTPS to the provider (discovery, JWKS, token endpoint) — `-management`
 when `management.enabled`, otherwise `-server`. No vpay process called anything
@@ -540,6 +542,48 @@ in the same commit as the Deployment: a default here would be an operator's
 action silently refused in production, discovered from a payer's or a staff
 member's side rather than an install-time error.
 
+### The dashboard's sign-in: four values, and the overlay text they must equal
+
+Added with VPA-5c. The dashboard application signs a staff member in only where
+vpay serves the `human_login` method
+([the flow](../../../docs/flows/dashboard-auth/human-login.md)), and it is told
+how by four environment variables that this chart now renders from values:
+
+| Value                   | Variable                      | Must equal, in the overlay                                                 |
+| ----------------------- | ----------------------------- | -------------------------------------------------------------------------- |
+| `dashboard.clientId`    | `VPAY_DASHBOARD_CLIENT_ID`    | `dashboard_client.client_id`                                               |
+| `dashboard.redirectUri` | `VPAY_DASHBOARD_REDIRECT_URI` | one of `dashboard_client.redirect_uris`, byte for byte                     |
+| `dashboard.scope`       | `VPAY_DASHBOARD_SCOPE`        | `dashboard_client.scope`                                                   |
+| `dashboard.ssoIssuer`   | `VPAY_DASHBOARD_SSO_ISSUER`   | `staff_auth.sso.issuer`, optional: without it `/login` draws no SSO button |
+
+- **Each is written only when set.** An unset value is an absent variable, which
+  is how the app learns no sign-in is configured; an empty `value: ""` would be
+  read as "set, and wrong". `just helm-check` renders both shapes and fails on
+  either direction (the Deployment carries the four from `ci/values-full.yaml`,
+  and none when `enabled` is the only thing set).
+- **Helm cannot check the other half.** The overlay is opaque text to it, so a
+  `redirectUri` that is not in `dashboard_client.redirect_uris` is not a template
+  error but a sign-in that fails. Setting only some of the three is the same
+  state, and the app says so: `/login` lists the variables that are missing and
+  renders no form. Neither mismatch is a release that fails to roll out.
+- **All three empty is a legal release** and the right one where vpay does not
+  serve `human_login`: `/login` then says the console signs in with a paired key.
+- **`redirectUri` is never visited.** The dashboard's own server follows the
+  authorize redirect, so no route exists at that path and nothing is missing.
+  `staff_auth.sso.redirect_uri` is a different string, and a visited one:
+  `<dashboard.publicOrigin>/api/auth/sso/callback`, listed at the provider.
+- **The cookies are `__Host-` prefixed and `Secure`.** A browser keeps them over
+  `https`, and over `http` only on `localhost`; behind any other plain-`http`
+  origin the sign-in succeeds and does not stick (`NOTES.txt` says so when
+  `publicOrigin` starts with `http://`).
+- **Upgrading.** Before this, an operator could only set these through
+  `dashboard.extraEnv`. Move them to the values above and delete them from
+  `extraEnv`: Kubernetes keeps the last entry of a duplicate name, and
+  `dashboard.extraEnv` is appended last. The dashboard has no reserved-name
+  guard (`extra-env-collision` covers `server`, `worker` and `checkout`).
+- **Nothing here has been applied to a cluster**, like every other value in this
+  chart: the evidence is `helm lint`, `helm template` and `kubeconform`.
+
 ## Values
 
 Every key, with its default. `values.yaml` carries the same information plus
@@ -691,33 +735,37 @@ no HPA either — nothing has measured what would drive one.
 
 ### Misc
 
-| Key                               | Default                                 | Meaning                                                                                                                                                                   |
-| --------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `serviceAccount.create`           | `true`                                  |                                                                                                                                                                           |
-| `serviceAccount.name`             | `""`                                    | Empty means the chart fullname                                                                                                                                            |
-| `serviceAccount.annotations`      | `{}`                                    |                                                                                                                                                                           |
-| `logFilter`                       | `info`                                  | `RUST_LOG`                                                                                                                                                                |
-| `logFormat`                       | `json`                                  | `VPAY_LOG_FORMAT` — already the binary's default                                                                                                                          |
-| `dashboard.enabled`               | `false`                                 | `true` is a named template failure                                                                                                                                        |
-| `dashboard.publicOrigin`          | `""`                                    | `VPAY_DASHBOARD_PUBLIC_ORIGIN` on the dashboard you deploy separately. **Nothing in this chart reads it** — see below. Empty means the app falls back to comparing `Host` |
-| `checkout.enabled`                | `false`                                 | vpay's own payment page. Off is a complete deployment — see below                                                                                                         |
-| `checkout.replicaCount`           | `2`                                     |                                                                                                                                                                           |
-| `checkout.port`                   | `3000`                                  | The Next.js standalone server's `PORT`; set as an env var so it cannot drift from the Service                                                                             |
-| `checkout.resources`              | `100m` / `128Mi` request, `512Mi` limit | **Placeholders**, as everywhere else here. The limit exists because an unbounded heap on a GC'd process evicts a node rather than restarting a pod                        |
-| `checkout.apiUrl`                 | `""`                                    | This pod's view of vpay, for the server-side origins lookup. Empty renders this release's own server Service                                                              |
-| `checkout.publicApiUrl`           | `""`                                    | **Required when enabled.** A payer's browser's view of vpay; the app throws on a missing one                                                                              |
-| `checkout.service.type` / `.port` | `ClusterIP` / `3000`                    |                                                                                                                                                                           |
-| `checkout.ingress.enabled`        | `false`                                 |                                                                                                                                                                           |
-| `checkout.ingress.host`           | `""`                                    | Its own hostname — prefer this shape                                                                                                                                      |
-| `checkout.ingress.path`           | `""`                                    | A prefix on `ingress.host`. Needs a `rewrite-target` annotation, and **nobody has run this shape**                                                                        |
-| `checkout.ingress.limitRps`       | `50`                                    | Looser than `/v1`'s on purpose: it is a page, not an authenticated write surface                                                                                          |
-| `checkout.route.enabled`          | `false`                                 | The page's HTTPRoute                                                                                                                                                      |
-| `checkout.route.parentRefs`       | `[]`                                    | Empty means `route.parentRefs`                                                                                                                                            |
-| `checkout.route.hostnames`        | `[]`                                    | Its own hostname — prefer this shape                                                                                                                                      |
-| `checkout.route.path`             | `""`                                    | A prefix on `route.hostnames`; the chart renders the `URLRewrite` that strips it. **Nobody has run this shape**                                                           |
-| `checkout.route.pathType`         | `PathPrefix`                            |                                                                                                                                                                           |
-| `checkout.route.filters`          | `[]`                                    | Appended after the `URLRewrite`, never before it                                                                                                                          |
-| `checkout.extraEnv`               | `[]`                                    | `PORT`, `HOSTNAME`, `VPAY_API_URL` and `NEXT_PUBLIC_VPAY_API_URL` are reserved (`extra-env-collision`)                                                                    |
+| Key                               | Default                                 | Meaning                                                                                                                                            |
+| --------------------------------- | --------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serviceAccount.create`           | `true`                                  |                                                                                                                                                    |
+| `serviceAccount.name`             | `""`                                    | Empty means the chart fullname                                                                                                                     |
+| `serviceAccount.annotations`      | `{}`                                    |                                                                                                                                                    |
+| `logFilter`                       | `info`                                  | `RUST_LOG`                                                                                                                                         |
+| `logFormat`                       | `json`                                  | `VPAY_LOG_FORMAT` — already the binary's default                                                                                                   |
+| `dashboard.enabled`               | `false`                                 | The admin frontend (ADR-0022): a Deployment and a Service                                                                                          |
+| `dashboard.publicOrigin`          | `""`                                    | `VPAY_DASHBOARD_PUBLIC_ORIGIN`. **Required when `dashboard.enabled` is true** (the `dashboard-public-origin` guard)                                |
+| `dashboard.clientId`              | `""`                                    | `VPAY_DASHBOARD_CLIENT_ID` = `dashboard_client.client_id`. Rendered only when set (VPA-5c)                                                         |
+| `dashboard.redirectUri`           | `""`                                    | `VPAY_DASHBOARD_REDIRECT_URI`: one of `dashboard_client.redirect_uris`, byte for byte. Rendered only when set                                      |
+| `dashboard.scope`                 | `""`                                    | `VPAY_DASHBOARD_SCOPE` = `dashboard_client.scope`. Rendered only when set                                                                          |
+| `dashboard.ssoIssuer`             | `""`                                    | `VPAY_DASHBOARD_SSO_ISSUER` = `staff_auth.sso.issuer`. Optional; no SSO button without it. Rendered only when set                                  |
+| `checkout.enabled`                | `false`                                 | vpay's own payment page. Off is a complete deployment — see below                                                                                  |
+| `checkout.replicaCount`           | `2`                                     |                                                                                                                                                    |
+| `checkout.port`                   | `3000`                                  | The Next.js standalone server's `PORT`; set as an env var so it cannot drift from the Service                                                      |
+| `checkout.resources`              | `100m` / `128Mi` request, `512Mi` limit | **Placeholders**, as everywhere else here. The limit exists because an unbounded heap on a GC'd process evicts a node rather than restarting a pod |
+| `checkout.apiUrl`                 | `""`                                    | This pod's view of vpay, for the server-side origins lookup. Empty renders this release's own server Service                                       |
+| `checkout.publicApiUrl`           | `""`                                    | **Required when enabled.** A payer's browser's view of vpay; the app throws on a missing one                                                       |
+| `checkout.service.type` / `.port` | `ClusterIP` / `3000`                    |                                                                                                                                                    |
+| `checkout.ingress.enabled`        | `false`                                 |                                                                                                                                                    |
+| `checkout.ingress.host`           | `""`                                    | Its own hostname — prefer this shape                                                                                                               |
+| `checkout.ingress.path`           | `""`                                    | A prefix on `ingress.host`. Needs a `rewrite-target` annotation, and **nobody has run this shape**                                                 |
+| `checkout.ingress.limitRps`       | `50`                                    | Looser than `/v1`'s on purpose: it is a page, not an authenticated write surface                                                                   |
+| `checkout.route.enabled`          | `false`                                 | The page's HTTPRoute                                                                                                                               |
+| `checkout.route.parentRefs`       | `[]`                                    | Empty means `route.parentRefs`                                                                                                                     |
+| `checkout.route.hostnames`        | `[]`                                    | Its own hostname — prefer this shape                                                                                                               |
+| `checkout.route.path`             | `""`                                    | A prefix on `route.hostnames`; the chart renders the `URLRewrite` that strips it. **Nobody has run this shape**                                    |
+| `checkout.route.pathType`         | `PathPrefix`                            |                                                                                                                                                    |
+| `checkout.route.filters`          | `[]`                                    | Appended after the `URLRewrite`, never before it                                                                                                   |
+| `checkout.extraEnv`               | `[]`                                    | `PORT`, `HOSTNAME`, `VPAY_API_URL` and `NEXT_PUBLIC_VPAY_API_URL` are reserved (`extra-env-collision`)                                             |
 
 ## Why two Ingress objects
 

@@ -11,6 +11,13 @@ import {
 } from "./cypress/tasks/frameFixtureServer.js";
 import { mintCheckoutPaymentIntent } from "./cypress/tasks/checkoutTasks.js";
 import { logA11yViolations } from "./cypress/tasks/a11yTasks.js";
+import {
+  carriedForward,
+  carryForward,
+  secondsLeftInStep,
+  staffPassword,
+  totpCode,
+} from "./cypress/tasks/dashboardTasks.js";
 
 /**
  * The compose stack's published ports, as a BROWSER reaches them.
@@ -33,6 +40,20 @@ const orangeStubUrl =
  */
 const shopPublishableKey =
   process.env["VPAY_SHOP_PUBLISHABLE_KEY"] ?? "pk_test_shopmerchantsandbox1";
+
+/**
+ * vpay as the host reaches it, for the one thing a dashboard spec asks vpay
+ * itself: `GET /.well-known/vpay-auth` (what the deployment serves) and
+ * `GET /dash/v1/staff/session` (whether a session token is still alive).
+ * `just e2e-specs` sets `VPAY_BASE_URL`, the same variable the checkout task
+ * mints against; the default is `compose.e2e.yml`'s publication.
+ */
+const vpayBaseUrl = process.env["VPAY_BASE_URL"] ?? "http://localhost:8080";
+/**
+ * The staff address `just demo-staff` created. The PASSWORD is deliberately
+ * absent — `cy.task('staffPassword')` reads it from a file in Node.
+ */
+const staffEmail = process.env["VPAY_STAFF_EMAIL"] ?? "ada@example.test";
 
 /**
  * `shop-embedded.cy.ts` needs the browser's same-origin policy off to reach
@@ -122,6 +143,15 @@ export default defineConfig({
         // headless `cypress run` never surfaces `Cypress.log`'s
         // `consoleProps`. See `a11yTasks.ts`.
         logA11yViolations,
+        // `dashboard-human-login.cy.ts`'s five, all Node-side for
+        // `dashboardTasks.ts`'s reasons: the staff password is read from a file
+        // so it never enters `Cypress.env`, the TOTP codes need a keyed hash,
+        // and two tests hand a value to a later one through Node.
+        staffPassword,
+        totpCode,
+        secondsLeftInStep,
+        carryForward,
+        carriedForward,
         dump(payload: { what: string; value: string }) {
           console.log("PROBE " + payload.what + ": " + payload.value);
           return null;
@@ -142,6 +172,8 @@ export default defineConfig({
         CHECKOUT_URL: checkoutUrl,
         ORANGE_STUB_URL: orangeStubUrl,
         SHOP_PUBLISHABLE_KEY: shopPublishableKey,
+        VPAY_BASE_URL: vpayBaseUrl,
+        STAFF_EMAIL: staffEmail,
       };
       return config;
     },

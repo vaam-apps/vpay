@@ -138,9 +138,9 @@ dashboard:
     port: 3000
     annotations: {}
 
-  # This pod's view of `/dash/v1`. The application reads it only from VP-6b
-  # (its signed reader; today it is a notice page that calls nothing,
-  # ADR-0036). Empty means this release's own management Service —
+  # This pod's view of `/dash/v1`, server-side only: the sign-in calls
+  # (`/dash/v1/staff/*`, `/dash/v1/oauth/*`) and, from VP-6b, its signed reader.
+  # Empty means this release's own management Service —
   # the right answer whenever `management.enabled` is true, and the only
   # answer this chart could pick for an in-cluster deployment. If
   # `management.enabled` is false there is no management Service to default
@@ -170,6 +170,42 @@ dashboard:
   # A value that is set but is not an absolute http(s) origin — a trailing
   # slash, a path, a bare hostname — is the same guard's other half.
   publicOrigin: ""
+
+  # The dashboard's own OAuth client, as vpay's `dashboard_client` block spells
+  # it (VPA-5a, `docs/flows/dashboard-auth/human-login.md`). All three are read
+  # by the application ONLY to sign a staff member in, and only where vpay
+  # serves the `human_login` method; on a deployment that does not, leave all
+  # three empty and `/login` says the console signs in with a paired key.
+  #
+  # Each renders into the Deployment's env only when it is set, so a release
+  # that sets none of them renders the same Deployment it did before this
+  # block (`just helm-check` renders both shapes and asserts it). They are
+  # values of THIS chart and the blocks they must equal are text in
+  # `config.overlay`, which Helm does not parse: a mismatch is not a template
+  # error but a sign-in that fails, and the dashboard's `/login` names the
+  # variable it is missing. Setting some and not all three is the same state:
+  # the page lists the ones that are absent and renders no form.
+  #
+  # `VPAY_DASHBOARD_CLIENT_ID` — `dashboard_client.client_id`. A PUBLIC client:
+  # there is no secret to put here, and vpay refuses one at boot.
+  clientId: ""
+  # `VPAY_DASHBOARD_REDIRECT_URI` — one of `dashboard_client.redirect_uris`,
+  # byte for byte (no prefix, no wildcard). **No browser ever visits it**: the
+  # dashboard's own server follows the authorize redirect, so there is no route
+  # at this path and nothing is missing. It is an identifier the two OAuth legs
+  # must spell identically.
+  redirectUri: ""
+  # `VPAY_DASHBOARD_SCOPE` — `dashboard_client.scope` (today `dashboard:read`).
+  scope: ""
+  # `VPAY_DASHBOARD_SSO_ISSUER` — `staff_auth.sso.issuer`, exactly as written
+  # there. Optional on top of the three above: set, `/login` offers single
+  # sign-on when vpay says it is enabled (VPA-5b, `docs/flows/dashboard-auth/
+  # sso.md`); empty, `/login` names the variable and draws no button. The
+  # provider's client must list `<publicOrigin>/api/auth/sso/callback`, which
+  # is `staff_auth.sso.redirect_uri` and is NOT `redirectUri` above. This pod
+  # needs no egress to the provider: the browser is sent there and vpay, not
+  # this pod, talks to it (`networkPolicy.idpEgress` is vpay's).
+  ssoIssuer: ""
 
 # ------------------------------------------------------------- checkout ----
 

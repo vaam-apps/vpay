@@ -185,10 +185,12 @@ and `src/no-shadows.test.ts`. **Not restored**: the BFF, `middleware.ts`,
 - The no-dropdowns scan sees `<UI.Select>`.
 
 **Not built.** Any page that reads `/dash/v1` (the read seam, the BFF's
-replacement, and the pages are a later ticket); the end-to-end cases (VPA-5c);
-a paired key as this app's own
+replacement, and the pages are a later ticket); a paired key as this app's own
 credential, and which of a session and a key wins when a browser holds both
-(VP-6b). Nothing here has run against a real vpay in a browser.
+(VP-6b). ~~Nothing here has run against a real vpay in a browser.~~ **Changed
+2026-10-30 (VPA-5c):** the end-to-end cases for this sign-in are written
+([the section below](#the-dashboards-sign-in-is-exercised-end-to-end-vpa-5c)),
+and no run of them has been observed yet.
 
 ## The dashboard application is a notice until VP-6b
 
@@ -304,7 +306,62 @@ the provider URL is checked against the issuer's origin and refused over plain
 was "not enabled" and is now a message. The callback has a 25-second deadline of
 its own and revokes, best effort, the session it replaces (review round 1).
 
-**Not built.** The end-to-end cases (VPA-5c), the Helm value for the issuer, and
-any run against a real provider through these routes. A provider whose
+**Not built.** An end-to-end case for single sign-on (the e2e stack has no
+provider; the section below says why), and any run against a real provider
+through these routes. ~~The Helm value for the issuer~~ is `dashboard.ssoIssuer`
+since VPA-5c. A provider whose
 authorization endpoint is on another origin than its issuer is refused (AWS
 Cognito, Entra ID v1 and Azure AD B2C behind a custom domain are such).
+
+## The dashboard's sign-in is exercised end to end (VPA-5c)
+
+**Written 2026-10-30; no run observed.** VPA-5a and VPA-5b were proved by jsdom
+and a fake `fetch`; neither had met a running vpay. VPA-5c puts the sign-in in
+front of the compose stack, and the stack's first run is CI's `e2e (compose)`
+job on the PR that carries it. Everything below is what exists; the
+[verification page](verification/2026-10-30-vpa5c-dashboard-e2e.md) has what was
+broken on purpose and what could not be run.
+
+- **The stack serves `human_login`.** `just gen-demo-keys` writes the `demo`
+  overlay with `auth.methods: [keypair, hmac_webhooks, human_login]`, a
+  `dashboard_client` (`vpay-dashboard`, the shop's tenant, the redirect URI on
+  `demo_dashboard_port`, `dashboard:read`) and a `staff_auth` whose pepper and
+  TOTP key are `${VAR}` placeholders. Their values are generated per checkout
+  into `.e2e/staff-auth.env` (mode 0600, git-ignored) and reach the server, the
+  worker and the one-off `staff add` through `compose.e2e.yml`'s `env_file`;
+  nothing is committed. The sign-in rate limit is raised to 100 per five minutes
+  in that overlay only. **The demo stack shares the overlay, so `just demo`
+  serves `human_login` too**; it is not a separate switch.
+- **The dashboard container is told its registration.** `compose.e2e.yml` sets
+  `VPAY_DASHBOARD_CLIENT_ID`, `VPAY_DASHBOARD_REDIRECT_URI` and
+  `VPAY_DASHBOARD_SCOPE` (not `VPAY_DASHBOARD_SSO_ISSUER`; there is no provider).
+- **`just demo-staff` keeps the password.** `staff add` prints a one-time
+  password where `human_login` is served; the recipe writes it to
+  `.e2e/<project>/staff-password.txt` (mode 0600) and fails if it was handed a
+  `stf_…` id, which means the overlay is stale. It is no longer a file of ids.
+- **The spec.** `frontends/tests/e2e/cypress/e2e/dashboard-human-login.cy.ts`
+  (seven tests, one sequence, `testIsolation: false`) with
+  `cypress/tasks/dashboardTasks.ts` restored from `f885170^` and cut back (the
+  password read from a file path in Node, RFC 6238 codes computed from the
+  displayed secret, values carried between tests in Node) and a WCAG A/AA axe
+  pass on four screens (`color-contrast` off, for the reason in
+  `support/dashboard.ts`).
+- **The browser reaches the dashboard on `localhost`, and has to.** The cookies
+  are `__Host-` and `Secure`; a plain-`http` origin other than `localhost` is not
+  a secure context and stores neither
+  ([human-login.md](../flows/dashboard-auth/human-login.md), "The cookie needs a
+  secure origin"). Cypress runs on the host against the published port, so
+  `baseUrl` is the only origin it uses. That a Cypress-driven Chromium keeps the
+  cookie is what the spec's own cookie assertions test first.
+- **The chart.** `dashboard.clientId`, `redirectUri`, `scope` and `ssoIssuer`
+  render into the Deployment's env only when set; `just helm-check` renders both
+  shapes and fails on either direction; `NOTES.txt` says what must agree with
+  the overlay and, when `ssoIssuer` is set, which callback to register.
+  `values.schema.json` accepts the four keys.
+
+**Not built.** Single sign-on in the stack: no provider, so no case, no
+`staff_auth.sso` in the overlay and no issuer variable on the container (a
+documented gap; [sso.md](../flows/dashboard-auth/sso.md)). A run: the stack needs
+Docker and none was available where this was written. The pages that read
+`/dash/v1` (VP-6b), which is also why the spec asserts an account page and no
+payments.

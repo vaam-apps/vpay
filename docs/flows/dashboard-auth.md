@@ -59,7 +59,11 @@ tenant a request reads.
 > a key meanwhile is the break-glass below (`vpay-server staff pair-key`) and a
 > client that signs requests; [`docs/status.md`](../status.md) says so, and
 > [`docs/status/frontend.md`](../status/frontend.md#the-dashboard-application-signs-in-with-a-password-vpa-5a)
-> has what VPA-5a built and measured.
+> has what VPA-5a built and measured. The password sign-in has end-to-end cases
+> in a real browser since VPA-5c (`dashboard-human-login.cy.ts`, over
+> `compose.e2e.yml`, which now serves `human_login`); single sign-on has none,
+> because that stack has no identity provider
+> ([sso.md](dashboard-auth/sso.md), "Status").
 
 ## Upgrading from before VP-6a
 
@@ -116,7 +120,11 @@ leave an operator believing a sign-in exists that does not.
    migration 0056 and resolve to the same member again by `(issuer, subject)`
    ([sso.md](dashboard-auth/sso.md#members-kept-through-0056)).
 5. **Helm**: `dashboard.clientId`, `dashboard.redirectUri` and `dashboard.scope`
-   are gone from the chart values. A split release (`management.enabled`) serves
+   were removed from the chart values by VP-6a and are back since VPA-5c, with
+   `dashboard.ssoIssuer`, each rendered into the dashboard's environment only
+   when set: set them (or none, where `human_login` is not served) to match the
+   overlay's `dashboard_client` and `staff_auth.sso`
+   ([the chart's README](../../deploy/helm/vpay/README.md)). A split release (`management.enabled`) serves
    `/svc/v1` from `-server`, so list the calling service in
    `networkPolicy.serviceIngress.peers` when `networkPolicy.enabled`.
 
