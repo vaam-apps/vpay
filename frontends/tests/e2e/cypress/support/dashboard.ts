@@ -103,8 +103,8 @@ export function carriedForward(key: string): Cypress.Chainable<string> {
  * It runs on the dashboard's own origin, so unlike the checkout's checks it
  * needs no `cy.origin()`; `cy.readFile` is allowed here.
  *
- * **Not yet seen to run.** This was written without a browser, and the first
- * red `e2e (compose)` run is the first time axe meets these pages in one. A
+ * **First seen to run in CI** (the `e2e (compose)` run on 9aa0036: clean on the
+ * four screens). It was written without a browser. A
  * violation is named in the assertion message itself, with its rule, impact,
  * the elements' selectors and axe's summary: headless `cypress run` prints
  * nothing else, and a `cy.task` queued before a throwing `expect` never runs

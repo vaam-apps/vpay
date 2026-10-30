@@ -32,8 +32,8 @@
  * `localhost:3000`, so `baseUrl` is the only origin this spec uses
  * (`docs/flows/dashboard-auth/human-login.md`, "The cookie needs a secure
  * origin"). **That Cypress's browser (Electron, which is Chromium) stores the
- * cookie is the premise of this whole file and was written down before it was
- * observed**; the first `e2e (compose)` run is the first time it is tested.
+ * cookie is the premise of this whole file; it was written down before it was
+ * observed, and CI's first `e2e (compose)` run of the spec observed it.**
  *
  * # The cases, and where each one is
  *

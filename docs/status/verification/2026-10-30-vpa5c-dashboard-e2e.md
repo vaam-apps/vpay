@@ -2,10 +2,12 @@
 
 _Written 2026-10-30 while the work was done, on `vpa5c-dashboard-e2e` over
 `master` at `ee200d4` (VPA-5b, #393, on it). Every number below was measured on
-the tree this page was committed with. **The end-to-end spec this ticket adds has
-not run**: there is no Docker daemon where this was written, and the Cypress
-binary was not downloaded. See "Not done" before reading anything here as a
-claim that the sign-in works against a stack._
+the tree this page was committed with. **The end-to-end spec this ticket adds did
+not run where this was written** (no Docker daemon, and the Cypress binary was
+not downloaded); CI's first `e2e (compose)` run of it, on `9aa0036`, is recorded
+in "The first CI run" below, and it is **the pre-review spec** that passed.
+Review round 1 changed the spec after that run, and the run after it is not
+recorded here._
 
 What was built is in [docs/status/frontend.md](../frontend.md) ("The dashboard's
 sign-in is exercised end to end (VPA-5c)"), in the app's
@@ -156,25 +158,46 @@ first refusal had no id (the dashboard's own validation, not vpay's), the id che
 is skipped and the intercept wait alone carries it; the first submit here is a
 password that passes the dashboard's checks, so it does have one.
 
+## The first CI run
+
+Reported by the coordinator from `e2e (compose)` on `9aa0036` (the commit before
+review round 1), read from the job, not run here: `dashboard-human-login.cy.ts`
+**7 of 7 passing on the first attempt, no retries, 18 s**; `checkout.cy.ts` 1/1,
+`shop-hosted.cy.ts` 4/4, `shop-embedded.cy.ts` 6/6. The log shows
+`wrote .e2e/staff-auth.env` and `the one-time password is in
+.e2e/vpay-demo/staff-password.txt` and no secret value.
+
+That run observes what this page had written down as premises:
+
+- Cypress's browser (Electron, which is Chromium) stored the `Secure` `__Host-`
+  cookie from `http://localhost:3000`: the cookie test and every test after the
+  sign-in passed.
+- The controlled inputs hydrated before Cypress typed into them (with `retries`
+  in force, no test needed one).
+- Axe found no WCAG A or AA violation on the four screens.
+- The bottom sheet's "Done" was clickable once the secret was read.
+- A stack with `human_login` served, the generated secrets, `demo-staff` and the
+  chart-independent env all worked together; `just demo-staff` ran in CI against
+  a live stack.
+
+**What it does not cover.** It is the spec before review round 1: case 3's second
+half could not fail in that version (finding 1), so "7 of 7" says nothing about
+account enumeration. Round 1's wait on the second answer, `retries: 0`, the
+screenshot upload and the stale-password handling have not been seen in a run.
+`just test-e2e` locally, `just demo-walk` with `human_login` served and the
+runbook's `psql` line are still unrun.
+
 ## Not done
 
-- **The Cypress spec has not run.** It is typechecked and linted, and its
-  selectors, labels and the sequence were read from the components and the
-  server actions; no browser has executed it. CI's `e2e (compose)` job is where it
-  runs for the first time, and that run is the evidence this page does not have.
-  Premises written down before they were observed: that Cypress's browser (Electron, which is Chromium)
-  stores a `Secure` `__Host-` cookie from `http://localhost:3000` (the spec's
-  cookie assertions test it first); that the controlled inputs hydrate before
-  Cypress types into them (an input typed before hydration is cleared, and the
-  `retries` in `cypress.config.ts` are the only cover); that axe finds no WCAG A
-  or AA violation on four screens in a real browser (jsdom's structural pass is
-  the only prior evidence); that the bottom sheet's "Done" is clickable as soon as
-  the secret is read.
-- **No stack was brought up.** `docker compose up`, `just demo-staff` against a
-  running stack, `just test-e2e`, and the effect of serving `human_login` on
-  `just demo-walk` (read as no change, from where `/v1/oauth/token` is mounted)
-  are all unrun. `demo-staff`'s refusal of an id where a password was expected is
-  a `case` on the prefix `stf_` that nothing exercised.
+- **The round 1 spec has not run.** It is typechecked and linted, and the new
+  wait in case 3 is reasoned, not observed. CI's next `e2e (compose)` run is the
+  evidence this page does not yet have.
+- **`just test-e2e` and `just demo-walk` were not run.** CI exercised
+  `docker compose up` and `just demo-staff`; the effect of serving `human_login`
+  on `just demo-walk` (read as no change, from where `/v1/oauth/token` is
+  mounted) is unrun. `demo-staff`'s refusal of an id where a password was
+  expected is a `case` on the prefix `stf_` that nothing exercised, and the
+  `staff_members_email_key` branch was checked only with a stub `docker`.
 - **The runbook's `psql` line** that fetches the member's id for `staff pair-key`
   (`docs/runbooks/demo/dashboard-sign-in.md`) was written from the schema's names
   and not run.

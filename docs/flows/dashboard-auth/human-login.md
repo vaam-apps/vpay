@@ -106,11 +106,11 @@ origin, `__Host-vpay_dash_session` and `__Host-vpay_dash_enrolment`
 them, and so a sibling subdomain or a plain-`http` response cannot plant or
 overwrite it.
 
-| Where the dashboard is reached                                    | What happens                                                                                                                                                                                                                              |
-| ----------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `https://…`                                                       | stored                                                                                                                                                                                                                                    |
-| `http://localhost:3000` (`next dev`, the compose stacks, Cypress) | stored by Chrome and Firefox, which treat localhost as a secure context (under Cypress, VPA-5c's spec asserts it and has not yet been seen to run). Safari has historically refused a `Secure` cookie over plain `http`; it was not tried |
-| `http://` on any other host                                       | **stored by no browser.** The sign-in action succeeds and redirects, the next request carries no cookie, and `/` sends the browser back to `/login`: the sign-in does not stick. `Secure` was already unconditional here                  |
+| Where the dashboard is reached                                    | What happens                                                                                                                                                                                                                       |
+| ----------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `https://…`                                                       | stored                                                                                                                                                                                                                             |
+| `http://localhost:3000` (`next dev`, the compose stacks, Cypress) | stored by Chrome and Firefox, which treat localhost as a secure context (under Cypress, VPA-5c's spec asserts it and CI's first run passed). Safari has historically refused a `Secure` cookie over plain `http`; it was not tried |
+| `http://` on any other host                                       | **stored by no browser.** The sign-in action succeeds and redirects, the next request carries no cookie, and `/` sends the browser back to `/login`: the sign-in does not stick. `Secure` was already unconditional here           |
 
 The sign-in does not branch on the environment to make the last row work
 (AGENTS.md forbids it). Put the dashboard behind TLS, or reach it on
@@ -222,9 +222,8 @@ password sign-in, authenticator step, forced password change, account page and
 sign-out are built (VPA-5a), and so are its two SSO routes and its
 single-sign-on button (VPA-5b, [sso.md](sso.md)): [`frontends/apps/dashboard/README.md`](../../../frontends/apps/dashboard/README.md)
 says how, and [status/frontend.md](../../status/frontend.md) says what was
-measured. **The password sign-in's end-to-end cases are written (VPA-5c,
-below) and CI's `e2e (compose)` job runs them; this page does not claim a
-passing run until one is recorded in
+measured. **The password sign-in's end-to-end cases (VPA-5c, below) are run by
+CI's `e2e (compose)` job; its first run passed 7 of 7, recorded in
 [the VPA-5c page](../../status/verification/2026-10-30-vpa5c-dashboard-e2e.md).**
 
 ## Tests

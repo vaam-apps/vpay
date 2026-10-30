@@ -190,7 +190,7 @@ credential, and which of a session and a key wins when a browser holds both
 (VP-6b). ~~Nothing here has run against a real vpay in a browser.~~ **Changed
 2026-10-30 (VPA-5c):** the end-to-end cases for this sign-in are written
 ([the section below](#the-dashboards-sign-in-is-exercised-end-to-end-vpa-5c)),
-and no run of them has been observed yet.
+and CI's first run of them passed (the section below).
 
 ## The dashboard application is a notice until VP-6b
 
@@ -315,10 +315,13 @@ Cognito, Entra ID v1 and Azure AD B2C behind a custom domain are such).
 
 ## The dashboard's sign-in is exercised end to end (VPA-5c)
 
-**Written 2026-10-30; no run observed.** VPA-5a and VPA-5b were proved by jsdom
+**Written 2026-10-30; first CI run passed 7 of 7.** VPA-5a and VPA-5b were proved by jsdom
 and a fake `fetch`; neither had met a running vpay. VPA-5c puts the sign-in in
-front of the compose stack, and the stack's first run is CI's `e2e (compose)`
-job on the PR that carries it. Everything below is what exists; the
+front of the compose stack. CI's `e2e (compose)` job ran it on the PR that
+carries it: `dashboard-human-login.cy.ts` 7 of 7 on the first attempt, with no
+retries, in 18 s, beside the checkout and shop specs (that was the spec before
+review round 1; the verification page says what the later change has not been
+seen to do). Everything below is what exists; the
 [verification page](verification/2026-10-30-vpa5c-dashboard-e2e.md) has what was
 broken on purpose and what could not be run.
 
@@ -352,7 +355,8 @@ broken on purpose and what could not be run.
   ([human-login.md](../flows/dashboard-auth/human-login.md), "The cookie needs a
   secure origin"). Cypress runs on the host against the published port, so
   `baseUrl` is the only origin it uses. That Cypress's browser (Electron, which is Chromium) keeps the
-  cookie is what the spec's own cookie assertions test first.
+  cookie was the premise, and CI's first run observed it: the cookie test and
+  every sign-in after it passed.
 - **The chart.** `dashboard.clientId`, `redirectUri`, `scope` and `ssoIssuer`
   render into the Deployment's env only when set; `just helm-check` renders both
   shapes and fails on either direction; `NOTES.txt` says what must agree with
@@ -361,7 +365,8 @@ broken on purpose and what could not be run.
 
 **Not built.** Single sign-on in the stack: no provider, so no case, no
 `staff_auth.sso` in the overlay and no issuer variable on the container (a
-documented gap; [sso.md](../flows/dashboard-auth/sso.md)). A run: the stack needs
-Docker and none was available where this was written. The pages that read
+documented gap; [sso.md](../flows/dashboard-auth/sso.md)). A run of the
+round 1 spec (the first CI run was of the version before it) and a local
+`just test-e2e`. The pages that read
 `/dash/v1` (VP-6b), which is also why the spec asserts an account page and no
 payments.

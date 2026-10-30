@@ -133,8 +133,8 @@ only (`eslint.config.js`). The pages that read `/dash/v1` come with VP-6b.
 
 The sign-in has end-to-end cases that drive this app in a real browser against
 `compose.e2e.yml` + `compose.demo.yml`:
-`frontends/tests/e2e/cypress/e2e/dashboard-human-login.cy.ts`. They are written;
-CI's `e2e (compose)` job is where they run, and no run has been recorded yet
+`frontends/tests/e2e/cypress/e2e/dashboard-human-login.cy.ts`. CI's
+`e2e (compose)` job runs them, and its first run passed 7 of 7
 ([the verification page](../../../docs/status/verification/2026-10-30-vpa5c-dashboard-e2e.md)).
 Things to know if you run them or point a stack at this app:
 

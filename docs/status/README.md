@@ -164,8 +164,9 @@ rather than trusting this list to be exhaustive.
   TOTP enrolment, the forced change, the cookie and sign-out; the chart renders
   the dashboard's client values when set. The Helm conditional and the overlay's
   freshness checks were broken and seen to fail, and the config loader accepted
-  the generated overlay. **The spec itself has not run** (no Docker here), and
-  single sign-on has no case (no provider in the stack).
+  the generated overlay. **The spec did not run where it was written; CI's first
+  `e2e (compose)` run of it passed 7 of 7 with no retries**, and single sign-on has
+  no case (no provider in the stack).
 - [verification/2026-10-30-vpa5b-dashboard-sso.md](verification/2026-10-30-vpa5b-dashboard-sso.md) —
   VPA-5b: the dashboard application's single sign-on, a button beside the email
   question and the two routes behind it, restored from the parent of #383 and
