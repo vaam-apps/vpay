@@ -85,6 +85,24 @@ export function credentialHeaders(
   }
 }
 
+/**
+ * How long any call to vpay may take before this app gives up, in milliseconds.
+ *
+ * Every call here is made inside a page render or a server action, and a
+ * `fetch` has no timeout of its own: a vpay that accepts the connection and
+ * never answers (a wedged pod, a proxy holding the socket) would hold the
+ * render open until something upstream cut it, with nothing on screen. The
+ * timeout turns that into a rejected `fetch`, which `api.ts` shapes into an
+ * {@link import('./api').ApiFailure} with `status: 0` — an **outage**, rendered
+ * with the cookie kept, and for the discovery read "Sign-in is not reachable"
+ * and never "paired key only" (`discovery.ts`).
+ *
+ * Five seconds: well past a healthy `/dash/v1` answer or an argon2id
+ * verification, short enough that a person is told rather than left looking at
+ * a spinner.
+ */
+export const DASH_TIMEOUT_MS = 5000;
+
 /** What one call carries beyond its URL. */
 export interface DashRequest {
   readonly method: "GET" | "POST";
@@ -120,6 +138,7 @@ export function buildInit(request: DashRequest): RequestInit {
     // showed none.
     cache: "no-store",
     redirect: request.redirect ?? "error",
+    signal: AbortSignal.timeout(DASH_TIMEOUT_MS),
   };
 }
 

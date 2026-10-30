@@ -7,6 +7,7 @@
  */
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { hangingVpay } from "../testing/hanging-fetch";
 import { DISCOVERY_PATH, readDiscovery } from "./discovery";
 
 function answer(body: unknown, init: ResponseInit = {}): void {
@@ -25,6 +26,7 @@ function answer(body: unknown, init: ResponseInit = {}): void {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("a deployment that serves human_login", () => {
@@ -111,4 +113,23 @@ describe("a discovery that could not be read", () => {
       expect((await readDiscovery("http://vpay:8080")).kind).toBe("unreadable");
     },
   );
+});
+
+describe("a vpay that accepts the connection and never answers", () => {
+  it("is `unreadable` — an outage — and never `paired-key-only`", async () => {
+    // THE DECISIVE MUTATION: no deadline on the discovery call. Then this
+    // never settles at all, and a login page waits on it with nothing shown;
+    // were the timeout read as "no human_login", an operator would be sent to
+    // fix a deployment that is merely wedged.
+    const { timeOut, asked } = hangingVpay();
+    const pending = readDiscovery("http://vpay:8080");
+    expect(asked()).toEqual([5000]);
+    timeOut();
+    const result = await pending;
+    expect(result.kind).toBe("unreadable");
+    if (result.kind === "unreadable") {
+      expect(result.failure.status).toBe(0);
+      expect(result.failure.message).toMatch(/could not be reached/);
+    }
+  });
 });

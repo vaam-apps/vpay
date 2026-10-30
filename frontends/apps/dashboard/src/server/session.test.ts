@@ -40,6 +40,7 @@ vi.mock("../config/runtime", () => ({
   }),
 }));
 
+import { hangingVpay } from "../testing/hanging-fetch";
 import { alreadySignedIn, requireStaff } from "./session";
 
 const SESSION = {
@@ -98,6 +99,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe("the gate", () => {
@@ -255,6 +257,20 @@ describe("a session the read refused", () => {
       "/dash/v1/staff/session/stage": { status: 502 },
     });
     expect(await destination()).toBe("render:outage");
+  });
+});
+
+describe("a vpay that never answers", () => {
+  it("is an outage with the cookie kept — the session read times out", async () => {
+    const { timeOut } = hangingVpay();
+    const pending = requireStaff();
+    // Let the gate reach its `fetch` before the deadline fires.
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
+    timeOut();
+    expect(await pending).toMatchObject({
+      kind: "outage",
+      failure: { status: 0 },
+    });
   });
 });
 

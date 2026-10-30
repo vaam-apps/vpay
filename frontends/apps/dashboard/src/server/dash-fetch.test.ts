@@ -19,6 +19,7 @@ import {
   sessionCredential,
   type Credential,
 } from "./dash-fetch";
+import { hangingVpay } from "../testing/hanging-fetch";
 
 function headersOf(init: RequestInit): Record<string, string> {
   return init.headers as Record<string, string>;
@@ -165,5 +166,32 @@ describe("the request itself", () => {
     expect(headersOf(init)["content-type"]).toBe(
       "application/x-www-form-urlencoded",
     );
+  });
+});
+
+describe("a call that never answers", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("gives every call a five-second deadline, a fresh one each time", () => {
+    // THE DECISIVE MUTATION: leave `signal` out of `buildInit`. A `fetch` has
+    // no timeout of its own, and a wedged vpay would hold the render open.
+    const { asked } = hangingVpay();
+    const get = buildInit({ method: "GET" });
+    const post = buildInit({ method: "POST", form: { a: "b" } });
+    const authorize = buildInit({ method: "GET", redirect: "manual" });
+    expect(get.signal).toBeInstanceOf(AbortSignal);
+    expect(post.signal).toBeInstanceOf(AbortSignal);
+    expect(authorize.signal).toBeInstanceOf(AbortSignal);
+    expect(asked()).toEqual([5000, 5000, 5000]);
+  });
+
+  it("rejects when the deadline fires, which every caller already shapes into an outage", async () => {
+    const { timeOut } = hangingVpay();
+    const pending = dashFetch("http://vpay:8080/x", { method: "GET" });
+    timeOut();
+    await expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
   });
 });

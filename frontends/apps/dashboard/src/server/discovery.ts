@@ -17,7 +17,9 @@
  * | `unreadable`    | an outage, with the request id                           |
  *
  * **A discovery that could not be read is never read as "paired key only".**
- * That would tell a staff member whose vpay was restarting that their
+ * That would tell a staff member whose vpay was restarting — or accepting the
+ * connection and never answering, which the call's five-second deadline
+ * (`dash-fetch.ts`) turns into this same outcome — that their
  * deployment had no password sign-in, and send them to an operator for a fault
  * that heals itself — the same mistake `gate.ts`'s `refusalFor` records for the
  * session read (issue #88 item 2). Only a body that parsed, whose `methods`
