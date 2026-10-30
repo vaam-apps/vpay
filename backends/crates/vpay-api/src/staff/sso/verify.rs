@@ -695,7 +695,11 @@ mod tests {
     fn the_debug_of_the_claims_prints_no_personal_data() {
         let key = rsa("k1");
         let mut with_canary_subject = live_claims();
-        with_canary_subject["sub"] = json!("canary-subject-7f3a91");
+        put(
+            &mut with_canary_subject,
+            "sub",
+            json!("canary-subject-7f3a91"),
+        );
         let token = sign(&key, Algorithm::RS256, Some("k1"), &with_canary_subject);
         let claims = check_live(&key, &token).expect("verifies");
         assert_eq!(claims.subject, "canary-subject-7f3a91");
