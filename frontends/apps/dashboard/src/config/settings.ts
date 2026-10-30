@@ -53,26 +53,6 @@ export interface DashboardConfig {
    * configuration mistake.
    */
   readonly scope: string;
-  /**
-   * The origin a browser reaches this dashboard on
-   * (`https://dash.example`), or `null` if the deployment has not said.
-   *
-   * Used by **one** thing: the origin check in front of every server action
-   * (`server/csrf.ts`, issue #88 item 4). It is compared against the `Origin`
-   * header, and it exists because Next's own check compares `Origin` against
-   * `X-Forwarded-Host` — two values the caller sets, which agree whenever
-   * the caller wants them to.
-   *
-   * **Optional**, unlike every other field here, and the reason is stated
-   * rather than assumed: making it required would refuse every action on
-   * every deployment that has not been reconfigured, including this
-   * repository's own compose stacks. With it unset the check falls back to
-   * the `Host` header — never `X-Forwarded-Host`, so still stronger than
-   * Next's — which is right for a dashboard reached directly and wrong
-   * behind a proxy that rewrites `Host`. `docs/status.md` carries it as the
-   * follow-up.
-   */
-  readonly publicOrigin: string | null;
 }
 
 /** One missing or unusable setting, in the words an operator needs. */
@@ -99,6 +79,36 @@ export interface AssembledConfig {
   readonly config: DashboardConfig | null;
   readonly problems: readonly ConfigProblem[];
   readonly apiBaseUrl: string | null;
+  /**
+   * The origin a browser reaches this dashboard on
+   * (`https://dash.example`), or `null` if the deployment has not said.
+   *
+   * Used by **one** thing: the origin check in front of every server action
+   * (`server/csrf.ts`, issue #88 item 4). It is compared against the `Origin`
+   * header, and it exists because Next's own check compares `Origin` against
+   * `X-Forwarded-Host` — two values the caller sets, which agree whenever
+   * the caller wants them to.
+   *
+   * **Answered beside {@link AssembledConfig.apiBaseUrl}, outside `config`**,
+   * and for the same reason: the check has to run when the client variables
+   * are missing too. It lived on `config` until the VPA-5a review, so a
+   * deployment that set `VPAY_DASHBOARD_PUBLIC_ORIGIN` but not the three
+   * client values had its configured origin ignored and fell back to `Host`
+   * — which is the weaker comparison, on exactly the deployment least likely
+   * to be right.
+   *
+   * **Optional**, unlike every required setting, and the reason is stated
+   * rather than assumed: making it required would refuse every action on
+   * every deployment that has not been reconfigured, including this
+   * repository's own compose stacks. With it unset the check falls back to
+   * the `Host` header — never `X-Forwarded-Host`, so still stronger than
+   * Next's — which is right for a dashboard reached directly and wrong
+   * behind a proxy that rewrites `Host`. `docs/status.md` carries it as the
+   * follow-up. Not validated here and not defaulted: `server/csrf.ts`
+   * normalises it and treats anything that is not an absolute http(s) URL as
+   * unset, the same fail-closed reading a blank value gets.
+   */
+  readonly publicOrigin: string | null;
 }
 
 /** vpay's base URL, as this server reaches it. */
@@ -111,7 +121,7 @@ export const REDIRECT_URI_VAR = "VPAY_DASHBOARD_REDIRECT_URI";
 export const SCOPE_VAR = "VPAY_DASHBOARD_SCOPE";
 /**
  * The origin a browser reaches this dashboard on. **Optional** — see
- * [`DashboardConfig.publicOrigin`].
+ * [`AssembledConfig.publicOrigin`].
  */
 export const PUBLIC_ORIGIN_VAR = "VPAY_DASHBOARD_PUBLIC_ORIGIN";
 
@@ -188,6 +198,8 @@ export function assembleConfig(
     });
   }
 
+  const publicOrigin = present(env[PUBLIC_ORIGIN_VAR]);
+
   // The base URL loses a trailing slash so that every path this app appends
   // is one `/` and not two. `//dash/v1/...` is a different path to axum, and
   // it answers this crate's 404 envelope.
@@ -203,7 +215,7 @@ export function assembleConfig(
     redirectUri === null ||
     scope === null
   ) {
-    return { config: null, problems, apiBaseUrl: base };
+    return { config: null, problems, apiBaseUrl: base, publicOrigin };
   }
 
   return {
@@ -212,14 +224,10 @@ export function assembleConfig(
       clientId,
       redirectUri,
       scope,
-      // Not validated here and not defaulted. `server/csrf.ts` normalises it
-      // and treats anything that is not an absolute http(s) URL as unset,
-      // which is the same fail-closed reading a blank value gets: the
-      // fallback is the `Host` comparison, never an allow-everything.
-      publicOrigin: present(env[PUBLIC_ORIGIN_VAR]),
     },
     problems: [],
     apiBaseUrl: base,
+    publicOrigin,
   };
 }
 

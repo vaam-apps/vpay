@@ -14,6 +14,10 @@ const world = vi.hoisted(() => ({
   events: [] as string[],
   origin: "http://localhost:3000",
   host: "localhost:3000",
+  /** `VPAY_DASHBOARD_PUBLIC_ORIGIN`, as `assembleConfig` answers it. */
+  publicOrigin: null as string | null,
+  /** The three client variables missing: `config` is `null`. */
+  unconfigured: false,
   sets: [] as {
     name: string;
     value: string;
@@ -53,15 +57,19 @@ vi.mock("next/navigation", () => ({
 }));
 vi.mock("../config/runtime", () => ({
   dashboardConfig: () => ({
-    config: {
-      apiBaseUrl: "http://vpay:8080",
-      clientId: "vpay-dashboard",
-      redirectUri: "http://localhost:3000/dash/v1/callback",
-      scope: "dashboard:read",
-      publicOrigin: null,
-    },
-    problems: [],
+    config: world.unconfigured
+      ? null
+      : {
+          apiBaseUrl: "http://vpay:8080",
+          clientId: "vpay-dashboard",
+          redirectUri: "http://localhost:3000/dash/v1/callback",
+          scope: "dashboard:read",
+        },
+    problems: world.unconfigured
+      ? [{ variable: "VPAY_DASHBOARD_CLIENT_ID", detail: "the client id." }]
+      : [],
     apiBaseUrl: "http://vpay:8080",
+    publicOrigin: world.publicOrigin,
   }),
 }));
 
@@ -135,6 +143,8 @@ beforeEach(() => {
   world.sets.length = 0;
   world.origin = "http://localhost:3000";
   world.host = "localhost:3000";
+  world.publicOrigin = null;
+  world.unconfigured = false;
   vi.spyOn(console, "warn").mockImplementation(() => {});
 });
 afterEach(() => {
@@ -189,6 +199,43 @@ describe("every action opens with the origin check", () => {
     expect(sent).toEqual([]);
     expect(world.sets).toEqual([]);
     expect(world.jar.get("__Host-vpay_dash_session")).toBe("sess-1");
+  });
+});
+
+describe("the origin check does not depend on the client variables", () => {
+  // `publicOrigin` is answered beside `apiBaseUrl`, outside `config`. THE
+  // DECISIVE MUTATION: read it from `config?.publicOrigin` again — `config`
+  // is `null` here, the configured origin is ignored, and the check compares
+  // `Host`, which a caller who sets `Origin` can set to agree with it.
+  const refusal =
+    "This request did not come from this dashboard. Reload the page and try again.";
+
+  it("refuses a cross-origin POST whose Host agrees with its Origin, when the configured origin says otherwise", async () => {
+    world.unconfigured = true;
+    world.publicOrigin = "https://dash.example";
+    world.origin = "https://evil.example";
+    world.host = "evil.example";
+    const sent = vpay({});
+    const result = await run(() =>
+      signIn(NO_ERROR, formOf({ email: "a@b.c", password: "x" })),
+    );
+    expect(result).toMatchObject({ error: refusal });
+    expect(sent).toEqual([]);
+  });
+
+  it("admits the configured origin when Host is an internal name, and then says the client is unregistered", async () => {
+    world.unconfigured = true;
+    world.publicOrigin = "https://dash.example";
+    world.origin = "https://dash.example";
+    world.host = "dashboard:3000";
+    const result = await run(() =>
+      signIn(NO_ERROR, formOf({ email: "a@b.c", password: "x" })),
+    );
+    expect(result).toMatchObject({
+      error: expect.stringContaining(
+        "no dashboard client registered",
+      ) as string,
+    });
   });
 });
 

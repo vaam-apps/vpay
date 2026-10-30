@@ -18,7 +18,8 @@ const COMPLETE: Record<string, string> = {
 
 describe("a complete configuration", () => {
   it("is assembled as written", () => {
-    const { config, problems, apiBaseUrl } = assembleConfig(COMPLETE);
+    const { config, problems, apiBaseUrl, publicOrigin } =
+      assembleConfig(COMPLETE);
     expect(problems).toEqual([]);
     expect(apiBaseUrl).toBe("http://vpay-server:8080");
     expect(config).toEqual({
@@ -26,23 +27,45 @@ describe("a complete configuration", () => {
       clientId: "vpay-dashboard",
       redirectUri: "http://localhost:3000/dash/v1/callback",
       scope: "dashboard:read",
-      // Absent from COMPLETE on purpose: it is the one OPTIONAL setting, and
-      // `null` here is what makes `server/csrf.ts` fall back to comparing
-      // `Host` rather than to allowing anything.
-      publicOrigin: null,
     });
+    // Absent from COMPLETE on purpose: it is the one OPTIONAL setting, and
+    // `null` here is what makes `server/csrf.ts` fall back to comparing
+    // `Host` rather than to allowing anything.
+    expect(publicOrigin).toBeNull();
   });
 
   it("carries the public origin when the deployment set one", () => {
     // The only consumer is the origin check in front of every server action
     // (issue #88 item 4). It is optional, and a deployment behind a proxy
-    // that rewrites `Host` has to set it — see `DashboardConfig.publicOrigin`.
-    const { config, problems } = assembleConfig({
+    // that rewrites `Host` has to set it — see `AssembledConfig.publicOrigin`.
+    const { problems, publicOrigin } = assembleConfig({
       ...COMPLETE,
       [PUBLIC_ORIGIN_VAR]: "https://dash.example",
     });
     expect(problems).toEqual([]);
-    expect(config?.publicOrigin).toBe("https://dash.example");
+    expect(publicOrigin).toBe("https://dash.example");
+  });
+
+  it("answers the public origin when the client variables are missing too — the check must not fall back to Host there", () => {
+    // THE DECISIVE MUTATION: put `publicOrigin` back inside `config`. It is
+    // `null` whenever any client variable is missing, so the origin check
+    // then compared `Host` on exactly the deployment that had set the
+    // variable to say otherwise.
+    const { config, problems, apiBaseUrl, publicOrigin } = assembleConfig({
+      [API_BASE_URL_VAR]: "http://vpay-server:8080",
+      [PUBLIC_ORIGIN_VAR]: "https://dash.example",
+    });
+    expect(config).toBeNull();
+    expect(problems.length).toBeGreaterThan(0);
+    expect(apiBaseUrl).toBe("http://vpay-server:8080");
+    expect(publicOrigin).toBe("https://dash.example");
+  });
+
+  it("answers the public origin even when vpay's address is missing", () => {
+    expect(
+      assembleConfig({ [PUBLIC_ORIGIN_VAR]: "https://dash.example" })
+        .publicOrigin,
+    ).toBe("https://dash.example");
   });
 
   it("does not refuse to boot without one", () => {
@@ -50,12 +73,12 @@ describe("a complete configuration", () => {
     // refuse every server action on every deployment that has not been
     // reconfigured. The consequence is the `Host` fallback, never an
     // allow-everything.
-    const { config, problems } = assembleConfig({
+    const { problems, publicOrigin } = assembleConfig({
       ...COMPLETE,
       [PUBLIC_ORIGIN_VAR]: "   ",
     });
     expect(problems).toEqual([]);
-    expect(config?.publicOrigin).toBeNull();
+    expect(publicOrigin).toBeNull();
   });
 
   it("drops a trailing slash from the base URL only", () => {

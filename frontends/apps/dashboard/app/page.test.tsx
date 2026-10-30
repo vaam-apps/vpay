@@ -34,10 +34,10 @@ vi.mock("../src/config/runtime", () => ({
       clientId: "vpay-dashboard",
       redirectUri: "http://localhost:3000/dash/v1/callback",
       scope: "dashboard:read",
-      publicOrigin: null,
     },
     problems: [],
     apiBaseUrl: "http://vpay:8080",
+    publicOrigin: null,
   }),
 }));
 vi.mock("../src/server/actions", () => ({ signOut: vi.fn() }));

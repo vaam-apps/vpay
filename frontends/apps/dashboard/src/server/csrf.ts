@@ -156,10 +156,13 @@ export function originIsAllowed(
  */
 export async function originRefusal(): Promise<FormState | null> {
   const store = await headers();
-  const { config } = dashboardConfig();
+  // `publicOrigin` beside `apiBaseUrl`, not inside `config`: the check must
+  // use the configured origin on a deployment whose client variables are
+  // missing too, where `config` is `null`.
+  const { publicOrigin } = dashboardConfig();
   const allowed = originIsAllowed(
     store.get(ORIGIN_HEADER),
-    config?.publicOrigin ?? null,
+    publicOrigin,
     store.get(HOST_HEADER),
   );
   if (allowed) {
