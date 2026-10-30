@@ -481,6 +481,117 @@ describe("changePassword", () => {
     expect(sent).toEqual([]);
   });
 
+  it("names the current password as the field a wrong one is about — vpay's 401", async () => {
+    // THE DECISIVE MUTATION: return `shown(result.failure)` with no field, and
+    // the sentence lands under "Repeat it".
+    vpay({
+      "/dash/v1/staff/password": {
+        status: 401,
+        body: { error: { message: "We could not sign you in." } },
+      },
+    });
+    const result = await run(() =>
+      changePassword(
+        NO_ERROR,
+        formOf({
+          current_password: "wrong",
+          new_password: "a-much-longer-one",
+          confirm_password: "a-much-longer-one",
+        }),
+      ),
+    );
+    expect(result).toMatchObject({ field: "current_password" });
+  });
+
+  it("names the new password as the field a policy refusal is about — vpay's 400 with param new_password", async () => {
+    vpay({
+      "/dash/v1/staff/password": {
+        status: 400,
+        body: {
+          error: {
+            message: "A password must be between 12 and 128 characters.",
+            param: "new_password",
+          },
+        },
+      },
+    });
+    const result = await run(() =>
+      changePassword(
+        NO_ERROR,
+        formOf({
+          current_password: "printed-one",
+          new_password: "x".repeat(200),
+          confirm_password: "x".repeat(200),
+        }),
+      ),
+    );
+    expect(result).toMatchObject({
+      field: "new_password",
+      error: "A password must be between 12 and 128 characters.",
+    });
+  });
+
+  it("names no field for a refusal that is about the whole form — a 429", async () => {
+    vpay({
+      "/dash/v1/staff/password": {
+        status: 429,
+        body: { error: { message: "Too many attempts." } },
+      },
+    });
+    const result = await run(() =>
+      changePassword(
+        NO_ERROR,
+        formOf({
+          current_password: "printed-one",
+          new_password: "a-much-longer-one",
+          confirm_password: "a-much-longer-one",
+        }),
+      ),
+    );
+    expect(result).toMatchObject({ error: "Too many attempts." });
+    expect(result).not.toHaveProperty("field");
+  });
+
+  it("names the field for the three checks made here", async () => {
+    vpay({});
+    expect(
+      await run(() =>
+        changePassword(
+          NO_ERROR,
+          formOf({
+            current_password: "",
+            new_password: "a",
+            confirm_password: "a",
+          }),
+        ),
+      ),
+    ).toMatchObject({ field: "current_password" });
+    expect(
+      await run(() =>
+        changePassword(
+          NO_ERROR,
+          formOf({
+            current_password: "p",
+            new_password: "",
+            confirm_password: "",
+          }),
+        ),
+      ),
+    ).toMatchObject({ field: "new_password" });
+    expect(
+      await run(() =>
+        changePassword(
+          NO_ERROR,
+          formOf({
+            current_password: "p",
+            new_password: "a",
+            confirm_password: "b",
+          }),
+        ),
+      ),
+    ).toMatchObject({ field: "confirm_password" });
+  });
+
   it("a wrong current password is a sentence, not a sign-out — the cookie stays", async () => {
     vpay({
       "/dash/v1/staff/password": {

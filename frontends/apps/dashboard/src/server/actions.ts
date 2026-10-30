@@ -69,8 +69,35 @@ import {
 } from "./session";
 
 /** A refusal, in the shape a form renders. */
-function shown(failure: ApiFailure): FormState {
-  return { error: failure.message, requestId: failure.requestId };
+function shown(failure: ApiFailure, field?: string): FormState {
+  return {
+    error: failure.message,
+    requestId: failure.requestId,
+    ...(field === undefined ? {} : { field }),
+  };
+}
+
+/**
+ * Which password-change question a refusal from `/dash/v1/staff/password` is
+ * about.
+ *
+ * * `401` is "the password in force is wrong or absent" — or a session vpay
+ *   will not accept, which is the same answer on purpose and which
+ *   `PasswordPage` catches on its next render. Either way the person's next
+ *   move is the first question.
+ * * `400` naming `new_password` is the length rule, and it is about the new
+ *   one.
+ * * Anything else (a rate limit, an outage) is about the form as a whole and
+ *   stays on the last question, where it always was.
+ */
+function passwordFieldFor(failure: ApiFailure): string | undefined {
+  if (failure.status === 401) {
+    return "current_password";
+  }
+  if (failure.param === "new_password") {
+    return "new_password";
+  }
+  return undefined;
 }
 
 /** The sentence a deployment with no registration shows instead of a form. */
@@ -302,16 +329,28 @@ export async function changePassword(
     // current password with the same `401` it answers a wrong one. What this
     // buys is a sentence that says which field is empty, which vpay
     // deliberately will not.
-    return { error: "Enter your current password.", requestId: null };
+    return {
+      error: "Enter your current password.",
+      requestId: null,
+      field: "current_password",
+    };
   }
   if (typeof next !== "string" || next.length === 0) {
-    return { error: "Choose a new password.", requestId: null };
+    return {
+      error: "Choose a new password.",
+      requestId: null,
+      field: "new_password",
+    };
   }
   if (next !== confirm) {
     // Checked here because it is the one rule vpay has no way to check: it
     // sees one password, and a mistyped pair would be a password nobody can
     // reproduce.
-    return { error: "The two passwords do not match.", requestId: null };
+    return {
+      error: "The two passwords do not match.",
+      requestId: null,
+      field: "confirm_password",
+    };
   }
 
   const result = await postForm<{
@@ -344,7 +383,7 @@ export async function changePassword(
     // every render and redirects to `/login` when vpay refuses it — the page
     // whose job that is, deciding it from a fresh answer, rather than an
     // action inferring it from a status that now means two things.
-    return shown(result.failure);
+    return shown(result.failure, passwordFieldFor(result.failure));
   }
 
   redirect(HOME_PATH);

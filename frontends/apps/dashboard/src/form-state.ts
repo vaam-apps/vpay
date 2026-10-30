@@ -21,6 +21,16 @@ export interface FormState {
    * reading the log.
    */
   readonly requestId: string | null;
+  /**
+   * The name of the question the refusal is about, when the action knows.
+   *
+   * `OneQuestionSteps` takes the person back to that question and marks it
+   * invalid, where without it the sentence appears on the last one — "Repeat
+   * it" for a wrong current password, which is the wrong field to be told
+   * about. Absent means "the whole form", and the last question carries it.
+   * A name that matches no question is read the same way.
+   */
+  readonly field?: string;
 }
 
 /** The state a form starts in: no submit has happened. */

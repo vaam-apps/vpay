@@ -47,6 +47,15 @@ export interface ApiFailure {
   readonly message: string;
   /** `request-id`, or `null` if the response carried none. */
   readonly requestId: string | null;
+  /**
+   * `error.param` — the request parameter vpay says was unusable
+   * (`ApiError::InvalidParam`) — when the envelope named one.
+   *
+   * Absent for every other refusal, and for a failure this app decided on its
+   * own. It is how `changePassword` knows a too-short new password is about
+   * the new password and not about the one in force.
+   */
+  readonly param?: string;
 }
 
 /** Success or {@link ApiFailure} — never a thrown error for a refusal. */
@@ -258,10 +267,12 @@ async function failureOf(response: Response): Promise<ApiFailure> {
   } catch {
     // Left as the status sentence `envelopeMessage` falls back to.
   }
+  const param = (body as { error?: { param?: unknown } } | null)?.error?.param;
   return {
     status: response.status,
     message: envelopeMessage(response.status, body),
     requestId: requestIdOf(response),
+    ...(typeof param === "string" && param.length > 0 ? { param } : {}),
   };
 }
 

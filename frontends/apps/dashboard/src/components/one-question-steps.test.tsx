@@ -199,6 +199,114 @@ describe("one question per screen", () => {
   });
 });
 
+// Placed before every case that leaves an action pending (`neverSettles`):
+// React 19 queues async transitions behind one another, so a submit that never
+// settles holds every later submit in the file, in any root, and the cases
+// below would then wait for an alert that cannot arrive.
+describe("a refusal that names its question", () => {
+  /** An action that refuses, naming `field`. */
+  function refusesAbout(field: string | undefined, error = "Refused.") {
+    return vi.fn((_previous: FormState, _form: FormData) =>
+      Promise.resolve({
+        error,
+        requestId: "req_pw",
+        ...(field === undefined ? {} : { field }),
+      }),
+    );
+  }
+
+  /** All three answers given, submitted from "Repeat it". */
+  async function submitThePasswordChange() {
+    type("Current password", "printed-one");
+    press("Continue");
+    type("New password", "a-much-longer-one");
+    press("Continue");
+    type("Repeat it", "a-much-longer-one");
+    await inAct(() => press("Set password"));
+    await screen.findByRole("alert");
+  }
+
+  it("takes a wrong current password back to the current-password question, invalid there and not on 'Repeat it'", async () => {
+    // THE DECISIVE MUTATION: ignore `state.field`. The sentence then sits
+    // under "Repeat it", which has nothing to do with a wrong password in
+    // force, and `aria-invalid` is set on the wrong field.
+    render(
+      <PasswordForm
+        action={refusesAbout("current_password", "We could not sign you in.")}
+      />,
+    );
+    await submitThePasswordChange();
+
+    expect(screen.getByText("Question 1 of 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("Current password")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.queryByLabelText("Repeat it")).toBeNull();
+    expect(screen.getAllByRole("alert")).toHaveLength(1);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "We could not sign you in.",
+    );
+    // What was typed is kept, so the person corrects rather than retypes.
+    expect(screen.getByLabelText("Current password")).toHaveValue(
+      "printed-one",
+    );
+  });
+
+  it("takes a refused new password back to the new-password question", async () => {
+    render(
+      <PasswordForm action={refusesAbout("new_password", "Too short.")} />,
+    );
+    await submitThePasswordChange();
+
+    expect(screen.getByText("Question 2 of 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("New password")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Too short.");
+  });
+
+  it("leaves the other questions clean when the person walks forward again", async () => {
+    render(<PasswordForm action={refusesAbout("current_password")} />);
+    await submitThePasswordChange();
+
+    press("Continue");
+    expect(screen.getByLabelText("New password")).not.toHaveAttribute(
+      "aria-invalid",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+    press("Continue");
+    expect(screen.getByLabelText("Repeat it")).not.toHaveAttribute(
+      "aria-invalid",
+    );
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("keeps a refusal that names nothing on the last question, as before", async () => {
+    render(<PasswordForm action={refusesAbout(undefined, "Slow down.")} />);
+    await submitThePasswordChange();
+
+    expect(screen.getByText("Question 3 of 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("Repeat it")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent("Slow down.");
+  });
+
+  it("reads a field this form does not ask as naming nothing", async () => {
+    render(<PasswordForm action={refusesAbout("email", "Slow down.")} />);
+    await submitThePasswordChange();
+
+    expect(screen.getByText("Question 3 of 3")).toBeInTheDocument();
+    expect(screen.getByLabelText("Repeat it")).toHaveAttribute(
+      "aria-invalid",
+      "true",
+    );
+  });
+});
+
 describe("a refusal", () => {
   it("is shown exactly once, with the request id beside it", async () => {
     // Exactly once: the first draft of the sign-in rendered the same sentence

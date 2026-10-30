@@ -100,6 +100,18 @@ export function OneQuestionSteps({
   const [step, setStep] = useState(0);
   const [answers, setAnswers] = useState<Record<string, string>>({});
 
+  // A refusal that names its question takes the person back to it. Adjusted
+  // during render, on the render that first sees the new state, rather than in
+  // an effect: an effect would paint the wrong question for a frame first.
+  const [seen, setSeen] = useState(state);
+  if (state !== seen) {
+    setSeen(state);
+    const target = questions.findIndex((asked) => asked.name === state.field);
+    if (state.error !== null && target >= 0) {
+      setStep(target);
+    }
+  }
+
   const question = questions[step];
   if (question === undefined) {
     return null;
@@ -107,7 +119,12 @@ export function OneQuestionSteps({
   const value = answers[question.name] ?? "";
   const valid = question.isValid(value, answers);
   const last = step === questions.length - 1;
-  const invalid = state.error !== null && last;
+  // Which question the refusal belongs to: the one it names, or the last when
+  // it names none (or one that is not asked here).
+  const named = questions.findIndex((asked) => asked.name === state.field);
+  const owner = named >= 0 ? named : questions.length - 1;
+  const here = step === owner;
+  const invalid = state.error !== null && here;
   const carried =
     usernameFrom !== undefined && step > 0 ? answers[usernameFrom] : undefined;
 
@@ -190,7 +207,7 @@ export function OneQuestionSteps({
         </FormField>
 
         <FormAlert
-          error={last ? state.error : null}
+          error={here ? state.error : null}
           requestId={state.requestId}
         />
 
