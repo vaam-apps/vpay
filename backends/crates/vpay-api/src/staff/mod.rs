@@ -67,6 +67,7 @@ use crate::staff_auth::{StaffCredentials, tokens, totp};
 pub mod client_address;
 pub mod oauth;
 pub mod rate_limit;
+pub mod sso;
 
 /// Where a caller presents its session token.
 ///
@@ -112,6 +113,19 @@ pub struct StaffLogin {
     /// projection for it would put a display string on the type every `/v1`
     /// handler reads.
     pub issuer_label: String,
+    /// The OpenID Connect provider staff may sign in through, when
+    /// `staff_auth.sso` is configured
+    /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+    ///
+    /// `None` means the three SSO routes answer "not configured" (`status`
+    /// says `enabled: false`; `start` and `callback` are the honest `404`) and
+    /// password + TOTP is the only way in. It is **configuration, not a
+    /// feature flag**: the block's presence is the whole switch, and password +
+    /// TOTP stays mounted either way as the break-glass path. It exists only
+    /// inside a `StaffLogin`, so SSO is served exactly when `human_login` is
+    /// (ADR-0037): there is no third state in which the provider is built and
+    /// the method is not.
+    pub sso: Option<Arc<sso::SsoProvider>>,
 }
 
 /// A `staff_auth` value a process that must serve the sign-in cannot use
@@ -139,10 +153,12 @@ pub enum StaffLoginError {
     SecretsMissing,
 
     /// A pepper argon2 refuses, a TOTP key that is not 32 bytes of base64url,
-    /// or a `trusted_proxies` entry that does not parse.
+    /// a `trusted_proxies` entry that does not parse, or an SSO block whose
+    /// outbound HTTP client cannot be built.
     #[error("{what} is not usable: {reason}")]
     Unusable {
-        /// The configuration at fault: `staff_auth` or `staff_auth.trusted_proxies`.
+        /// The configuration at fault: `staff_auth`,
+        /// `staff_auth.trusted_proxies` or `staff_auth.sso`.
         what: &'static str,
         /// The underlying error's own text, which names no secret.
         reason: String,
@@ -224,8 +240,38 @@ impl StaffLogin {
             merchant_id = %dashboard.merchant_id,
             "/dash/v1 serves the staff authorization-code grant (ADR-0017, auth.methods: \
              human_login): password + TOTP, server-side sessions, and tokens whose audience \
-             is this client id. Staff SSO is not offered (VPA-4)"
+             is this client id"
         );
+
+        // `staff_auth.sso` (ADR-0030): the block's presence is the whole
+        // switch. A provider that cannot even be constructed is the fixed TLS
+        // stack failing. It is fatal here, like the other two unusable values
+        // above: a block the operator wrote that quietly serves nothing is the
+        // dormant half-feature ADR-0037 refuses (until VPA-4 this logged and
+        // fell back to password + TOTP, the break-glass path, which is still
+        // mounted either way).
+        let sso = staff_auth
+            .sso
+            .as_ref()
+            .map(|sso| {
+                sso::SsoProvider::new(sso, &dashboard.merchant_id).map_err(|error| {
+                    StaffLoginError::Unusable {
+                        what: "staff_auth.sso",
+                        reason: error.to_string(),
+                    }
+                })
+            })
+            .transpose()?
+            .map(Arc::new);
+        if let Some(provider) = &sso {
+            tracing::info!(
+                issuer = %provider.issuer(),
+                merchant_id = %dashboard.merchant_id,
+                "/dash/v1 offers staff SSO (ADR-0030): members are provisioned on first \
+                 sign-in, never as admins; password + TOTP stays mounted as the \
+                 break-glass path"
+            );
+        }
 
         Ok(Some(Arc::new(Self {
             credentials,
@@ -239,6 +285,7 @@ impl StaffLogin {
             limiter: rate_limit::SignInLimiter::new(staff_auth.rate_limits),
             trusted_proxies,
             issuer_label: config.deployment.name.clone(),
+            sso,
         })))
     }
 }
@@ -552,6 +599,12 @@ pub const STAFF_ROUTES: &[(&str, &[&str])] = &[
     ("/staff/logout", &["POST"]),
     ("/oauth/authorize", &["GET"]),
     ("/oauth/token", &["POST"]),
+    // SSO (ADR-0030). Mounted whether or not `staff_auth.sso` is configured,
+    // like every route above: an unconfigured one answers `enabled: false` or
+    // the honest 404 rather than being absent from the table a test walks.
+    ("/staff/sso", &["GET"]),
+    ("/staff/sso/start", &["POST"]),
+    ("/staff/sso/callback", &["POST"]),
 ];
 
 /// The unauthenticated half of `/dash/v1`.
@@ -570,6 +623,9 @@ pub(crate) fn routes() -> Router<crate::AppState> {
         .route("/staff/logout", post(logout))
         .route("/oauth/authorize", get(oauth::authorize))
         .route("/oauth/token", post(oauth::token))
+        .route("/staff/sso", get(sso::status))
+        .route("/staff/sso/start", post(sso::start))
+        .route("/staff/sso/callback", post(sso::callback))
 }
 
 /// Step 1: the password.
@@ -1432,10 +1488,9 @@ mod tests {
     /// Every route this module mounts is listed in `STAFF_ROUTES`, which is
     /// what the boundary test walks.
     #[test]
-    fn the_route_table_names_eight_unauthenticated_paths() {
-        // Eight: the three SSO routes ADR-0030 added (eleven in total) are
-        // VPA-4's and are not mounted yet.
-        assert_eq!(STAFF_ROUTES.len(), 8);
+    fn the_route_table_names_eleven_unauthenticated_paths() {
+        // Eight until ADR-0030 added the three SSO routes.
+        assert_eq!(STAFF_ROUTES.len(), 11);
         for (path, methods) in STAFF_ROUTES {
             assert!(path.starts_with('/'), "{path}");
             assert!(!methods.is_empty(), "{path}");

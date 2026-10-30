@@ -558,6 +558,8 @@ fn staff_auth_with(trusted_proxies: Vec<String>, rate_limits: RateLimits) -> Sta
         // under the number a deployment that wrote nothing gets, so that a
         // short TTL cannot make an unrelated assertion pass or fail.
         access_token_ttl_seconds: StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+        // Password and TOTP only: the SSO cases are `staff_sso.rs`'s.
+        sso: None,
     }
 }
 

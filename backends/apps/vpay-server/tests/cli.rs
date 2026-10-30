@@ -2320,6 +2320,83 @@ fn a_management_pod_serving_human_login_mounts_its_jwks_and_session_validator() 
     });
 }
 
+/// The same management pod with `staff_auth.sso` written: see the fixture's header.
+fn serve_management_staff_sso_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/serve-management-staff-sso.yml"
+    )
+}
+
+/// `serve` offers staff SSO exactly when `staff_auth.sso` is written (VPA-4,
+/// ADR-0030, ADR-0037): the provider is built by `StaffLogin::from_config`, so the
+/// wiring is the one that ships and not a harness's copy of it.
+///
+/// Two boots of the same management pod, one with the block and one without. With
+/// it, `GET /dash/v1/staff/sso` says `enabled: true` and `start` is mounted (the
+/// provider's issuer is unreachable by design, so the refusal is the module's one
+/// `401` and not a `404`); without it, the status route says `enabled: false` and
+/// `start` is the honest `404`.
+///
+/// **Proved by sabotage** (`docs/status/verification/2026-10-30-vpa4-staff-sso.md`):
+/// leaving `sso: None` in `StaffLogin::from_config` fails the first boot's
+/// `enabled` assertion.
+#[test]
+fn a_management_pod_offers_staff_sso_exactly_when_the_block_is_written() {
+    with_live_postgres(|database_url| {
+        for (config, offered) in [
+            (serve_management_staff_sso_path(), true),
+            (serve_management_human_login_path(), false),
+        ] {
+            let addr = free_addr();
+            let mut guard = spawn_logged(
+                bin()
+                    .env("VPAY_BIND", addr.to_string())
+                    .env("DATABASE_URL", &database_url)
+                    .env("VPAY_CONFIG", config)
+                    .env("VPAY_TEST_STAFF_TOTP_KEY", totp_key(32))
+                    .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                    .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                    .env(
+                        "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                        envelope_next_key_path(),
+                    ),
+            );
+            assert_eq!(
+                poll_healthz(&mut guard, addr, Duration::from_secs(10)),
+                Some(200),
+                "the management pod never became healthy on {addr}"
+            );
+
+            let (code, response) =
+                http_request(addr, &get_request("/dash/v1/staff/sso")).expect("the pod answers");
+            assert_eq!(code, 200, "the status route is always mounted: {response}");
+            let expected = if offered {
+                "\"enabled\":true"
+            } else {
+                "\"enabled\":false"
+            };
+            assert!(
+                response.replace(' ', "").contains(expected),
+                "staff_auth.sso written is {offered}: {response}"
+            );
+
+            let (code, response) = http_request(
+                addr,
+                "POST /dash/v1/staff/sso/start HTTP/1.1\r\nHost: localhost\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .expect("the pod answers");
+            let expected_status = if offered { 401 } else { 404 };
+            assert_eq!(
+                code, expected_status,
+                "start with the block written is refused for the provider, without it for the \
+                 route: {response}"
+            );
+        }
+    });
+}
+
 /// `n` zero bytes as unpadded base64url, the encoding `staff_auth.totp_encryption_key`
 /// is read in.
 fn totp_key(n: usize) -> String {

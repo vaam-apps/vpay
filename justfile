@@ -3146,7 +3146,16 @@ expected_ignored := "0"
 # listed, expected 55": this recipe is in `just ci` and not in `just verify`'s
 # seventeen, so the PR's local run never reached it. The review round's serve
 # test went into the existing `vpay-server` `tests/cli.rs`, so it adds none.
-expected_suites := "56"
+#
+# **56 -> 58 on 2026-10-30 (VPA-4, staff SSO restored)**: two binaries, the two
+# VP-6a deleted with the sign-in they drove: `staff_sso.rs` (the real router over a
+# real Postgres against an identity provider simulated over HTTP) and
+# `staff_sso_keycloak.rs` (one test, a real Keycloak container). Counted before
+# running the gate, the way the 55 -> 56 note above says to: `staff_sign_in.rs` was
+# the previous bump and these are two more files under `tests/`, each its own
+# binary because each boots its own stack. Measured by `just verify-ignored`
+# below.
+expected_suites := "58"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.

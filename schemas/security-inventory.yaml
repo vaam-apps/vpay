@@ -132,7 +132,7 @@ deployable_services:
       - name: "management_api"
         surface: "/dash/v1, including /dash/v1/staff/* and /dash/v1/oauth/*"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "A COSE_Sign1 signed request under a paired console key (ADR-0036) or, only when auth.methods serves human_login (ADR-0037), an unsigned request carrying a staff session bearer (Authorization: Bearer, audience dashboard_client.client_id); a request that is signed and also carries an Authorization header is a 400. The staff sign-in routes (/dash/v1/staff/*) and the authorization-code grant (/dash/v1/oauth/*) are mounted only then. /dash/v1/staff/* itself authenticates by an unauthenticated password and TOTP sign-in, which returns the staff session token that every later request carries"
+        auth: "A COSE_Sign1 signed request under a paired console key (ADR-0036) or, only when auth.methods serves human_login (ADR-0037), an unsigned request carrying a staff session bearer (Authorization: Bearer, audience dashboard_client.client_id); a request that is signed and also carries an Authorization header is a 400. The staff sign-in routes (/dash/v1/staff/*, including the three SSO routes /dash/v1/staff/sso*: the status route answers enabled false, and start and callback 404, unless staff_auth.sso is written) and the authorization-code grant (/dash/v1/oauth/*) are mounted only then. /dash/v1/staff/* itself authenticates by an unauthenticated password and TOTP sign-in, which returns the staff session token that every later request carries"
         purpose: "Staff and merchant management reads, and the staff sign-in"
       - name: "oidc_discovery"
         surface: "/v1/oauth/jwks.json and /v1/oauth/.well-known/openid-configuration"
@@ -327,6 +327,14 @@ secrets_and_credentials:
     storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet. Losing it invalidates every enrolled second factor"
     adr: "docs/adr/0017-staff-authentication.md"
 
+  - class: staff_sso_client_secret
+    description: "OIDC client secret for federated staff sign-in; read only when auth.methods serves human_login and staff_auth.sso is written"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.sso.client_secret"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet. It is vpay's secret at the identity provider, not a credential of any staff member: a rotation is done at the provider and in this key together"
+    adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+
   - class: oauth_signing_key
     description: "RSA private key that signs vpay-issued access tokens"
     managed_in: "vpay-server CLI"
@@ -511,20 +519,24 @@ material_controls:
   - id: "A.8.2"
     theme: "Technological"
     name: "Privileged Access Rights"
-    implementation: "A person reads the console with a paired P-256 key (phone-vouched through vaam, a service holding console_pairing, or an operator's `staff pair-key`, which never creates or upgrades an administrator) or, only when auth.methods serves human_login, with a staff session: a password plus TOTP, an authorization code with PKCE, and a short-lived access token. The second door is a deployment choice, off in vaam's."
+    implementation: "A person reads the console with a paired P-256 key (phone-vouched through vaam, a service holding console_pairing, or an operator's `staff pair-key`, which never creates or upgrades an administrator) or, only when auth.methods serves human_login, with a staff session: a password plus TOTP or, when staff_auth.sso is written, a federated OpenID Connect sign-in (state, nonce and PKCE; an id_token whose signature, issuer, audience, group and second factor are checked), then an authorization code with PKCE and a short-lived access token. The second door is a deployment choice, off in vaam's."
     implementation_paths:
       - "backends/crates/vpay-api/src/console_keys.rs"
       - "backends/crates/vpay-api/src/envelope/console.rs"
       - "backends/crates/vpay-api/src/envelope/service.rs"
       - "backends/crates/vpay-api/src/svc/mod.rs"
       - "backends/crates/vpay-api/src/staff/mod.rs"
+      - "backends/crates/vpay-api/src/staff/sso/mod.rs"
+      - "backends/crates/vpay-api/src/staff/sso/verify.rs"
       - "backends/crates/vpay-api/src/staff_auth/mod.rs"
-    evidence: "A key expires 30 days after pairing (a CHECK), a revoked or expired key is the layer's coarse 401 on the next request, a merchant key never reaches /svc, and an administrator is made only by an operator on the command line. With human_login served: TOTP replay guard, session revocation, per-source-address and per-email sign-in limits in rate_limit_windows, and the member re-read on every request; with it off the sign-in routes are not mounted and /dash/v1 takes a signature alone. Dual control and automated key lifecycle remain gap #152."
+    evidence: "A key expires 30 days after pairing (a CHECK), a revoked or expired key is the layer's coarse 401 on the next request, a merchant key never reaches /svc, and an administrator is made only by an operator on the command line. With human_login served: TOTP replay guard, OIDC ID-token checks (a pending flow is taken exactly once and expires, and the second factor must be proved by acr or amr), session revocation, per-source-address and per-email sign-in limits in rate_limit_windows, and the member re-read on every request; with it off the sign-in routes are not mounted and /dash/v1 takes a signature alone. Dual control and automated key lifecycle remain gap #152."
     evidence_paths:
       - "docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md"
       - "docs/adr/0017-staff-authentication.md"
+      - "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
       - "docs/adr/0037-authentication-methods-are-deployment-configuration.md"
     evidence_tests:
+      - "the_second_factor_rule_is_acr_or_amr_and_a_password_alone_is_not_one"
       - "pairing_never_creates_or_upgrades_an_administrator"
       - "a_merchant_key_cannot_reach_svc"
       - "a_revoked_key_is_refused_on_its_very_next_request"

@@ -1,0 +1,46 @@
+# Fixture for `the_sso_block_loads_from_yaml_with_its_defaults`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# The smallest document that carries `staff_auth.sso`: a dashboard client to
+# provision into, both staff secrets, and the block with only the keys that
+# have no default. `scopes` and `groups_claim` are LEFT OUT on purpose so the
+# test can assert what a deployment that does not write them gets.
+#
+# `accepted_acr` is left out too — the Keycloak shape: its `acr` is a level of
+# authentication that says nothing about a second factor, so the rule is an
+# `amr` one (ADR-0030).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme
+    merchant_id: acme-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [vpay:v1]
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-tenant
+  redirect_uris:
+    - http://localhost:3000/api/auth/callback
+  scope: dashboard:read
+
+staff_auth:
+  password_pepper: ${STAFF_PEPPER}
+  totp_encryption_key: ${STAFF_TOTP_KEY}
+  sso:
+    issuer: https://auth.example.test/realms/staff
+    client_id: vpay-staff
+    client_secret: ${STAFF_SSO_CLIENT_SECRET}
+    redirect_uri: http://localhost:3000/api/auth/sso/callback
+    required_group: vpay-staff
+    accepted_amr: [otp]

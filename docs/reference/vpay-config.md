@@ -815,12 +815,12 @@ sealed webhooks (VP-8). Order is irrelevant. The code is
 resolved set and `vpay_api::ResourceConfig::auth_methods()` carries it to the
 router.
 
-| Method           | Permits                                                                                                                    | Its block (refused when the method is off)                     |
-| ---------------- | -------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| `keypair`        | signed `/v1` requests, sealed answers, the console (`/dash/v1`, `/svc/v1`)                                                 | `merchant_clients[].cose_keys`, `dashboard`, `service_clients` |
-| `machine_tokens` | `Authorization: Bearer` on `/v1`, `/v1/oauth/token`, the MCP endpoint                                                      | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences`  |
-| `hmac_webhooks`  | merchant webhooks signed with a shared secret (`Vpay-Signature`)                                                           | `merchant_clients[].webhooks`                                  |
-| `human_login`    | staff password and TOTP sign-in, the authorization code, a session token on `/dash/v1` beside a console key (SSO is VPA-4) | `staff_auth`, `dashboard_client` (**both or neither**)         |
+| Method           | Permits                                                                                                                                                                                         | Its block (refused when the method is off)                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `keypair`        | signed `/v1` requests, sealed answers, the console (`/dash/v1`, `/svc/v1`)                                                                                                                      | `merchant_clients[].cose_keys`, `dashboard`, `service_clients` |
+| `machine_tokens` | `Authorization: Bearer` on `/v1`, `/v1/oauth/token`, the MCP endpoint                                                                                                                           | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences`  |
+| `hmac_webhooks`  | merchant webhooks signed with a shared secret (`Vpay-Signature`)                                                                                                                                | `merchant_clients[].webhooks`                                  |
+| `human_login`    | staff password and TOTP sign-in, single sign-on through an OpenID Connect provider when `staff_auth.sso` is written, the authorization code, a session token on `/dash/v1` beside a console key | `staff_auth`, `dashboard_client` (**both or neither**)         |
 
 ### The rules
 
@@ -969,7 +969,14 @@ staff_auth:
   the `/dash/v1` session validator likewise comes from the one
   `ManagementEnvelope::with_staff_sessions`),
   where it once logged and mounted the read
-  surface with no way in. `staff_auth.sso` is an unknown field until VPA-4.
+  surface with no way in. `staff_auth.sso` is `staff_auth`'s one optional
+  sub-block (VPA-4): it is served exactly when `human_login` is, so with the
+  method not permitted it is refused with the rest of `staff_auth`
+  (`AuthMethodDisabled`). Its own rules: `StaffSsoMalformed` (a field and the rule
+  it broke, never the value), `StaffSsoNoSecondFactorRule` (neither `accepted_acr`
+  nor `accepted_amr`), `LiteralSecret` for `client_secret` in livemode, and the
+  livemode https and stub-host rules for `issuer` and `redirect_uri`; a provider
+  that cannot be built is `StaffLoginError::Unusable`, exit `78`.
 - `dashboard.merchant_id` and `dashboard_client.merchant_id`, when both are
   written, must agree (`DashboardTenantMismatch`). A deployment that writes only
   `dashboard_client` mounts `/dash/v1` and no `/svc/v1`: pairing needs `dashboard:`.

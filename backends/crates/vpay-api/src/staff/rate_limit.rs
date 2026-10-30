@@ -269,6 +269,32 @@ impl SignInLimiter {
         })
     }
 
+    /// Counts one SSO start against the sign-in budget **for this address**.
+    ///
+    /// The same `sign_in:address` bucket the password leg spends from, on
+    /// purpose and without a new scope: `rate_limit_windows_scope_is_known`
+    /// admits three scopes and a fourth would need a migration for a counter
+    /// whose job is identical. The consequence is the one the budget already
+    /// has — behind a reverse proxy with `trusted_proxies` empty the address
+    /// is the proxy, so the bucket is the deployment's — and it is stated in
+    /// `docs/flows/dashboard-auth.md` rather than discovered.
+    ///
+    /// There is no per-email half: nobody has said who they are yet.
+    ///
+    /// # Errors
+    ///
+    /// [`ApiError`] if Postgres cannot count — a refusal, never an allowance.
+    pub async fn check_sso_start(
+        &self,
+        repositories: &dyn Repositories,
+        address: Option<IpAddr>,
+        now: OffsetDateTime,
+    ) -> Result<Verdict, ApiError> {
+        let key = address.map_or_else(|| "unknown".to_owned(), |ip| ip.to_string());
+        self.count(repositories, Budget::SignInAddress, &key, self.sign_in, now)
+            .await
+    }
+
     /// Counts one **current-password** attempt against the session making it.
     ///
     /// `session_digest` is `staff_sessions.id` — the SHA-256 of the token,

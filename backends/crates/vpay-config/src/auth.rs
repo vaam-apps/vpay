@@ -22,7 +22,7 @@
 //! | `keypair` | signed `/v1` requests and sealed answers; the console (`/dash/v1`, `/svc/v1`) | `merchant_clients[].cose_keys`, `dashboard`, `service_clients` |
 //! | `machine_tokens` | `Authorization: Bearer` on `/v1` and the `/v1/oauth` token endpoint that mints it; the MCP endpoint | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences` |
 //! | `hmac_webhooks` | merchant webhook endpoints signed with a shared secret (`Vpay-Signature`) | `merchant_clients[].webhooks` |
-//! | `human_login` | staff sign-in by password and TOTP, and the authorization-code grant that turns it into a `/dash/v1` session (SSO is VPA-4) | `staff_auth`, `dashboard_client` |
+//! | `human_login` | staff sign-in by password and TOTP, and the authorization-code grant that turns it into a `/dash/v1` session; single sign-on through an OpenID Connect provider when `staff_auth.sso` is written | `staff_auth`, `dashboard_client` |
 //!
 //! # Permitted is not served
 //!

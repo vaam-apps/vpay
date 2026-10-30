@@ -1513,6 +1513,38 @@ debug_protections:
   - type: NewCredential
     file: backends/crates/vpay-db/src/credentials.rs
     elements: [staff_credential_secret]
+  # The staff SSO plane (VPA-4, restored from before VP-6a with the wire types'
+  # `Debug` written by hand, as VPA-3 did for the password plane). A start answer
+  # carries the pending-flow token and the authorization URL (state, nonce and the
+  # PKCE challenge in its query); a callback request carries the provider's
+  # authorization code and the state; a callback answer carries the session token.
+  # The provider keeps the client secret; the verified claims keep the provider's
+  # subject (the join key of `credentials.subject`), an address, a display name and
+  # the nonce. Each prints the ids and outcomes a log needs and nothing else.
+  - type: SsoStartResponse
+    file: backends/crates/vpay-api/src/staff/sso/mod.rs
+    elements: [session_oauth_code]
+  - type: SsoCallbackRequest
+    file: backends/crates/vpay-api/src/staff/sso/mod.rs
+    elements: [session_oauth_code]
+  - type: SsoCallbackResponse
+    file: backends/crates/vpay-api/src/staff/sso/mod.rs
+    elements: [staff_oauth_token, session_oauth_code]
+  - type: SsoProvider
+    file: backends/crates/vpay-api/src/staff/sso/provider.rs
+    elements: [oauth_client_secret]
+  - type: IdentityClaims
+    file: backends/crates/vpay-api/src/staff/sso/verify.rs
+    elements:
+      [
+        staff_credential_secret,
+        staff_email,
+        staff_display_name,
+        session_oauth_code,
+      ]
+  - type: StaffSso
+    file: backends/crates/vpay-config/src/config.rs
+    elements: [oauth_client_secret]
   # vpay-api wire objects.
   - type: LastPaymentErrorObject
     file: backends/crates/vpay-api/src/model.rs

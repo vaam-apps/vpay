@@ -311,8 +311,15 @@ async fn with_the_method_off_the_procedure_transport_is_signed_only() {
 // ------------------------------------------------------- method on: mounted --
 
 /// With the method served every staff route is mounted: none answers the honest
-/// `404`. (They answer what they answer without a database: a refused form, a
-/// refused session. What each does is the integration suite's.)
+/// `404` of a route nobody mounted. (They answer what they answer without a
+/// database: a refused form, a refused session. What each does is the
+/// integration suite's.)
+///
+/// The two SSO routes that act (`start`, `callback`) are the one exception to
+/// "not a `404`": with no `staff_auth.sso` written they answer the module's own
+/// `404` (ADR-0030: SSO is not configured here), which is mounted and says so in
+/// its body. This test tells the two `404`s apart by the error code, so a
+/// route that fell off the router cannot hide behind an unconfigured one.
 #[tokio::test]
 async fn with_the_method_served_the_staff_routes_are_mounted() {
     let (app, _mint, _server) = served_app().await;
@@ -320,10 +327,20 @@ async fn with_the_method_served_the_staff_routes_are_mounted() {
         for method in *methods {
             let uri = format!("/dash/v1{path}");
             let response = send(app.clone(), method, &uri, &[], "").await;
-            assert_ne!(
-                response.status(),
-                StatusCode::NOT_FOUND,
+            if response.status() != StatusCode::NOT_FOUND {
+                continue;
+            }
+            assert!(
+                path.starts_with("/staff/sso/"),
                 "{method} {uri} must be mounted when human_login is served"
+            );
+            let bytes = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                .await
+                .expect("body");
+            assert!(
+                !String::from_utf8_lossy(&bytes).contains("unknown_route"),
+                "{method} {uri} answered the router's 404 for a route nobody mounted, not the \
+                 SSO module's own 404 for an unconfigured provider"
             );
         }
     }

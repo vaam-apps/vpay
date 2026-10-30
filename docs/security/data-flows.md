@@ -131,6 +131,42 @@ sign-in routes answer `404` and `/dash/v1` takes a signature alone.
 [dashboard-auth/human-login.md](../flows/dashboard-auth/human-login.md) has the
 state machine and the refusals.
 
+### 5. Staff single sign-on, only where `human_login` is served and `staff_auth.sso` is written (ADR-0030)
+
+```text
+Staff browser     Dashboard app (server)         vpay-server /dash/v1            OIDC provider (Keycloak)
+      │                  │                                │                                │
+      │ 1. "Sign in SSO" │ 2. POST /staff/sso/start       │                                │
+      ├─────────────────▶├───────────────────────────────▶│ 3. rate limit; state, nonce,   │
+      │                  │                                │    PKCE verifier; staff_sso_   │
+      │                  │                                │    attempts row (hashes, the   │
+      │                  │◀── pending token + provider URL┤    verifier sealed)            │
+      │ 4. redirect      │                                │                                │
+      │◀─────────────────┤                                │                                │
+      │ 5. authenticate at the provider (password + second factor)                         │
+      ├────────────────────────────────────────────────────────────────────────────────────▶│
+      │ 6. redirect back to the dashboard with code and state                              │
+      │◀────────────────────────────────────────────────────────────────────────────────────┤
+      ├─────────────────▶│ 7. POST /staff/sso/callback    │ 8. take the flow ONCE (DELETE) │
+      │                  ├───────────────────────────────▶│    compare state               │
+      │                  │                                ├───────────────────────────────▶│ 9. code + verifier
+      │                  │                                │◀───────────────────────────────┤    -> id_token (TLS)
+      │                  │                                │ 10. signature, iss, aud, azp,  │
+      │                  │                                │     exp, iat, nonce, group,    │
+      │                  │                                │     second factor (acr or amr) │
+      │                  │◀── new session token ──────────┤ 11. link by (iss, sub) or      │
+      │                  │    then 8-11 of flow 4         │     provision a non-admin      │
+```
+
+The provider's id_token is verified, read and discarded; its access token is
+never read, and vpay stays the OP for the token `/dash/v1` accepts. Every
+refusal is one `401` and the reason goes to vpay's log. There is no `jti` check
+in this flow: replay defence is the single-use pending flow (`state`, nonce and
+PKCE verifier are bound to a row that is deleted on the first callback, and
+expires after ten minutes) and the single-use authorization code that follows.
+[dashboard-auth/sso.md](../flows/dashboard-auth/sso.md) has the state machine
+and the refusals.
+
 ## Security Controls Embedded in Flows
 
 1. **Replay defence:** Every verified `/v1` envelope claims its nonce in
