@@ -235,6 +235,16 @@ shamefullyHoist: false
 #   constrain nothing a fresh resolution would not choose anyway, so deleting
 #   one is safe once `pnpm install` has moved the lockfile past it for good.
 #
+# overrides['qs@<6.16.1'] — 2026-10-27. GHSA-6pq8-jhm2-2vcw (moderate) against
+#   qs >=6.7.0 <=6.16.0; fixed in 6.16.1 (2026-10-14). A floor, for the same
+#   reason as the four above: every dependent takes qs on a caret range
+#   (`@refinedev/core` 5.0.12 and `@refinedev/nextjs-router` 7.0.5 on
+#   `^6.10.1`, `@cypress/request` 4.0.1 on `^6.15.2`), and the lockfile held
+#   6.16.0. It resolves 6.16.1 rather than 6.16.2 or 6.17.0, because both of
+#   those were published on 2026-10-27, inside pnpm 11's 24h
+#   `minimumReleaseAge`; no `minimumReleaseAgeExclude` entry was added for
+#   them, since 6.16.1 is fixed. Re-check on the next audit pass, as above.
+#
 # overrides['@zenstackhq/cli>@hono/node-server'] — 2026-10-29.
 #   GHSA-rmxm-3fg6-px4f (moderate): `serveStatic` decodes the request path a
 #   second time, bypassing middleware on static paths. Vulnerable
@@ -270,6 +280,7 @@ overrides:
   "brace-expansion@>=4.0.0 <5.0.12": ^5.0.12
   "sharp@<0.35.5": ^0.35.5
   "source-map-js@<1.2.2": ^1.2.2
+  "qs@<6.16.1": ^6.16.1
   "chevrotain>lodash": ^4.18.1
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1

@@ -6,10 +6,10 @@
 //! (revision `2026-07-28`, Streamable HTTP). Each test names the threat-model
 //! row it proves (`docs/security/threat-models/mcp.md`).
 //!
-//! Since VP-3, `/v1` is signed rather than token-authenticated, so every `/v1`
-//! call here is sealed through [`support::sealed::SealedHttp`] as the merchant
-//! whose MCP token the same case uses. The OAuth OP now serves this endpoint
-//! alone.
+//! Every `/v1` call here is sealed through [`support::sealed::SealedHttp`]
+//! (VP-3) as the merchant whose MCP token the same case uses. Since ADR-0037,
+//! `/v1` also takes a `vpay:v1` bearer token where `auth.methods` permits
+//! `machine_tokens`; an MCP token is still refused there.
 //!
 //! The rails here are unreachable by design, as in `payment_intents.rs`:
 //! this suite is about the surface. A confirm that a rail settles is
