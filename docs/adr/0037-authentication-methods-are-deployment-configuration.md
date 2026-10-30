@@ -6,7 +6,8 @@
   day hold for a deployment that permits only `keypair`, and no longer hold for
   one that permits more. [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)
   is untouched except for what decision 8 adds: staff sign-in returns under
-  `human_login` (VPA-3), beside the console key, and not in its place.
+  `human_login` (VPA-3), and staff SSO with it (VPA-4), beside the console key
+  and not in its place.
 - **Date:** 2026-10-27
 - **Deciders:** the owner (ruling R5, 2026-10-27): _vpay serves other apps
   besides vaam. Which ways of authenticating a deployment accepts is
@@ -118,8 +119,19 @@ vaam, taken in a repository that serves others.
    grant would be a new design (a store, a rotation rule, a migration), not a
    restoration.
 
-   **Staff SSO is not part of this release** (`staff_auth.sso`, VPA-4): the key
-   is an unknown field of `staff_auth` and is refused, not ignored.
+   ~~**Staff SSO is not part of this release** (`staff_auth.sso`, VPA-4): the key
+   is an unknown field of `staff_auth` and is refused, not ignored.~~
+   **Corrected 2026-10-30 (VPA-4):** staff SSO
+   ([ADR-0030](0030-staff-sign-in-federates-to-an-oidc-provider.md)) is restored
+   and is a part of this method, not a fifth one. `staff_auth.sso` is a sub-block
+   of the block this decision already pairs with `dashboard_client`, so it needs
+   no switch of its own and is served exactly when `human_login` is: with the
+   method not permitted, the `staff_auth` block that carries it is refused
+   (`AuthMethodDisabled`, naming `staff_auth`), as `staff_auth` itself is; with
+   the method served and the sub-block absent, the three SSO routes answer
+   `enabled: false` and `404`; with it written, `StaffLogin::from_config` builds
+   the provider and a provider that cannot be built is a boot refusal, not a log
+   line. Password and TOTP stays mounted beside it as the break-glass path.
 
 9. Every request span on `/v1` and `/dash/v1` carries
    `auth.method = keypair | machine_token | human_session`. It is tracing only:

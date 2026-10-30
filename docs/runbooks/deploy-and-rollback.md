@@ -91,9 +91,9 @@ Four things the tooling will not check for you:
    writes those tables, nobody signs in by password or TOTP whatever you restore,
    and the export below keeps the data safe without making login work. VPA-3
    restores the password, TOTP, session and authorization-code routes behind
-   `auth.methods` (`human_login`); **staff SSO is still not served** (VPA-4), so
-   a deployment that signs staff in through an identity provider waits for that
-   release too.
+   `auth.methods` (`human_login`); **staff SSO** (`staff_auth.sso`) is restored by
+   VPA-4, so a deployment that signs staff in through an identity provider waits
+   for the release that carries it.
 
 ### Two things this release changes on `/dash/v1`
 
@@ -158,7 +158,9 @@ new release does with a `staff_auth:` block depends on whether it carries VPA-3.
   naming `human_login`), and the blocks must be **both** there: one without the
   other, or a block with `human_login` left out of an explicit list, exits `78`
   at boot (`AuthMethodNotConfigured`, `AuthMethodDisabled`). A `staff_auth.sso`
-  block is refused as an unknown key until VPA-4: delete it. To stop serving the
+  block is accepted from the release that carries VPA-4 (see
+  [dashboard-auth/sso.md](../flows/dashboard-auth/sso.md)) and is an unknown key,
+  so a boot refusal, on one that does not: delete it there. To stop serving the
   sign-in instead, delete both blocks, as the next bullet.
 - **A release cut between VP-6a and VPA-3 refuses a `staff_auth:` block** when it
   loads its configuration, before it runs a migration: the process exits `78`

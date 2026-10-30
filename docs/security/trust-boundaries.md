@@ -101,8 +101,11 @@ Bearer`. vpay sets no cookie; the session is a `staff_sessions` row keyed by
   The envelope layer then runs `Optional` on `/dash/v1`, a request that is signed
   **and** carries a bearer is refused, and a session is held to the same member
   re-read and tenant resolution as a key. Where the method is off, none of this
-  is mounted and `/dash/v1` takes a signature alone. Staff SSO is not served
-  (VPA-4).
+  is mounted and `/dash/v1` takes a signature alone. With `staff_auth.sso`
+  written the sign-in also federates its human step to one configured OpenID
+  Connect provider (VPA-4, [ADR-0030](../adr/0030-staff-sign-in-federates-to-an-oidc-provider.md));
+  vpay stays the OP for the token, and the provider's id_token is read once and
+  discarded.
 - **Authorization:** Cross-tenant access is restricted to read-only views
   ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
 

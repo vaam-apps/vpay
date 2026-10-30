@@ -7,6 +7,9 @@
 > decision 8), and vaam's is not one of them. This page is the sign-in that
 > method restores, from password to a `/dash/v1` read; the console key it sits
 > beside is [../dashboard-auth.md](../dashboard-auth.md).
+>
+> With `staff_auth.sso` written the human step can instead federate to an OpenID
+> Connect provider and end in the same session: [sso.md](sso.md) (VPA-4).
 
 ## When it is served
 
@@ -185,8 +188,7 @@ named in [status/backend.md](../../status/backend.md).
 
 ## Not built
 
-Staff SSO (`staff_auth.sso`; VPA-4: the key is refused as unknown until then),
-the dashboard application's login pages and its two-transport data layer
+The dashboard application's login pages (and its two SSO routes) and its two-transport data layer
 (VPA-5, with VP-6b), a command to remove a member, disable one or reset a
 password (none exists; see the section above for the SQL), and any proof against
 a deployment that is running.
@@ -206,3 +208,7 @@ a deployment that is running.
   a real process on `deployment.surfaces: [management]` answers the JWKS and the
   sign-in route, refuses an unsigned read with `missing_bearer_token`, and exits
   `78` naming `staff_auth` on a 31-byte TOTP key.
+- Single sign-on (VPA-4) has its own suites, listed on [sso.md](sso.md):
+  `staff_sso.rs`, `staff_sso_keycloak.rs`, and
+  `a_management_pod_offers_staff_sso_exactly_when_the_block_is_written` in
+  `tests/cli.rs`.
