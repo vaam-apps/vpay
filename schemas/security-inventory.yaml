@@ -130,13 +130,18 @@ deployable_services:
     trust_tier: "tier_2_application"
     interfaces:
       - name: "management_api"
-        surface: "/dash/v1"
+        surface: "/dash/v1, including /dash/v1/staff/* and /dash/v1/oauth/*"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "vpay-issued bearer access token; the dashboard holds it in an httpOnly cookie"
-        purpose: "Staff and merchant management reads"
+        auth: "A COSE_Sign1 signed request under a paired console key (ADR-0036) or, only when auth.methods serves human_login (ADR-0037), an unsigned request carrying a staff session bearer (Authorization: Bearer, audience dashboard_client.client_id); a request that is signed and also carries an Authorization header is a 400. The staff sign-in routes (/dash/v1/staff/*) and the authorization-code grant (/dash/v1/oauth/*) are mounted only then"
+        purpose: "Staff and merchant management reads, and the staff sign-in"
+      - name: "oidc_discovery"
+        surface: "/v1/oauth/jwks.json and /v1/oauth/.well-known/openid-configuration"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "Unauthenticated by design: a public key set and a discovery document. Mounted on this pod only when auth.methods serves human_login, because its own session validator fetches the key set over loopback (ADR-0022, ADR-0037); /v1/oauth/token is not mounted here"
+        purpose: "Key set and metadata a staff access token is validated against"
     upstream_apis: []
     responsibilities:
-      - "Serve /dash/v1 alone; every /v1 route is unmounted (ADR-0022), and the chart's NetworkPolicy is opt-in and never applied"
+      - "Serve /dash/v1 and, when human_login is served, the OP's JWKS and discovery document its own session validator reads; every other /v1 route is unmounted (ADR-0022), and the chart's NetworkPolicy is opt-in and never applied"
 
   - id: merchant_dashboard
     name: "Merchant and Staff Dashboard"

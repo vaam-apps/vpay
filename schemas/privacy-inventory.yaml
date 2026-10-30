@@ -1500,6 +1500,13 @@ debug_protections:
   - type: StaffAuth
     file: backends/crates/vpay-config/src/config.rs
     elements: [staff_credential_secret]
+  # The dashboard client's registration: a public client that must never hold a
+  # secret, so `client_secret` is refused at load (`ClientSecretPresent`). Its
+  # `Debug` still redacts the field, as `MerchantClient`'s does, so the refused
+  # value cannot reach a log line by way of the error path that names the entry.
+  - type: DashboardClient
+    file: backends/crates/vpay-config/src/oauth.rs
+    elements: [oauth_client_secret]
   - type: CredentialRow
     file: backends/crates/vpay-db/src/credentials.rs
     elements: [staff_credential_secret]
