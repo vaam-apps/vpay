@@ -613,11 +613,8 @@ async fn audit_table_holds_hmac_target_representation_and_no_raw_pii() -> anyhow
 
     // Expected HMAC-SHA256 of tenant + canonical MSISDN with AUDIT_SALT
     use sqlx::Row as _;
-    let expected_hash = vpay_api::v1::account_holders::audit_target_hash(
-        MERCHANT_A,
-        MSISDN_REGISTERED,
-        AUDIT_SALT,
-    );
+    let expected_hash =
+        vpay_api::v1::account_holders::audit_target_hash(MERCHANT_A, MSISDN_REGISTERED, AUDIT_SALT);
 
     let rows = sqlx::query(
         "SELECT action, target_repr, outcome FROM audit_events WHERE tenant = $1 ORDER BY occurred_at ASC",

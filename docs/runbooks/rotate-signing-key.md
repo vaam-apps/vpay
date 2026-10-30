@@ -200,6 +200,7 @@ There are no down-migrations here. See [release.md](release.md) §5.
 - `--envelope-signing-key-next-file` / `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE`: upcoming key published in server keys for clients to pre-warm pins
 
 ### Procedure:
+
 1. Generate a new Ed25519 keypair.
 2. Mount the new key as `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE` alongside the current key and restart `vpay-server`.
 3. Allow clients (and SDK pins) time to update their trusted server keys.
@@ -212,7 +213,9 @@ _Proven by:_ `an_answer_is_refused_by_a_client_pinning_the_wrong_server_key` (`b
 ## 6. Console Key and Service Client Revocation (ADR-0036, issue #152)
 
 ### Revoking a Console Key:
+
 If an operator console key is lost, stolen, or compromised:
+
 1. Identify the 64-character hex thumbprint (from logs, staff export, or `console_keys` table).
 2. Execute immediate revocation on the pod or host CLI:
    ```bash
@@ -223,7 +226,9 @@ If an operator console key is lost, stolen, or compromised:
 _Proven by:_ `a_revoked_key_is_refused_on_its_very_next_request` (`backends/tests/integration/tests/dashboard_read_surface.rs:1350`).
 
 ### Revoking a Service Client:
+
 Internal service clients (such as `vaam` on `/svc/v1`) authenticate via registered COSE keys in `config/application.yml` under `service_clients`.
+
 1. To disable a service client immediately, update configuration to set `disabled: true` on the `service_clients[]` entry, or remove the specific key from `cose_keys[]`.
 2. Redeploy `vpay-server`. The disabled client receives an immediate coarse 401 on subsequent calls.
 
@@ -234,6 +239,7 @@ _Proven by:_ `a_service_client_without_the_pairing_capability_is_refused_a_pairi
 ## 7. Rotating the Privacy Lookup Audit Salt (ADR-0020, provisional pending RFC-0002 D3)
 
 `privacy.lookup_audit_salt` keys HMAC-SHA256 digests of phone numbers stored in `audit_events.target_repr`.
+
 1. Generate 32 bytes of secure random bytes as a 64-character lowercase hex string (`openssl rand -hex 32`).
 2. Update the Kubernetes Secret or environment variable `VPAY_PRIVACY_LOOKUP_AUDIT_SALT`.
 3. Restart `vpay-server`. New lookups immediately write HMAC digests keyed under the new salt.

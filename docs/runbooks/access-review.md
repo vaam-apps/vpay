@@ -85,14 +85,17 @@ ORDER BY s.expires_at DESC;
 ## 4. Remediation Actions
 
 ### Revoking a Console Key Immediately
+
 If an unauthorized or stale console key is discovered, revoke it via the CLI on the pod/host:
 
 ```bash
 vpay-server staff revoke-key --thumbprint "<64_char_hex_thumbprint>"
 ```
+
 _Proven by:_ `a_revoked_key_is_refused_on_its_very_next_request` (`backends/tests/integration/tests/dashboard_read_surface.rs`).
 
 ### Deactivating a Staff Member
+
 To deactivate a staff member and cut off all session access:
 
 ```sql
@@ -111,4 +114,5 @@ SET revoked_at = now()
 WHERE staff_id IN (SELECT id FROM staff_members WHERE email = 'departed.user@example.test')
   AND revoked_at IS NULL;
 ```
+
 _Proven by:_ Member re-read on every request (`vpay_api::envelope::console::session_scope`).

@@ -2199,7 +2199,13 @@ impl RailHarness {
         self.post(path, body, &key).await
     }
 
-    async fn post_as(&self, client_id: &str, path: &str, body: &str, key: &str) -> anyhow::Result<Answer> {
+    async fn post_as(
+        &self,
+        client_id: &str,
+        path: &str,
+        body: &str,
+        key: &str,
+    ) -> anyhow::Result<Answer> {
         let response = SealedHttp::new()
             .post(self.url(path))
             .signed_by(client_id)
@@ -3134,7 +3140,8 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
 /// Issue #56 / ADR-0037: A refund nominating a payee requires `account_holders:read`.
 /// A caller with only `payments:write` (CLIENT_B) is refused 403 Forbidden.
 #[tokio::test]
-async fn a_nominated_payee_refund_without_account_holders_read_is_refused_403() -> anyhow::Result<()> {
+async fn a_nominated_payee_refund_without_account_holders_read_is_refused_403() -> anyhow::Result<()>
+{
     let harness = rail_harness().await?;
     let intent_id = harness.captured_intent_for(MERCHANT_B, AMOUNT).await?;
 

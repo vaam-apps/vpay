@@ -152,12 +152,14 @@ column is a change to the charge path and not to this route.
 ### 4. Rate limiting — per-credential fixed window (ADR-0020, issue #56, provisional pending RFC-0002 D6)
 
 Each lookup is counted against the caller's credential before the rail call. Lookups share a single fixed-window budget per credential across both `GET /v1/account_holders` and nominated-payee refunds on `POST /v1/refunds`.
+
 - For signed COSE envelopes: keyed by the signing-key thumbprint (`lookup:merchant_key:SHA-256:<thumbprint>`).
 - For machine tokens: keyed by the client ID (`lookup:machine_token:<client_id>`).
 
 The window duration and attempt limit are configured via `privacy.lookup_rate_limit` (provisional pending RFC-0002 D6).
 
 When the limit is reached, vpay returns HTTP 429 Too Many Requests with a `Retry-After: <seconds>` header rounding up the remaining seconds in the window, and error body:
+
 ```json
 {
   "error": {
@@ -167,6 +169,7 @@ When the limit is reached, vpay returns HTTP 429 Too Many Requests with a `Retry
   }
 }
 ```
+
 If counting the attempt fails in the database, the lookup fails closed with a `500`.
 
 _Proven by_ `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` and `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration).
@@ -354,9 +357,9 @@ about the _rail_, and this one answers a question about the _route_.
 | the refund path's three-way answer: unregistered is a `400`, unreachable is not | `an_unregistered_payee_is_a_400_and_an_unreachable_rail_is_not`, `a_rail_without_a_lookup_accepts_the_destination_unverified` (`vpay-api`), `a_payee_the_rail_does_not_know_is_refused_before_the_transfer` (integration, against a real WireMock MTN) |
 | every outcome counted, no label carrying the number or the name                 | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                                                                                 |
 | rate limit: exceeding budget is refused 429 with Retry-After                    | `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` (integration)                                                                                                                                                         |
-| rate limit: nominated payee refund spends lookup budget                          | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                            |
-| audit log: initiated and terminal events with HMAC target, no raw PII            | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
-| scope: lacking `account_holders:read` refused 403 Forbidden                      | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                  |
+| rate limit: nominated payee refund spends lookup budget                         | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                           |
+| audit log: initiated and terminal events with HMAC target, no raw PII           | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
+| scope: lacking `account_holders:read` refused 403 Forbidden                     | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                   |
 | the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — nine cases                                                                                                                                                                                     |
 | both SDKs speak the same query string and read the same object                  | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                                                                                     |
 

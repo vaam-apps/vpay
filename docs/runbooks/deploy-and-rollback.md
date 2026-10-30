@@ -94,6 +94,7 @@ Five things the tooling will not check for you:
    `auth.methods` (`human_login`); **staff SSO** (`staff_auth.sso`) is restored by
    VPA-4, so a deployment that signs staff in through an identity provider waits
    for the release that carries it.
+
 5. **Shared administrator prohibition and break-glass procedures (ISO 27001 A.8.2, issue #152).**
    Shared administrative accounts are strictly prohibited across all deployments. Every
    staff operator must possess an individual account created via

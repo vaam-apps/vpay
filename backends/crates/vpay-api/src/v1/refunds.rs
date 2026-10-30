@@ -254,7 +254,15 @@ pub(crate) async fn create(
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
-    create_with(repositories.as_ref(), &config, &adapters, &caller, &scope, post).await
+    create_with(
+        repositories.as_ref(),
+        &config,
+        &adapters,
+        &caller,
+        &scope,
+        post,
+    )
+    .await
 }
 
 /// [`create`] once its request has been read into a [`PostRequest`]: every
@@ -304,7 +312,8 @@ pub(crate) async fn create_with(
     // and it is why the release is here rather than left to
     // [`PostRequest::finish`], which would store the refusal and replay it at
     // a merchant who has since corrected their request.
-    let target = match resolve_target(repositories, config, adapters, caller, scope, &params).await {
+    let target = match resolve_target(repositories, config, adapters, caller, scope, &params).await
+    {
         Ok(target) => target,
         Err(error) => {
             post.release(repositories, scope, claim_id).await;

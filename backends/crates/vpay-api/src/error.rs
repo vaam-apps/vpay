@@ -1297,7 +1297,9 @@ impl IntoResponse for ApiError {
             .headers_mut()
             .insert(STRIPE_SHOULD_RETRY_HEADER, should_retry);
         if let Some(retry_after) = retry_after {
-            response.headers_mut().insert(header::RETRY_AFTER, retry_after);
+            response
+                .headers_mut()
+                .insert(header::RETRY_AFTER, retry_after);
         }
         response
     }

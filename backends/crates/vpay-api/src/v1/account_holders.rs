@@ -131,8 +131,8 @@ pub fn audit_target_hash(tenant_id: &str, msisdn: &str, salt: &str) -> String {
     use hmac::{Hmac, Mac as _};
     use sha2::Sha256;
 
-    let mut mac = Hmac::<Sha256>::new_from_slice(salt.as_bytes())
-        .expect("HMAC can take key of any size");
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(salt.as_bytes()).expect("HMAC can take key of any size");
     mac.update(tenant_id.as_bytes());
     mac.update(b":");
     mac.update(msisdn.as_bytes());
@@ -328,7 +328,11 @@ pub(crate) async fn ask_rail(
     // 1. Fixed-window rate limiting per credential (ADR-0020, provisional pending RFC-0002 D6)
     if let Some(policy) = rate_limit {
         use sha2::Digest as _;
-        let pre_image = format!("lookup:merchant_key:{}:{}", scope.merchant_id(), caller.id());
+        let pre_image = format!(
+            "lookup:merchant_key:{}:{}",
+            scope.merchant_id(),
+            caller.id()
+        );
         let rate_limit_id = hex::encode(sha2::Sha256::digest(pre_image.as_bytes()));
         let now = time::OffsetDateTime::now_utc();
         let window = time::Duration::seconds(policy.window_seconds as i64);
@@ -637,7 +641,10 @@ impl vpay_db::RateLimits for TestStore {
         _window: time::Duration,
         now: time::OffsetDateTime,
     ) -> Result<vpay_db::RateLimitOutcome, vpay_db::DbError> {
-        let attempts = self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let attempts = self
+            .attempts
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
         Ok(vpay_db::RateLimitOutcome {
             attempts,
             window_started_at: now,
@@ -1363,7 +1370,9 @@ mod tests {
     #[tokio::test]
     async fn rate_limiting_refuses_when_over_budget_with_retry_after() {
         let store = TestStore::default();
-        store.attempts.store(10, std::sync::atomic::Ordering::SeqCst);
+        store
+            .attempts
+            .store(10, std::sync::atomic::Ordering::SeqCst);
 
         let config = Config {
             deployment: Deployment {
@@ -1429,7 +1438,9 @@ mod tests {
         .expect_err("over budget must be refused");
 
         match err {
-            ApiError::AccountHolderLookupRateLimited { retry_after_seconds } => {
+            ApiError::AccountHolderLookupRateLimited {
+                retry_after_seconds,
+            } => {
                 assert!(retry_after_seconds > 0 && retry_after_seconds <= 60);
             }
             other => panic!("expected AccountHolderLookupRateLimited, got: {other:?}"),

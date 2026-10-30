@@ -8178,7 +8178,10 @@ providers:
 
         config.privacy.lookup_audit_salt = Some("${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
         let mut raw = RawSecrets::identity(&config);
-        raw.privacy.insert("lookup_audit_salt".to_owned(), "${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
+        raw.privacy.insert(
+            "lookup_audit_salt".to_owned(),
+            "${VPAY_LOOKUP_AUDIT_SALT}".to_owned(),
+        );
         assert_eq!(config.validate_all(&raw), Ok(()));
     }
 }

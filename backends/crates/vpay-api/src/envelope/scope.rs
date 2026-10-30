@@ -430,10 +430,8 @@ mod tests {
     #[tokio::test]
     async fn caller_credential_extraction_succeeds_for_signer() {
         let thumbprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let cred = CallerCredential::for_signer(
-            thumbprint.to_owned(),
-            vec!["payments:write".to_owned()],
-        );
+        let cred =
+            CallerCredential::for_signer(thumbprint.to_owned(), vec!["payments:write".to_owned()]);
         let mut req = Request::builder().body(()).unwrap();
         req.extensions_mut().insert(cred.clone());
         let (mut parts, ()) = req.into_parts();
