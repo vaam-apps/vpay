@@ -187,7 +187,8 @@ _Built 2026-10-30._ The sequence above is what the application does:
 
 - **The button** is drawn when discovery serves `human_login` **and**
   `GET /staff/sso` says `enabled: true` **and** the container knows the
-  provider's origin. `enabled: false` draws nothing. A status read that fails
+  provider's origin (an `https` issuer, or `http` on a loopback host).
+  `enabled: false` draws nothing. A status read that fails
   says "Single sign-on could not be checked" with the request id and keeps the
   password question; it never hides the button silently.
 - **The callback path must equal the path of `staff_auth.sso.redirect_uri`.**
@@ -212,9 +213,29 @@ _Built 2026-10-30._ The sequence above is what the application does:
   `Referrer-Policy: no-referrer`: a callback's URL holds a one-time code.
   `start` checks the request's `Origin` first, as the server actions do; the
   callback cannot, being a cross-site navigation by construction.
+- **The callback waits longer than any other call.** vpay's callback consumes
+  the sign-in attempt first, then calls the provider with a ten-second timeout
+  of its own, which covers a token exchange and, on a cold cache, a JWKS fetch.
+  The application gives that one call 25 seconds (`SSO_CALLBACK_TIMEOUT_MS`);
+  every other call keeps five. A shorter wait would show `sso=failed` while vpay
+  may still mint a session.
+- **The session a sign-in replaces is revoked, best effort.** If the browser
+  held a session cookie when `signed_in` arrived, the application asks vpay to
+  delete that session through the call sign-out makes, with a two-second
+  deadline (`SSO_REVOKE_TIMEOUT_MS`). A failure of any kind is ignored and the
+  sign-in goes ahead; the old row then expires on its own bounds.
+- **A refused redirect leaves one line in the log**, naming the refused URL's
+  origin and the configured issuer's origin and nothing else: the URL carries
+  `state`, the nonce and the PKCE challenge.
 - **Limits.** A provider whose authorization endpoint is on another origin than
-  its issuer is refused. A session already in the browser is replaced on
-  `signed_in` but not revoked at vpay; it expires on its own bounds.
+  its issuer is refused (the origin rule compares the two byte for byte). Three
+  such providers are known: AWS Cognito (the hosted UI is on the user pool's
+  domain, not the issuer's), Entra ID v1 (an issuer on `sts.windows.net`, an
+  authorization endpoint on `login.microsoftonline.com`) and Azure AD B2C behind
+  a custom domain. Supporting one is a decision for whoever deploys it, not a
+  default. An `http` issuer counts as configured only on a loopback host; any
+  other reads as unset, and `/login` shows the not-configured notice instead of
+  a button that could only fail.
 
 **Upgrade note.** The application needs `staff_auth.sso` written (VPA-4) with
 `redirect_uri` set to `https://<dashboard origin>/api/auth/sso/callback`, and

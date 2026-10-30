@@ -301,8 +301,10 @@ clears the pending cookie only, so a stray cross-site `GET` cannot sign a staff
 member out; `signed_in` does not run the code leg in the route, the gate does;
 the provider URL is checked against the issuer's origin and refused over plain
 `http` outside loopback (it was any `http(s)` URL); a status read that failed
-was "not enabled" and is now a message.
+was "not enabled" and is now a message. The callback has a 25-second deadline of
+its own and revokes, best effort, the session it replaces (review round 1).
 
 **Not built.** The end-to-end cases (VPA-5c), the Helm value for the issuer, and
 any run against a real provider through these routes. A provider whose
-authorization endpoint is on another origin than its issuer is refused.
+authorization endpoint is on another origin than its issuer is refused (AWS
+Cognito, Entra ID v1 and Azure AD B2C behind a custom domain are such).

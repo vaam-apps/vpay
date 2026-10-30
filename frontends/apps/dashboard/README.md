@@ -114,7 +114,9 @@ the button silently.
   fragment.
 - `GET /api/auth/sso/callback` takes exactly one `code` and one `state`, stops on
   an `error` parameter before vpay is called, and on `signed_in` replaces the
-  session cookie with the new token and clears the pending one. Every other
+  session cookie with the new token (asking vpay to revoke the old one, best
+  effort) and clears the pending one. The callback may take 25 seconds, not
+  five: vpay calls the provider inside it. Every other
   outcome lands on `/login?sso=failed`. There is no `return_to`. Both routes send
   `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
 - **`staff_auth.sso.redirect_uri` must end in `/api/auth/sso/callback`**, on this

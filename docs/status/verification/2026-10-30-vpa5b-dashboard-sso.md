@@ -136,6 +136,75 @@ before it ran. That is a smaller claim than the VPA-5a page's, which found nine;
 it is not evidence that none exist, only that the listed guards are held. The
 mutations are mine, so they test what I thought of.
 
+## Review round 1
+
+The review's verdict was merge; its seven optional findings were done in
+`4a95073` and its tests committed before any mutation, as the rule above
+says. What each finding changed:
+
+- **O3, the callback's deadline.** `DashRequest` takes an optional `timeoutMs`;
+  `ssoCallback` passes `SSO_CALLBACK_TIMEOUT_MS` (25 seconds), because vpay
+  consumes the attempt and then calls the provider with a ten-second timeout of
+  its own. Every other call keeps `DASH_TIMEOUT_MS` (5 seconds). Two tests: one
+  through `hangingVpay` (the deadline asked for is the callback's, and firing it
+  lands on `/login?sso=failed`), one on a fake clock (still pending at 5
+  seconds, settled at its own deadline).
+- **O1, a refused redirect leaves a trace.** `console.warn` names the refused
+  URL's origin (or `unparseable`) and the configured issuer origin, for `start`
+  and for `reauthenticate`. The test asserts both origins appear and that
+  `state`, the nonce, the challenge and the path do not.
+- **O2, an `http` issuer outside loopback.** `LOOPBACK_HOSTS` moved to
+  `config/settings.ts`, the one place both `originOf` and
+  `safeAuthorizationUrl` read it from, so the issuer is held to the redirect's
+  rule.
+- **O4, the replaced session.** `signed_in` revokes a session cookie the
+  browser held, through `revokeSession` (now also what sign-out calls), with a
+  two-second deadline; failure of any kind still signs in. A failed flow
+  revokes nothing.
+- **O5, `/signed-out`** clears the pending cookie too.
+- **O6, three URL cases** in `sso.test.ts`.
+- **O7, two stale lines** reworded.
+
+The same harness as above, one mutation to one file, the file restored after
+each. **17 mutations: all caught, none survived.**
+
+| ID    | Mutation                                                                | Changed                  | Run against                     | Failing | First failing case                                                                                                                  |
+| ----- | ----------------------------------------------------------------------- | ------------------------ | ------------------------------- | ------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| TMO-1 | callback uses the default deadline (timeoutMs dropped from ssoCallback) | src/server/api.ts        | sso.test.ts                     | 3       | the callback's deadline is its own, not the default, and it is long enough for the provider's ten seconds                           |
+| TMO-2 | dash-fetch ignores a per-request deadline                               | src/server/dash-fetch.ts | sso.test.ts, dash-fetch.test.ts | 4       | a call that never answers lets one call name its own deadline and leaves every other at five seconds                                |
+| TMO-3 | callback deadline set back to 5000                                      | src/server/dash-fetch.ts | sso.test.ts                     | 2       | the callback's deadline is its own, not the default, and it is long enough for the provider's ten seconds                           |
+| LOG-1 | refusal logs the full URL                                               | src/server/sso.ts        | sso.test.ts                     | 3       | POST /api/auth/sso/start says why it refused a provider redirect: the two origins, never the URL                                    |
+| LOG-2 | refused start redirect logs nothing                                     | src/server/sso.ts        | sso.test.ts                     | 2       | POST /api/auth/sso/start says why it refused a provider redirect: the two origins, never the URL                                    |
+| LOG-3 | refused reauthenticate redirect logs nothing                            | src/server/sso.ts        | sso.test.ts                     | 1       | GET /api/auth/sso/callback says why it refused a reauthenticate redirect: the two origins, never the URL                            |
+| LOG-4 | log omits the configured issuer origin                                  | src/server/sso.ts        | sso.test.ts                     | 3       | POST /api/auth/sso/start says why it refused a provider redirect: the two origins, never the URL                                    |
+| ISS-1 | issuer origin ignores the transport rule                                | src/config/settings.ts   | settings.test.ts                | 1       | a complete configuration reads an issuer on plain http as unknown unless it is on a loopback host                                   |
+| REV-1 | replaced session not revoked                                            | src/server/sso.ts        | sso.test.ts                     | 6       | GET /api/auth/sso/callback replaces whatever session the browser held with the NEW token, clears the pending cookie, and lands on / |
+| REV-2 | a failed revocation fails the sign-in                                   | src/server/sso.ts        | sso.test.ts                     | 4       | the session a sign-in replaces still signs in when the revocation meets a 500                                                       |
+| REV-3 | revocation uses the default deadline                                    | src/server/sso.ts        | sso.test.ts                     | 1       | the session a sign-in replaces is revoked at vpay with the call sign-out makes, once the new one is minted                          |
+| REV-4 | the NEW session is revoked instead of the old                           | src/server/sso.ts        | sso.test.ts                     | 3       | GET /api/auth/sso/callback makes no second call to vpay on signed_in with no session held — the gate on / mints                     |
+| REV-5 | sign-out no longer shares the revoke call (calls the wrong path)        | src/server/api.ts        | actions.test.ts, sso.test.ts    | 4       | signOut revokes the row at vpay BEFORE it forgets the cookie                                                                        |
+| SO-1  | /signed-out leaves the SSO pending cookie                               | src/server/signed-out.ts | signed-out.test.ts              | 2       | the signed-out response takes the single-sign-on pending token with it, under its own attributes                                    |
+| LB-1  | 127.0.0.1 removed from LOOPBACK_HOSTS                                   | src/config/settings.ts   | sso.test.ts, settings.test.ts   | 2       | a complete configuration reads an issuer on plain http as unknown unless it is on a loopback host                                   |
+| URL-1 | provider URL sent as written, not canonicalised                         | src/server/sso.ts        | sso.test.ts                     | 1       | safeAuthorizationUrl accepts an upper-case scheme and host and sends the canonical form                                             |
+| URL-2 | issuer origin not compared (backslash case)                             | src/server/sso.ts        | sso.test.ts                     | 9       | safeAuthorizationUrl refuses another host                                                                                           |
+
+Three notes. `LB-1` is the sabotage the review asked for by name: with
+`127.0.0.1` out of `LOOPBACK_HOSTS`, the new case in `sso.test.ts` fails, and so
+does the settings case. `URL-2` is a mutation `EXTRA-2` already covers; it is
+listed because the backslash case, written for this round, is one of the nine
+that fail. `TMO-1` and `TMO-3` are the two ways to "put the default back": drop
+the option from the call, and set the constant to 5000.
+
+Gates after the round, on the tree this page is committed with:
+`pnpm --filter @vpay/dashboard test` is 38 files, **580 passed, 1 skipped** (561
+before the round, 19 new); `typecheck` and `lint` clean; `build` compiles and
+both routes are still dynamic; `just lint-web` and `just fmt-check-web` exit 0;
+`just test-storybook` is checkout 26 and dashboard 39, unchanged; `just verify`
+passes its seventeen gates. The first `lint` run **failed** on four errors a
+test run cannot see: a `console.warn` without the disable comment
+`csrf.ts` carries, and three `String(input)` calls on a `fetch` input in the new
+tests, which became a `urlOf` helper.
+
 ## Not done
 
 - **No provider has been reached.** The routes are driven against a stubbed
@@ -146,9 +215,11 @@ mutations are mine, so they test what I thought of.
   nor the three VPA-5a client values; those are VPA-5c's.
 - **A provider whose authorization endpoint is on another origin than its issuer
   is refused**, though vpay accepts it (it checks the scheme only). Keycloak is
-  not such a provider.
-- **A session already in the browser is replaced on `signed_in`, not revoked at
-  vpay**; it expires on its own bounds.
+  not such a provider; AWS Cognito, Entra ID v1 and Azure AD B2C behind a custom
+  domain are. The refusal now leaves a log line naming both origins.
+- **The revocation of a replaced session is best effort** (review round 1): a
+  vpay that does not answer within two seconds, or refuses, leaves the old row
+  to expire on its own bounds.
 - **`http` is allowed for a loopback provider.** The ticket says `https`; a
   development stack's Keycloak is `http://localhost`, and vpay itself allows it
   outside livemode. A non-loopback `http` provider is refused even when vpay
