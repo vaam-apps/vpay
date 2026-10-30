@@ -1140,6 +1140,19 @@ jobs:
           VPAY_SERVER_KEY_CURRENT_PATH: ${{ github.workspace }}/.e2e/envelope/current.pub
           VPAY_SERVER_KEY_NEXT_PATH: ${{ github.workspace }}/.e2e/envelope/next.pub
         run: pnpm --filter @vaam-apps/vpay-sdk test:live
+      # Cypress writes a screenshot of the failing step into
+      # `cypress/screenshots/` (video is off, `cypress.config.ts`). Without this
+      # upload a red `dashboard-human-login.cy.ts` shows only an assertion
+      # message in the job log, and which screen the browser was on is the one
+      # thing that message cannot say. Failure only: a green run has none, and
+      # `.gitignore` already keeps them out of the tree. Same pinned action as
+      # the log upload below.
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cypress-screenshots
+          path: frontends/tests/e2e/cypress/screenshots
+          if-no-files-found: ignore
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log
       - if: always()

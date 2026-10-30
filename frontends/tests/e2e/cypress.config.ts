@@ -114,6 +114,10 @@ export default defineConfig({
     experimentalModifyObstructiveThirdPartyCode: !framedRun,
     modifyObstructiveCode: !framedRun,
     video: false,
+    // Two retries in run mode, except where a spec is a sequence:
+    // `dashboard-human-login.cy.ts` sets `retries: 0` on its describe, because a
+    // retry re-runs one test in the middle of a chain that spends one-time
+    // credentials.
     retries: { runMode: 2, openMode: 0 },
     setupNodeEvents(on, config) {
       // Two servers, both on their own origin, both for the whole run rather

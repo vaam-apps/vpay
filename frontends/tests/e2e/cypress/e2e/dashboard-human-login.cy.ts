@@ -31,20 +31,23 @@
  * with no cookie. Cypress runs on the host and the dashboard is published on
  * `localhost:3000`, so `baseUrl` is the only origin this spec uses
  * (`docs/flows/dashboard-auth/human-login.md`, "The cookie needs a secure
- * origin"). **That a Cypress-driven Chromium stores the cookie is the premise of
- * this whole file and was written down before it was observed**; the first
- * `e2e (compose)` run is the first time it is tested.
+ * origin"). **That Cypress's browser (Electron, which is Chromium) stores the
+ * cookie is the premise of this whole file and was written down before it was
+ * observed**; the first `e2e (compose)` run is the first time it is tested.
  *
  * # The cases, and where each one is
  *
- * | VPA-5c case | Test                                                            |
- * | ----------- | --------------------------------------------------------------- |
- * | discovery   | "serves the sign-in, and does not say 'paired key only'"        |
- * | 3           | "refuses a wrong password with one sentence, …"                 |
- * | 18          | "signs in with the one-time password and enrols …"              |
- * | 19          | "makes the person replace the one-time password …"              |
- * | 1           | "signs the same person back in …" (a plain sign-in, no enrolment)|
- * | 4           | "revokes the session on sign-out …"                             |
+ * The tests run in this order; the table is in it.
+ *
+ * | VPA-5c case | Test                                                              |
+ * | ----------- | ----------------------------------------------------------------- |
+ * | discovery   | "serves the sign-in, and does not say 'paired key only'"          |
+ * | 3           | "refuses a wrong password with one sentence, …"                   |
+ * | 18          | "signs in with the one-time password and enrols …"                |
+ * | 19          | "makes the person replace the one-time password …"                |
+ * | (cookie)    | "keeps the session cookie httpOnly and the access token out …"    |
+ * | 4           | "revokes the session on sign-out, not just the cookie"            |
+ * | 1           | "signs the same person back in …" (a plain sign-in, no enrolment) |
  *
  * **Not here: single sign-on.** It needs an OpenID Connect provider, and this
  * stack has none (no Keycloak, no fake issuer — vpay's own SSO suites run theirs
@@ -69,6 +72,13 @@
  * about the one before it. **A failure early in the sequence fails the tests
  * after it**, for the reason that they have nobody to be signed in as; read the
  * first red one.
+ *
+ * **Retries are off for the same reason** (`retries: 0` on the describe, over
+ * `cypress.config.ts`'s two in run mode). A retry re-runs one test in the middle
+ * of the chain: the enrolment test would sign in again with a password that is
+ * already spent and a code step the replay guard has already seen, and the
+ * second attempt's failure would bury the first, which is the one that says what
+ * broke.
  */
 import {
   carriedForward,
@@ -96,7 +106,7 @@ const SESSION_COOKIE = "__Host-vpay_dash_session";
  * What this spec sets as the member's own password, replacing the printed one
  * — generated per run, so no credential is written down in this file and the
  * value means nothing the moment the stack is torn down (`down -v`). Twelve
- * characters is vpay's minimum; this is 41.
+ * characters is vpay's minimum; this is 40.
  */
 const NEW_PASSWORD = `e2e-${crypto.randomUUID()}`;
 
@@ -140,22 +150,66 @@ function changePassword(current: string, next: string): void {
   cy.contains("button", "Set password").click();
 }
 
+/** What the alert says: the sentence, and the request id vpay attached to it. */
+interface Refusal {
+  /** The sentence alone: the request id differs on every request, so it is left out of any comparison. */
+  sentence: string;
+  /** `null` for a refusal the dashboard itself made, which has no request. */
+  requestId: string | null;
+}
+
+/** The request id in an alert, or `null`. `FormAlert` puts it in a `<code>`. */
+function requestIdIn($alert: JQuery<HTMLElement>): string | null {
+  const id = $alert.find("code").text().trim();
+  return id === "" ? null : id;
+}
+
 /**
- * The sentence in the alert, without the request id vpay attaches to it —
- * which differs on every request and so would make two identical refusals
- * compare unequal.
+ * Reads the alert that is on screen now, as {@link Refusal}.
+ *
+ * **It cannot tell a fresh alert from a stale one.** The stepper keeps the last
+ * refusal while the person goes Back and forward again, so after a second
+ * submit the OLD alert is still there until vpay answers. Whoever reads a second
+ * refusal must first wait for the second answer (`waitForNewRefusal`).
  */
-function refusalSentence(): Cypress.Chainable<string> {
+function readRefusal(): Cypress.Chainable<Refusal> {
   return cy
     .get('[role="alert"]')
     .should("be.visible")
-    .invoke("text")
-    .then((text) => text.replace(/Request\s+\S+\s*$/, "").trim());
+    .then(($alert) => ({
+      sentence: $alert
+        .text()
+        .replace(/Request\s+\S+\s*$/, "")
+        .trim(),
+      requestId: requestIdIn($alert),
+    }));
+}
+
+/**
+ * Waits until the alert is vpay's answer to the submit just made and not the
+ * previous refusal still on screen: the sign-in's server action has answered
+ * (`@signInAction`, the intercept the test registers), and the alert now
+ * carries a different request id than `previous`'s.
+ *
+ * The second condition is skipped only when `previous` had no id to differ from;
+ * the first still holds then. Each is necessary alone: the response can arrive
+ * before React has repainted, and the id can be absent.
+ */
+function waitForNewRefusal(previous: Refusal): Cypress.Chainable<Refusal> {
+  cy.wait("@signInAction");
+  cy.get('[role="alert"]').should(($alert) => {
+    const id = requestIdIn($alert);
+    expect(
+      previous.requestId === null || id !== previous.requestId,
+      "the alert is the answer to this submit, not the previous one still on screen",
+    ).to.equal(true);
+  });
+  return readRefusal();
 }
 
 describe(
   "the dashboard's staff sign-in (human_login)",
-  { testIsolation: false },
+  { testIsolation: false, retries: 0 },
   () => {
     it("serves the sign-in, and does not say 'paired key only'", () => {
       // Runs first, in a fresh browser: nothing has signed in yet.
@@ -184,6 +238,10 @@ describe(
       );
       cy.contains("No sign-in is configured").should("not.exist");
       cy.contains("Sign-in is not reachable").should("not.exist");
+      // `SsoUnchecked`: the status read for the single sign-on button failed. A
+      // vpay that serves `human_login` and answers `GET /dash/v1/staff/sso` must
+      // not leave this on the page; it would otherwise sit beside a working form.
+      cy.contains("Single sign-on could not be checked").should("not.exist");
       expectNoWcagViolations("/login, the email question");
 
       // A signed-out visitor is sent here from the account page and from the
@@ -199,34 +257,48 @@ describe(
       // real address with a wrong password must be indistinguishable on the
       // screen. vpay answers both with `StaffSignInRefused`, one 401, one
       // sentence; this is that, through the dashboard, in a browser.
+      // The server action is a POST to the page itself. Registered before the
+      // first submit so each `cy.wait` below pairs with one answer from vpay.
+      cy.intercept({ method: "POST", pathname: "/login" }).as("signInAction");
       cy.visit("/login");
       signIn(NOBODY, WRONG_PASSWORD);
+      cy.wait("@signInAction");
       cy.location("pathname").should("eq", "/login");
-      refusalSentence().then((forNobody) => {
+      readRefusal().then((forNobody) => {
         expect(
-          forNobody,
+          forNobody.sentence,
           "a refusal that says something",
         ).to.have.length.greaterThan(10);
-        expect(forNobody, "the sentence echoes no address").to.not.contain(
-          NOBODY,
-        );
+        expect(
+          forNobody.sentence,
+          "the sentence echoes no address",
+        ).to.not.contain(NOBODY);
         cy.getCookie(SESSION_COOKIE).should("not.exist");
 
-        // The stepper put us back on the password question. Back to the email,
-        // then a REAL address with the same wrong password.
+        // The stepper put us back on the password question, and it KEEPS this
+        // alert while we go Back and forward again, so everything read after
+        // the next submit is checked against vpay's second answer and not this
+        // one (`waitForNewRefusal`). Back to the email, then a REAL address
+        // with the same wrong password.
         cy.contains("button", "Back").click();
         signIn(staffEmail(), WRONG_PASSWORD);
-        cy.location("pathname").should("eq", "/login");
-        refusalSentence().then((forTheMember) => {
+        waitForNewRefusal(forNobody).then((forTheMember) => {
+          cy.location("pathname").should("eq", "/login");
           expect(
-            forTheMember,
+            forTheMember.sentence,
             "the sentence for a real address with a wrong password",
-          ).to.equal(forNobody);
-          expect(forTheMember).to.not.contain(staffEmail());
+          ).to.equal(forNobody.sentence);
+          expect(forTheMember.sentence).to.not.contain(staffEmail());
+          // And the second answer really was a second answer.
+          expect(
+            forTheMember.requestId === null ||
+              forTheMember.requestId !== forNobody.requestId,
+            "a different request",
+          ).to.equal(true);
         });
       });
       // And the refusal stored nothing: no session, and no half-session that
-      // `/login/totp` would accept.
+      // `/login/totp` would accept. Only now, after the second answer.
       cy.getCookie(SESSION_COOKIE).should("not.exist");
       cy.visit("/login/totp");
       cy.location("pathname").should("eq", "/login");
@@ -234,9 +306,11 @@ describe(
 
     it("signs in with the one-time password and enrols an authenticator (case 18)", () => {
       cy.visit("/login");
-      cy.task<string>("staffPassword").then((password) => {
-        signIn(staffEmail(), password);
-      });
+      cy.task<string>("staffPassword", null, { log: false }).then(
+        (password) => {
+          signIn(staffEmail(), password);
+        },
+      );
 
       // A first sign-in is owed an enrolment: the session is `pending_totp` and
       // does not reach `authenticated` while the member has no secret.
@@ -307,7 +381,7 @@ describe(
       cy.getCookie(SESSION_COOKIE).should("exist");
 
       // Then the one `staff add` printed.
-      cy.task<string>("staffPassword").then((printed) => {
+      cy.task<string>("staffPassword", null, { log: false }).then((printed) => {
         changePassword(printed, NEW_PASSWORD);
       });
 

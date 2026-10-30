@@ -27,7 +27,7 @@ declare global {
  * only that this spec agrees with itself.
  */
 export function totpDigits(secret: string): Cypress.Chainable<string> {
-  return cy.task<string>("totpCode", { secret });
+  return cy.task<string>("totpCode", { secret }, { log: false });
 }
 
 /**
@@ -52,14 +52,15 @@ export function waitForNextTotpStep(): void {
 /**
  * Leaves a value for a LATER test in this spec, in Node.
  *
- * `Cypress.env(key, value)` is the obvious way to do this and it is the wrong
- * one here: it does not survive the primary origin moving, which this spec
- * does every run as soon as it buys something in the shop. The measurement,
- * and why Node is where the value has to live, are in
+ * `Cypress.env(key, value)` is the obvious way to do this and it does not
+ * survive the primary origin moving, which the spec this one replaced did every
+ * run as soon as it bought something in the shop. This spec stays on the
+ * dashboard's origin, so `Cypress.env` would work today; Node is kept so that a
+ * later visit to another origin cannot lose the value. The measurement is in
  * `cypress/tasks/dashboardTasks.ts`.
  */
 export function carryForward(key: string, value: string): void {
-  cy.task("carryForward", { key, value });
+  cy.task("carryForward", { key, value }, { log: false });
 }
 
 /**
@@ -67,13 +68,15 @@ export function carryForward(key: string, value: string): void {
  * if the test that was supposed to store it did not.
  */
 export function carriedForward(key: string): Cypress.Chainable<string> {
-  return cy.task<string | null>("carriedForward", key).then((value) => {
-    expect(
-      value,
-      `'${key}', which an earlier test in this spec should have stored`,
-    ).to.be.a("string");
-    return String(value);
-  });
+  return cy
+    .task<string | null>("carriedForward", key, { log: false })
+    .then((value) => {
+      expect(
+        value,
+        `'${key}', which an earlier test in this spec should have stored`,
+      ).to.be.a("string");
+      return String(value);
+    });
 }
 
 /**
@@ -102,8 +105,11 @@ export function carriedForward(key: string): Cypress.Chainable<string> {
  *
  * **Not yet seen to run.** This was written without a browser, and the first
  * red `e2e (compose)` run is the first time axe meets these pages in one. A
- * violation prints through the `logA11yViolations` task with the element and
- * the criterion.
+ * violation is named in the assertion message itself, with its rule, impact,
+ * the elements' selectors and axe's summary: headless `cypress run` prints
+ * nothing else, and a `cy.task` queued before a throwing `expect` never runs
+ * (the `logA11yViolations` task is why `shop-hosted.cy.ts` does it the other
+ * way round, with the assertion last).
  *
  * @param label Which screen, for the failure message.
  */
@@ -125,13 +131,17 @@ export function expectNoWcagViolations(label: string): void {
           });
         })
         .then((result) => {
-          if (result.violations.length > 0) {
-            cy.task("logA11yViolations", result.violations);
-          }
+          const detail = result.violations
+            .map(
+              (violation) =>
+                `${violation.id} (${violation.impact ?? "unknown"}): ` +
+                violation.nodes.map((node) => node.target.join(" ")).join(", "),
+            )
+            .join("; ");
           expect(
-            result.violations.map((violation) => violation.id),
-            `${label}: WCAG A/AA violations axe-core detected`,
-          ).to.deep.equal([]);
+            result.violations,
+            `${label}: WCAG A/AA violations axe-core detected: ${detail}`,
+          ).to.have.length(0);
         });
     },
   );

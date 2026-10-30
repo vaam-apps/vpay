@@ -35,6 +35,13 @@ the e2e stack and not the demo, but they share one generated overlay, so
 `human_login` is served by `just demo` too. That is not a second switch hidden
 behind the first; it is one file, and the overlay's own header says so.
 
+**Ratified deviation from the plan.** The plan asked for the e2e stack and not the
+demo. The orchestrator ratified `just demo` serving `human_login` (review round
+1), together with the raised sign-in rate limit that rides on the same overlay:
+100 attempts per five minutes per email and per address instead of 10, which
+covers re-runs of the spec against a live stack and applies to `just demo` as
+well. The overlay's comment says both.
+
 ## What was restored from `f885170^`
 
 | File                                             | Against `f885170^`                                                                                                                                                                                                          |
@@ -112,13 +119,50 @@ in two places" bullet, and the single sign-on bullet naming
 keeps a `__Host-` cookie over `http`. `dashboard.enabled` alone: the none-set line
 and "single sign-on is not offered". The text is not asserted by `helm-check`.
 
+## Review round 1
+
+An Opus review of the first push, each finding checked against the code before
+it was fixed. Nothing below ran against a stack.
+
+| #    | Finding                                                                                                                                                                                                                                  | What changed                                                                                                                                                                                                                       |
+| ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | **Blocking.** Case 3's second half could not fail: the stepper keeps the first refusal on screen through Back and forward, so every assertion after the second "Sign in" read the old alert                                              | the test waits for the second server action (`cy.intercept` on the POST to `/login`, `cy.wait("@signInAction")`) and for an alert carrying a different request id before it reads anything; the sentence comparison is then made   |
+| 2    | `retries.runMode: 2` inside a `testIsolation: false` chain                                                                                                                                                                               | `retries: 0` on the describe; the config says why                                                                                                                                                                                  |
+| 3    | `logA11yViolations` was queued and then an `expect` threw, so the details were lost                                                                                                                                                      | the violation ids, impacts and selectors are in the assertion message; the header no longer claims the task prints them                                                                                                            |
+| 4    | no screenshots survived a red run                                                                                                                                                                                                        | `if: failure()` upload of `cypress/screenshots`, with the action pin the file already uses                                                                                                                                         |
+| 5    | the compose comment said `config` echoes nothing                                                                                                                                                                                         | it says `config` and `docker inspect` show the values, acceptable for a throwaway stack                                                                                                                                            |
+| 6    | the stated reason for rendering the chart values only when set was false (`present()` treats `""` as absent), and `/login` was said to name a mismatched value                                                                           | the reason is the unchanged default render; a mismatched value surfaces after both factors as "Signed in, but not authorised" on `/`. Corrected in the template, `values.yaml`, the chart README, the justfile and the PR body     |
+| 7    | a stale `staff-password.txt` outlived its stack and its pepper, and `demo-staff` called any failure "already exists"                                                                                                                     | removed in `test-e2e` (before and after) and `demo-down`; `gen-demo-keys` deletes it when it rewrites the pepper and says a running stack needs `just demo-down`; `demo-staff` takes that branch only on `staff_members_email_key` |
+| 8-15 | nits: the umask is a subshell; "(below)"; 40 characters not 41; the case table in run order with the cookie test; the stale-origin comment; `log: false` on the secret-carrying tasks; Electron not "Chromium"; the broken `#6-…` anchor | done; the discovery test also asserts the "Single sign-on could not be checked" notice is absent                                                                                                                                   |
+
+**Why finding 1's fix would fail on the faults it exists for, by reasoning, since
+no stack could run it.** Take the test without the wait: the second read returns
+the first alert, the sentences are equal, and the test passes whatever vpay did.
+With it, three faults each end the test red.
+
+- _The second submit never reaches vpay_ (the button stays disabled, Continue
+  not clicked): `cy.wait("@signInAction")` times out, naming the alias.
+- _The page repaints late, or not at all_: the alert still carries the first
+  request id, so the `should` that asserts a different id retries for four
+  seconds and fails with "the alert is the answer to this submit, not the
+  previous one still on screen".
+- _vpay tells a real address with a wrong password apart from an unknown one_
+  (the oracle the test exists for): the second alert is a fresh one with a
+  different sentence, and the `to.equal(forNobody.sentence)` assertion fails.
+
+The one case it cannot catch is a vpay that answers both with the same sentence
+_and_ the same request id, which is not a thing a request-scoped id does. If the
+first refusal had no id (the dashboard's own validation, not vpay's), the id check
+is skipped and the intercept wait alone carries it; the first submit here is a
+password that passes the dashboard's checks, so it does have one.
+
 ## Not done
 
 - **The Cypress spec has not run.** It is typechecked and linted, and its
   selectors, labels and the sequence were read from the components and the
   server actions; no browser has executed it. CI's `e2e (compose)` job is where it
   runs for the first time, and that run is the evidence this page does not have.
-  Premises written down before they were observed: that a Cypress-driven Chromium
+  Premises written down before they were observed: that Cypress's browser (Electron, which is Chromium)
   stores a `Secure` `__Host-` cookie from `http://localhost:3000` (the spec's
   cookie assertions test it first); that the controlled inputs hydrate before
   Cypress types into them (an input typed before hydration is cleared, and the

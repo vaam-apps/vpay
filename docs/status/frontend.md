@@ -351,7 +351,7 @@ broken on purpose and what could not be run.
   a secure context and stores neither
   ([human-login.md](../flows/dashboard-auth/human-login.md), "The cookie needs a
   secure origin"). Cypress runs on the host against the published port, so
-  `baseUrl` is the only origin it uses. That a Cypress-driven Chromium keeps the
+  `baseUrl` is the only origin it uses. That Cypress's browser (Electron, which is Chromium) keeps the
   cookie is what the spec's own cookie assertions test first.
 - **The chart.** `dashboard.clientId`, `redirectUri`, `scope` and `ssoIssuer`
   render into the Deployment's env only when set; `just helm-check` renders both

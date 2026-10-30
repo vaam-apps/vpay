@@ -105,9 +105,11 @@ spec:
             - name: VPAY_DASHBOARD_PUBLIC_ORIGIN
               value: {{ .Values.dashboard.publicOrigin | quote }}
             # The sign-in's client registration (VPA-5c). Each is written only
-            # when set: an absent variable is how the app learns this
-            # deployment configured no sign-in, and an empty string would be
-            # read as "set, and wrong". See `dashboard.clientId` in values.yaml.
+            # when set, which keeps a release that sets none of them rendering
+            # the Deployment it rendered before. (The app would read an empty
+            # value as absent too: `present()` in `src/config/settings.ts` trims
+            # and treats "" as missing; the saving is the diff, not the
+            # behaviour.) See `dashboard.clientId` in values.yaml.
             {{- with .Values.dashboard.clientId }}
             - name: VPAY_DASHBOARD_CLIENT_ID
               value: {{ . | quote }}

@@ -239,7 +239,7 @@ longer list and shows only the first six. _(This said "Six services" and "The se
 `dashboard`, is deliberately absent" until 2026-09-23. `vpay-checkout` and
 `vpay-shop` joined the list in Step 9 (2026-09-04), and `dashboard` joined in
 exp28 (2026-09-07); see
-[§6](demo/dashboard-sign-in.md#6-signing-in-to-the-dashboard).)_
+[§6](demo/dashboard-sign-in.md#signing-in-with-a-password).)_
 
 ## The rest of the procedure, in order
 

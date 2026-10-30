@@ -182,9 +182,11 @@ dashboard:
   # block (`just helm-check` renders both shapes and asserts it). They are
   # values of THIS chart and the blocks they must equal are text in
   # `config.overlay`, which Helm does not parse: a mismatch is not a template
-  # error but a sign-in that fails, and the dashboard's `/login` names the
-  # variable it is missing. Setting some and not all three is the same state:
-  # the page lists the ones that are absent and renders no form.
+  # error but a sign-in that fails, and `/login` does NOT name a mismatched
+  # value: the person passes both factors and then sees "Signed in, but not
+  # authorised" on `/`, because vpay refuses the mint. Setting some and not all
+  # three is a different state: `/login` lists the ones that are absent and
+  # renders no form.
   #
   # `VPAY_DASHBOARD_CLIENT_ID` — `dashboard_client.client_id`. A PUBLIC client:
   # there is no secret to put here, and vpay refuses one at boot.

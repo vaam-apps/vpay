@@ -49,8 +49,11 @@ services:
     # git-ignored file (mode 0600), never written down here: a literal in a
     # tracked compose file is a secret in the repository, and a placeholder with
     # no value is exit 78 at boot naming the variable. It is an `env_file` rather
-    # than `environment:` because compose reads it on the host, so nothing is
-    # interpolated from the caller's shell and nothing is echoed by `config`.
+    # than `environment:` so the values come from the file and not from the
+    # caller's shell. They are NOT hidden: `docker compose config` and
+    # `docker inspect` print them. Acceptable for a throwaway stack whose
+    # volumes go with `down -v` and whose pepper protects one demo member; do
+    # not copy this arrangement to a deployment whose staff are real.
     #
     # Required, like the key mounts below: a stack brought up without
     # `just gen-demo-keys` stops here with "env file … not found", which says

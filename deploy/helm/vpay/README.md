@@ -331,7 +331,7 @@ vpay can let dashboard staff sign in through an external OpenID Connect provider
 profile overlay, not in a value of this chart**: the overlay is opaque text to
 Helm, and this chart templates nothing for `staff_auth.sso` itself. The one
 thing it does carry is the dashboard's side of the same setting,
-`dashboard.ssoIssuer` (above). What the chart does
+`dashboard.ssoIssuer` (below). What the chart does
 own is the one consequence for the network: the pod that serves `/dash/v1` now
 makes outbound HTTPS to the provider (discovery, JWKS, token endpoint) — `-management`
 when `management.enabled`, otherwise `-server`. No vpay process called anything
@@ -556,16 +556,20 @@ how by four environment variables that this chart now renders from values:
 | `dashboard.scope`       | `VPAY_DASHBOARD_SCOPE`        | `dashboard_client.scope`                                                   |
 | `dashboard.ssoIssuer`   | `VPAY_DASHBOARD_SSO_ISSUER`   | `staff_auth.sso.issuer`, optional: without it `/login` draws no SSO button |
 
-- **Each is written only when set.** An unset value is an absent variable, which
-  is how the app learns no sign-in is configured; an empty `value: ""` would be
-  read as "set, and wrong". `just helm-check` renders both shapes and fails on
-  either direction (the Deployment carries the four from `ci/values-full.yaml`,
-  and none when `enabled` is the only thing set).
+- **Each is written only when set.** That keeps a release that sets none of them
+  rendering the same Deployment it did before; the app would treat an empty value
+  as absent anyway (`present()` in `src/config/settings.ts` trims and reads `""`
+  as missing). `just helm-check` renders both shapes and fails on either
+  direction (the Deployment carries the four from `ci/values-full.yaml`, and none
+  when `enabled` is the only thing set).
 - **Helm cannot check the other half.** The overlay is opaque text to it, so a
   `redirectUri` that is not in `dashboard_client.redirect_uris` is not a template
-  error but a sign-in that fails. Setting only some of the three is the same
-  state, and the app says so: `/login` lists the variables that are missing and
-  renders no form. Neither mismatch is a release that fails to roll out.
+  error but a sign-in that fails, and **a mismatched value is not named on
+  `/login`**: the person gets through both factors and then sees "Signed in, but
+  not authorised" on `/`, with vpay's sentence and a request id, because it is
+  the mint that vpay refuses. Setting only some of the three is a different
+  state and the app does say so: `/login` lists the variables that are missing
+  and renders no form. Neither is a release that fails to roll out.
 - **All three empty is a legal release** and the right one where vpay does not
   serve `human_login`: `/login` then says the console signs in with a paired key.
 - **`redirectUri` is never visited.** The dashboard's own server follows the

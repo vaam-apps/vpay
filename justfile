@@ -1127,11 +1127,18 @@ demo-staff:
         # `-f` as well as `-s`, because `-s` is true of a DIRECTORY too and
         # this branch would then report a password kept in something that
         # cannot hold one (exp28 review).
-        if [ -f "$out" ] && [ -s "$out" ]; then
+        #
+        # AND only for the failure that says so: the unique index on the email
+        # (`staff_members_email_key`, which `staff add` reports with the
+        # constraint name). Any other failure with a password file lying about
+        # (the server not reachable, the database down, a tenant that does not
+        # exist) used to be reported as "already exists", which is how a stale
+        # file from a previous stack read as success.
+        if [ -f "$out" ] && [ -s "$out" ] && grep -q 'staff_members_email_key' "$stderr"; then
             echo "demo-staff: {{demo_staff_email}} already exists; keeping the password in $out"
             exit 0
         fi
-        echo "demo-staff: FAIL — \`staff add\` exited $status and there is no password in $out." >&2
+        echo "demo-staff: FAIL — \`staff add\` exited $status without reporting that the member already exists; any password in $out is not evidence of one." >&2
         echo "demo-staff: a one-time password is printed ONCE and only its hash is stored, so if" >&2
         echo "demo-staff: the account exists its password cannot be recovered. \`just demo-down\`" >&2
         echo "demo-staff: (which deletes the volumes) and start again." >&2
@@ -1189,6 +1196,10 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
 
     set -e
     docker compose {{demo_compose}} down -v
+    # The volumes are gone, and with them the member the password in this file
+    # belonged to. A file that outlives them makes `demo-staff` report a member
+    # that no longer exists, and the spec then signs in with a dead password.
+    rm -f {{demo_staff_password_file}}
     docker compose {{demo_compose}} up -d --build --wait
     set +e
 
@@ -1268,6 +1279,7 @@ test-e2e: gen-demo-keys build-sdk-node build-checkout-browser
     e2e_status=$?
 
     docker compose {{demo_compose}} down -v
+    rm -f {{demo_staff_password_file}}
     exit $e2e_status
 
 # The browser specs against a stack that is ALREADY UP, and the ONE place
@@ -3708,10 +3720,10 @@ helm-check:
     # The dashboard's sign-in registration (VPA-5c): four optional values, each
     # rendered into the Deployment's env ONLY when set. Both directions, over the
     # rendered yaml, because "an unset value renders no variable" is an absence
-    # and a `fail` guard cannot assert one. An empty `value: ""` would be the
-    # wrong answer, not a harmless one: the app reads a present variable as a
-    # configured one, so an empty client id would be a sign-in that is offered
-    # and cannot work, where an absent one is `/login` naming what to set.
+    # and a `fail` guard cannot assert one. The saving is that a release setting
+    # none of them keeps rendering the Deployment it rendered before (the app
+    # itself treats an empty value as absent, so this is about the diff, not the
+    # behaviour).
     echo "==> dashboard sign-in env: written when set, absent when not"
     dash_env="$(helm template vpay "$chart" -f "$chart/ci/values-full.yaml" --show-only templates/deployment-dashboard.yaml)"
     for pair in \
@@ -4900,6 +4912,19 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
         echo "gen-demo-keys: $key, $shop_key, $demo_seed, $shop_seed, $staff_env and $overlay are out of sync — regenerating all of them"
     fi
     rm -f "$key" "$shop_key" "$overlay" "$demo_seed" "$shop_seed" "$staff_env" .e2e/demo-merchant/signing.pub .e2e/shop-merchant/signing.pub
+    # A password `demo-staff` kept is the one-time password of a member hashed
+    # under the pepper this run is about to replace, so it can never verify
+    # again, and a file that outlives its pepper is how a spec signs in with a
+    # dead credential. The members themselves are in the database of whatever
+    # stack is up, still holding the OLD pepper's hashes: this recipe cannot
+    # reach them, so it says so.
+    for stale_password in .e2e/*/staff-password.txt; do
+        if [ -e "$stale_password" ]; then
+            rm -f "$stale_password"
+            echo "gen-demo-keys: removed $stale_password — it belonged to the staff_auth pepper this run replaces" >&2
+            echo "gen-demo-keys: a stack that is already up still holds members hashed under the old pepper; \`just demo-down\` before bringing it up again" >&2
+        fi
+    done
 
     generated=$(cargo xtask gen-signing-key --out .e2e/demo-merchant)
     jwk=$(printf '%s\n' "$generated" | grep -m1 '^{"kty"' || true)
@@ -4944,17 +4969,17 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     # is already this recipe's dependency (`gen-e2e-signing-key`), and the pipe
     # is checked: an empty value would be a placeholder that resolves to nothing
     # and a boot refusal naming it.
-    umask 077
     staff_pepper=$(openssl rand -hex 32)
     staff_totp_key=$(openssl rand -base64 32 | tr '+/' '-_' | tr -d '=\n')
     if [ "${#staff_pepper}" -ne 64 ] || [ "${#staff_totp_key}" -ne 43 ]; then
         echo "gen-demo-keys: FAIL — could not generate the staff_auth secrets (pepper ${#staff_pepper} chars, TOTP key ${#staff_totp_key} chars; expected 64 and 43)" >&2
         exit 1
     fi
-    printf 'VPAY_STAFF_PEPPER=%s\nVPAY_STAFF_TOTP_KEY=%s\n' "$staff_pepper" "$staff_totp_key" > "$staff_env"
+    # A subshell, so the 0077 mask is the write's alone and nothing after it
+    # has to remember to put the shell's own back.
+    (umask 077; printf 'VPAY_STAFF_PEPPER=%s\nVPAY_STAFF_TOTP_KEY=%s\n' "$staff_pepper" "$staff_totp_key" > "$staff_env")
     chmod 0600 "$staff_env"
     unset staff_pepper staff_totp_key
-    umask 022
 
     # 0644, NOT the 0600 `demo-merchant`'s key gets, and the difference is the
     # whole point: unlike the demo binary — which runs on the HOST, as a
@@ -5164,9 +5189,15 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
     #
     # The sign-in rate limit is raised from the shipping ten attempts per five
     # minutes: one Cypress run signs in from a single address several times, and
-    # a retried case would spend the budget and then fail with a refusal that
-    # looks exactly like a wrong password. It is a profile value, never a code
-    # path (ADR-0003); the shipping default is untouched in config/application.yml.
+    # a second attempt at the same stack (a re-run of the spec, or a retried
+    # case, should the spec's retries ever be lifted from 0) would spend the
+    # budget and then fail with a refusal that looks exactly like a wrong
+    # password. THIS OVERLAY IS SHARED: \`just demo\` loads it too, so a person
+    # typing passwords into the demo dashboard also gets a hundred attempts per
+    # five minutes per email and per address, not ten. That is acceptable for a
+    # throwaway stack with one member and is a ratified choice, not an
+    # oversight. It is a profile value, never a code path (ADR-0003); the
+    # shipping default is untouched in config/application.yml.
     staff_auth:
       password_pepper: \${VPAY_STAFF_PEPPER}
       totp_encryption_key: \${VPAY_STAFF_TOTP_KEY}
@@ -5460,6 +5491,8 @@ demo-down:
     export VPAY_DEMO_SHOP_PORT={{demo_shop_port}}
     export VPAY_DEMO_DASHBOARD_PORT={{demo_dashboard_port}}
     docker compose {{demo_compose}} down -v
+    # The member went with the volumes; so does the password that was theirs.
+    rm -f {{demo_staff_password_file}}
     echo "demo-down: project {{demo_project}} is gone (containers and volumes)"
 
 # Print the demo shop's URL — the end-to-end demo a human clicks through.
