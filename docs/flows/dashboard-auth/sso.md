@@ -198,6 +198,9 @@ rather than skipping it.
 
 **Not built, and none of it is implied above:**
 
+- **The dashboard application's two SSO routes and its button** (VPA-5b).
+  `redirect_uri` names a page that does not exist until then, and the
+  application's `/login` (VPA-5a) offers the password sign-in only.
 - **No way to link an existing member to an SSO identity.** Members are created
   by first sign-in; password members stay password members.
 - **No back-channel or RP-initiated logout.** Signing out of vpay does not end

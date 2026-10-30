@@ -37,15 +37,27 @@ records the decision and the owner rulings behind it, and what it supersedes
 for, and [ADR-0018](../adr/0018-cross-tenant-admin-reads.md) still decides which
 tenant a request reads.
 
-> **The dashboard application cannot sign in until VP-6b/VPA-5.** The server
-> side of a password sign-in is back (VPA-3, behind `human_login`) and so is
-> the server side of a single sign-on (VPA-4, [sso.md](dashboard-auth/sso.md)),
-> but the application has no pages for either yet. Its sign-in,
-> session, BFF and SSO code is deleted, and it renders one notice page; the
-> pages and the end-to-end cases VP-6b restores are listed in
-> [`docs/status/frontend.md`](../status/frontend.md#what-vp-6b-must-restore).
-> The way in meanwhile is the break-glass below (`vpay-server staff pair-key`)
-> and a client that signs requests; [`docs/status.md`](../status.md) says so.
+> **The dashboard application signs a person in with a password again (VPA-5a),
+> only where vpay serves `human_login`; it cannot sign in with a paired key
+> until VP-6b, and with single sign-on until VPA-5b.** The server side of a
+> password sign-in is back (VPA-3, behind `human_login`) and so is the server
+> side of a single sign-on (VPA-4, [sso.md](dashboard-auth/sso.md)). The
+> application's half of the password sign-in is back too: `/login` asks vpay
+> which methods it serves (`GET /.well-known/vpay-auth`) before it asks for
+> anything, then one question per screen — the email, the password, the
+> authenticator code (a first sign-in enrols one), and, while the one-time
+> password is still in force, the new password — then lands on an account page
+> and signs out by revoking the session. A deployment that does not serve
+> `human_login` shows "This console signs in with a paired key" and no field.
+> What the application does **not** have is any page that reads `/dash/v1`
+> (the payments, refunds, deliveries and customers screens are a later ticket),
+> a button for single sign-on (VPA-5b), and the signed reader for a paired key
+> (VP-6b); its BFF and middleware stay deleted, and which credential wins when a
+> browser holds both a session and a key is VP-6b's to decide. The way in with
+> a key meanwhile is the break-glass below (`vpay-server staff pair-key`) and a
+> client that signs requests; [`docs/status.md`](../status.md) says so, and
+> [`docs/status/frontend.md`](../status/frontend.md#the-dashboard-application-signs-in-with-a-password-vpa-5a)
+> has what VPA-5a built and measured.
 
 ## Upgrading from before VP-6a
 

@@ -1676,7 +1676,9 @@ fallback.
   unsigned-401 tests assert the layer's own body, not only the status, so
   loosening `Required` to `Optional` fails them. The guard proofs are in
   [verification/2026-10-26-vp6a-console-keys.md](verification/2026-10-26-vp6a-console-keys.md).
-- **Not done.** The dashboard application cannot sign in until VP-6b (key
+- **Not done.** ~~The dashboard application cannot sign in until VP-6b~~ (VPA-5a,
+  2026-10-30: it signs in with a password where vpay serves `human_login`;
+  with a paired key it still cannot until VP-6b — key
   generation in the browser, the pairing request, request signing); vaam's side
   of `/svc/v1` is not built; `rate_limit_windows` and `RateLimits` are unused
   scaffolding with no caller; `staff_members.last_sign_in_at` is never written;
@@ -1840,7 +1842,7 @@ throwaway Postgres; no deployment has run it.**
   TOTP key VPA-2's runbook told an operator to keep. A deployment that did not
   keep them cannot verify an old hash and must enrol its staff again.
 - **Not done.** ~~Staff SSO (VPA-4; `staff_auth.sso` is refused as an unknown
-  field).~~ (Restored 2026-10-30, VPA-4: next section.) The dashboard application's login pages (VPA-5). The SDKs' token mode
+  field).~~ (Restored 2026-10-30, VPA-4: next section.) ~~The dashboard application's login pages (VPA-5).~~ (Built 2026-10-30, VPA-5a: [status/frontend.md](frontend.md#the-dashboard-application-signs-in-with-a-password-vpa-5a).) The SDKs' token mode
   (VPA-6). **A way to remove a member, disable one or reset a password: no
   `staff remove`, `staff disable` or `staff reset-password` command exists
   (gap, 2026-10-30).** `staff add` refuses a second account for an address, so a
@@ -1905,7 +1907,8 @@ was broken on purpose, is
   (Helm 3.19.0, kubeconform, 68 resources valid). A private or in-cluster
   provider, or any provider once `railsEgress` is off, can be reached again.
 - **Not done.** The dashboard application's two SSO routes and sign-in button
-  (VPA-5; `redirect_uri` names a page that does not exist until then). Never run
+  (VPA-5b, not VPA-5a, which built the password sign-in only; `redirect_uri`
+  names a page that does not exist until then). Never run
   against any provider but a simulated one and Keycloak 26.6.1 in a container,
   and the Keycloak suite was **not run in this session** (no Docker daemon).
   Nothing in the chart has run in a cluster.

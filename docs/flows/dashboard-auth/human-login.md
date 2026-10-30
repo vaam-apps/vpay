@@ -95,6 +95,30 @@ row carries the access token the exchange minted, so the dashboard's own server
 can no longer obtain it, and the cascade kills any code the session issued. The
 minted JWT stays valid for the rest of its TTL, and no design changes that.
 
+## The cookie needs a secure origin
+
+The dashboard application keeps the session token in two cookies on its own
+origin, `__Host-vpay_dash_session` and `__Host-vpay_dash_enrolment`
+(`frontends/apps/dashboard/src/server/cookies.ts`). Both are `HttpOnly`,
+`Secure`, `SameSite=Lax`, `Path=/` and carry no `Domain`, which is what the
+`__Host-` prefix requires: a browser refuses to store one that lacks any of
+them, and so a sibling subdomain or a plain-`http` response cannot plant or
+overwrite it.
+
+| Where the dashboard is reached                                    | What happens                                                                                                                                                                                                             |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `https://…`                                                       | stored                                                                                                                                                                                                                   |
+| `http://localhost:3000` (`next dev`, the compose stacks, Cypress) | stored by Chrome and Firefox, which treat localhost as a secure context. Safari has historically refused a `Secure` cookie over plain `http`; it was not tried                                                           |
+| `http://` on any other host                                       | **stored by no browser.** The sign-in action succeeds and redirects, the next request carries no cookie, and `/` sends the browser back to `/login`: the sign-in does not stick. `Secure` was already unconditional here |
+
+The sign-in does not branch on the environment to make the last row work
+(AGENTS.md forbids it). Put the dashboard behind TLS, or reach it on
+`localhost`.
+
+The rename from `vpay_dash_session` signs out any browser that held the old
+name: it is never read again and expires on its own. Nothing is revoked early
+or kept alive by it.
+
 ## One answer for every refusal
 
 No such address, wrong password, disabled account, wrong or replayed code,
@@ -188,10 +212,15 @@ named in [status/backend.md](../../status/backend.md).
 
 ## Not built
 
-The dashboard application's login pages (and its two SSO routes) and its two-transport data layer
-(VPA-5, with VP-6b), a command to remove a member, disable one or reset a
-password (none exists; see the section above for the SQL), and any proof against
-a deployment that is running.
+The dashboard application's two SSO routes and its single-sign-on button
+(VPA-5b), the pages that read `/dash/v1` and the signed reader they need
+(VP-6b), a command to remove a member, disable one or reset a password (none
+exists; see the section above for the SQL), and any proof against a deployment
+that is running (the end-to-end cases are VPA-5c). The dashboard application's
+password sign-in, authenticator step, forced password change, account page and
+sign-out are built (VPA-5a): [`frontends/apps/dashboard/README.md`](../../../frontends/apps/dashboard/README.md)
+says how, and [status/frontend.md](../../status/frontend.md) says what was
+measured.
 
 ## Tests
 

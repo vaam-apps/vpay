@@ -1,0 +1,451 @@
+"use server";
+
+/**
+ * The four things a staff member can actually do: sign in, present a code,
+ * replace the printed password, sign out.
+ *
+ * Server actions rather than route handlers so that the session token, the
+ * sealed enrolment secret and the `/dash/v1` access token stay in this
+ * process: the client component around each (`one-question-steps.tsx`) hands
+ * its answers over as a `FormData` and renders what comes back. It does need
+ * JavaScript — a stepper that asks one question per screen cannot advance
+ * without it, and that is the cost of the rule rather than an oversight.
+ *
+ * # None of them mints a token
+ *
+ * The code leg (`oauth.ts`) is run by the **gate** (`session.ts`), on the
+ * first render of a page behind it, and by nothing here. These actions end in
+ * a redirect to the page that needs the token, which finds none and mints
+ * one — so there is one place that decides whether a session may hold a token
+ * and one place that handles the mint's refusal, where this file used to
+ * have three.
+ *
+ * # One shape for every answer
+ *
+ * Each action returns {@link FormState}: a message and a request id, or
+ * `null` and a redirect. Never a thrown error for a refusal — a staff member
+ * who mistyped a password must read a sentence, not Next's error page.
+ *
+ * # Every one of them opens with an origin check
+ *
+ * An export of a `'use server'` file is a `POST` endpoint anything on the
+ * internet can reach, and the session cookie is `SameSite=Lax` rather than
+ * `Strict`, so a top-level form submission from another site carries it.
+ * `server/csrf.ts` is the check and it compares the **configured** public
+ * origin — never `X-Forwarded-Host`, which is what Next's own check uses and
+ * which the caller sets (issue #88 item 4). Adding a fifth action means
+ * adding the two lines; there is no wrapper, because a wrapper around a
+ * `'use server'` export changes what Next registers.
+ */
+import { redirect } from "next/navigation";
+import { cookies } from "next/headers";
+
+import { dashboardConfig } from "../config/runtime";
+import type { FormState } from "../form-state";
+import {
+  postForm,
+  type ApiFailure,
+  type LoginResponse,
+  type TotpResponse,
+} from "./api";
+import { sessionCredential } from "./dash-fetch";
+import {
+  COOKIE_ATTRIBUTES,
+  ENROLMENT_COOKIE,
+  ENROLMENT_MAX_AGE_SECONDS,
+  SESSION_MAX_AGE_SECONDS,
+} from "./cookies";
+import { originRefusal } from "./csrf";
+import { decodePendingEnrolment, encodePendingEnrolment } from "./enrolment";
+import {
+  clearEnrolmentCookie,
+  clearSessionCookie,
+  HOME_PATH,
+  LOGIN_PATH,
+  PASSWORD_PATH,
+  sessionToken,
+  setSessionCookie,
+  TOTP_PATH,
+} from "./session";
+
+/** A refusal, in the shape a form renders. */
+function shown(failure: ApiFailure, field?: string): FormState {
+  return {
+    error: failure.message,
+    requestId: failure.requestId,
+    ...(field === undefined ? {} : { field }),
+  };
+}
+
+/**
+ * Which password-change question a refusal from `/dash/v1/staff/password` is
+ * about.
+ *
+ * * `401` is "the password in force is wrong or absent" — or a session vpay
+ *   will not accept, which is the same answer on purpose and which
+ *   `PasswordPage` catches on its next render. Either way the person's next
+ *   move is the first question.
+ * * `400` naming `new_password` is the length rule, and it is about the new
+ *   one.
+ * * Anything else (a rate limit, an outage) is about the form as a whole and
+ *   stays on the last question, where it always was.
+ */
+function passwordFieldFor(failure: ApiFailure): string | undefined {
+  if (failure.status === 401) {
+    return "current_password";
+  }
+  if (failure.param === "new_password") {
+    return "new_password";
+  }
+  return undefined;
+}
+
+/** The sentence a deployment with no registration shows instead of a form. */
+const UNCONFIGURED =
+  "This deployment has no dashboard client registered, so it can sign nobody in. See the container log.";
+
+/**
+ * A single string field out of a `FormData`, trimmed.
+ *
+ * `FormData.get` answers `File | string | null`; anything but a string is
+ * treated as absent rather than stringified, because `[object File]` reaching
+ * an argon2 verification is a refusal whose message would be about a
+ * password.
+ */
+function field(form: FormData, name: string): string {
+  const value = form.get(name);
+  return typeof value === "string" ? value.trim() : "";
+}
+
+/**
+ * Step 1 — the password.
+ *
+ * On success the session cookie is set **before** the redirect, and the
+ * sealed enrolment secret with it when this is a first sign-in. Neither
+ * value is returned to the caller: `FormState` is what a browser reads.
+ */
+export async function signIn(
+  _previous: FormState,
+  form: FormData,
+): Promise<FormState> {
+  // Issue #88 item 4. First, before anything is read out of the form and
+  // before any cookie is touched: a cross-origin caller must not be able to
+  // spend a rate-limit unit, let alone a credential.
+  const crossOrigin = await originRefusal();
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+
+  const { config } = dashboardConfig();
+  if (config === null) {
+    return { error: UNCONFIGURED, requestId: null };
+  }
+
+  const email = field(form, "email");
+  const password = form.get("password");
+  if (
+    email.length === 0 ||
+    typeof password !== "string" ||
+    password.length === 0
+  ) {
+    // Refused here rather than at vpay, which would spend an argon2id
+    // verification on an empty string. The message says nothing about which
+    // of the two is missing for the same reason vpay's does not.
+    return {
+      error: "Enter your work email and your password.",
+      requestId: null,
+    };
+  }
+
+  const result = await postForm<LoginResponse>(
+    config.apiBaseUrl,
+    "/dash/v1/staff/login",
+    {
+      email,
+      // NOT trimmed: a password's leading or trailing space is part of it, and
+      // trimming one here would refuse a password this deployment accepted when
+      // `staff add` hashed it.
+      password,
+    },
+  );
+  if (!result.ok) {
+    return shown(result.failure);
+  }
+
+  await setSessionCookie(result.value.session, SESSION_MAX_AGE_SECONDS);
+
+  const sealed = result.value.enrolment;
+  const otpauth = result.value.otpauth_uri;
+  if (
+    result.value.next === "totp_enrolment" &&
+    typeof sealed === "string" &&
+    typeof otpauth === "string"
+  ) {
+    const store = await cookies();
+    store.set(ENROLMENT_COOKIE, encodePendingEnrolment({ sealed, otpauth }), {
+      ...COOKIE_ATTRIBUTES,
+      maxAge: ENROLMENT_MAX_AGE_SECONDS,
+    });
+  } else {
+    // An account that is already enrolled must not carry a stale blob into
+    // `/staff/totp`. It would be ignored there — the stored secret is the
+    // only one that may ever authenticate an enrolled account — but a
+    // credential blob living in a browser for no reason is one this app can
+    // simply not leave behind.
+    await clearEnrolmentCookie();
+  }
+
+  redirect(TOTP_PATH);
+}
+
+/**
+ * Step 2 — the code, and on a first sign-in the enrolment it completes.
+ *
+ * The sealed secret is read from the cookie and sent back; vpay opens it,
+ * verifies the code against it, and commits the enrolment with a
+ * compare-and-swap. A caller that sends one for an already-enrolled account
+ * has it ignored, which is why this is safe to send whenever it is present.
+ */
+export async function submitTotp(
+  _previous: FormState,
+  form: FormData,
+): Promise<FormState> {
+  // Issue #88 item 4. First, before anything is read out of the form and
+  // before any cookie is touched: a cross-origin caller must not be able to
+  // spend a rate-limit unit, let alone a credential.
+  const crossOrigin = await originRefusal();
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+
+  const { config } = dashboardConfig();
+  if (config === null) {
+    return { error: UNCONFIGURED, requestId: null };
+  }
+
+  const token = await sessionToken();
+  if (token === null) {
+    redirect(LOGIN_PATH);
+  }
+
+  const code = field(form, "code");
+  if (code.length === 0) {
+    return {
+      error: "Enter the six-digit code from your authenticator app.",
+      requestId: null,
+    };
+  }
+
+  const store = await cookies();
+  const pending = decodePendingEnrolment(store.get(ENROLMENT_COOKIE)?.value);
+
+  const body: Record<string, string> =
+    pending === null ? { code } : { code, enrolment: pending.sealed };
+
+  const result = await postForm<TotpResponse>(
+    config.apiBaseUrl,
+    "/dash/v1/staff/totp",
+    body,
+    { credential: sessionCredential(token) },
+  );
+  if (!result.ok) {
+    // NOT `if (status === 401) { clearSessionCookie(); clear the enrolment }`,
+    // which is what stood here until 2026-09-10 (the exp36 review's F6, and
+    // `changePassword`'s F1 one route over).
+    //
+    // `/dash/v1/staff/totp` answers `401` for a **wrong six-digit code** as
+    // well as for a session it refuses — one answer for both, deliberately,
+    // because this module has exactly one refusal. So the old reading turned
+    // the commonest failure on this screen, a typo, into a sign-out: the
+    // cookie went, the next render found none and bounced to `/login`, and
+    // the person never read the sentence saying what was wrong. It took the
+    // sealed enrolment blob with it, so a first sign-in could not even be
+    // retried — the retry would carry no secret to commit.
+    //
+    // Nothing is lost by not clearing them. A session that really IS over is
+    // caught by `TotpPage`, which since the same day reads
+    // `GET /dash/v1/staff/session/stage` on every render and redirects to
+    // `/login` when vpay refuses it — the page whose job that is, deciding it
+    // from a fresh answer, rather than an action inferring it from a status
+    // that means two things. The extra guesses this admits are bounded by the
+    // sign-in limiter, which counts a wrong code (`staff::totp_step`).
+    return shown(result.failure);
+  }
+
+  // Enrolment is committed; the blob has no further use and outliving the
+  // request is the only thing it could do wrong.
+  await clearEnrolmentCookie();
+
+  // The page decides, not this action: `/` reads the session, sends one that
+  // still carries the printed password to `/login/password` (no token can be
+  // minted for it), and mints the token for any other. Going to the password
+  // page directly saves that hop and decides nothing the gate would not.
+  redirect(result.value.password_change_required ? PASSWORD_PATH : HOME_PATH);
+}
+
+/**
+ * Replaces this staff member's password, having been shown the current one.
+ *
+ * Reachable only by a session that has presented both factors — vpay checks
+ * that, not this app. Since 2026-09-10 (issue #79 item 3) vpay also requires
+ * the password **in force**, and this action carries it: the two factors were
+ * presented once, up to twelve hours earlier, so without it the credential
+ * protecting an irreversible account takeover is the session cookie alone.
+ *
+ * vpay deletes every *other* session of this staff member on success. Nothing
+ * is needed here for that — the sessions being ended are other browsers' —
+ * and this one survives on purpose, which is why the redirect below still
+ * works.
+ */
+export async function changePassword(
+  _previous: FormState,
+  form: FormData,
+): Promise<FormState> {
+  // Issue #88 item 4. First, before anything is read out of the form and
+  // before any cookie is touched: a cross-origin caller must not be able to
+  // spend a rate-limit unit, let alone a credential.
+  const crossOrigin = await originRefusal();
+  if (crossOrigin !== null) {
+    return crossOrigin;
+  }
+
+  const { config } = dashboardConfig();
+  if (config === null) {
+    return { error: UNCONFIGURED, requestId: null };
+  }
+
+  const token = await sessionToken();
+  if (token === null) {
+    redirect(LOGIN_PATH);
+  }
+
+  const current = form.get("current_password");
+  const next = form.get("new_password");
+  const confirm = form.get("confirm_password");
+  if (typeof current !== "string" || current.length === 0) {
+    // Refused here rather than at vpay for `signIn`'s reason — an empty
+    // string must not cost an argon2id verification — and, unlike the pair
+    // check below, this is NOT a rule this app owns: vpay refuses an absent
+    // current password with the same `401` it answers a wrong one. What this
+    // buys is a sentence that says which field is empty, which vpay
+    // deliberately will not.
+    return {
+      error: "Enter your current password.",
+      requestId: null,
+      field: "current_password",
+    };
+  }
+  if (typeof next !== "string" || next.length === 0) {
+    return {
+      error: "Choose a new password.",
+      requestId: null,
+      field: "new_password",
+    };
+  }
+  if (next !== confirm) {
+    // Checked here because it is the one rule vpay has no way to check: it
+    // sees one password, and a mistyped pair would be a password nobody can
+    // reproduce.
+    return {
+      error: "The two passwords do not match.",
+      requestId: null,
+      field: "confirm_password",
+    };
+  }
+
+  const result = await postForm<{
+    password_change_required: boolean;
+    other_sessions_revoked: number;
+  }>(
+    config.apiBaseUrl,
+    "/dash/v1/staff/password",
+    // NOT trimmed, either of them, for the reason `signIn` states: a
+    // password's leading or trailing space is part of it.
+    { current_password: current, new_password: next },
+    { credential: sessionCredential(token) },
+  );
+  if (!result.ok) {
+    // NOT `if (status === 401) clearSessionCookie()`, which is what stood
+    // here until the exp36 review, and which was correct only for as long as
+    // this endpoint had no credential to refuse.
+    //
+    // Since 2026-09-10 vpay answers `401` here for a wrong or absent CURRENT
+    // PASSWORD as well as for a session it will not accept — one answer for
+    // both, deliberately, because this module has exactly one refusal. So the
+    // old reading turned a typo into a sign-out: the cookie went, the next
+    // render of this page found no token and redirected, and the person never
+    // saw the sentence telling them what was wrong. Measured in a browser —
+    // `dashboard.cy.ts` leg 4 typed a wrong current password, expected the
+    // alert, and got `(new url) /login` instead.
+    //
+    // Nothing is lost by not clearing it. A session that really IS over is
+    // caught one render later by `PasswordPage`, which reads the session on
+    // every render and redirects to `/login` when vpay refuses it — the page
+    // whose job that is, deciding it from a fresh answer, rather than an
+    // action inferring it from a status that now means two things.
+    return shown(result.failure, passwordFieldFor(result.failure));
+  }
+
+  redirect(HOME_PATH);
+}
+
+/** What the sign-out says when vpay did not confirm the revocation. */
+const SIGN_OUT_FAILED =
+  "Could not sign out, so you are still signed in. Try again.";
+
+/**
+ * Signs out: deletes the vpay session row, then clears the cookie.
+ *
+ * **That order matters.** The row is what carries the access token, so
+ * deleting it is the revocation (ADR-0017 decision 2); clearing the cookie
+ * first and failing to reach vpay would leave a live row with a live token
+ * on it and nothing pointing at it — a session nobody can sign out of.
+ *
+ * **So the cookie is kept when vpay did not confirm.** A failed call (vpay
+ * unreachable, a `5xx`, a refusal) answers {@link SIGN_OUT_FAILED} and leaves
+ * the cookie where it is: the person is told they are still signed in and the
+ * button still works, where clearing it would have shown them a sign-in form
+ * over a live row. This comment said as much and the code cleared the cookie
+ * anyway until the VPA-5a review.
+ *
+ * `/dash/v1/staff/logout` is idempotent and answers `200` for a token that
+ * was never there, so a second sign-out is not an error. With no cookie, or no
+ * configuration to call vpay with, there is no row this app can revoke and the
+ * redirect to the form is the whole job.
+ *
+ * It forgets the sealed enrolment secret too, but only once the revocation
+ * has been confirmed: a blob that outlives the session that was enrolling has
+ * no use, and is the thing a shared browser should not keep.
+ */
+export async function signOut(
+  _previous: FormState,
+  _form: FormData,
+): Promise<FormState> {
+  // Issue #88 item 4, and this one is the reason the check is per action
+  // rather than per form: a sign-out is the action an `<img src>` or a link
+  // scanner would fire, which `signed-in-bar.tsx` already made a POST to
+  // avoid. A refused call does nothing at all — it does not clear the cookie
+  // and it does not delete the row — and answers the redirect a browser that
+  // reached it honestly would have got, so a forged one is indistinguishable
+  // from a completed one to whoever forged it.
+  if ((await originRefusal()) !== null) {
+    redirect(LOGIN_PATH);
+  }
+
+  const { config } = dashboardConfig();
+  const token = await sessionToken();
+  if (config !== null && token !== null) {
+    const revoked = await postForm<{ signed_out: boolean }>(
+      config.apiBaseUrl,
+      "/dash/v1/staff/logout",
+      {},
+      { credential: sessionCredential(token) },
+    );
+    if (!revoked.ok) {
+      return { error: SIGN_OUT_FAILED, requestId: revoked.failure.requestId };
+    }
+  }
+  await clearSessionCookie();
+  await clearEnrolmentCookie();
+  redirect(LOGIN_PATH);
+}

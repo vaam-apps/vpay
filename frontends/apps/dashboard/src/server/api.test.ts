@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { envelopeMessage, requestIdOf, unreachable } from "./api";
+import { envelopeMessage, getJson, requestIdOf, unreachable } from "./api";
 
 describe("a refusal", () => {
   it("takes its sentence from vpay error envelope", () => {
@@ -55,5 +55,44 @@ describe("a refusal", () => {
     expect(failure.message).toContain("ECONNREFUSED");
     expect(failure.requestId).toBeNull();
     expect(unreachable("boom").message).toContain("boom");
+  });
+});
+
+describe("a refusal that names a parameter", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function answer(status: number, body: unknown) {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(new Response(JSON.stringify(body), { status })),
+      ),
+    );
+  }
+
+  it("carries error.param on the failure — it is how a policy refusal finds its field", async () => {
+    answer(400, { error: { message: "Too short.", param: "new_password" } });
+    const result = await getJson("http://vpay:8080", "/x");
+    expect(result).toMatchObject({
+      ok: false,
+      failure: { status: 400, message: "Too short.", param: "new_password" },
+    });
+  });
+
+  it("leaves the key out when the envelope names none, or names something that is not a string", async () => {
+    for (const error of [
+      { message: "No param." },
+      { message: "Empty.", param: "" },
+      { message: "Number.", param: 7 },
+    ]) {
+      answer(400, { error });
+      const result = await getJson("http://vpay:8080", "/x");
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.failure).not.toHaveProperty("param");
+      }
+    }
   });
 });
