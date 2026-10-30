@@ -1,6 +1,6 @@
 /**
- * The root layout: the theme and the brand, and the gate that keeps the app's
- * only page the unavailable notice until VP-6b.
+ * The root layout: the theme and the brand, and the gate that names the pages
+ * this app has.
  *
  * `docs/plans/2026-09-07-ui-revamp.md` §5 Lane D names the theme regression
  * as a decisive mutation: "the layout's `data-theme` reverts to `corporate`"
@@ -78,7 +78,7 @@ describe("the root layout", () => {
   });
 
   it("renders no <h1> of its own — the page owns the document's one", () => {
-    // `ConsoleUnavailable` renders it (`sr-only`, as the shell's did).
+    // `CenteredShell` renders it (`sr-only`), on every page behind it.
     expect(markup()).not.toMatch(/<h1/);
   });
 
@@ -86,7 +86,7 @@ describe("the root layout", () => {
     expect(markup()).not.toContain("vpay dashboard");
   });
 
-  it("renders no signed-in control — nobody can be signed in", () => {
+  it("renders no signed-in control — /login shares this layout", () => {
     // "Sign out" in chrome shared with a page where nobody is signed in is
     // the same kind of claim as a nav entry for a page nobody wrote.
     expect(markup()).not.toMatch(/sign out/i);
@@ -122,21 +122,26 @@ function pagesUnder(dir: string, prefix = ""): string[] {
 }
 
 /**
- * The fail-closed gate (ADR-0036, VP-6a).
+ * The pages this app has (VPA-5a), as a list a change must edit.
  *
- * The console signs every `/dash/v1` request with a paired key and this app
- * cannot do that until VP-6b, so its one page is the notice that says so. A
- * second page would be a page that reads vpay with nothing to read it with, or
- * a sign-in form for credentials vpay no longer accepts — the two things the
- * cutover deleted. When VP-6b adds the first real page it changes this list in
- * the same commit, which is what makes the change visible.
+ * Until VP-6a this was `["page.tsx"]` and the first page after it came with
+ * VP-6b; VPA-5a brings back the sign-in — `/login`, its code step and its
+ * password step — and a landing page at `/`. A page added beyond these is a
+ * page that reads vpay with nothing to read it with, or a second sign-in; the
+ * pages that read `/dash/v1` arrive with their own ticket, which changes this
+ * list in the same commit, and that is what makes the change visible.
  *
- * The negative control is the same function over a directory that does have
- * pages, so an always-empty `pagesUnder` cannot pass the real assertion.
+ * The negative control below is the same function over a directory that does
+ * have pages, so an always-empty `pagesUnder` cannot pass the real assertion.
  */
-describe("the app has no page but the unavailable notice", () => {
-  it("serves `/` and nothing else", () => {
-    expect(pagesUnder(APP_DIR).sort()).toEqual(["page.tsx"]);
+describe("the app has the pages the sign-in needs, and no others", () => {
+  it("serves the account page and the three sign-in steps", () => {
+    expect(pagesUnder(APP_DIR).sort()).toEqual([
+      "login/page.tsx",
+      "login/password/page.tsx",
+      "login/totp/page.tsx",
+      "page.tsx",
+    ]);
   });
 
   it("the helper it relies on is not vacuously true", () => {

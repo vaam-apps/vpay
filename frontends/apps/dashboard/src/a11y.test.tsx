@@ -30,18 +30,30 @@
  * markup, rather than left to a suite this repo does not build.
  *
  * Every screen is covered through the **component** it is made of. Since
- * VP-6a the app's only page is `ConsoleUnavailable` (ADR-0036): the pages that
- * read `/dash/v1` are deleted until VP-6b, and the presentational components
- * they were made of are covered here and in their own suites.
+ * VPA-5a the app's pages are the sign-in's steps and the account page, all of
+ * them inside `CenteredShell`'s landmark; the pages that read `/dash/v1` are a
+ * later ticket, and the presentational components they were made of are covered
+ * here and in their own suites.
  */
-import { render } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import axe from "axe-core";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 
 import RootLayout from "../app/layout";
-import { ConsoleUnavailable } from "./components/console-unavailable";
+import { AccountPage } from "./components/account-page";
+import { CenteredShell } from "./components/centered-shell";
+import { EnrolmentPanel } from "./components/enrolment-panel";
+import {
+  NotConfigured,
+  PairedKeyOnly,
+  SignInUnreachable,
+} from "./components/login-notices";
+import { NotFoundNotice } from "./components/not-found-notice";
+import { PasswordForm } from "./components/password-form";
+import { SignInForm } from "./components/sign-in-form";
+import { TotpForm } from "./components/totp-form";
 import { PaymentDetailView } from "./components/payment-detail";
 import { PaymentsFilters } from "./components/payments-filters";
 import { PaymentsPager } from "./components/payments-pager";
@@ -101,15 +113,21 @@ async function violations(container: Element): Promise<string[]> {
   );
 }
 
+const NOOP = () => Promise.resolve({ error: null, requestId: null });
+
 describe("the rendered app", () => {
   it("puts every byte of page content inside a landmark", async () => {
-    // The real `<body>` the root layout renders around the real page, not a
+    // The real `<body>` the root layout renders around a real page, not a
     // fragment — `region` is a document-level rule and a fragment would pass
     // it vacuously. The root layout is the document and provides no landmark
-    // of its own; the `<main>` comes from the page.
+    // of its own; the `<main>` comes from `CenteredShell`.
     const html = renderToStaticMarkup(
       RootLayout({
-        children: <ConsoleUnavailable />,
+        children: (
+          <CenteredShell>
+            <PairedKeyOnly />
+          </CenteredShell>
+        ),
       }) as ReactElement,
     );
     const body = html
@@ -121,13 +139,100 @@ describe("the rendered app", () => {
   });
 });
 
-describe("every screen this app renders", () => {
-  it("the unavailable notice, the only page there is", async () => {
-    const { container, unmount } = render(<ConsoleUnavailable />);
+describe("every screen of the sign-in", () => {
+  /** Renders `ui` inside the shell every page has, and checks the whole thing. */
+  async function clean(ui: ReactElement) {
+    const { container, unmount } = render(<CenteredShell>{ui}</CenteredShell>);
+    const found = await violations(container);
+    unmount();
+    return found;
+  }
+
+  it("the email question", async () => {
+    expect(await clean(<SignInForm action={NOOP} />)).toEqual([]);
+  });
+
+  it("the password question, with the account name carried for a password manager", async () => {
+    const { container, unmount } = render(
+      <CenteredShell>
+        <SignInForm action={NOOP} />
+      </CenteredShell>,
+    );
+    fireEvent.change(screen.getByLabelText("Work email"), {
+      target: { value: "ada@acme.test" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     expect(await violations(container)).toEqual([]);
     unmount();
   });
 
+  it("the code question", async () => {
+    expect(await clean(<TotpForm action={NOOP} />)).toEqual([]);
+  });
+
+  it("the enrolment screen, and the key sheet open over it", async () => {
+    const { container, unmount } = render(
+      <CenteredShell>
+        <EnrolmentPanel
+          qrDataUrl="data:image/png;base64,AAAA"
+          secret="JBSWY3DPEHPK3PXP"
+        />
+        <TotpForm action={NOOP} enrolling />
+      </CenteredShell>,
+    );
+    expect(await violations(container)).toEqual([]);
+
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: "Cannot scan? Enter the key instead",
+      }),
+    );
+    await screen.findByRole("dialog");
+    // The sheet is portalled out of `container`, so the document is the root.
+    expect(await violations(document.body)).toEqual([]);
+    unmount();
+  });
+
+  it("the password change", async () => {
+    expect(await clean(<PasswordForm action={NOOP} />)).toEqual([]);
+  });
+
+  it("the account page", async () => {
+    expect(
+      await clean(
+        <AccountPage
+          displayName="Ada Lovelace"
+          email="ada@acme.test"
+          merchantId="acme"
+          signOut={() => Promise.resolve()}
+        />,
+      ),
+    ).toEqual([]);
+  });
+
+  it("the three notices and the not-found page", async () => {
+    expect(await clean(<PairedKeyOnly />)).toEqual([]);
+    expect(
+      await clean(
+        <NotConfigured
+          problems={[
+            { variable: "VPAY_DASHBOARD_CLIENT_ID", detail: "the id." },
+          ]}
+        />,
+      ),
+    ).toEqual([]);
+    expect(
+      await clean(
+        <SignInUnreachable
+          failure={{ status: 503, message: "Starting up.", requestId: "req_1" }}
+        />,
+      ),
+    ).toEqual([]);
+    expect(await clean(<NotFoundNotice />)).toEqual([]);
+  });
+});
+
+describe("every screen this app renders", () => {
   it("the payments list and its filters", async () => {
     const table = render(<PaymentsTable rows={[INTENT]} />);
     expect(await violations(table.container)).toEqual([]);

@@ -1,10 +1,11 @@
-import { ConsoleUnavailable } from "../src/components/console-unavailable";
+import { CenteredShell } from "../src/components/centered-shell";
+import { NotFoundNotice } from "../src/components/not-found-notice";
 
-/**
- * Every path that is not `/`: the same answer. There are no other pages until
- * VP-6b, and a `404` that said nothing would read as a broken link rather than
- * as a console that cannot sign anybody in yet.
- */
+/** Every path that is not a page: a plain 404, in the same shell as the rest. */
 export default function NotFound() {
-  return <ConsoleUnavailable />;
+  return (
+    <CenteredShell>
+      <NotFoundNotice />
+    </CenteredShell>
+  );
 }
