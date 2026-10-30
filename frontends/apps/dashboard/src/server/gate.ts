@@ -51,10 +51,13 @@ export type Gate =
  * another, which is either too late to matter or a re-mint on every render.
  *
  * The margin is not an optimisation. Without it the *first* read after the
- * expiry fails and `dash-read.ts` retries it, so every fifteen minutes a staff
- * member's page costs a refused request before it costs a good one — and that
- * reactive path stays, because a clock that disagrees with vpay's, or a token
- * revoked mid-render, is not something a margin can see.
+ * expiry is refused, and nothing here retries it: `dash-read.ts`, which did,
+ * was deleted with the read seam (VP-6a). So the margin is the only thing
+ * that keeps a render from reading with a token vpay is about to refuse, and
+ * what it cannot see — a clock that disagrees with vpay's, a token revoked
+ * mid-render — surfaces as a refused read that the next render's gate answers
+ * by minting again. The reader VP-6b adds must show that refusal, not retry
+ * with the same token.
  */
 export const REMINT_AFTER_FRACTION = 0.8;
 

@@ -87,9 +87,8 @@ describe("replacing the token before it expires (issue #88 item 1)", () => {
 
   it("is still a stale token rather than a missing one after the expiry", () => {
     // A render that arrives late — a slow request, a suspended laptop. The
-    // fallback in `requireStaff` is refused for a `401` either way, and
-    // `dash-read.ts`'s reactive retry is what covers a token that really is
-    // dead.
+    // fallback in `requireStaff` is refused for a `401` either way, and vpay
+    // itself refuses a token that really is dead; nothing retries it.
     expect(gateFor(SESSION, at(TTL_SECONDS + 60)).kind).toBe("stale-token");
   });
 
