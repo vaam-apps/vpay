@@ -32,7 +32,7 @@ pub use cli::{
 pub use config::{
     CallbackRegistration, CallbackVerification, CheckoutConfig, Config, CurrencyEntry,
     ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits, Routing,
-    RoutingWeight, StaffAuth, WebhookPolicy,
+    RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use console::{Dashboard, ServiceCapability, ServiceClient};
 pub use oauth::{
@@ -574,6 +574,30 @@ pub enum ConfigError {
         /// `password_pepper` or `totp_encryption_key`.
         field: String,
     },
+
+    /// A `staff_auth.sso` value is unusable. `reason` is chosen by the check
+    /// and never by anything a file contains; the value itself is never
+    /// echoed, because one of the fields is a secret and the others do not
+    /// need it to be found.
+    #[error("staff_auth.sso.{field} is not usable: {reason}")]
+    StaffSsoMalformed {
+        /// Which field.
+        field: &'static str,
+        /// Which rule it broke.
+        reason: &'static str,
+    },
+
+    /// `staff_auth.sso` lists neither an accepted `acr` nor an accepted `amr`
+    /// (ADR-0019 § R1 for the `oidc` kind, taken by ADR-0030).
+    ///
+    /// Fail closed: an id_token is accepted only if it proves a second
+    /// factor, and a block with no rule for what proves one cannot say. Either
+    /// list may be empty as long as the other is not.
+    #[error(
+        "staff_auth.sso lists neither accepted_acr nor accepted_amr: an id_token is accepted \
+         only if it proves a second factor, and this block names no way to tell (ADR-0030)"
+    )]
+    StaffSsoNoSecondFactorRule,
 
     /// A `service_clients` entry holds no capability.
     ///
