@@ -1122,14 +1122,16 @@ pub fn router(deps: RouterDeps) -> Router {
 
     // Unauthenticated by necessity, not by omission — see the table above.
     //
-    // **Business and MCP only since VP-6a.** The two discovery routes were
-    // mounted on the management surface too, because its bearer-token validator
-    // fetched JWKS over HTTP and must not have to reach the business tier to
-    // validate a staff token (ADR-0022 § "Where `/v1/oauth` goes"). There is no
-    // staff token and no validator any more. What still reads them is the
-    // merchant MCP endpoint's validator, which fetches this process's own JWKS
-    // over loopback (ADR-0033 D9), so an MCP-only pod keeps the pair. `/token`
-    // mints the **merchant** private-key-JWT credential and is
+    // **Where the pair is mounted is decided by who reads it** (`validates_tokens`
+    // below). Until VP-6a the management surface mounted it, because its staff
+    // bearer-token validator fetched JWKS over HTTP and must not have to reach the
+    // business tier to validate a session (ADR-0022 § "Where `/v1/oauth` goes").
+    // VP-6a deleted that validator and the mount with it; VPA-3 restores both for a
+    // deployment that serves `human_login`, so a management pod that does has the
+    // pair again. Any other pod has it only where it mints machine tokens or is an
+    // MCP pod, whose validator fetches this process's own JWKS over loopback
+    // (ADR-0033 D9).
+    // `/token` mints the **merchant** private-key-JWT credential and is
     // `surfaces.business` alone: a pod that mounts the OP for its JWKS and mints
     // nothing answers the honest 404 there.
     let oauth = Router::new()

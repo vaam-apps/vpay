@@ -539,9 +539,6 @@ fn verifier_matches(verifier: &str, challenge: &str) -> bool {
 mod tests {
     use super::*;
 
-    /// RFC 7636 Appendix B's own vector: this exact verifier hashes to this
-    /// exact challenge. Without it, "the PKCE check works" would be a claim
-    /// about two functions in this file agreeing with each other.
     /// The grant's wire types print no credential through `{:?}`.
     #[test]
     fn the_grants_wire_types_do_not_print_their_secrets() {
@@ -593,6 +590,9 @@ mod tests {
         );
     }
 
+    /// RFC 7636 Appendix B's own vector: this exact verifier hashes to this
+    /// exact challenge. Without it, "the PKCE check works" would be a claim
+    /// about two functions in this file agreeing with each other.
     #[test]
     fn the_pkce_check_matches_rfc_7636_appendix_b() {
         let verifier = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
@@ -632,7 +632,11 @@ mod tests {
             &"a".repeat(43),
             &"z".repeat(128),
         ] {
-            assert!(!verifier_matches(verifier, ""), "{verifier}");
+            assert!(
+                !verifier_matches(verifier, ""),
+                "a verifier of {} characters satisfied the empty challenge",
+                verifier.len()
+            );
         }
     }
 

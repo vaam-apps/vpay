@@ -141,10 +141,105 @@ fn the_dash_mode_is_optional_iff_human_login_is_served() {
         ]))),
         SurfaceMode::Off
     );
-    // Nothing on the list authenticates /dash/v1: the nests are not mounted.
+    // Keypair alone, the sign-in not served: signed-only.
     assert_eq!(
         mode(&config_with_auth(Some(&["keypair", "machine_tokens"]))),
         SurfaceMode::Required
+    );
+    // The fourth row of `for_dashboard`'s table: no keypair and no sign-in.
+    // Nothing on the list authenticates /dash/v1, so the nests are not mounted
+    // (`Config::validate_all` refuses the list as `NoWayIn` for a deployment that
+    // mounts the surface at all); the mode is the signed-only one, so a router
+    // built over it can never be more open than the table says.
+    assert_eq!(
+        mode(&config_with_auth(Some(&["machine_tokens"]))),
+        SurfaceMode::Required
+    );
+}
+
+// ------------------------------------------------- keypair off, sign-in served --
+
+/// `keypair` off and `human_login` served is the one deployment where a console
+/// key is no credential at all: `/dash/v1` runs the envelope `Off`, so every
+/// request is a session request, and the signed surfaces are not there.
+///
+/// Four properties, each the router's and none of them the table's alone
+/// ([`SurfaceMode::for_dashboard`] is tested above as a function, not as a
+/// router):
+///
+/// * `/svc/v1` is not mounted (its caller is a signing service, and `dashboard:`,
+///   which pairs keys, is refused without `keypair`): the honest `404`;
+/// * every `/dash/v1` request, the read routes and the procedure transport alike,
+///   goes to the session path: with no bearer it is the scope step's
+///   `missing_bearer_token`, never the layer's coarse signed-only `401`;
+/// * a COSE body is refused `415` rather than forwarded unverified;
+/// * a staff session bearer clears every gate and ends at the member lookup
+///   (the lazy pool answers a server error, which is "not refused").
+///
+/// Decisive: give `/dash/v1` `Required` here and the second property answers the
+/// coarse `401` and the fourth never gets in; give it `Optional` and a COSE body
+/// is forwarded to the scope step instead of the third's `415`.
+#[tokio::test]
+async fn with_keypair_off_and_the_sign_in_served_dash_takes_sessions_alone() {
+    let (encoding_key, jwk) = generate_keypair("staff-1");
+    let server = jwks_server(&jwk).await;
+    let config = config_with_human_login(Some(&["machine_tokens", "human_login"]));
+    let app = router(deps_for_human_login(
+        &config,
+        &format!("{}/jwks.json", server.uri()),
+    ));
+
+    let svc = send(app.clone(), "POST", "/svc/v1/console_keys", &[], "").await;
+    assert_eq!(
+        svc.status(),
+        StatusCode::NOT_FOUND,
+        "/svc/v1 is not mounted"
+    );
+
+    for (method, uri) in [
+        ("GET", "/dash/v1/payment_intents"),
+        ("POST", "/dash/v1/$procs/searchPaymentIntents"),
+    ] {
+        let response = send(app.clone(), method, uri, &[], "").await;
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "{method} {uri}"
+        );
+        assert_eq!(
+            error_code(&json_of(response).await),
+            Some("missing_bearer_token"),
+            "{method} {uri}: the session path asks for a bearer"
+        );
+    }
+
+    let cose = send(
+        app.clone(),
+        "GET",
+        "/dash/v1/payment_intents",
+        &[("content-type", "application/cose; cose-type=\"cose-sign1\"")],
+        "",
+    )
+    .await;
+    assert_eq!(cose.status(), StatusCode::UNSUPPORTED_MEDIA_TYPE);
+
+    let token = mint_token(
+        &encoding_key,
+        "staff-1",
+        &staff_claims("stf_1", DASHBOARD_SCOPE, Some(TENANT)),
+    );
+    let read = send(
+        app,
+        "GET",
+        "/dash/v1/payment_intents",
+        &[("authorization", &bearer(&token))],
+        "",
+    )
+    .await;
+    assert!(
+        read.status().is_server_error(),
+        "a session bearer reaches the member lookup, which the lazy pool cannot answer: {}",
+        read.status()
     );
 }
 
@@ -276,7 +371,10 @@ async fn a_session_request_with_no_valid_token_is_a_plain_401() {
         object.insert("aud".to_owned(), json!(vpay_config::MERCHANT_AUDIENCE));
     }
     let merchant_audience = mint(&claims);
-    for token in ["not.a.jwt", merchant_audience.as_str()] {
+    for (index, token) in ["not.a.jwt", merchant_audience.as_str()]
+        .into_iter()
+        .enumerate()
+    {
         let response = send(
             app.clone(),
             "GET",
@@ -285,7 +383,11 @@ async fn a_session_request_with_no_valid_token_is_a_plain_401() {
             "",
         )
         .await;
-        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{token}");
+        assert_eq!(
+            response.status(),
+            StatusCode::UNAUTHORIZED,
+            "bearer number {index} must be refused"
+        );
         assert_eq!(error_code(&json_of(response).await), Some("invalid_token"));
     }
 }
