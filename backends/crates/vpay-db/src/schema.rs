@@ -497,7 +497,7 @@ mod tests {
         // never probe, and a name here the schema no longer declares is a
         // probe of nothing. Until 2026-09-23 this was a hand-kept
         // `[&str; 19]` of table names with no such check.
-        const MODEL_TABLES: [(&str, &str); 23] = [
+        const MODEL_TABLES: [(&str, &str); 24] = [
             ("Currency", "currencies"),
             ("Provider", "providers"),
             ("PaymentIntent", "payment_intents"),
@@ -539,6 +539,8 @@ mod tests {
             // `StaffSsoAttempt`; migration 0058 (VPA-2, owner ruling R5) gave
             // all three back, which is why they are listed again above.
             ("ConsoleKey", "console_keys"),
+            // Twenty-fourth, 2026-10-30: `model AuditEvent` (migration 0059, issue #56).
+            ("AuditEvent", "audit_events"),
         ];
 
         let mut listed: Vec<&str> = MODEL_TABLES.iter().map(|(model, _)| *model).collect();
