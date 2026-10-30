@@ -9,7 +9,12 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { COOKIE_ATTRIBUTES, ENROLMENT_COOKIE, SESSION_COOKIE } from "./cookies";
+import {
+  COOKIE_ATTRIBUTES,
+  ENROLMENT_COOKIE,
+  SESSION_COOKIE,
+  SSO_PENDING_COOKIE,
+} from "./cookies";
 import { LOGIN_PATH } from "./session";
 import { signedOutResponse } from "./signed-out";
 
@@ -88,6 +93,21 @@ describe("the signed-out response", () => {
     expect(enrolment).toMatch(/HttpOnly/i);
   });
 
+  it("takes the single-sign-on pending token with it, under its own attributes", () => {
+    // THE DECISIVE MUTATION: leave `SSO_PENDING_COOKIE` out of the loop. A
+    // half-finished flow's token then outlives the session that was over.
+    const cookies = setCookies(signedOutResponse());
+    const pending = cookies.find((cookie) =>
+      cookie.startsWith(`${SSO_PENDING_COOKIE}=;`),
+    );
+    expect(pending, `cookies were ${cookies.join(" | ")}`).toBeDefined();
+    expect(pending).toMatch(/Max-Age=0/i);
+    expect(pending).toMatch(/Path=\/(;|$)/i);
+    expect(pending).toMatch(/Secure/i);
+    expect(pending).toMatch(/HttpOnly/i);
+    expect(pending).not.toMatch(/Domain=/i);
+  });
+
   it("leaves the enrolment secret alone for an <img> on somebody else's page", () => {
     const response = signedOutResponse(
       fetchMetadata({ "sec-fetch-dest": "image" }),
@@ -100,7 +120,7 @@ describe("the signed-out response", () => {
     // original in place: the browser treats them as different cookies.
     expect(COOKIE_ATTRIBUTES.httpOnly, "the attributes under test").toBe(true);
     const cookies = setCookies(signedOutResponse());
-    expect(cookies).toHaveLength(2);
+    expect(cookies).toHaveLength(3);
     for (const cookie of cookies) {
       expect(cookie).toMatch(/HttpOnly/i);
       expect(cookie).toMatch(/Secure/i);

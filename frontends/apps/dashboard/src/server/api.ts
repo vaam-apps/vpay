@@ -34,7 +34,12 @@
  * — so the id is the only thing that distinguishes one failure from another.
  * It is carried on the failure and rendered beside the message.
  */
-import { dashFetch, sessionCredential, type Credential } from "./dash-fetch";
+import {
+  dashFetch,
+  SSO_CALLBACK_TIMEOUT_MS,
+  sessionCredential,
+  type Credential,
+} from "./dash-fetch";
 
 /** The two spellings vpay emits, in the order this app prefers them. */
 const REQUEST_ID_HEADERS = ["request-id", "x-request-id"] as const;
@@ -288,9 +293,11 @@ async function settle<T>(response: Response): Promise<ApiResult<T>> {
   }
 }
 
-/** What a call may carry beyond its path and body: the one credential. */
+/** What a call may carry beyond its path and body: the one credential, and a deadline. */
 export interface CallOptions {
   readonly credential?: Credential;
+  /** A deadline other than the default; see `DashRequest.timeoutMs`. */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -314,11 +321,35 @@ export async function postForm<T>(
       ...(options.credential === undefined
         ? {}
         : { credential: options.credential }),
+      ...(options.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: options.timeoutMs }),
     });
   } catch (error) {
     return { ok: false, failure: unreachable(error) };
   }
   return settle<T>(response);
+}
+
+/**
+ * `POST /dash/v1/staff/logout`: deletes the `staff_sessions` row `token`
+ * names, which is what revokes it (ADR-0017 decision 2).
+ *
+ * The one call sign-out makes, and the one the single-sign-on callback makes
+ * for the session it is about to replace. Idempotent at vpay: a token that
+ * was never there answers `200`.
+ */
+export function revokeSession(
+  apiBaseUrl: string,
+  token: string,
+  options: Pick<CallOptions, "timeoutMs"> = {},
+): Promise<ApiResult<{ signed_out: boolean }>> {
+  return postForm<{ signed_out: boolean }>(
+    apiBaseUrl,
+    "/dash/v1/staff/logout",
+    {},
+    { ...options, credential: sessionCredential(token) },
+  );
 }
 
 /** `GET` a JSON document. */
@@ -387,4 +418,177 @@ export async function authorizeRedirect(
     };
   }
   return { ok: true, value: location };
+}
+
+/**
+ * `GET /dash/v1/staff/sso`'s answer, as the sign-in page reads it
+ * (`vpay_api::staff::sso::SsoStatusResponse`).
+ *
+ * **Three outcomes, and the third is not the second.** `disabled` is vpay
+ * saying this deployment writes no `staff_auth.sso` block; `unreadable` is
+ * this app not knowing. The page renders a button for the first, nothing for
+ * the second, and a sentence saying SSO could not be checked for the third —
+ * hiding the button because a read failed would send a staff member who
+ * should be using it to a password they may not have (VPA-5b).
+ */
+export type SsoStatus =
+  | { readonly kind: "enabled" }
+  | { readonly kind: "disabled" }
+  | { readonly kind: "unreadable"; readonly failure: ApiFailure };
+
+/**
+ * Whether the login page should offer the single sign-on button.
+ *
+ * Unauthenticated: nobody is signed in yet, and the request carries no
+ * credential at all. Only a literal boolean `enabled` is an answer —
+ * `"true"`, `1`, an array and a missing field are a body this app cannot
+ * read, which is `unreadable` and never `disabled`. A `404` is `unreadable`
+ * too: the page only asks after `human_login` was seen served, and a vpay that
+ * serves that method mounts this route, so a `404` is a proxy or a version
+ * mismatch worth telling the person about.
+ */
+export async function getSsoStatus(apiBaseUrl: string): Promise<SsoStatus> {
+  const result = await getJson<unknown>(apiBaseUrl, "/dash/v1/staff/sso");
+  if (!result.ok) {
+    return { kind: "unreadable", failure: result.failure };
+  }
+  const enabled = (result.value as { enabled?: unknown } | null)?.enabled;
+  if (typeof enabled !== "boolean") {
+    return {
+      kind: "unreadable",
+      failure: malformed("an SSO status in a shape"),
+    };
+  }
+  return enabled ? { kind: "enabled" } : { kind: "disabled" };
+}
+
+/**
+ * `POST /dash/v1/staff/sso/start`'s answer.
+ *
+ * **`session` is a pending-flow token, not a session.** Only the callback
+ * accepts it; every other route refuses it, so a cookie holding it signs
+ * nobody in.
+ */
+export interface SsoStartResponse {
+  readonly session: string;
+  readonly authorization_url: string;
+}
+
+/**
+ * `POST /dash/v1/staff/sso/callback`'s answer — one of two outcomes.
+ *
+ * Either way `session` is a **new** token, and the cookie must be replaced by
+ * it: after `signed_in` it is the authenticated session, after
+ * `reauthenticate` it is the pending-flow token for the single `prompt=login`
+ * retry vpay started. The token the callback was called with is never reused.
+ */
+export type SsoCallbackResponse =
+  | { readonly outcome: "signed_in"; readonly session: string }
+  | {
+      readonly outcome: "reauthenticate";
+      readonly session: string;
+      readonly authorization_url: string;
+    };
+
+/** A body this app could not trust, as a failure rather than a thrown error. */
+function malformed(what: string): ApiFailure {
+  return {
+    status: 200,
+    message: `vpay answered ${what} this app could not read.`,
+    requestId: null,
+  };
+}
+
+/** `true` for a non-empty string; the only thing a token is allowed to be. */
+function nonEmpty(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+/**
+ * Starts a federated sign-in: asks vpay for a pending-flow token and the
+ * identity provider's authorization URL.
+ *
+ * No body and **no credential** — nobody is signed in yet, and a session
+ * header here would be a second door for no reason. A `401` is vpay's uniform
+ * refusal, `429` the rate limit, `404` "SSO is not configured"; all three
+ * arrive as the ordinary {@link ApiFailure} with `status` set, and the caller
+ * turns every one of them into the same generic redirect.
+ */
+export async function ssoStart(
+  apiBaseUrl: string,
+): Promise<ApiResult<SsoStartResponse>> {
+  const result = await postForm<unknown>(
+    apiBaseUrl,
+    "/dash/v1/staff/sso/start",
+    {},
+  );
+  if (!result.ok) {
+    return result;
+  }
+  const body = result.value as {
+    session?: unknown;
+    authorization_url?: unknown;
+  } | null;
+  if (!nonEmpty(body?.session) || !nonEmpty(body?.authorization_url)) {
+    return { ok: false, failure: malformed("a start response") };
+  }
+  return {
+    ok: true,
+    value: {
+      session: body.session,
+      authorization_url: body.authorization_url,
+    },
+  };
+}
+
+/**
+ * Hands the identity provider's `code` and `state` to vpay, with the
+ * pending-flow token as the one credential, a session.
+ *
+ * This is the **only** place those two values are sent anywhere. The body is
+ * form-encoded like every other staff call; nothing is logged and the values
+ * are not echoed into the failure — `failureOf` reads vpay's own envelope,
+ * never the request.
+ */
+export async function ssoCallback(
+  apiBaseUrl: string,
+  pendingToken: string,
+  code: string,
+  state: string,
+): Promise<ApiResult<SsoCallbackResponse>> {
+  const result = await postForm<unknown>(
+    apiBaseUrl,
+    "/dash/v1/staff/sso/callback",
+    { code, state },
+    {
+      credential: sessionCredential(pendingToken),
+      timeoutMs: SSO_CALLBACK_TIMEOUT_MS,
+    },
+  );
+  if (!result.ok) {
+    return result;
+  }
+  const body = result.value as {
+    outcome?: unknown;
+    session?: unknown;
+    authorization_url?: unknown;
+  } | null;
+  if (body?.outcome === "signed_in" && nonEmpty(body.session)) {
+    return { ok: true, value: { outcome: "signed_in", session: body.session } };
+  }
+  if (
+    body?.outcome === "reauthenticate" &&
+    nonEmpty(body.session) &&
+    nonEmpty(body.authorization_url)
+  ) {
+    return {
+      ok: true,
+      value: {
+        outcome: "reauthenticate",
+        session: body.session,
+        authorization_url: body.authorization_url,
+      },
+    };
+  }
+  return { ok: false, failure: malformed("a callback response") };
 }

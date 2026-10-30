@@ -43,6 +43,12 @@ import {
 } from "./login-notices";
 import { PasswordForm } from "./password-form";
 import { SignInForm } from "./sign-in-form";
+import {
+  SsoFailedNotice,
+  SsoNotConfigured,
+  SsoSignIn,
+  SsoUnchecked,
+} from "./sso-sign-in";
 import { TotpForm } from "./totp-form";
 import { PaymentDetailHeader, PaymentDetailView } from "./payment-detail";
 import { PaymentSkeleton } from "./payment-skeleton";
@@ -739,6 +745,83 @@ export const SignInEmail: Story = {
 export const SignInEmailLight: Story = {
   render: () => (
     <CenteredShell>
+      <SignInForm action={NOOP} />
+    </CenteredShell>
+  ),
+  globals: { theme: "light" },
+};
+
+// Single sign-on (VPA-5b): the button beside the email question, and the three
+// notices around it, in both themes — `color-contrast` is only judged here.
+
+export const SignInWithSso: Story = {
+  render: () => (
+    <CenteredShell>
+      <SignInForm action={NOOP} sso={<SsoSignIn />} />
+    </CenteredShell>
+  ),
+};
+
+export const SignInWithSsoLight: Story = {
+  render: () => (
+    <CenteredShell>
+      <SignInForm action={NOOP} sso={<SsoSignIn />} />
+    </CenteredShell>
+  ),
+  globals: { theme: "light" },
+};
+
+export const SsoFailed: Story = {
+  render: () => (
+    <CenteredShell>
+      <SsoFailedNotice />
+      <SignInForm action={NOOP} sso={<SsoSignIn />} />
+    </CenteredShell>
+  ),
+};
+
+export const SsoFailedLight: Story = {
+  render: () => (
+    <CenteredShell>
+      <SsoFailedNotice />
+      <SignInForm action={NOOP} sso={<SsoSignIn />} />
+    </CenteredShell>
+  ),
+  globals: { theme: "light" },
+};
+
+export const SsoUncheckedNotice: Story = {
+  render: () => (
+    <CenteredShell>
+      <SsoUnchecked requestId="req_01J8" />
+      <SignInForm action={NOOP} />
+    </CenteredShell>
+  ),
+};
+
+export const SsoUncheckedNoticeLight: Story = {
+  render: () => (
+    <CenteredShell>
+      <SsoUnchecked requestId="req_01J8" />
+      <SignInForm action={NOOP} />
+    </CenteredShell>
+  ),
+  globals: { theme: "light" },
+};
+
+export const SsoNotConfiguredNotice: Story = {
+  render: () => (
+    <CenteredShell>
+      <SsoNotConfigured variable="VPAY_DASHBOARD_SSO_ISSUER" />
+      <SignInForm action={NOOP} />
+    </CenteredShell>
+  ),
+};
+
+export const SsoNotConfiguredNoticeLight: Story = {
+  render: () => (
+    <CenteredShell>
+      <SsoNotConfigured variable="VPAY_DASHBOARD_SSO_ISSUER" />
       <SignInForm action={NOOP} />
     </CenteredShell>
   ),

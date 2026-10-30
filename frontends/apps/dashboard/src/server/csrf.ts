@@ -170,7 +170,7 @@ export async function originRefusal(): Promise<FormState | null> {
   }
   // eslint-disable-next-line no-console -- an operator whose proxy rewrites Host needs to see this, and it carries no credential: the Origin header of a request that was refused before anything was read from it.
   console.warn(
-    `[vpay-dashboard] a server action was refused: Origin ${store.get(ORIGIN_HEADER) ?? "(absent)"} is not this deployment's public origin. Set VPAY_DASHBOARD_PUBLIC_ORIGIN if this app is behind a proxy.`,
+    `[vpay-dashboard] a server action or form post was refused: Origin ${store.get(ORIGIN_HEADER) ?? "(absent)"} is not this deployment's public origin. Set VPAY_DASHBOARD_PUBLIC_ORIGIN if this app is behind a proxy.`,
   );
   return { error: CROSS_ORIGIN_REFUSED, requestId: null };
 }

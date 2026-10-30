@@ -1,11 +1,15 @@
 "use client";
 
+import type { ReactNode } from "react";
+
 import type { FormAction } from "../form-state";
 import { OneQuestionSteps, type Question } from "./one-question-steps";
 
 export interface SignInFormProps {
   /** `signIn` from `src/server/actions.ts`, passed in so this file imports no server code. */
   action: FormAction;
+  /** The single sign-on button, or nothing; shown under the email question only. */
+  sso?: ReactNode;
 }
 
 /**
@@ -47,7 +51,7 @@ export const SIGN_IN_QUESTIONS: readonly Question[] = [
  * password are separate screens (`OneQuestionSteps`), which is the rule that
  * one screen collects one piece of information.
  */
-export function SignInForm({ action }: SignInFormProps) {
+export function SignInForm({ action, sso }: SignInFormProps) {
   return (
     <OneQuestionSteps
       action={action}
@@ -55,6 +59,7 @@ export function SignInForm({ action }: SignInFormProps) {
       submitLabel="Sign in"
       pendingLabel="Signing in…"
       usernameFrom="email"
+      {...(sso === undefined ? {} : { alternative: sso })}
     />
   );
 }

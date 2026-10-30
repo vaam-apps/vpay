@@ -109,6 +109,27 @@ export interface AssembledConfig {
    * unset, the same fail-closed reading a blank value gets.
    */
   readonly publicOrigin: string | null;
+  /**
+   * The **origin** of the identity provider single sign-on sends a browser to
+   * (`https://idp.example`), taken from `VPAY_DASHBOARD_SSO_ISSUER`, or `null`.
+   *
+   * VPA-5b. The one thing it decides: whether the `Location` of the redirect
+   * `POST /api/auth/sso/start` is about to answer names the provider this
+   * deployment's `staff_auth.sso.issuer` names. vpay chose that URL and the
+   * dashboard follows it with a browser, so an upstream defect, a
+   * man-in-the-middle on the server-side hop or a misconfigured proxy must not
+   * be able to aim a staff member's browser at any other site.
+   *
+   * **Optional, and never defaulted.** It is read from the issuer URL
+   * (`staff_auth.sso.issuer`, copied as written) and reduced to its origin;
+   * anything that is not an absolute `http(s)` URL reads as unset. Unset, the
+   * sign-in button is not offered — the page says so and names the variable —
+   * and `start` refuses, because a redirect that cannot be checked is not made.
+   * Answered beside {@link AssembledConfig.apiBaseUrl}, outside `config`, for
+   * the reason `publicOrigin` is: it matters on a deployment whose client
+   * variables are missing too.
+   */
+  readonly ssoIssuerOrigin: string | null;
 }
 
 /** vpay's base URL, as this server reaches it. */
@@ -124,6 +145,11 @@ export const SCOPE_VAR = "VPAY_DASHBOARD_SCOPE";
  * [`AssembledConfig.publicOrigin`].
  */
 export const PUBLIC_ORIGIN_VAR = "VPAY_DASHBOARD_PUBLIC_ORIGIN";
+/**
+ * The identity provider's issuer URL, as `staff_auth.sso.issuer` spells it.
+ * **Optional** — see [`AssembledConfig.ssoIssuerOrigin`].
+ */
+export const SSO_ISSUER_VAR = "VPAY_DASHBOARD_SSO_ISSUER";
 
 /**
  * A value that is present and not whitespace, or `null`.
@@ -199,6 +225,7 @@ export function assembleConfig(
   }
 
   const publicOrigin = present(env[PUBLIC_ORIGIN_VAR]);
+  const ssoIssuerOrigin = originOf(present(env[SSO_ISSUER_VAR]));
 
   // The base URL loses a trailing slash so that every path this app appends
   // is one `/` and not two. `//dash/v1/...` is a different path to axum, and
@@ -215,7 +242,13 @@ export function assembleConfig(
     redirectUri === null ||
     scope === null
   ) {
-    return { config: null, problems, apiBaseUrl: base, publicOrigin };
+    return {
+      config: null,
+      problems,
+      apiBaseUrl: base,
+      publicOrigin,
+      ssoIssuerOrigin,
+    };
   }
 
   return {
@@ -228,7 +261,46 @@ export function assembleConfig(
     problems: [],
     apiBaseUrl: base,
     publicOrigin,
+    ssoIssuerOrigin,
   };
+}
+
+/**
+ * Hosts a development identity provider may be reached on over plain `http`.
+ *
+ * The one list: {@link originOf} reads it for the issuer, and
+ * `server/sso.ts` for the authorization URL vpay answers, so the two cannot
+ * disagree about what is allowed.
+ */
+export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+]);
+
+/** Whether `url` is `https`, or `http` on a loopback host. */
+export function isHttpsOrLoopbackHttp(url: URL): boolean {
+  return (
+    url.protocol === "https:" ||
+    (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))
+  );
+}
+
+/**
+ * The lower-cased origin of an absolute URL that is `https`, or `http` on a
+ * loopback host, or `null`.
+ *
+ * The transport rule is the one `safeAuthorizationUrl` applies to the
+ * redirect, applied here to the issuer too: an issuer on plain `http` outside
+ * loopback could never be redirected to, and counting it as configured would
+ * draw a button that always fails instead of the not-configured notice.
+ */
+function originOf(value: string | null): string | null {
+  if (value === null || !isAbsoluteHttpUrl(value)) {
+    return null;
+  }
+  const url = new URL(value);
+  return isHttpsOrLoopbackHttp(url) ? url.origin : null;
 }
 
 /** Absolute, and `http`/`https` — not `file:`, not a bare host. */

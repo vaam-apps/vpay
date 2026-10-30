@@ -11,9 +11,9 @@
   only" became one deployment's choice (`auth.methods`), not every deployment's.
   Every decision below holds as written, with one change of address: `staff_auth.sso`
   is served only when `human_login` is, and written while it is not it is refused
-  (`AuthMethodDisabled`). The dashboard application's two SSO routes are not part
-  of this restoration (VPA-5b; VPA-5a, 2026-10-30, gave the application its
-  password sign-in and not these routes).
+  (`AuthMethodDisabled`). The dashboard application's two SSO routes were not part
+  of this restoration; VPA-5b (2026-10-30) gave the application its routes and
+  button again, with the pending token in a cookie of its own.
 - **Date:** 2026-10-19
 - **Deciders:** the vpay maintainer, who took the four decisions ADR-0019 had
   reserved — R1 (for the `oidc` kind), R2, R3 and R4 — on 2026-10-19, and

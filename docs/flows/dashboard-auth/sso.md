@@ -178,6 +178,77 @@ That is the case the retry exists for: vpay sends the browser back with
 `prompt=login`, Keycloak re-runs its forms (password only, the user being
 remembered, then the OTP form), and the second token carries `otp`.
 
+## The dashboard application (VPA-5b)
+
+_Built 2026-10-30._ The sequence above is what the application does:
+`frontends/apps/dashboard` serves `POST /api/auth/sso/start` and
+`GET /api/auth/sso/callback` (`src/server/sso.ts`) and draws the button
+(`src/components/sso-sign-in.tsx`) on `/login`.
+
+- **The button** is drawn when discovery serves `human_login` **and**
+  `GET /staff/sso` says `enabled: true` **and** the container knows the
+  provider's origin (an `https` issuer, or `http` on a loopback host).
+  `enabled: false` draws nothing. A status read that fails
+  says "Single sign-on could not be checked" with the request id and keeps the
+  password question; it never hides the button silently.
+- **The callback path must equal the path of `staff_auth.sso.redirect_uri`.**
+  The route is `/api/auth/sso/callback`, so the block's `redirect_uri` is
+  `https://<dashboard origin>/api/auth/sso/callback`, and the provider's client
+  lists exactly that. It is **not** `dashboard_client.redirect_uris`, whose
+  string is never visited. `sso-paths.test.ts` ties the route file to the
+  constant.
+- **The pending token has its own cookie**, `__Host-vpay_dash_sso_pending`
+  (httpOnly, Secure, Lax, `Path=/`, no `Domain`, ten minutes, vpay's own bound on
+  a flow). `signed_in` writes the new token over the session cookie, whatever it
+  held (no session fixation), and clears the pending one; the gate on `/` then
+  mints the `/dash/v1` token. `reauthenticate` replaces the pending cookie and
+  `303`s to the provider again. Any other outcome clears the pending cookie and
+  lands on `/login?sso=failed`, with no reason: the reason is in vpay's log.
+- **Where the browser may be sent.** vpay chose `authorization_url` and the
+  application follows it, so it is followed only if it is `https` (`http` for a
+  loopback host, a development stack), on the origin of
+  `VPAY_DASHBOARD_SSO_ISSUER` (the issuer URL, reduced to its origin), with no
+  `user:pass@` and no fragment. There is no `return_to`: a success lands on `/`.
+- **Every response** of both routes carries `Cache-Control: no-store` and
+  `Referrer-Policy: no-referrer`: a callback's URL holds a one-time code.
+  `start` checks the request's `Origin` first, as the server actions do; the
+  callback cannot, being a cross-site navigation by construction.
+- **The callback waits longer than any other call.** vpay's callback consumes
+  the sign-in attempt first, then calls the provider with a ten-second timeout
+  of its own, which covers a token exchange and, on a cold cache, a JWKS fetch.
+  The application gives that one call 25 seconds (`SSO_CALLBACK_TIMEOUT_MS`);
+  every other call keeps five. A shorter wait would show `sso=failed` while vpay
+  may still mint a session.
+- **The session a sign-in replaces is revoked, best effort.** If the browser
+  held a session cookie when `signed_in` arrived, the application asks vpay to
+  delete that session through the call sign-out makes, with a two-second
+  deadline (`SSO_REVOKE_TIMEOUT_MS`). A failure of any kind is ignored and the
+  sign-in goes ahead; the old row then expires on its own bounds.
+- **A refused redirect leaves one line in the log**, naming the refused URL's
+  origin and the configured issuer's origin and nothing else: the URL carries
+  `state`, the nonce and the PKCE challenge.
+- **Limits.** A provider whose authorization endpoint is on another origin than
+  its issuer is refused (the origin rule compares the two byte for byte). Three
+  such providers are known: AWS Cognito (the hosted UI is on the user pool's
+  domain, not the issuer's), Entra ID v1 (an issuer on `sts.windows.net`, an
+  authorization endpoint on `login.microsoftonline.com`) and Azure AD B2C behind
+  a custom domain. Supporting one is a decision for whoever deploys it, not a
+  default. An `http` issuer counts as configured only on a loopback host; any
+  other reads as unset, and `/login` shows the not-configured notice instead of
+  a button that could only fail.
+
+**Upgrade note.** The application needs `staff_auth.sso` written (VPA-4) with
+`redirect_uri` set to `https://<dashboard origin>/api/auth/sso/callback`, and
+**one new environment variable**, `VPAY_DASHBOARD_SSO_ISSUER`, the same issuer
+URL `staff_auth.sso.issuer` carries. It is optional: without it the button is
+not offered and `/login` says which variable to set. Nothing else is new — the
+three client values and `VPAY_DASHBOARD_PUBLIC_ORIGIN` are VPA-5a's. The Helm
+chart does not template the new variable yet (the chart's dashboard values are
+VPA-5c's).
+
+[The VPA-5b page](../../status/verification/2026-10-30-vpa5b-dashboard-sso.md)
+has the tests and the sabotage log.
+
 ## Status
 
 **Restored 2026-10-30 (VPA-4) on the server; built, and proven at three levels.** `staff_sso.rs` drives the real router over
@@ -198,9 +269,9 @@ rather than skipping it.
 
 **Not built, and none of it is implied above:**
 
-- **The dashboard application's two SSO routes and its button** (VPA-5b).
-  `redirect_uri` names a page that does not exist until then, and the
-  application's `/login` (VPA-5a) offers the password sign-in only.
+- **No browser has completed it.** The two routes are proved against a stubbed
+  `fetch` and the page in jsdom and Chromium (contrast); no end-to-end case
+  drives them (VPA-5c), and none ran against Keycloak or any provider.
 - **No way to link an existing member to an SSO identity.** Members are created
   by first sign-in; password members stay password members.
 - **No back-channel or RP-initiated logout.** Signing out of vpay does not end
@@ -212,8 +283,3 @@ rather than skipping it.
 - **No `userinfo` call, no refresh token, no provider token stored.**
 - **Never exercised in a cluster, behind a real ingress, or against any provider
   but Keycloak 26.6.1.**
-- **The dashboard application has no SSO routes.** `app/api/auth/sso/**`,
-  `src/server/sso.ts` and the sign-in button were deleted with the rest of its
-  sign-in (VP-6a) and come back with VPA-5. Until then `…/api/auth/sso/callback`
-  in `redirect_uri` names a page that does not exist, and a client that signs the
-  human step itself (the integration suite does) is the only caller.

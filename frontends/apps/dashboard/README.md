@@ -93,17 +93,41 @@ Read once at start, through bracket notation (`src/config/runtime.ts`).
 | `VPAY_DASHBOARD_REDIRECT_URI`  | signing in: one of `dashboard_client.redirect_uris`, byte for byte, never visited                                   |
 | `VPAY_DASHBOARD_SCOPE`         | signing in: `dashboard_client.scope`                                                                                |
 | `VPAY_DASHBOARD_PUBLIC_ORIGIN` | optional: the origin a browser reaches this app on (the origin check; used even when the client values are missing) |
+| `VPAY_DASHBOARD_SSO_ISSUER`    | optional: `staff_auth.sso.issuer` as written; single sign-on is offered only if it is set (see below)               |
 
 The three `VPAY_DASHBOARD_` client values matter only where vpay serves
 `human_login`. When it does and one is missing, `/login` names them and renders
 no form; when it does not, `/login` says "paired key" whatever they are.
 
+### Single sign-on (VPA-5b)
+
+Offered when vpay serves `human_login`, `GET /dash/v1/staff/sso` says
+`enabled: true` and `VPAY_DASHBOARD_SSO_ISSUER` is set; `/login` then draws a
+button under the email question. If the status read fails it says so ("Single
+sign-on could not be checked") and keeps the password question; it never hides
+the button silently.
+
+- `POST /api/auth/sso/start` (origin-checked) asks vpay to start a flow, stores
+  the pending token in `__Host-vpay_dash_sso_pending` (ten minutes) and `303`s to
+  the provider's URL, **only if** that URL is `https` (`http` for a loopback
+  host), on the origin of `VPAY_DASHBOARD_SSO_ISSUER`, with no userinfo and no
+  fragment.
+- `GET /api/auth/sso/callback` takes exactly one `code` and one `state`, stops on
+  an `error` parameter before vpay is called, and on `signed_in` replaces the
+  session cookie with the new token (asking vpay to revoke the old one, best
+  effort) and clears the pending one. The callback may take 25 seconds, not
+  five: vpay calls the provider inside it. Every other
+  outcome lands on `/login?sso=failed`. There is no `return_to`. Both routes send
+  `Cache-Control: no-store` and `Referrer-Policy: no-referrer`.
+- **`staff_auth.sso.redirect_uri` must end in `/api/auth/sso/callback`**, on this
+  app's public origin, and the provider's client must list it. It is not
+  `dashboard_client.redirect_uris`, which is never visited.
+
 ### Not here, on purpose
 
 The BFF (`app/api/dash`), `middleware.ts`, `src/dash/*`'s providers and Refine
 auth are deleted and stay so. `@vpay/dash-client` may be imported for its types
-only (`eslint.config.js`). Single sign-on is VPA-5b, the end-to-end cases are
-VPA-5c, and the pages that read `/dash/v1` come with VP-6b.
+only (`eslint.config.js`). The end-to-end cases are VPA-5c, and the pages that read `/dash/v1` come with VP-6b.
 
 ## What is kept, and why
 

@@ -54,6 +54,12 @@ import { MintRefused } from "./components/mint-refused";
 import { NotFoundNotice } from "./components/not-found-notice";
 import { PasswordForm } from "./components/password-form";
 import { SignInForm } from "./components/sign-in-form";
+import {
+  SsoFailedNotice,
+  SsoNotConfigured,
+  SsoSignIn,
+  SsoUnchecked,
+} from "./components/sso-sign-in";
 import { TotpForm } from "./components/totp-form";
 import { PaymentDetailView } from "./components/payment-detail";
 import { PaymentsFilters } from "./components/payments-filters";
@@ -155,6 +161,53 @@ describe("every screen of the sign-in", () => {
 
   it("the email question", async () => {
     expect(await clean(<SignInForm action={NOOP} />)).toEqual([]);
+  });
+
+  it("the email question with the single sign-on button beside it", async () => {
+    expect(
+      await clean(<SignInForm action={NOOP} sso={<SsoSignIn />} />),
+    ).toEqual([]);
+  });
+
+  it("the email question after a refused single sign-on", async () => {
+    expect(
+      await clean(
+        <>
+          <SsoFailedNotice />
+          <SignInForm action={NOOP} sso={<SsoSignIn />} />
+        </>,
+      ),
+    ).toEqual([]);
+  });
+
+  it("the email question when single sign-on could not be checked, with and without a request id", async () => {
+    expect(
+      await clean(
+        <>
+          <SsoUnchecked requestId="req_01J8" />
+          <SignInForm action={NOOP} />
+        </>,
+      ),
+    ).toEqual([]);
+    expect(
+      await clean(
+        <>
+          <SsoUnchecked requestId={null} />
+          <SignInForm action={NOOP} />
+        </>,
+      ),
+    ).toEqual([]);
+  });
+
+  it("the email question when this container does not know the identity provider", async () => {
+    expect(
+      await clean(
+        <>
+          <SsoNotConfigured variable="VPAY_DASHBOARD_SSO_ISSUER" />
+          <SignInForm action={NOOP} />
+        </>,
+      ),
+    ).toEqual([]);
   });
 
   it("the password question, with the account name carried for a password manager", async () => {

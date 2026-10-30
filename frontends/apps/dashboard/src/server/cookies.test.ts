@@ -17,6 +17,8 @@ import {
   ENROLMENT_MAX_AGE_SECONDS,
   SESSION_COOKIE,
   SESSION_MAX_AGE_SECONDS,
+  SSO_PENDING_COOKIE,
+  SSO_PENDING_MAX_AGE_SECONDS,
 } from "./cookies";
 
 describe("the session cookie", () => {
@@ -69,6 +71,20 @@ describe("the cookies are __Host- cookies", () => {
     expect(ENROLMENT_COOKIE).toBe("__Host-vpay_dash_enrolment");
     expect(SESSION_COOKIE.startsWith("__Host-")).toBe(true);
     expect(ENROLMENT_COOKIE.startsWith("__Host-")).toBe(true);
+  });
+
+  it("names the single sign-on pending cookie with the prefix too, and apart from the session's", () => {
+    expect(SSO_PENDING_COOKIE).toBe("__Host-vpay_dash_sso_pending");
+    expect(SSO_PENDING_COOKIE.startsWith("__Host-")).toBe(true);
+    // Held apart so a pending token can never be read as a session, and a
+    // refused flow can forget itself without signing anybody out.
+    expect(SSO_PENDING_COOKIE).not.toBe(SESSION_COOKIE);
+    expect(SSO_PENDING_COOKIE).not.toBe(ENROLMENT_COOKIE);
+  });
+
+  it("lets the pending cookie live ten minutes — vpay's own bound on a flow", () => {
+    expect(SSO_PENDING_MAX_AGE_SECONDS).toBe(10 * 60);
+    expect(SSO_PENDING_MAX_AGE_SECONDS).toBeLessThan(SESSION_MAX_AGE_SECONDS);
   });
 
   it("carries what the prefix requires: Secure, Path=/, and no Domain", () => {

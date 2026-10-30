@@ -1,6 +1,11 @@
 "use client";
 
-import { startTransition, useActionState, useState } from "react";
+import {
+  startTransition,
+  useActionState,
+  useState,
+  type ReactNode,
+} from "react";
 
 import { Button, FormField, Input } from "@vaam-apps/ui";
 
@@ -50,6 +55,14 @@ export interface OneQuestionStepsProps {
    * against nothing.
    */
   usernameFrom?: string;
+  /**
+   * Another way past the **first** question, drawn under its buttons and only
+   * while that question is on screen (VPA-5b: the single sign-on button). It
+   * answers nothing in this component's state; it is a sibling of the form,
+   * never inside it, because a button that posts elsewhere inside this form
+   * would submit the answers typed so far to the wrong place.
+   */
+  alternative?: ReactNode;
 }
 
 /**
@@ -95,6 +108,7 @@ export function OneQuestionSteps({
   submitLabel,
   pendingLabel,
   usernameFrom,
+  alternative,
 }: OneQuestionStepsProps) {
   const [state, dispatch, pending] = useActionState(action, NO_ERROR);
   const [step, setStep] = useState(0);
@@ -144,90 +158,97 @@ export function OneQuestionSteps({
   }
 
   return (
-    <form
-      noValidate
-      onSubmit={(event) => {
-        // Never the browser's own submission: the answers are not in the DOM
-        // all at once, and the action is called from `advance`.
-        event.preventDefault();
-        advance();
-      }}
-    >
-      <div className="flex flex-col gap-4">
-        {questions.length > 1 ? (
-          <p
-            className="text-body-small text-muted-foreground"
-            aria-live="polite"
-          >
-            Question {step + 1} of {questions.length}
-          </p>
-        ) : null}
-
-        {carried === undefined ? null : (
-          // The account name, for a password manager. Visually hidden and out
-          // of the tab order and the accessibility tree: it is not a question
-          // and a person is never asked to touch it.
-          <input
-            type="email"
-            name="username"
-            autoComplete="username"
-            value={carried}
-            readOnly
-            tabIndex={-1}
-            aria-hidden="true"
-            className="sr-only"
-          />
-        )}
-
-        <FormField
-          label={question.label}
-          htmlFor={`dashboard-step-${question.name}`}
-          {...(question.hint === undefined ? {} : { hint: question.hint })}
-        >
-          <Input
-            key={question.name}
-            id={`dashboard-step-${question.name}`}
-            name={question.name}
-            type={question.type}
-            autoComplete={question.autoComplete}
-            {...(question.inputMode === undefined
-              ? {}
-              : { inputMode: question.inputMode })}
-            {...(question.maxLength === undefined
-              ? {}
-              : { maxLength: question.maxLength })}
-            autoFocus
-            value={value}
-            onChange={(event) =>
-              setAnswers({ ...answers, [question.name]: event.target.value })
-            }
-            disabled={pending}
-            aria-invalid={invalid ? "true" : undefined}
-          />
-        </FormField>
-
-        <FormAlert
-          error={here ? state.error : null}
-          requestId={state.requestId}
-        />
-
-        <div className="flex flex-col gap-2">
-          <Button type="submit" className="w-full" disabled={!valid || pending}>
-            {last ? (pending ? pendingLabel : submitLabel) : "Continue"}
-          </Button>
-          {step === 0 ? null : (
-            <Button
-              type="button"
-              variant="ghost"
-              className="w-full"
-              disabled={pending}
-              onClick={() => setStep(step - 1)}
+    <div className="flex flex-col gap-4">
+      <form
+        noValidate
+        onSubmit={(event) => {
+          // Never the browser's own submission: the answers are not in the DOM
+          // all at once, and the action is called from `advance`.
+          event.preventDefault();
+          advance();
+        }}
+      >
+        <div className="flex flex-col gap-4">
+          {questions.length > 1 ? (
+            <p
+              className="text-body-small text-muted-foreground"
+              aria-live="polite"
             >
-              Back
-            </Button>
+              Question {step + 1} of {questions.length}
+            </p>
+          ) : null}
+
+          {carried === undefined ? null : (
+            // The account name, for a password manager. Visually hidden and out
+            // of the tab order and the accessibility tree: it is not a question
+            // and a person is never asked to touch it.
+            <input
+              type="email"
+              name="username"
+              autoComplete="username"
+              value={carried}
+              readOnly
+              tabIndex={-1}
+              aria-hidden="true"
+              className="sr-only"
+            />
           )}
+
+          <FormField
+            label={question.label}
+            htmlFor={`dashboard-step-${question.name}`}
+            {...(question.hint === undefined ? {} : { hint: question.hint })}
+          >
+            <Input
+              key={question.name}
+              id={`dashboard-step-${question.name}`}
+              name={question.name}
+              type={question.type}
+              autoComplete={question.autoComplete}
+              {...(question.inputMode === undefined
+                ? {}
+                : { inputMode: question.inputMode })}
+              {...(question.maxLength === undefined
+                ? {}
+                : { maxLength: question.maxLength })}
+              autoFocus
+              value={value}
+              onChange={(event) =>
+                setAnswers({ ...answers, [question.name]: event.target.value })
+              }
+              disabled={pending}
+              aria-invalid={invalid ? "true" : undefined}
+            />
+          </FormField>
+
+          <FormAlert
+            error={here ? state.error : null}
+            requestId={state.requestId}
+          />
+
+          <div className="flex flex-col gap-2">
+            <Button
+              type="submit"
+              className="w-full"
+              disabled={!valid || pending}
+            >
+              {last ? (pending ? pendingLabel : submitLabel) : "Continue"}
+            </Button>
+            {step === 0 ? null : (
+              <Button
+                type="button"
+                variant="ghost"
+                className="w-full"
+                disabled={pending}
+                onClick={() => setStep(step - 1)}
+              >
+                Back
+              </Button>
+            )}
+          </div>
         </div>
-      </div>
-    </form>
+      </form>
+      {step === 0 ? alternative : null}
+    </div>
   );
 }

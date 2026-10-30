@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 
-import { COOKIE_ATTRIBUTES, ENROLMENT_COOKIE, SESSION_COOKIE } from "./cookies";
+import {
+  COOKIE_ATTRIBUTES,
+  ENROLMENT_COOKIE,
+  SESSION_COOKIE,
+  SSO_PENDING_COOKIE,
+} from "./cookies";
 import { LOGIN_PATH } from "./session";
 
 /**
@@ -86,8 +91,10 @@ export function signedOutResponse(headers?: Headers): NextResponse {
     //
     // The sealed enrolment secret goes with it: a session vpay has refused is
     // over, and the blob that was bridging its password step to its first
-    // code has nothing left to bridge.
-    for (const name of [SESSION_COOKIE, ENROLMENT_COOKIE]) {
+    // code has nothing left to bridge. So does the single-sign-on pending
+    // token: a flow left half-finished in a browser whose session is over has
+    // no reason to survive its ten minutes.
+    for (const name of [SESSION_COOKIE, ENROLMENT_COOKIE, SSO_PENDING_COOKIE]) {
       response.cookies.set(name, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
     }
   }

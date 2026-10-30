@@ -11,6 +11,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   readDiscovery: vi.fn(),
+  getSsoStatus: vi.fn(),
   signedIn: { value: false },
   assembled: { value: {} },
 }));
@@ -31,6 +32,9 @@ vi.mock("../../src/server/session", () => ({
 vi.mock("../../src/server/discovery", () => ({
   readDiscovery: mocks.readDiscovery,
 }));
+vi.mock("../../src/server/api", () => ({
+  getSsoStatus: mocks.getSsoStatus,
+}));
 
 import LoginPage from "./page";
 
@@ -44,6 +48,7 @@ const CONFIGURED = {
   problems: [],
   apiBaseUrl: "http://vpay:8080",
   publicOrigin: null,
+  ssoIssuerOrigin: "https://idp.example",
 };
 
 const UNREGISTERED = {
@@ -56,14 +61,20 @@ const UNREGISTERED = {
   ],
 };
 
-async function renderLogin() {
-  render(await LoginPage());
+async function renderLogin(sso?: string) {
+  render(
+    await LoginPage(
+      sso === undefined ? {} : { searchParams: Promise.resolve({ sso }) },
+    ),
+  );
 }
 
 beforeEach(() => {
   mocks.signedIn.value = false;
   mocks.assembled.value = CONFIGURED;
   mocks.readDiscovery.mockReset();
+  mocks.getSsoStatus.mockReset();
+  mocks.getSsoStatus.mockResolvedValue({ kind: "disabled" });
 });
 
 describe("a deployment that serves human_login", () => {
@@ -85,7 +96,7 @@ describe("a deployment that serves human_login", () => {
 
   it("redirects a browser that already holds a session, before rendering a form", async () => {
     mocks.signedIn.value = true;
-    await expect(LoginPage()).rejects.toThrow("redirect:/");
+    await expect(LoginPage({})).rejects.toThrow("redirect:/");
   });
 
   it("says which variables to set, and renders no form, when the client is not registered", async () => {
@@ -102,6 +113,91 @@ describe("a deployment that serves human_login", () => {
       expect(screen.getByText(variable)).toBeInTheDocument();
     }
     expect(document.body.querySelector("form, input")).toBeNull();
+  });
+});
+
+const SSO_BUTTON = { name: "Sign in with single sign-on" };
+
+describe("single sign-on on the sign-in page", () => {
+  beforeEach(() => {
+    mocks.readDiscovery.mockResolvedValue({
+      kind: "served",
+      methods: ["keypair", "human_login"],
+    });
+  });
+
+  it("offers the button beside the email question when vpay says enabled", async () => {
+    mocks.getSsoStatus.mockResolvedValue({ kind: "enabled" });
+    await renderLogin();
+    const button = screen.getByRole("button", SSO_BUTTON);
+    expect(button.closest("form")).toHaveAttribute(
+      "action",
+      "/api/auth/sso/start",
+    );
+    expect(button.closest("form")).toHaveAttribute("method", "post");
+    // Beside the email question, never instead of it.
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+  });
+
+  it("does not offer it when vpay says enabled: false, and says nothing about it", async () => {
+    mocks.getSsoStatus.mockResolvedValue({ kind: "disabled" });
+    await renderLogin();
+    expect(screen.queryByRole("button", SSO_BUTTON)).toBeNull();
+    expect(screen.queryByText(/single sign-on/i)).toBeNull();
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+  });
+
+  it("says SSO could not be checked — and does not hide the button silently — when the read fails", async () => {
+    mocks.getSsoStatus.mockResolvedValue({
+      kind: "unreadable",
+      failure: { status: 503, message: "Starting up.", requestId: "req_01J8" },
+    });
+    await renderLogin();
+    expect(screen.queryByRole("button", SSO_BUTTON)).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Single sign-on could not be checked",
+    );
+    expect(screen.getByRole("status")).toHaveTextContent("req_01J8");
+    // The password question is still there.
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+  });
+
+  it("names the variable, and offers no button, when this container does not know the provider", async () => {
+    mocks.getSsoStatus.mockResolvedValue({ kind: "enabled" });
+    mocks.assembled.value = { ...CONFIGURED, ssoIssuerOrigin: null };
+    await renderLogin();
+    expect(screen.queryByRole("button", SSO_BUTTON)).toBeNull();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "VPAY_DASHBOARD_SSO_ISSUER",
+    );
+  });
+
+  it("shows the generic failure after ?sso=failed, with no reason", async () => {
+    await renderLogin("failed");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Single sign-on did not complete.",
+    );
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
+  });
+
+  it("shows nothing for any other ?sso= value", async () => {
+    await renderLogin("<b>hi</b>");
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("does not ask vpay about SSO when it serves no sign-in at all", async () => {
+    mocks.readDiscovery.mockResolvedValue({
+      kind: "paired-key-only",
+      methods: ["keypair"],
+    });
+    await renderLogin();
+    expect(mocks.getSsoStatus).not.toHaveBeenCalled();
+  });
+
+  it("does not ask vpay about SSO for a browser that is already signed in", async () => {
+    mocks.signedIn.value = true;
+    await expect(LoginPage({})).rejects.toThrow("redirect:/");
+    expect(mocks.getSsoStatus).not.toHaveBeenCalled();
   });
 });
 

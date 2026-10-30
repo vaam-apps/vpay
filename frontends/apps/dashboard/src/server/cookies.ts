@@ -80,6 +80,25 @@ export const SESSION_COOKIE = "__Host-vpay_dash_session";
 export const ENROLMENT_COOKIE = "__Host-vpay_dash_enrolment";
 
 /**
+ * The pending-flow token a single sign-on `start` returns, between the
+ * redirect to the identity provider and the browser's return (VPA-5b).
+ *
+ * **Its own cookie, never the session's slot.** An earlier version kept it in
+ * the session cookie, so pressing "Sign in with single sign-on" overwrote a
+ * working session and a refused callback had to delete it. Held apart, a
+ * pending token cannot be mistaken for a session by anything that reads
+ * {@link SESSION_COOKIE}, a failed flow forgets only itself, and a callback
+ * that signs in *replaces* the session cookie with a token vpay minted after
+ * the identity check — the pending token never becomes the credential of an
+ * authenticated browser (no session fixation).
+ *
+ * It is not a session: vpay's `GET /staff/session` refuses it and only
+ * `POST /staff/sso/callback` accepts it, once. httpOnly, because the browser
+ * has no use for it.
+ */
+export const SSO_PENDING_COOKIE = "__Host-vpay_dash_sso_pending";
+
+/**
  * The attributes every cookie this app sets carries.
  *
  * One object, exported, and asserted on by `cookies.test.ts` rather than
@@ -114,3 +133,13 @@ export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
  * enrolled account and refuses it for one enrolled meanwhile.
  */
 export const ENROLMENT_MAX_AGE_SECONDS = 10 * 60;
+
+/**
+ * How long the pending-flow cookie may live: ten minutes.
+ *
+ * vpay's own bound on a flow (`staff_sso_attempts` rows are refused after ten
+ * minutes and then swept), so the cookie never outlives the row it names. A
+ * person who needs longer than that at the identity provider — a forgotten
+ * password, an authenticator on another phone — starts again.
+ */
+export const SSO_PENDING_MAX_AGE_SECONDS = 10 * 60;

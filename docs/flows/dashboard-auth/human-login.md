@@ -9,7 +9,8 @@
 > beside is [../dashboard-auth.md](../dashboard-auth.md).
 >
 > With `staff_auth.sso` written the human step can instead federate to an OpenID
-> Connect provider and end in the same session: [sso.md](sso.md) (VPA-4).
+> Connect provider and end in the same session: [sso.md](sso.md) (VPA-4, and the
+> dashboard's button and routes, VPA-5b).
 
 ## When it is served
 
@@ -212,13 +213,13 @@ named in [status/backend.md](../../status/backend.md).
 
 ## Not built
 
-The dashboard application's two SSO routes and its single-sign-on button
-(VPA-5b), the pages that read `/dash/v1` and the signed reader they need
+The pages that read `/dash/v1` and the signed reader they need
 (VP-6b), a command to remove a member, disable one or reset a password (none
 exists; see the section above for the SQL), and any proof against a deployment
 that is running (the end-to-end cases are VPA-5c). The dashboard application's
 password sign-in, authenticator step, forced password change, account page and
-sign-out are built (VPA-5a): [`frontends/apps/dashboard/README.md`](../../../frontends/apps/dashboard/README.md)
+sign-out are built (VPA-5a), and so are its two SSO routes and its
+single-sign-on button (VPA-5b, [sso.md](sso.md)): [`frontends/apps/dashboard/README.md`](../../../frontends/apps/dashboard/README.md)
 says how, and [status/frontend.md](../../status/frontend.md) says what was
 measured.
 
