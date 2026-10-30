@@ -85,6 +85,7 @@ pub(crate) mod scope;
 pub(crate) mod service;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use cratestack_axum::envelope_layer::{
     EnvelopeLayer, EnvelopeMode, PolicyRequest, UnsignedRequest,
@@ -157,6 +158,12 @@ pub enum V1EnvelopeError {
     /// payload-type or contract setup it cannot serve.
     #[error("an envelope layer was refused: {0}")]
     Layer(String),
+
+    /// The JWKS client a bearer-token validator fetches with could not be built
+    /// (a TLS stack with no usable roots). The reason is the client's own text,
+    /// which names no secret.
+    #[error("the JWKS client a bearer-token validator fetches with could not be built: {0}")]
+    Validator(String),
 }
 
 impl Classify for V1EnvelopeError {
@@ -169,6 +176,7 @@ impl Classify for V1EnvelopeError {
         match self {
             Self::Registry(_) => "key_registry_unusable",
             Self::Layer(_) => "envelope_layer_refused",
+            Self::Validator(_) => "token_validator_unbuildable",
         }
     }
 }
@@ -571,17 +579,45 @@ impl ManagementEnvelope {
     }
 
     /// Hands the console scope step the validator it checks a staff access token
-    /// with (`human_login`, ADR-0037).
+    /// with (`human_login`, ADR-0037): `jwks_url`'s key set, tokens issued by
+    /// `issuer`, and the registered `dashboard_client.client_id` as the only
+    /// audience.
     ///
-    /// Separate from [`Self::new`] for [`V1Envelope::with_machine_tokens`]'
-    /// reason: the validator fetches this process's own JWKS over loopback and
-    /// so needs the bound address. Meaningful only when `human_login` is served;
-    /// harmless otherwise, since the scope step then refuses an unsigned request
-    /// before it consults the validator.
-    #[must_use]
-    pub fn with_staff_sessions(mut self, validator: JwtValidator) -> Self {
-        self.sessions = Some(validator);
-        self
+    /// **The one place the `/dash/v1` session validator is built**, called by
+    /// `vpay-server`'s `main` and by every test harness that serves the sign-in,
+    /// so no copy of the wiring can fall out of step. It is separate from
+    /// [`Self::new`] for [`V1Envelope::with_machine_tokens`]' reason: the
+    /// validator fetches this process's own JWKS over loopback and so needs the
+    /// bound address, which exists only after the listener does.
+    ///
+    /// `resource_config` decides whether there is anything to validate: its
+    /// `staff_binding` is `Some` only for a served `human_login`, and this
+    /// returns `self` unchanged otherwise, so the scope step keeps refusing an
+    /// unsigned request before it consults a validator that does not exist.
+    ///
+    /// # Errors
+    ///
+    /// [`V1EnvelopeError::Validator`] if the JWKS client cannot be built.
+    pub fn with_staff_sessions(
+        mut self,
+        resource_config: &ResourceConfig,
+        jwks_url: impl Into<String>,
+        jwks_refresh_interval: Duration,
+        issuer: impl Into<String>,
+    ) -> Result<Self, V1EnvelopeError> {
+        let Some(staff) = resource_config.staff_binding() else {
+            return Ok(self);
+        };
+        self.sessions = Some(
+            crate::resource_auth::dashboard_token_validator(
+                jwks_url,
+                jwks_refresh_interval,
+                issuer,
+                staff.client_id.as_str(),
+            )
+            .map_err(|error| V1EnvelopeError::Validator(error.to_string()))?,
+        );
+        Ok(self)
     }
 
     /// The mode `/dash/v1` runs in, for the boot log.

@@ -515,49 +515,37 @@ pub(crate) fn dashboard_validator(jwks_url: &str) -> crate::resource_auth::JwtVa
 }
 
 /// The sign-in state `vpay-server` builds for a served `human_login`, over the
-/// lazy pool.
+/// lazy pool: the shipping constructor, [`crate::staff::StaffLogin::from_config`].
 pub(crate) fn staff_login(config: &Config) -> Arc<crate::staff::StaffLogin> {
-    let dashboard = config
-        .dashboard_client
-        .as_ref()
-        .expect("a human_login fixture");
-    let staff_auth = config.staff_auth.as_ref().expect("a human_login fixture");
-    let (pepper, totp_key) = staff_auth.both().expect("the fixture sets both secrets");
-    Arc::new(crate::staff::StaffLogin {
-        credentials: Arc::new(
-            crate::staff_auth::StaffCredentials::new(pepper, totp_key)
-                .expect("the fixture key is 32 bytes"),
-        ),
-        dashboard_op: Arc::new(crate::op::dashboard::DashboardOp::new(
-            config,
-            dashboard,
-            staff_auth,
-            &signing_key(),
-            lazy_repositories(),
-        )),
-        limiter: crate::staff::rate_limit::SignInLimiter::new(staff_auth.rate_limits),
-        trusted_proxies: crate::staff::client_address::TrustedProxies::parse(&[])
-            .expect("an empty list parses"),
-        issuer_label: config.deployment.name.clone(),
-    })
+    crate::staff::StaffLogin::from_config(config, &signing_key(), &lazy_repositories())
+        .expect("the fixture's staff_auth is usable")
+        .expect("a human_login fixture serves the sign-in")
 }
 
 /// [`RouterDeps`] for a deployment that serves `human_login`: the management
 /// transport with a staff-token validator over `jwks_url`, and the staff login
 /// itself. Both surfaces, like [`deps`].
 pub(crate) fn deps_for_human_login(config: &Config, jwks_url: &str) -> RouterDeps {
+    let resource_config = Arc::new(
+        crate::ResourceConfig::from_config(config)
+            .expect("the fixture's rails project onto the port"),
+    );
     RouterDeps {
         repositories: lazy_repositories(),
         merchant_op: merchant_op(),
         adapters: Arc::new(std::collections::BTreeMap::new()),
-        resource_config: Arc::new(
-            crate::ResourceConfig::from_config(config)
-                .expect("the fixture's rails project onto the port"),
-        ),
         v1_envelope: Some(v1_envelope(config)),
         management_envelope: Some(
-            management_envelope(config).with_staff_sessions(dashboard_validator(jwks_url)),
+            management_envelope(config)
+                .with_staff_sessions(
+                    &resource_config,
+                    jwks_url,
+                    Duration::from_secs(300),
+                    TOKEN_ISSUER,
+                )
+                .expect("the vendored-roots JWKS client builds"),
         ),
+        resource_config,
         staff_login: Some(staff_login(config)),
         merchant_mcp: None,
         surfaces: EnabledSurfaces::ALL,

@@ -45,6 +45,7 @@ use vpay_api::envelope::{
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
 use vpay_api::resource_auth::JwtValidator;
+use vpay_api::staff::StaffLoginError;
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{AuthMethod, ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
@@ -201,25 +202,6 @@ enum StartupError {
         /// The highest concurrency this pool serves: `pool_max / 2`.
         max_safe: usize,
     },
-
-    /// `auth.methods` serves `human_login` and a `staff_auth` value this process
-    /// must use cannot be used: a TOTP key that is not 32 bytes of base64url, a
-    /// pepper argon2 refuses, a `trusted_proxies` entry that does not parse
-    /// (ADR-0037, VPA-3).
-    ///
-    /// **Here rather than in `vpay_config::ConfigError`**, for
-    /// [`Self::WorkerConcurrencyExceedsPoolSize`]'s reason: the length of the key
-    /// is a constant in `vpay_api::staff_auth`, and the proxy syntax is decided
-    /// where the matching is. Fatal, where the sign-in once logged and mounted the
-    /// read surface with no way in: that is the dormant half-feature the method
-    /// switch exists to refuse. The reason names the field and never a value.
-    #[error("{what} is not usable: {reason}")]
-    StaffLoginUnusable {
-        /// The configuration at fault: `staff_auth` or `staff_auth.trusted_proxies`.
-        what: &'static str,
-        /// The error's own text, which names no secret.
-        reason: String,
-    },
 }
 
 impl vpay_core::error::Classify for StartupError {
@@ -260,6 +242,7 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
         .or_else(|| find_in_chain::<SigningKeyError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<EnvelopeKeyError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<V1EnvelopeError>(error.chain()).map(|e| e.category()))
+        .or_else(|| find_in_chain::<StaffLoginError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
         .unwrap_or(Category::Internal);
     // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
@@ -503,25 +486,27 @@ async fn run() -> anyhow::Result<()> {
     // ADR-0037: a deployment that serves `human_login` accepts a staff access
     // token on `/dash/v1` beside a console key, validated against this process's
     // own JWKS over loopback, with the dashboard client's id as its only audience.
-    let management_envelope = match (booted.management_envelope, resource_config.staff_binding()) {
-        (Some(envelope), Some(staff)) => {
-            let envelope = envelope.with_staff_sessions(
-                vpay_api::resource_auth::dashboard_token_validator(
+    let management_envelope = match booted.management_envelope {
+        Some(envelope) => {
+            let envelope = envelope
+                .with_staff_sessions(
+                    &resource_config,
                     loopback_jwks_url(bound),
                     JWKS_REFRESH_INTERVAL,
                     booted.merchant_op.issuer(),
-                    staff.client_id.as_str(),
                 )
-                .context("building the JWKS client the /dash/v1 token validator fetches with")?,
-            );
-            tracing::info!(
-                mode = ?envelope.dash_mode(),
-                client_id = %staff.client_id,
-                "/dash/v1 accepts a staff session beside a console key (auth.methods: human_login)"
-            );
+                .context("building the JWKS client the /dash/v1 token validator fetches with")?;
+            if let Some(staff) = resource_config.staff_binding() {
+                tracing::info!(
+                    mode = ?envelope.dash_mode(),
+                    client_id = %staff.client_id,
+                    "/dash/v1 accepts a staff session beside a console key (auth.methods: \
+                     human_login)"
+                );
+            }
             Some(envelope)
         }
-        (other, _) => other,
+        None => None,
     };
 
     let deps = RouterDeps {
@@ -761,7 +746,8 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // `RefusingAuthorizationCodeStore` for the merchant half and
     // `PgAuthorizationCodeStore` here, so a code can be issued and spent only by
     // the one client registered for it.
-    let staff_login = build_staff_login(&config, human_login, &signing_key, &repositories)?;
+    let staff_login =
+        vpay_api::staff::StaffLogin::from_config(&config, &signing_key, &repositories)?;
 
     let merchant_op = Arc::new(MerchantOp::new(
         &config,
@@ -1340,90 +1326,6 @@ async fn revoke_key(args: &ServerArgs, thumbprint: &str) -> anyhow::Result<()> {
     }
 
     Ok(())
-}
-
-/// Assembles the staff sign-in state, or `None` and no staff login is served
-/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md), ADR-0037).
-///
-/// `None` is exactly "this deployment does not serve `human_login`": the method
-/// is not permitted, or its blocks are not both written. Every other input is
-/// either valid (`vpay_config::Config::validate_all` proved the blocks and both
-/// secrets are there) or **a boot failure** here: a `totp_encryption_key` that is
-/// not 32 bytes of base64url, or a `trusted_proxies` entry that does not parse,
-/// is a configured secret this process cannot use, and the old behaviour (log and
-/// mount the read surface with no way in) is the dormant half-feature ADR-0037
-/// refuses. Exit `78` names the field.
-///
-/// # Errors
-///
-/// [`anyhow::Error`] for an unusable `staff_auth` secret or `trusted_proxies`.
-fn build_staff_login(
-    config: &vpay_config::Config,
-    human_login: bool,
-    key: &LoadedSigningKey,
-    repositories: &Arc<dyn vpay_db::Repositories>,
-) -> anyhow::Result<Option<Arc<vpay_api::staff::StaffLogin>>> {
-    if !human_login {
-        return Ok(None);
-    }
-    let (Some(dashboard), Some(staff_auth)) =
-        (config.dashboard_client.as_ref(), config.staff_auth.as_ref())
-    else {
-        return Ok(None);
-    };
-    let (pepper, totp_key) = staff_auth.both().context(
-        "staff_auth.password_pepper and staff_auth.totp_encryption_key are both required",
-    )?;
-    let credentials = Arc::new(
-        vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key).map_err(|error| {
-            StartupError::StaffLoginUnusable {
-                what: "staff_auth",
-                reason: error.to_string(),
-            }
-        })?,
-    );
-
-    // Parsed here rather than in `vpay_config`, for `StaffCredentials::new`'s
-    // reason: the syntax is decided where the matching is. An entry that does
-    // not parse stops the boot rather than narrowing the list silently — a
-    // typo'd allow-list is a per-address budget that has quietly become the whole
-    // deployment's again, which is the failure this field exists to fix and the
-    // one nobody would notice.
-    let trusted_proxies =
-        vpay_api::staff::client_address::TrustedProxies::parse(&staff_auth.trusted_proxies)
-            .map_err(|error| StartupError::StaffLoginUnusable {
-                what: "staff_auth.trusted_proxies",
-                reason: error.to_string(),
-            })?;
-    if trusted_proxies.is_empty() {
-        tracing::info!(
-            "staff_auth.trusted_proxies is empty: the sign-in rate limiter counts the \
-             TRANSPORT PEER. Behind a reverse proxy that is one budget for the whole \
-             deployment (ADR-0017 Consequences); name the proxy to count the caller"
-        );
-    }
-
-    tracing::info!(
-        client_id = %dashboard.client_id,
-        merchant_id = %dashboard.merchant_id,
-        "/dash/v1 serves the staff authorization-code grant (ADR-0017, auth.methods: \
-         human_login): password + TOTP, server-side sessions, and tokens whose audience is \
-         this client id. Staff SSO is not offered (VPA-4)"
-    );
-
-    Ok(Some(Arc::new(vpay_api::staff::StaffLogin {
-        credentials,
-        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
-            config,
-            dashboard,
-            staff_auth,
-            key,
-            Arc::clone(repositories),
-        )),
-        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(staff_auth.rate_limits),
-        trusted_proxies,
-        issuer_label: config.deployment.name.clone(),
-    })))
 }
 
 /// Binds `--observability-bind` and starts serving `/livez` and `/metrics` on

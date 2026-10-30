@@ -52,6 +52,8 @@ use axum::{Form, Router};
 use serde::{Deserialize, Serialize};
 use time::OffsetDateTime;
 use time::format_description::well_known::Rfc3339;
+use vpay_config::{Config, ConfigError};
+use vpay_core::{Category, Classify};
 use vpay_db::{
     CredentialKind, Credentials, NewCredential, NewSession, Repositories, SessionRow, SessionState,
     StaffRow, StaffSessions,
@@ -59,6 +61,7 @@ use vpay_db::{
 
 use crate::ApiError;
 use crate::op::dashboard::DashboardOp;
+use crate::op::keys::LoadedSigningKey;
 use crate::staff_auth::{StaffCredentials, tokens, totp};
 
 pub mod client_address;
@@ -109,6 +112,135 @@ pub struct StaffLogin {
     /// projection for it would put a display string on the type every `/v1`
     /// handler reads.
     pub issuer_label: String,
+}
+
+/// A `staff_auth` value a process that must serve the sign-in cannot use
+/// (ADR-0037, VPA-3).
+///
+/// **Here rather than in `vpay_config::ConfigError`**: the length of the TOTP
+/// key is a constant in [`crate::staff_auth`], and the proxy syntax is decided
+/// where the matching is. Fatal at boot, where the sign-in once logged and
+/// mounted the read surface with no way in: that is the dormant half-feature
+/// the method switch exists to refuse. The reason names the field and never a
+/// value.
+#[derive(Debug, thiserror::Error)]
+pub enum StaffLoginError {
+    /// `auth.methods` could not be resolved. Unreachable for a `Config` that
+    /// came from a file (`validate_all` ran the same code).
+    #[error(transparent)]
+    Config(#[from] ConfigError),
+
+    /// A served `human_login` without both `staff_auth` secrets. Unreachable
+    /// for a validated `Config`; typed so a hand-built one is refused too.
+    #[error(
+        "staff_auth is not usable: staff_auth.password_pepper and \
+         staff_auth.totp_encryption_key are both required"
+    )]
+    SecretsMissing,
+
+    /// A pepper argon2 refuses, a TOTP key that is not 32 bytes of base64url,
+    /// or a `trusted_proxies` entry that does not parse.
+    #[error("{what} is not usable: {reason}")]
+    Unusable {
+        /// The configuration at fault: `staff_auth` or `staff_auth.trusted_proxies`.
+        what: &'static str,
+        /// The underlying error's own text, which names no secret.
+        reason: String,
+    },
+}
+
+impl Classify for StaffLoginError {
+    /// A deploy that must be fixed, exit `78`: not a condition a supervisor
+    /// should retry.
+    fn category(&self) -> Category {
+        Category::Configuration
+    }
+
+    fn code(&self) -> &'static str {
+        match self {
+            Self::Config(error) => error.code(),
+            Self::SecretsMissing | Self::Unusable { .. } => "staff_login_unusable",
+        }
+    }
+}
+
+impl StaffLogin {
+    /// Assembles the sign-in state for `config`, or `None` and no staff login
+    /// is served ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md),
+    /// ADR-0037).
+    ///
+    /// **The one constructor.** `vpay-server`'s `serve` calls it, and so does
+    /// every test harness that serves the sign-in, so what the integration
+    /// suite proves is the wiring that ships and not a copy of it.
+    ///
+    /// `None` is exactly "this deployment does not serve `human_login`": the
+    /// method is not permitted, or its blocks are not both written. Every other
+    /// input is either valid (`Config::validate_all` proved the blocks and both
+    /// secrets are there) or a boot failure: a `totp_encryption_key` that is not
+    /// 32 bytes of base64url, or a `trusted_proxies` entry that does not parse,
+    /// is a configured secret this process cannot use, and the old behaviour
+    /// (log and mount the read surface with no way in) is the dormant
+    /// half-feature ADR-0037 refuses. A typo'd allow-list would otherwise narrow
+    /// silently into a per-address budget that has quietly become the whole
+    /// deployment's again, which is the failure the field exists to fix.
+    ///
+    /// # Errors
+    ///
+    /// [`StaffLoginError`], `78` at boot.
+    pub fn from_config(
+        config: &Config,
+        key: &LoadedSigningKey,
+        repositories: &Arc<dyn Repositories>,
+    ) -> Result<Option<Arc<Self>>, StaffLoginError> {
+        if !config.auth_methods()?.human_login_served() {
+            return Ok(None);
+        }
+        let (Some(dashboard), Some(staff_auth)) =
+            (config.dashboard_client.as_ref(), config.staff_auth.as_ref())
+        else {
+            return Ok(None);
+        };
+        let (pepper, totp_key) = staff_auth.both().ok_or(StaffLoginError::SecretsMissing)?;
+        let credentials = Arc::new(StaffCredentials::new(pepper, totp_key).map_err(|error| {
+            StaffLoginError::Unusable {
+                what: "staff_auth",
+                reason: error.to_string(),
+            }
+        })?);
+        let trusted_proxies = client_address::TrustedProxies::parse(&staff_auth.trusted_proxies)
+            .map_err(|error| StaffLoginError::Unusable {
+                what: "staff_auth.trusted_proxies",
+                reason: error.to_string(),
+            })?;
+        if trusted_proxies.is_empty() {
+            tracing::info!(
+                "staff_auth.trusted_proxies is empty: the sign-in rate limiter counts the \
+                 TRANSPORT PEER. Behind a reverse proxy that is one budget for the whole \
+                 deployment (ADR-0017 Consequences); name the proxy to count the caller"
+            );
+        }
+        tracing::info!(
+            client_id = %dashboard.client_id,
+            merchant_id = %dashboard.merchant_id,
+            "/dash/v1 serves the staff authorization-code grant (ADR-0017, auth.methods: \
+             human_login): password + TOTP, server-side sessions, and tokens whose audience \
+             is this client id. Staff SSO is not offered (VPA-4)"
+        );
+
+        Ok(Some(Arc::new(Self {
+            credentials,
+            dashboard_op: Arc::new(DashboardOp::new(
+                config,
+                dashboard,
+                staff_auth,
+                key,
+                Arc::clone(repositories),
+            )),
+            limiter: rate_limit::SignInLimiter::new(staff_auth.rate_limits),
+            trusted_proxies,
+            issuer_label: config.deployment.name.clone(),
+        })))
+    }
 }
 
 /// Shows nothing but the fact that a login is configured. Both the

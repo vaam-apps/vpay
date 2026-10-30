@@ -461,27 +461,23 @@ pub(crate) fn router_deps_with(
         ),
         false => v1_envelope,
     };
+    // As `vpay-server`'s `main` does it, through the same method: a deployment
+    // that serves `human_login` accepts a staff access token on `/dash/v1` beside
+    // a key, validated against this server's own JWKS with the dashboard client's
+    // id as the only audience.
+    let resource_config = Arc::new(
+        ResourceConfig::from_config(config)
+            .expect("the suite's configuration projects onto the port"),
+    );
     let management_envelope = management_envelope_for(config, &repositories).map(|envelope| {
-        // As `vpay-server`'s `main` does it: a deployment that serves
-        // `human_login` accepts a staff access token on `/dash/v1` beside a key,
-        // validated against this server's own JWKS with the dashboard client's
-        // id as the only audience.
-        match config
-            .dashboard_client
-            .as_ref()
-            .filter(|_| config.auth_methods().is_ok_and(|m| m.human_login_served()))
-        {
-            Some(client) => envelope.with_staff_sessions(
-                vpay_api::resource_auth::dashboard_token_validator(
-                    format!("{}/jwks.json", merchant_op.issuer()),
-                    Duration::from_secs(300),
-                    merchant_op.issuer(),
-                    client.client_id.as_str(),
-                )
-                .expect("the vendored-roots JWKS client builds"),
-            ),
-            None => envelope,
-        }
+        envelope
+            .with_staff_sessions(
+                &resource_config,
+                format!("{}/jwks.json", merchant_op.issuer()),
+                Duration::from_secs(300),
+                merchant_op.issuer(),
+            )
+            .expect("the vendored-roots JWKS client builds")
     });
     RouterDeps {
         repositories,
@@ -498,10 +494,7 @@ pub(crate) fn router_deps_with(
         // which is what makes `/dash/v1/staff/login` a `404` in all of them.
         staff_login: None,
         adapters: Arc::new(adapters),
-        resource_config: Arc::new(
-            ResourceConfig::from_config(config)
-                .expect("the suite's configuration projects onto the port"),
-        ),
+        resource_config,
         // Derived exactly as `vpay-server`'s `main` derives it. `Config`'s
         // own construction in these suites is not run through
         // `Config::validate_all`, so unlike `main.rs` this can genuinely
@@ -553,50 +546,21 @@ pub(crate) fn management_envelope_for(
     )
 }
 
-/// `vpay-server`'s own `build_staff_login`, for a suite's harness: `Some` exactly
-/// when `auth.methods` serves `human_login`.
+/// The sign-in state a suite's server serves: `vpay-server`'s own constructor,
+/// [`vpay_api::staff::StaffLogin::from_config`], so a suite proves the wiring
+/// that ships. `Some` exactly when `auth.methods` serves `human_login`.
 ///
-/// Copied rather than shared, because `main.rs`'s version logs operator-facing
-/// lines this has no business emitting into a test's output, and a helper in
-/// `vpay-api` that both called would be a shipping function whose only caller
-/// shape is a test. What must not drift is the *condition*, and it is one line
-/// in both: `human_login` served, or `None`.
+/// `expect` rather than a fallible return, because a suite that wrote an
+/// unusable `staff_auth` has a bug in its fixture and must say so rather than
+/// quietly booting a server with no sign-in, which would make an assertion
+/// about it pass for the wrong reason.
 pub(crate) fn staff_login_for(
     config: &Config,
     signing_key: &LoadedSigningKey,
     repositories: &Arc<dyn Repositories>,
 ) -> Option<Arc<vpay_api::staff::StaffLogin>> {
-    if !config.auth_methods().ok()?.human_login_served() {
-        return None;
-    }
-    let dashboard = config.dashboard_client.as_ref()?;
-    let staff_auth = config.staff_auth.as_ref()?;
-    let (pepper, totp_key) = staff_auth.both()?;
-    let credentials = vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
-        .expect("the suite's staff_auth secrets are usable");
-
-    Some(Arc::new(vpay_api::staff::StaffLogin {
-        credentials: Arc::new(credentials),
-        dashboard_op: Arc::new(vpay_api::op::dashboard::DashboardOp::new(
-            config,
-            dashboard,
-            staff_auth,
-            signing_key,
-            Arc::clone(repositories),
-        )),
-        limiter: vpay_api::staff::rate_limit::SignInLimiter::new(staff_auth.rate_limits),
-        // The suite's own `staff_auth.trusted_proxies`, parsed exactly as
-        // `main.rs` parses it. `expect` rather than a fallible return, because
-        // a suite that wrote an unparseable allow-list has a bug in its fixture
-        // and must say so rather than quietly booting a server that trusts
-        // nobody, which would make a trusted-proxy assertion pass for the wrong
-        // reason.
-        trusted_proxies: vpay_api::staff::client_address::TrustedProxies::parse(
-            &staff_auth.trusted_proxies,
-        )
-        .expect("the suite's staff_auth.trusted_proxies are parseable"),
-        issuer_label: config.deployment.name.clone(),
-    }))
+    vpay_api::staff::StaffLogin::from_config(config, signing_key, repositories)
+        .expect("the suite's staff_auth is usable")
 }
 
 /// Boot step 4, run against a test's own configuration.

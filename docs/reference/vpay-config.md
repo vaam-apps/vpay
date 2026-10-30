@@ -964,7 +964,9 @@ staff_auth:
   because the block always existed and defaulted). In livemode both must be
   `${VAR}` references (`LiteralSecret`). A key that is not 32 bytes, or a
   `trusted_proxies` entry that does not parse, is `78` at boot
-  (`StartupError::StaffLoginUnusable`), where it once logged and mounted the read
+  (`vpay_api::staff::StaffLoginError`, built by the one constructor
+  `StaffLogin::from_config` that `serve` and the integration harnesses both call),
+  where it once logged and mounted the read
   surface with no way in. `staff_auth.sso` is an unknown field until VPA-4.
 - `dashboard.merchant_id` and `dashboard_client.merchant_id`, when both are
   written, must agree (`DashboardTenantMismatch`). A deployment that writes only

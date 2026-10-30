@@ -259,6 +259,14 @@ fn staff_config_human_login_path() -> &'static str {
     )
 }
 
+/// The management-only pod that serves `human_login`: see the fixture's header.
+fn serve_management_human_login_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/serve-management-human-login.yml"
+    )
+}
+
 /// A real RSA private key on disk, generated once per run of this test
 /// binary, standing in for the Kubernetes Secret mount `vpay-server` reads
 /// at boot.
@@ -2210,6 +2218,135 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
 /// Two decisive assertions. Move the `println!` to `tracing::info!` and stdout
 /// is empty; put the subcommand's logs back on stdout and the line count is
 /// more than one.
+/// `serve` on a **management-only** pod that serves `human_login`: the wiring
+/// only `serve` performs, which no integration harness reaches.
+///
+/// Three things are `main.rs`'s alone and each fails silently without this test.
+/// The pod must mount the OP's JWKS and discovery for its own session validator
+/// (`validates_tokens` in `vpay_api::router`, whose management-only term is
+/// the one a pod with no `business` surface depends on); the session validator
+/// must actually be installed (`ManagementEnvelope::with_staff_sessions`,
+/// without which an unsigned `/dash/v1` request reaches the scope step with
+/// nothing to validate a bearer against and answers `500`); and the sign-in is
+/// built from `staff_auth` or the boot is `78`.
+///
+/// **Proved by sabotage** (`docs/status/verification/2026-10-29-vpa3-staff-sign-in.md`,
+/// "Review round 1"): deleting the `with_staff_sessions` call in `main.rs` fails
+/// the `401` assertion with a `500`, and dropping the management term from
+/// `validates_tokens` fails the JWKS assertion with a `404`.
+#[test]
+fn a_management_pod_serving_human_login_mounts_its_jwks_and_session_validator() {
+    with_live_postgres(|database_url| {
+        let addr = free_addr();
+        let valid_key = totp_key(32);
+        let mut guard = spawn_logged(
+            bin()
+                .env("VPAY_BIND", addr.to_string())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", serve_management_human_login_path())
+                .env("VPAY_TEST_STAFF_TOTP_KEY", &valid_key)
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                ),
+        );
+        assert_eq!(
+            poll_healthz(&mut guard, addr, Duration::from_secs(10)),
+            Some(200),
+            "the management pod never became healthy on {addr}"
+        );
+
+        // The OP's key set and discovery, mounted for the pod's own validator.
+        for path in [
+            "/v1/oauth/jwks.json",
+            "/v1/oauth/.well-known/openid-configuration",
+        ] {
+            let (code, response) = http_request(addr, &get_request(path)).expect("the pod answers");
+            assert_eq!(
+                code, 200,
+                "a management pod that serves human_login mounts {path}: {response}"
+            );
+        }
+
+        // The sign-in is mounted: a POST with no body is refused for its body,
+        // not for its route.
+        let (code, response) = http_request(
+            addr,
+            "POST /dash/v1/staff/login HTTP/1.1\r\nHost: localhost\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+        )
+        .expect("the pod answers");
+        assert_ne!(
+            code, 404,
+            "/dash/v1/staff/login is mounted when human_login is served: {response}"
+        );
+        assert!(
+            code < 500,
+            "an empty login is the caller's fault: {response}"
+        );
+
+        // An unsigned read reaches the scope step (the layer runs `Optional`) and
+        // is refused for want of a bearer, by the validator the pod installed.
+        let (code, response) = http_request(addr, &get_request("/dash/v1/payment_intents"))
+            .expect("the signed /dash/v1 surface answers");
+        assert_eq!(
+            code, 401,
+            "an unsigned /dash/v1 read is 401, not a 500 from a missing validator: {response}"
+        );
+        assert!(
+            response.contains("missing_bearer_token"),
+            "the refusal names the missing bearer: {response}"
+        );
+
+        // A pod that serves no business surface mints no machine token.
+        let (code, _) = http_request(
+            addr,
+            "POST /v1/oauth/token HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+        )
+        .expect("the pod answers");
+        assert_eq!(code, 404, "/v1/oauth/token is the business surface's");
+        drop(guard);
+
+        // A TOTP key of 31 bytes is a secret this process cannot use: the boot
+        // stops, 78, naming the block, instead of logging and mounting a
+        // `/dash/v1` with no way in.
+        let output = bin()
+            .env("VPAY_BIND", free_addr().to_string())
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", serve_management_human_login_path())
+            .env("VPAY_TEST_STAFF_TOTP_KEY", totp_key(31))
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+            .env(
+                "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                envelope_next_key_path(),
+            )
+            .output()
+            .expect("running `vpay-server`");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(78), "{stderr}");
+        assert!(
+            stderr.contains("staff_auth"),
+            "the refusal names the block: {stderr}"
+        );
+        assert!(
+            !stderr.contains(&totp_key(31)),
+            "the refusal never prints the key"
+        );
+    });
+}
+
+/// `n` zero bytes as unpadded base64url, the encoding `staff_auth.totp_encryption_key`
+/// is read in.
+fn totp_key(n: usize) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![0_u8; n])
+}
+
 #[test]
 fn staff_add_creates_a_staff_member_and_prints_its_id_on_stdout() {
     with_live_postgres(|database_url| {
