@@ -3137,7 +3137,16 @@ expected_ignored := "0"
 # endpoint against a real Postgres and the real OP; its own file because
 # every case boots a server with `surfaces: [business, mcp]`), on top of
 # VP-6a's 54.
-expected_suites := "55"
+#
+# **55 -> 56 on 2026-10-29 (VPA-3, the staff sign-in restored)**: one new binary,
+# `backends/tests/integration/tests/staff_sign_in.rs`, the suite VP-6a deleted
+# (password, TOTP, session, authorization code and the two-door `/dash/v1` against
+# a real Postgres and the shipping router; its own file because every case boots a
+# container). CI's `rust` job on `d8c357b` failed here with "56 test binaries
+# listed, expected 55": this recipe is in `just ci` and not in `just verify`'s
+# seventeen, so the PR's local run never reached it. The review round's serve
+# test went into the existing `vpay-server` `tests/cli.rs`, so it adds none.
+expected_suites := "56"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
