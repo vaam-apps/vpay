@@ -72,7 +72,7 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{MatchedPath, Request, State};
 use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -81,7 +81,7 @@ use cratestack_core::VerifiedSigner;
 use crate::ApiError;
 use crate::merchant_keys::MerchantKeyResolver;
 use crate::resource_auth::{AuthRejection, JwtValidator, extract_bearer_token};
-use crate::v1::{MerchantScope, ResourceConfig, required_scopes};
+use crate::v1::{MerchantScope, ResourceConfig, V1_NEST, required_scopes, required_scopes_for};
 
 /// The `auth.method` span field's two values on `/v1` (ADR-0037, tracing
 /// only: no policy reads it).
@@ -166,7 +166,17 @@ pub(crate) async fn merchant_scope(
         Err(error) => return ApiError::from(error).into_response(),
     };
 
-    let required = required_scopes(&parts.method);
+    let required = parts
+        .extensions
+        .get::<MatchedPath>()
+        .and_then(|matched| {
+            if matched.as_str().starts_with(V1_NEST) {
+                required_scopes_for(matched.as_str(), &parts.method)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| required_scopes(&parts.method));
     if !required
         .iter()
         .any(|scope| merchant.scopes.iter().any(|granted| granted == scope))
@@ -244,7 +254,17 @@ async fn token_scope(
     // the token's own: the signed path above reads the YAML alone, so a scope
     // removed there reaches a token minted before the change on the next
     // restart.
-    let required = required_scopes(&parts.method);
+    let required = parts
+        .extensions
+        .get::<MatchedPath>()
+        .and_then(|matched| {
+            if matched.as_str().starts_with(V1_NEST) {
+                required_scopes_for(matched.as_str(), &parts.method)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| required_scopes(&parts.method));
     if !required
         .iter()
         .any(|needed| state.resource_config.token_holds(&claims, needed))

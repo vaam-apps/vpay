@@ -162,6 +162,31 @@ pub fn required_scopes(method: &Method) -> &'static [&'static str] {
     }
 }
 
+/// The path [`crate::router`] mounts this surface at.
+pub const V1_NEST: &str = "/v1";
+
+/// The default scope policy for `/v1` payment routes (ADR-0020 §5).
+///
+/// Preserves the existing behaviour of [`required_scopes`]: `GET` and `HEAD`
+/// require `payments:read` or `payments:write`; all other verbs require `payments:write`.
+#[must_use]
+pub fn default_payment_scopes(method: &Method) -> &'static [&'static str] {
+    required_scopes(method)
+}
+
+/// The scopes a request needs for a matched route template and method, or `None`.
+///
+/// `matched` can be axum's matched template with or without the [`V1_NEST`] prefix
+/// (e.g. `"/v1/payment_intents/{id}"` or `"/payment_intents/{id}"`).
+#[must_use]
+pub fn required_scopes_for(matched: &str, method: &Method) -> Option<&'static [&'static str]> {
+    let template = matched.strip_prefix(V1_NEST).unwrap_or(matched);
+    V1_ROUTES
+        .iter()
+        .find(|route| route.path == template && route.methods.contains(&method.as_str()))
+        .map(|route| (route.scopes)(method))
+}
+
 /// One mounted `/v1` route: the path axum matches, the methods it answers,
 /// and the `MethodRouter` that serves them.
 ///
@@ -178,6 +203,8 @@ pub struct V1Route {
     pub path: &'static str,
     /// Every HTTP method this path answers, upper-case.
     pub methods: &'static [&'static str],
+    /// Scopes policy for this route (ADR-0020 §5).
+    pub scopes: fn(&Method) -> &'static [&'static str],
     /// Builds the handlers. A function pointer rather than a value because
     /// `MethodRouter` is not `const`-constructible.
     pub(crate) mount: fn() -> MethodRouter<crate::AppState>,
@@ -209,26 +236,31 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/payment_intents",
         methods: &["POST", "GET"],
+        scopes: default_payment_scopes,
         mount: || post(payment_intents::create).get(payment_intents::list),
     },
     V1Route {
         path: "/payment_intents/{id}",
         methods: &["GET"],
+        scopes: default_payment_scopes,
         mount: || get(payment_intents::retrieve),
     },
     V1Route {
         path: "/payment_intents/{id}/confirm",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(payment_intents::confirm),
     },
     V1Route {
         path: "/payment_intents/{id}/cancel",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(payment_intents::cancel),
     },
     V1Route {
         path: "/events",
         methods: &["GET"],
+        scopes: default_payment_scopes,
         mount: || get(events::list),
     },
     // Plural, like every other collection here, although it addresses one
@@ -240,11 +272,13 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/account_holders",
         methods: &["GET"],
+        scopes: default_payment_scopes,
         mount: || get(account_holders::retrieve),
     },
     V1Route {
         path: "/events/{id}",
         methods: &["GET"],
+        scopes: default_payment_scopes,
         mount: || get(events::retrieve),
     },
     // `/checkout/sessions`, not `/checkout_sessions`: Stripe's own path for
@@ -254,11 +288,13 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/checkout/sessions",
         methods: &["POST", "GET"],
+        scopes: default_payment_scopes,
         mount: || post(checkout_sessions::create).get(checkout_sessions::list),
     },
     V1Route {
         path: "/checkout/sessions/{id}",
         methods: &["GET"],
+        scopes: default_payment_scopes,
         mount: || get(checkout_sessions::retrieve),
     },
     // A POST, not a DELETE: expiring a session is a *transition* that
@@ -267,6 +303,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/checkout/sessions/{id}/expire",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(checkout_sessions::expire),
     },
     // All four, since 2026-09-16 (RFC-0003 § 2, Wave 3). This entry was
@@ -289,6 +326,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/refunds",
         methods: &["POST", "GET"],
+        scopes: default_payment_scopes,
         mount: || post(refunds::create).get(refunds::list),
     },
     // `POST` is the update — Stripe's spelling, and `metadata` is the only
@@ -299,6 +337,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/refunds/{id}",
         methods: &["GET", "POST"],
+        scopes: default_payment_scopes,
         mount: || get(refunds::retrieve).post(refunds::update),
     },
     // A `POST`, not a `DELETE`: cancelling a refund is a *transition* that
@@ -309,11 +348,13 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/refunds/{id}/cancel",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(refunds::cancel),
     },
     V1Route {
         path: "/customers",
         methods: &["POST", "GET"],
+        scopes: default_payment_scopes,
         mount: || post(customers::create).get(customers::list),
     },
     // Three methods on one path, which no other resource here has. `POST` is
@@ -329,6 +370,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/customers/{id}",
         methods: &["GET", "POST", "DELETE"],
+        scopes: default_payment_scopes,
         mount: || {
             get(customers::retrieve)
                 .post(customers::update)
@@ -338,6 +380,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/invoices",
         methods: &["POST", "GET"],
+        scopes: default_payment_scopes,
         mount: || post(invoices::create).get(invoices::list),
     },
     // FOUR methods on one path, which no other resource here has, and the
@@ -355,6 +398,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/invoices/{id}",
         methods: &["GET", "POST", "PATCH", "DELETE"],
+        scopes: default_payment_scopes,
         mount: || {
             get(invoices::retrieve)
                 .post(invoices::update)
@@ -371,16 +415,19 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/invoices/{id}/finalize",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(invoices::finalize),
     },
     V1Route {
         path: "/invoices/{id}/void",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(invoices::void),
     },
     V1Route {
         path: "/invoices/{id}/mark_uncollectible",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(invoices::mark_uncollectible),
     },
     // `pay` mints a payment intent for what is left and answers the invoice
@@ -390,11 +437,13 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/invoices/{id}/pay",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(invoices::pay),
     },
     V1Route {
         path: "/invoice_items",
         methods: &["POST"],
+        scopes: default_payment_scopes,
         mount: || post(invoice_items::create),
     },
     // No collection `GET`. An invoice's lines are read from the invoice
@@ -405,6 +454,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/invoice_items/{id}",
         methods: &["GET", "POST", "PATCH", "DELETE"],
+        scopes: default_payment_scopes,
         mount: || {
             get(invoice_items::retrieve)
                 .post(invoice_items::update)
@@ -1779,5 +1829,46 @@ mod tests {
             ],
             "the four routes RFC-0003 § 2 documents, plus the read issue #45 shipped first"
         );
+    }
+
+    /// Every mounted `/v1` route has a declared scope policy (56-8, ADR-0020 §5).
+    ///
+    /// Authorisation is route-declared rather than method-inferred: every entry
+    /// in `V1_ROUTES` must declare which scopes it requires for each method it answers,
+    /// and `required_scopes_for` must resolve both the relative route template and
+    /// the `/v1`-prefixed template to that policy.
+    #[test]
+    fn every_mounted_v1_route_has_a_declared_scope_policy() {
+        assert!(!V1_ROUTES.is_empty(), "V1_ROUTES must not be empty");
+        for route in V1_ROUTES {
+            assert!(
+                !route.methods.is_empty(),
+                "route {} must answer at least one method",
+                route.path
+            );
+            for method_str in route.methods {
+                let method = Method::from_bytes(method_str.as_bytes()).expect("valid HTTP method");
+                let scopes = (route.scopes)(&method);
+                assert!(
+                    !scopes.is_empty(),
+                    "route {} {} has an empty declared scope policy",
+                    route.path,
+                    method
+                );
+                assert_eq!(
+                    required_scopes_for(route.path, &method),
+                    Some(scopes),
+                    "required_scopes_for relative path mismatch for {} {}",
+                    route.path,
+                    method
+                );
+                let nested = format!("{V1_NEST}{}", route.path);
+                assert_eq!(
+                    required_scopes_for(&nested, &method),
+                    Some(scopes),
+                    "required_scopes_for nested path mismatch for {nested} {method}"
+                );
+            }
+        }
     }
 }
