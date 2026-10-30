@@ -1518,8 +1518,9 @@ debug_protections:
   # carries the pending-flow token and the authorization URL (state, nonce and the
   # PKCE challenge in its query); a callback request carries the provider's
   # authorization code and the state; a callback answer carries the session token.
-  # The provider keeps the client secret; the verified claims keep an address and a
-  # display name. Each prints the ids and outcomes a log needs and nothing else.
+  # The provider keeps the client secret; the verified claims keep the provider's
+  # subject (the join key of `credentials.subject`), an address, a display name and
+  # the nonce. Each prints the ids and outcomes a log needs and nothing else.
   - type: SsoStartResponse
     file: backends/crates/vpay-api/src/staff/sso/mod.rs
     elements: [session_oauth_code]
@@ -1534,7 +1535,13 @@ debug_protections:
     elements: [oauth_client_secret]
   - type: IdentityClaims
     file: backends/crates/vpay-api/src/staff/sso/verify.rs
-    elements: [staff_email, staff_display_name, session_oauth_code]
+    elements:
+      [
+        staff_credential_secret,
+        staff_email,
+        staff_display_name,
+        session_oauth_code,
+      ]
   - type: StaffSso
     file: backends/crates/vpay-config/src/config.rs
     elements: [oauth_client_secret]

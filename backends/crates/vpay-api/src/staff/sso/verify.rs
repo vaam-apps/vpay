@@ -91,13 +91,15 @@ pub(crate) struct IdentityClaims {
     amr: Vec<String>,
 }
 
-/// Prints the subject and nothing a person typed or the provider chose to
-/// say about them: the email and the name are personal data, and the nonce is
-/// a credential until it is compared.
+/// Prints how many groups and the authentication class, and nothing else the
+/// provider said: the subject is the join key of a federated credential
+/// (`credentials.subject`, a `staff_credential_secret` the privacy inventory
+/// forbids in a log), the email and the name are personal data, and the nonce
+/// is a credential until it is compared.
 impl std::fmt::Debug for IdentityClaims {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("IdentityClaims")
-            .field("subject", &self.subject)
+            .field("subject", &"[redacted]")
             .field("groups", &self.groups.len())
             .field("acr", &self.acr)
             .field("amr", &self.amr)
@@ -692,9 +694,13 @@ mod tests {
     #[test]
     fn the_debug_of_the_claims_prints_no_personal_data() {
         let key = rsa("k1");
-        let token = sign(&key, Algorithm::RS256, Some("k1"), &live_claims());
+        let mut with_canary_subject = live_claims();
+        with_canary_subject["sub"] = json!("canary-subject-7f3a91");
+        let token = sign(&key, Algorithm::RS256, Some("k1"), &with_canary_subject);
         let claims = check_live(&key, &token).expect("verifies");
+        assert_eq!(claims.subject, "canary-subject-7f3a91");
         let printed = format!("{claims:?}");
+        assert!(!printed.contains("canary-subject-7f3a91"), "{printed}");
         assert!(!printed.contains("ada@example.test"), "{printed}");
         assert!(!printed.contains("n-1"), "{printed}");
     }
