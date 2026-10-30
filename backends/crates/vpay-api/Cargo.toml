@@ -205,9 +205,11 @@ uuid.workspace = true
 # handset. Apache-2.0, already allowed in `deny.toml`. Not a workspace pin:
 # this crate is its only consumer.
 phonenumber = "0.3"
-# `op::token`: parsing the RFC 8707 `resource` parameters of a token request
-# (`form_urlencoded`), which is how the OP mints a token for the MCP resource.
-# Workspace pin, already in this crate's graph through reqwest and
+# `staff::sso`: building the provider's authorization URL (`query_pairs_mut`)
+# and form-encoding the token request and the `client_secret_basic` pair
+# (`form_urlencoded`) (VPA-4); and `op::token`: parsing the RFC 8707 `resource`
+# parameters of a token request, which is how the OP mints a token for the MCP
+# resource. Workspace pin, already in this crate's graph through reqwest and
 # `vpay-config`, so this names an existing package.
 url.workspace = true
 
@@ -254,3 +256,9 @@ rand.workspace = true
 # 0071 note); not a workspace dependency, so pinned directly here the same
 # way jsonwebtoken is above.
 rsa = "0.9"
+# Test-only: mints a P-256 keypair so `staff::sso::verify` is exercised with an
+# ES256 id_token as well as an RS256 one (ADR-0030 allows both). Already in the
+# resolved graph at 0.13.2 through `jsonwebtoken`'s `rust_crypto` backend and
+# this crate's own `[dependencies]` entry above; the `pkcs8` feature is what
+# lets `jsonwebtoken` read the private key a test hands it.
+p256 = { version = "0.13", features = ["ecdsa", "pkcs8"] }

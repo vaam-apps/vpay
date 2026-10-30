@@ -29,10 +29,10 @@
 //! Migration 0056 dropped this table with the rest of the human sign-in, and
 //! migration 0058 created it again (owner ruling R5: which ways in a deployment
 //! permits is configuration, and human login is one of them). This module is the
-//! persistence only. **Nothing in the workspace calls it yet**: the sign-in that
-//! writes it, and the `human_login` method of `auth.methods` that VPA-1 still
-//! refuses as unavailable, are VPA-3 (`docs/status/backend.md`). The table starts
-//! empty on every deployment, new or upgraded.
+//! persistence only. Its one caller is `vpay_api::staff::sso` (VPA-4), which runs
+//! only where `auth.methods` serves `human_login` and `staff_auth.sso` is written
+//! (`docs/status/backend.md`). The table starts empty on every deployment, new or
+//! upgraded, and a flow in it never outlives its ten minutes.
 
 use std::fmt;
 
