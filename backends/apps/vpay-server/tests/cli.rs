@@ -2448,9 +2448,11 @@ fn staff_add_mints_a_one_time_password_only_where_human_login_is_served() {
                 .expect("running `vpay-server staff add`");
             let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
             let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            // Never stdout: where this command succeeds it is the one-time
+            // password, and an assertion message must not print a credential.
             assert!(
                 output.status.success(),
-                "staff add exited {:?}\nstdout: {stdout}\nstderr: {stderr}",
+                "staff add exited {:?}\nstderr: {stderr}",
                 output.status.code()
             );
             (stdout, stderr)
@@ -2461,24 +2463,24 @@ fn staff_add_mints_a_one_time_password_only_where_human_login_is_served() {
         assert_eq!(
             lines.len(),
             1,
-            "the password must be alone on stdout so an operator can pipe it: {stdout:?}"
+            "the password must be alone on stdout so an operator can pipe it, got {} lines",
+            lines.len()
         );
         let issued = lines.first().expect("exactly one line, asserted above");
         assert_eq!(
             issued.len(),
             26,
-            "26 characters of Crockford base32 is 130 bits: {issued:?}"
+            "26 characters of Crockford base32 is 130 bits"
         );
         assert!(
             issued
                 .bytes()
                 .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
-            "the alphabet is `vpay_core::ids`', so nothing in it can be misread off a \
-             terminal: {issued:?}"
+            "the alphabet is `vpay_core::ids`', so nothing in it can be misread off a terminal"
         );
         assert!(
             !stderr.contains(issued),
-            "the password must NOT reach the tracing subscriber: {stderr}"
+            "the password must NOT reach the tracing subscriber"
         );
         assert!(
             stderr.contains("created a staff member") && stderr.contains("\"staff_id\":\"stf_"),

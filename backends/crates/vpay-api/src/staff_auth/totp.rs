@@ -302,7 +302,12 @@ mod tests {
             if code == "005924" {
                 continue;
             }
-            assert_eq!(totp.verify(code, now), None, "accepted {code:?}");
+            assert_eq!(
+                totp.verify(code, now),
+                None,
+                "a malformed or padded code of {} characters was accepted",
+                code.len()
+            );
         }
         assert_eq!(totp.verify("005924", now), Some(step_at(now)));
     }
@@ -326,8 +331,15 @@ mod tests {
         let totp = Totp::new(b"12345678901234567890".to_vec());
         for step in 0..2_000_i64 {
             let code = totp.code_at_step(step);
-            assert_eq!(code.len(), DIGITS as usize, "step {step} gave {code}");
-            assert!(code.bytes().all(|b| b.is_ascii_digit()), "{code}");
+            assert_eq!(
+                code.len(),
+                DIGITS as usize,
+                "step {step} gave a code of the wrong length"
+            );
+            assert!(
+                code.bytes().all(|b| b.is_ascii_digit()),
+                "step {step} gave a non-digit"
+            );
         }
     }
 }

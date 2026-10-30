@@ -1530,7 +1530,10 @@ async fn with_the_method_off_the_staff_routes_404_and_dash_refuses_unsigned_requ
                 status,
                 false,
                 &body,
-                &format!("{method} {path} with {authorization:?} where human_login is off"),
+                &format!(
+                    "{method} {path} (bearer presented: {}) where human_login is off",
+                    authorization.is_some()
+                ),
             );
         }
     }

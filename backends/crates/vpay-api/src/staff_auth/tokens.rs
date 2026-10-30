@@ -214,17 +214,19 @@ mod tests {
     /// character has to be one that survives that.
     #[test]
     fn a_one_time_password_is_unambiguous_and_long_enough() {
+        // Static messages, and a name that is not "password": a failing assertion
+        // must not print a generated credential, whatever it is called here.
         for _ in 0..64 {
-            let password = one_time_password();
-            assert_eq!(password.len(), ONE_TIME_PASSWORD_CHARS);
+            let candidate = one_time_password();
+            assert_eq!(candidate.len(), ONE_TIME_PASSWORD_CHARS);
             assert!(
-                password.bytes().all(|b| PASSWORD_ALPHABET.contains(&b)),
-                "{password}"
+                candidate.bytes().all(|b| PASSWORD_ALPHABET.contains(&b)),
+                "a generated one-time value left the alphabet"
             );
             for confusable in ['i', 'l', 'o', 'u'] {
                 assert!(
-                    !password.contains(confusable),
-                    "{password} contains {confusable}, which is misread off a terminal"
+                    !candidate.contains(confusable),
+                    "a generated one-time value contains {confusable}, which is misread off a terminal"
                 );
             }
         }
