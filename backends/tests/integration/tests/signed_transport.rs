@@ -500,3 +500,32 @@ async fn an_answer_is_refused_by_a_client_pinning_the_wrong_server_key() -> anyh
     h.shutdown().await;
     Ok(())
 }
+
+// --------------------------------------------------------------- case (g)
+
+/// Privileged-access matrix (ADR-0020, issue #152): a console key or a service
+/// key presented on `/v1` is refused with the coarse 401 Unauthorized.
+#[tokio::test]
+async fn a_console_or_service_key_cannot_reach_v1() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let url = h.url("/v1/customers");
+
+    let console = SealedHttp::new()
+        .get(&url)
+        .signed_by_console("never-paired")
+        .send()
+        .await?;
+    assert!(!console.is_sealed());
+    assert_eq!(console.status().as_u16(), 401);
+
+    let service = SealedHttp::new()
+        .get(&url)
+        .signed_by_service("some-service")
+        .send()
+        .await?;
+    assert!(!service.is_sealed());
+    assert_eq!(service.status().as_u16(), 401);
+
+    h.shutdown().await;
+    Ok(())
+}

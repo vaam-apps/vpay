@@ -192,7 +192,58 @@ There are no down-migrations here. See [release.md](release.md) §5.
 | exit 69                                         | the database, genuinely                                              | Not a key problem. Wait, or look at Postgres                                                                                                            |
 | Every `/v1` call 401s, nothing in the logs      | issuer/audience mismatch, not a key problem                          | [../flows/merchant-auth.md](../flows/merchant-auth.md)                                                                                                  |
 
-## 5. What is unproven here
+## 5. Ed25519 Envelope Signing Key Rotation (ADR-0035)
+
+`/v1` response envelopes are signed with Ed25519 rather than tokens. The server accepts two key flags for zero-downtime rotation:
+
+- `--envelope-signing-key-file` / `VPAY_ENVELOPE_SIGNING_KEY_FILE`: current signing key
+- `--envelope-signing-key-next-file` / `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE`: upcoming key published in server keys for clients to pre-warm pins
+
+### Procedure:
+1. Generate a new Ed25519 keypair.
+2. Mount the new key as `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE` alongside the current key and restart `vpay-server`.
+3. Allow clients (and SDK pins) time to update their trusted server keys.
+4. Promote the next key to `VPAY_ENVELOPE_SIGNING_KEY_FILE` and remove `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE`. Restart `vpay-server`.
+
+_Proven by:_ `an_answer_is_refused_by_a_client_pinning_the_wrong_server_key` (`backends/tests/integration/tests/signed_transport.rs`).
+
+---
+
+## 6. Console Key and Service Client Revocation (ADR-0036, issue #152)
+
+### Revoking a Console Key:
+If an operator console key is lost, stolen, or compromised:
+1. Identify the 64-character hex thumbprint (from logs, staff export, or `console_keys` table).
+2. Execute immediate revocation on the pod or host CLI:
+   ```bash
+   vpay-server staff revoke-key --thumbprint "<thumbprint>"
+   ```
+3. The revocation is recorded in `console_keys.revoked_at` in Postgres. The key is refused on its very next request with a coarse 401.
+
+_Proven by:_ `a_revoked_key_is_refused_on_its_very_next_request` (`backends/tests/integration/tests/dashboard_read_surface.rs:1350`).
+
+### Revoking a Service Client:
+Internal service clients (such as `vaam` on `/svc/v1`) authenticate via registered COSE keys in `config/application.yml` under `service_clients`.
+1. To disable a service client immediately, update configuration to set `disabled: true` on the `service_clients[]` entry, or remove the specific key from `cose_keys[]`.
+2. Redeploy `vpay-server`. The disabled client receives an immediate coarse 401 on subsequent calls.
+
+_Proven by:_ `a_service_client_without_the_pairing_capability_is_refused_a_pairing` (`console_pairing.rs:511`), `a_disabled_client_is_refused_on_its_next_call_like_an_unknown_one` (`signed_transport.rs`).
+
+---
+
+## 7. Rotating the Privacy Lookup Audit Salt (ADR-0020, provisional pending RFC-0002 D3)
+
+`privacy.lookup_audit_salt` keys HMAC-SHA256 digests of phone numbers stored in `audit_events.target_repr`.
+1. Generate 32 bytes of secure random bytes as a 64-character lowercase hex string (`openssl rand -hex 32`).
+2. Update the Kubernetes Secret or environment variable `VPAY_PRIVACY_LOOKUP_AUDIT_SALT`.
+3. Restart `vpay-server`. New lookups immediately write HMAC digests keyed under the new salt.
+4. Old audit rows in `audit_events` remain intact. Pseudonymization salt rotation is forward-secure: past queries cannot be joined to new queries across salt boundaries.
+
+_Proven by:_ `audit_table_holds_hmac_target_representation_and_no_raw_pii` (`backends/tests/integration/tests/account_holders.rs:727`).
+
+---
+
+## 8. What is unproven here
 
 - **No rotation has ever been performed on a deployment.** The evidence is
   unit and integration tests against ephemeral containers.

@@ -514,15 +514,21 @@ material_controls:
     implementation: "Merchant access is authorized per surface and per scope; every query is tenant-scoped; a console key or, when human_login is served, a staff session token reads exactly the dashboard's tenant, through one resolver (ADR-0018, ADR-0036, ADR-0037)."
     implementation_paths:
       - "backends/crates/vpay-api/src/v1/mod.rs"
+      - "backends/crates/vpay-api/src/v1/account_holders.rs"
       - "backends/crates/vpay-api/src/envelope/console.rs"
       - "backends/crates/vpay-api/src/envelope/scope.rs"
       - "backends/crates/vpay-api/src/resource_auth.rs"
     evidence: "Signed /v1 requests from registered merchant keys, resolved to a tenant-bound merchant with per-route scopes (ADR-0035)."
     evidence_paths:
       - "docs/adr/0035-v1-is-a-signed-message-not-a-token.md"
+      - "docs/security/privileged-access-matrix.md"
+      - "docs/runbooks/access-review.md"
     evidence_tests:
       - "every_route_refuses_an_unsigned_request_with_the_coarse_401"
       - "a_foreign_tenant_gets_the_uniform_sealed_404"
+      - "credential_without_account_holders_read_scope_is_refused_403"
+      - "a_console_or_service_key_cannot_reach_v1"
+      - "a_client_registered_for_no_scopes_is_forbidden_while_a_scoped_one_is_not"
     status: "implemented"
 
   - id: "A.8.2"
@@ -544,6 +550,8 @@ material_controls:
       - "docs/adr/0017-staff-authentication.md"
       - "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
       - "docs/adr/0037-authentication-methods-are-deployment-configuration.md"
+      - "docs/security/privileged-access-matrix.md"
+      - "docs/runbooks/access-review.md"
     evidence_tests:
       - "the_second_factor_rule_is_acr_or_amr_and_a_password_alone_is_not_one"
       - "pairing_never_creates_or_upgrades_an_administrator"
@@ -684,6 +692,8 @@ material_controls:
     implementation: "HMAC-SHA256 for webhook signatures, Ed25519 COSE_Sign1 for every /v1 and /svc/v1 request and answer, ECDSA P-256 COSE_Sign1 (ESP256) for every /dash/v1 request, RSA for the OAuth OP's tokens until VP-4, and, when human_login is served, Argon2id for staff passwords, RFC 6238 TOTP and AES-256-GCM for stored TOTP secrets."
     implementation_paths:
       - "backends/crates/vpay-api/src/envelope/mod.rs"
+      - "backends/crates/vpay-api/src/v1/account_holders.rs"
+      - "backends/crates/vpay-api/src/v1/boot.rs"
       - "backends/crates/vpay-api/src/staff_auth/password.rs"
       - "backends/crates/vpay-api/src/staff_auth/secret_box.rs"
       - "backends/crates/vpay-api/src/staff_auth/totp.rs"
@@ -691,8 +701,13 @@ material_controls:
     evidence: "Primitives are implemented and tested. Automated key rotation and dual control for production keys are gap #152."
     evidence_paths:
       - "docs/adr/0005-rustls-only.md"
+      - "docs/security/privileged-access-matrix.md"
+      - "docs/runbooks/rotate-signing-key.md"
     evidence_tests:
       - "every_signature_is_64_lowercase_hex_characters"
+      - "boot_logging_never_leaks_configured_secrets"
+      - "audit_table_holds_hmac_target_representation_and_no_raw_pii"
+      - "an_answer_is_refused_by_a_client_pinning_the_wrong_server_key"
     status: "partial"
     related_gap: "GAP-152"
 
@@ -749,8 +764,8 @@ known_security_gaps:
   - id: "GAP-56"
     title: "Account-holder lookup audit and rate limiting controls"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/56"
-    description: "A dedicated scope and durable per-key audit log for account-holder lookups are not built."
-    status: "open"
+    description: "Dedicated scope (`account_holders:read`), durable rate limiting per credential in `rate_limit_windows`, and privacy-minimal audit logging in `audit_events` with HMAC-SHA256 target representation are implemented (ADR-0020, #56). Operator surface 56-6 remains pending RFC-0002 D8."
+    status: "closed"
     related_control: "A.5.15"
 
   - id: "GAP-151"
@@ -763,7 +778,7 @@ known_security_gaps:
   - id: "GAP-152"
     title: "Hardened privileged access and cryptographic key lifecycle"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
-    description: "Automated rotation and dual-control procedures for production rail and signing keys are not built."
+    description: "Privileged access matrix, access review export, key revocation runbooks, and secret redaction are documented and verified (#152). Automated rotation and dual-control procedures for production rail and signing keys remain unbuilt."
     status: "open"
     related_control: "A.8.24"
 

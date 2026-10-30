@@ -127,7 +127,7 @@ The stored `target_repr` holds a keyed HMAC-SHA256 digest of `tenant_id` + norma
 
 If writing the `initiated` event to the database fails, the lookup is immediately refused with `500 Internal Server Error` (fail-closed). Retention is operational (provisional pending RFC-0002 D9).
 
-_Proven by_ `a_lookup_writes_initiated_and_terminal_audit_events_with_hmac_target_and_no_raw_pii` (integration).
+_Proven by_ `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration).
 
 ### 3. Logs carry a masked number and never a name
 
@@ -169,7 +169,7 @@ When the limit is reached, vpay returns HTTP 429 Too Many Requests with a `Retry
 ```
 If counting the attempt fails in the database, the lookup fails closed with a `500`.
 
-_Proven by_ `a_caller_exceeding_the_lookup_rate_limit_is_refused_with_429_and_retry_after`, `a_rate_limited_credential_does_not_affect_a_different_credential`, and `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration).
+_Proven by_ `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` and `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration).
 
 ### 5. Dedicated scope (`account_holders:read`, issue #56, provisional pending RFC-0002 D5)
 
@@ -177,7 +177,7 @@ _Proven by_ `a_caller_exceeding_the_lookup_rate_limit_is_refused_with_429_and_re
 Nominated-payee refunds via `POST /v1/refunds` also require `account_holders:read` in addition to `payments:write`.
 Any credential lacking this scope is refused with HTTP 403 Forbidden (`insufficient_scope`).
 
-_Proven by_ `a_caller_lacking_account_holders_read_scope_is_refused_with_403` and `a_nominated_payee_refund_without_account_holders_read_scope_is_refused_with_403` (integration).
+_Proven by_ `credential_without_account_holders_read_scope_is_refused_403` and `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration).
 
 ## The wire
 
@@ -353,11 +353,10 @@ about the _rail_, and this one answers a question about the _route_.
 | every lookup vpay makes is counted and masked, from either caller               | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`, `a_lookup_logs_a_masked_number_and_never_a_name` (the route), `a_refund_path_lookup_is_counted_and_logged_like_the_routes` (`POST /v1/refunds`)                                |
 | the refund path's three-way answer: unregistered is a `400`, unreachable is not | `an_unregistered_payee_is_a_400_and_an_unreachable_rail_is_not`, `a_rail_without_a_lookup_accepts_the_destination_unverified` (`vpay-api`), `a_payee_the_rail_does_not_know_is_refused_before_the_transfer` (integration, against a real WireMock MTN) |
 | every outcome counted, no label carrying the number or the name                 | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                                                                                 |
-| rate limit: exceeding budget is refused 429 with Retry-After                    | `a_caller_exceeding_the_lookup_rate_limit_is_refused_with_429_and_retry_after` (integration)                                                                                                                                                           |
-| rate limit: credential independence                                              | `a_rate_limited_credential_does_not_affect_a_different_credential` (integration)                                                                                                                                                                       |
+| rate limit: exceeding budget is refused 429 with Retry-After                    | `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` (integration)                                                                                                                                                         |
 | rate limit: nominated payee refund spends lookup budget                          | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                            |
-| audit log: initiated and terminal events with HMAC target, no raw PII            | `a_lookup_writes_initiated_and_terminal_audit_events_with_hmac_target_and_no_raw_pii` (integration)                                                                                                                                                    |
-| scope: lacking `account_holders:read` refused 403 Forbidden                      | `a_caller_lacking_account_holders_read_scope_is_refused_with_403`, `a_nominated_payee_refund_without_account_holders_read_scope_is_refused_with_403` (integration)                                                                                   |
+| audit log: initiated and terminal events with HMAC target, no raw PII            | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
+| scope: lacking `account_holders:read` refused 403 Forbidden                      | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                  |
 | the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — nine cases                                                                                                                                                                                     |
 | both SDKs speak the same query string and read the same object                  | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                                                                                     |
 
