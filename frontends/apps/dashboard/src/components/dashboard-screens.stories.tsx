@@ -30,8 +30,19 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, within } from "storybook/test";
 
+import { AccountPage } from "./account-page";
+import { CenteredShell } from "./centered-shell";
+import { EnrolmentPanel } from "./enrolment-panel";
 import { FilterChips } from "./filter-chips";
 import { PageHeader } from "./layout";
+import {
+  NotConfigured,
+  PairedKeyOnly,
+  SignInUnreachable,
+} from "./login-notices";
+import { PasswordForm } from "./password-form";
+import { SignInForm } from "./sign-in-form";
+import { TotpForm } from "./totp-form";
 import { PaymentDetailHeader, PaymentDetailView } from "./payment-detail";
 import { PaymentSkeleton } from "./payment-skeleton";
 import { PaymentsFilters } from "./payments-filters";
@@ -703,4 +714,115 @@ export const ReadFailed: Story = {
 
 export const Gap: Story = {
   render: () => <TimelineGap />,
+};
+
+// ------------------------------------------------------------------- Sign-in
+//
+// The sign-in's screens inside `CenteredShell`, in both themes, because
+// `a11y.test.tsx` runs in jsdom and answers no `color-contrast`: this is the
+// only place the muted text on the card, the hint under a password field and
+// the warning banners get a contrast verdict. The actions are no-ops — a
+// page's server actions cannot run in a story.
+
+const NOOP = () => Promise.resolve({ error: null, requestId: null });
+
+export const SignInEmail: Story = {
+  render: () => (
+    <CenteredShell>
+      <SignInForm action={NOOP} />
+    </CenteredShell>
+  ),
+};
+
+export const SignInEmailLight: Story = {
+  render: () => (
+    <CenteredShell>
+      <SignInForm action={NOOP} />
+    </CenteredShell>
+  ),
+  globals: { theme: "light" },
+};
+
+export const PasswordChange: Story = {
+  render: () => (
+    <CenteredShell>
+      <PasswordForm action={NOOP} />
+    </CenteredShell>
+  ),
+};
+
+export const Enrolment: Story = {
+  render: () => (
+    <CenteredShell>
+      <EnrolmentPanel
+        qrDataUrl="data:image/gif;base64,R0lGODlhAQABAAAAACw="
+        secret="JBSWY3DPEHPK3PXP"
+      />
+      <TotpForm action={NOOP} enrolling />
+    </CenteredShell>
+  ),
+};
+
+export const PairedKeyNotice: Story = {
+  render: () => (
+    <CenteredShell>
+      <PairedKeyOnly />
+    </CenteredShell>
+  ),
+};
+
+export const NotConfiguredNotice: Story = {
+  render: () => (
+    <CenteredShell>
+      <NotConfigured
+        problems={[
+          {
+            variable: "VPAY_DASHBOARD_CLIENT_ID",
+            detail: "this deployment's registered dashboard_client.client_id.",
+          },
+        ]}
+      />
+    </CenteredShell>
+  ),
+};
+
+export const UnreachableNotice: Story = {
+  render: () => (
+    <CenteredShell>
+      <SignInUnreachable
+        failure={{
+          status: 503,
+          message: "Starting up.",
+          requestId: "req_01J8",
+        }}
+      />
+    </CenteredShell>
+  ),
+};
+
+export const Account: Story = {
+  render: () => (
+    <CenteredShell>
+      <AccountPage
+        displayName="Ada Lovelace"
+        email="ada@acme.test"
+        merchantId="acme"
+        signOut={() => Promise.resolve()}
+      />
+    </CenteredShell>
+  ),
+};
+
+export const AccountLight: Story = {
+  render: () => (
+    <CenteredShell>
+      <AccountPage
+        displayName="Ada Lovelace"
+        email="ada@acme.test"
+        merchantId="acme"
+        signOut={() => Promise.resolve()}
+      />
+    </CenteredShell>
+  ),
+  globals: { theme: "light" },
 };
