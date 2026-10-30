@@ -11,7 +11,7 @@ export interface AccountPageProps extends SignedInBarProps {
  * `/` — who is signed in, which tenant they read, and the way out.
  *
  * **An account page and nothing more, and it says so.** The pages that read
- * `/dash/v1` are a later ticket (VPA-5a), so a link to `/payments` would be a
+ * `/dash/v1` are a later ticket (VP-6b), so a link to `/payments` would be a
  * menu entry for a page nobody wrote. What a staff member can honestly be
  * shown after signing in is that they are signed in, as whom, reading which
  * merchant — the one fact an operator needs before trusting any list that

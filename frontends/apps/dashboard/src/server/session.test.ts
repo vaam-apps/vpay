@@ -138,6 +138,77 @@ describe("the gate", () => {
   });
 });
 
+describe("a signed-in session whose token vpay will not mint", () => {
+  // The session read is 200 and `/oauth/authorize` is 401 — a staff member
+  // whose merchant is not the one the dashboard client is bound to
+  // (`vpay_api::staff::oauth::authorize`'s fourth refusal). Until the VPA-5a
+  // review the gate answered this with `redirect("/signed-out")`; the browser
+  // went `/` -> `/signed-out` (which clears nothing on a non-navigation
+  // request) -> `/login` (`alreadySignedIn`) -> `/`, hitting vpay on every
+  // pass and showing nothing.
+  const NO_TOKEN = { ...SESSION, access_token: undefined };
+  const REFUSAL = {
+    status: 401,
+    body: { error: { message: "We could not sign you in." } },
+  };
+
+  it("renders the refusal and redirects nowhere — THE DECISIVE MUTATION: restore redirect(SIGNED_OUT_PATH)", async () => {
+    const asked = vpay({
+      "/dash/v1/staff/session": { status: 200, body: NO_TOKEN },
+      "/dash/v1/oauth/authorize": REFUSAL,
+    });
+    const gate = await requireStaff();
+    expect(gate).toMatchObject({
+      kind: "refused",
+      failure: { status: 401, message: "We could not sign you in." },
+    });
+    // One session read and one mint, no stage read, nothing past them.
+    expect(asked).toEqual([
+      "/dash/v1/staff/session",
+      "/dash/v1/oauth/authorize",
+    ]);
+  });
+
+  it("does not fall back to the stale token it holds — vpay has just said no", async () => {
+    // Token inside the re-mint margin, still unexpired: the one case where a
+    // fallback could have rendered. A 401 on the mint is a refusal of the
+    // session, and the token on its row is not to be read on.
+    vpay({
+      "/dash/v1/staff/session": {
+        status: 200,
+        body: {
+          ...SESSION,
+          access_token_expires_at: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+      "/dash/v1/oauth/authorize": REFUSAL,
+    });
+    expect(await destination()).toBe("render:refused");
+  });
+
+  it("does fall back to the stale token when vpay merely could not be reached for the mint", async () => {
+    vpay({
+      "/dash/v1/staff/session": {
+        status: 200,
+        body: {
+          ...SESSION,
+          access_token_expires_at: new Date(Date.now() + 60_000).toISOString(),
+        },
+      },
+      "/dash/v1/oauth/authorize": { status: 503 },
+    });
+    expect(await destination()).toBe("render:ready");
+  });
+
+  it("is an outage, not a refusal, when there is no token to fall back to and vpay answers 503", async () => {
+    vpay({
+      "/dash/v1/staff/session": { status: 200, body: NO_TOKEN },
+      "/dash/v1/oauth/authorize": { status: 503 },
+    });
+    expect(await destination()).toBe("render:outage");
+  });
+});
+
 describe("a session the read refused", () => {
   it("goes to the code form when the stage says it is still owed a code — pending_totp", async () => {
     // Somebody who typed a password and then opened `/` in a new tab is owed

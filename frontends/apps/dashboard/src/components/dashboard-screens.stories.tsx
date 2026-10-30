@@ -35,6 +35,7 @@ import { CenteredShell } from "./centered-shell";
 import { EnrolmentPanel } from "./enrolment-panel";
 import { FilterChips } from "./filter-chips";
 import { PageHeader } from "./layout";
+import { MintRefused } from "./mint-refused";
 import {
   NotConfigured,
   PairedKeyOnly,
@@ -812,6 +813,26 @@ export const Account: Story = {
       />
     </CenteredShell>
   ),
+};
+
+export const MintRefusedScreen: Story = {
+  render: () => (
+    <CenteredShell>
+      <MintRefused
+        failure={{
+          status: 401,
+          message: "We could not sign you in.",
+          requestId: "req_01J8",
+        }}
+        signOut={() => Promise.resolve(NO_ERROR)}
+      />
+    </CenteredShell>
+  ),
+};
+
+export const MintRefusedLight: Story = {
+  ...MintRefusedScreen,
+  globals: { theme: "light" },
 };
 
 export const AccountLight: Story = {

@@ -58,7 +58,7 @@ export const PASSWORD_PATH = "/login/password";
  *
  * It is `/` and it shows who is signed in, which merchant they read, and the
  * way out — nothing else, because the pages that read `/dash/v1` are a later
- * ticket (VPA-5a, `docs/status/frontend.md`). The gate every one of those
+ * ticket (VP-6b, `docs/status/frontend.md`). The gate every one of those
  * pages will open with is already this one, so when they arrive they change
  * the destination here and not the sign-in.
  */
@@ -88,7 +88,21 @@ export type StaffGate =
    * still hold a perfectly good session, and the page renders the failure and
    * its request id instead of the data.
    */
-  | { readonly kind: "outage"; readonly failure: ApiFailure };
+  | { readonly kind: "outage"; readonly failure: ApiFailure }
+  /**
+   * The session read **succeeded** — this person is signed in — and vpay then
+   * refused to mint the token that reads `/dash/v1` for them.
+   *
+   * Not a sign-out, and the page renders it instead of redirecting: the
+   * session is live, so `/login` would send the browser straight back to `/`
+   * (`alreadySignedIn`) and `/` would ask vpay again, a loop that costs vpay a
+   * request per pass and tells the person nothing. The realistic cause is a
+   * staff member whose merchant is not the one the dashboard client is bound
+   * to (`vpay_api::staff::oauth::authorize`'s fourth refusal). The page says
+   * so, quotes the request id, and offers the way out. The cookie is untouched
+   * and **no stale token is read on**: vpay has just said no.
+   */
+  | { readonly kind: "refused"; readonly failure: ApiFailure };
 
 /** Everything a protected page needs, once the gate has let it through. */
 export interface StaffContext {
@@ -99,10 +113,9 @@ export interface StaffContext {
   /**
    * The staff session token this browser presented.
    *
-   * Carried so a page can mint a **replacement** access token when the one
-   * above has expired — `server/dash-read.ts` and the fifteen minutes it
-   * describes. Server-side only, like everything else here: it is the cookie
-   * value, and nothing renders it.
+   * Server-side only, like everything else here: it is the cookie value, and
+   * nothing renders it. Carried for the reader that will present the session
+   * to vpay (VP-6b); no page reads it today.
    */
   readonly sessionToken: string;
   /** The settings this container booted with. */
@@ -273,12 +286,19 @@ async function gateThisRequest(): Promise<StaffGate> {
     // this browser's session is very likely still good.
     if (refusalFor(exchanged.failure) === "outage") {
       // A **stale** token is not a missing one, and this is the whole reason
-      // `gateFor` tells them apart. The one in hand is still inside its TTL —
-      // that is what the margin bought — so a vpay that could not be reached
-      // for the re-mint costs nothing at all here, where it would otherwise
-      // replace a page that could have rendered with an error box. If it does
-      // expire before vpay comes back, `dash-read.ts` answers the `401` with
-      // its own attempt and then renders the refusal.
+      // `gateFor` tells them apart: the one in hand was on the session row
+      // this very render read, so a vpay that could not be reached for the
+      // re-mint costs nothing here, where it would otherwise replace a page
+      // that could have rendered with an error box.
+      //
+      // What it risks is stated, not assumed away. The token may be past its
+      // expiry (a render that arrived late), and vpay refuses an expired one
+      // on its own; it may have been revoked since the row was read, which
+      // the next render's session read catches. **Nothing retries a refused
+      // read** — `dash-read.ts` and its reactive re-mint were deleted with
+      // the read seam (VP-6a) — so a reader that is refused with this token
+      // must show the refusal and let the next render's gate mint another,
+      // never present the same token again. No reader exists yet.
       if (gate.kind === "stale-token") {
         return {
           kind: "ready",
@@ -293,12 +313,18 @@ async function gateThisRequest(): Promise<StaffGate> {
       return { kind: "outage", failure: exchanged.failure };
     }
     // A `401` is NOT fallen back on, deliberately, stale token or not: it
-    // means `/oauth/authorize` refused this session on this request — signed
-    // out elsewhere, the account disabled, the staff member moved to another
-    // merchant — and reading on with the token that refusal has just
-    // invalidated is the fifteen-minute hole the exp24 review's finding F1
-    // closed one layer down.
-    redirect(SIGNED_OUT_PATH);
+    // means `/oauth/authorize` refused this session on this request — the
+    // account disabled, the staff member on another merchant than the
+    // dashboard is bound to — and reading on with the token that refusal has
+    // just invalidated is the fifteen-minute hole the exp24 review's finding
+    // F1 closed one layer down.
+    //
+    // **And it is NOT a redirect either.** The session read above answered
+    // 200, so this browser is signed in; sending it to `/signed-out` clears
+    // nothing on a non-navigation request, `/login` sends a live session back
+    // to `/`, and `/` comes here again — a loop that hits vpay on every pass
+    // and shows nothing. The refusal is rendered (`StaffGate`'s `refused`).
+    return { kind: "refused", failure: exchanged.failure };
   }
   return {
     kind: "ready",

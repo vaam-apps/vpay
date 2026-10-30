@@ -50,6 +50,7 @@ import {
   PairedKeyOnly,
   SignInUnreachable,
 } from "./components/login-notices";
+import { MintRefused } from "./components/mint-refused";
 import { NotFoundNotice } from "./components/not-found-notice";
 import { PasswordForm } from "./components/password-form";
 import { SignInForm } from "./components/sign-in-form";
@@ -208,6 +209,21 @@ describe("every screen of the sign-in", () => {
           displayName="Ada Lovelace"
           email="ada@acme.test"
           merchantId="acme"
+          signOut={() => Promise.resolve(NO_ERROR)}
+        />,
+      ),
+    ).toEqual([]);
+  });
+
+  it("the account page when vpay would not mint a token", async () => {
+    expect(
+      await clean(
+        <MintRefused
+          failure={{
+            status: 401,
+            message: "We could not sign you in.",
+            requestId: "req_1",
+          }}
           signOut={() => Promise.resolve(NO_ERROR)}
         />,
       ),
