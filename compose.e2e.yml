@@ -42,6 +42,25 @@ services:
       context: .
       dockerfile: backends/Dockerfile
       target: server
+    # VPA-5c. The two secrets `staff_auth` names as `${VPAY_STAFF_PEPPER}` and
+    # `${VPAY_STAFF_TOTP_KEY}` in the generated `demo` overlay (`human_login`,
+    # ADR-0037): argon2id's pepper and the key that encrypts each authenticator
+    # seed. They are GENERATED PER CHECKOUT by `just gen-demo-keys` into this
+    # git-ignored file (mode 0600), never written down here: a literal in a
+    # tracked compose file is a secret in the repository, and a placeholder with
+    # no value is exit 78 at boot naming the variable. It is an `env_file` rather
+    # than `environment:` so the values come from the file and not from the
+    # caller's shell. They are NOT hidden: `docker compose config` and
+    # `docker inspect` print them. Acceptable for a throwaway stack whose
+    # volumes go with `down -v` and whose pepper protects one demo member; do
+    # not copy this arrangement to a deployment whose staff are real.
+    #
+    # Required, like the key mounts below: a stack brought up without
+    # `just gen-demo-keys` stops here with "env file … not found", which says
+    # what is missing. The `sandbox` profile this file names does not read the
+    # two variables; only the `demo` overlay does (compose.demo.yml).
+    env_file:
+      - ./.e2e/staff-auth.env
     environment:
       VPAY_PROFILE: sandbox
       # Set in the image too (backends/Dockerfile `ENV VPAY_CONFIG`); restated
@@ -174,6 +193,11 @@ services:
     # entrypoint and the equivalent is `args:` — see
     # `deploy/helm/vpay/templates/deployment-worker.yaml`.
     command: ["worker"]
+    # The same two secrets, for the same reason: the worker loads the same
+    # config, an unresolved `${VAR}` is exit 78 for BOTH binaries, and it
+    # never signs anybody in. See `vpay-server`'s `env_file:`.
+    env_file:
+      - ./.e2e/staff-auth.env
     environment:
       VPAY_PROFILE: sandbox
       VPAY_CONFIG: /config/application.yml
@@ -290,28 +314,55 @@ services:
       # that had to change.
       target: runner
     environment:
-      # Nothing below is read by the application today: since VP-6a (ADR-0036)
-      # it is a single notice page that calls vpay for nothing, and it has no
-      # OAuth client registration, redirect URI, scope, session or CSRF check to
-      # configure. The two variables stay because VP-6b's signed reader needs
-      # both, and a stack that already sets them does not have to learn them
-      # again.
-      #
       # vpay as THIS SERVER reaches it.
       VPAY_DASH_API: http://vpay-server:8080
       # The origin a browser reaches the dashboard on. The port is the same
       # variable the publication uses, so a stale literal here is a mismatch
       # with the published port.
       VPAY_DASHBOARD_PUBLIC_ORIGIN: http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}
+      # THE STAFF SIGN-IN'S CLIENT REGISTRATION (VPA-5c). The three values
+      # below are `dashboard_client` in the generated `demo` overlay
+      # (`just gen-demo-keys`), spelled the same on both sides or the sign-in
+      # fails: `/login` renders the variable names and no form when one is
+      # missing, and the mint is refused at vpay when one disagrees. The
+      # dashboard is a PUBLIC OAuth client, so there is no secret to give it.
+      VPAY_DASHBOARD_CLIENT_ID: vpay-dashboard
+      # Byte for byte one of `dashboard_client.redirect_uris`. **No browser ever
+      # visits it** — the app's own server follows the authorize redirect and
+      # exchanges the code — so the dashboard has no route at this path and
+      # nothing is missing. The port is the publication's variable, which the
+      # overlay's copy is generated from; `gen-demo-keys` regenerates an overlay
+      # that disagrees with it.
+      VPAY_DASHBOARD_REDIRECT_URI: http://localhost:${VPAY_DEMO_DASHBOARD_PORT:-3000}/dash/v1/callback
+      # The single read-only scope the registration grants.
+      VPAY_DASHBOARD_SCOPE: dashboard:read
+      # Deliberately NOT set: VPAY_DASHBOARD_SSO_ISSUER. Single sign-on needs an
+      # OpenID Connect provider and this stack has none (no Keycloak, no fake
+      # issuer; vpay's own SSO suites run theirs in a testcontainer, which
+      # nothing here can reach). The overlay writes no `staff_auth.sso` either,
+      # so `/login` draws no button, and that is the honest shape of the gap
+      # rather than a button that goes nowhere. docs/flows/dashboard-auth/sso.md
+      # names it.
+      #
+      # WHY `localhost` AND NOT A COMPOSE HOSTNAME. The session cookies are
+      # `__Host-` prefixed and `Secure`. A browser keeps a `Secure` cookie from
+      # `http://` only on a secure context, and `localhost` is one by rule while
+      # `http://dashboard:3000` or any other name is not: the sign-in would
+      # succeed, redirect, and arrive at /login again with no cookie.
+      # Cypress runs on the host and reaches the dashboard through the
+      # publication below, at `http://localhost:<port>`, and that is the only
+      # origin this stack supports a browser on. Behind TLS any host works.
     depends_on:
       # `service_started`, not `service_healthy`: `vpay-server` has no
       # healthcheck to report healthy (see the comment above it). This is a
       # boot-order guarantee only — the dashboard can still start before the
       # server has finished binding its listener.
       #
-      # Until VP-6b the dashboard renders a notice and calls nothing, so the
-      # race is harmless. `just test-e2e` and CI's e2e job both poll
-      # `/healthz` from outside, which is the actual readiness gate.
+      # Every call the dashboard makes to vpay is made per request rather than
+      # at boot, with a five-second deadline, and a refusal to connect renders
+      # as an outage with a request id (never as "paired key"), so the race is
+      # survivable. `just test-e2e` and CI's e2e job both poll `/healthz` from
+      # outside, which is the actual readiness gate.
       vpay-server: { condition: service_started }
     ports: ["3000:3000"]
     restart: unless-stopped

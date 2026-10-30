@@ -261,6 +261,14 @@ jobs:
               # is what creates the shop's database. The only `deploy/` path
               # this job reads, and it is not under `deploy/helm/`.
               - 'deploy/dev/**'
+              # `justfile` since VPA-5c: `gen-demo-keys` writes the `demo`
+              # overlay this job loads (`auth.methods`, `dashboard_client`,
+              # `staff_auth`) and `demo-staff` / `e2e-specs` spell the sign-in
+              # spec's environment, so an edit to either changes what this
+              # stack serves without touching a file listed above. The cost is
+              # one e2e run on a justfile-only change, which is the right price
+              # for a recipe that generates the configuration under test.
+              - 'justfile'
             deploy:
               # `just helm-check` reads `deploy/helm/vpay` and nothing else in
               # the tree (`chart := "deploy/helm/vpay"` in the justfile); the
@@ -922,9 +930,11 @@ jobs:
       # even though `sandbox` is the CLI's default profile.
       #
       # (It stopped being inert on 2026-09-07 (exp28), when `dashboard.cy.ts`
-      # signed in and read the demo overlay's OAuth redirect URI, and went
-      # back to inert on VP-6a: the spec and the redirect URI are both gone, so
-      # this job reads no dashboard setting but `dashboard.merchant_id`.)
+      # signed in and read the demo overlay's OAuth redirect URI, went back to
+      # inert on VP-6a, when the spec and the redirect URI were both deleted,
+      # and is NOT inert again as of VPA-5c: `dashboard-human-login.cy.ts` signs
+      # in through `human_login`, so this job reads the overlay's
+      # `auth.methods`, `dashboard_client` and `staff_auth` for real.)
       #
       # THE `3000` IN THAT STRING IS A DEFAULT, NOT A LITERAL, since
       # 2026-09-10 (exp35, issue #78): the port is `justfile`'s
@@ -1005,6 +1015,24 @@ jobs:
               exit 1
             fi
           done
+      # The dashboard's staff member, created against the RUNNING stack
+      # (VPA-5c: `dashboard-human-login.cy.ts` signs in as them).
+      #
+      # `vpay-server staff add` is the only way one is created, and without it
+      # the spec has nobody to sign in as: `cy.task('staffPassword')` throws and
+      # every case after the first fails. `just test-e2e` makes the same call;
+      # this job is a second copy of the same sequence, and the recipe is called
+      # rather than its body copied so the two cannot drift again (an earlier
+      # `dashboard.cy.ts` was green locally and red here for exactly that
+      # reason). It prints the member's one-time password once and the recipe
+      # keeps it in `.e2e/vpay-demo/staff-password.txt`, mode 0600, which
+      # `just e2e-specs` hands the spec as a PATH.
+      #
+      # No `VPAY_DEMO_*` is set anywhere in this job, so the recipe's own
+      # defaults stand and it addresses the same `vpay-demo` project the
+      # `docker compose` lines above brought up.
+      - name: create the dashboard's staff member (dashboard-human-login.cy.ts signs in as them)
+        run: just demo-staff
       # `just e2e-specs`, NOT a second copy of the environment it sets.
       #
       # This step used to spell out VPAY_BASE_URL, the four browser URLs, the
@@ -1018,9 +1046,9 @@ jobs:
       # `checkout.cy.ts` 0/1 and `dashboard.cy.ts` 8/11 on a branch whose
       # `just test-e2e` was green. The recipe is the single source now, the
       # same arrangement `just lint-web`, `just check-schema` and
-      # `just helm-check` already use. (`dashboard.cy.ts` itself is gone since
-      # VP-6a: it signed in with a password and a TOTP code, and there is no
-      # such sign-in until VP-6b.)
+      # `just helm-check` already use. (`dashboard.cy.ts` was deleted with the
+      # sign-in on VP-6a; `dashboard-human-login.cy.ts` is its VPA-5c
+      # successor, over the restored `human_login` sign-in.)
       #
       # No `VPAY_DEMO_*` is set anywhere in this job, so the recipe's own
       # defaults stand — 8080, 3000, 3001, 3080 and 8082, which are exactly
@@ -1112,6 +1140,19 @@ jobs:
           VPAY_SERVER_KEY_CURRENT_PATH: ${{ github.workspace }}/.e2e/envelope/current.pub
           VPAY_SERVER_KEY_NEXT_PATH: ${{ github.workspace }}/.e2e/envelope/next.pub
         run: pnpm --filter @vaam-apps/vpay-sdk test:live
+      # Cypress writes a screenshot of the failing step into
+      # `cypress/screenshots/` (video is off, `cypress.config.ts`). Without this
+      # upload a red `dashboard-human-login.cy.ts` shows only an assertion
+      # message in the job log, and which screen the browser was on is the one
+      # thing that message cannot say. Failure only: a green run has none, and
+      # `.gitignore` already keeps them out of the tree. Same pinned action as
+      # the log upload below.
+      - if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cypress-screenshots
+          path: frontends/tests/e2e/cypress/screenshots
+          if-no-files-found: ignore
       - if: always()
         run: docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml logs --no-color > compose.log
       - if: always()
