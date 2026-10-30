@@ -17,12 +17,12 @@ It does this **only where vpay serves `human_login`**
 `/login` reads `GET /.well-known/vpay-auth` on the server, on every render, and
 decides which page it is:
 
-| vpay says                             | `/login` renders                                                       |
-| ------------------------------------- | ---------------------------------------------------------------------- |
-| it could not be asked                 | "Sign-in is not reachable", with the request id. Never the next row.   |
-| `human_login` is not served           | "This console signs in with a paired key" (VP-6b), and no field        |
-| served, the client values are missing | the variable names to set, and no form                                 |
-| served, configured                    | the first question                                                     |
+| vpay says                             | `/login` renders                                                     |
+| ------------------------------------- | -------------------------------------------------------------------- |
+| it could not be asked                 | "Sign-in is not reachable", with the request id. Never the next row. |
+| `human_login` is not served           | "This console signs in with a paired key" (VP-6b), and no field      |
+| served, the client values are missing | the variable names to set, and no form                               |
+| served, configured                    | the first question                                                   |
 
 Since VP-6a ([ADR-0036](../../../docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md))
 a deployment that does not serve `human_login` is signed with a paired P-256
@@ -30,14 +30,14 @@ key and nothing else; this app cannot do that until VP-6b.
 
 ### The pages
 
-| Route             | What it asks or shows                                                             |
-| ----------------- | --------------------------------------------------------------------------------- |
-| `/login`          | the work email, then the password                                                 |
+| Route             | What it asks or shows                                                                           |
+| ----------------- | ----------------------------------------------------------------------------------------------- |
+| `/login`          | the work email, then the password                                                               |
 | `/login/totp`     | the six-digit code; a first sign-in also shows the QR code (the typed key is in a bottom sheet) |
-| `/login/password` | while the one-time password is in force: the current, the new, the new again      |
-| `/`               | the account page: who, which merchant, Sign out                                   |
-| `/signed-out`     | a route handler: forgets a dead session cookie, then `/login`                     |
-| `/healthz`        | "Next is answering"; probes nothing                                               |
+| `/login/password` | while the one-time password is in force: the current, the new, the new again                    |
+| `/`               | the account page: who, which merchant, Sign out                                                 |
+| `/signed-out`     | a route handler: forgets a dead session cookie, then `/login`                                   |
+| `/healthz`        | "Next is answering"; probes nothing                                                             |
 
 **One screen collects one piece of information.** The email and the password are
 two screens (`src/components/one-question-steps.tsx`), the password change is
@@ -76,13 +76,13 @@ to decide, not this app's.
 
 Read once at start, through bracket notation (`src/config/runtime.ts`).
 
-| Variable                       | Needed for                                                  |
-| ------------------------------ | ----------------------------------------------------------- |
-| `VPAY_DASH_API`                | everything: vpay's base URL as this server reaches it       |
-| `VPAY_DASHBOARD_CLIENT_ID`     | signing in: `dashboard_client.client_id`                    |
+| Variable                       | Needed for                                                                        |
+| ------------------------------ | --------------------------------------------------------------------------------- |
+| `VPAY_DASH_API`                | everything: vpay's base URL as this server reaches it                             |
+| `VPAY_DASHBOARD_CLIENT_ID`     | signing in: `dashboard_client.client_id`                                          |
 | `VPAY_DASHBOARD_REDIRECT_URI`  | signing in: one of `dashboard_client.redirect_uris`, byte for byte, never visited |
-| `VPAY_DASHBOARD_SCOPE`         | signing in: `dashboard_client.scope`                        |
-| `VPAY_DASHBOARD_PUBLIC_ORIGIN` | optional: the origin a browser reaches this app on (the origin check) |
+| `VPAY_DASHBOARD_SCOPE`         | signing in: `dashboard_client.scope`                                              |
+| `VPAY_DASHBOARD_PUBLIC_ORIGIN` | optional: the origin a browser reaches this app on (the origin check)             |
 
 The three `VPAY_DASHBOARD_` client values matter only where vpay serves
 `human_login`. When it does and one is missing, `/login` names them and renders
@@ -101,14 +101,14 @@ The presentational components and the pure logic under them survive, with
 their tests, because they depend on nothing that was deleted and VP-6b will
 render them again:
 
-| Area                  | Where                                                                                                                                |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| Payments table/detail | `src/components/payments-table.tsx`, `payment-detail.tsx`, `payments-filters.tsx`, `payments-pager.tsx`                              |
-| Procedure lists       | `src/components/procedure-list-view.tsx`, `procedure-table.tsx`, `procedure-pager.tsx`, over `src/dash/procedure-resources.ts`       |
-| Query and paging      | `src/payments-query.ts` (cursors, filters, the URLs), `src/dash/procedure-paging.ts`                                                 |
-| Words and colour      | `src/format.ts` (the masked payer is a dash, never derived), `src/payment-status.ts`, `src/status-systems.ts`, from `@vpay/tokens`   |
+| Area                  | Where                                                                                                                                                |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Payments table/detail | `src/components/payments-table.tsx`, `payment-detail.tsx`, `payments-filters.tsx`, `payments-pager.tsx`                                              |
+| Procedure lists       | `src/components/procedure-list-view.tsx`, `procedure-table.tsx`, `procedure-pager.tsx`, over `src/dash/procedure-resources.ts`                       |
+| Query and paging      | `src/payments-query.ts` (cursors, filters, the URLs), `src/dash/procedure-paging.ts`                                                                 |
+| Words and colour      | `src/format.ts` (the masked payer is a dash, never derived), `src/payment-status.ts`, `src/status-systems.ts`, from `@vpay/tokens`                   |
 | Failure shape         | `src/server/api.ts` (`ApiFailure`, the request id, the object types and the sign-in calls), `src/components/read-failure.tsx`, `src/dash/failure.ts` |
-| Storybook             | `src/components/dashboard-screens.stories.tsx`, run through axe in a real Chromium by `pnpm --filter @vpay/dashboard test-storybook` |
+| Storybook             | `src/components/dashboard-screens.stories.tsx`, run through axe in a real Chromium by `pnpm --filter @vpay/dashboard test-storybook`                 |
 
 ## The rules this app is held to
 

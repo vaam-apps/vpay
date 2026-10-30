@@ -188,10 +188,15 @@ named in [status/backend.md](../../status/backend.md).
 
 ## Not built
 
-The dashboard application's login pages (and its two SSO routes) and its two-transport data layer
-(VPA-5, with VP-6b), a command to remove a member, disable one or reset a
-password (none exists; see the section above for the SQL), and any proof against
-a deployment that is running.
+The dashboard application's two SSO routes and its single-sign-on button
+(VPA-5b), the pages that read `/dash/v1` and the signed reader they need
+(VP-6b), a command to remove a member, disable one or reset a password (none
+exists; see the section above for the SQL), and any proof against a deployment
+that is running (the end-to-end cases are VPA-5c). The dashboard application's
+password sign-in, authenticator step, forced password change, account page and
+sign-out are built (VPA-5a): [`frontends/apps/dashboard/README.md`](../../../frontends/apps/dashboard/README.md)
+says how, and [status/frontend.md](../../status/frontend.md) says what was
+measured.
 
 ## Tests
 
