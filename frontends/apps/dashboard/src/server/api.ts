@@ -1,25 +1,40 @@
 /**
- * The shapes `/dash/v1` answers in, and the one shape a refusal becomes.
+ * The shapes vpay answers in, the one shape a refusal becomes, and the calls
+ * the sign-in makes.
  *
- * # What this file is since VP-6a (ADR-0036)
+ * # What this file is (VPA-5a)
  *
- * It used to be every call the app made to vpay, and most of it was the
- * sign-in: the password and TOTP routes, the authorization-code leg, the token
- * mint and the SSO exchange. All of those routes are deleted. What is left is
- * what a console that reads `/dash/v1` will still need whatever carries the
- * request: the object types, and {@link ApiFailure} with its builders. No call
- * is made from here, because the console now signs every request with a paired
- * key and **this app cannot do that yet** (VP-6b).
+ * It was every call the app made to vpay until VP-6a (ADR-0036) deleted the
+ * sign-in routes and left the object types and {@link ApiFailure}. VPA-5a
+ * restores the calls — the five staff routes, the authorization request and
+ * the token exchange — and nothing else: the `/dash/v1` reads that return
+ * payments are a later ticket, and the types for them stay as they were.
+ *
+ * Every call goes through `dash-fetch.ts`, which attaches exactly one
+ * credential (a session token for the staff routes) and forwards nothing the
+ * browser sent.
+ *
+ * **Server-side only.** `frontends/apps/dashboard` is the OAuth client
+ * (ADR-0017 decision 4): it holds the session cookie on its own origin and the
+ * `/dash/v1` access token passes through this process. Nothing in this file is
+ * reachable from a browser bundle, and nothing it returns carries a token to
+ * one. (No `server-only` import: the package throws under any condition but
+ * `react-server`, which would make this module's own suite unrunnable. What
+ * keeps it server-side is that every importer is a server component or a
+ * server action.)
  *
  * # Why the request id is threaded through everything
  *
  * vpay emits `request-id` (Stripe's spelling) and `x-request-id` with one
  * value on every response, and `vpay-api`'s error envelope deliberately
- * carries no `request_id` field because the header already does. It is the
- * only thing that distinguishes one refusal from another for a person who has
- * to quote something to an operator, so it is carried on the failure and
- * rendered beside the message.
+ * carries no `request_id` field because the header already does. A staff
+ * member who cannot sign in has nothing else to quote to an operator, and
+ * every refusal on the sign-in path is the same sentence by design
+ * (`docs/flows/dashboard-auth/human-login.md`, "Every refusal is one answer")
+ * — so the id is the only thing that distinguishes one failure from another.
+ * It is carried on the failure and rendered beside the message.
  */
+import { dashFetch, sessionCredential, type Credential } from "./dash-fetch";
 
 /** The two spellings vpay emits, in the order this app prefers them. */
 const REQUEST_ID_HEADERS = ["request-id", "x-request-id"] as const;
@@ -38,6 +53,80 @@ export interface ApiFailure {
 export type ApiResult<T> =
   | { readonly ok: true; readonly value: T }
   | { readonly ok: false; readonly failure: ApiFailure };
+
+/** `POST /dash/v1/staff/login`'s answer (`vpay_api::staff::LoginResponse`). */
+export interface LoginResponse {
+  readonly session: string;
+  readonly next: "totp" | "totp_enrolment";
+  readonly otpauth_uri?: string;
+  readonly enrolment?: string;
+}
+
+/** `POST /dash/v1/staff/totp`'s answer. */
+export interface TotpResponse {
+  readonly password_change_required: boolean;
+}
+
+/** `GET /dash/v1/staff/session`'s answer (`vpay_api::staff::SessionResponse`). */
+export interface SessionResponse {
+  readonly staff_id: string;
+  readonly display_name: string;
+  readonly email: string;
+  readonly merchant_id: string;
+  readonly password_change_required: boolean;
+  /** Absent until the code exchange has minted one. */
+  readonly access_token?: string;
+  /**
+   * When {@link SessionResponse.access_token} stops being accepted, RFC 3339.
+   * Absent exactly when the token is.
+   *
+   * Read from `staff_sessions.access_token_expires_at` (migration 0040) and
+   * **not** from the JWT's own `exp`: this app holds the token and presents
+   * it, it does not verify it, and reading a claim out of an unverified
+   * credential is a habit worth not having here.
+   */
+  readonly access_token_expires_at?: string;
+  /**
+   * How long a freshly minted token lives, in seconds
+   * (`staff_auth.access_token_ttl_seconds`).
+   *
+   * The denominator of the re-mint margin — see `gate.ts`'s
+   * `REMINT_AFTER_FRACTION`, which is a fraction precisely because this is
+   * configuration.
+   */
+  readonly access_token_ttl_seconds: number;
+}
+
+/**
+ * `GET /dash/v1/staff/session/stage`'s answer
+ * (`vpay_api::staff::SessionStageResponse`).
+ *
+ * The one read that answers for a session **mid-sign-in**. `/staff/session`
+ * refuses one that has not presented a code — the same `401` it answers for a
+ * session that is over — so this is what lets `/login/totp` tell "you mistyped
+ * your code" from "your session is gone".
+ *
+ * One field, deliberately: a caller at this stage has proved a password and
+ * no second factor, so vpay publishes nothing about the person here.
+ */
+export interface SessionStageResponse {
+  readonly stage: "pending_totp" | "authenticated";
+}
+
+/**
+ * `POST /dash/v1/oauth/token`'s answer.
+ *
+ * There is no `refresh_token` here and none is ever asked for: the grant
+ * serves `authorization_code` alone (ADR-0037), and a token near the end of
+ * its life is replaced by running the authorization request again from the
+ * session (`gate.ts`).
+ */
+export interface TokenResponse {
+  readonly access_token: string;
+  readonly token_type: string;
+  readonly expires_in: number;
+  readonly scope: string;
+}
 
 /** One `payment_intent`, as `/dash/v1` renders it (no `client_secret`). */
 export interface PaymentIntentObject {
@@ -159,4 +248,132 @@ export function unreachable(error: unknown): ApiFailure {
     message: `vpay could not be reached (${detail}).`,
     requestId: null,
   };
+}
+
+/** `error.message` and the id out of a refused response. */
+async function failureOf(response: Response): Promise<ApiFailure> {
+  let body: unknown = null;
+  try {
+    body = await response.json();
+  } catch {
+    // Left as the status sentence `envelopeMessage` falls back to.
+  }
+  return {
+    status: response.status,
+    message: envelopeMessage(response.status, body),
+    requestId: requestIdOf(response),
+  };
+}
+
+/** The JSON body of an answered call, or the failure it became. */
+async function settle<T>(response: Response): Promise<ApiResult<T>> {
+  if (!response.ok) {
+    return { ok: false, failure: await failureOf(response) };
+  }
+  try {
+    return { ok: true, value: (await response.json()) as T };
+  } catch (error) {
+    return { ok: false, failure: unreachable(error) };
+  }
+}
+
+/** What a call may carry beyond its path and body: the one credential. */
+export interface CallOptions {
+  readonly credential?: Credential;
+}
+
+/**
+ * `POST` a form-encoded body.
+ *
+ * Form-encoded and not JSON because that is what the handlers take: every
+ * staff route and the token endpoint extract `axum::Form`, and a JSON body
+ * to one of them is a `415` that says nothing about the credential.
+ */
+export async function postForm<T>(
+  apiBaseUrl: string,
+  path: string,
+  body: Readonly<Record<string, string>>,
+  options: CallOptions = {},
+): Promise<ApiResult<T>> {
+  let response: Response;
+  try {
+    response = await dashFetch(`${apiBaseUrl}${path}`, {
+      method: "POST",
+      form: body,
+      ...(options.credential === undefined
+        ? {}
+        : { credential: options.credential }),
+    });
+  } catch (error) {
+    return { ok: false, failure: unreachable(error) };
+  }
+  return settle<T>(response);
+}
+
+/** `GET` a JSON document. */
+export async function getJson<T>(
+  apiBaseUrl: string,
+  path: string,
+  options: CallOptions = {},
+): Promise<ApiResult<T>> {
+  let response: Response;
+  try {
+    response = await dashFetch(`${apiBaseUrl}${path}`, {
+      method: "GET",
+      ...(options.credential === undefined
+        ? {}
+        : { credential: options.credential }),
+    });
+  } catch (error) {
+    return { ok: false, failure: unreachable(error) };
+  }
+  return settle<T>(response);
+}
+
+/**
+ * `GET /dash/v1/oauth/authorize`, **without following the redirect**.
+ *
+ * `redirect: 'manual'` is the whole of ADR-0017 decision 4 in one option:
+ * the `302`'s `Location` is read here, in this process, and the code in it
+ * never reaches a browser. `fetch`'s default would follow it to a URL nothing
+ * serves.
+ *
+ * Returns the `Location` on a `302`. Anything else — including a `200`, which
+ * would mean the endpoint answered something other than an authorization
+ * response — is a failure.
+ */
+export async function authorizeRedirect(
+  apiBaseUrl: string,
+  query: Readonly<Record<string, string>>,
+  sessionToken: string,
+): Promise<ApiResult<string>> {
+  const search = new URLSearchParams(query).toString();
+  let response: Response;
+  try {
+    response = await dashFetch(
+      `${apiBaseUrl}/dash/v1/oauth/authorize?${search}`,
+      {
+        method: "GET",
+        credential: sessionCredential(sessionToken),
+        redirect: "manual",
+      },
+    );
+  } catch (error) {
+    return { ok: false, failure: unreachable(error) };
+  }
+  const location = response.headers.get("location");
+  if (response.status !== 302 || location === null) {
+    if (!response.ok) {
+      return { ok: false, failure: await failureOf(response) };
+    }
+    return {
+      ok: false,
+      failure: {
+        status: response.status,
+        message: "The authorization endpoint did not answer with a redirect.",
+        requestId: requestIdOf(response),
+      },
+    };
+  }
+  return { ok: true, value: location };
 }
