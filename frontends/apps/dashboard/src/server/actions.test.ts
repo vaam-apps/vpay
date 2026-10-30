@@ -165,7 +165,7 @@ describe("every action opens with the origin check", () => {
     "%s refuses a cross-origin POST before reading anything or calling vpay",
     async (_name, call) => {
       world.origin = "https://evil.example";
-      world.jar.set("vpay_dash_session", "sess-1");
+      world.jar.set("__Host-vpay_dash_session", "sess-1");
       const sent = vpay({});
       const result = await run(call);
       expect(result).toMatchObject({
@@ -181,14 +181,14 @@ describe("every action opens with the origin check", () => {
     // A forged sign-out must be indistinguishable from a completed one to the
     // forger, and must neither revoke the row nor clear the cookie.
     world.origin = "https://evil.example";
-    world.jar.set("vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
     const sent = vpay({});
     expect(await run(() => signOut(NO_ERROR, new FormData()))).toBe(
       "redirect:/login",
     );
     expect(sent).toEqual([]);
     expect(world.sets).toEqual([]);
-    expect(world.jar.get("vpay_dash_session")).toBe("sess-1");
+    expect(world.jar.get("__Host-vpay_dash_session")).toBe("sess-1");
   });
 });
 
@@ -204,7 +204,9 @@ describe("signIn", () => {
       signIn(NO_ERROR, formOf({ email: "ada@acme.test", password: "pw" })),
     );
     expect(result).toBe("redirect:/login/totp");
-    const set = world.sets.find((entry) => entry.name === "vpay_dash_session");
+    const set = world.sets.find(
+      (entry) => entry.name === "__Host-vpay_dash_session",
+    );
     expect(set?.value).toBe("sess-new");
     expect(set?.options).toMatchObject({
       httpOnly: true,
@@ -213,6 +215,8 @@ describe("signIn", () => {
       path: "/",
       maxAge: 12 * 60 * 60,
     });
+    // A `__Host-` cookie is refused by the browser if it carries a `Domain`.
+    expect(set?.options).not.toHaveProperty("domain");
   });
 
   it("sends the password exactly as typed — a leading or trailing space is part of it", async () => {
@@ -250,14 +254,14 @@ describe("signIn", () => {
       signIn(NO_ERROR, formOf({ email: "a@b.c", password: "pw" })),
     );
     const set = world.sets.find(
-      (entry) => entry.name === "vpay_dash_enrolment",
+      (entry) => entry.name === "__Host-vpay_dash_enrolment",
     );
     expect(set?.value).toContain("sealed-blob");
     expect(set?.options).toMatchObject({ httpOnly: true, maxAge: 600 });
   });
 
   it("leaves no stale enrolment blob behind for an account that is already enrolled", async () => {
-    world.jar.set("vpay_dash_enrolment", "stale");
+    world.jar.set("__Host-vpay_dash_enrolment", "stale");
     vpay({
       "/dash/v1/staff/login": {
         status: 200,
@@ -267,7 +271,7 @@ describe("signIn", () => {
     await run(() =>
       signIn(NO_ERROR, formOf({ email: "a@b.c", password: "pw" })),
     );
-    expect(world.jar.has("vpay_dash_enrolment")).toBe(false);
+    expect(world.jar.has("__Host-vpay_dash_enrolment")).toBe(false);
   });
 
   it("answers vpay's one sentence and its request id, and sets no cookie, on a refusal", async () => {
@@ -301,12 +305,12 @@ describe("signIn", () => {
 
 describe("submitTotp", () => {
   beforeEach(() => {
-    world.jar.set("vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
   });
 
   it("presents the session in X-Vpay-Staff-Session and the sealed secret from the cookie", async () => {
     world.jar.set(
-      "vpay_dash_enrolment",
+      "__Host-vpay_dash_enrolment",
       encodePendingEnrolment({
         sealed: "sealed-blob",
         otpauth: "otpauth://totp/x:y?secret=ABC",
@@ -325,7 +329,7 @@ describe("submitTotp", () => {
     expect(Object.keys(sent[0]?.headers ?? {})).not.toContain("authorization");
     expect(sent[0]?.body?.get("code")).toBe("123456");
     expect(sent[0]?.body?.get("enrolment")).toBe("sealed-blob");
-    expect(world.jar.has("vpay_dash_enrolment")).toBe(false);
+    expect(world.jar.has("__Host-vpay_dash_enrolment")).toBe(false);
   });
 
   it("goes to the password page when the printed password is still in force", async () => {
@@ -353,7 +357,7 @@ describe("submitTotp", () => {
 
   it("a wrong code is a sentence, not a sign-out — the session and enrolment cookies stay (F6)", async () => {
     world.jar.set(
-      "vpay_dash_enrolment",
+      "__Host-vpay_dash_enrolment",
       encodePendingEnrolment({
         sealed: "sealed-blob",
         otpauth: "otpauth://totp/x:y?secret=ABC",
@@ -370,12 +374,12 @@ describe("submitTotp", () => {
     );
     expect(result).toMatchObject({ error: "We could not sign you in." });
     expect(world.sets).toEqual([]);
-    expect(world.jar.has("vpay_dash_session")).toBe(true);
-    expect(world.jar.has("vpay_dash_enrolment")).toBe(true);
+    expect(world.jar.has("__Host-vpay_dash_session")).toBe(true);
+    expect(world.jar.has("__Host-vpay_dash_enrolment")).toBe(true);
   });
 
   it("goes back to /login with no session cookie, without calling vpay", async () => {
-    world.jar.delete("vpay_dash_session");
+    world.jar.delete("__Host-vpay_dash_session");
     const sent = vpay({});
     expect(
       await run(() => submitTotp(NO_ERROR, formOf({ code: "123456" }))),
@@ -386,7 +390,7 @@ describe("submitTotp", () => {
 
 describe("changePassword", () => {
   beforeEach(() => {
-    world.jar.set("vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
   });
 
   it("sends the current and the new password and never the repeat", async () => {
@@ -448,7 +452,7 @@ describe("changePassword", () => {
       ),
     );
     expect(result).toMatchObject({ error: "We could not sign you in." });
-    expect(world.jar.has("vpay_dash_session")).toBe(true);
+    expect(world.jar.has("__Host-vpay_dash_session")).toBe(true);
     expect(world.sets).toEqual([]);
   });
 });
@@ -458,7 +462,7 @@ describe("signOut", () => {
     // The row carries the access token, so deleting it is the revocation.
     // Clearing the cookie first and then failing to reach vpay would leave a
     // live token with nothing pointing at it.
-    world.jar.set("vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
     const sent = vpay({
       "/dash/v1/staff/logout": { status: 200, body: { signed_out: true } },
     });
@@ -468,7 +472,7 @@ describe("signOut", () => {
     expect(sent[0]?.headers["x-vpay-staff-session"]).toBe("sess-1");
     expect(world.events).toEqual([
       "vpay:/dash/v1/staff/logout",
-      "cookie:vpay_dash_session=(cleared)",
+      "cookie:__Host-vpay_dash_session=(cleared)",
     ]);
   });
 
@@ -476,19 +480,19 @@ describe("signOut", () => {
     // THE DECISIVE MUTATION: clear the cookie whatever vpay answered, which is
     // what this action did until the VPA-5a review while its own comment said
     // the opposite.
-    world.jar.set("vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
     vpay({ "/dash/v1/staff/logout": { status: 503 } });
     const result = await run(() => signOut(NO_ERROR, new FormData()));
     expect(result).toMatchObject({ requestId: "req_act" });
     expect((result as FormState).error).toMatch(
       /could not sign out.*try again/i,
     );
-    expect(world.jar.get("vpay_dash_session")).toBe("sess-1");
+    expect(world.jar.get("__Host-vpay_dash_session")).toBe("sess-1");
     expect(world.sets).toEqual([]);
   });
 
   it("keeps the cookie when vpay cannot be reached at all", async () => {
-    world.jar.set("vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.reject(new Error("connection reset"))),
@@ -496,7 +500,7 @@ describe("signOut", () => {
     const result = await run(() => signOut(NO_ERROR, new FormData()));
     expect(result).toMatchObject({ requestId: null });
     expect((result as FormState).error).toMatch(/could not sign out/i);
-    expect(world.jar.has("vpay_dash_session")).toBe(true);
+    expect(world.jar.has("__Host-vpay_dash_session")).toBe(true);
   });
 
   it("is a sign-out without a call when there is no cookie to revoke", async () => {

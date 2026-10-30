@@ -56,6 +56,14 @@ describe("the signed-out response", () => {
     expect(cookie).toMatch(/Max-Age=0/i);
   });
 
+  it("deletes it under its __Host- name, with no Domain", () => {
+    // A deletion under the old, unprefixed name would leave the real cookie in
+    // place; one with a `Domain` is refused by the browser outright.
+    const cookie = setCookie(signedOutResponse());
+    expect(cookie.startsWith("__Host-vpay_dash_session=")).toBe(true);
+    expect(cookie).not.toMatch(/Domain=/i);
+  });
+
   it("deletes it with the attributes it was written with", () => {
     // A deletion whose Path or Secure differs from the original leaves the
     // original in place: the browser treats them as different cookies.

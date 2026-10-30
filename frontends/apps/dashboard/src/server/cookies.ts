@@ -29,8 +29,37 @@
  * `path: '/'` — every page in this app is behind the session.
  */
 
+/**
+ * # The `__Host-` prefix
+ *
+ * Both names carry it (VPA-5a review). A browser stores a `__Host-` cookie
+ * only if it is `Secure`, was set over a secure connection, has `Path=/` and
+ * has **no `Domain`** — which is exactly what {@link COOKIE_ATTRIBUTES} already
+ * said, so the prefix costs nothing and gains the one thing the attributes
+ * cannot: it stops a sibling subdomain, or a plain-`http` response on the
+ * same host, from planting or overwriting the session cookie.
+ *
+ * Where that bites:
+ *
+ * * `http://localhost` (`next dev`, the compose stacks, Cypress): Chrome and
+ *   Firefox treat it as a secure context, so a `Secure` and a `__Host-`
+ *   cookie are both stored. Safari has historically refused a `Secure` cookie
+ *   over plain `http`, localhost included; this was not tried there, and the
+ *   cookie was already `Secure` before the prefix.
+ * * Plain `http` on any other host: **no browser stores the cookie**. The
+ *   sign-in action succeeds and redirects, the next request carries nothing,
+ *   and `/` sends the browser back to `/login`. The prefix does not change
+ *   that — `secure: true` was already unconditional — but it makes the
+ *   failure certain rather than browser-dependent. Put the dashboard behind
+ *   TLS (`docs/flows/dashboard-auth/human-login.md`, "The cookie needs a
+ *   secure origin").
+ * * A rename signs out every browser holding the old name: the old cookie is
+ *   never read again and expires on its own. Nothing is lost server-side; the
+ *   row is revoked by its own expiry.
+ */
+
 /** The staff session token vpay minted. */
-export const SESSION_COOKIE = "vpay_dash_session";
+export const SESSION_COOKIE = "__Host-vpay_dash_session";
 
 /**
  * The **sealed** TOTP secret, between the password leg and the first code.
@@ -48,7 +77,7 @@ export const SESSION_COOKIE = "vpay_dash_session";
  * that is enrolment, not a leak — but the sealed blob is this app's own
  * business.
  */
-export const ENROLMENT_COOKIE = "vpay_dash_enrolment";
+export const ENROLMENT_COOKIE = "__Host-vpay_dash_enrolment";
 
 /**
  * The attributes every cookie this app sets carries.
@@ -85,17 +114,3 @@ export const SESSION_MAX_AGE_SECONDS = 12 * 60 * 60;
  * enrolled account and refuses it for one enrolled meanwhile.
  */
 export const ENROLMENT_MAX_AGE_SECONDS = 10 * 60;
-
-/**
- * How long the session cookie may hold a **pending-flow** token — the one vpay
- * hands out at `POST /staff/sso/start` and again when the identity provider's
- * answer lacked a second factor.
- *
- * Ten minutes, for the enrolment cookie's reason: it bridges one round trip
- * to the identity provider (a person typing a password and a code there) and
- * a token that outlived the attempt would only be a credential sitting in a
- * browser for no purpose. It is a short-lived cookie in the **same** slot as
- * the session — the pending token is replaced, never kept, when the callback
- * answers (see `sso.ts`).
- */
-export const SSO_PENDING_MAX_AGE_SECONDS = 10 * 60;

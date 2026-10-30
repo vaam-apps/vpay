@@ -55,8 +55,9 @@ never `shadow-*`.
 
 The app is the OAuth client and runs the code leg in its own process
 (ADR-0017 decision 4). The staff session token lives in an httpOnly, Secure,
-`SameSite=Lax` cookie on this app's origin (`vpay_dash_session`, no `Domain`,
-12 hours). The `/dash/v1` access token is minted by running
+`SameSite=Lax` cookie on this app's origin (`__Host-vpay_dash_session`, no
+`Domain`, 12 hours; see [the cookie needs a secure
+origin](../../../docs/flows/dashboard-auth/human-login.md#the-cookie-needs-a-secure-origin)). The `/dash/v1` access token is minted by running
 `GET /oauth/authorize` and `POST /oauth/token` from the session, with PKCE
 S256, an exact `redirect_uri` and a checked `state`, and is read back off the
 session row on every render. **There is no refresh grant** (the grant serves

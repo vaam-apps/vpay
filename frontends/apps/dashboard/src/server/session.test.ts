@@ -16,7 +16,7 @@ vi.mock("next/headers", () => ({
   cookies: () =>
     Promise.resolve({
       get: (name: string) =>
-        name === "vpay_dash_session" && jar.session !== undefined
+        name === "__Host-vpay_dash_session" && jar.session !== undefined
           ? { name, value: jar.session }
           : undefined,
     }),

@@ -56,3 +56,24 @@ describe("the session cookie", () => {
     expect(ENROLMENT_MAX_AGE_SECONDS).toBeLessThan(SESSION_MAX_AGE_SECONDS);
   });
 });
+
+describe("the cookies are __Host- cookies", () => {
+  // `__Host-` makes the BROWSER refuse the cookie unless it is Secure, set
+  // from a secure origin, has `Path=/` and has no `Domain` — so a sibling
+  // subdomain, or a downgraded connection, cannot plant or overwrite the
+  // session cookie. The names are the whole mechanism; the attributes below
+  // are what the prefix demands and are asserted so a change to one cannot
+  // quietly turn the prefix into a cookie the browser drops.
+  it("names both cookies with the prefix", () => {
+    expect(SESSION_COOKIE).toBe("__Host-vpay_dash_session");
+    expect(ENROLMENT_COOKIE).toBe("__Host-vpay_dash_enrolment");
+    expect(SESSION_COOKIE.startsWith("__Host-")).toBe(true);
+    expect(ENROLMENT_COOKIE.startsWith("__Host-")).toBe(true);
+  });
+
+  it("carries what the prefix requires: Secure, Path=/, and no Domain", () => {
+    expect(COOKIE_ATTRIBUTES.secure).toBe(true);
+    expect(COOKIE_ATTRIBUTES.path).toBe("/");
+    expect(COOKIE_ATTRIBUTES).not.toHaveProperty("domain");
+  });
+});
