@@ -132,7 +132,7 @@ deployable_services:
       - name: "management_api"
         surface: "/dash/v1, including /dash/v1/staff/* and /dash/v1/oauth/*"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "A COSE_Sign1 signed request under a paired console key (ADR-0036) or, only when auth.methods serves human_login (ADR-0037), an unsigned request carrying a staff session bearer (Authorization: Bearer, audience dashboard_client.client_id); a request that is signed and also carries an Authorization header is a 400. The staff sign-in routes (/dash/v1/staff/*) and the authorization-code grant (/dash/v1/oauth/*) are mounted only then"
+        auth: "A COSE_Sign1 signed request under a paired console key (ADR-0036) or, only when auth.methods serves human_login (ADR-0037), an unsigned request carrying a staff session bearer (Authorization: Bearer, audience dashboard_client.client_id); a request that is signed and also carries an Authorization header is a 400. The staff sign-in routes (/dash/v1/staff/*) and the authorization-code grant (/dash/v1/oauth/*) are mounted only then. /dash/v1/staff/* itself authenticates by an unauthenticated password and TOTP sign-in, which returns the staff session token that every later request carries"
         purpose: "Staff and merchant management reads, and the staff sign-in"
       - name: "oidc_discovery"
         surface: "/v1/oauth/jwks.json and /v1/oauth/.well-known/openid-configuration"

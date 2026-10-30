@@ -1144,9 +1144,10 @@ pub fn router(deps: RouterDeps) -> Router {
     // machine token is minted, so a deployment that does not permit
     // `machine_tokens` mounts no `/token`, and `/v1/oauth/token` is the honest
     // 404 below. The discovery pair is mounted only where something reads it:
-    // a deployment that mints tokens, or the MCP endpoint's validator
-    // (`validates_tokens`). MCP implies `machine_tokens` at boot
-    // (`ConfigError::McpNeedsMachineTokens`).
+    // a deployment that mints tokens, the MCP endpoint's validator, or a
+    // management pod that serves `human_login`, whose staff session validator
+    // reads it (all three are `validates_tokens` or `mints_tokens`, below).
+    // MCP implies `machine_tokens` at boot (`ConfigError::McpNeedsMachineTokens`).
     let machine_tokens = state
         .resource_config
         .auth_methods()

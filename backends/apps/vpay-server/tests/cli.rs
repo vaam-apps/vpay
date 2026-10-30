@@ -2198,26 +2198,6 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
     });
 }
 
-// ------------------------------------------- `staff add` / `staff pair-key` (ADR-0036)
-
-/// `vpay-server staff add` creates a staff member and prints its id **on
-/// stdout, alone**.
-///
-/// The subprocess half of the console suites in `backends/tests/integration`,
-/// which exercise the repository path but not the ones only a process has: that
-/// the binary accepts the flags at all, that it needs no signing key and binds
-/// no listener, and that the id is pipeable (`staff pair-key --staff $(…)`).
-///
-/// On this fixture (`staff-config.yml`: a `dashboard:` and no `human_login`
-/// blocks) it writes **no credential**: the member reads `/dash/v1` once a
-/// console key is attached. So the only thing on stdout is an `stf_…` id, and the tracing subscriber — JSON on
-/// stderr, shipped to a log aggregator — must not be where it goes: a
-/// subcommand's logs are on stderr (`install_process_defaults`), the server's
-/// on stdout where a container log collector reads them.
-///
-/// Two decisive assertions. Move the `println!` to `tracing::info!` and stdout
-/// is empty; put the subcommand's logs back on stdout and the line count is
-/// more than one.
 /// `serve` on a **management-only** pod that serves `human_login`: the wiring
 /// only `serve` performs, which no integration harness reaches.
 ///
@@ -2347,6 +2327,26 @@ fn totp_key(n: usize) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![0_u8; n])
 }
 
+// ------------------------------------------- `staff add` / `staff pair-key` (ADR-0036)
+
+/// `vpay-server staff add` creates a staff member and prints its id **on
+/// stdout, alone**.
+///
+/// The subprocess half of the console suites in `backends/tests/integration`,
+/// which exercise the repository path but not the ones only a process has: that
+/// the binary accepts the flags at all, that it needs no signing key and binds
+/// no listener, and that the id is pipeable (`staff pair-key --staff $(…)`).
+///
+/// On this fixture (`staff-config.yml`: a `dashboard:` and no `human_login`
+/// blocks) it writes **no credential**: the member reads `/dash/v1` once a
+/// console key is attached. So the only thing on stdout is an `stf_…` id, and the tracing subscriber — JSON on
+/// stderr, shipped to a log aggregator — must not be where it goes: a
+/// subcommand's logs are on stderr (`install_process_defaults`), the server's
+/// on stdout where a container log collector reads them.
+///
+/// Two decisive assertions. Move the `println!` to `tracing::info!` and stdout
+/// is empty; put the subcommand's logs back on stdout and the line count is
+/// more than one.
 #[test]
 fn staff_add_creates_a_staff_member_and_prints_its_id_on_stdout() {
     with_live_postgres(|database_url| {

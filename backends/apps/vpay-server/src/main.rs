@@ -1120,7 +1120,8 @@ async fn staff_add(
                 .with_context(|| {
                     format!(
                         "creating staff member {email} and their password credential in one \
-                         transaction; neither was written"
+                         transaction: it did not commit, or its outcome is unknown. Check \
+                         `staff_members` for {email} before retrying"
                     )
                 })?;
         }

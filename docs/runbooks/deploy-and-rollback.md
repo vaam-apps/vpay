@@ -437,6 +437,12 @@ DELETE FROM staff_sessions
 COMMIT;
 ```
 
+Deleting the sessions does not end access at once: a dashboard access token
+already issued keeps reading `/dash/v1` until it expires, up to
+`staff_auth.access_token_ttl_seconds` (default 900 s), because the session scope
+re-reads the staff row but not the session row. The lost-password path below
+deletes the member, so it is not affected.
+
 **Lost password.** Read the member's attributes, delete the member, and add them
 again with the same ones. `staff add` refuses a second account for an address
 while the row exists, and deleting only the password credential would leave a

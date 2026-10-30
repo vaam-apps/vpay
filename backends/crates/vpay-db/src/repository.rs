@@ -584,9 +584,11 @@ pub trait TxRepositories: Send {
     ) -> Result<crate::CustomerErasure, DbError>;
 
     /// `staff_members` + `credentials`: creates a member and their first
-    /// credential, atomically — just-in-time SSO provisioning
-    /// (ADR-0030). See [`crate::staff`]'s `provision_federated_in_tx` for why
-    /// this one is a transaction.
+    /// credential, atomically. Callers: a first pairing through vaam
+    /// (ADR-0036), `vpay-server staff add` when `human_login` is served (a
+    /// one-time password credential, VPA-3), and just-in-time SSO provisioning
+    /// (ADR-0030), which the name comes from. See [`crate::staff`]'s
+    /// `provision_federated_in_tx` for why this one is a transaction.
     ///
     /// # Errors
     ///

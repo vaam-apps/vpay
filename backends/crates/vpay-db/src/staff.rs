@@ -234,13 +234,13 @@ impl fmt::Debug for NewStaff {
 /// caller is a claim `docs/status.md` would have to carry.
 ///
 /// Of the five, `create` has a caller (`vpay-server staff add` writes one
-/// `staff_members` row and no credential), and so do `find_by_email` and
-/// `find`: `vpay-server staff pair-key` resolves `--staff` through them
-/// (`backends/apps/vpay-server/src/main.rs`), and they were never removed.
-/// `record_sign_in` and `delete` are restored for VPA-3, the sign-in routes, and
-/// have no caller yet. They are exercised by this crate's own suites against a
-/// real database, which is the only thing that stops a method with no caller
-/// from rotting.
+/// `staff_members` row and no credential when `human_login` is not served), and
+/// so do `find_by_email` and `find`: `vpay-server staff pair-key` resolves
+/// `--staff` through them (`backends/apps/vpay-server/src/main.rs`), and they
+/// were never removed. `record_sign_in` is called by the staff sign-in route
+/// (`vpay_api::staff`). `delete` has no production caller yet; it is exercised
+/// by this crate's own suites against a real database, which is the only thing
+/// that stops a method with no caller from rotting.
 ///
 /// It was six until migration 0044. `enrol_totp`, `record_totp_step` and
 /// `set_password` are `crate::credentials`' `create`, `advance_counter` and
@@ -337,12 +337,13 @@ pub trait Staff {
 
     /// Deletes one staff member, and by cascade everything that names them.
     ///
-    /// **Restored for VPA-3; no caller yet.** Nothing in the workspace calls
-    /// it today: `vpay-server staff add` writes one `staff_members` row and no
-    /// credential, so it has nothing to compensate for. It stays because the
-    /// sign-in routes VPA-3 restores need an account-removal path, and
-    /// because `model StaffMember`'s `@@allow("delete", …)` arm is what admits
-    /// it.
+    /// **No production caller yet** (this crate's suites exercise it).
+    /// `vpay-server staff add` has nothing to compensate for with it: when
+    /// `human_login` is served it writes the member and their password
+    /// credential in one transaction (`provision_federated_in_tx`), both or
+    /// neither, and otherwise it writes one `staff_members` row and no
+    /// credential. It stays as the account-removal path, and because
+    /// `model StaffMember`'s `@@allow("delete", …)` arm is what admits it.
     ///
     /// # What the cascade removes
     ///
@@ -461,12 +462,18 @@ impl Staff for crate::repository::PgRepositories {
 }
 
 /// Creates a staff member **and** their first credential in the caller's
-/// transaction — the one write just-in-time SSO provisioning makes
-/// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)),
-/// and the one a first pairing through vaam makes (ADR-0036).
+/// transaction. Three callers write a member with a credential through it, and
+/// the name (`provision_federated_*`) is the first one's:
 ///
-/// **Restored for VPA-3; no caller yet.** The sign-in and pairing code that
-/// calls it was deleted with the routes (VP-6a) and returns with them.
+/// - a first pairing through vaam, which provisions the member and links its
+///   OIDC identity (`vpay_api::console_keys`, ADR-0036);
+/// - `vpay-server staff add` when `human_login` is served, which writes the
+///   member and a one-time **password** credential, both or neither (VPA-3);
+/// - just-in-time SSO provisioning
+///   ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)),
+///   the call the name was given for.
+///
+/// The credential's kind is the caller's; nothing here is federated-specific.
 ///
 /// # Why this is a transaction
 ///
