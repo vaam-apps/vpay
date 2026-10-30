@@ -811,6 +811,10 @@ fn resolve_destination(
 /// it — and would let a refused payee leave **no trace at all**, since the
 /// refusal happens before any row, any attempt and any rail instruction.
 /// Added by review, 2026-09-16; see that function's own doc.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "delegates to ask_rail with caller credential, provider, payee details and config"
+)]
 async fn verify_registered_holder(
     store: &(impl crate::v1::account_holders::LookupStore + ?Sized),
     scope: &MerchantScope,

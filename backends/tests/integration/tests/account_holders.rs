@@ -628,16 +628,18 @@ async fn audit_table_holds_hmac_target_representation_and_no_raw_pii() -> anyhow
         2,
         "must have initiated and completed audit events"
     );
-    let action_0: String = rows[0].get("action");
-    let outcome_0: String = rows[0].get("outcome");
-    let target_repr_0: String = rows[0].get("target_repr");
+    let row0 = rows.first().expect("initiated row exists");
+    let action_0: String = row0.get("action");
+    let outcome_0: String = row0.get("outcome");
+    let target_repr_0: String = row0.get("target_repr");
     assert_eq!(action_0, "account_holder:lookup");
     assert_eq!(outcome_0, "initiated");
     assert_eq!(target_repr_0, expected_hash);
 
-    let action_1: String = rows[1].get("action");
-    let outcome_1: String = rows[1].get("outcome");
-    let target_repr_1: String = rows[1].get("target_repr");
+    let row1 = rows.get(1).expect("terminal row exists");
+    let action_1: String = row1.get("action");
+    let outcome_1: String = row1.get("outcome");
+    let target_repr_1: String = row1.get("target_repr");
     assert_eq!(action_1, "account_holder:lookup");
     assert_eq!(outcome_1, "found");
     assert_eq!(target_repr_1, expected_hash);

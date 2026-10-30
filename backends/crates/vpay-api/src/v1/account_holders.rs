@@ -131,8 +131,10 @@ pub fn audit_target_hash(tenant_id: &str, msisdn: &str, salt: &str) -> String {
     use hmac::{Hmac, Mac as _};
     use sha2::Sha256;
 
-    let mut mac =
-        Hmac::<Sha256>::new_from_slice(salt.as_bytes()).expect("HMAC can take key of any size");
+    let mut mac = match Hmac::<Sha256>::new_from_slice(salt.as_bytes()) {
+        Ok(m) => m,
+        Err(_) => return String::new(),
+    };
     mac.update(tenant_id.as_bytes());
     mac.update(b":");
     mac.update(msisdn.as_bytes());
@@ -313,6 +315,10 @@ pub(crate) mod caller {
 /// [`ApiError::from`] — `502` for a rail that could not be reached, never an
 /// `Ok(None)`. Collapsing the two is what the three-way answer exists to
 /// prevent; see this module's flow doc.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "lookup pipeline parameters: store, scope, caller, salt, rate_limit, adapter, rail_code, msisdn, config, caller_trace"
+)]
 pub(crate) async fn ask_rail(
     store: &(impl LookupStore + ?Sized),
     scope: &MerchantScope,
@@ -659,7 +665,9 @@ impl vpay_db::AuditEvents for TestStore {
         &self,
         event: &vpay_db::NewAuditEvent,
     ) -> Result<vpay_db::AuditEventRow, vpay_db::DbError> {
-        self.audit_events.lock().unwrap().push(event.clone());
+        if let Ok(mut lock) = self.audit_events.lock() {
+            lock.push(event.clone());
+        }
         Ok(vpay_db::AuditEventRow {
             id: event.id.clone(),
             occurred_at: event.occurred_at,
@@ -679,7 +687,11 @@ impl vpay_db::AuditEvents for TestStore {
         tenant: &str,
         _limit: i64,
     ) -> Result<Vec<vpay_db::AuditEventRow>, vpay_db::DbError> {
-        let events = self.audit_events.lock().unwrap();
+        let events = self
+            .audit_events
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         Ok(events
             .iter()
             .filter(|e| e.tenant == tenant)
@@ -1447,9 +1459,14 @@ mod tests {
         }
 
         // Verify a rate_limited audit event was appended
-        let events = store.audit_events.lock().unwrap();
+        let events = store
+            .audit_events
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].outcome, "rate_limited");
+        let first = events.first().expect("rate_limited event was appended");
+        assert_eq!(first.outcome, "rate_limited");
     }
 
     #[tokio::test]
@@ -1477,16 +1494,22 @@ mod tests {
         .expect("successful lookup");
         assert_eq!(res.status(), StatusCode::OK);
 
-        let events = store.audit_events.lock().unwrap();
+        let events = store
+            .audit_events
+            .lock()
+            .map(|g| g.clone())
+            .unwrap_or_default();
         assert_eq!(events.len(), 2);
-        assert_eq!(events[0].outcome, "initiated");
-        assert_eq!(events[1].outcome, "found");
-        assert_eq!(events[0].operation_id, events[1].operation_id);
-        assert_eq!(events[0].actor_kind, "signer");
-        assert_eq!(events[0].actor_id, "thumbprint-123");
-        assert_eq!(events[0].tenant, "tenant-xyz");
-        assert_eq!(events[0].target_class, "account_holder");
-        assert!(!events[0].target_repr.contains(MSISDN));
-        assert!(!events[0].target_repr.contains(HOLDER_NAME));
+        let e0 = events.first().expect("initiated event exists");
+        let e1 = events.get(1).expect("terminal event exists");
+        assert_eq!(e0.outcome, "initiated");
+        assert_eq!(e1.outcome, "found");
+        assert_eq!(e0.operation_id, e1.operation_id);
+        assert_eq!(e0.actor_kind, "signer");
+        assert_eq!(e0.actor_id, "thumbprint-123");
+        assert_eq!(e0.tenant, "tenant-xyz");
+        assert_eq!(e0.target_class, "account_holder");
+        assert!(!e0.target_repr.contains(MSISDN));
+        assert!(!e0.target_repr.contains(HOLDER_NAME));
     }
 }
