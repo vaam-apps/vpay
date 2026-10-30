@@ -3,17 +3,16 @@
 //! whose `auth.methods` permits `machine_tokens`, `/v1` beside a signed request
 //! (ADR-0037).
 //!
-//! The console's `/dash/v1` and `/svc/v1` are signed only (VP-6a), so this
-//! module no longer guards either: `Surface`, the dashboard validator and the
-//! dashboard extractor are deleted with the staff sessions. What remains is
-//! [`JwtValidator`] and the [`ResourceClaims`] it returns, which
-//! [`crate::mcp`] builds its `McpAuthenticator` from and
-//! [`crate::envelope`]'s scope step checks a `/v1` token with. The token comes
-//! from vpay's own OP (`/v1/oauth/token`), and **which audience it carries
-//! decides which door it opens**: [`merchant_token_validator`] and
-//! [`mcp_token_validator`] are the two ways a binary builds a validator, so the
-//! audience a deployment ships with is a value these tests hold and not one
-//! `vpay-server` types a second time.
+//! A third door opens on a deployment whose `auth.methods` serves `human_login`
+//! (ADR-0037, VPA-3): `/dash/v1` beside a console key, with the access token the
+//! staff authorization-code grant mints ([`dashboard_token_validator`]). Its
+//! audience is the registered `dashboard_client.client_id` and it is the only
+//! token that carries the merchant claim ([`ResourceClaims::merchant`]).
+//! `/svc/v1` stays signed only. Every validator is pinned to **one** audience,
+//! built by the function that names it, so which audience decides which door
+//! is a value these tests hold and not one `vpay-server` types a second time:
+//! [`merchant_token_validator`], [`mcp_token_validator`] and
+//! [`dashboard_token_validator`].
 //!
 //! Validation is local: `crate::jwks_cache` (private) caches the JWKS and every
 //! check after the first verifies the signature from memory. The one input that
@@ -97,6 +96,24 @@ pub struct ResourceClaims {
     /// The token's `scope` claim, space-split per RFC 6749 §3.3. Empty if
     /// the token carried no `scope` claim at all.
     pub scope: Vec<String>,
+    /// The merchant this token is for, from the
+    /// [`vpay_config::DASHBOARD_MERCHANT_CLAIM`] claim, or `None`.
+    ///
+    /// **`Some` only on a `/dash/v1` staff token**, and that asymmetry is the
+    /// tightening ADR-0017 decision 3 makes: nothing but the staff
+    /// authorization-code grant stamps this claim, so a `client_credentials`
+    /// token structurally cannot carry one, which is what makes "no machine
+    /// client may read the dashboard" a property of the mint rather than of a
+    /// list somebody maintains.
+    ///
+    /// The `sub` of such a token is the **staff member** (`stf_…`), not a
+    /// client: `default_handle_authorization_code` mints with the staff id as
+    /// the identity and the client id as the *audience*.
+    ///
+    /// `/v1` does not read it. Its tenant comes from
+    /// `ResourceConfig::merchant_id_for`, keyed by the client id, and a claim
+    /// that could override that would be a tenant a caller chooses.
+    pub merchant: Option<String>,
 }
 
 impl ResourceClaims {
@@ -117,6 +134,8 @@ struct RawClaims {
     sub: String,
     #[serde(default)]
     scope: Option<String>,
+    #[serde(default, rename = "vpay_merchant_id")]
+    merchant: Option<String>,
 }
 
 impl From<RawClaims> for ResourceClaims {
@@ -127,9 +146,26 @@ impl From<RawClaims> for ResourceClaims {
                 .scope
                 .map(|scope| scope.split_whitespace().map(str::to_owned).collect())
                 .unwrap_or_default(),
+            merchant: raw.merchant,
         }
     }
 }
+
+/// The `RawClaims` rename and `vpay_config`'s constant are the same string.
+///
+/// A `const` assertion rather than a runtime test because `#[serde(rename)]`
+/// takes a literal and cannot take a constant: the two spellings are written
+/// twice by necessity, so something has to compare them, and a compile-time
+/// comparison fails before a token is ever minted under one and read under
+/// the other.
+const _: () = assert!(
+    matches!(
+        vpay_config::DASHBOARD_MERCHANT_CLAIM.as_bytes(),
+        b"vpay_merchant_id"
+    ),
+    "RawClaims renames the merchant claim to a literal; it must equal \
+     vpay_config::DASHBOARD_MERCHANT_CLAIM, which is what the mint stamps"
+);
 
 /// Every way a bearer token can fail to authenticate a request, collapsed
 /// into the Stripe-shaped envelope this crate renders in one place
@@ -390,6 +426,41 @@ pub fn mcp_token_validator(
         issuer,
         crate::mcp::merchant_resource(public_base_url),
     )
+}
+
+/// The `/dash/v1` staff-token validator (ADR-0017, ADR-0037): the JWKS at
+/// `jwks_url`, tokens issued by `issuer`, and the registered
+/// `dashboard_client.client_id` as the **only** audience.
+///
+/// The audience is a value and not a constant because it is what the
+/// authorization-code grant actually mints (`aud = <client_id>`;
+/// `default_handle_authorization_code` has no requested-audience path). A
+/// merchant token (`vpay:v1`) is refused here and a staff token is refused by
+/// [`merchant_token_validator`] and [`mcp_token_validator`].
+///
+/// # Errors
+///
+/// [`HttpClientError`] if the JWKS client cannot be built, as
+/// [`JwtValidator::new`].
+///
+/// ```
+/// use std::time::Duration;
+///
+/// let validator = vpay_api::resource_auth::dashboard_token_validator(
+///     "http://127.0.0.1:8080/v1/oauth/jwks.json",
+///     Duration::from_secs(300),
+///     "https://api.example.test/v1/oauth",
+///     "vpay-dashboard",
+/// );
+/// assert!(validator.is_ok());
+/// ```
+pub fn dashboard_token_validator(
+    jwks_url: impl Into<String>,
+    jwks_refresh_interval: Duration,
+    issuer: impl Into<String>,
+    dashboard_client_id: impl Into<String>,
+) -> Result<JwtValidator, HttpClientError> {
+    JwtValidator::new(jwks_url, jwks_refresh_interval, issuer, dashboard_client_id)
 }
 
 /// Validates bearer tokens for exactly one audience: one JWKS cache, one
@@ -870,6 +941,71 @@ mod tests {
             .await
             .expect_err("a token for another audience must not validate");
         assert!(matches!(error, AuthRejection::InvalidToken));
+    }
+
+    /// The staff door is told apart from the merchant and MCP doors by audience
+    /// alone, in every direction, and the tenant claim survives the trip: it is
+    /// the one thing a `client_credentials` token cannot carry, and `/dash/v1`'s
+    /// scope step refuses a token without it.
+    #[tokio::test]
+    async fn a_dashboard_token_opens_only_its_own_door_and_carries_its_tenant() {
+        const DASHBOARD_CLIENT_ID: &str = "vpay-dashboard";
+        let (encoding_key, jwk) = &*KEYPAIR;
+        let server = jwks_server(jwk).await;
+        let url = format!("{}/jwks.json", server.uri());
+        let dashboard = dashboard_token_validator(
+            url.clone(),
+            Duration::from_secs(300),
+            ISSUER,
+            DASHBOARD_CLIENT_ID,
+        )
+        .expect("the vendored-roots JWKS client builds");
+        let v1 = merchant_validator(url.clone());
+        let mcp = mcp_validator(url);
+
+        let mut staff = valid_claims(DASHBOARD_CLIENT_ID, "stf_1", "dashboard:read");
+        if let Some(object) = staff.as_object_mut() {
+            object.insert(
+                vpay_config::DASHBOARD_MERCHANT_CLAIM.to_owned(),
+                json!("acme-tenant"),
+            );
+        }
+        let staff_token = mint_token(encoding_key, "test-key-1", &staff);
+        let v1_token = mint_token(
+            encoding_key,
+            "test-key-1",
+            &valid_claims(vpay_config::MERCHANT_AUDIENCE, "acme", "payments:write"),
+        );
+
+        let claims = dashboard
+            .validate(&staff_token)
+            .await
+            .expect("the dashboard door takes its own token");
+        assert_eq!(claims.subject, "stf_1");
+        assert_eq!(claims.scope, vec!["dashboard:read".to_owned()]);
+        assert_eq!(
+            claims.merchant.as_deref(),
+            Some("acme-tenant"),
+            "the tenant claim is what tells a staff token from every other"
+        );
+
+        // A merchant token carries no tenant claim, whoever reads it.
+        let merchant_claims = v1.validate(&v1_token).await.expect("/v1 takes its own");
+        assert_eq!(merchant_claims.merchant, None);
+
+        for (door, result) in [
+            ("dashboard takes /v1's", dashboard.validate(&v1_token).await),
+            ("/v1 takes the dashboard's", v1.validate(&staff_token).await),
+            (
+                "MCP takes the dashboard's",
+                mcp.validate(&staff_token).await,
+            ),
+        ] {
+            assert!(
+                matches!(result, Err(AuthRejection::InvalidToken)),
+                "{door}: every door is pinned to one audience"
+            );
+        }
     }
 
     #[tokio::test]

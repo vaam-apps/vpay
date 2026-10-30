@@ -493,8 +493,11 @@ config:
   # The management tier's overlay carries `dashboard:` (the one tenant the
   # console reads) and, if vaam is to pair console keys, `service_clients:`
   # (ADR-0036). Neither is a value of this chart; the overlay is opaque text to
-  # Helm. There is no staff sign-in to configure any more: the `staff_auth` and
-  # `dashboard_client` blocks this comment used to describe are refused at boot.
+  # Helm. A staff password sign-in, if the deployment serves one, is the
+  # `human_login` method (ADR-0037): the `staff_auth` and `dashboard_client` blocks
+  # are overlay text too (both, or neither), and `staff_auth` names the pepper and
+  # the TOTP key as `${VAR}` placeholders, resolved from the environment (a
+  # workload's `extraEnv`, from a Secret you manage).
   #
   #     dashboard:
   #       merchant_id: <a merchant_clients entry>

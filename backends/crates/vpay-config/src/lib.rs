@@ -31,12 +31,14 @@ pub use cli::{
 };
 pub use config::{
     CallbackRegistration, CallbackVerification, CheckoutConfig, Config, CurrencyEntry,
-    ProviderCallbacks, ProviderHost, RailDisplayName, Routing, RoutingWeight, WebhookPolicy,
+    ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits, Routing,
+    RoutingWeight, StaffAuth, WebhookPolicy,
 };
 pub use console::{Dashboard, ServiceCapability, ServiceClient};
 pub use oauth::{
-    COSE_KEY_LABEL_MAX_CHARS, CoseKey, GrantType, InvoiceDefaults, MERCHANT_AUDIENCE,
-    MerchantClient, RegisteredCoseKey, WebhookEndpoint, read_cose_keys,
+    COSE_KEY_LABEL_MAX_CHARS, CoseKey, DASHBOARD_MERCHANT_CLAIM, DashboardClient, GrantType,
+    InvoiceDefaults, MERCHANT_AUDIENCE, MerchantClient, RegisteredCoseKey, WebhookEndpoint,
+    read_cose_keys,
 };
 pub use signal::ShutdownSignals;
 
@@ -473,8 +475,9 @@ pub enum ConfigError {
         oauth::MERCHANT_AUDIENCE
     )]
     MerchantMissingV1Audience { client_id: String },
-    /// `dashboard.merchant_id` names a tenant no `merchant_clients` entry
-    /// registers.
+    /// `dashboard.merchant_id` (or, with `human_login` served,
+    /// `dashboard_client.merchant_id`) names a tenant no `merchant_clients`
+    /// entry registers.
     ///
     /// Fatal, and it is the whole reason [`console::Dashboard::merchant_id`] is
     /// checked rather than merely stored. A `/dash/v1` bound to an
@@ -498,25 +501,78 @@ pub enum ConfigError {
         merchant_id: String,
     },
 
-    /// The file carries a top-level key whose feature VP-6a deleted
-    /// (`dashboard_client`, `staff_auth`). Fatal, and not ignored: a key the
-    /// binary silently drops is an operator who believes a sign-in exists that
-    /// does not, with a password pepper and a TOTP key still sitting in their
-    /// secrets store (ADR-0036).
+    /// `dashboard` and `dashboard_client` both configured and naming different
+    /// tenants (VPA-3).
     ///
-    /// Naming the key at all is the refusal: `key: ~` (a null) trips it as
-    /// firmly as a populated block, because the deployment that nulled the old
-    /// block out of a base file has to take that line out in the same change.
+    /// Fatal: `/dash/v1` reads exactly one tenant, and a console key and a staff
+    /// session that each carried their own would be two answers to one
+    /// question, decided by whichever credential a request happened to hold.
     #[error(
-        "the configuration names `{key}`, which no longer exists. Delete the `{key}:` \
-         key from the base file and from every profile overlay, even as a null \
-         (`{key}: ~` is refused too). {instead}"
+        "dashboard.merchant_id `{dashboard}` and dashboard_client.merchant_id `{client}` differ; \
+         /dash/v1 reads one tenant, so name the same one in both"
     )]
-    RetiredKey {
-        /// The key, as written.
-        key: String,
-        /// What replaced it, in one sentence.
-        instead: &'static str,
+    DashboardTenantMismatch {
+        /// `dashboard.merchant_id`.
+        dashboard: String,
+        /// `dashboard_client.merchant_id`.
+        client: String,
+    },
+
+    /// A `human_login` dashboard client declares no `redirect_uris`
+    /// (`docs/flows/dashboard-auth.md`): authorization-code + PKCE needs
+    /// somewhere to redirect back to; a client that can never redirect can
+    /// never complete a login.
+    #[error("dashboard client {0} declares no redirect_uris")]
+    DashboardMissingRedirectUri(String),
+
+    /// A **merchant** registration lists the dashboard client's own id in
+    /// `allowed_audiences`.
+    ///
+    /// This is a privilege boundary, not tidiness. `handle_client_credentials`
+    /// honours a *requested* audience whenever `allowed_audiences` permits
+    /// it, so a merchant registration carrying that value lets that merchant
+    /// post `audience=<dashboard client id>` to `/v1/oauth/token` and receive
+    /// a token the `/dash/v1` bearer validator's audience check accepts. The
+    /// two surfaces exist to be different credentials (ADR-0008: the dashboard
+    /// never holds a merchant key), and one YAML line would have made them the
+    /// same one.
+    ///
+    /// Checked at whole-document scope because the forbidden value is the
+    /// dashboard client's own `client_id`, which one registration cannot know.
+    /// `/dash/v1` refuses such a token a second time anyway (a
+    /// `client_credentials` token carries no merchant claim) but a boundary that
+    /// depends on one check is a boundary one edit removes.
+    #[error(
+        "merchant client {client_id} lists `{audience}` in allowed_audiences; that is the \
+         dashboard client's own id, which is the audience of every /dash/v1 staff token, and a \
+         merchant credential must never be able to mint one (ADR-0008, ADR-0017)"
+    )]
+    MerchantClaimsDashboardAudience {
+        /// The merchant registration that claimed it.
+        client_id: String,
+        /// The value it claimed — the dashboard client's `client_id`. Never a
+        /// secret: it is a public client identifier published in the
+        /// deployment's own YAML.
+        audience: String,
+    },
+
+    /// `staff_auth` is configured and one of its two secrets is not
+    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+    ///
+    /// Fatal in every deployment. The `staff_auth` block is the whole switch for
+    /// serving a password and TOTP sign-in (`auth.methods` permits
+    /// `human_login`, ADR-0037), and a login that cannot hash a password or seal
+    /// a TOTP seed is a door an operator believes exists. (Until VPA-3 this was
+    /// fatal in livemode alone, because the block was always present; now that
+    /// writing it is the switch, a sandbox has no reason to write it half.) The
+    /// message names the field and never a value.
+    #[error(
+        "staff_auth.{field} is required: without it no staff member can sign in, and the \
+         human_login method would be a door nobody can use (ADR-0017, ADR-0037)"
+    )]
+    StaffAuthSecretMissing {
+        /// `password_pepper` or `totp_encryption_key`.
+        field: String,
     },
 
     /// A `service_clients` entry holds no capability.
@@ -1520,8 +1576,8 @@ pub enum ConfigError {
     #[error(
         "auth.methods is present and empty (or null: `methods:` with every item commented \
          out); a deployment that permits no way of authenticating is a misconfiguration. Name \
-         one or more of: keypair, machine_tokens, hmac_webhooks (or delete the key to permit \
-         every method)"
+         one or more of: keypair, machine_tokens, hmac_webhooks, human_login (or delete the key to \
+         permit every method)"
     )]
     NoAuthMethods,
 
@@ -1604,16 +1660,6 @@ pub enum ConfigError {
     /// list that repeats itself was edited by someone who meant to change it.
     #[error("auth.methods names {0} more than once; each method is listed at most once")]
     DuplicateAuthMethod(AuthMethod),
-
-    /// `auth.methods` names a method this release cannot serve. Today that is
-    /// `human_login` alone: its blocks (`staff_auth`, `dashboard_client`) are
-    /// retired keys until staff sign-in is restored (VPA-3), so listing it
-    /// would promise a door that is not there. Delete it from the list.
-    #[error(
-        "auth.methods names {0}, which is not available in this release; delete it from the \
-         list (an absent auth.methods permits it without serving it)"
-    )]
-    AuthMethodUnavailable(AuthMethod),
 
     /// `auth.methods` permits neither `keypair` nor `machine_tokens`, so
     /// nothing could authenticate a caller of `/v1`. Refused rather than

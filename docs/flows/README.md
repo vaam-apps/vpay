@@ -44,12 +44,15 @@ code expresses it belongs in `../reference/`.
 Every flow here is _designed_. See [../status.md](../status.md) for which parts
 are actually built.
 
-**5 of these are an overview plus a directory** <!-- count:dir-entries docs/flows -->, since 2026-09-11: each of
+**6 of these are an overview plus a directory** <!-- count:dir-entries docs/flows -->, since 2026-09-11: each of
 [hosted-checkout.md](hosted-checkout.md), [customers.md](customers.md),
 [dashboard.md](dashboard.md), [webhooks.md](webhooks.md) and
 [merchant-auth.md](merchant-auth.md) had passed 700 lines (a sixth,
 `dashboard-auth.md`, was one too, until VP-6a replaced it with a page of its own
-length and deleted its directory). The page you open is still the one linked above; its dated
+length and deleted its directory; VPA-3 gave it a directory again, but for a
+different reason: the sign-in that
+[dashboard-auth/human-login.md](dashboard-auth/human-login.md) describes is
+one method among several, not a page that outgrew its length). The page you open is still the one linked above; its dated
 Status detail is on pages it indexes, moved verbatim. See
 [../README.md](../README.md) for the before-and-after counts and for what the
 split did and did not change.

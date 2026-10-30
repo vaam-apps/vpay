@@ -1459,6 +1459,54 @@ debug_protections:
   - type: NewAuthorizationCode
     file: backends/crates/vpay-db/src/authorization_codes.rs
     elements: [session_oauth_code]
+  # The staff sign-in's wire types and credential holders (VPA-3, restored from
+  # before VP-6a with their `Debug` written by hand). A request carries a
+  # password, a TOTP code or the PKCE proof; a response carries a session token,
+  # the TOTP seed in an `otpauth://` URI or an access token. Each hides every
+  # such field and keeps the ids a log needs to find the row.
+  - type: LoginRequest
+    file: backends/crates/vpay-api/src/staff/mod.rs
+    elements: [staff_credential_secret, staff_email]
+  - type: LoginResponse
+    file: backends/crates/vpay-api/src/staff/mod.rs
+    elements: [session_oauth_code, staff_credential_secret]
+  - type: TotpRequest
+    file: backends/crates/vpay-api/src/staff/mod.rs
+    elements: [staff_credential_secret]
+  - type: PasswordRequest
+    file: backends/crates/vpay-api/src/staff/mod.rs
+    elements: [staff_credential_secret]
+  - type: SessionResponse
+    file: backends/crates/vpay-api/src/staff/mod.rs
+    elements: [staff_oauth_token, staff_email, staff_display_name]
+  - type: AuthorizeQuery
+    file: backends/crates/vpay-api/src/staff/oauth.rs
+    elements: [session_oauth_code]
+  - type: TokenForm
+    file: backends/crates/vpay-api/src/staff/oauth.rs
+    elements: [session_oauth_code]
+  - type: TokenResponse
+    file: backends/crates/vpay-api/src/staff/oauth.rs
+    elements: [staff_oauth_token]
+  - type: MintedToken
+    file: backends/crates/vpay-api/src/staff_auth/tokens.rs
+    elements: [staff_oauth_token, session_oauth_code]
+  - type: StaffCredentials
+    file: backends/crates/vpay-api/src/staff_auth/mod.rs
+    elements: [staff_credential_secret]
+  - type: Totp
+    file: backends/crates/vpay-api/src/staff_auth/totp.rs
+    elements: [staff_credential_secret]
+  - type: StaffAuth
+    file: backends/crates/vpay-config/src/config.rs
+    elements: [staff_credential_secret]
+  # The dashboard client's registration: a public client that must never hold a
+  # secret, so `client_secret` is refused at load (`ClientSecretPresent`). Its
+  # `Debug` still redacts the field, as `MerchantClient`'s does, so the refused
+  # value cannot reach a log line by way of the error path that names the entry.
+  - type: DashboardClient
+    file: backends/crates/vpay-config/src/oauth.rs
+    elements: [oauth_client_secret]
   - type: CredentialRow
     file: backends/crates/vpay-db/src/credentials.rs
     elements: [staff_credential_secret]

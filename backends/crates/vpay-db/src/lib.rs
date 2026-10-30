@@ -153,7 +153,7 @@ pub use customers::{
     CustomerAddress, CustomerErasure, CustomerListPage, CustomerPatch, CustomerRow, Customers,
     NewCustomer, REDACTED,
 };
-pub use dashboard_transport::DashboardAuthFn;
+pub use dashboard_transport::{DashboardAuthFn, ProcedureSigning};
 pub use disabled_clients::DisabledClients;
 pub use envelope_nonces::EnvelopeNonces;
 pub use error::DbError;

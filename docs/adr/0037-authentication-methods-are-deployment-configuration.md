@@ -5,8 +5,8 @@
   no optional or compatibility mode, no token fallback" and decision 6's flag
   day hold for a deployment that permits only `keypair`, and no longer hold for
   one that permits more. [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)
-  is untouched in this release; staff sign-in returns under `human_login` in
-  VPA-3.
+  is untouched except for what decision 8 adds: staff sign-in returns under
+  `human_login` (VPA-3), beside the console key, and not in its place.
 - **Date:** 2026-10-27
 - **Deciders:** the owner (ruling R5, 2026-10-27): _vpay serves other apps
   besides vaam. Which ways of authenticating a deployment accepts is
@@ -77,14 +77,53 @@ vaam, taken in a repository that serves others.
    is no other mode.
 7. `GET /.well-known/vpay-auth` answers `{"methods": [...]}`, unauthenticated
    and outside every envelope: the methods this deployment permits and serves.
-   _Served_ is _permitted minus `human_login`_ and nothing more (`AuthMethods::served`):
-   it says what the deployment offers, not what any one merchant can do. A
-   console reads it instead of a second switch that could disagree.
-8. `human_login` is **permitted by the default and served by nothing** in this
-   release. Naming it explicitly is refused ("not available in this release");
-   `staff_auth` and `dashboard_client` stay retired keys. VPA-3 restores it.
-9. Every `/v1` request span carries `auth.method = keypair | machine_token`.
-   It is tracing only: no policy reads it.
+   _Served_ is _permitted_, except that `human_login` is listed only when both of
+   its blocks are present (`AuthMethods::served`): it says what the deployment
+   offers, not what any one merchant can do. A console reads it instead of a
+   second switch that could disagree.
+8. **`human_login` is the staff sign-in, and it follows `machine_tokens`' rules
+   exactly (VPA-3).** Its blocks are `staff_auth` (the password pepper and the
+   TOTP key) and `dashboard_client` (the authorization-code client). It is
+   _served_ when it is permitted and both blocks are written
+   (`AuthMethods::human_login_served`); it is the one list of states there is:
+
+   | `human_login` | `staff_auth` + `dashboard_client` | Result                                                                                                     |
+   | ------------- | --------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+   | permitted     | both                              | served: sign-in routes mounted, `/dash/v1` runs `Optional`, `staff add` mints a one-time password          |
+   | permitted     | neither, by the default           | not served: the routes are `404`, `/dash/v1` is `Required`, `staff add` writes a member and no credential  |
+   | named         | neither, or only one              | refused at boot, `AuthMethodNotConfigured`                                                                 |
+   | permitted     | exactly one, by the default       | refused at boot, `AuthMethodNotConfigured`: half a sign-in is the dormant configuration decision 4 refuses |
+   | not permitted | either                            | refused at boot, `AuthMethodDisabled`, naming the block to delete                                          |
+
+   `/dash/v1` and the procedure transport beneath it take **a console key or a
+   staff session**, one per request. The envelope runs `Optional` iff the method
+   is served; otherwise it stays `Required`, so a deployment that never wrote the
+   blocks is signed-only (`SurfaceMode::for_dashboard`). With `keypair` off the
+   layer is `Off`, as `/v1`'s is for tokens alone. As on `/v1`, the policy is a
+   closure with the unresolved mode pinned to `Required`. A request that is
+   signed **and** carries a bearer is `400`. A session is a staff access token
+   from the authorization-code grant, audience `dashboard_client.client_id`,
+   scope the registration's, with the tenant claim equal to the dashboard's;
+   it is held to the same member re-read and the same admin override as a key,
+   through one resolver. `/svc/v1` stays `Required`.
+
+   **There is no refresh token on this surface**, then or now (ADR-0017: "no
+   refresh token on this surface and there is not going to be one"; the owner's
+   rulings of 2026-09-29 and 2026-10-09). Q8's "the `refresh_token` grant is
+   restored only conditionally" has nothing to restore here: the dashboard
+   client's registration carries `authorization_code` alone, the refresh slot of
+   the OP is the fail-closed `RefusingRefreshTokenStore`, and a `refresh_token`
+   request to `/dash/v1/oauth/token` is a `400` while the method is served and a
+   `404` when it is not. A keypair caller never reaches it. Offering a refresh
+   grant would be a new design (a store, a rotation rule, a migration), not a
+   restoration.
+
+   **Staff SSO is not part of this release** (`staff_auth.sso`, VPA-4): the key
+   is an unknown field of `staff_auth` and is refused, not ignored.
+
+9. Every request span on `/v1` and `/dash/v1` carries
+   `auth.method = keypair | machine_token | human_session`. It is tracing only:
+   no policy reads it.
 
 ## Consequences
 

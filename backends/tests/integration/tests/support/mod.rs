@@ -461,7 +461,24 @@ pub(crate) fn router_deps_with(
         ),
         false => v1_envelope,
     };
-    let management_envelope = management_envelope_for(config, &repositories);
+    // As `vpay-server`'s `main` does it, through the same method: a deployment
+    // that serves `human_login` accepts a staff access token on `/dash/v1` beside
+    // a key, validated against this server's own JWKS with the dashboard client's
+    // id as the only audience.
+    let resource_config = Arc::new(
+        ResourceConfig::from_config(config)
+            .expect("the suite's configuration projects onto the port"),
+    );
+    let management_envelope = management_envelope_for(config, &repositories).map(|envelope| {
+        envelope
+            .with_staff_sessions(
+                &resource_config,
+                format!("{}/jwks.json", merchant_op.issuer()),
+                Duration::from_secs(300),
+                merchant_op.issuer(),
+            )
+            .expect("the vendored-roots JWKS client builds")
+    });
     RouterDeps {
         repositories,
         merchant_op,
@@ -472,11 +489,12 @@ pub(crate) fn router_deps_with(
         // writes none gets `None` here, and `/dash/v1`, the procedure transport
         // and `/svc/v1` are then nests the router does not mount at all.
         management_envelope,
+        // Filled by `serve_with_adapters`, which holds the signing key the
+        // dashboard half of the OP signs with; every other suite gets `None`,
+        // which is what makes `/dash/v1/staff/login` a `404` in all of them.
+        staff_login: None,
         adapters: Arc::new(adapters),
-        resource_config: Arc::new(
-            ResourceConfig::from_config(config)
-                .expect("the suite's configuration projects onto the port"),
-        ),
+        resource_config,
         // Derived exactly as `vpay-server`'s `main` derives it. `Config`'s
         // own construction in these suites is not run through
         // `Config::validate_all`, so unlike `main.rs` this can genuinely
@@ -511,16 +529,38 @@ pub(crate) fn v1_envelope_for(config: &Config, repositories: &Arc<dyn Repositori
 
 /// The management surface's signed transport (`/dash/v1`, the procedure
 /// transport under it, `/svc/v1`), or `None` when the configuration registers
-/// no `dashboard:` — `vpay-server`'s own condition, in one line.
+/// no `dashboard:` and serves no `human_login` — `vpay-server`'s own condition,
+/// in one line.
 pub(crate) fn management_envelope_for(
     config: &Config,
     repositories: &Arc<dyn Repositories>,
 ) -> Option<ManagementEnvelope> {
-    config.dashboard.as_ref()?;
+    let human_login = config
+        .auth_methods()
+        .expect("the suite's auth.methods is valid")
+        .human_login_served();
+    (config.dashboard.is_some() || human_login).then_some(())?;
     Some(
         ManagementEnvelope::new(config, &test_envelope_keys(), Arc::clone(repositories))
             .expect("the suite's service clients project onto a key registry"),
     )
+}
+
+/// The sign-in state a suite's server serves: `vpay-server`'s own constructor,
+/// [`vpay_api::staff::StaffLogin::from_config`], so a suite proves the wiring
+/// that ships. `Some` exactly when `auth.methods` serves `human_login`.
+///
+/// `expect` rather than a fallible return, because a suite that wrote an
+/// unusable `staff_auth` has a bug in its fixture and must say so rather than
+/// quietly booting a server with no sign-in, which would make an assertion
+/// about it pass for the wrong reason.
+pub(crate) fn staff_login_for(
+    config: &Config,
+    signing_key: &LoadedSigningKey,
+    repositories: &Arc<dyn Repositories>,
+) -> Option<Arc<vpay_api::staff::StaffLogin>> {
+    vpay_api::staff::StaffLogin::from_config(config, signing_key, repositories)
+        .expect("the suite's staff_auth is usable")
 }
 
 /// Boot step 4, run against a test's own configuration.
@@ -965,6 +1005,7 @@ pub(crate) async fn serve_with_adapters(
     ));
     let issuer = merchant_op.issuer().to_owned();
     let mut deps = router_deps_with(Arc::clone(repositories), merchant_op, &config, adapters());
+    deps.staff_login = staff_login_for(&config, &signing_key, repositories);
     // The merchant MCP endpoint (ADR-0033), built exactly as `vpay-server`'s
     // `main` builds it — only when `deployment.surfaces` names `mcp`, over
     // a validator whose audience is the MCP resource and whose JWKS is this

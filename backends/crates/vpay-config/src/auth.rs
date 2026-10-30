@@ -22,7 +22,7 @@
 //! | `keypair` | signed `/v1` requests and sealed answers; the console (`/dash/v1`, `/svc/v1`) | `merchant_clients[].cose_keys`, `dashboard`, `service_clients` |
 //! | `machine_tokens` | `Authorization: Bearer` on `/v1` and the `/v1/oauth` token endpoint that mints it; the MCP endpoint | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences` |
 //! | `hmac_webhooks` | merchant webhook endpoints signed with a shared secret (`Vpay-Signature`) | `merchant_clients[].webhooks` |
-//! | `human_login` | staff sign-in by password, TOTP or SSO | `staff_auth`, `dashboard_client` (**retired in this release**) |
+//! | `human_login` | staff sign-in by password and TOTP, and the authorization-code grant that turns it into a `/dash/v1` session (SSO is VPA-4) | `staff_auth`, `dashboard_client` |
 //!
 //! # Permitted is not served
 //!
@@ -32,10 +32,18 @@
 //! an operator comes to believe a door is shut that is open, or open that is
 //! shut. [`AuthMethods::served`] is the list a client may be told.
 //!
-//! `human_login` is the one permitted method nothing serves yet: its blocks
-//! are retired keys and its restoration is VPA-3. Until then naming it
-//! explicitly is refused ([`ConfigError::AuthMethodUnavailable`]) and the
-//! absent default permits it without serving it.
+//! `human_login` follows `machine_tokens`' rules exactly. It runs when it is
+//! permitted **and** both of its blocks are present
+//! ([`AuthMethods::human_login_served`]); a block present with the method not
+//! permitted is [`ConfigError::AuthMethodDisabled`], and the method named
+//! explicitly with a block missing is [`ConfigError::AuthMethodNotConfigured`].
+//! The absent default permits it, and a deployment that never wrote its blocks
+//! simply does not serve it: `/dash/v1` stays a signed-only surface, the staff
+//! sign-in routes are not mounted and `staff add` mints no password. A
+//! deployment that wrote **one** of the two blocks has half a login; that is
+//! refused as [`ConfigError::AuthMethodNotConfigured`] whether or not
+//! `auth.methods` was written, because a half-configured door is the dormant
+//! configuration this module exists to refuse.
 //!
 //! # Rules
 //!
@@ -44,15 +52,16 @@
 //! 1. an empty list or a null, [`ConfigError::NoAuthMethods`];
 //! 2. an unknown name, [`ConfigError::UnknownAuthMethod`];
 //! 3. a duplicate, [`ConfigError::DuplicateAuthMethod`];
-//! 4. `human_login` named explicitly, [`ConfigError::AuthMethodUnavailable`];
-//! 5. nothing can authenticate a `/v1` caller (no `keypair` and no
+//! 4. nothing can authenticate a `/v1` caller (no `keypair` and no
 //!    `machine_tokens`), [`ConfigError::NoWayIn`];
-//! 6. `deployment.surfaces` names `mcp` without `machine_tokens`,
+//! 5. `deployment.surfaces` names `mcp` without `machine_tokens`,
 //!    [`ConfigError::McpNeedsMachineTokens`];
-//! 7. `machine_tokens` named explicitly with no merchant that has a `jwks`,
-//!    [`ConfigError::AuthMethodNotConfigured`];
-//! 8. a block present for a method that is not permitted,
-//!    [`ConfigError::AuthMethodDisabled`].
+//! 6. `machine_tokens` named explicitly with no merchant that has a `jwks`, or
+//!    `human_login` with a block missing (or with only one of its two blocks
+//!    written), [`ConfigError::AuthMethodNotConfigured`];
+//! 7. a block present for a method that is not permitted,
+//!    [`ConfigError::AuthMethodDisabled`] (`staff_auth` and `dashboard_client`
+//!    without `human_login`, as `jwks` without `machine_tokens`).
 //!
 //! The per-merchant half of the same contract lives in `validate_all`'s merchant
 //! rules and is stated here because it is the part an operator reads this page
@@ -176,16 +185,18 @@ impl AuthConfig {
     ///
     /// # Errors
     ///
-    /// [`ConfigError::NoAuthMethods`], [`ConfigError::UnknownAuthMethod`],
-    /// [`ConfigError::DuplicateAuthMethod`] and
-    /// [`ConfigError::AuthMethodUnavailable`] (rules 1 to 4 in the module
-    /// docs). The cross-block rules need the whole [`Config`] and live in
-    /// [`validate_auth_methods`].
+    /// [`ConfigError::NoAuthMethods`], [`ConfigError::UnknownAuthMethod`] and
+    /// [`ConfigError::DuplicateAuthMethod`] (rules 1 to 3 in the module docs).
+    /// The cross-block rules need the whole [`Config`] and live in
+    /// [`validate_auth_methods`]. The set this returns knows nothing of the
+    /// blocks, so [`AuthMethods::human_login_served`] is `false`: ask
+    /// [`Config::auth_methods`] for the one that does.
     pub fn resolve(&self) -> Result<AuthMethods, ConfigError> {
         let Some(names) = &self.methods else {
             return Ok(AuthMethods {
                 permitted: AuthMethod::ALL.into_iter().collect(),
                 explicit: false,
+                human_login_blocks: false,
             });
         };
         if names.is_empty() {
@@ -199,12 +210,10 @@ impl AuthConfig {
                 return Err(ConfigError::DuplicateAuthMethod(method));
             }
         }
-        if permitted.contains(&AuthMethod::HumanLogin) {
-            return Err(ConfigError::AuthMethodUnavailable(AuthMethod::HumanLogin));
-        }
         Ok(AuthMethods {
             permitted,
             explicit: true,
+            human_login_blocks: false,
         })
     }
 }
@@ -214,6 +223,10 @@ impl AuthConfig {
 pub struct AuthMethods {
     permitted: BTreeSet<AuthMethod>,
     explicit: bool,
+    /// Whether `staff_auth` **and** `dashboard_client` are both present. Set by
+    /// [`Config::auth_methods`], the only constructor that has seen the
+    /// document; [`AuthConfig::resolve`] leaves it `false`.
+    human_login_blocks: bool,
 }
 
 impl AuthMethods {
@@ -236,18 +249,30 @@ impl AuthMethods {
             .filter(|method| self.permits(*method))
     }
 
-    /// The permitted methods this release actually serves: what
+    /// Whether `human_login` is **served**: permitted, and both its blocks
+    /// (`staff_auth`, `dashboard_client`) present. The one question
+    /// the staff routes, the OP's dashboard half, `/dash/v1`'s envelope mode and
+    /// `staff add` all ask, so they cannot disagree about it.
+    #[must_use]
+    pub fn human_login_served(&self) -> bool {
+        self.permits(AuthMethod::HumanLogin) && self.human_login_blocks
+    }
+
+    /// The permitted methods this deployment actually serves: what
     /// `GET /.well-known/vpay-auth` tells a client.
     ///
-    /// **Permitted minus `human_login`**, and nothing else: whether a method
-    /// *runs* for a given merchant still depends on that merchant's blocks (a
-    /// merchant with no `jwks` cannot use `machine_tokens` on a deployment that
-    /// serves it), so the list is what the deployment offers, not a promise
-    /// about any one caller. `human_login`'s blocks are retired keys until
-    /// VPA-3 restores them; **this is the one place that changes when it does.**
+    /// Permitted, except that `human_login` also needs its blocks
+    /// ([`Self::human_login_served`]). Whether any other method *runs* for a
+    /// given merchant still depends on that merchant's blocks (a merchant with
+    /// no `jwks` cannot use `machine_tokens` on a deployment that serves it),
+    /// so the list is what the deployment offers, not a promise about any one
+    /// caller. **`human_login` is the one place this differs from the permitted
+    /// list.**
     pub fn served(&self) -> impl Iterator<Item = AuthMethod> + '_ {
-        self.permitted()
-            .filter(|method| *method != AuthMethod::HumanLogin)
+        self.permitted().filter(|method| match method {
+            AuthMethod::HumanLogin => self.human_login_served(),
+            _ => true,
+        })
     }
 }
 
@@ -256,14 +281,16 @@ impl Config {
     ///
     /// # Errors
     ///
-    /// Rules 1 to 4 of the module docs; unreachable for a `Config` that came
+    /// Rules 1 to 3 of the module docs; unreachable for a `Config` that came
     /// from a file, since `validate_all` ran the same call.
     pub fn auth_methods(&self) -> Result<AuthMethods, ConfigError> {
-        self.auth.resolve()
+        let mut methods = self.auth.resolve()?;
+        methods.human_login_blocks = self.staff_auth.is_some() && self.dashboard_client.is_some();
+        Ok(methods)
     }
 }
 
-/// Rules 5 to 8 of the module docs, over the whole document.
+/// Rules 4 to 7 of the module docs, over the whole document.
 ///
 /// Called first in `Config::validate_all`, after `deployment.surfaces`: a
 /// contradiction between what is permitted and what is configured is a
@@ -297,8 +324,40 @@ pub(crate) fn validate_auth_methods(
         });
     }
 
+    let human = methods.permits(AuthMethod::HumanLogin);
     let disabled =
         |method: AuthMethod, key: String| ConfigError::AuthMethodDisabled { method, key };
+    // `human_login`, like `machine_tokens`, is its blocks: both or neither. The
+    // method off is rule 7 (a block is dormant configuration); the method
+    // permitted is the explicit-naming rule, extended to a half-written pair,
+    // because "permitted, one block, so not served" is how an operator comes to
+    // believe a sign-in exists that does not.
+    if human {
+        let staff_auth = config.staff_auth.is_some();
+        let dashboard_client = config.dashboard_client.is_some();
+        let missing = match (staff_auth, dashboard_client) {
+            (true, true) => None,
+            (true, false) => Some("dashboard_client"),
+            (false, true) => Some("staff_auth"),
+            (false, false) => methods.is_explicit().then_some("staff_auth"),
+        };
+        if let Some(key) = missing {
+            return Err(ConfigError::AuthMethodNotConfigured {
+                method: AuthMethod::HumanLogin,
+                key: key.to_owned(),
+            });
+        }
+    } else {
+        if config.staff_auth.is_some() {
+            return Err(disabled(AuthMethod::HumanLogin, "staff_auth".to_owned()));
+        }
+        if config.dashboard_client.is_some() {
+            return Err(disabled(
+                AuthMethod::HumanLogin,
+                "dashboard_client".to_owned(),
+            ));
+        }
+    }
     for merchant in &config.merchant_clients {
         let client = &merchant.client_id;
         if !tokens {

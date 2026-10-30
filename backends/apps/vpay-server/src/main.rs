@@ -45,10 +45,11 @@ use vpay_api::envelope::{
 use vpay_api::op::MerchantOp;
 use vpay_api::op::keys::{LoadedSigningKey, SigningKeyError};
 use vpay_api::resource_auth::JwtValidator;
+use vpay_api::staff::StaffLoginError;
 use vpay_api::{ResourceConfig, RouterDeps};
 use vpay_config::{AuthMethod, ConfigError, LogFormat, ServerArgs, ShutdownSignals};
 use vpay_core::error::{Category, Classify as _, find_in_chain};
-use vpay_db::DbError;
+use vpay_db::{DbError, UnitOfWork as _};
 
 #[global_allocator]
 static GLOBAL: MiMalloc = MiMalloc;
@@ -241,6 +242,7 @@ fn exit_code_for(error: &anyhow::Error) -> u8 {
         .or_else(|| find_in_chain::<SigningKeyError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<EnvelopeKeyError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<V1EnvelopeError>(error.chain()).map(|e| e.category()))
+        .or_else(|| find_in_chain::<StaffLoginError>(error.chain()).map(|e| e.category()))
         .or_else(|| find_in_chain::<DbError>(error.chain()).map(|e| e.category()))
         .unwrap_or(Category::Internal);
     // Every `Category::exit_code()` is in `1..=78` (pinned by a test in
@@ -273,6 +275,13 @@ struct Booted {
     /// (`deployment.surfaces` without `management`, or no `dashboard:` block).
     /// `Some` on every process that mounts it: `boot` refuses to return otherwise.
     management_envelope: Option<ManagementEnvelope>,
+    /// Everything the staff sign-in routes need, or `None`. `Some` exactly when
+    /// `auth.methods` **serves** `human_login` (ADR-0037): permitted, with
+    /// `staff_auth` and `dashboard_client` both configured. `vpay_config` refuses
+    /// every other combination at boot, so there is no "configured but unusable,
+    /// mount nothing" state left to log: a login that cannot be built is a boot
+    /// failure (`78`), never a `/dash/v1` that quietly has no way in.
+    staff_login: Option<Arc<vpay_api::staff::StaffLogin>>,
 }
 
 /// The whole startup, as the ordered list of steps it is.
@@ -474,11 +483,38 @@ async fn run() -> anyhow::Result<()> {
         );
     }
 
+    // ADR-0037: a deployment that serves `human_login` accepts a staff access
+    // token on `/dash/v1` beside a console key, validated against this process's
+    // own JWKS over loopback, with the dashboard client's id as its only audience.
+    let management_envelope = match booted.management_envelope {
+        Some(envelope) => {
+            let envelope = envelope
+                .with_staff_sessions(
+                    &resource_config,
+                    loopback_jwks_url(bound),
+                    JWKS_REFRESH_INTERVAL,
+                    booted.merchant_op.issuer(),
+                )
+                .context("building the JWKS client the /dash/v1 token validator fetches with")?;
+            if let Some(staff) = resource_config.staff_binding() {
+                tracing::info!(
+                    mode = ?envelope.dash_mode(),
+                    client_id = %staff.client_id,
+                    "/dash/v1 accepts a staff session beside a console key (auth.methods: \
+                     human_login)"
+                );
+            }
+            Some(envelope)
+        }
+        None => None,
+    };
+
     let deps = RouterDeps {
         repositories: booted.repositories,
         merchant_op: booted.merchant_op,
         v1_envelope,
-        management_envelope: booted.management_envelope,
+        management_envelope,
+        staff_login: booted.staff_login,
         adapters,
         resource_config,
         surfaces,
@@ -686,8 +722,13 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
     // is something of it to serve: `/dash/v1` on a `management` process and
     // `/svc/v1` on a `business` one (ADR-0036 § "Which surface `/svc/v1` is on"),
     // each only with a `dashboard:` block.
-    let management_envelope = match (&envelope_keys, &config.dashboard) {
-        (Some(keys), Some(_)) => Some(
+    //
+    // **A `human_login` deployment builds it without a `dashboard:` block too**
+    // (ADR-0037): `/dash/v1` is mounted for a staff session beside a key, and
+    // the layer runs `Optional`.
+    let human_login = config.auth_methods()?.human_login_served();
+    let management_envelope = match (&envelope_keys, config.dashboard.is_some() || human_login) {
+        (Some(keys), true) => Some(
             ManagementEnvelope::new(&config, keys, Arc::clone(&repositories))
                 .context("assembling the signed /dash/v1 and /svc/v1 transport (VP-6a)")?,
         ),
@@ -699,6 +740,14 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
             None
         }
     };
+
+    // Before `MerchantOp::new` takes the signing key by value: the dashboard half
+    // of the OP signs with the same key. The OP's authorization-code slot is
+    // `RefusingAuthorizationCodeStore` for the merchant half and
+    // `PgAuthorizationCodeStore` here, so a code can be issued and spent only by
+    // the one client registered for it.
+    let staff_login =
+        vpay_api::staff::StaffLogin::from_config(&config, &signing_key, &repositories)?;
 
     let merchant_op = Arc::new(MerchantOp::new(
         &config,
@@ -713,6 +762,7 @@ async fn boot(args: &ServerArgs) -> anyhow::Result<Booted> {
         merchant_op,
         v1_envelope,
         management_envelope,
+        staff_login,
     })
 }
 
@@ -931,8 +981,21 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
 /// admin phone. `admin` defaults to `false` at the `clap` layer, so an operator
 /// who never reads this far gets the narrower account.
 ///
-/// **It writes no credential** (VP-6a): the member reads `/dash/v1` only once a
-/// console key is attached to them, by `staff pair-key` or by a pairing.
+/// # What it writes depends on `auth.methods` (ADR-0037)
+///
+/// * **`human_login` served** (permitted, `staff_auth` and `dashboard_client`
+///   configured): the member **and** a password credential holding an argon2id
+///   hash of a generated one-time password (`must_change`), exactly as before
+///   VP-6a. TOTP is enrolled at the member's first sign-in. Stdout carries the
+///   password, alone.
+/// * **Otherwise**: the member and no credential. The member reads `/dash/v1`
+///   only once a console key is attached, by `staff pair-key` or by a pairing.
+///   Stdout carries the new `stf_…` id, alone, so it can be piped into `staff
+///   pair-key --staff`.
+///
+/// There is no flag to ask for a password on a deployment that does not serve
+/// the method, and the command never mints one it could not verify: the pepper
+/// that hashes it is read only from a served `staff_auth` block.
 ///
 /// # The order of the checks, and why
 ///
@@ -944,9 +1007,9 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
 ///
 /// # What it prints, and where
 ///
-/// The new `stf_…` id goes to **stdout**, alone on its line, so an operator can
-/// pipe it into `staff pair-key --staff`. Everything else goes to the tracing
-/// subscriber, which on a subcommand is stderr.
+/// Exactly one line on stdout, as above. Everything else goes to the tracing
+/// subscriber, which on a subcommand is stderr (`install_process_defaults`),
+/// and **the id goes there too** in the served case.
 ///
 /// # Errors
 ///
@@ -963,6 +1026,21 @@ async fn staff_add(
         vpay_api::boot::load_config(args.common.config.as_deref(), &args.common.profile)
             .context("loading and validating configuration (--config / VPAY_CONFIG, ADR-0003)")?;
 
+    // The pepper, only on a deployment that serves the sign-in: `validate_all`
+    // proved the block is there and both secrets are set whenever the method is
+    // served, so the `else` is "this deployment has no password to mint", not a
+    // missing secret.
+    let credentials = match (
+        config.auth_methods()?.human_login_served(),
+        config.staff_auth.as_ref().and_then(|staff| staff.both()),
+    ) {
+        (true, Some((pepper, totp_key))) => Some(
+            vpay_api::staff_auth::StaffCredentials::new(pepper, totp_key)
+                .context("reading the staff_auth secrets")?,
+        ),
+        _ => None,
+    };
+
     // Before the database, for the reason in this function's doc.
     anyhow::ensure!(
         config
@@ -976,6 +1054,19 @@ async fn staff_add(
     // Lower-cased here, once, because `staff_members_email_is_lower_case` refuses the
     // insert otherwise and because the lookup is a plain equality.
     let email = email.trim().to_lowercase();
+    // Generated and hashed before the database for the same reason: nothing
+    // about it needs a connection, and a pepper the argon2 parameters refuse
+    // should be answered in milliseconds.
+    let one_time_password = match &credentials {
+        Some(credentials) => {
+            let password = vpay_api::staff_auth::tokens::one_time_password();
+            let hash = credentials
+                .hash_password(&password)
+                .context("hashing the one-time password")?;
+            Some((password, hash))
+        }
+        None => None,
+    };
 
     let database_url = args
         .common
@@ -985,38 +1076,90 @@ async fn staff_add(
     let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
     let id = vpay_core::ids::staff_id();
-    vpay_db::Staff::create(
-        repositories.as_ref(),
-        vpay_db::NewStaff {
-            id: id.clone(),
-            merchant_id: merchant.to_owned(),
-            email: email.clone(),
-            display_name: display_name.to_owned(),
-            is_admin: admin,
-            now: time::OffsetDateTime::now_utc(),
-        },
-    )
-    .await
-    .with_context(|| format!("creating staff member {email}"))?;
+    let now = time::OffsetDateTime::now_utc();
+    let staff = vpay_db::NewStaff {
+        id: id.clone(),
+        merchant_id: merchant.to_owned(),
+        email: email.clone(),
+        display_name: display_name.to_owned(),
+        is_admin: admin,
+        now,
+    };
+    match &one_time_password {
+        // THE PASSWORD IS A SECOND ROW (ADR-0019), written in the member's own
+        // transaction: a failure in the window between two inserts would leave a
+        // member who can never sign in AND whose address is taken (the email
+        // unique index refuses a second `staff add`), and the compensating
+        // delete this used to run could itself fail. The repository method is
+        // named for its first caller, just-in-time SSO provisioning, and does
+        // exactly this: a member and their first credential, both or neither.
+        Some((_, password_hash)) => {
+            let credential = vpay_db::NewCredential {
+                id: vpay_core::ids::credential_id(),
+                staff_member_id: Some(id.clone()),
+                kind: vpay_db::CredentialKind::Password,
+                material: Some(password_hash.clone()),
+                issuer: None,
+                subject: None,
+                // The one-time password the CLI is about to print is a
+                // credential the operator has seen; it stops being usable the
+                // moment its owner picks their own.
+                must_change: true,
+                expires_at: None,
+                now,
+            };
+            repositories
+                .transaction(|tx| {
+                    Box::pin(async move {
+                        tx.provision_federated_staff_in_tx(&staff, credential)
+                            .await?;
+                        Ok::<_, vpay_db::DbError>(vpay_db::TxOutcome::Commit(()))
+                    })
+                })
+                .await
+                .with_context(|| {
+                    format!(
+                        "creating staff member {email} and their password credential in one \
+                         transaction: it did not commit, or its outcome is unknown. Check \
+                         `staff_members` for {email} before retrying"
+                    )
+                })?;
+        }
+        None => {
+            vpay_db::Staff::create(repositories.as_ref(), staff)
+                .await
+                .with_context(|| format!("creating staff member {email}"))?;
+        }
+    }
 
     tracing::info!(
         staff_id = %id,
         merchant_id = %merchant,
         is_admin = admin,
-        "created a staff member; attach a console key with `vpay-server staff pair-key`"
+        credential_issued = one_time_password.is_some(),
+        "created a staff member; the one-time sign-in credential, when one was issued, is on \
+         stdout and is not logged. Otherwise attach a console key with `vpay-server staff \
+         pair-key`"
     );
 
     // stdout, alone, and never through `tracing`. `print_stdout` is a
     // workspace `warn` lint precisely so that writing to stdout is a
-    // deliberate act; "alone" is what `install_process_defaults` arranges: on
-    // a subcommand it points the tracing subscriber at **stderr**.
+    // deliberate act; "alone" is what `install_process_defaults` arranges: on a
+    // subcommand it points the tracing subscriber at **stderr**, so this line is
+    // the whole of stdout. Without that, the password is the fifth line of a
+    // JSON log.
+    let output = match &one_time_password {
+        Some((password, _)) => password.as_str(),
+        None => id.as_str(),
+    };
     #[allow(
         clippy::print_stdout,
-        reason = "the new member's id must be pipeable and must be the whole of stdout; \
-                  `install_process_defaults` puts a subcommand's logs on stderr so it is"
+        reason = "the one-time password (or the new member's id) must be pipeable and must be \
+                  the whole of stdout; `install_process_defaults` puts a subcommand's logs on \
+                  stderr so it is"
     )]
     {
-        println!("{id}");
+        println!("{output}");
     }
 
     Ok(())

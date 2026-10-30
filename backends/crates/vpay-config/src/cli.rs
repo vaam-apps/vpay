@@ -551,9 +551,19 @@ pub enum CallbacksCommand {
 /// `vpay-server staff …`.
 #[derive(Debug, Clone, clap::Subcommand)]
 pub enum StaffCommand {
-    /// Create a staff member. No credential: a member reads `/dash/v1` only
-    /// once a console key is attached (`staff pair-key`, or a phone pairing
-    /// through `/svc/v1`).
+    /// Create a staff member. What it prints depends on `auth.methods`.
+    ///
+    /// **With `human_login` served** (permitted, and `staff_auth` and
+    /// `dashboard_client` both configured; ADR-0037) it also writes a password
+    /// credential and prints a generated one-time password, once: the password
+    /// must be replaced at first sign-in, and TOTP is enrolled at the same
+    /// sign-in. That is how it worked before VP-6a (ADR-0017 decision 1).
+    ///
+    /// **Otherwise** it creates the member and no credential: a member reads
+    /// `/dash/v1` only once a console key is attached (`staff pair-key`, or a
+    /// phone pairing through `/svc/v1`). With `human_login` not permitted, the
+    /// command that would mint a password refuses to be asked for one: there is
+    /// no flag for it, and the passwordless member is the whole of what it does.
     ///
     /// **The only way an administrator is created.** A member paired through
     /// vaam is provisioned just in time as a plain member (owner ruling R2),

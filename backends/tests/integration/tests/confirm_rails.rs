@@ -362,6 +362,8 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
         },
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }

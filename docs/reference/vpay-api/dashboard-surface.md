@@ -112,7 +112,10 @@ so `dash::routes`' own `.fallback(not_found)` stays inside: an unmatched
 existed. `staff::routes` deliberately carries no fallback of its own, because
 two routers with fallbacks cannot be merged.
 
-The staff routes are mounted whether or not `staff_auth` is configured. A
+**Since VPA-3 the staff routes are mounted only where `auth.methods` serves
+`human_login`** ([human-login.md](../../flows/dashboard-auth/human-login.md)); the
+paragraph below is the 2026-09 account of the arrangement before VP-6a, kept for
+its reasoning. The staff routes were mounted whether or not `staff_auth` was configured. A
 deployment with a dashboard and no secrets answers the honest 404 through
 `AppState::staff_login`, rather than the paths vanishing — a 404 on
 `/dash/v1/staff/login` and a 404 on `/dash/v1/nonsense` are the same answer,
