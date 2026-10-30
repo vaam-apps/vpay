@@ -70,7 +70,8 @@
 import { NextResponse, type NextRequest } from "next/server";
 
 import { dashboardConfig } from "../config/runtime";
-import { ssoCallback, ssoStart } from "./api";
+import { isHttpsOrLoopbackHttp } from "../config/settings";
+import { revokeSession, ssoCallback, ssoStart } from "./api";
 import {
   COOKIE_ATTRIBUTES,
   SESSION_COOKIE,
@@ -84,12 +85,16 @@ import { HOME_PATH, LOGIN_PATH } from "./session";
 /** The one place every refusal goes; the query value is the whole message. */
 export const SSO_FAILED_PATH = `${LOGIN_PATH}?sso=failed`;
 
-/** Hosts a development identity provider may be reached on over plain `http`. */
-const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
-  "localhost",
-  "127.0.0.1",
-  "[::1]",
-]);
+/**
+ * How long the callback waits for vpay to revoke the session it is replacing,
+ * in milliseconds.
+ *
+ * The revocation is a courtesy to a session that is about to be unreachable
+ * from this browser anyway; the sign-in it rides on has already succeeded at
+ * vpay. So it gets a deadline well under `DASH_TIMEOUT_MS` and its failure,
+ * of any kind, changes nothing.
+ */
+export const SSO_REVOKE_TIMEOUT_MS = 2000;
 
 /**
  * `url` normalised, if it is somewhere this deployment's staff may be sent;
@@ -99,7 +104,7 @@ const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
  * it is checked rather than trusted. All of these must hold:
  *
  * * absolute and **`https`** — `http` only for a loopback host
- *   (`localhost`, `127.0.0.1`, `[::1]`), because a development identity
+ *   (`LOOPBACK_HOSTS`: `localhost`, `127.0.0.1`, `[::1]`), because a development identity
  *   provider in a compose stack is `http://localhost`, and the cookie on this
  *   side is `Secure` either way. A non-loopback `http` provider is refused
  *   here even though vpay accepts it outside livemode;
@@ -130,10 +135,7 @@ export function safeAuthorizationUrl(
   } catch {
     return null;
   }
-  const secure =
-    parsed.protocol === "https:" ||
-    (parsed.protocol === "http:" && LOOPBACK_HOSTS.has(parsed.hostname));
-  if (!secure) {
+  if (!isHttpsOrLoopbackHttp(parsed)) {
     return null;
   }
   if (parsed.origin !== issuerOrigin) {
@@ -147,6 +149,32 @@ export function safeAuthorizationUrl(
     return null;
   }
   return parsed.href;
+}
+
+/** The origin of `url` for a log line, or a fixed word when it has none. */
+function originForLog(url: string): string {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return "unparseable";
+  }
+}
+
+/**
+ * Leaves the one trace of a refused provider redirect, and returns `null`.
+ *
+ * A refusal answers the generic `/login?sso=failed` with no reason, so
+ * without this an operator whose provider's authorization endpoint is on
+ * another origin than its issuer sees a button that always fails and a log
+ * that says nothing. It names **origins only**: the full URL carries `state`,
+ * the nonce and the PKCE challenge, and none of that belongs in a log.
+ */
+function refuseRedirect(url: string, issuerOrigin: string | null): null {
+  // eslint-disable-next-line no-console -- the one trace of a refusal that is otherwise silent; origins only, never the URL, so it carries no state, nonce or challenge.
+  console.warn(
+    `[vpay-dashboard] single sign-on refused a provider redirect to origin ${originForLog(url)}; the configured issuer origin is ${issuerOrigin ?? "not set"}`,
+  );
+  return null;
 }
 
 /** A `303` to `location` with the two headers every response here carries. */
@@ -225,10 +253,9 @@ export async function handleSsoStart(): Promise<NextResponse> {
   if (!started.ok) {
     return failed();
   }
-  const target = safeAuthorizationUrl(
-    started.value.authorization_url,
-    ssoIssuerOrigin,
-  );
+  const target =
+    safeAuthorizationUrl(started.value.authorization_url, ssoIssuerOrigin) ??
+    refuseRedirect(started.value.authorization_url, ssoIssuerOrigin);
   if (target === null) {
     return failed();
   }
@@ -243,6 +270,35 @@ function single(params: URLSearchParams, name: string): string | null {
   return values.length === 1 && only !== undefined && only.length > 0
     ? only
     : null;
+}
+
+/**
+ * Best-effort revocation of the session this sign-in replaces.
+ *
+ * Overwriting the cookie makes the old session unreachable from this browser
+ * but leaves its `staff_sessions` row, and the access token on it, alive until
+ * its own bounds. So when the browser held one, vpay is asked to delete it,
+ * through the call sign-out makes. Nothing about it can fail the sign-in: the
+ * new session is already minted, so an unreachable vpay, a refusal or a
+ * timeout ({@link SSO_REVOKE_TIMEOUT_MS}) is ignored and the old row simply
+ * expires on its own. A token equal to the new one is never revoked.
+ */
+async function revokeReplaced(
+  apiBaseUrl: string,
+  replaced: string | undefined,
+  next: string,
+): Promise<void> {
+  if (replaced === undefined || replaced.length === 0 || replaced === next) {
+    return;
+  }
+  try {
+    await revokeSession(apiBaseUrl, replaced, {
+      timeoutMs: SSO_REVOKE_TIMEOUT_MS,
+    });
+  } catch {
+    // `revokeSession` shapes a network failure into a result; this guards the
+    // sign-in against anything it does not.
+  }
 }
 
 /**
@@ -291,10 +347,9 @@ export async function handleSsoCallback(
   }
 
   if (answered.value.outcome === "reauthenticate") {
-    const target = safeAuthorizationUrl(
-      answered.value.authorization_url,
-      ssoIssuerOrigin,
-    );
+    const target =
+      safeAuthorizationUrl(answered.value.authorization_url, ssoIssuerOrigin) ??
+      refuseRedirect(answered.value.authorization_url, ssoIssuerOrigin);
     if (target === null) {
       return failedAndForgotten();
     }
@@ -304,6 +359,11 @@ export async function handleSsoCallback(
   // `signed_in`: the session vpay minted is authenticated and the pending
   // token is spent. Replacing the session cookie outright is what makes a
   // session planted before the flow worthless; the gate on `/` mints.
+  await revokeReplaced(
+    config.apiBaseUrl,
+    request.cookies.get(SESSION_COOKIE)?.value,
+    answered.value.session,
+  );
   const response = redirectTo(HOME_PATH);
   response.cookies.set(SESSION_COOKIE, answered.value.session, {
     ...COOKIE_ATTRIBUTES,

@@ -104,6 +104,34 @@ describe("a complete configuration", () => {
     }
   });
 
+  it("reads an issuer on plain http as unknown unless it is on a loopback host", () => {
+    // A redirect to a non-loopback `http` provider is always refused
+    // (`safeAuthorizationUrl`), so counting such an issuer as configured would
+    // draw a button that can only fail. Unknown shows the not-configured
+    // notice instead.
+    const origin = (issuer: string): string | null =>
+      assembleConfig({ ...COMPLETE, [SSO_ISSUER_VAR]: issuer }).ssoIssuerOrigin;
+    expect(origin("http://idp.example/realms/staff")).toBeNull();
+    expect(origin("http://10.0.0.5:8180/realms/staff")).toBeNull();
+    expect(origin("http://localhost:8180/realms/staff")).toBe(
+      "http://localhost:8180",
+    );
+    expect(origin("http://127.0.0.1:8180/realms/staff")).toBe(
+      "http://127.0.0.1:8180",
+    );
+    expect(origin("http://[::1]:8180/realms/staff")).toBe("http://[::1]:8180");
+    expect(origin("https://idp.example/realms/staff")).toBe(
+      "https://idp.example",
+    );
+    // Never a boot refusal: SSO is optional, the password sign-in is not.
+    expect(
+      assembleConfig({
+        ...COMPLETE,
+        [SSO_ISSUER_VAR]: "http://idp.example/realms/staff",
+      }).problems,
+    ).toEqual([]);
+  });
+
   it("answers the SSO issuer origin when the client variables are missing too", () => {
     expect(
       assembleConfig({ [SSO_ISSUER_VAR]: "https://idp.example/realms/staff" })

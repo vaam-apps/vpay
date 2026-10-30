@@ -103,15 +103,43 @@ export function credentialHeaders(
  */
 export const DASH_TIMEOUT_MS = 5000;
 
+/**
+ * How long the single-sign-on callback may take, in milliseconds.
+ *
+ * Not {@link DASH_TIMEOUT_MS}, and the difference is the reason it exists.
+ * vpay's callback **consumes the sign-in attempt first**, then calls the
+ * identity provider with a ten-second timeout of its own
+ * (`vpay-api/src/staff/sso/provider.rs`), and that one budget covers a token
+ * exchange plus, on a cold cache, a JWKS fetch. Giving up at five seconds
+ * would show `sso=failed` while vpay may still be about to mint a session
+ * for an attempt nobody can retry. Twenty-five seconds is the provider's ten
+ * with room for vpay's own database work and a slow hop in between; the
+ * person is waiting on a provider's own page's redirect, not on a spinner of
+ * ours, so the longer wait is the honest one. Everything else keeps the
+ * default.
+ */
+export const SSO_CALLBACK_TIMEOUT_MS = 25_000;
+
 /** What one call carries beyond its URL. */
 export interface DashRequest {
   readonly method: "GET" | "POST";
-  /** The credential, or `undefined` for the two calls that precede one. */
+  /**
+   * The credential, or `undefined` for the four calls that precede one: the
+   * password step, the discovery read, the single-sign-on status read and
+   * `start`.
+   */
   readonly credential?: Credential;
   /** A form-encoded body (`axum::Form` is what every staff handler takes). */
   readonly form?: Readonly<Record<string, string>>;
   /** `"manual"` only for the authorization request. */
   readonly redirect?: "error" | "manual";
+  /**
+   * This call's deadline in milliseconds, when {@link DASH_TIMEOUT_MS} is the
+   * wrong one. Only a call whose upstream is known to take longer names one
+   * ({@link SSO_CALLBACK_TIMEOUT_MS}); there is no way to turn the deadline
+   * off.
+   */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -138,7 +166,7 @@ export function buildInit(request: DashRequest): RequestInit {
     // showed none.
     cache: "no-store",
     redirect: request.redirect ?? "error",
-    signal: AbortSignal.timeout(DASH_TIMEOUT_MS),
+    signal: AbortSignal.timeout(request.timeoutMs ?? DASH_TIMEOUT_MS),
   };
 }
 

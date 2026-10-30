@@ -25,7 +25,7 @@ describe("the SSO paths", () => {
     expect(existsSync(routeFile(path))).toBe(true);
   });
 
-  it("are the ones the docs and the Helm values spell", () => {
+  it("are the ones the docs and the app README spell", () => {
     expect(SSO_START_PATH).toBe("/api/auth/sso/start");
     expect(SSO_CALLBACK_PATH).toBe("/api/auth/sso/callback");
   });

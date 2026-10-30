@@ -44,6 +44,7 @@ import { dashboardConfig } from "../config/runtime";
 import type { FormState } from "../form-state";
 import {
   postForm,
+  revokeSession,
   type ApiFailure,
   type LoginResponse,
   type TotpResponse,
@@ -435,12 +436,7 @@ export async function signOut(
   const { config } = dashboardConfig();
   const token = await sessionToken();
   if (config !== null && token !== null) {
-    const revoked = await postForm<{ signed_out: boolean }>(
-      config.apiBaseUrl,
-      "/dash/v1/staff/logout",
-      {},
-      { credential: sessionCredential(token) },
-    );
+    const revoked = await revokeSession(config.apiBaseUrl, token);
     if (!revoked.ok) {
       return { error: SIGN_OUT_FAILED, requestId: revoked.failure.requestId };
     }

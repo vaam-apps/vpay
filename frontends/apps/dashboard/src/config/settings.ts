@@ -265,12 +265,42 @@ export function assembleConfig(
   };
 }
 
-/** The lower-cased origin of an absolute `http(s)` URL, or `null`. */
+/**
+ * Hosts a development identity provider may be reached on over plain `http`.
+ *
+ * The one list: {@link originOf} reads it for the issuer, and
+ * `server/sso.ts` for the authorization URL vpay answers, so the two cannot
+ * disagree about what is allowed.
+ */
+export const LOOPBACK_HOSTS: ReadonlySet<string> = new Set([
+  "localhost",
+  "127.0.0.1",
+  "[::1]",
+]);
+
+/** Whether `url` is `https`, or `http` on a loopback host. */
+export function isHttpsOrLoopbackHttp(url: URL): boolean {
+  return (
+    url.protocol === "https:" ||
+    (url.protocol === "http:" && LOOPBACK_HOSTS.has(url.hostname))
+  );
+}
+
+/**
+ * The lower-cased origin of an absolute URL that is `https`, or `http` on a
+ * loopback host, or `null`.
+ *
+ * The transport rule is the one `safeAuthorizationUrl` applies to the
+ * redirect, applied here to the issuer too: an issuer on plain `http` outside
+ * loopback could never be redirected to, and counting it as configured would
+ * draw a button that always fails instead of the not-configured notice.
+ */
 function originOf(value: string | null): string | null {
   if (value === null || !isAbsoluteHttpUrl(value)) {
     return null;
   }
-  return new URL(value).origin;
+  const url = new URL(value);
+  return isHttpsOrLoopbackHttp(url) ? url.origin : null;
 }
 
 /** Absolute, and `http`/`https` — not `file:`, not a bare host. */

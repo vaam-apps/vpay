@@ -34,7 +34,12 @@
  * — so the id is the only thing that distinguishes one failure from another.
  * It is carried on the failure and rendered beside the message.
  */
-import { dashFetch, sessionCredential, type Credential } from "./dash-fetch";
+import {
+  dashFetch,
+  SSO_CALLBACK_TIMEOUT_MS,
+  sessionCredential,
+  type Credential,
+} from "./dash-fetch";
 
 /** The two spellings vpay emits, in the order this app prefers them. */
 const REQUEST_ID_HEADERS = ["request-id", "x-request-id"] as const;
@@ -288,9 +293,11 @@ async function settle<T>(response: Response): Promise<ApiResult<T>> {
   }
 }
 
-/** What a call may carry beyond its path and body: the one credential. */
+/** What a call may carry beyond its path and body: the one credential, and a deadline. */
 export interface CallOptions {
   readonly credential?: Credential;
+  /** A deadline other than the default; see `DashRequest.timeoutMs`. */
+  readonly timeoutMs?: number;
 }
 
 /**
@@ -314,11 +321,35 @@ export async function postForm<T>(
       ...(options.credential === undefined
         ? {}
         : { credential: options.credential }),
+      ...(options.timeoutMs === undefined
+        ? {}
+        : { timeoutMs: options.timeoutMs }),
     });
   } catch (error) {
     return { ok: false, failure: unreachable(error) };
   }
   return settle<T>(response);
+}
+
+/**
+ * `POST /dash/v1/staff/logout`: deletes the `staff_sessions` row `token`
+ * names, which is what revokes it (ADR-0017 decision 2).
+ *
+ * The one call sign-out makes, and the one the single-sign-on callback makes
+ * for the session it is about to replace. Idempotent at vpay: a token that
+ * was never there answers `200`.
+ */
+export function revokeSession(
+  apiBaseUrl: string,
+  token: string,
+  options: Pick<CallOptions, "timeoutMs"> = {},
+): Promise<ApiResult<{ signed_out: boolean }>> {
+  return postForm<{ signed_out: boolean }>(
+    apiBaseUrl,
+    "/dash/v1/staff/logout",
+    {},
+    { ...options, credential: sessionCredential(token) },
+  );
 }
 
 /** `GET` a JSON document. */
@@ -529,7 +560,10 @@ export async function ssoCallback(
     apiBaseUrl,
     "/dash/v1/staff/sso/callback",
     { code, state },
-    { credential: sessionCredential(pendingToken) },
+    {
+      credential: sessionCredential(pendingToken),
+      timeoutMs: SSO_CALLBACK_TIMEOUT_MS,
+    },
   );
   if (!result.ok) {
     return result;

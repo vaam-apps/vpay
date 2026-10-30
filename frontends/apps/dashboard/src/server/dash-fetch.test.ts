@@ -15,6 +15,7 @@ import {
   buildInit,
   credentialHeaders,
   dashFetch,
+  DASH_TIMEOUT_MS,
   SESSION_HEADER,
   sessionCredential,
   type Credential,
@@ -186,6 +187,17 @@ describe("a call that never answers", () => {
     expect(post.signal).toBeInstanceOf(AbortSignal);
     expect(authorize.signal).toBeInstanceOf(AbortSignal);
     expect(asked()).toEqual([5000, 5000, 5000]);
+  });
+
+  it("lets one call name its own deadline and leaves every other at five seconds", () => {
+    // THE DECISIVE MUTATION: ignore `timeoutMs` in `buildInit`. The single
+    // sign-on callback then gives up at five seconds while vpay is still
+    // inside the identity provider's ten.
+    const { asked } = hangingVpay();
+    buildInit({ method: "POST", form: { a: "b" }, timeoutMs: 25_000 });
+    buildInit({ method: "POST", form: { a: "b" } });
+    expect(asked()).toEqual([25_000, DASH_TIMEOUT_MS]);
+    expect(DASH_TIMEOUT_MS).toBe(5000);
   });
 
   it("rejects when the deadline fires, which every caller already shapes into an outage", async () => {
