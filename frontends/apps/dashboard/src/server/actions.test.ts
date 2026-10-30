@@ -520,7 +520,41 @@ describe("signOut", () => {
     expect(world.events).toEqual([
       "vpay:/dash/v1/staff/logout",
       "cookie:__Host-vpay_dash_session=(cleared)",
+      "cookie:__Host-vpay_dash_enrolment=(cleared)",
     ]);
+  });
+
+  it("forgets the sealed enrolment secret with the session", async () => {
+    // THE DECISIVE MUTATION: clear the session cookie only. The sealed secret
+    // then stays in a shared browser for the ten minutes of its life.
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_enrolment", "sealed-blob");
+    vpay({
+      "/dash/v1/staff/logout": { status: 200, body: { signed_out: true } },
+    });
+    expect(await run(() => signOut(NO_ERROR, new FormData()))).toBe(
+      "redirect:/login",
+    );
+    expect(world.jar.has("__Host-vpay_dash_enrolment")).toBe(false);
+    const cleared = world.sets.find(
+      (entry) => entry.name === "__Host-vpay_dash_enrolment",
+    );
+    expect(cleared?.options).toMatchObject({
+      httpOnly: true,
+      secure: true,
+      sameSite: "lax",
+      path: "/",
+      maxAge: 0,
+    });
+  });
+
+  it("keeps the enrolment secret too when the revocation was not confirmed", async () => {
+    world.jar.set("__Host-vpay_dash_session", "sess-1");
+    world.jar.set("__Host-vpay_dash_enrolment", "sealed-blob");
+    vpay({ "/dash/v1/staff/logout": { status: 503 } });
+    await run(() => signOut(NO_ERROR, new FormData()));
+    expect(world.jar.has("__Host-vpay_dash_enrolment")).toBe(true);
+    expect(world.sets).toEqual([]);
   });
 
   it("KEEPS the cookie and says so when vpay answers 503 — a live row nobody could sign out of is the failure", async () => {

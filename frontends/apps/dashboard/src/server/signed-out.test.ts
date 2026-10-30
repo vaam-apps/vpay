@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from "vitest";
 
-import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from "./cookies";
+import { COOKIE_ATTRIBUTES, ENROLMENT_COOKIE, SESSION_COOKIE } from "./cookies";
 import { LOGIN_PATH } from "./session";
 import { signedOutResponse } from "./signed-out";
 
@@ -28,6 +28,11 @@ function setCookie(response: Response): string {
   const header = response.headers.get("set-cookie");
   expect(header, "the response must carry a Set-Cookie").not.toBeNull();
   return header ?? "";
+}
+
+/** Each `Set-Cookie` the response carries, one string per cookie. */
+function setCookies(response: Response): string[] {
+  return response.headers.getSetCookie();
 }
 
 describe("the signed-out response", () => {
@@ -59,22 +64,51 @@ describe("the signed-out response", () => {
   it("deletes it under its __Host- name, with no Domain", () => {
     // A deletion under the old, unprefixed name would leave the real cookie in
     // place; one with a `Domain` is refused by the browser outright.
-    const cookie = setCookie(signedOutResponse());
-    expect(cookie.startsWith("__Host-vpay_dash_session=")).toBe(true);
-    expect(cookie).not.toMatch(/Domain=/i);
+    const cookies = setCookies(signedOutResponse());
+    expect(
+      cookies.some((cookie) => cookie.startsWith("__Host-vpay_dash_session=")),
+    ).toBe(true);
+    for (const cookie of cookies) {
+      expect(cookie).not.toMatch(/Domain=/i);
+    }
+  });
+
+  it("takes the sealed enrolment secret with it — a session vpay refused is over", () => {
+    // THE DECISIVE MUTATION: delete only the session cookie. The blob that
+    // bridged the password step to the first code is then left in the browser
+    // for the ten minutes of its life.
+    const cookies = setCookies(signedOutResponse());
+    const enrolment = cookies.find((cookie) =>
+      cookie.startsWith(`${ENROLMENT_COOKIE}=;`),
+    );
+    expect(enrolment, `cookies were ${cookies.join(" | ")}`).toBeDefined();
+    expect(enrolment).toMatch(/Max-Age=0/i);
+    expect(enrolment).toMatch(/Path=\/(;|$)/i);
+    expect(enrolment).toMatch(/Secure/i);
+    expect(enrolment).toMatch(/HttpOnly/i);
+  });
+
+  it("leaves the enrolment secret alone for an <img> on somebody else's page", () => {
+    const response = signedOutResponse(
+      fetchMetadata({ "sec-fetch-dest": "image" }),
+    );
+    expect(setCookies(response)).toEqual([]);
   });
 
   it("deletes it with the attributes it was written with", () => {
     // A deletion whose Path or Secure differs from the original leaves the
     // original in place: the browser treats them as different cookies.
     expect(COOKIE_ATTRIBUTES.httpOnly, "the attributes under test").toBe(true);
-    const cookie = setCookie(signedOutResponse());
-    expect(cookie).toMatch(/HttpOnly/i);
-    expect(cookie).toMatch(/Secure/i);
-    // Exactly `/`: a prefix match would also pass `Path=/signed-out`, a
-    // different cookie to the browser, which leaves the original in place.
-    expect(cookie).toMatch(/Path=\/(;|$)/i);
-    expect(cookie).toMatch(/SameSite=Lax/i);
+    const cookies = setCookies(signedOutResponse());
+    expect(cookies).toHaveLength(2);
+    for (const cookie of cookies) {
+      expect(cookie).toMatch(/HttpOnly/i);
+      expect(cookie).toMatch(/Secure/i);
+      // Exactly `/`: a prefix match would also pass `Path=/signed-out`, a
+      // different cookie to the browser, which leaves the original in place.
+      expect(cookie).toMatch(/Path=\/(;|$)/i);
+      expect(cookie).toMatch(/SameSite=Lax/i);
+    }
   });
 });
 

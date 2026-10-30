@@ -42,7 +42,7 @@ import {
   type SessionResponse,
   type SessionStageResponse,
 } from "./api";
-import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from "./cookies";
+import { COOKIE_ATTRIBUTES, ENROLMENT_COOKIE, SESSION_COOKIE } from "./cookies";
 import { sessionCredential } from "./dash-fetch";
 import { gateFor, refusalFor, totpGateFor } from "./gate";
 import { completeAuthorizationCode } from "./oauth";
@@ -148,6 +148,20 @@ export async function setSessionCookie(
 export async function clearSessionCookie(): Promise<void> {
   const store = await cookies();
   store.set(SESSION_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+}
+
+/**
+ * Removes the sealed enrolment secret.
+ *
+ * **Callable only from a server action**, for {@link clearSessionCookie}'s
+ * reason. It outlives nothing it should: the secret bridges the password step
+ * and the first code, so a sign-out — and `/signed-out`, which forgets a
+ * session vpay has refused — must take it with the session, or a shared
+ * browser keeps a credential blob for ten minutes after the person left.
+ */
+export async function clearEnrolmentCookie(): Promise<void> {
+  const store = await cookies();
+  store.set(ENROLMENT_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
 }
 
 /**

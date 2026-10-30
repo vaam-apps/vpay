@@ -58,6 +58,7 @@ import {
 import { originRefusal } from "./csrf";
 import { decodePendingEnrolment, encodePendingEnrolment } from "./enrolment";
 import {
+  clearEnrolmentCookie,
   clearSessionCookie,
   HOME_PATH,
   LOGIN_PATH,
@@ -146,7 +147,6 @@ export async function signIn(
 
   await setSessionCookie(result.value.session, SESSION_MAX_AGE_SECONDS);
 
-  const store = await cookies();
   const sealed = result.value.enrolment;
   const otpauth = result.value.otpauth_uri;
   if (
@@ -154,6 +154,7 @@ export async function signIn(
     typeof sealed === "string" &&
     typeof otpauth === "string"
   ) {
+    const store = await cookies();
     store.set(ENROLMENT_COOKIE, encodePendingEnrolment({ sealed, otpauth }), {
       ...COOKIE_ATTRIBUTES,
       maxAge: ENROLMENT_MAX_AGE_SECONDS,
@@ -164,7 +165,7 @@ export async function signIn(
     // only one that may ever authenticate an enrolled account — but a
     // credential blob living in a browser for no reason is one this app can
     // simply not leave behind.
-    store.set(ENROLMENT_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+    await clearEnrolmentCookie();
   }
 
   redirect(TOTP_PATH);
@@ -246,7 +247,7 @@ export async function submitTotp(
 
   // Enrolment is committed; the blob has no further use and outliving the
   // request is the only thing it could do wrong.
-  store.set(ENROLMENT_COOKIE, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+  await clearEnrolmentCookie();
 
   // The page decides, not this action: `/` reads the session, sends one that
   // still carries the printed password to `/login/password` (no token can be
@@ -372,6 +373,10 @@ const SIGN_OUT_FAILED =
  * was never there, so a second sign-out is not an error. With no cookie, or no
  * configuration to call vpay with, there is no row this app can revoke and the
  * redirect to the form is the whole job.
+ *
+ * It forgets the sealed enrolment secret too, but only once the revocation
+ * has been confirmed: a blob that outlives the session that was enrolling has
+ * no use, and is the thing a shared browser should not keep.
  */
 export async function signOut(
   _previous: FormState,
@@ -402,5 +407,6 @@ export async function signOut(
     }
   }
   await clearSessionCookie();
+  await clearEnrolmentCookie();
   redirect(LOGIN_PATH);
 }

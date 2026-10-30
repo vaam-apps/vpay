@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 
-import { COOKIE_ATTRIBUTES, SESSION_COOKIE } from "./cookies";
+import { COOKIE_ATTRIBUTES, ENROLMENT_COOKIE, SESSION_COOKIE } from "./cookies";
 import { LOGIN_PATH } from "./session";
 
 /**
@@ -83,10 +83,13 @@ export function signedOutResponse(headers?: Headers): NextResponse {
     // deletion whose `path` or `secure` differs from the original leaves the
     // original in place — the browser treats them as different cookies —
     // which is the drift `COOKIE_ATTRIBUTES` exists to stop (`cookies.ts`).
-    response.cookies.set(SESSION_COOKIE, "", {
-      ...COOKIE_ATTRIBUTES,
-      maxAge: 0,
-    });
+    //
+    // The sealed enrolment secret goes with it: a session vpay has refused is
+    // over, and the blob that was bridging its password step to its first
+    // code has nothing left to bridge.
+    for (const name of [SESSION_COOKIE, ENROLMENT_COOKIE]) {
+      response.cookies.set(name, "", { ...COOKIE_ATTRIBUTES, maxAge: 0 });
+    }
   }
   return response;
 }
