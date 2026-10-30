@@ -554,7 +554,7 @@ material_controls:
       - "pnpm-lock.yaml"
       - "deny.toml"
       - "pnpm-workspace.yaml"
-    evidence: "cargo deny check (bans, licenses, sources, advisories) and pnpm audit at moderate. One JS advisory is risk-accepted and ignored by id; GAP-103 tracks the missing dated allowlist."
+    evidence: "cargo deny check (bans, licenses, sources, advisories) and pnpm audit at moderate. One JS advisory is risk-accepted by id under a dated, reasoned auditConfig.ignoreGhsas entry; the allowlist-with-reason escape hatch #103 asked for is built (GAP-103, closed)."
     evidence_paths:
       - "deny.toml"
       - "pnpm-workspace.yaml"
@@ -565,11 +565,12 @@ material_controls:
   - id: "A.8.8"
     theme: "Technological"
     name: "Management of Technical Vulnerabilities"
-    implementation: "Dependency auditing runs in CI and locally; there is no formal CVE intake or remediation SLA."
+    implementation: "Dependency auditing runs in CI and locally, and the remediation SLA (severity, owner, target, exception path) is written down in docs/flows/sdlc.md."
     implementation_paths:
       - ".github/workflows/ci.yml"
       - "justfile"
-    evidence: "cargo-deny advisories and pnpm audit fail on moderate, high and critical findings. Remediation SLAs are gap #151."
+      - "docs/flows/sdlc.md"
+    evidence: "cargo-deny advisories and pnpm audit fail on moderate, high and critical findings; the remediation SLA and exception path are documented in docs/flows/sdlc.md. What remains out of repository scope is the cross-release CVE history ledger (GAP-151)."
     evidence_paths:
       - "deny.toml"
     evidence_tests: []
@@ -690,15 +691,20 @@ material_controls:
   - id: "A.8.25"
     theme: "Technological"
     name: "Secure Development Life Cycle"
-    implementation: "just verify runs the invariant gates; vulnerability intake and remediation SLAs are not formalized."
+    implementation: "The change-to-production path is the written SDLC policy: just ci and just verify gate every change, security-relevant changes get a threat model before their code, advisory scanning is a required CI gate at an approved threshold, vulnerability findings carry severity/owner/target and a documented exception path, and emergency changes have an auditable record and a retrospective review."
     implementation_paths:
       - "justfile"
       - ".github/workflows/ci.yml"
-    evidence: "The sixteen offline gates plus the Storybook axe gate and pnpm audit. A written SSDLC and CVE remediation SLA are gap #151."
+      - "docs/flows/sdlc.md"
+      - "docs/flows/emergency-changes.md"
+      - "docs/security/README.md"
+    evidence: "The offline gates, the Storybook axe gate, pnpm audit at moderate and cargo deny, written down as policy in docs/flows/sdlc.md with emergency changes in docs/flows/emergency-changes.md. Organisational ISMS risk treatment and SoA remain out of repository scope."
     evidence_paths:
       - "AGENTS.md"
+      - "docs/flows/sdlc.md"
+      - "docs/flows/emergency-changes.md"
     evidence_tests: []
-    status: "gap"
+    status: "partial"
     related_gap: "GAP-151"
 
   - id: "A.8.28"
@@ -733,8 +739,8 @@ known_security_gaps:
   - id: "GAP-103"
     title: "Web dependency audit allowlist and one ignored advisory"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/103"
-    description: "pnpm audit runs at --audit-level=moderate. GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) is ignored by id in pnpm-workspace.yaml under the maintainer decision of 2026-10-09; the dated allowlist-with-reason escape hatch #103 asked for is not built."
-    status: "open"
+    description: "Resolved: audit-web runs pnpm audit at --audit-level=moderate in just ci and in CI's web job, so moderate, high and critical all fail. The dated allowlist-with-reason escape hatch #103 asked for is built: GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) is ignored by id under auditConfig.ignoreGhsas in pnpm-workspace.yaml with the maintainer decision of 2026-10-09, the scope of exposure and a REMOVE WHEN condition, and the exception path is documented in docs/flows/sdlc.md."
+    status: "closed"
     related_control: "A.8.7"
 
   - id: "GAP-56"
@@ -747,7 +753,7 @@ known_security_gaps:
   - id: "GAP-151"
     title: "Formal secure SDLC policy and vulnerability remediation evidence"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/151"
-    description: "No written procedure links CVE intake to a fix-release SLA."
+    description: "The repository-side SDLC policy is now written (docs/flows/sdlc.md) with emergency changes (docs/flows/emergency-changes.md), mapping the change-to-production path, threat-assessment trigger, advisory scanning threshold and exception path, remediation SLA and CI evidence to ISO 27001 A.8.25. What remains is out of repository scope: the organisational ISMS risk treatment, Statement of Applicability, and the cross-release CVE history ledger, which an ISMS reader maintains outside this tree."
     status: "open"
     related_control: "A.8.25"
 

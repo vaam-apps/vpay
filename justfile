@@ -1492,10 +1492,18 @@ deny:
 # nobody reads.
 #
 # The escape hatch issue #103 asked for alongside the lower ceiling — a
-# documented allowlist with a dated reason per entry — is NOT BUILT.
-# `pnpm.auditConfig.ignoreCves` is absent from `package.json` and no advisory
-# is being suppressed (checked 2026-09-16). Until it exists, an accepted
-# advisory has nowhere to go but this comment, and #103 stays open for it.
+# documented allowlist with a dated reason per entry — is BUILT since
+# 2026-10-09, as `auditConfig.ignoreGhsas` in `pnpm-workspace.yaml`
+# (the settings moved out of `package.json` on 2026-09-19), which carries the
+# maintainer's dated decision, the scope of exposure and a REMOVE WHEN
+# condition for the one advisory it suppresses, GHSA-vfj7-8cjw-p6xm. #103 is
+# closed; the exception path is documented in docs/flows/sdlc.md.
+#
+# This paragraph said "is NOT BUILT … #103 stays open for it" until
+# 2026-10-29, and had been wrong since the auditConfig entry landed on
+# 2026-10-09; the 2026-09-16 check it recorded predated that entry. An
+# accepted advisory goes in `auditConfig.ignoreGhsas` (or `deny.toml`'s
+# `[advisories] ignore` for Rust), not in this comment.
 #
 # IS part of `just ci`, since 2026-09-11 — and it is the one thing in `just
 # ci` that needs the network. See the `ci` recipe's own comment: the

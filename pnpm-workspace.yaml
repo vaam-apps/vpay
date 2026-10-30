@@ -359,6 +359,31 @@ minimumReleaseAgeExclude:
 # `overrides` like the brace-expansion ones, and delete this block. Re-check
 # on every audit pass, since an ignore that outlives its reason hides the next
 # finding against the same id.
+#
+# GHSA-3f7j-7jwc-fxfj: systeminformation <5.33.16, high, RCE in getgrnam.
+#   Reached only through `frontends__tests__e2e > cypress > systeminformation`,
+#   a path that is exclusively a test dependency (Cypress e2e suite). It is
+#   not present in the production dependency graph.
+#   REMOVE WHEN: `cypress` publishes a version that bumps its `systeminformation`
+#   floor to >=5.33.16.
+#
+# GHSA-7648-jmwf-vw7j: systeminformation <5.33.13, moderate, DoS in WiFi
+#   scanning. Same path as GHSA-3f7j above (test-only dep via cypress).
+#   REMOVE WHEN: same as GHSA-3f7j — remove when cypress resolves the
+#   systeminformation floor to >=5.33.13.
+#
+# GHSA-rmxm-3fg6-px4f: @hono/node-server <2.1.3, moderate, request smuggling
+#   via chunked encoding. Reached only through
+#   `examples__shop > @zenstackhq/cli > @hono/node-server`. The `examples__shop`
+#   workspace is an SDK integration example and not a shipped application.
+#   `@zenstackhq/cli` constrains `@hono/node-server` to `^1.13.8` (v1.x), and
+#   the fix is in v2.1.3 (major-version change). No version of `@zenstackhq/cli`
+#   currently published resolves to a fixed version of `@hono/node-server`.
+#   REMOVE WHEN: `@zenstackhq/cli` publishes a version that bumps its
+#   `@hono/node-server` floor to >=2.1.3.
 auditConfig:
   ignoreGhsas:
     - GHSA-vfj7-8cjw-p6xm
+    - GHSA-3f7j-7jwc-fxfj
+    - GHSA-7648-jmwf-vw7j
+    - GHSA-rmxm-3fg6-px4f
