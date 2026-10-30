@@ -349,6 +349,10 @@ export async function changePassword(
   redirect(HOME_PATH);
 }
 
+/** What the sign-out says when vpay did not confirm the revocation. */
+const SIGN_OUT_FAILED =
+  "Could not sign out, so you are still signed in. Try again.";
+
 /**
  * Signs out: deletes the vpay session row, then clears the cookie.
  *
@@ -357,12 +361,22 @@ export async function changePassword(
  * first and failing to reach vpay would leave a live row with a live token
  * on it and nothing pointing at it — a session nobody can sign out of.
  *
+ * **So the cookie is kept when vpay did not confirm.** A failed call (vpay
+ * unreachable, a `5xx`, a refusal) answers {@link SIGN_OUT_FAILED} and leaves
+ * the cookie where it is: the person is told they are still signed in and the
+ * button still works, where clearing it would have shown them a sign-in form
+ * over a live row. This comment said as much and the code cleared the cookie
+ * anyway until the VPA-5a review.
+ *
  * `/dash/v1/staff/logout` is idempotent and answers `200` for a token that
- * was never there, so a second sign-out is not an error. The cookie is
- * cleared whatever vpay answered: a staff member who pressed the button must
- * end up signed out of this browser.
+ * was never there, so a second sign-out is not an error. With no cookie, or no
+ * configuration to call vpay with, there is no row this app can revoke and the
+ * redirect to the form is the whole job.
  */
-export async function signOut(): Promise<void> {
+export async function signOut(
+  _previous: FormState,
+  _form: FormData,
+): Promise<FormState> {
   // Issue #88 item 4, and this one is the reason the check is per action
   // rather than per form: a sign-out is the action an `<img src>` or a link
   // scanner would fire, which `signed-in-bar.tsx` already made a POST to
@@ -377,12 +391,15 @@ export async function signOut(): Promise<void> {
   const { config } = dashboardConfig();
   const token = await sessionToken();
   if (config !== null && token !== null) {
-    await postForm<{ signed_out: boolean }>(
+    const revoked = await postForm<{ signed_out: boolean }>(
       config.apiBaseUrl,
       "/dash/v1/staff/logout",
       {},
       { credential: sessionCredential(token) },
     );
+    if (!revoked.ok) {
+      return { error: SIGN_OUT_FAILED, requestId: revoked.failure.requestId };
+    }
   }
   await clearSessionCookie();
   redirect(LOGIN_PATH);

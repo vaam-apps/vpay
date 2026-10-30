@@ -1,5 +1,7 @@
-import { Button, Code } from "@vaam-apps/ui";
-import { LogOut } from "lucide-react";
+import { Code } from "@vaam-apps/ui";
+
+import type { FormAction } from "../form-state";
+import { SignOutControl } from "./sign-out-control";
 
 export interface SignedInBarProps {
   /** The address this session signed in with. */
@@ -7,7 +9,7 @@ export interface SignedInBarProps {
   /** The one tenant this session may read — the dashboard client's binding. */
   merchantId: string;
   /** `signOut` from `src/server/actions.ts`. */
-  signOut: () => Promise<void>;
+  signOut: FormAction;
 }
 
 /**
@@ -19,18 +21,12 @@ export interface SignedInBarProps {
  * to tell "this merchant has no payments" from "I am looking at the wrong
  * merchant", and no other element on the page answers that.
  *
- * Sign-out is a `<form>` POST rather than a link, so it cannot be triggered by
- * a `GET` — a sign-out link is something a prefetcher, a link scanner or an
- * `<img src>` in a chat message can fire. (And it carries the origin check in
- * `server/csrf.ts`, because a `POST` from another site is the same thing.)
+ * Sign-out is {@link SignOutControl}: a `<form>` POST rather than a link, and
+ * the place its refusal is shown.
  *
  * **Not in the root layout.** The layout is rendered by `/login` too, and a
  * "Sign out" control on a page where nobody is signed in is the same kind of
  * claim as a nav entry for a page nobody wrote.
- *
- * `secondary`, M3's outlined button: sign-out ends this session and revokes
- * its token, but it destroys nothing an operator would need back, so it is
- * not painted in the danger hue the status system reserves for failures.
  */
 export function SignedInBar({ email, merchantId, signOut }: SignedInBarProps) {
   const initial = email.trim().charAt(0).toUpperCase() || "?";
@@ -54,12 +50,7 @@ export function SignedInBar({ email, merchantId, signOut }: SignedInBarProps) {
           </span>
         </span>
       </div>
-      <form action={signOut}>
-        <Button type="submit" variant="secondary" size="sm" className="w-full">
-          <LogOut size={16} aria-hidden="true" />
-          Sign out
-        </Button>
-      </form>
+      <SignOutControl signOut={signOut} />
     </div>
   );
 }

@@ -58,6 +58,7 @@ import { PaymentDetailView } from "./components/payment-detail";
 import { PaymentsFilters } from "./components/payments-filters";
 import { PaymentsPager } from "./components/payments-pager";
 import { PaymentsTable } from "./components/payments-table";
+import { NO_ERROR } from "./form-state";
 import { DETAIL, INTENT } from "./testing/fixtures";
 
 // `PaymentsFilters` calls `useRouter()` to apply (see its own module doc);
@@ -207,7 +208,7 @@ describe("every screen of the sign-in", () => {
           displayName="Ada Lovelace"
           email="ada@acme.test"
           merchantId="acme"
-          signOut={() => Promise.resolve()}
+          signOut={() => Promise.resolve(NO_ERROR)}
         />,
       ),
     ).toEqual([]);

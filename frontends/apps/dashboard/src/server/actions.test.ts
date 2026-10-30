@@ -183,7 +183,9 @@ describe("every action opens with the origin check", () => {
     world.origin = "https://evil.example";
     world.jar.set("vpay_dash_session", "sess-1");
     const sent = vpay({});
-    expect(await run(() => signOut())).toBe("redirect:/login");
+    expect(await run(() => signOut(NO_ERROR, new FormData()))).toBe(
+      "redirect:/login",
+    );
     expect(sent).toEqual([]);
     expect(world.sets).toEqual([]);
     expect(world.jar.get("vpay_dash_session")).toBe("sess-1");
@@ -460,7 +462,9 @@ describe("signOut", () => {
     const sent = vpay({
       "/dash/v1/staff/logout": { status: 200, body: { signed_out: true } },
     });
-    expect(await run(() => signOut())).toBe("redirect:/login");
+    expect(await run(() => signOut(NO_ERROR, new FormData()))).toBe(
+      "redirect:/login",
+    );
     expect(sent[0]?.headers["x-vpay-staff-session"]).toBe("sess-1");
     expect(world.events).toEqual([
       "vpay:/dash/v1/staff/logout",
@@ -468,10 +472,38 @@ describe("signOut", () => {
     ]);
   });
 
-  it("forgets the cookie whatever vpay answered", async () => {
+  it("KEEPS the cookie and says so when vpay answers 503 — a live row nobody could sign out of is the failure", async () => {
+    // THE DECISIVE MUTATION: clear the cookie whatever vpay answered, which is
+    // what this action did until the VPA-5a review while its own comment said
+    // the opposite.
     world.jar.set("vpay_dash_session", "sess-1");
     vpay({ "/dash/v1/staff/logout": { status: 503 } });
-    expect(await run(() => signOut())).toBe("redirect:/login");
-    expect(world.jar.has("vpay_dash_session")).toBe(false);
+    const result = await run(() => signOut(NO_ERROR, new FormData()));
+    expect(result).toMatchObject({ requestId: "req_act" });
+    expect((result as FormState).error).toMatch(
+      /could not sign out.*try again/i,
+    );
+    expect(world.jar.get("vpay_dash_session")).toBe("sess-1");
+    expect(world.sets).toEqual([]);
+  });
+
+  it("keeps the cookie when vpay cannot be reached at all", async () => {
+    world.jar.set("vpay_dash_session", "sess-1");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.reject(new Error("connection reset"))),
+    );
+    const result = await run(() => signOut(NO_ERROR, new FormData()));
+    expect(result).toMatchObject({ requestId: null });
+    expect((result as FormState).error).toMatch(/could not sign out/i);
+    expect(world.jar.has("vpay_dash_session")).toBe(true);
+  });
+
+  it("is a sign-out without a call when there is no cookie to revoke", async () => {
+    const sent = vpay({});
+    expect(await run(() => signOut(NO_ERROR, new FormData()))).toBe(
+      "redirect:/login",
+    );
+    expect(sent).toEqual([]);
   });
 });

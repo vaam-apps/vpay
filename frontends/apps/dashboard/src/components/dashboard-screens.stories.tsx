@@ -52,6 +52,7 @@ import { PaymentsTable } from "./payments-table";
 import { ProcedurePager } from "./procedure-pager";
 import { ReadFailure } from "./read-failure";
 import { TimelineGap } from "./timeline-gap";
+import { NO_ERROR } from "../form-state";
 import { DETAIL, INTENT, OTHER_INTENT } from "../testing/fixtures";
 
 /**
@@ -807,7 +808,7 @@ export const Account: Story = {
         displayName="Ada Lovelace"
         email="ada@acme.test"
         merchantId="acme"
-        signOut={() => Promise.resolve()}
+        signOut={() => Promise.resolve(NO_ERROR)}
       />
     </CenteredShell>
   ),
@@ -820,7 +821,7 @@ export const AccountLight: Story = {
         displayName="Ada Lovelace"
         email="ada@acme.test"
         merchantId="acme"
-        signOut={() => Promise.resolve()}
+        signOut={() => Promise.resolve(NO_ERROR)}
       />
     </CenteredShell>
   ),
