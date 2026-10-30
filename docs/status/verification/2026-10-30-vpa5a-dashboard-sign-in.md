@@ -31,8 +31,8 @@ in the tree rather than taken from the plan:
 
 | File                                                                                                                                | Against `f885170^`                                                                                                                                                       |
 | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `server/{cookies,csrf,pkce,oauth,signed-out,enrolment}.ts`, `form-state.ts`, `app/signed-out/route.ts`, `components/form-alert.tsx` | byte-identical (0 lines)                                                                                                                                                 |
-| `server/{cookies,csrf,pkce}.test.ts`                                                                                                | byte-identical                                                                                                                                                           |
+| `server/{cookies,csrf,pkce,oauth,signed-out,enrolment}.ts`, `form-state.ts`, `app/signed-out/route.ts`, `components/form-alert.tsx` | byte-identical (0 lines) when this page was first written; **no longer**: review round 1 changed `cookies`, `csrf`, `signed-out` and `form-state` (see below)            |
+| `server/{cookies,csrf,pkce}.test.ts`                                                                                                | byte-identical when first written; `cookies.test.ts` gained the `__Host-` cases in review round 1                                                                        |
 | `server/gate.ts`                                                                                                                    | 36 lines: `refusalFor` treats `404` as the end of a session; two comments                                                                                                |
 | `server/session.ts`                                                                                                                 | 50 lines: `HOME_PATH` is `/`; a refused session reads `/staff/session/stage` (`pending_totp` goes to `/login/totp`); `alreadySignedIn` counts a must-change session      |
 | `server/actions.ts`                                                                                                                 | 49 lines: no token mint (the gate does it), the credential option, the comment saying so                                                                                 |
@@ -313,3 +313,102 @@ All 146 were then run again, against the committed tests, with the output below.
   tests.
 - **Which credential wins when a browser holds both a session and a key** is not
   decided here: this app signs nothing, so it cannot send both. VP-6b decides.
+
+## Review round 1
+
+Written 2026-10-30, on the same branch, after the review of the pull request.
+The first commit of the round is `f212226`. Each fix landed **with its test in
+one commit**, and the sabotage below was run **after** that commit, one mutation
+at a time, restoring the file with `git checkout -- <file>`; so every "caught" is
+a test that was already committed. `RR-` rows are new. **The rows above are
+unchanged and describe the source as it was before this round**: `ACT-8`,
+`ACT-10`, `CSRF-*`, `SET-*` and the signed-out rows quote lines that have since
+moved or changed (the enrolment cookie is cleared through `clearEnrolmentCookie`,
+`publicOrigin` is not on `config`), and the counts in "Gates" above are the
+first commit's.
+
+### What changed, and the finding behind each
+
+| Finding                                                                                | What changed                                                                                                                                                                                                                                                                                                                                                                          |
+| -------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| B1: a refused token mint after a good session read looped the browser back to `/login` | `gateThisRequest` returns `{ kind: "refused", failure }` for a `401`/`404` from `/oauth/authorize`; `/` renders `MintRefused` (vpay's sentence, the request id, Sign out). No redirect, no stale token. A `5xx` or an unreachable vpay is still an outage, with the stale-token fallback kept for a token that is merely due                                                          |
+| 1: `__Host-` prefix                                                                    | `__Host-vpay_dash_session`, `__Host-vpay_dash_enrolment`; [the cookie needs a secure origin](../../flows/dashboard-auth/human-login.md#the-cookie-needs-a-secure-origin) says what happens on `http://localhost` and on plain `http` elsewhere                                                                                                                                        |
+| 2: sign-out cleared the cookie even when the logout call failed                        | `signOut` is a `FormAction`; a failed call answers "Could not sign out, so you are still signed in. Try again." with the request id and keeps the cookie. `SignOutControl` is a client component so the sentence has somewhere to be shown                                                                                                                                            |
+| 3: stale comments                                                                      | the re-mint margin and the stale-token fallback say that `dash-read.ts` and its retry were deleted (VP-6a) and that nothing retries a refused read; the read pages are "a later ticket (VP-6b)"; `SSO_PENDING_MAX_AGE_SECONDS` is removed (VPA-5b adds it back with its user). The fallback is **kept**: it is reachable (a mint that fails with `5xx` while the token is merely due) |
+| 4: timeouts                                                                            | `buildInit` attaches `AbortSignal.timeout(5000)` to every call, discovery included; the rejection is the `status: 0` failure every caller already renders as an outage                                                                                                                                                                                                                |
+| 5: origin check used `config?.publicOrigin`                                            | `publicOrigin` is answered by `assembleConfig` beside `apiBaseUrl`, outside `config`, and `originRefusal` reads it there                                                                                                                                                                                                                                                              |
+| 6: the enrolment cookie outlived a sign-out                                            | a confirmed sign-out and `/signed-out` clear it with the attributes it was written with; an unconfirmed sign-out keeps it with the session                                                                                                                                                                                                                                            |
+| 7: a wrong current password was shown under "Repeat it"                                | `FormState.field`; `ApiFailure.param` from `error.param`; `changePassword` names `current_password` for a `401`, `new_password` for a `400` whose `param` is `new_password`, `confirm_password` for the mismatch; the stepper jumps to that question and sets `aria-invalid` there. A refusal naming nothing stays on the last question                                               |
+| 8: the no-dropdowns scan missed `UI.Select>`                                           | `>` joins the lookahead; four fixture cases that must trip, two that must not                                                                                                                                                                                                                                                                                                         |
+
+Two things in the round are not on the list. `src/testing/hanging-fetch.ts`
+replaces `AbortSignal.timeout` with a signal the test aborts and settles a stub
+`fetch` only through the signal it was handed, because the timer behind
+`AbortSignal.timeout` is reachable neither by fake timers nor by a test that is
+meant to take five seconds. And two stories (`MintRefusedScreen`,
+`MintRefusedLight`) and an axe case give the new page the contrast and structure
+verdicts every other screen has.
+
+### Sabotage
+
+18 mutations, 18 caught, 0 survivors.
+
+| Id    | Mutated file                            | Mutation                                                                                                                | Result | Tests failing | First failing case                                                                                         |
+| ----- | --------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ------ | ------------- | ---------------------------------------------------------------------------------------------------------- |
+| RR-1  | `src/server/actions.ts`                 | deletes `if (!revoked.ok) { return { error: SIGN_OUT_FAILED, … }; }` (the cookie is cleared whatever vpay answered)     | caught | 2             | KEEPS the cookie and says so when vpay answers 503                                                         |
+| RR-2  | `src/components/sign-out-control.tsx`   | deletes `<FormAlert error={state.error} requestId={state.requestId} />`                                                 | caught | 1             | shows the refusal and its request id, and the button works again                                           |
+| RR-3  | `src/server/session.ts`                 | `return { kind: "refused", failure: exchanged.failure };` → `redirect(SIGNED_OUT_PATH);` (the redirect restored)        | caught | 3             | renders the refusal and redirects nowhere (`session.test.ts`), and `app/page.test.tsx` "is told so"        |
+| RR-4  | `src/server/session.ts`                 | `if (refusalFor(exchanged.failure) === "outage") {` → `… === "outage" \|\| gate.kind === "stale-token") {`              | caught | 1             | does not fall back to the stale token it holds                                                             |
+| RR-5  | `src/server/cookies.ts`                 | `SESSION_COOKIE = "__Host-vpay_dash_session"` → `"vpay_dash_session"`                                                   | caught | 26            | lets a signed-in session through with the token on its row; names both cookies with the prefix             |
+| RR-6  | `src/server/cookies.ts`                 | `COOKIE_ATTRIBUTES` gains `domain: "vpay.example"`                                                                      | caught | 3             | carries what the prefix requires: Secure, Path=/, and no Domain                                            |
+| RR-7  | `src/server/dash-fetch.ts`              | deletes `signal: AbortSignal.timeout(DASH_TIMEOUT_MS),` (run with `--testTimeout=1500`: the hanging calls never settle) | caught | 5             | renders the outage, with no form, and never the paired-key notice                                          |
+| RR-8  | `src/server/dash-fetch.ts`              | `AbortSignal.timeout(DASH_TIMEOUT_MS)` → `AbortSignal.timeout(60_000)`                                                  | caught | 2             | gives every call a five-second deadline, a fresh one each time                                             |
+| RR-9  | `src/server/csrf.ts`                    | `originIsAllowed(…, publicOrigin, …)` reads `null` when `config` is `null` (the old behaviour)                          | caught | 2             | refuses a cross-origin POST whose Host agrees with its Origin                                              |
+| RR-10 | `src/config/settings.ts`                | `return { config: null, problems, apiBaseUrl: base, publicOrigin };` → `publicOrigin: null`                             | caught | 2             | answers the public origin when the client variables are missing too                                        |
+| RR-11 | `src/server/actions.ts`                 | deletes `await clearEnrolmentCookie();` from `signOut`                                                                  | caught | 2             | revokes the row at vpay BEFORE it forgets the cookie; forgets the sealed enrolment secret with the session |
+| RR-12 | `src/server/signed-out.ts`              | `for (const name of [SESSION_COOKIE, ENROLMENT_COOKIE])` → `for (const name of [SESSION_COOKIE])`                       | caught | 2             | takes the sealed enrolment secret with it                                                                  |
+| RR-13 | `src/components/one-question-steps.tsx` | the owner of a refusal is always the last question, and the jump is off                                                 | caught | 3             | takes a wrong current password back to the current-password question                                       |
+| RR-14 | `src/components/one-question-steps.tsx` | `if (state.error !== null && target >= 0) {` → `if (false as boolean) {` (marks the right field, does not jump)         | caught | 3             | takes a wrong current password back to the current-password question                                       |
+| RR-15 | `src/server/actions.ts`                 | `return shown(result.failure, passwordFieldFor(result.failure));` → `return shown(result.failure);`                     | caught | 2             | names the current password as the field a wrong one is about                                               |
+| RR-16 | `src/server/actions.ts`                 | `passwordFieldFor`: a `401` names `confirm_password`                                                                    | caught | 1             | names the current password as the field a wrong one is about                                               |
+| RR-17 | `src/server/api.ts`                     | deletes `…(typeof param === "string" && param.length > 0 ? { param } : {}),`                                            | caught | 1             | carries error.param on the failure                                                                         |
+| RR-18 | `src/no-dropdowns.test.ts`              | the lookahead `(?=[\s,}<(>]\|$)` → `(?=[\s,}<(]\|$)`                                                                    | caught | 4             | trips on a namespace-imported Select                                                                       |
+
+Things the sabotage found while it was being written, and that are now in the
+tests:
+
+- The stepper's tests cannot follow a case that leaves an action pending
+  (`neverSettles`): React 19 queues async transitions behind one another, so a
+  later submit in the same file never settles and `findByRole("alert")` times out
+  while the same case passes alone. The new `a refusal that names its question`
+  block sits above every such case, with a comment saying why.
+- `RR-3` also restores the pre-review behaviour in `app/page.test.tsx`, the test
+  that renders the page, so both the gate and the rendered page are held.
+
+### Gates, after the round
+
+| Gate                                      | Result                                                                                                                                                                                                                                                                                                     |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `pnpm --filter @vpay/dashboard test`      | 35 files, **434 passed, 1 skipped** (390 + 1 before; the skip is still `a11y-gate.test.ts`'s conditional)                                                                                                                                                                                                  |
+| `pnpm --filter @vpay/dashboard typecheck` | clean                                                                                                                                                                                                                                                                                                      |
+| `pnpm --filter @vpay/dashboard lint`      | clean, `--max-warnings 0`                                                                                                                                                                                                                                                                                  |
+| `pnpm --filter @vpay/dashboard build`     | compiled; `/`, `/login`, `/login/password`, `/login/totp`, `/signed-out`, `/healthz` dynamic, `/_not-found` static; first load 261 to 263 kB; `.next` deleted                                                                                                                                              |
+| `just lint-web`                           | exit 0                                                                                                                                                                                                                                                                                                     |
+| `just fmt-check-web`                      | "All matched files use Prettier code style!"                                                                                                                                                                                                                                                               |
+| `just test-storybook`                     | checkout 26 passed; dashboard **31 passed** (29 before; the two new stories), axe `color-contrast` on                                                                                                                                                                                                      |
+| `just verify`                             | exit 0: the seventeen gates passed (`verify-ui` silent over the staged tree, `verify-links` 3177 links in 531 files, `verify-doc-counts` 9 counts agree, `verify-status` 2 unimplemented items all declared); the xtask was built with `CARGO_PROFILE_DEV_DEBUG=0` into `/tmp/xt-target` and deleted after |
+
+### Not done, and not run, in this round
+
+- **No browser has run any of it.** The `__Host-` cookie in particular is a
+  browser's decision: it is asserted on the names and on the attributes the
+  prefix requires, and on the `Set-Cookie` the signed-out route produces; no
+  browser was asked whether it stores one. Safari on `http://localhost` was not
+  tried.
+- **The timeout is proved against a stub whose signal the test aborts.** No
+  vpay was made to stall.
+- **A wrong current password at a real vpay** is a `401` in the tests because
+  that is what `change_password` returns (`vpay-api/src/staff/mod.rs`); nothing
+  here called it. The `400` with `param: "new_password"` is read from the same
+  function and from `ApiError::param`.
+- **`dashboard.cy.ts`** (VPA-5c) was not run and was not changed.

@@ -136,7 +136,8 @@ work email, then the password; `/login/totp` the six digits (a first sign-in
 shows the QR code, the typed key behind a bottom sheet); `/login/password` the
 current, the new and the repeated password while the printed one is in force.
 `/` is an account page: who is signed in, which merchant they read, Sign out
-(a POST that revokes the session row before it forgets the cookie).
+(a POST that revokes the session row before it forgets the cookie, and keeps
+the cookie, telling the person so, when vpay did not confirm the revocation).
 
 **Restored from `f885170^`, adapted**: `cookies`, `csrf`, `pkce`, `oauth`,
 `gate`, `session`, `actions`, `signed-out`, `enrolment`, `api` (the calls),
@@ -162,6 +163,26 @@ and `src/no-shadows.test.ts`. **Not restored**: the BFF, `middleware.ts`,
 - The landing page is the account page, not `/overview`, and links to nothing.
 - A session that still owes the printed password counts as signed in for
   `/login`, which sends it on to `/login/password`.
+
+**Review round 1 (2026-10-30)**, each with a test written to fail
+([verification](verification/2026-10-30-vpa5a-dashboard-sign-in.md#review-round-1)):
+
+- A signed-in person whose token mint vpay refuses (`401` from
+  `/oauth/authorize` after a `200` session read) is shown the refusal at `/`
+  with a Sign out, and is not redirected. It used to loop `/`, `/signed-out`,
+  `/login`, `/` with no message, a vpay request per pass.
+- Sign-out keeps the cookie, and the sealed enrolment secret, when vpay did not
+  confirm the revocation. A confirmed one, and `/signed-out`, now clear the
+  enrolment secret as well as the session.
+- The cookies are `__Host-vpay_dash_session` and `__Host-vpay_dash_enrolment`;
+  [the cookie needs a secure origin](../flows/dashboard-auth/human-login.md#the-cookie-needs-a-secure-origin)
+  says what that means on plain `http`.
+- Every call to vpay has a five-second deadline; a timeout is an outage.
+- `VPAY_DASHBOARD_PUBLIC_ORIGIN` is used by the origin check when the client
+  variables are missing too.
+- A wrong current password is shown on the current-password question, a
+  too-short new one on the new-password question.
+- The no-dropdowns scan sees `<UI.Select>`.
 
 **Not built.** Any page that reads `/dash/v1` (the read seam, the BFF's
 replacement, and the pages are a later ticket); single sign-on and its two

@@ -35,9 +35,18 @@ key and nothing else; this app cannot do that until VP-6b.
 | `/login`          | the work email, then the password                                                               |
 | `/login/totp`     | the six-digit code; a first sign-in also shows the QR code (the typed key is in a bottom sheet) |
 | `/login/password` | while the one-time password is in force: the current, the new, the new again                    |
-| `/`               | the account page: who, which merchant, Sign out                                                 |
+| `/`               | the account page: who, which merchant, Sign out; or why vpay would not mint a token (below)     |
 | `/signed-out`     | a route handler: forgets a dead session cookie, then `/login`                                   |
 | `/healthz`        | "Next is answering"; probes nothing                                                             |
+
+**A signed-in person vpay will not mint a token for** (an account on another
+merchant than the dashboard is bound to) is shown "Signed
+in, but not authorised" at `/`, with vpay's sentence, the request id and Sign
+out. It is a page and not a redirect because the session is good: every redirect
+from it leads back to `/` (`StaffGate`'s `refused`, `src/components/mint-refused.tsx`).
+A sign-out vpay did not confirm keeps the cookie and says so; the button still
+works. Every call to vpay has a five-second deadline (`src/server/dash-fetch.ts`),
+and a timeout is an outage, never "paired key".
 
 **One screen collects one piece of information.** The email and the password are
 two screens (`src/components/one-question-steps.tsx`), the password change is
@@ -77,13 +86,13 @@ to decide, not this app's.
 
 Read once at start, through bracket notation (`src/config/runtime.ts`).
 
-| Variable                       | Needed for                                                                        |
-| ------------------------------ | --------------------------------------------------------------------------------- |
-| `VPAY_DASH_API`                | everything: vpay's base URL as this server reaches it                             |
-| `VPAY_DASHBOARD_CLIENT_ID`     | signing in: `dashboard_client.client_id`                                          |
-| `VPAY_DASHBOARD_REDIRECT_URI`  | signing in: one of `dashboard_client.redirect_uris`, byte for byte, never visited |
-| `VPAY_DASHBOARD_SCOPE`         | signing in: `dashboard_client.scope`                                              |
-| `VPAY_DASHBOARD_PUBLIC_ORIGIN` | optional: the origin a browser reaches this app on (the origin check)             |
+| Variable                       | Needed for                                                                                                          |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------- |
+| `VPAY_DASH_API`                | everything: vpay's base URL as this server reaches it                                                               |
+| `VPAY_DASHBOARD_CLIENT_ID`     | signing in: `dashboard_client.client_id`                                                                            |
+| `VPAY_DASHBOARD_REDIRECT_URI`  | signing in: one of `dashboard_client.redirect_uris`, byte for byte, never visited                                   |
+| `VPAY_DASHBOARD_SCOPE`         | signing in: `dashboard_client.scope`                                                                                |
+| `VPAY_DASHBOARD_PUBLIC_ORIGIN` | optional: the origin a browser reaches this app on (the origin check; used even when the client values are missing) |
 
 The three `VPAY_DASHBOARD_` client values matter only where vpay serves
 `human_login`. When it does and one is missing, `/login` names them and renders
