@@ -14,6 +14,8 @@
 // The table-family modules stay `pub` for the row/seed types and each
 // family's own trait, not for free functions. Why, in full: [docs/reference/vpay-db.md
 // § what stays pub, and why](../../../../docs/reference/vpay-db.md#what-stays-pub-and-why).
+/// The generic audit journal repository (ADR-0020 §3, ISO 27001 A.12.4).
+pub mod audit_events;
 /// The dashboard client's authorization-code store (ADR-0017 decision 3).
 pub mod authorization_codes;
 pub mod charges;
@@ -139,6 +141,7 @@ mod signing_keys;
 #[cfg(test)]
 mod sql_audit;
 
+pub use audit_events::{AuditEventRow, AuditEvents, NewAuditEvent};
 pub use authorization_codes::{AuthorizationCodeRow, AuthorizationCodes, NewAuthorizationCode};
 pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use checkout_sessions::{

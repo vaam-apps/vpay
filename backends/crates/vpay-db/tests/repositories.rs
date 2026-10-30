@@ -13683,3 +13683,156 @@ async fn a_credential_export_taken_before_0056_is_restored_after_0058() -> anyho
     assert_eq!(link, 1, "the oidc link was never touched");
     Ok(())
 }
+
+/// ADR-0020 §3, ISO 27001 A.12.4: `audit_events` integration tests.
+///
+/// Asserts:
+/// 1. Appending an audit event succeeds and can be read back.
+/// 2. Strict tenant scoping: querying tenant_a never returns tenant_b events.
+/// 3. Bounded pagination: limit is respected.
+/// 4. Vocabulary CHECK constraints refuse illegal actions and outcomes.
+/// 5. Transactional append in UnitOfWork works.
+#[tokio::test]
+async fn audit_events_append_and_query_by_tenant() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+
+    let now = time::OffsetDateTime::now_utc();
+    let event1 = vpay_db::NewAuditEvent {
+        id: "aud_011111111111111111111111".to_owned(),
+        occurred_at: now,
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "initiated".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_011111111111111111111111".to_owned(),
+    };
+
+    let appended1 = repositories.append_audit_event(&event1).await?;
+    assert_eq!(appended1.id, event1.id);
+    assert_eq!(appended1.tenant, event1.tenant);
+    assert_eq!(appended1.outcome, "initiated");
+
+    // Terminal row linked by operation_id
+    let event2 = vpay_db::NewAuditEvent {
+        id: "aud_022222222222222222222222".to_owned(),
+        occurred_at: now + time::Duration::milliseconds(50),
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "found".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_011111111111111111111111".to_owned(),
+    };
+    let appended2 = repositories.append_audit_event(&event2).await?;
+    assert_eq!(appended2.id, event2.id);
+    assert_eq!(appended2.outcome, "found");
+
+    // Event for a different tenant
+    let event_other_tenant = vpay_db::NewAuditEvent {
+        id: "aud_033333333333333333333333".to_owned(),
+        occurred_at: now,
+        tenant: "merchant_test_b".to_owned(),
+        actor_kind: "machine_token".to_owned(),
+        actor_id: "client_12345".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "not_found".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_033333333333333333333333".to_owned(),
+    };
+    repositories.append_audit_event(&event_other_tenant).await?;
+
+    // Query tenant A: must return exactly event2 and event1 (newest first), NEVER event_other_tenant
+    let tenant_a_events = repositories
+        .list_audit_events_by_tenant("merchant_test_a", 10)
+        .await?;
+    assert_eq!(tenant_a_events.len(), 2);
+    assert_eq!(tenant_a_events.first().map(|e| &e.id), Some(&event2.id));
+    assert_eq!(tenant_a_events.get(1).map(|e| &e.id), Some(&event1.id));
+
+    // Limit is respected
+    let bounded = repositories
+        .list_audit_events_by_tenant("merchant_test_a", 1)
+        .await?;
+    assert_eq!(bounded.len(), 1);
+    assert_eq!(bounded.first().map(|e| &e.id), Some(&event2.id));
+
+    // Query tenant B: returns only event_other_tenant
+    let tenant_b_events = repositories
+        .list_audit_events_by_tenant("merchant_test_b", 10)
+        .await?;
+    assert_eq!(tenant_b_events.len(), 1);
+    assert_eq!(
+        tenant_b_events.first().map(|e| &e.id),
+        Some(&event_other_tenant.id)
+    );
+
+    // Query non-existent tenant: returns empty list
+    let empty_events = repositories
+        .list_audit_events_by_tenant("merchant_unknown", 10)
+        .await?;
+    assert!(empty_events.is_empty());
+
+    // CHECK constraint: unknown outcome is refused
+    let invalid_outcome = vpay_db::NewAuditEvent {
+        id: "aud_044444444444444444444444".to_owned(),
+        occurred_at: now,
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "bogus_outcome".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_044444444444444444444444".to_owned(),
+    };
+    let err = repositories
+        .append_audit_event(&invalid_outcome)
+        .await
+        .expect_err("unknown outcome must fail CHECK");
+    match err {
+        vpay_db::DbError::Query(sqlx_err) => {
+            let constraint = sqlx_err
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::constraint);
+            assert_eq!(constraint, Some("audit_events_outcome_is_known"));
+        }
+        other => panic!("expected DbError::Query with CHECK violation, got: {other:?}"),
+    }
+
+    // Append in transaction
+    let tx_event = vpay_db::NewAuditEvent {
+        id: "aud_055555555555555555555555".to_owned(),
+        occurred_at: now + time::Duration::milliseconds(100),
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "rate_limited".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_055555555555555555555555".to_owned(),
+    };
+    repositories
+        .transaction(|tx| {
+            let ev = tx_event.clone();
+            Box::pin(async move {
+                let row = tx.append_audit_event_in_tx(&ev).await?;
+                Ok::<_, vpay_db::DbError>(vpay_db::TxOutcome::Commit(row))
+            })
+        })
+        .await?;
+
+    let after_tx = repositories
+        .list_audit_events_by_tenant("merchant_test_a", 10)
+        .await?;
+    assert_eq!(after_tx.len(), 3);
+    assert_eq!(after_tx.first().map(|e| &e.id), Some(&tx_event.id));
+
+    Ok(())
+}

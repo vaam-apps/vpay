@@ -190,6 +190,7 @@ state_stores:
       - "Callbacks are hints; only an authenticated status read moves money"
       - "Tenant scoping is applied in the repository layer"
     tables:
+      - audit_events
       - charges
       - checkout_sessions
       - console_keys
@@ -365,6 +366,14 @@ secrets_and_credentials:
     env_vars:
       - "DATABASE_URL"
     storage: "Kubernetes Secret or environment variable; required at boot"
+
+  - class: lookup_audit_salt
+    description: "Deployment secret used to key HMAC-SHA256 digests of phone numbers for account-holder lookup audit logs (ADR-0020 §3, provisional pending RFC-0002 D3)"
+    managed_in: "vpay-config"
+    config_keys:
+      - "privacy.lookup_audit_salt"
+    storage: "Environment variable referenced by ${VAR} placeholders; required when lookup is configured"
+    adr: "docs/adr/0020-privacy-controls-and-evidence.md"
 
 external_integrations:
   - id: mtn_momo_rail

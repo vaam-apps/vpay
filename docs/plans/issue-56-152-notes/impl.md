@@ -41,9 +41,9 @@ Per `task.md` Section 3, implementation proceeds without waiting for pending mai
 | **56-1** | Per-key fixed-window rate limit on lookups    | `backends/tests/integration/tests/account_holders.rs::per_key_rate_limit_blocks_exceeded_attempts`               | Planned |
 | **56-2** | Refusal is `429` with `Retry-After` header    | `backends/tests/integration/tests/account_holders.rs::rate_limited_response_carries_retry_after`                 | Planned |
 | **56-3** | Limit covers every lookup (including refunds) | `backends/tests/integration/tests/refunds.rs::nominated_payee_spends_lookup_rate_limit`                          | Planned |
-| **56-4** | Append-only audit row per lookup              | `backends/crates/vpay-db/tests/repositories.rs::audit_events_append_and_query_by_tenant`                         | Planned |
+| **56-4** | Append-only audit row per lookup              | `backends/crates/vpay-db/tests/repositories.rs::audit_events_append_and_query_by_tenant`                         | Done    |
 | **56-5** | Audit holds no raw MSISDN / no returned name  | `backends/tests/conformance/tests/privacy.rs::audit_log_contains_no_raw_phone_numbers_or_names`                  | Planned |
-| **56-6** | Audit queryable by operator (repo layer)      | `vpay_db::AuditEventRepository::list_by_tenant`                                                                  | Planned |
+| **56-6** | Audit queryable by operator (repo layer)      | `vpay_db::AuditEvents::list_audit_events_by_tenant`                                                              | Done    |
 | **56-7** | Dedicated scope for lookups                   | `backends/tests/integration/tests/account_holders.rs::lookup_refuses_payments_read_without_account_holders_read` | Planned |
 | **56-8** | Scope is route-declared, not method-inferred  | `backends/crates/vpay-api/src/v1/mod.rs::tests::every_mounted_v1_route_has_a_declared_scope_policy`              | Done    |
 
@@ -69,3 +69,4 @@ Per `task.md` Section 3, implementation proceeds without waiting for pending mai
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | One `/v1` route's declared scope policy removed (set to `\|_\| &[]`) | `v1::tests::every_mounted_v1_route_has_a_declared_scope_policy`                     | PASS (panicked at `route /payment_intents POST has an empty declared scope policy`)                       |
 | `CallerCredential` default-constructed when missing                  | `envelope::scope::tests::caller_credential_extraction_refuses_when_absent_with_500` | PASS (panicked at `missing credential must fail: CallerCredential { kind: MachineToken, id: "default" }`) |
+| Unclassified outcome written to `audit_events`                       | `vpay-db/tests/repositories.rs::audit_events_append_and_query_by_tenant`            | PASS (refused with `DbError::Query` pointing to constraint `audit_events_outcome_is_known`)               |

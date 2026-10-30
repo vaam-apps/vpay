@@ -8093,7 +8093,8 @@ struct SecurityGap {
 /// `Dashboard`, `ServiceClient`, `StaffAuth`, `StaffSso`). A rail or a deployment secret added there
 /// must be added here in the same change; a misspelled key the inventory
 /// invents is refused rather than silently believed.
-const SECURITY_CONFIG_KEYS: [&str; 13] = [
+const SECURITY_CONFIG_KEYS: [&str; 14] = [
+    "privacy.lookup_audit_salt",
     "providers.mtn_momo.credentials.subscription_key",
     "providers.mtn_momo.credentials.api_key",
     "providers.mtn_momo.credentials.disbursement_subscription_key",
