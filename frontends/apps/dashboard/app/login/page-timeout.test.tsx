@@ -26,6 +26,7 @@ vi.mock("../../src/config/runtime", () => ({
     problems: [],
     apiBaseUrl: "http://vpay:8080",
     publicOrigin: null,
+    ssoIssuerOrigin: "https://idp.example",
   }),
 }));
 vi.mock("../../src/server/actions", () => ({ signIn: vi.fn() }));
@@ -55,5 +56,31 @@ describe("a discovery read that times out", () => {
     ).toBeInTheDocument();
     expect(screen.queryByText(/paired key/i)).toBeNull();
     expect(document.body.querySelector("form, input")).toBeNull();
+  });
+});
+
+describe("an SSO status read that times out after discovery answered", () => {
+  it("says SSO could not be checked and keeps the email question — never hides the button silently", async () => {
+    const { timeOut } = hangingVpay();
+    // Discovery answers; the status read, the second call, never does.
+    vi.mocked(fetch).mockImplementationOnce(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ methods: ["human_login"] }), {
+          status: 200,
+        }),
+      ),
+    );
+    const pending = LoginPage();
+    await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
+    timeOut();
+    render(await pending);
+
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Single sign-on could not be checked",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Sign in with single sign-on" }),
+    ).toBeNull();
+    expect(screen.getByLabelText("Work email")).toBeInTheDocument();
   });
 });

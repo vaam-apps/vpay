@@ -44,6 +44,43 @@ function toThePasswordStep() {
   press("Continue");
 }
 
+describe("an alternative way in, beside the first question", () => {
+  const SSO = <button type="button">Sign in with single sign-on</button>;
+
+  it("is drawn under the email question and outside its form", () => {
+    render(
+      <SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} sso={SSO} />,
+    );
+    const button = screen.getByRole("button", {
+      name: "Sign in with single sign-on",
+    });
+    // A sibling of the form, never inside it: a button in there would be
+    // submitted with the answers typed so far.
+    expect(button.closest("form")).toBeNull();
+  });
+
+  it("is gone from the password question — the answers typed so far are not an SSO sign-in", () => {
+    render(
+      <SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} sso={SSO} />,
+    );
+    toThePasswordStep();
+    expect(
+      screen.queryByRole("button", { name: "Sign in with single sign-on" }),
+    ).toBeNull();
+    press("Back");
+    expect(
+      screen.getByRole("button", { name: "Sign in with single sign-on" }),
+    ).toBeInTheDocument();
+  });
+
+  it("draws nothing when none is given", () => {
+    render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    expect(
+      screen.queryByRole("button", { name: "Sign in with single sign-on" }),
+    ).toBeNull();
+  });
+});
+
 describe("one question per screen", () => {
   it("asks the email alone first — no password field, and no Back to go to", () => {
     render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
