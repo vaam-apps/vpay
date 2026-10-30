@@ -47,7 +47,8 @@ tenant a request reads.
 
 > **From the release that carries VPA-3, `dashboard_client` and `staff_auth` are
 > accepted again.** VP-6a refused both keys at boot, even as a null
-> (`ConfigError::RetiredKey`); VPA-3 took them out of that table, because they
+> (`ConfigError::RetiredKey`, a variant since deleted with its empty table); VPA-3
+> took them out of that table, because they
 > are the two blocks of the `human_login` method of `auth.methods`
 > ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)).
 > The refusal below is the behaviour of the releases **between** VP-6a and VPA-3,

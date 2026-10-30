@@ -794,8 +794,8 @@ service_clients:
   of the `human_login` method (below, and
   [`docs/flows/dashboard-auth/human-login.md`](../flows/dashboard-auth/human-login.md)).
   They were refused at boot (`ConfigError::RetiredKey`) in the releases between
-  VP-6a and VPA-3; the retired-key table is empty now and the refusal stays,
-  tested against a synthetic table, for the next deleted feature.
+  VP-6a and VPA-3. The table, its walk and the error variant were deleted once
+  nothing was left in it; the next deleted feature adds its own refusal.
 
 ---
 
@@ -878,7 +878,7 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
   only at the top of the document, and only `deployment` denies unknown fields, so
   one mis-indented under `checkout`, `webhooks[]`, `dashboard`, `providers[]` or
   `merchant_clients[]` would be dropped with the same fail-open (the boot line would
-  read `explicit=false`, which nothing refuses). `reject_retired_keys` walks the
+  read `explicit=false`, which nothing refuses). `reject_near_misses` walks the
   merged document before any placeholder is resolved; arrays count as a level, the
   match is case-insensitive, and `MisplacedAuthKey` names the path as written
   (`checkout.auth`, `merchant_clients[0].auth`). The exact top-level `auth` is the
@@ -965,7 +965,9 @@ staff_auth:
   `${VAR}` references (`LiteralSecret`). A key that is not 32 bytes, or a
   `trusted_proxies` entry that does not parse, is `78` at boot
   (`vpay_api::staff::StaffLoginError`, built by the one constructor
-  `StaffLogin::from_config` that `serve` and the integration harnesses both call),
+  `StaffLogin::from_config` that `serve` and the integration harnesses both call;
+  the `/dash/v1` session validator likewise comes from the one
+  `ManagementEnvelope::with_staff_sessions`),
   where it once logged and mounted the read
   surface with no way in. `staff_auth.sso` is an unknown field until VPA-4.
 - `dashboard.merchant_id` and `dashboard_client.merchant_id`, when both are

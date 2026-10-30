@@ -152,18 +152,44 @@ holds it.
 
 The token is signed by the process's RS256 key and validated against its own
 `/v1/oauth/jwks.json` over loopback (`loopback_jwks_url`), so a pod need not
-reach its own public hostname. The pod that mounts the sign-in must therefore
-load the signing key (`--oauth-signing-key-file`) and announce it in
+reach its own public hostname. The validator is built by
+`ManagementEnvelope::with_staff_sessions`, the one constructor `serve` and the
+integration harness share. The pod that mounts the sign-in must load the signing key (`--oauth-signing-key-file`) and announce it in
 `oauth_signing_keys`, exactly as a business pod does; rotation overlap is
 `op::keys::ROTATION_OVERLAP` (24 h), far above the token TTL.
+
+## Recovering a member who lost a password or an authenticator
+
+There is **no command** for either, and no way to set a password from SQL: a
+hash needs the deployment pepper, which only the server holds. What an operator
+can do is two statements' worth, run in `psql` as a role that can write
+`staff_members` and `credentials`, with the address in lower case (the column is
+checked lower-case):
+
+- **Lost authenticator.** Delete the member's TOTP credential and their sessions.
+  Enrolment is the absence of that row, so the member's next password sign-in
+  enrols a fresh authenticator. Whoever holds the password can do that, so
+  confirm who is asking before running it.
+- **Lost password.** Delete the member and run `vpay-server staff add` again with
+  the same `--merchant`, `--email`, `--name` and, for an administrator, `--admin`
+  (read them first). The email unique index refuses a second `staff add` while
+  the row exists, and deleting only the password credential would leave a member
+  nobody can issue a password to. The delete cascades to the member's sessions,
+  codes, credentials **and console keys**, so a paired key must be paired again,
+  and the member's `stf_…` id changes.
+
+The statements are in
+[the deploy runbook](../../runbooks/deploy-and-rollback.md#staff-who-lost-a-password-or-an-authenticator).
+A `staff remove`, `staff disable` or `staff reset-password` command is a gap,
+named in [status/backend.md](../../status/backend.md).
 
 ## Not built
 
 Staff SSO (`staff_auth.sso`; VPA-4: the key is refused as unknown until then),
 the dashboard application's login pages and its two-transport data layer
-(VPA-5, with VP-6b), a `staff reset-password` command (none exists: a member who
-lost a password is removed and added again), and any proof against a deployment
-that is running.
+(VPA-5, with VP-6b), a command to remove a member, disable one or reset a
+password (none exists; see the section above for the SQL), and any proof against
+a deployment that is running.
 
 ## Tests
 
@@ -174,4 +200,9 @@ that is running.
 - `backends/crates/vpay-api/src/human_login_tests.rs`: the same gates without a
   database, one assertion per row of the tables above.
 - `backends/apps/vpay-server/tests/cli.rs`:
-  `staff_add_mints_a_one_time_password_only_where_human_login_is_served`.
+  `staff_add_mints_a_one_time_password_only_where_human_login_is_served`, and,
+  for the wiring only `serve` performs,
+  `a_management_pod_serving_human_login_mounts_its_jwks_and_session_validator`:
+  a real process on `deployment.surfaces: [management]` answers the JWKS and the
+  sign-in route, refuses an unsigned read with `missing_bearer_token`, and exits
+  `78` naming `staff_auth` on a 31-byte TOTP key.

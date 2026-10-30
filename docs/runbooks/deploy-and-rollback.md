@@ -95,6 +95,14 @@ Four things the tooling will not check for you:
    a deployment that signs staff in through an identity provider waits for that
    release too.
 
+### Two things this release changes on `/dash/v1`
+
+From this release a signed `/dash/v1` request that carries **any** `Authorization`
+header is a `400` naming `authorization`, so a proxy or gateway in front of the
+management pod must not add one. And with `human_login` served and no `dashboard:`
+block, the `console_keys` already paired still open `/dash/v1`; writing the
+sign-in's blocks does not lock them out.
+
 ### Keeping staff passwords across 0056 and 0058
 
 `staff_members` rows survive 0056, and 0058 drops the one CHECK that refused a
@@ -404,6 +412,49 @@ rather than a silent no-op. This is consistent with [ADR-0003](../adr/0003-yaml-
 
 Editing the ConfigMap **directly** with `kubectl edit` changes nothing at all,
 because nothing re-reads the file and nothing restarts. Go through helm.
+
+### Staff who lost a password or an authenticator
+
+There is no `staff remove`, `staff disable` or `staff reset-password` command
+(gap, [status/backend.md](../status/backend.md)), and no SQL can set a password,
+because a hash needs the deployment's pepper. Use `psql` as a role that can write
+`staff_members` and `credentials`. The address is the one `staff add` stored, in
+lower case. Confirm who is asking by another channel first: both recoveries let
+whoever makes the request back in.
+
+**Lost authenticator.** The member keeps their password and gets a new second
+factor. Enrolment is the absence of a TOTP credential, so deleting it, and the
+sessions that were issued under the old one, makes the next password sign-in
+enrol a fresh authenticator:
+
+```sql
+BEGIN;
+DELETE FROM credentials
+ WHERE kind = 'totp'
+   AND staff_member_id = (SELECT id FROM staff_members WHERE email = 'ada@example.test');
+DELETE FROM staff_sessions
+ WHERE staff_id = (SELECT id FROM staff_members WHERE email = 'ada@example.test');
+COMMIT;
+```
+
+**Lost password.** Read the member's attributes, delete the member, and add them
+again with the same ones. `staff add` refuses a second account for an address
+while the row exists, and deleting only the password credential would leave a
+member nobody can issue a password to:
+
+```sql
+SELECT id, merchant_id, display_name, is_admin FROM staff_members WHERE email = 'ada@example.test';
+DELETE FROM staff_members WHERE email = 'ada@example.test';
+```
+
+```text
+vpay-server staff add --merchant <merchant_id> --email ada@example.test --name '<display_name>' [--admin]
+```
+
+The last command prints the new one-time password alone on stdout. The delete
+cascades to the member's sessions, authorization codes, credentials **and console
+keys**, so a paired key has to be paired again, and the member's `stf_…` id
+changes. Nothing audits either recovery: write down who asked and who ran it.
 
 ## 6. What is unproven
 
