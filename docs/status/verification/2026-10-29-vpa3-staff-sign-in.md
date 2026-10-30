@@ -21,6 +21,7 @@ run, what broke it on purpose, and what could not be run.
 | `cargo test -p vpay-server --test cli`                       | 51 passed against a native PostgreSQL 16                                 |
 | the other `/dash/v1` and envelope integration suites         | see below                                                                |
 | `just verify`                                                | the seventeen gates passed (`verify-docs` is advisory)                   |
+| `just verify-ignored`                                        | **not run before round 1**; it failed in CI on `d8c357b`, see round 1    |
 
 The other integration suites that build a `Config` or a router, run the same way:
 `boot_coherence` 1, `console_pairing` 11, `dashboard_procedure_transport` 6,
@@ -109,8 +110,13 @@ measured; neither is changed here.
 ## Not done, and what this does not prove
 
 - **No deployment ran this.** Every check above is a test against a process on a
-  loopback socket and a throwaway database. The OP's JWKS over loopback is
-  proved by the integration suite, not by a pod.
+  loopback socket and a throwaway database. ~~The OP's JWKS over loopback is
+  proved by the integration suite, not by a pod.~~ **Corrected 2026-10-30 (review
+  round 1): that was false.** The integration suite never reached `serve`'s
+  wiring: its harness pointed the session validator at the issuer's
+  `jwks.json` over the test server's own address and copied the construction of
+  the sign-in. The loopback fetch is proved by a real `serve` process now (round 1,
+  below) and by no pod.
 - **Staff SSO is not restored** (VPA-4). `staff_auth.sso` is refused as an
   unknown field and the SSO secret class is not in the security inventory.
 - **`vpay-db`'s own Postgres suites, `postgres_smoke`, and the other integration
@@ -119,3 +125,71 @@ measured; neither is changed here.
   and edits none of the repositories they exercise. The e2e compose was not run.
 - The dashboard application (VPA-5, VP-6b) and the SDK token mode (VPA-6) are
   not touched.
+
+## Review round 1 (2026-10-30)
+
+_The security review of the pull request found nine things; this is what each
+changed and what was run. Numbers were measured on the tree this page is committed
+with._
+
+### What changed
+
+| Finding                                                                     | Change                                                                                                                                                                                                                                                                                                                                |
+| --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `serve`'s wiring untested and copied                                        | `StaffLogin::from_config` and `ManagementEnvelope::with_staff_sessions` are the shipping constructors; `main`, `tests/integration/tests/support` and `vpay-api`'s fixtures call them. A real-process test in `vpay-server`'s `tests/cli.rs` boots a management-only pod with `human_login` served (rows 1 to 4 below).                |
+| `vpay_management` inventory row stale                                       | Its auth text, its responsibility and a new `oidc_discovery` interface in `schemas/security-inventory.yaml`.                                                                                                                                                                                                                          |
+| `DashboardClient` unregistered                                              | A `debug_protections` row with `oauth_client_secret` (rows 10 and 11 below).                                                                                                                                                                                                                                                          |
+| No recovery path; `staff add` not atomic                                    | `staff add` writes the member and the password through `provision_federated_staff_in_tx`: both or neither, and the compensating delete is deleted. The recovery statements are in the deploy runbook, were run against a native PostgreSQL 16 carrying every migration, and the missing CLI commands are a dated gap in `backend.md`. |
+| Off mode had no router test                                                 | `with_keypair_off_and_the_sign_in_served_dash_takes_sessions_alone` (rows 5 and 6).                                                                                                                                                                                                                                                   |
+| Livemode literal check not exercised through the loader                     | Two fixtures through `Config::load_with_env` (rows 7 to 9).                                                                                                                                                                                                                                                                           |
+| Nits                                                                        | The stale comment, the misplaced RFC 7636 doc comment, the comment and the real fourth row in the mode table, `RETIRED_KEYS` and its machinery deleted, `staff add`'s assertion messages made static.                                                                                                                                 |
+| CodeQL 138 and 139                                                          | `a_one_time_password_is_unambiguous_and_long_enough` uses `candidate` and static messages. The sweep of the diff found seven more values reaching assertion messages (a bearer, a PKCE verifier, TOTP codes, an Authorization value, `staff add`'s stdout) and made each static.                                                      |
+| FYI: `Authorization` on a signed request; console keys with no `dashboard:` | One paragraph in the deploy runbook.                                                                                                                                                                                                                                                                                                  |
+| CI: `verify-ignored` expected 55 binaries                                   | `expected_suites` is 56 (`staff_sign_in.rs`). This gate is in `just ci` and not in `just verify`'s seventeen.                                                                                                                                                                                                                         |
+
+### Run
+
+| Gate                                                                                                                                                                                                               | Result                                                                               |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------ |
+| `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo deny check`                                                                                                             | clean                                                                                |
+| `cargo test -p vpay-config -p vpay-api --lib`, `-p vpay-server --lib --bins`                                                                                                                                       | 185 (two retired-key tests out, two loader tests in), 537 (one new) and 9 + 8 passed |
+| doctests of `vpay-api`, `vpay-config`, `vpay-db`, `vpay-server`                                                                                                                                                    | 27, 7 and 10 passed                                                                  |
+| `cargo test -p vpay-tests-integration --test staff_sign_in`, against a native PostgreSQL 16                                                                                                                        | 28 passed, through the shared constructors                                           |
+| `cargo test -p vpay-server --test cli`, against a native PostgreSQL 16                                                                                                                                             | 52 passed (51 and the new `serve` test)                                              |
+| the other suites that build a router: `boot_coherence`, `console_pairing`, `dashboard_procedure_transport`, `dashboard_read_surface`, `mcp_merchant`, `merchant_token_flow`, `payment_intents`, `signed_transport` | 1, 11, 6, 20, 14, 15, 26 and 7 passed                                                |
+| `just verify-ignored`                                                                                                                                                                                              | `0 ignored (expected 0), 56 test binaries (expected 56), 2666 total (minimum 1080)`  |
+
+The native PostgreSQL patch was applied again, locally, and reverted before each
+commit; the data directories were deleted.
+
+### Guards, broken on purpose
+
+Logged one per file in the session's scratchpad (`vpa3/sabotage/r1-*.log`).
+
+| #   | Mutation                                                               | Failed                                                                                                                       |
+| --- | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `main.rs` never calls `with_staff_sessions`                            | `a_management_pod_serving_human_login_mounts_its_jwks_and_session_validator`: the unsigned read is `500`, not `401`          |
+| 2   | `validates_tokens` loses the management-only term                      | the same test: `/v1/oauth/jwks.json` is `404`                                                                                |
+| 3   | `StaffLoginError` dropped from `exit_code_for`                         | the same test: exit `1`, not `78`                                                                                            |
+| 4   | `StaffLoginError::Unusable` stops naming the field                     | the same test: "the refusal names the block"                                                                                 |
+| 5   | `/dash/v1` is `Required` where `keypair` is off and the sign-in served | `with_keypair_off_and_the_sign_in_served_dash_takes_sessions_alone` (the unsigned `401` is the layer's coarse one, not JSON) |
+| 6   | `/dash/v1` is `Optional` there                                         | the same test: a COSE body is `406`, not `415`                                                                               |
+| 7   | the staff_auth literal rule is asked of the resolved text              | `a_livemode_staff_auth_written_as_placeholders_loads_and_carries_the_resolved_values` (and the hand-injected test)           |
+| 8   | the staff_auth literal rule is switched off                            | `a_livemode_staff_auth_pepper_written_as_a_literal_is_rejected_by_the_loader` (and the hand-injected test)                   |
+| 9   | the loader stops supplying the written `staff_auth` text               | the resolved-values test **alone**; the hand-injected test stays green, which is why the loader fixtures exist               |
+| 10  | `DashboardClient` derives `Debug`                                      | `just verify-privacy-inventory`                                                                                              |
+| 11  | `DashboardClient` renamed, its row left                                | `just verify-privacy-inventory` (the stale row)                                                                              |
+| 12  | `staff add`'s credential is not `must_change`                          | `staff_add_mints_a_one_time_password_only_where_human_login_is_served`                                                       |
+
+The atomicity of the member-and-credential write is not re-proved here: it is
+`provisioning_a_federated_member_is_atomic` in `vpay-db`, which needs the Docker
+harness and was not run. Row 12 proves `staff add` reaches the credential through
+the new path.
+
+### Not run
+
+- `vpay-db`'s own suites, `postgres_smoke` and the integration suites that never
+  build a router from a `Config` (`invoices`, `customers`, `refunds`, `webhooks`,
+  the worker suites and the rest), as before.
+- Nothing ran against a deployment. The recovery statements ran against a
+  throwaway database, not a cluster, and the CLI test boots a process on loopback.
