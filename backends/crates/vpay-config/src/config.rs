@@ -1252,7 +1252,7 @@ impl Config {
             .extract()
             .map_err(|e| ConfigError::Load(base_path.display().to_string(), e.to_string()))?;
 
-        reject_retired_keys(&raw)?;
+        reject_near_misses(&raw)?;
 
         // Before step 2, because after it there is nothing left to ask —
         // see this module's header.
@@ -2905,21 +2905,6 @@ fn resolve_string(s: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Strin
     Ok(out)
 }
 
-/// The top-level keys a release deleted, and what replaced each.
-///
-/// **Empty.** VP-6a put `dashboard_client` and `staff_auth` here and VPA-3
-/// (ADR-0037, `human_login`) took them out again, so a file that still carries
-/// either loads. What it cannot do is carry one without the other, or either
-/// without `auth.methods` permitting `human_login`
-/// ([`ConfigError::AuthMethodNotConfigured`], [`ConfigError::AuthMethodDisabled`]).
-///
-/// The second column is the whole of the operator's instruction, so it says
-/// what to add as well as what to delete; [`ConfigError::RetiredKey`] supplies
-/// the "delete it, even as a null" half. The walk
-/// ([`reject_retired_in`]) is kept, and tested against a synthetic table,
-/// because the next deleted feature needs this refusal and not a fresh design.
-const RETIRED_KEYS: [(&str, &str); 0] = [];
-
 /// Top-level keys that are near misses of a real one, and what the real one is.
 /// Matched without regard to case, as is `auth` itself (only the exact lowercase
 /// `auth` is the key).
@@ -2940,37 +2925,12 @@ const NEAR_MISS_KEYS: [(&str, &str); 5] = [
 /// What every near miss of `auth` was meant to be.
 const AUTH_KEY_MEANT: &str = "auth: {methods: [...]}";
 
-/// Refuses a document that still carries a retired top-level key.
+/// Refuses a document that spells `auth` wrongly (see [`NEAR_MISS_KEYS`]).
 ///
 /// `Config` does not set `deny_unknown_fields` (an overlay may carry keys a
-/// later release reads), so a deleted feature's block would otherwise be
-/// dropped without a word.
-fn reject_retired_keys(raw: &figment::value::Value) -> Result<(), ConfigError> {
-    reject_retired_in(raw, &RETIRED_KEYS)?;
-    reject_near_misses(raw)
-}
-
-/// [`reject_retired_keys`]' first half over a table the caller supplies, so the
-/// refusal is tested while [`RETIRED_KEYS`] is empty.
-fn reject_retired_in(
-    raw: &figment::value::Value,
-    table: &[(&str, &'static str)],
-) -> Result<(), ConfigError> {
-    let Some(document) = raw.as_dict() else {
-        return Ok(());
-    };
-    for (key, instead) in table {
-        if document.contains_key(*key) {
-            return Err(ConfigError::RetiredKey {
-                key: (*key).to_owned(),
-                instead,
-            });
-        }
-    }
-    Ok(())
-}
-
-/// The second half: the near misses of `auth`.
+/// later release reads), so a near miss of `auth` would otherwise be dropped
+/// without a word, and the deployment would believe it narrowed
+/// `auth.methods` while permitting all four.
 fn reject_near_misses(raw: &figment::value::Value) -> Result<(), ConfigError> {
     let Some(document) = raw.as_dict() else {
         return Ok(());
@@ -3493,48 +3453,6 @@ merchant_clients:
         );
     }
 
-    /// The retired-key refusal still works, and is exercised against a
-    /// synthetic table because the real one is empty (VPA-3 took
-    /// `dashboard_client` and `staff_auth` out of it). `Config` ignores unknown
-    /// keys, so without the walk a deployment that still writes a deleted
-    /// feature's block boots with nothing in its place. The null form
-    /// (`key: ~`) is refused as firmly: it is how an overlay switched a block
-    /// off, and the message has to say that the line itself goes.
-    #[test]
-    fn a_deleted_features_block_is_refused_not_ignored() {
-        let table = [("old_feature", "Use `new_feature:` instead")];
-        for yaml in ["old_feature:\n  x: 1\n", "old_feature: ~\n"] {
-            let raw: figment::value::Value =
-                figment::Figment::from(figment::providers::Yaml::string(yaml))
-                    .extract()
-                    .expect("a document");
-            let err = reject_retired_in(&raw, &table).expect_err("a retired key must be refused");
-            assert!(
-                matches!(&err, ConfigError::RetiredKey { key, instead } if key == "old_feature" && instead.contains("new_feature")),
-                "{yaml}: {err:?}"
-            );
-            let message = err.to_string();
-            assert!(message.contains("even as a null"), "{message}");
-            assert!(message.contains("`old_feature: ~`"), "{message}");
-        }
-        let clean: figment::value::Value =
-            figment::Figment::from(figment::providers::Yaml::string("other: 1\n"))
-                .extract()
-                .expect("a document");
-        assert_eq!(reject_retired_in(&clean, &table), Ok(()));
-    }
-
-    /// `dashboard_client` and `staff_auth` are not retired any more (VPA-3):
-    /// the table is empty, and a file carrying either (even as a null) reaches
-    /// the `human_login` rules instead of the retired-key refusal.
-    #[test]
-    fn dashboard_client_and_staff_auth_are_no_longer_retired_keys() {
-        assert!(RETIRED_KEYS.is_empty());
-        let err = load_fixture("auth-methods-human-login-half-default.yml")
-            .expect_err("half of a sign-in is refused");
-        assert!(!matches!(err, ConfigError::RetiredKey { .. }), "{err:?}");
-    }
-
     // ------------------------------------------------------ auth.methods ---
 
     /// ADR-0037, one fixture per rule: each file is valid in every respect but
@@ -3833,7 +3751,7 @@ merchant_clients:
             .expect("a document");
             assert!(
                 matches!(
-                    reject_retired_keys(&raw),
+                    reject_near_misses(&raw),
                     Err(ConfigError::NearMissKey { key: ref k, .. }) if k == key
                 ),
                 "{key}"
@@ -3846,7 +3764,7 @@ merchant_clients:
         .extract()
         .expect("a document");
         assert!(
-            reject_retired_keys(&exact).is_ok(),
+            reject_near_misses(&exact).is_ok(),
             "the exact key is the key"
         );
     }
@@ -3955,7 +3873,7 @@ merchant_clients:
             ),
         ] {
             assert_eq!(
-                reject_retired_keys(&raw(yaml)),
+                reject_near_misses(&raw(yaml)),
                 Err(ConfigError::MisplacedAuthKey {
                     path: path.to_owned()
                 }),
@@ -3970,7 +3888,7 @@ merchant_clients:
             "providers:\n  - code: x\n    settings:\n      auth: v\n      Auth: v\n",
         ] {
             assert!(
-                reject_retired_keys(&raw(yaml)).is_ok(),
+                reject_near_misses(&raw(yaml)).is_ok(),
                 "a value, a longer word, the exact top-level key or an adapter-defined map's entry is not a misplaced key: {yaml}"
             );
         }
@@ -3990,14 +3908,14 @@ merchant_clients:
         for map in ["credentials", "settings"] {
             let yaml = format!("providers:\n  - code: x\n    {map}:\n      auth: ${{X}}\n");
             assert_eq!(
-                reject_retired_keys(&raw(&yaml)),
+                reject_near_misses(&raw(&yaml)),
                 Ok(()),
                 "providers[0].{map}.auth"
             );
         }
         let both = "providers:\n  - code: x\n    settings: {auth: a}\n    credentials: {auth: b}\n    auth: {methods: [keypair]}\n";
         assert_eq!(
-            reject_retired_keys(&raw(both)),
+            reject_near_misses(&raw(both)),
             Err(ConfigError::MisplacedAuthKey {
                 path: "providers[0].auth".to_owned()
             }),
@@ -4044,7 +3962,7 @@ merchant_clients:
                 figment::Figment::from(figment::providers::Yaml::string(&text))
                     .extract()
                     .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert_eq!(reject_retired_keys(&raw), Ok(()), "{}", path.display());
+            assert_eq!(reject_near_misses(&raw), Ok(()), "{}", path.display());
         }
     }
 
@@ -6177,6 +6095,69 @@ merchant_clients:
         raw.staff_auth
             .insert("password_pepper".to_owned(), "${PEPPER}".to_owned());
         assert_eq!(validate_staff_auth(staff_auth, true, &raw), Ok(()));
+    }
+
+    /// The same rule, asked **through the loader**: the pre-substitution text
+    /// the rule needs is something `Config::load_with_env` supplies, and the
+    /// test above injects it by hand, so it cannot notice the loader stop doing
+    /// so (which is exactly how a livemode deployment became unbootable for rail
+    /// credentials once; `livemode-resolved-secret.yml`'s header).
+    ///
+    /// Both halves, or neither proves anything: a livemode file written with
+    /// `${VAR}` placeholders that resolve **loads** and carries the resolved
+    /// values, and the same file with a literal pepper is `LiteralSecret` naming
+    /// the pepper.
+    #[test]
+    fn a_livemode_staff_auth_written_as_placeholders_loads_and_carries_the_resolved_values() {
+        let env = example_env(
+            [
+                ("STAFF_PASSWORD_PEPPER", "resolved-pepper-value"),
+                (
+                    "STAFF_TOTP_ENCRYPTION_KEY",
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                ),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+        );
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-auth-livemode-resolved-secret.yml");
+        let config = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .expect("a livemode staff_auth whose ${VAR}s all resolve must load");
+
+        let staff_auth = config.staff_auth.as_ref().expect("the fixture writes it");
+        assert_eq!(
+            staff_auth.both(),
+            Some((
+                "resolved-pepper-value",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            )),
+            "the loaded config carries the RESOLVED values; the raw text is only what the \
+             literal-secret rule is asked about"
+        );
+    }
+
+    /// See the test above: the refusal half of the pair.
+    #[test]
+    fn a_livemode_staff_auth_pepper_written_as_a_literal_is_rejected_by_the_loader() {
+        let env = example_env(
+            [(
+                "STAFF_TOTP_ENCRYPTION_KEY",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+        );
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-auth-livemode-literal-secret.yml");
+        assert_eq!(
+            Config::load_with_env(Some(&path), "does-not-exist", &env).err(),
+            Some(ConfigError::LiteralSecret(
+                "staff_auth.password_pepper".to_owned()
+            ))
+        );
     }
 
     /// The shapes `validate_checkout_base_url` accepts and refuses, as a

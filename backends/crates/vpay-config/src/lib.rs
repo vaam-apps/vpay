@@ -575,31 +575,6 @@ pub enum ConfigError {
         field: String,
     },
 
-    /// The file carries a top-level key whose feature was deleted. Fatal, and
-    /// not ignored: a key the binary silently drops is an operator who believes
-    /// a mechanism exists that does not.
-    ///
-    /// Naming the key at all is the refusal: `key: ~` (a null) trips it as
-    /// firmly as a populated block, because the deployment that nulled the old
-    /// block out of a base file has to take that line out in the same change.
-    ///
-    /// **The table behind it is empty today.** VP-6a retired `dashboard_client`
-    /// and `staff_auth` with it, and VPA-3 restored both as the blocks of the
-    /// `human_login` method (ADR-0037), so they are read again. The variant and
-    /// the walk stay, tested against a synthetic table, because the next
-    /// deleted feature needs exactly this refusal and not a fresh design.
-    #[error(
-        "the configuration names `{key}`, which no longer exists. Delete the `{key}:` \
-         key from the base file and from every profile overlay, even as a null \
-         (`{key}: ~` is refused too). {instead}"
-    )]
-    RetiredKey {
-        /// The key, as written.
-        key: String,
-        /// What replaced it, in one sentence.
-        instead: &'static str,
-    },
-
     /// A `service_clients` entry holds no capability.
     ///
     /// Fatal: a service that may call nothing is a registration somebody
