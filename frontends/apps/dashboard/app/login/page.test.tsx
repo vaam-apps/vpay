@@ -96,7 +96,7 @@ describe("a deployment that serves human_login", () => {
 
   it("redirects a browser that already holds a session, before rendering a form", async () => {
     mocks.signedIn.value = true;
-    await expect(LoginPage()).rejects.toThrow("redirect:/");
+    await expect(LoginPage({})).rejects.toThrow("redirect:/");
   });
 
   it("says which variables to set, and renders no form, when the client is not registered", async () => {
@@ -196,7 +196,7 @@ describe("single sign-on on the sign-in page", () => {
 
   it("does not ask vpay about SSO for a browser that is already signed in", async () => {
     mocks.signedIn.value = true;
-    await expect(LoginPage()).rejects.toThrow("redirect:/");
+    await expect(LoginPage({})).rejects.toThrow("redirect:/");
     expect(mocks.getSsoStatus).not.toHaveBeenCalled();
   });
 });

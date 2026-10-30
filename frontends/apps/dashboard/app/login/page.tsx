@@ -61,7 +61,7 @@ export default async function LoginPage({
   searchParams,
 }: {
   searchParams?: Promise<Record<string, string | string[] | undefined>>;
-} = {}) {
+}) {
   const { config, problems, apiBaseUrl, ssoIssuerOrigin } = dashboardConfig();
 
   if (apiBaseUrl === null) {

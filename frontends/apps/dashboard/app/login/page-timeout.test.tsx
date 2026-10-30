@@ -46,7 +46,7 @@ afterEach(() => {
 describe("a discovery read that times out", () => {
   it("renders the outage, with no form, and never the paired-key notice", async () => {
     const { timeOut } = hangingVpay();
-    const pending = LoginPage();
+    const pending = LoginPage({});
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(1));
     timeOut();
     render(await pending);
@@ -70,7 +70,7 @@ describe("an SSO status read that times out after discovery answered", () => {
         }),
       ),
     );
-    const pending = LoginPage();
+    const pending = LoginPage({});
     await vi.waitFor(() => expect(fetch).toHaveBeenCalledTimes(2));
     timeOut();
     render(await pending);
