@@ -1,4 +1,4 @@
-import { Code, InlineBanner, ScreenStack } from "@vaam-apps/ui";
+import { Code, ScreenStack } from "@vaam-apps/ui";
 
 import { SignedInBar, type SignedInBarProps } from "./signed-in-bar";
 
@@ -17,7 +17,9 @@ export interface AccountPageProps extends SignedInBarProps {
  * merchant — the one fact an operator needs before trusting any list that
  * follows — and a sign-out that revokes the token.
  *
- * The notice is a status, not an error: nothing is broken.
+ * The notice is a status and plain text, not a banner: nothing is broken, and
+ * a banner variant is a colour pair `payment-status-contrast.test.ts` would
+ * have to measure.
  */
 export function AccountPage({
   displayName,
@@ -31,13 +33,11 @@ export function AccountPage({
         Signed in as {displayName}
       </h2>
       <SignedInBar email={email} merchantId={merchantId} signOut={signOut} />
-      <div role="status">
-        <InlineBanner variant="neutral">
-          The payments, refunds and deliveries screens are not built in this
-          dashboard yet. Until they are, <Code>/dash/v1</Code> is read by a
-          client that signs its requests.
-        </InlineBanner>
-      </div>
+      <p role="status" className="text-body text-muted-foreground">
+        The payments, refunds and deliveries screens are not built in this
+        dashboard yet. Until they are, <Code>/dash/v1</Code> is read by a client
+        that signs its requests.
+      </p>
     </ScreenStack>
   );
 }
