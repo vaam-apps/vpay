@@ -1,5 +1,51 @@
 # Changelog
 
+## [0.16.0](https://github.com/vaam-apps/vpay/compare/v0.15.0...v0.16.0) (2026-10-30)
+
+
+### ⚠ BREAKING CHANGES
+
+* **dashboard:** dashboard_client and staff_auth are refused at boot, even as a null (~): delete them from the base file and every overlay, and add dashboard: plus service_clients: to enable the console. The dashboard application cannot sign in until VP-6b.
+* **api:** sign every /v1 request and answer; both SDKs seal (VP-3, VP-5, VP-7) ([#380](https://github.com/vaam-apps/vpay/issues/380))
+
+### Features
+
+* **api:** sign every /v1 request and answer; both SDKs seal (VP-3, VP-5, VP-7) ([#380](https://github.com/vaam-apps/vpay/issues/380)) ([863ce37](https://github.com/vaam-apps/vpay/commit/863ce37ed7dde2baec0dc6c9cb87e824ae27b6d5))
+* **auth:** auth.methods makes the ways in deployment configuration; /v1 takes tokens beside signatures ([#384](https://github.com/vaam-apps/vpay/issues/384)) ([088a2ff](https://github.com/vaam-apps/vpay/commit/088a2ffebc2d88c8365e02a8b8f6b6be2b9cbdff))
+* **auth:** serve staff sign-in on /dash/v1 beside the console keys (VPA-3) ([#390](https://github.com/vaam-apps/vpay/issues/390)) ([623d659](https://github.com/vaam-apps/vpay/commit/623d659f7c042b226ed1cdaf64d53e3fe69d132e))
+* **auth:** serve staff SSO again as a part of human_login (VPA-4) ([#391](https://github.com/vaam-apps/vpay/issues/391)) ([ff3ab95](https://github.com/vaam-apps/vpay/commit/ff3ab95d35154895d5a23c92ad0e27e6340bdceb))
+* **dashboard:** sign staff in again behind human_login (VPA-5a) ([#392](https://github.com/vaam-apps/vpay/issues/392)) ([9099ecc](https://github.com/vaam-apps/vpay/commit/9099eccbededd4d83f61418e3dc9dc421f094077))
+* **dashboard:** sign the console with a paired key, retire staff sessions ([#383](https://github.com/vaam-apps/vpay/issues/383)) ([f885170](https://github.com/vaam-apps/vpay/commit/f885170c11bc67e8523e326f21f964d948c62444))
+* **dashboard:** staff single sign-on from the sign-in page (VPA-5b) ([#393](https://github.com/vaam-apps/vpay/issues/393)) ([ee200d4](https://github.com/vaam-apps/vpay/commit/ee200d434df3ec01b725c84a9e82ea819b4b2a57))
+* **db:** restore the human sign-in persistence (migration 0058, repositories) ([#388](https://github.com/vaam-apps/vpay/issues/388)) ([faab1bf](https://github.com/vaam-apps/vpay/commit/faab1bff6d1cfc8705021b8d7a76b85b6e9f0838))
+* **mcp:** the merchant MCP endpoint, first slice (ADR-0033 step 3) ([#377](https://github.com/vaam-apps/vpay/issues/377)) ([42a255d](https://github.com/vaam-apps/vpay/commit/42a255dbab89bf955daf2f51101bb4fe939326ad))
+
+
+### Bug Fixes
+
+* **config:** refuse a misplaced auth key at any depth and a bare methods key ([#386](https://github.com/vaam-apps/vpay/issues/386)) ([3bcf076](https://github.com/vaam-apps/vpay/commit/3bcf0763500a15095399229f5595ec08c5c88131))
+
+
+### Refactoring
+
+* **api:** split the payment-intent and refund writes from their axum extractors ([#375](https://github.com/vaam-apps/vpay/issues/375)) ([626c7fb](https://github.com/vaam-apps/vpay/commit/626c7fbd730b783983cd8c0836256978fd8a08db))
+
+
+### Documentation
+
+* **adr:** ADR-0033, MCP as the primary agent surface, its threat model, and the 0.16.0 run with Docker ([#374](https://github.com/vaam-apps/vpay/issues/374)) ([c1422bc](https://github.com/vaam-apps/vpay/commit/c1422bc6b1a412e9a4d006b53f709dd74bd3fb34))
+* the mcp surface in ADR-0022 and deployment; ADR-0033's staff half after [#383](https://github.com/vaam-apps/vpay/issues/383) ([#385](https://github.com/vaam-apps/vpay/issues/385)) ([1229783](https://github.com/vaam-apps/vpay/commit/1229783e3039b94060eeec9a2fb7414582dfa13a))
+
+
+### Tests
+
+* **dashboard:** the sign-in against a running stack, and the chart's client values (VPA-5c) ([#394](https://github.com/vaam-apps/vpay/issues/394)) ([10f4274](https://github.com/vaam-apps/vpay/commit/10f42747c7de97c10aa669df87afaf50c59bf0b2))
+
+
+### Chores
+
+* **deps:** re-resolve systeminformation, vite, @hono/node-server past the 2026-10-29 advisories ([#389](https://github.com/vaam-apps/vpay/issues/389)) ([9f6d384](https://github.com/vaam-apps/vpay/commit/9f6d384e1ab89f859f5fbbcedde553df175b59a6))
+
 ## [0.15.0](https://github.com/vaam-apps/vpay/compare/v0.14.2...v0.15.0) (2026-10-26)
 
 
