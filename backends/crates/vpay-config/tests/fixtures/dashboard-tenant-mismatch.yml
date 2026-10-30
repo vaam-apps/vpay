@@ -1,0 +1,36 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-3).
+#
+# `dashboard` and `dashboard_client` naming different tenants: refused
+# (DashboardTenantMismatch). `/dash/v1` reads one tenant.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+  - client_id: beta
+    merchant_id: beta-tenant
+    cose_keys:
+      - public_key: PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw
+
+dashboard:
+  merchant_id: beta-tenant
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-cameroon-tenant
+  redirect_uris:
+    - http://localhost:3000/dash/v1/callback
+  scope: dashboard:read
+
+staff_auth:
+  password_pepper: fixture-pepper
+  totp_encryption_key: fixture-key

@@ -4038,6 +4038,17 @@ dependencies = [
 
 [[package]]
 name = "sha1"
+version = "0.10.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a978451301f4db1d02937a4ab3ccce137717b81826e79b7d49ffe3244a13c3b8"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.2.17",
+ "digest 0.10.7",
+]
+
+[[package]]
+name = "sha1"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
@@ -4308,7 +4319,7 @@ dependencies = [
  "log",
  "percent-encoding",
  "serde",
- "sha1",
+ "sha1 0.11.0",
  "sha2 0.11.0",
  "sqlx-core",
  "thiserror",
@@ -5173,6 +5184,8 @@ dependencies = [
 name = "vpay-api"
 version = "0.15.0"
 dependencies = [
+ "aes-gcm",
+ "argon2",
  "async-trait",
  "authkestra-engine",
  "authkestra-op",
@@ -5184,18 +5197,22 @@ dependencies = [
  "cratestack-core",
  "cratestack-cose",
  "hex",
+ "hmac 0.12.1",
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",
  "p256 0.13.2",
  "phonenumber",
  "rand 0.8.7",
+ "rand_core 0.6.4",
  "reqwest",
  "rsa",
  "serde",
  "serde_json",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "sqlx",
+ "subtle",
  "thiserror",
  "time",
  "tokio",
@@ -5263,6 +5280,7 @@ dependencies = [
  "chrono",
  "cratestack-codec-json",
  "cratestack-pg",
+ "futures-util",
  "metrics",
  "metrics-exporter-prometheus",
  "serde",

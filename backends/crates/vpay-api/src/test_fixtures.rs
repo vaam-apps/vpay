@@ -199,6 +199,8 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }
@@ -393,6 +395,9 @@ pub(crate) fn deps_over(config: &Config, v1_envelope_override: Option<V1Envelope
         // `404` an undashboarded deployment gives. `crate::dash`'s own tests
         // build their own deps.
         management_envelope: None,
+        // `None`: no fixture serves `human_login` unless it asks to
+        // ([`deps_for_human_login`]).
+        staff_login: None,
         merchant_mcp: None,
         // Both surfaces, matching every deployment that never wrote
         // `deployment.surfaces` — this crate's non-surface-specific tests
@@ -453,8 +458,97 @@ pub(crate) fn deps_with_surfaces(surfaces: Option<Vec<String>>) -> RouterDeps {
         ),
         v1_envelope: Some(v1_envelope(&config)),
         management_envelope: Some(management_envelope(&config)),
+        staff_login: None,
         merchant_mcp: None,
         surfaces: resolved,
+    }
+}
+
+/// The dashboard client id every `human_login` fixture registers, and so the
+/// audience of its staff tokens.
+pub(crate) const DASHBOARD_CLIENT_ID: &str = "vpay-dashboard";
+
+/// The scope the fixture dashboard client registers.
+pub(crate) const DASHBOARD_SCOPE: &str = "dashboard:read";
+
+/// [`config_with_auth`] serving `human_login`: the `dashboard_client` and
+/// `staff_auth` blocks, bound to the fixture merchant's tenant, with
+/// `auth.methods` set to `methods` (`None` is the absent key).
+///
+/// The `staff_auth` secrets are throwaways (a 32-byte base64url key and a
+/// pepper) that nothing in a unit test hashes with.
+pub(crate) fn config_with_human_login(methods: Option<&[&str]>) -> Config {
+    use base64::Engine as _;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    let mut config = config_with_auth(methods);
+    let merchant_id = config
+        .merchant_clients
+        .first()
+        .map(|merchant| merchant.merchant_id.clone())
+        .expect("the fixture registers a merchant");
+    config.dashboard_client = Some(vpay_config::DashboardClient {
+        client_id: DASHBOARD_CLIENT_ID.to_owned(),
+        merchant_id,
+        redirect_uris: vec!["https://dash.vpay.test/api/auth/callback".to_owned()],
+        scope: DASHBOARD_SCOPE.to_owned(),
+        client_secret: None,
+    });
+    config.staff_auth = Some(vpay_config::StaffAuth {
+        password_pepper: Some("fixture-pepper".to_owned()),
+        totp_encryption_key: Some(URL_SAFE_NO_PAD.encode([0x44; 32])),
+        ..vpay_config::StaffAuth::default()
+    });
+    config
+}
+
+/// A `/dash/v1` staff-token validator over `jwks_url`: issuer
+/// [`TOKEN_ISSUER`], audience [`DASHBOARD_CLIENT_ID`], built by the function
+/// `vpay-server` calls.
+pub(crate) fn dashboard_validator(jwks_url: &str) -> crate::resource_auth::JwtValidator {
+    crate::resource_auth::dashboard_token_validator(
+        jwks_url,
+        Duration::from_secs(300),
+        TOKEN_ISSUER,
+        DASHBOARD_CLIENT_ID,
+    )
+    .expect("the vendored-roots JWKS client builds")
+}
+
+/// The sign-in state `vpay-server` builds for a served `human_login`, over the
+/// lazy pool: the shipping constructor, [`crate::staff::StaffLogin::from_config`].
+pub(crate) fn staff_login(config: &Config) -> Arc<crate::staff::StaffLogin> {
+    crate::staff::StaffLogin::from_config(config, &signing_key(), &lazy_repositories())
+        .expect("the fixture's staff_auth is usable")
+        .expect("a human_login fixture serves the sign-in")
+}
+
+/// [`RouterDeps`] for a deployment that serves `human_login`: the management
+/// transport with a staff-token validator over `jwks_url`, and the staff login
+/// itself. Both surfaces, like [`deps`].
+pub(crate) fn deps_for_human_login(config: &Config, jwks_url: &str) -> RouterDeps {
+    let resource_config = Arc::new(
+        crate::ResourceConfig::from_config(config)
+            .expect("the fixture's rails project onto the port"),
+    );
+    RouterDeps {
+        repositories: lazy_repositories(),
+        merchant_op: merchant_op(),
+        adapters: Arc::new(std::collections::BTreeMap::new()),
+        v1_envelope: Some(v1_envelope(config)),
+        management_envelope: Some(
+            management_envelope(config)
+                .with_staff_sessions(
+                    &resource_config,
+                    jwks_url,
+                    Duration::from_secs(300),
+                    TOKEN_ISSUER,
+                )
+                .expect("the vendored-roots JWKS client builds"),
+        ),
+        resource_config,
+        staff_login: Some(staff_login(config)),
+        merchant_mcp: None,
+        surfaces: EnabledSurfaces::ALL,
     }
 }
 

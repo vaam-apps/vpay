@@ -86,7 +86,9 @@ mod mcp_merchant;
 ///
 /// **`procedure_router`, never `router()`.** The generated `router()`
 /// merges `model_router(...)` — the CRUD CrateStack generates for every one
-/// of this schema's twenty-two models (twenty-one until `EnvelopeNonce`, VP-3; twenty until `StaffSsoAttempt`, ADR-0030;
+/// of this schema's twenty-three models (twenty until migration 0058 restored `StaffSession`,
+/// `OauthAuthorizationCode` and `StaffSsoAttempt`, VPA-2; twenty-two before 0056 dropped them and added
+/// `ConsoleKey`, VP-6a; twenty-one until `EnvelopeNonce`, VP-3; twenty until `StaffSsoAttempt`, ADR-0030;
 /// nineteen until `ManualPayment`, #251),
 /// creates/updates/deletes included,
 /// whether or not anything routes it — with `procedure_router(...)`
@@ -131,11 +133,19 @@ where
 /// private to this crate, so the layer that binds `POST /$procs/<name>` can only
 /// be built here.
 ///
-/// **Required and JSON.** The transport is `procedure_router` over
-/// [`::cratestack_codec_json::JsonCodec`], so JSON is the one payload type in
-/// both directions; the generated layer defaults to CBOR alone, which this
-/// router would refuse. No optional mode: an unsigned procedure call is the
-/// layer's coarse `401`.
+/// **JSON, and `Required` unless `signing` says otherwise.** The transport is
+/// `procedure_router` over [`::cratestack_codec_json::JsonCodec`], so JSON is the
+/// one payload type in both directions; the generated layer defaults to CBOR
+/// alone, which this router would refuse. `signing` is the deployment's choice
+/// (ADR-0037) and is `Required` for a deployment that serves no `human_login`:
+/// an unsigned procedure call is then the layer's coarse `401`.
+///
+/// **`Optional` is built the way `/v1`'s is** (`vpay_api::envelope`), for the
+/// reasons given there: a closure policy with `unresolved_mode` pinned back to
+/// `Required`, so a route the resolver cannot bind still fails closed instead
+/// of passing unsigned (cratestack decision S2), and a response seal policy that
+/// never seals an unsigned request's answer, because that seal binds a nonce and
+/// a payload and not a caller.
 ///
 /// **`mount` is the path the procedure router is nested at** (`/dash/v1`), and
 /// it is required: the layer is applied to the inner router before
@@ -153,15 +163,24 @@ pub(crate) fn dashboard_envelope_layer(
     envelope: std::sync::Arc<dyn ::cratestack::envelope_layer::ServerEnvelope>,
     audience: &str,
     mount: &str,
+    signing: crate::ProcedureSigning,
 ) -> Result<::cratestack::envelope_layer::EnvelopeLayer, ::cratestack::CratestackError> {
-    cratestack_schema::axum::envelope_layer(
-        envelope,
-        ::cratestack::envelope_layer::EnvelopeMode::Required,
-        audience,
-    )
-    .mount_prefix(mount)
-    .payload_media_types(["application/json"], ["application/json"])
-    .build()
+    use ::cratestack::envelope_layer::{EnvelopeMode, PolicyRequest, UnsignedRequest};
+
+    let builder =
+        cratestack_schema::axum::envelope_layer(envelope, EnvelopeMode::Required, audience);
+    let builder = match signing {
+        crate::ProcedureSigning::Required => builder,
+        crate::ProcedureSigning::Optional => builder
+            .policy(|_request: &PolicyRequest<'_>| EnvelopeMode::Optional)
+            .unresolved_mode(EnvelopeMode::Required)
+            .response_seal_policy(|_request: &UnsignedRequest<'_>| false),
+        crate::ProcedureSigning::Off => builder.policy(EnvelopeMode::Off),
+    };
+    builder
+        .mount_prefix(mount)
+        .payload_media_types(["application/json"], ["application/json"])
+        .build()
 }
 
 /// The merchant MCP endpoint (ADR-0033): the generated tool table served
@@ -427,7 +446,7 @@ mod tests {
         );
     }
 
-    /// Walks candidate paths for every one of the twenty-two models' generated
+    /// Walks candidate paths for every one of the twenty-three models' generated
     /// CRUD, proving none of them is mounted through
     /// [`super::dashboard_procedure_router`] — the mechanical version of
     /// `DASH_ROUTES`' own doc's reason for keeping a route table at all:
@@ -441,8 +460,8 @@ mod tests {
     /// **Decisive.** Changing `super::dashboard_procedure_router`'s call
     /// from `cratestack_schema::axum::procedure_router(...)` to
     /// `cratestack_schema::axum::router(...)` (the merged form that also
-    /// mounts `model_router`) turns every one of the 168 route assertions
-    /// below red at once — twenty-two models, two paths each, four methods per
+    /// mounts `model_router`) turns every one of the 184 route assertions
+    /// below red at once — twenty-three models, two paths each, four methods per
     /// path. _(This said "seventy-six" until 2026-09-23, which is nineteen
     /// times four and forgets the two paths; it said "seventy-two", eighteen
     /// times four, on the day it was written. Neither count was ever the
@@ -453,7 +472,7 @@ mod tests {
     /// `cratestack-macros-0.12.0/src/axum/model/routes.rs` is where those
     /// paths and that four-method set come from, and
     /// `docs/reference/vpay-db/cratestack.md`'s "the table name is decided
-    /// by the model name" is why the twenty-two table strings below are the same
+    /// by the model name" is why the twenty-three table strings below are the same
     /// ones `backends/migrations/*.sql` names as tables.
     #[tokio::test]
     async fn no_generated_model_route_is_mounted_only_the_one_procedure_is() {
@@ -461,7 +480,7 @@ mod tests {
 
         // A pool that never connects, exactly like every other test in this
         // module. Every probed request below is refused before a statement
-        // could run: the twenty-two models' paths never match any route at
+        // could run: the twenty-three models' paths never match any route at
         // all, and the one real procedure is asked with a method it does
         // not serve (`GET`, never `POST`) so this test proves routing
         // without needing the lazy pool to answer anything.
@@ -478,7 +497,7 @@ mod tests {
         // never probe, and a name here the schema no longer declares is a
         // probe of nothing. Until 2026-09-23 this was a hand-kept
         // `[&str; 19]` of table names with no such check.
-        const MODEL_TABLES: [(&str, &str); 20] = [
+        const MODEL_TABLES: [(&str, &str); 23] = [
             ("Currency", "currencies"),
             ("Provider", "providers"),
             ("PaymentIntent", "payment_intents"),
@@ -492,6 +511,8 @@ mod tests {
             ("WebhookDelivery", "webhook_deliveries"),
             ("Customer", "customers"),
             ("StaffMember", "staff_members"),
+            ("StaffSession", "staff_sessions"),
+            ("OauthAuthorizationCode", "oauth_authorization_codes"),
             // Nineteenth, added when this branch's `model Credential`
             // (migration 0044) merged with Lane C's transport: a model
             // declared after this list was written is exactly the one whose
@@ -505,13 +526,18 @@ mod tests {
             // noticed until a skills re-verification did.
             ("ManualPayment", "manual_payments"),
             ("RateLimitWindow", "rate_limit_windows"),
+            // Twenty-first, 2026-10-20: `model StaffSsoAttempt` (migration
+            // 0050, ADR-0030), added in the same change that declared it —
+            // the lesson of the twentieth.
+            ("StaffSsoAttempt", "staff_sso_attempts"),
             // Twenty-second, 2026-10-26: `model EnvelopeNonce` (migration
             // 0055, VP-3), added in the same change that declared it.
             ("EnvelopeNonce", "envelope_nonces"),
             // 2026-10-26, VP-6a: `model ConsoleKey` (migration 0056, ADR-0036),
-            // added in the same change that declared it. The same change
-            // removed `StaffSession`, `OauthAuthorizationCode` and
-            // `StaffSsoAttempt`, which is why the count fell by two.
+            // added in the same change that declared it. That change also
+            // dropped `StaffSession`, `OauthAuthorizationCode` and
+            // `StaffSsoAttempt`; migration 0058 (VPA-2, owner ruling R5) gave
+            // all three back, which is why they are listed again above.
             ("ConsoleKey", "console_keys"),
         ];
 

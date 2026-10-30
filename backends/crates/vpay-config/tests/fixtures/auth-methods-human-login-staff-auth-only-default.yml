@@ -1,0 +1,21 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-3).
+#
+# `auth.methods` absent and only `staff_auth` written: refused
+# (AuthMethodNotConfigured, naming `dashboard_client`).
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+staff_auth:
+  password_pepper: fixture-pepper
+  totp_encryption_key: fixture-key

@@ -22,6 +22,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
+use crate::authorization_codes::AuthorizationCodes;
 use crate::charges::Charges;
 use crate::checkout_sessions::CheckoutSessions;
 use crate::client_assertion::ClientAssertions;
@@ -46,6 +47,8 @@ use crate::refunds::Refunds;
 use crate::settlement::Settlement;
 use crate::signing_keys::SigningKeys;
 use crate::staff::Staff;
+use crate::staff_sessions::StaffSessions;
+use crate::staff_sso_attempts::StaffSsoAttempts;
 use crate::webhook_deliveries::WebhookDeliveries;
 
 /// A future that borrows the transaction it was handed, boxed so the closure
@@ -581,9 +584,11 @@ pub trait TxRepositories: Send {
     ) -> Result<crate::CustomerErasure, DbError>;
 
     /// `staff_members` + `credentials`: creates a member and their first
-    /// credential, atomically — just-in-time SSO provisioning
-    /// (ADR-0030). See [`crate::staff`]'s `provision_federated_in_tx` for why
-    /// this one is a transaction.
+    /// credential, atomically. Callers: a first pairing through vaam
+    /// (ADR-0036), `vpay-server staff add` when `human_login` is served (a
+    /// one-time password credential, VPA-3), and just-in-time SSO provisioning
+    /// (ADR-0030), which the name comes from. See [`crate::staff`]'s
+    /// `provision_federated_in_tx` for why this one is a transaction.
     ///
     /// # Errors
     ///
@@ -1132,6 +1137,9 @@ pub trait Repositories:
     + Settlement
     + SigningKeys
     + Staff
+    + StaffSessions
+    + StaffSsoAttempts
+    + AuthorizationCodes
     + TransactionSource
     + WebhookDeliveries
     + std::fmt::Debug
@@ -1181,8 +1189,9 @@ pub trait Repositories:
     fn dashboard_procedure_router(&self, auth: crate::DashboardAuthFn) -> cratestack::axum::Router;
 
     /// The signed-transport layer for [`Self::dashboard_procedure_router`]
-    /// (VP-6a): `Required`, JSON in and out, over the contract digests and route
-    /// descriptors CrateStack generated from `schemas/vpay.cstack`.
+    /// (VP-6a): JSON in and out, over the contract digests and route descriptors
+    /// CrateStack generated from `schemas/vpay.cstack`, in the mode `signing`
+    /// names (`Required` unless the deployment serves `human_login`, ADR-0037).
     ///
     /// On this trait for [`Self::dashboard_procedure_router`]'s reason: the
     /// generated module is private to this crate, and so is the only place
@@ -1201,6 +1210,7 @@ pub trait Repositories:
         envelope: std::sync::Arc<dyn cratestack::envelope_layer::ServerEnvelope>,
         audience: &str,
         mount: &str,
+        signing: crate::ProcedureSigning,
     ) -> Result<cratestack::envelope_layer::EnvelopeLayer, DbError>;
 
     /// The merchant MCP endpoint (ADR-0033), ready to merge into the root
@@ -1293,14 +1303,17 @@ impl Repositories for PgRepositories {
         envelope: std::sync::Arc<dyn cratestack::envelope_layer::ServerEnvelope>,
         audience: &str,
         mount: &str,
+        signing: crate::ProcedureSigning,
     ) -> Result<cratestack::envelope_layer::EnvelopeLayer, DbError> {
-        crate::schema::dashboard_envelope_layer(envelope, audience, mount).map_err(|error| {
-            DbError::from(crate::persistence::classify_cratestack(
-                "DashboardEnvelope",
-                "build",
-                error,
-            ))
-        })
+        crate::schema::dashboard_envelope_layer(envelope, audience, mount, signing).map_err(
+            |error| {
+                DbError::from(crate::persistence::classify_cratestack(
+                    "DashboardEnvelope",
+                    "build",
+                    error,
+                ))
+            },
+        )
     }
 
     fn merchant_mcp_router(

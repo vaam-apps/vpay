@@ -790,9 +790,12 @@ service_clients:
   spans merchants and services) is a boot refusal.
 - **A capability is granted here and nowhere else.** No route, database row or
   environment variable can add one.
-- `staff_auth:` and `dashboard_client:` are gone. A file that still carries
-  either fails to load (`deny_unknown_fields`): the operator is told, at boot,
-  that a sign-in they configured no longer exists.
+- `staff_auth:` and `dashboard_client:` came back with VPA-3, as the two blocks
+  of the `human_login` method (below, and
+  [`docs/flows/dashboard-auth/human-login.md`](../flows/dashboard-auth/human-login.md)).
+  They were refused at boot (`ConfigError::RetiredKey`) in the releases between
+  VP-6a and VPA-3. The table, its walk and the error variant were deleted once
+  nothing was left in it; the next deleted feature adds its own refusal.
 
 ---
 
@@ -812,40 +815,44 @@ sealed webhooks (VP-8). Order is irrelevant. The code is
 resolved set and `vpay_api::ResourceConfig::auth_methods()` carries it to the
 router.
 
-| Method           | Permits                                                                    | Its block (refused when the method is off)                                               |
-| ---------------- | -------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
-| `keypair`        | signed `/v1` requests, sealed answers, the console (`/dash/v1`, `/svc/v1`) | `merchant_clients[].cose_keys`, `dashboard`, `service_clients`                           |
-| `machine_tokens` | `Authorization: Bearer` on `/v1`, `/v1/oauth/token`, the MCP endpoint      | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences`                            |
-| `hmac_webhooks`  | merchant webhooks signed with a shared secret (`Vpay-Signature`)           | `merchant_clients[].webhooks`                                                            |
-| `human_login`    | staff password, TOTP and SSO sign-in                                       | `staff_auth`, `dashboard_client` (still retired keys: **not available in this release**) |
+| Method           | Permits                                                                                                                                                                                         | Its block (refused when the method is off)                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
+| `keypair`        | signed `/v1` requests, sealed answers, the console (`/dash/v1`, `/svc/v1`)                                                                                                                      | `merchant_clients[].cose_keys`, `dashboard`, `service_clients` |
+| `machine_tokens` | `Authorization: Bearer` on `/v1`, `/v1/oauth/token`, the MCP endpoint                                                                                                                           | `merchant_clients[].jwks`, `grant_types`, `allowed_audiences`  |
+| `hmac_webhooks`  | merchant webhooks signed with a shared secret (`Vpay-Signature`)                                                                                                                                | `merchant_clients[].webhooks`                                  |
+| `human_login`    | staff password and TOTP sign-in, single sign-on through an OpenID Connect provider when `staff_auth.sso` is written, the authorization code, a session token on `/dash/v1` beside a console key | `staff_auth`, `dashboard_client` (**both or neither**)         |
 
 ### The rules
 
 Each is a boot refusal with its own `ConfigError` variant and a fixture
 (`tests/fixtures/auth-methods-*.yml`), and each exits `78`.
 
-| Rule                                                                                                                                            | Variant                     |
-| ----------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
-| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)                                                     | `NoAuthMethods`             |
-| a name that is not a method                                                                                                                     | `UnknownAuthMethod`         |
-| a method listed twice                                                                                                                           | `DuplicateAuthMethod`       |
-| `human_login` named explicitly                                                                                                                  | `AuthMethodUnavailable`     |
-| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                                                                        | `NoWayIn`                   |
-| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                                                                   | `McpNeedsMachineTokens`     |
-| `machine_tokens` named explicitly and no merchant has a `jwks`                                                                                  | `AuthMethodNotConfigured`   |
-| a block from the table above, present while its method is off                                                                                   | `AuthMethodDisabled`        |
-| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`                                                            | `MerchantGrantTypesMissing` |
-| `machine_tokens` permitted and a registration with `grant_types` or `allowed_audiences` but **no `jwks`** (a dormant OAuth half)                | `MerchantOauthWithoutJwks`  |
-| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                                                                | `MerchantNoCredential`      |
-| a top-level `auth_methods:`, `auth-methods:`, `authmethods:`, `authentication:`, `methods:` or any case variant of those or of `auth` (`Auth:`) | `NearMissKey`               |
-| an `auth` key, in any case, below the top level: `checkout.auth`, `merchant_clients[0].auth`, `deployment.auth`                                 | `MisplacedAuthKey`          |
+| Rule                                                                                                                                                                    | Variant                     |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `methods: []`, or `methods:` with every item commented out (a null, **not** the absent key)                                                                             | `NoAuthMethods`             |
+| a name that is not a method                                                                                                                                             | `UnknownAuthMethod`         |
+| a method listed twice                                                                                                                                                   | `DuplicateAuthMethod`       |
+| neither `keypair` nor `machine_tokens`: nothing could authenticate `/v1`                                                                                                | `NoWayIn`                   |
+| `deployment.surfaces` names `mcp` and `machine_tokens` is off                                                                                                           | `McpNeedsMachineTokens`     |
+| `machine_tokens` named explicitly and no merchant has a `jwks`; `human_login` named explicitly without its blocks, or permitted by the default with only one of the two | `AuthMethodNotConfigured`   |
+| `dashboard.merchant_id` and `dashboard_client.merchant_id` both written and different                                                                                   | `DashboardTenantMismatch`   |
+| `staff_auth` written without its `password_pepper` or `totp_encryption_key` (a sandbox too: the block is the switch)                                                    | `StaffAuthSecretMissing`    |
+| a block from the table above, present while its method is off                                                                                                           | `AuthMethodDisabled`        |
+| `machine_tokens` permitted and a registration **with a `jwks`** but no `grant_types`                                                                                    | `MerchantGrantTypesMissing` |
+| `machine_tokens` permitted and a registration with `grant_types` or `allowed_audiences` but **no `jwks`** (a dormant OAuth half)                                        | `MerchantOauthWithoutJwks`  |
+| a registration with neither `cose_keys` nor `jwks`: no way to authenticate as it                                                                                        | `MerchantNoCredential`      |
+| a top-level `auth_methods:`, `auth-methods:`, `authmethods:`, `authentication:`, `methods:` or any case variant of those or of `auth` (`Auth:`)                         | `NearMissKey`               |
+| an `auth` key, in any case, below the top level: `checkout.auth`, `merchant_clients[0].auth`, `deployment.auth`                                                         | `MisplacedAuthKey`          |
 
 - **Permitted is not served.** A method with a block runs where the block is. An
   absent `auth.methods` permits `machine_tokens` and still boots a file whose
   merchants hold no `jwks`; only naming it explicitly demands one merchant that
-  does. `human_login` is the one method nothing serves yet: the default permits
-  it, `AuthMethods::served()` omits it, and VPA-3 is the change that restores it.
-  `served()` is **permitted minus `human_login`** and nothing else: it is what the
+  does. `human_login` is the same shape: the default permits it and serves it
+  only where **both** `staff_auth` and `dashboard_client` are written
+  (`AuthMethods::human_login_served`). Naming it, or writing one block, without
+  the other is `AuthMethodNotConfigured`; either block with the method left out of
+  an explicit list is `AuthMethodDisabled`. `served()` is **permitted, with
+  `human_login` also needing its blocks** and nothing else: it is what the
   deployment offers (the discovery document's list), not a promise about any
   one merchant, who may hold no `jwks` and so cannot use a token.
 - **A registration is a credential, and the OAuth half is its own.** Every
@@ -871,7 +878,7 @@ Each is a boot refusal with its own `ConfigError` variant and a fixture
   only at the top of the document, and only `deployment` denies unknown fields, so
   one mis-indented under `checkout`, `webhooks[]`, `dashboard`, `providers[]` or
   `merchant_clients[]` would be dropped with the same fail-open (the boot line would
-  read `explicit=false`, which nothing refuses). `reject_retired_keys` walks the
+  read `explicit=false`, which nothing refuses). `reject_near_misses` walks the
   merged document before any placeholder is resolved; arrays count as a level, the
   match is case-insensitive, and `MisplacedAuthKey` names the path as written
   (`checkout.auth`, `merchant_clients[0].auth`). The exact top-level `auth` is the
@@ -918,3 +925,60 @@ SDK or a proxy that adds a bearer header to a signed request must stop doing so
 before the upgrade. The vpay SDKs never set one (their sources name no
 `Authorization` header); a gateway or proxy in front of vpay is the operator's to
 check.
+
+---
+
+## `staff_auth:` and `dashboard_client:` — the `human_login` method (VPA-3)
+
+```yaml
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-cameroon-tenant      # the one tenant /dash/v1 reads
+  redirect_uris:
+    - https://dash.example/api/auth/callback   # exact match, no wildcard
+  scope: dashboard:read
+
+staff_auth:
+  password_pepper: ${VPAY_STAFF_PEPPER}          # argon2id's secret input
+  totp_encryption_key: ${VPAY_STAFF_TOTP_KEY}    # 32 bytes, unpadded base64url
+  trusted_proxies: []                            # whose X-Forwarded-For is believed
+  access_token_ttl_seconds: 900                  # 10..=3600
+  rate_limits:
+    sign_in: {attempts: 10, window_seconds: 300}
+    change_password: {attempts: 5, window_seconds: 300}
+```
+
+- **Both blocks, or neither** (see `auth:` above). Written, with the method
+  permitted, they serve the sign-in; the code is
+  `backends/crates/vpay-config/src/{oauth,config}.rs` and `vpay-api`'s `staff`,
+  `staff_auth` and `op::dashboard` modules.
+- `dashboard_client` is a **public** client: a `client_secret` is refused
+  (`ClientSecretPresent`), `redirect_uris` must be non-empty
+  (`DashboardMissingRedirectUri`) and, under `livemode`, `https` and not
+  stub-labelled; `merchant_id` must be a registered merchant
+  (`DashboardUnknownMerchant`); no merchant may list its `client_id` in
+  `allowed_audiences` (`MerchantClaimsDashboardAudience`); and `client_id` shares
+  the namespace of every merchant and service (`DuplicateClientId`).
+- `staff_auth` needs **both** secrets whenever the block is written, in every
+  deployment (`StaffAuthSecretMissing`; before VPA-3 this was livemode-only,
+  because the block always existed and defaulted). In livemode both must be
+  `${VAR}` references (`LiteralSecret`). A key that is not 32 bytes, or a
+  `trusted_proxies` entry that does not parse, is `78` at boot
+  (`vpay_api::staff::StaffLoginError`, built by the one constructor
+  `StaffLogin::from_config` that `serve` and the integration harnesses both call;
+  the `/dash/v1` session validator likewise comes from the one
+  `ManagementEnvelope::with_staff_sessions`),
+  where it once logged and mounted the read
+  surface with no way in. `staff_auth.sso` is `staff_auth`'s one optional
+  sub-block (VPA-4): it is served exactly when `human_login` is, so with the
+  method not permitted it is refused with the rest of `staff_auth`
+  (`AuthMethodDisabled`). Its own rules: `StaffSsoMalformed` (a field and the rule
+  it broke, never the value), `StaffSsoNoSecondFactorRule` (neither `accepted_acr`
+  nor `accepted_amr`), `LiteralSecret` for `client_secret` in livemode, and the
+  livemode https and stub-host rules for `issuer` and `redirect_uri`; a provider
+  that cannot be built is `StaffLoginError::Unusable`, exit `78`.
+- `dashboard.merchant_id` and `dashboard_client.merchant_id`, when both are
+  written, must agree (`DashboardTenantMismatch`). A deployment that writes only
+  `dashboard_client` mounts `/dash/v1` and no `/svc/v1`: pairing needs `dashboard:`.
+- `vpay-server staff add` mints a one-time password only where the method is
+  served; it never prints a password on a deployment that does not serve one.

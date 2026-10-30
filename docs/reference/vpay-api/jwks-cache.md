@@ -124,11 +124,14 @@ Not deviations, and worth stating because they look like ones:
 
 ## A second cache, for a federated issuer (2026-10-20, ADR-0030)
 
-> **Deleted in VP-6a (2026-10-27).** Staff SSO is gone, and `KeySetCache` and
+> ~~**Deleted in VP-6a (2026-10-27).** Staff SSO is gone, and `KeySetCache` and
 > its tests went with it; `jwks_cache.rs` holds only `JwksCache`, which serves
-> the merchant MCP validator. What follows is the record of what it was.
+> the merchant MCP validator. What follows is the record of what it was.~~
+> **Restored 2026-10-30 (VPA-4)**, byte for byte, with its four tests, as the
+> key source of `staff::sso` (served where `human_login` is and `staff_auth.sso`
+> is written). The text below is exact again.
 
-`jwks_cache.rs` held two caches. `JwksCache` is the port described above
+`jwks_cache.rs` holds two caches. `JwksCache` is the port described above
 and serves this deployment's **own** `/v1/oauth/jwks.json` to the two bearer
 validators. `KeySetCache` serves the **identity provider's** key set to the SSO
 callback, and differs in four ways, each deliberate:

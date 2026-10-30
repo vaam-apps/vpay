@@ -203,6 +203,8 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
             // the only thing standing between it and the pairing handler.
             service_client(BYSTANDER, &[]),
         ],
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }
@@ -720,9 +722,14 @@ async fn a_bad_proof_a_stale_one_and_a_compressed_point_write_nothing() -> anyho
     assert_eq!(status, 400, "{answer}");
     assert_eq!(at(&answer, "/error/param"), "possession_proof", "{answer}");
 
-    // A proof over a different `issued_at` than the one sent.
+    // A proof over a different `issued_at` than the one sent. Moved from the
+    // body's own `issued_at`, not from `now`: `body_for` reads the clock again,
+    // and a second boundary crossed since `now` made `now + 1` the signed value.
     let mut moved = body_for("alice-browser", "frank");
-    set(&mut moved, "issued_at", json!(now + 1));
+    let signed_at = at(&moved, "/issued_at")
+        .as_i64()
+        .context("body_for writes issued_at as an integer")?;
+    set(&mut moved, "issued_at", json!(signed_at + 1));
     let (status, answer) = harness.pair(&moved).await?;
     assert_eq!(status, 400, "{answer}");
 

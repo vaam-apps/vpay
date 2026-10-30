@@ -107,6 +107,15 @@ its replacement is stronger: a second enrolment is refused by
 
 ## What `staff add` now risks, and what closes it
 
+> **Corrected 2026-10-30 (VPA-3, review round 1): the two inserts are one
+> transaction now, and the compensating delete is gone.** The paragraph below
+> that says a transaction "is not available" was wrong by the time it was
+> restored: `TxRepositories::provision_federated_staff_in_tx` writes a member and
+> their first credential on one transaction through the generated models
+> (`run_in_tx`), and `provisioning_a_federated_member_is_atomic` pins both-or-neither
+> against a real Postgres. `staff add` calls it, so a failed credential insert
+> leaves no member. The text is kept as the record of what stood.
+
 `vpay-server staff add` was **one** insert and is **two** — a `staff_members`
 row and a `credentials` row. Two inserts that are not one statement have a
 window, and a failure in it would leave a staff member **who can never sign in

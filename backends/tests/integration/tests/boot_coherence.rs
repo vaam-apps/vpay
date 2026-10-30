@@ -160,6 +160,8 @@ fn config_with(code: &str) -> Config {
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }

@@ -541,6 +541,11 @@ impl SealedRequest {
             for (name, value) in &sealed.headers {
                 request = request.header(name, value);
             }
+            // Not part of the seal: the one header a case sets to prove the
+            // surface refuses a signature that arrives beside a bearer.
+            if let Some(value) = self.header_value("authorization") {
+                request = request.header("authorization", value);
+            }
             let response = request.send().await?;
             let status = response.status();
             let headers = response.headers().clone();

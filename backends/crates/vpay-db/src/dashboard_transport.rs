@@ -59,6 +59,25 @@ use cratestack::{CratestackContext, CratestackError, PrincipalContext, Principal
 /// itself.
 pub type DashboardAuthFn = Arc<dyn Fn(&Extensions) -> Option<String> + Send + Sync>;
 
+/// How the signed-transport layer of the procedure transport treats a request
+/// that carries no signature (ADR-0037).
+///
+/// The same three modes `/v1` runs in (`vpay_api::envelope::SurfaceMode`), named
+/// here because this crate cannot name that type, and kept to the three
+/// cratestack's `EnvelopeMode` has, so the mapping is a `match` and not a
+/// decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcedureSigning {
+    /// Every call is signed; an unsigned one is the layer's coarse `401`.
+    Required,
+    /// A signed call is opened and sealed; an unsigned one passes to the
+    /// tenancy step untouched (a staff session, `human_login`).
+    Optional,
+    /// The layer is off: nothing is opened or sealed, and a COSE body is
+    /// refused (`415`).
+    Off,
+}
+
 /// [`cratestack::AuthProvider`] over a [`DashboardAuthFn`].
 ///
 /// A tenant-carrying context — never an anonymous or a system one — for any

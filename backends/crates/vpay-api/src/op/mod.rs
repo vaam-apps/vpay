@@ -9,7 +9,10 @@
 //! (the two handlers vpay writes itself), and [`refusing_stores`] (the three
 //! `OpStore` slots `/v1` must fill and no `/v1` grant can reach).
 //!
-//! [`MerchantOp`] is the assembly. Nothing here serves the dashboard surface.
+//! [`MerchantOp`] is the assembly. Nothing in it serves the dashboard surface:
+//! the staff authorization-code grant is [`dashboard::DashboardOp`], a second
+//! half of the same OP (one issuer, one signing key, one JWKS) that exists only
+//! on a deployment serving `human_login`.
 //!
 //! Why vpay writes its own handlers instead of mounting `authkestra-axum`, and
 //! what it deliberately does *not* re-implement:
@@ -32,6 +35,10 @@ use crate::op::refusing_stores::{
 };
 
 pub mod clients;
+/// The `/dash/v1` half: the authorization-code grant, for the dashboard
+/// client and nothing else (ADR-0017 decision 3). Built only when `human_login`
+/// is served (ADR-0037).
+pub mod dashboard;
 pub mod jwks;
 pub mod keys;
 pub mod refusing_stores;

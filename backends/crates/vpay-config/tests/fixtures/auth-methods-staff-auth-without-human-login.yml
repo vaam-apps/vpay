@@ -1,0 +1,25 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-3).
+#
+# `staff_auth` configured while `auth.methods` does not permit `human_login`:
+# refused (AuthMethodDisabled, naming `staff_auth`). Dormant configuration is
+# how an operator comes to believe a sign-in is off that is on.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+staff_auth:
+  password_pepper: fixture-pepper
+  totp_encryption_key: fixture-key

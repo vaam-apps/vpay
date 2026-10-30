@@ -1,0 +1,34 @@
+# Fixture for the `auth.methods` rules in
+# backends/crates/vpay-config/src/config.rs (ADR-0037, VPA-4).
+#
+# `staff_auth.sso` configured while `auth.methods` does not permit
+# `human_login`: refused (AuthMethodDisabled, naming `staff_auth`, the block
+# the SSO rides in). A single sign-on is a way to sign in as a person, so the
+# method that is off takes it with it; a block left behind is how an operator
+# comes to believe a sign-in is off that is on.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: acme-ci
+
+staff_auth:
+  password_pepper: fixture-pepper
+  totp_encryption_key: fixture-key
+  sso:
+    issuer: https://auth.example.test/realms/staff
+    client_id: vpay-staff
+    client_secret: fixture-secret
+    redirect_uri: http://localhost:3000/api/auth/sso/callback
+    required_group: vpay-staff
+    accepted_amr: [otp]

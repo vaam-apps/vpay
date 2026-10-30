@@ -301,6 +301,8 @@ fn config_with(base_url: &str, jwks: [Value; 4], surfaces: Option<Vec<String>>) 
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }

@@ -512,6 +512,53 @@ pub enum ApiError {
     #[error("the client is not permitted to perform that action")]
     Forbidden,
 
+    /// A staff sign-in step did not succeed
+    /// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md)).
+    ///
+    /// **One variant for every failure of the sign-in path**, and the
+    /// uniformity is the security property rather than laziness: no such
+    /// address, wrong password, disabled account, wrong TOTP code, a replayed
+    /// TOTP code, an expired session, an idle session, a session that never
+    /// existed and a session at the wrong stage all render as one `401` with
+    /// one sentence. A caller that could tell them apart would have an
+    /// account-enumeration oracle and a "you got the password right" oracle,
+    /// which are the two things a login form must not be.
+    ///
+    /// `stage` is **operator-facing only** — it reaches the `Display` above
+    /// and therefore the log, never the response body (see
+    /// [`Classify::public_message`]). It is a `&'static str` naming one of
+    /// this crate's own steps, never a value the caller sent.
+    ///
+    /// The timing half of the same property is
+    /// `crate::staff_auth::StaffCredentials::verify_absent_account`: an
+    /// address with no account still costs one argon2id verification.
+    #[error("staff sign-in refused at {stage}")]
+    StaffSignInRefused {
+        /// Which step refused, for the log. One of this crate's own literals.
+        stage: &'static str,
+    },
+
+    /// Too many sign-in attempts for this email or from this address
+    /// (ADR-0017 decision 2).
+    ///
+    /// `Category::RateLimited` → `429`, `Retry::AfterBackoff`. It is refused
+    /// **before** any credential work happens, which is the point: an attempt
+    /// over the budget must not cost an argon2id verification, or the limit
+    /// would be the amplifier rather than the defence.
+    #[error("staff sign-in refused: over the rate limit")]
+    StaffSignInRateLimited,
+
+    /// A staff credential operation failed for a reason that is nobody's
+    /// fault but this deployment's: a misconfigured key, or a stored secret
+    /// that will not open.
+    ///
+    /// `transparent`, and its classification is **delegated** rather than
+    /// re-decided (ADR-0011): `StaffAuthError` classifies every one of its
+    /// variants `Internal`, deliberately, because none of them is anything a
+    /// caller did and none may ever reach a person as "wrong password".
+    #[error(transparent)]
+    StaffAuth(#[from] crate::staff_auth::StaffAuthError),
+
     /// A merchant asked vpay to create a Checkout Session on a deployment
     /// that serves no checkout page — `checkout.public_base_url` is absent
     /// (Step 9).
@@ -845,6 +892,16 @@ impl Classify for ApiError {
             Self::NotFound { .. } => Category::NotFound,
             Self::Conflict { .. } => Category::Conflict,
             Self::Forbidden => Category::Forbidden,
+            // Every sign-in failure is one answer — see the variant. The
+            // category is `Authentication` and not `Forbidden`: the caller
+            // has not authenticated at all, and `403` would tell them they
+            // had.
+            Self::StaffSignInRefused { .. } => Category::Authentication,
+            Self::StaffSignInRateLimited => Category::RateLimited,
+            // Delegated, never re-decided (ADR-0011). Named explicitly rather
+            // than caught by a wildcard, which is what `verify-errors`
+            // checks.
+            Self::StaffAuth(e) => e.category(),
             // An operator's problem, fixed by a deploy, never by retrying —
             // which is `Category::Configuration`'s own definition. See the
             // variant for why it is not `Storage` even though the plan asked
@@ -899,6 +956,12 @@ impl Classify for ApiError {
             Self::NotFound { .. } => Category::NotFound.default_code(),
             Self::Conflict { .. } => Category::Conflict.default_code(),
             Self::Forbidden => Category::Forbidden.default_code(),
+            // The category defaults, and deliberately no override: a code
+            // per sign-in step would be exactly the oracle the single
+            // variant exists to remove.
+            Self::StaffSignInRefused { .. } => Category::Authentication.default_code(),
+            Self::StaffSignInRateLimited => Category::RateLimited.default_code(),
+            Self::StaffAuth(e) => e.code(),
             // The third deliberate override in this enum. The category
             // default, `misconfigured`, is what *every* configuration failure
             // says, and a merchant integrating hosted checkout has to be able
@@ -941,6 +1004,9 @@ impl Classify for ApiError {
             | Self::NotFound { .. }
             | Self::Conflict { .. }
             | Self::Forbidden
+            | Self::StaffSignInRefused { .. }
+            | Self::StaffSignInRateLimited
+            | Self::StaffAuth(_)
             | Self::CheckoutNotConfigured(_)
             | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_retry(),
@@ -966,9 +1032,16 @@ impl Classify for ApiError {
             | Self::NotFound { .. }
             | Self::Conflict { .. }
             | Self::Forbidden
+            | Self::StaffSignInRefused { .. }
+            | Self::StaffSignInRateLimited
             | Self::CheckoutNotConfigured(_)
             | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_severity(),
+            // Delegated: `StaffAuthError` is `Internal` throughout, so this
+            // pages — which is correct for a key that will not decode and
+            // for a stored secret that will not open, and is why neither may
+            // be rendered as a refused password.
+            Self::StaffAuth(e) => e.severity(),
         }
     }
 
@@ -1029,6 +1102,22 @@ impl Classify for ApiError {
             // can act on, and enumerating the scope it lacks would describe
             // the authorisation model to something that failed it.
             Self::Forbidden => Category::Forbidden.generic_message().to_owned(),
+            // ONE sentence for every sign-in failure. Nothing about which
+            // step refused, nothing about whether the address exists,
+            // nothing about whether the password was right. `stage` stays in
+            // the `Display` for the log and never reaches here.
+            Self::StaffSignInRefused { .. } => {
+                "Sign-in failed. Check the email address, the password and the code from your \
+                 authenticator app."
+                    .to_owned()
+            }
+            Self::StaffSignInRateLimited => {
+                "Too many sign-in attempts. Wait a few minutes and try again.".to_owned()
+            }
+            // Never the detail: every variant of `StaffAuthError` is about a
+            // deployment secret or a stored ciphertext, and the caller is a
+            // person at a login form.
+            Self::StaffAuth(e) => e.public_message(),
             // Its own sentence rather than `Category::Configuration`'s
             // generic "vpay is misconfigured for this operation. Contact
             // support." — which is true and useless here. This is not an
