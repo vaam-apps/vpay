@@ -1862,10 +1862,14 @@ was broken on purpose, is
   `callback` are the module's own `404`. A provider that cannot be built is a
   boot refusal (`StaffLoginError::Unusable`, exit `78`), where before VPA-4 it
   logged and fell back.
-- **Restored unchanged from `f885170^`:** `staff/sso/error.rs` and `verify.rs`
-  byte for byte (the algorithm allow-list, `kid`, signature, `iss`, `aud`,
-  `azp`, `exp`, `iat`, `sub`, the group and second-factor rules), `KeySetCache`
-  in `jwks_cache.rs` and its four tests, `check_sso_start`, the three routes in
+- **Restored from `f885170^`:** `staff/sso/error.rs` byte for byte;
+  `staff/sso/verify.rs` identical outside `#[cfg(test)]` except that
+  `IdentityClaims`'s `Debug` prints `"[redacted]"` for the provider's `subject`
+  (the algorithm allow-list, `kid`, signature, `iss`, `aud`, `azp`, `exp`,
+  `iat`, `sub`, the group and second-factor rules are untouched), with one test
+  case added (a token with no `exp`) and the `Debug` canary extended to the
+  subject; `KeySetCache` in `jwks_cache.rs` and its four tests byte for byte,
+  `check_sso_start`, the three routes in
   `STAFF_ROUTES` (eleven now), and the `StaffSso` block with its validation
   (`StaffSsoMalformed`, `StaffSsoNoSecondFactorRule`, `LiteralSecret` for
   `client_secret` in livemode). `staff/sso/mod.rs` and `provider.rs` differ
@@ -1887,10 +1891,13 @@ was broken on purpose, is
 - **Inventories.** `staff_sso_client_secret` is a secret class again
   (`staff_auth.sso.client_secret`, the xtask's recognised keys are thirteen),
   and six more types are registered in `debug_protections`.
+- **The chart's egress rule is back.** `networkPolicy.idpEgress`, deleted by
+  #383, is restored as it stood (`vpay.idpEgressRules`, its two includes, the
+  values, the schema and the README section); `just helm-check` passes with it
+  (Helm 3.19.0, kubeconform, 68 resources valid). A private or in-cluster
+  provider, or any provider once `railsEgress` is off, can be reached again.
 - **Not done.** The dashboard application's two SSO routes and sign-in button
-  (VPA-5; `redirect_uri` names a page that does not exist until then). No Helm
-  value or egress rule for the provider: the chart's `networkPolicy.idpEgress`
-  was deleted by #383 and is not restored here, so a deployment with
-  `railsEgress` off must allow the issuer's host itself. Never run against any
-  provider but a simulated one and Keycloak 26.6.1 in a container, and the
-  Keycloak suite was **not run in this session** (no Docker daemon).
+  (VPA-5; `redirect_uri` names a page that does not exist until then). Never run
+  against any provider but a simulated one and Keycloak 26.6.1 in a container,
+  and the Keycloak suite was **not run in this session** (no Docker daemon).
+  Nothing in the chart has run in a cluster.

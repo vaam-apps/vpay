@@ -160,6 +160,18 @@ same three things):
 `backends/tests/integration/tests/fixtures/keycloak-realm.json` is a working
 realm import with all of it, and `staff_sso_keycloak.rs` boots Keycloak with it.
 
+**On the network side, in the Helm chart.** The pod that serves `/dash/v1`
+(`-management` when `management.enabled`, otherwise `-server`) opens outbound
+HTTPS to the provider for discovery, the key set and the token endpoint. With
+`networkPolicy.enabled`, a public provider on 443 is already reachable through
+`networkPolicy.railsEgress`. A provider on a private address or in the cluster,
+on another port, or any provider once `railsEgress.enabled` is false needs
+`networkPolicy.idpEgress` (restored 2026-10-30, VPA-4, as #383 deleted it; never
+the worker, and not `-server` once the tiers are split). The chart's
+[README](../../../deploy/helm/vpay/README.md) ("Egress to the staff identity
+provider under `networkPolicy`") has the values and the limits of the schema's
+guard.
+
 A person whose OTP is **enrolled during** the sign-in (Keycloak's
 `CONFIGURE_TOTP` required action) gets a token whose `amr` is `["pwd"]` only.
 That is the case the retry exists for: vpay sends the browser back with
