@@ -416,7 +416,8 @@ correction.
   `git check-ignore` refuses those paths ("beyond a symbolic link", exit
   128), and the CLI reads that as "nothing is ignored" — six `decimal.js`
   files reported as drift on a clean checkout, measured. That is an upstream
-  bug, not filed from here. The gate count did not move (15): this is a
+  bug, filed 2026-10-27 as
+  [cratestack#1235](https://github.com/cratestack/cratestack/issues/1235). The gate count did not move (15): this is a
   direction of an existing gate, not a new one.
 - **`check-schema` — a gate, in `just verify`, `just ci` and CI's
   `self-checks` job.** `cratestack check --schema schemas/vpay.cstack` at the
