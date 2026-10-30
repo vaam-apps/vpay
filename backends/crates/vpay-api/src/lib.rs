@@ -137,11 +137,22 @@ pub mod op;
 // merchant API and must not sit inside the `/v1` authentication boundary —
 // see that module's header.
 pub mod provider_callback;
-// Bearer-token validation, for the merchant MCP endpoint alone (ADR-0033).
+// Bearer-token validation: the merchant MCP endpoint (ADR-0033), `/v1` beside a
+// signature when `machine_tokens` is permitted, and `/dash/v1` beside a console
+// key when `human_login` is served (ADR-0037).
 pub mod resource_auth;
+/// Staff credentials: argon2id with a deployment pepper, RFC 6238 TOTP, the
+/// AEAD that keeps a TOTP secret out of a database dump, and the opaque
+/// tokens (ADR-0017). Restored for `human_login` (ADR-0037, VPA-3).
+/// Staff sign-in: the routes that produce the credential `/dash/v1` checks
+/// beside a console key (ADR-0017). Mounted only when `human_login` is served.
+pub mod staff;
+pub mod staff_auth;
 // The routes a registered service calls (VP-6a): pair and revoke a console key.
 #[cfg(test)]
 mod auth_methods_tests;
+#[cfg(test)]
+mod human_login_tests;
 pub mod svc;
 #[cfg(test)]
 mod test_fixtures;
@@ -352,6 +363,20 @@ pub struct RouterDeps {
     /// all; `vpay-server` cannot produce that combination, so the arm exists for
     /// a router assembled by some other caller.
     pub management_envelope: Option<envelope::ManagementEnvelope>,
+    /// Everything the staff sign-in routes need, or `None` and they are not
+    /// mounted (ADR-0017, ADR-0037).
+    ///
+    /// `Some` exactly when `auth.methods` **serves** `human_login`: permitted,
+    /// with `staff_auth` and `dashboard_client` both configured. `None` means
+    /// `/dash/v1/staff/*` and `/dash/v1/oauth/*` answer the honest `404`, and
+    /// [`Self::management_envelope`] carries no session validator, so `/dash/v1`
+    /// takes a console key alone. `vpay-server` derives both from the one
+    /// `AuthMethods::human_login_served`, so they cannot disagree; a router
+    /// assembled by some other caller that passes `Some` here and no session
+    /// validator in the envelope answers every bearer request with a `500`
+    /// (never an open door), and one that passes `None` here with the envelope
+    /// built `Optional` answers the sign-in routes `404`.
+    pub staff_login: Option<Arc<staff::StaffLogin>>,
     /// The slice of the YAML deployment configuration a request path needs —
     /// see [`ResourceConfig`], which is also where `livemode` reaches a
     /// handler from.
@@ -392,6 +417,29 @@ pub(crate) struct AppState {
     merchant_op: std::sync::Arc<op::MerchantOp>,
     adapters: Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>,
     resource_config: Arc<ResourceConfig>,
+    staff_login: Option<Arc<staff::StaffLogin>>,
+}
+
+impl AppState {
+    /// The staff sign-in state, or the honest 404.
+    ///
+    /// Every staff handler starts here. `router` mounts the staff routes only
+    /// when this is `Some`, so reaching the `Err` arm means a router assembled
+    /// by some other caller, and the answer is the one an unmounted deployment
+    /// gives: a `500` would claim vpay is broken when the truth is that this
+    /// deployment serves no staff login.
+    pub(crate) fn staff_login(&self) -> Result<&staff::StaffLogin, ApiError> {
+        self.staff_login.as_deref().ok_or(ApiError::NotFound {
+            resource: "route",
+            id: "/dash/v1/staff".to_owned(),
+        })
+    }
+
+    /// The repositories, for a staff handler that would otherwise need its own
+    /// `State` extractor beside this one.
+    pub(crate) fn repositories(&self) -> &dyn Repositories {
+        self.repositories.as_ref()
+    }
 }
 
 /// So [`op::jwks::jwks_handler`] can take `State<Arc<dyn Repositories>>` and
@@ -471,10 +519,11 @@ async fn healthz(State(state): State<AppState>) -> impl IntoResponse {
 pub const AUTH_DISCOVERY_PATH: &str = "/.well-known/vpay-auth";
 
 /// `GET /.well-known/vpay-auth`: `{"methods": ["keypair", ...]}`, the methods
-/// this deployment permits **and serves** (`AuthMethods::served`: permitted
-/// minus `human_login`, which no release serves yet). It lists what the
-/// deployment offers, not what any one merchant can use: a merchant registered
-/// with `cose_keys` alone cannot use a token on a deployment that lists
+/// this deployment permits **and serves** (`AuthMethods::served`: permitted,
+/// except that `human_login` is listed only when both its blocks, `staff_auth`
+/// and `dashboard_client`, are configured). It lists what the deployment
+/// offers, not what any one merchant can use: a merchant registered with
+/// `cose_keys` alone cannot use a token on a deployment that lists
 /// `machine_tokens`.
 ///
 /// Nothing secret and nothing per-caller: it is the YAML's `auth.methods`
@@ -910,11 +959,6 @@ fn management_nests(
     state: &AppState,
     envelope: Option<&envelope::ManagementEnvelope>,
 ) -> ManagementNests {
-    let scope = envelope::console::DashScopeState {
-        repositories: Arc::clone(&state.repositories),
-        resource_config: Arc::clone(&state.resource_config),
-    };
-
     // The closure is the whole of `vpay_db::DashboardAuthFn`'s contract: read
     // the tenant `dash_scope` already resolved onto the request's own
     // extensions, and hand back nothing else. This crate never constructs a
@@ -928,18 +972,53 @@ fn management_nests(
     });
     let procedures = state.repositories.dashboard_procedure_router(auth);
 
+    // The staff sign-in routes (`human_login`, ADR-0037), or nothing. Built once,
+    // **outside** the envelope in both arms: they exist to produce the credential
+    // the scope step checks, and they are form requests under a session header,
+    // not operations a key signs. `Router::layer` wraps the routes *and the
+    // fallback* present when it is called, so merging after the layers leaves
+    // `dash::routes`' fallback inside them and these routes outside; an
+    // unmatched `/dash/v1/...` path therefore answers what it always did.
+    // `staff::routes` carries no fallback of its own: two routers with
+    // fallbacks cannot be merged. A deployment that does not serve the method
+    // mounts none of it, so every `/dash/v1/staff/...` and `/dash/v1/oauth/...`
+    // path is the honest `404` (a mounted route that refused would invite a
+    // caller to look for a credential this deployment cannot issue).
+    let staff = state.staff_login.is_some().then(|| {
+        staff::routes()
+            .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+            .layer(from_fn(track_http_metrics))
+    });
+    let with_staff = |dash: Router<AppState>| match staff {
+        Some(staff) => dash.merge(staff),
+        None => dash,
+    };
+
     match envelope {
         Some(envelope) => ManagementNests {
-            dash: dash::routes()
+            dash: with_staff(
+                dash::routes()
+                    .route_layer(from_fn_with_state(
+                        envelope.dash_scope_state(
+                            Arc::clone(&state.repositories),
+                            Arc::clone(&state.resource_config),
+                            envelope::console::DashSurface::Reads,
+                        ),
+                        envelope::console::dash_scope,
+                    ))
+                    .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
+                    .layer(envelope.dash_layer())
+                    .layer(from_fn(track_http_metrics)),
+            ),
+            procedures: procedures
                 .route_layer(from_fn_with_state(
-                    scope.clone(),
+                    envelope.dash_scope_state(
+                        Arc::clone(&state.repositories),
+                        Arc::clone(&state.resource_config),
+                        envelope::console::DashSurface::Procedures,
+                    ),
                     envelope::console::dash_scope,
                 ))
-                .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
-                .layer(envelope.dash_layer())
-                .layer(from_fn(track_http_metrics)),
-            procedures: procedures
-                .route_layer(from_fn_with_state(scope, envelope::console::dash_scope))
                 .layer(RequestBodyLimitLayer::new(V1_BODY_LIMIT_BYTES))
                 .layer(envelope.procedures_layer())
                 // **Added AFTER the envelope, so it is OUTSIDE it — and it is
@@ -973,9 +1052,11 @@ fn management_nests(
                 .layer(from_fn(track_http_metrics)),
         },
         None => ManagementNests {
-            dash: dash::routes()
-                .layer(from_fn(refuse_management_without_envelope))
-                .layer(from_fn(track_http_metrics)),
+            dash: with_staff(
+                dash::routes()
+                    .layer(from_fn(refuse_management_without_envelope))
+                    .layer(from_fn(track_http_metrics)),
+            ),
             procedures: procedures
                 .layer(from_fn(refuse_management_without_envelope))
                 .fallback(not_found)
@@ -1023,23 +1104,34 @@ pub fn router(deps: RouterDeps) -> Router {
     let surfaces = deps.surfaces;
     let merchant_mcp = deps.merchant_mcp;
 
+    // The sign-in is served when the configuration says so (`staff_binding` is
+    // `Some` only for a served `human_login`), and a `StaffLogin` the caller
+    // handed in for a configuration that does not serve it is dropped here:
+    // the method's off-switch is `auth.methods`, and nothing a caller of this
+    // function passes can turn it back on.
+    let staff_login = deps
+        .staff_login
+        .filter(|_| deps.resource_config.staff_binding().is_some());
     let state = AppState {
         repositories: deps.repositories,
         merchant_op: deps.merchant_op,
         adapters: deps.adapters,
         resource_config: deps.resource_config,
+        staff_login,
     };
 
     // Unauthenticated by necessity, not by omission — see the table above.
     //
-    // **Business and MCP only since VP-6a.** The two discovery routes were
-    // mounted on the management surface too, because its bearer-token validator
-    // fetched JWKS over HTTP and must not have to reach the business tier to
-    // validate a staff token (ADR-0022 § "Where `/v1/oauth` goes"). There is no
-    // staff token and no validator any more. What still reads them is the
-    // merchant MCP endpoint's validator, which fetches this process's own JWKS
-    // over loopback (ADR-0033 D9), so an MCP-only pod keeps the pair. `/token`
-    // mints the **merchant** private-key-JWT credential and is
+    // **Where the pair is mounted is decided by who reads it** (`validates_tokens`
+    // below). Until VP-6a the management surface mounted it, because its staff
+    // bearer-token validator fetched JWKS over HTTP and must not have to reach the
+    // business tier to validate a session (ADR-0022 § "Where `/v1/oauth` goes").
+    // VP-6a deleted that validator and the mount with it; VPA-3 restores both for a
+    // deployment that serves `human_login`, so a management pod that does has the
+    // pair again. Any other pod has it only where it mints machine tokens or is an
+    // MCP pod, whose validator fetches this process's own JWKS over loopback
+    // (ADR-0033 D9).
+    // `/token` mints the **merchant** private-key-JWT credential and is
     // `surfaces.business` alone: a pod that mounts the OP for its JWKS and mints
     // nothing answers the honest 404 there.
     let oauth = Router::new()
@@ -1052,15 +1144,23 @@ pub fn router(deps: RouterDeps) -> Router {
     // machine token is minted, so a deployment that does not permit
     // `machine_tokens` mounts no `/token`, and `/v1/oauth/token` is the honest
     // 404 below. The discovery pair is mounted only where something reads it:
-    // a deployment that mints tokens, or the MCP endpoint's validator
-    // (`validates_tokens`). MCP implies `machine_tokens` at boot
-    // (`ConfigError::McpNeedsMachineTokens`).
+    // a deployment that mints tokens, the MCP endpoint's validator, or a
+    // management pod that serves `human_login`, whose staff session validator
+    // reads it (all three are `validates_tokens` or `mints_tokens`, below).
+    // MCP implies `machine_tokens` at boot (`ConfigError::McpNeedsMachineTokens`).
     let machine_tokens = state
         .resource_config
         .auth_methods()
         .permits(vpay_config::AuthMethod::MachineTokens);
     let mints_tokens = surfaces.business && machine_tokens;
-    let validates_tokens = surfaces.mcp && machine_tokens;
+    // The discovery pair is also what a `/dash/v1` staff token is validated
+    // against, on the pod that mounts the sign-in (ADR-0022 § "Where `/v1/oauth`
+    // goes", which put it on the management tier for exactly that reason until
+    // VP-6a, and which VPA-3 restores for `human_login`): the key set is this
+    // process's own, fetched over loopback, and the management tier must not have
+    // to reach the business tier to check a session.
+    let validates_tokens = (surfaces.mcp && machine_tokens)
+        || (surfaces.management && state.resource_config.staff_binding().is_some());
     let oauth = match mints_tokens {
         true => oauth.route("/token", post(op::token::token_handler)),
         // Not mounted at all, so the nest's own `.fallback` answers the honest
@@ -1237,8 +1337,14 @@ pub fn router(deps: RouterDeps) -> Router {
     // the business Service (`http://vpay:8080` in-cluster), not to the tier a
     // person's browser reaches. A `surfaces: [management]` process therefore
     // answers 404 on `/svc/v1` (ADR-0036 § "Which surface `/svc/v1` is on").
-    let console_is_configured = state.resource_config.dashboard().is_some();
-    let serves_dash = surfaces.management && console_is_configured;
+    //
+    // **`/dash/v1` is also mounted by `human_login` alone** (ADR-0037): a
+    // deployment that serves the sign-in and configured no `dashboard:` has a
+    // tenant (`dashboard_client.merchant_id`) and a credential (the staff access
+    // token) but no paired keys, so it has nothing for `/svc/v1` to pair into.
+    // `/svc/v1` therefore follows the `dashboard:` block alone.
+    let console_is_configured = state.resource_config.console_configured();
+    let serves_dash = surfaces.management && state.resource_config.dashboard().is_some();
     let serves_svc = surfaces.business && console_is_configured;
     let management = (serves_dash || serves_svc)
         .then(|| management_nests(&state, deps.management_envelope.as_ref()));

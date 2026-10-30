@@ -51,14 +51,15 @@
   a third party
 ```
 
-**The staff column is superseded (since #383 merged on 2026-10-27; ADR-0036
-is dated 2026-10-26).** #383 deleted
-`/dash/v1/oauth/*`, the staff OP and staff sessions; the console signs with a
-paired key instead. The staff side of this diagram is therefore what was
-designed, and nothing serves it. How a staff agent authenticates is
-ADR-0033's "Left to the maintainer" item 5. The two staff rows below keep
-their mitigations as designed, and are **not built** for that reason as well
-as for the missing endpoint.
+**The staff column holds only where `human_login` is served.** #383 (merged
+2026-10-27; ADR-0036 is dated 2026-10-26) deleted `/dash/v1/oauth/*`, the staff
+OP and staff sessions, and VPA-3 (#390, merged 2026-10-30) restored them behind
+ADR-0037's `human_login`. A keypair-only deployment (vaam's) has no staff OP;
+its console signs with a paired key. Either way nothing serves the staff MCP
+side of this diagram. How a staff agent authenticates on a keypair-only
+deployment is ADR-0033's "Left to the maintainer" item 5. The two staff rows
+below keep their mitigations as designed, and are **not built**: there is no
+staff MCP endpoint, and no second staff OP client.
 
 The trust boundaries crossed are:
 

@@ -8,6 +8,18 @@
 > to this deployment, and has not been seen before. Every answer to such a request
 > is a COSE_Sign1 message signed by this deployment.**
 
+**That is the invariant of a deployment that does not serve `human_login`, which
+is every deployment until it writes the method's two blocks (`staff_auth` and
+`dashboard_client`), and vaam's for good.** On one that does
+([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md),
+VPA-3) `/dash/v1` also takes a staff access token from a password-and-TOTP
+sign-in, or from a single sign-on through an OpenID Connect provider when
+`staff_auth.sso` is written (VPA-4), one credential per request, and the sentence
+above holds for every request that carries a signature:
+[dashboard-auth/human-login.md](dashboard-auth/human-login.md) and
+[dashboard-auth/sso.md](dashboard-auth/sso.md).
+Where the method is off, the rest of this paragraph is exact.
+
 There is no password, no TOTP code, no session, no authorization code, no bearer
 token and no federated sign-in on this surface. A person's identity on the wire
 is a **P-256 key their browser generated and cannot export** (WebCrypto,
@@ -25,7 +37,10 @@ records the decision and the owner rulings behind it, and what it supersedes
 for, and [ADR-0018](../adr/0018-cross-tenant-admin-reads.md) still decides which
 tenant a request reads.
 
-> **The dashboard application cannot sign in until VP-6b.** Its sign-in,
+> **The dashboard application cannot sign in until VP-6b/VPA-5.** The server
+> side of a password sign-in is back (VPA-3, behind `human_login`) and so is
+> the server side of a single sign-on (VPA-4, [sso.md](dashboard-auth/sso.md)),
+> but the application has no pages for either yet. Its sign-in,
 > session, BFF and SSO code is deleted, and it renders one notice page; the
 > pages and the end-to-end cases VP-6b restores are listed in
 > [`docs/status/frontend.md`](../status/frontend.md#what-vp-6b-must-restore).
@@ -34,36 +49,66 @@ tenant a request reads.
 
 ## Upgrading from before VP-6a
 
-A deployment whose configuration still names the two keys VP-6a deleted does
-not boot: it exits `78` with `ConfigError::RetiredKey`. That is the cutover, not
-a fault to work around, and the refusal is by design a hard one: a key the
-binary silently dropped would leave an operator believing a sign-in exists that
-does not.
+> **From the release that carries VPA-3, `dashboard_client` and `staff_auth` are
+> accepted again.** VP-6a refused both keys at boot, even as a null
+> (`ConfigError::RetiredKey`, a variant since deleted with its empty table); VPA-3
+> took them out of that table, because they
+> are the two blocks of the `human_login` method of `auth.methods`
+> ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md)).
+> The refusal below is the behaviour of the releases **between** VP-6a and VPA-3,
+> and a deployment that skips straight to VPA-3 meets the rules in step 1
+> instead.
 
-1. **Delete `dashboard_client` and `staff_auth` from the base file and from every
-   profile overlay, even as a null.** `dashboard_client: ~` is refused exactly as
-   a populated block is: naming the key at all is the refusal. A deployment that
-   switched the old block off in an overlay with a null has to take that line out.
+A deployment whose configuration still names the two keys VP-6a deleted, on a
+release cut between VP-6a and VPA-3, does not boot: it exits `78` with
+`ConfigError::RetiredKey`. That was the cutover, not a fault to work around, and
+the refusal was by design a hard one: a key the binary silently dropped would
+leave an operator believing a sign-in exists that does not.
+
+1. **On a release that carries VPA-3, keep the two blocks only if you want the
+   sign-in, and write both.** `staff_auth` (the pepper and the TOTP key) and
+   `dashboard_client` are `human_login`'s: with the method permitted (the
+   default) and both blocks written it is served; one without the other, or
+   either with `auth.methods` listing methods but not `human_login`, is a boot
+   refusal that names the block (`AuthMethodNotConfigured`,
+   `AuthMethodDisabled`). `staff_auth.sso` is accepted again from the release
+   that carries VPA-4, as a sub-block of `staff_auth`, and is served with
+   `human_login` ([sso.md](dashboard-auth/sso.md)); between VPA-3 and VPA-4 it is
+   refused as an unknown key. **On a release cut between VP-6a and VPA-3, delete
+   both from the base file and from every profile overlay, even as a null.**
+   `dashboard_client: ~` is refused exactly as a populated block is: naming the
+   key at all is the refusal.
 2. **To serve a console, add `dashboard:` and `service_clients:`** (the YAML in
    "Services, and who may pair" below): `dashboard.merchant_id` names the one
    tenant the console reads and must be a `merchant_clients` entry; each
    `service_clients` entry is a service, vaam, with its capability and its
-   Ed25519 key. The base `config/application.yml` carries neither.
-3. **To run without a console, add nothing.** With no `dashboard:` the process
-   mounts neither `/dash/v1` nor `/svc/v1` (both answer the honest `404`), and
-   every `vpay-server` mode boots (owner ruling R4).
-4. **Retire the secrets the sign-in used**: the password pepper, the TOTP key and
-   the SSO client secret are read by nothing now. The migration signs everyone
-   out (it drops `oauth_authorization_codes`, `staff_sessions` and
-   `staff_sso_attempts` and deletes the `password` and `totp` credentials).
+   Ed25519 key. The base `config/application.yml` carries neither. When
+   `dashboard_client` is written too, it must name the same tenant.
+3. **To run without a console, add nothing.** With no `dashboard:` and no
+   `human_login` blocks the process mounts neither `/dash/v1` nor `/svc/v1` (both
+   answer the honest `404`), and every `vpay-server` mode boots (owner ruling R4).
+4. **Keep the password pepper and the TOTP key, and do not rotate them.**
+   They are the only way the stored password hashes and sealed TOTP seeds ever
+   verify again. On a release that carries VPA-3 they stay where they were, in
+   `staff_auth`; on one cut between VP-6a and VPA-3 they come out of the
+   configuration file (the block must go) and wait in the secret store. The
+   migration signs everyone out (it drops `oauth_authorization_codes`,
+   `staff_sessions` and `staff_sso_attempts` and deletes the `password` and
+   `totp` credentials); the deletion can be undone only from an export, see
+   [Keeping staff passwords across 0056 and 0058](../runbooks/deploy-and-rollback.md#keeping-staff-passwords-across-0056-and-0058).
+   The SSO client secret (`staff_auth.sso.client_secret`) is `staff_auth`'s
+   again from the release that carries VPA-4, and waits in the secret store until
+   then. Members who signed in through SSO kept their `oidc` credential through
+   migration 0056 and resolve to the same member again by `(issuer, subject)`
+   ([sso.md](dashboard-auth/sso.md#members-kept-through-0056)).
 5. **Helm**: `dashboard.clientId`, `dashboard.redirectUri` and `dashboard.scope`
    are gone from the chart values. A split release (`management.enabled`) serves
    `/svc/v1` from `-server`, so list the calling service in
    `networkPolicy.serviceIngress.peers` when `networkPolicy.enabled`.
 
-This is a breaking change for release notes: the commit that lands it carries a
-`BREAKING CHANGE:` footer (the changelog is release-please's, generated from
-commits, and is not edited by hand).
+The VP-6a change is a breaking one for release notes: the commit that landed it
+carries a `BREAKING CHANGE:` footer (the changelog is release-please's,
+generated from commits, and is not edited by hand).
 
 ## Pairing a key
 

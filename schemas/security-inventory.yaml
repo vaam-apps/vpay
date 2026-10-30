@@ -77,7 +77,7 @@ deployable_services:
       - name: "dashboard_bff"
         surface: "/dash/v1"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "COSE_Sign1 signed request under a paired P-256 console key (ADR-0036), sealed answer; a key lives 30 days from pairing and is revoked on the next request"
+        auth: "COSE_Sign1 signed request under a paired P-256 console key (ADR-0036), sealed answer; a key lives 30 days from pairing and is revoked on the next request. When auth.methods serves human_login (ADR-0037) an unsigned request is also accepted with a staff access token (Authorization: Bearer, audience dashboard_client.client_id) from the authorization-code grant, and the staff sign-in routes (/dash/v1/staff/*, /dash/v1/oauth/*) are mounted; a request presenting both is refused"
         purpose: "Console reads of one tenant's payments"
       - name: "service_pairing"
         surface: "/svc/v1"
@@ -130,13 +130,18 @@ deployable_services:
     trust_tier: "tier_2_application"
     interfaces:
       - name: "management_api"
-        surface: "/dash/v1"
+        surface: "/dash/v1, including /dash/v1/staff/* and /dash/v1/oauth/*"
         protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
-        auth: "vpay-issued bearer access token; the dashboard holds it in an httpOnly cookie"
-        purpose: "Staff and merchant management reads"
+        auth: "A COSE_Sign1 signed request under a paired console key (ADR-0036) or, only when auth.methods serves human_login (ADR-0037), an unsigned request carrying a staff session bearer (Authorization: Bearer, audience dashboard_client.client_id); a request that is signed and also carries an Authorization header is a 400. The staff sign-in routes (/dash/v1/staff/*, including the three SSO routes /dash/v1/staff/sso*: the status route answers enabled false, and start and callback 404, unless staff_auth.sso is written) and the authorization-code grant (/dash/v1/oauth/*) are mounted only then. /dash/v1/staff/* itself authenticates by an unauthenticated password and TOTP sign-in, which returns the staff session token that every later request carries"
+        purpose: "Staff and merchant management reads, and the staff sign-in"
+      - name: "oidc_discovery"
+        surface: "/v1/oauth/jwks.json and /v1/oauth/.well-known/openid-configuration"
+        protocol: "HTTP/1.1 or HTTP/2 behind an operator-terminated TLS ingress"
+        auth: "Unauthenticated by design: a public key set and a discovery document. Mounted on this pod only when auth.methods serves human_login, because its own session validator fetches the key set over loopback (ADR-0022, ADR-0037); /v1/oauth/token is not mounted here"
+        purpose: "Key set and metadata a staff access token is validated against"
     upstream_apis: []
     responsibilities:
-      - "Serve /dash/v1 alone; every /v1 route is unmounted (ADR-0022), and the chart's NetworkPolicy is opt-in and never applied"
+      - "Serve /dash/v1 and, when human_login is served, the OP's JWKS and discovery document its own session validator reads; every other /v1 route is unmounted (ADR-0022), and the chart's NetworkPolicy is opt-in and never applied"
 
   - id: merchant_dashboard
     name: "Merchant and Staff Dashboard"
@@ -148,7 +153,7 @@ deployable_services:
       - name: "dashboard_ui"
         surface: "dashboard HTTP port 3000"
         protocol: "HTTP/1.1"
-        auth: "None that works yet: the sign-in this app had (password, TOTP, SSO, an httpOnly session cookie) was deleted with its server in VP-6a, and the console's own key pairing ships in VP-6b. Until then an operator signs in through `vpay-server staff pair-key` and a client that signs requests"
+        auth: "None that works yet: the application's own sign-in pages were deleted with VP-6a and its two-transport rebuild is VP-6b/VPA-5. The server side it signed in against (password and TOTP, an authorization code, a staff access token) is served again when auth.methods serves human_login (VPA-3), and a signed console key is the other way in"
         purpose: "Merchant and staff read surface"
     upstream_apis:
       - "vpay_server /dash/v1"
@@ -202,6 +207,7 @@ state_stores:
       - ledger_entries
       - ledger_transactions
       - manual_payments
+      - oauth_authorization_codes
       - oauth_client_assertion_jtis
       - oauth_clients
       - oauth_codes
@@ -216,6 +222,8 @@ state_stores:
       - refunds
       - routing_decisions
       - staff_members
+      - staff_sessions
+      - staff_sso_attempts
       - webhook_deliveries
 
   - id: transactional_job_queue
@@ -302,6 +310,30 @@ secrets_and_credentials:
     algorithm: "HMAC-SHA256 over timestamp and body, sent as vpay-signature"
     storage: "Environment variables referenced by ${VAR} placeholders; two secrets may be live at once to allow rotation. No rotation runbook exists yet."
     adr: "docs/adr/0016-engineering-standards.md"
+
+  - class: staff_password_pepper
+    description: "Server-side pepper mixed into every Argon2id staff password hash; read only when auth.methods serves human_login"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.password_pepper"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet. Losing it invalidates every stored staff password hash, which is why VP-6a's upgrade note says to keep it"
+    adr: "docs/adr/0017-staff-authentication.md"
+
+  - class: staff_totp_encryption_key
+    description: "AES-256-GCM key that seals stored staff TOTP secrets; read only when auth.methods serves human_login"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.totp_encryption_key"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet. Losing it invalidates every enrolled second factor"
+    adr: "docs/adr/0017-staff-authentication.md"
+
+  - class: staff_sso_client_secret
+    description: "OIDC client secret for federated staff sign-in; read only when auth.methods serves human_login and staff_auth.sso is written"
+    managed_in: "vpay-config"
+    config_keys:
+      - "staff_auth.sso.client_secret"
+    storage: "Kubernetes Secret or environment variable; no rotation runbook exists yet. It is vpay's secret at the identity provider, not a credential of any staff member: a rotation is done at the provider and in this key together"
+    adr: "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
 
   - class: oauth_signing_key
     description: "RSA private key that signs vpay-issued access tokens"
@@ -470,11 +502,12 @@ material_controls:
   - id: "A.5.15"
     theme: "Organizational"
     name: "Access Control"
-    implementation: "Merchant access is authorized per surface and per scope; every query is tenant-scoped; a console key reads exactly the dashboard's tenant (ADR-0018, ADR-0036)."
+    implementation: "Merchant access is authorized per surface and per scope; every query is tenant-scoped; a console key or, when human_login is served, a staff session token reads exactly the dashboard's tenant, through one resolver (ADR-0018, ADR-0036, ADR-0037)."
     implementation_paths:
       - "backends/crates/vpay-api/src/v1/mod.rs"
       - "backends/crates/vpay-api/src/envelope/console.rs"
       - "backends/crates/vpay-api/src/envelope/scope.rs"
+      - "backends/crates/vpay-api/src/resource_auth.rs"
     evidence: "Signed /v1 requests from registered merchant keys, resolved to a tenant-bound merchant with per-route scopes (ADR-0035)."
     evidence_paths:
       - "docs/adr/0035-v1-is-a-signed-message-not-a-token.md"
@@ -486,20 +519,30 @@ material_controls:
   - id: "A.8.2"
     theme: "Technological"
     name: "Privileged Access Rights"
-    implementation: "A person reads the console only with a paired P-256 key; pairing is phone-vouched through vaam (a service holding console_pairing) or an operator's `staff pair-key`, and never creates or upgrades an administrator."
+    implementation: "A person reads the console with a paired P-256 key (phone-vouched through vaam, a service holding console_pairing, or an operator's `staff pair-key`, which never creates or upgrades an administrator) or, only when auth.methods serves human_login, with a staff session: a password plus TOTP or, when staff_auth.sso is written, a federated OpenID Connect sign-in (state, nonce and PKCE; an id_token whose signature, issuer, audience, group and second factor are checked), then an authorization code with PKCE and a short-lived access token. The second door is a deployment choice, off in vaam's."
     implementation_paths:
       - "backends/crates/vpay-api/src/console_keys.rs"
       - "backends/crates/vpay-api/src/envelope/console.rs"
       - "backends/crates/vpay-api/src/envelope/service.rs"
       - "backends/crates/vpay-api/src/svc/mod.rs"
-    evidence: "A key expires 30 days after pairing (a CHECK), a revoked or expired key is the layer's coarse 401 on the next request, a merchant key never reaches /svc, and an administrator is made only by an operator on the command line; dual control and automated key lifecycle remain gap #152."
+      - "backends/crates/vpay-api/src/staff/mod.rs"
+      - "backends/crates/vpay-api/src/staff/sso/mod.rs"
+      - "backends/crates/vpay-api/src/staff/sso/verify.rs"
+      - "backends/crates/vpay-api/src/staff_auth/mod.rs"
+    evidence: "A key expires 30 days after pairing (a CHECK), a revoked or expired key is the layer's coarse 401 on the next request, a merchant key never reaches /svc, and an administrator is made only by an operator on the command line. With human_login served: TOTP replay guard, OIDC ID-token checks (a pending flow is taken exactly once and expires, and the second factor must be proved by acr or amr), session revocation, per-source-address and per-email sign-in limits in rate_limit_windows, and the member re-read on every request; with it off the sign-in routes are not mounted and /dash/v1 takes a signature alone. Dual control and automated key lifecycle remain gap #152."
     evidence_paths:
       - "docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md"
+      - "docs/adr/0017-staff-authentication.md"
+      - "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
+      - "docs/adr/0037-authentication-methods-are-deployment-configuration.md"
     evidence_tests:
+      - "the_second_factor_rule_is_acr_or_amr_and_a_password_alone_is_not_one"
       - "pairing_never_creates_or_upgrades_an_administrator"
       - "a_merchant_key_cannot_reach_svc"
       - "a_revoked_key_is_refused_on_its_very_next_request"
       - "a_key_expires_thirty_days_after_it_was_paired"
+      - "a_session_bearer_and_a_console_key_both_read_dash_v1"
+      - "with_the_method_off_the_staff_routes_404_and_dash_refuses_unsigned_requests"
     status: "implemented"
 
   - id: "A.8.7"
@@ -629,9 +672,12 @@ material_controls:
   - id: "A.8.24"
     theme: "Technological"
     name: "Use of Cryptography"
-    implementation: "HMAC-SHA256 for webhook signatures, Ed25519 COSE_Sign1 for every /v1 and /svc/v1 request and answer, ECDSA P-256 COSE_Sign1 (ESP256) for every /dash/v1 request, RSA for the OAuth OP's tokens until VP-4."
+    implementation: "HMAC-SHA256 for webhook signatures, Ed25519 COSE_Sign1 for every /v1 and /svc/v1 request and answer, ECDSA P-256 COSE_Sign1 (ESP256) for every /dash/v1 request, RSA for the OAuth OP's tokens until VP-4, and, when human_login is served, Argon2id for staff passwords, RFC 6238 TOTP and AES-256-GCM for stored TOTP secrets."
     implementation_paths:
       - "backends/crates/vpay-api/src/envelope/mod.rs"
+      - "backends/crates/vpay-api/src/staff_auth/password.rs"
+      - "backends/crates/vpay-api/src/staff_auth/secret_box.rs"
+      - "backends/crates/vpay-api/src/staff_auth/totp.rs"
       - "backends/crates/vpay-worker/src/signing.rs"
     evidence: "Primitives are implemented and tested. Automated key rotation and dual control for production keys are gap #152."
     evidence_paths:

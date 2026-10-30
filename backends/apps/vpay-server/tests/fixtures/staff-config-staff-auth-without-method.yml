@@ -1,0 +1,32 @@
+# Fixture for `staff_add_refuses_a_staff_auth_block_where_human_login_is_not_permitted`
+# in `backends/apps/vpay-server/tests/cli.rs` (ADR-0037, VPA-3): `auth.methods`
+# does not name `human_login`, and the two blocks of that method are written
+# anyway. Boot refuses dormant configuration, so `staff add` (which loads the
+# same configuration) exits 78 naming the block, rather than minting a password
+# for a sign-in nothing serves.
+
+deployment:
+  name: vpay-server-cli-test
+  livemode: false
+  public_base_url: http://localhost:8080
+
+auth:
+  methods: [keypair]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    cose_keys:
+      - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
+        label: ci
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-cameroon-tenant
+  scope: dashboard:read
+  redirect_uris:
+    - http://localhost:3000/api/auth/callback
+
+staff_auth:
+  password_pepper: a-test-pepper-that-is-not-a-real-secret
+  totp_encryption_key: AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA

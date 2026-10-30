@@ -84,7 +84,8 @@ use vpay_provider::ProviderConfig;
 
 use crate::console::{Dashboard, ServiceClient, validate_dashboard, validate_service_client};
 use crate::oauth::{
-    MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key, validate_cose_keys,
+    DashboardClient, MERCHANT_AUDIENCE, MerchantClient, jwks_has_at_least_one_key,
+    validate_cose_keys,
 };
 use crate::{
     ConfigError, Deployment, GrantType, HostEntry, validate_host, validate_secret,
@@ -729,6 +730,19 @@ pub struct Config {
     #[garde(dive)]
     #[serde(default)]
     pub service_clients: Vec<ServiceClient>,
+    /// The dashboard's OAuth2 client (`docs/flows/dashboard-auth.md`): one of the
+    /// two blocks of the `human_login` method (`auth.methods`, ADR-0037).
+    /// `Option` because most deployments serve no staff sign-in; with the method
+    /// permitted, the block present **and** [`Self::staff_auth`] present is what
+    /// serves it, and either alone is refused at boot.
+    #[garde(dive)]
+    #[serde(default)]
+    pub dashboard_client: Option<DashboardClient>,
+    /// The two deployment secrets staff sign-in needs (ADR-0017): the other
+    /// block of `human_login`. See [`StaffAuth`].
+    #[garde(dive)]
+    #[serde(default)]
+    pub staff_auth: Option<StaffAuth>,
     /// How a payment-method type is routed to a rail (RFC-0008 as revised
     /// on 2026-10-23). Absent means every rail at
     /// [`vpay_core::routing::DEFAULT_WEIGHT`], so the rail code breaks every
@@ -848,6 +862,454 @@ fn validate_routing(routing: &Routing, providers: &[ProviderHost]) -> Result<(),
     Ok(())
 }
 
+/// The two deployment secrets staff sign-in needs
+/// ([ADR-0017](../../../../docs/adr/0017-staff-authentication.md) decision 1).
+///
+/// The block's presence is, with [`DashboardClient`], what serves the
+/// `human_login` method (`auth.methods`, ADR-0037): it is `Option` on
+/// [`Config`] and absent means this deployment serves no password sign-in.
+/// **Both secrets are required whenever it is written**, in every deployment
+/// ([`ConfigError::StaffAuthSecretMissing`]); a login that cannot hash a
+/// password or seal a TOTP seed is not a degraded login, it is none, and
+/// refusing it at boot is the honest answer.
+///
+/// An unknown key is refused rather than ignored (`deny_unknown_fields`), so a
+/// misspelt `sso:` is told so instead of leaving a deployment that believes it
+/// has a single sign-on. `sso` is the one optional sub-block, and it is served
+/// only with `human_login` (ADR-0037 decision 7): written while the method is
+/// not permitted, the whole `staff_auth` block is refused
+/// ([`ConfigError::AuthMethodDisabled`]).
+///
+/// Neither value is ever *used* by this crate. `vpay_api::staff_auth::StaffCredentials`
+/// is what turns them into an argon2 secret input and an AES-256-GCM key, and
+/// it is what refuses a key of the wrong length. Config's job is to carry
+/// them and to refuse a deployment that wrote them as literals.
+#[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StaffAuth {
+    /// argon2id's secret input, mixed into every staff password hash.
+    ///
+    /// **Losing this invalidates every `staff_members.password_hash` in the
+    /// database.** It belongs in the same Secret as the RS256 signing key
+    /// and has the same backup story; migration `0035` says so too, where an
+    /// operator will look.
+    ///
+    /// No length rule here: any string is a usable argon2 secret, and a
+    /// minimum would be a number this file invented. What is enforced is
+    /// that a livemode deployment wrote it as a `${VAR}` rather than as a
+    /// literal — the rule every other secret in this document already obeys.
+    #[garde(skip)]
+    #[serde(default)]
+    pub password_pepper: Option<String>,
+
+    /// The AES-256-GCM key `staff_members.totp_secret` is sealed under, base64url
+    /// (unpadded) of exactly 32 bytes.
+    ///
+    /// Losing it invalidates every enrolled second factor. Deliberately a
+    /// **different** value from [`Self::password_pepper`]: one is an argon2
+    /// secret input and the other an AEAD key, and reusing one for both would
+    /// mean rotating either forces rotating both.
+    ///
+    /// The length and the encoding are checked by
+    /// `vpay_api::staff_auth::StaffCredentials::new` at boot rather than
+    /// here, because that is where the constant that decides them lives —
+    /// a second copy of "32" in this file is a second thing to keep in step.
+    #[garde(skip)]
+    #[serde(default)]
+    pub totp_encryption_key: Option<String>,
+
+    /// The addresses whose `X-Forwarded-For` this deployment believes
+    /// (issue #79 item 1). Empty by default, which is the only safe default.
+    ///
+    /// Each entry is a literal address (`198.51.100.7`, `2001:db8::1`) or a
+    /// CIDR block (`10.0.0.0/8`, `fd00::/8`). An Ingress controller's pod
+    /// address is not stable, so a deployment that could only name literals
+    /// would have to be re-configured on every reschedule — which is how an
+    /// allow-list ends up as `0.0.0.0/0`.
+    ///
+    /// **Empty means the transport peer is the client address, always**, and
+    /// that is what ADR-0017 shipped: `X-Forwarded-For` is caller-supplied on
+    /// an unauthenticated route, and honouring it from an untrusted peer
+    /// hands an attacker a fresh per-IP budget per request. Behind a proxy
+    /// with this list empty the per-IP budget is the *deployment's*, which is
+    /// a real cost and the reason this field exists.
+    ///
+    /// Parsed by `vpay_api::staff::client_address::TrustedProxies::parse` at
+    /// boot rather than here, for [`Self::totp_encryption_key`]'s reason: the
+    /// syntax is decided where the matching is. An entry that does not parse
+    /// stops the staff login from mounting, loudly — see
+    /// `vpay-server`'s `staff_login`.
+    #[garde(skip)]
+    #[serde(default)]
+    pub trusted_proxies: Vec<String>,
+
+    /// How many attempts each rate-limited action gets per window
+    /// (issue #79 item 2). Absent means the documented defaults.
+    #[garde(dive)]
+    #[serde(default)]
+    pub rate_limits: RateLimits,
+
+    /// How long a `/dash/v1` access token lives, in seconds. Absent means
+    /// [`StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS`] — the 900 the staff
+    /// grant shipped with (issue #88 item 1).
+    ///
+    /// # Why this one is configurable and `/v1`'s is not
+    ///
+    /// `vpay_api::op::ACCESS_TOKEN_TTL_SECS` says in as many words that a TTL
+    /// varying by YAML is "one more thing that can differ between the sandbox
+    /// a merchant integrates against and the production they go live on".
+    /// That argument is about a number **merchants** build against, and it is
+    /// not weakened here: nothing outside this deployment ever sees a
+    /// dashboard token. The one client is `frontends/apps/dashboard`, whose
+    /// own server holds it, and the number is therefore an operational
+    /// parameter rather than a published contract.
+    ///
+    /// What it buys is the thing the proactive re-mint could not otherwise
+    /// have: an end-to-end run that actually **crosses** an expiry. At 900 s a
+    /// browser test would have to sit for a quarter of an hour, so the
+    /// behaviour that a staff member met fifteen minutes into every session
+    /// was exercised by nothing (the exp28 review's finding F4). `compose.e2e.yml`
+    /// sets a few seconds here and `dashboard.cy.ts` renders past it.
+    ///
+    /// # The bounds, and what each of them is
+    ///
+    /// **At least 10.** Below that the margin — 20 % of the TTL — is under two
+    /// seconds, and every render would be a re-mint on any network at all.
+    /// **At most 3600.** The floor is arithmetic; the ceiling is policy, and
+    /// it is far below the real constraint: `vpay_api::op::keys::ROTATION_OVERLAP`
+    /// is 24 hours, and a token must expire long before the key that signed
+    /// it stops being published. One hour keeps a *revoked* session's already
+    /// minted token — the residual ADR-0017's Consequences records — short.
+    #[garde(range(min = 10, max = 3600))]
+    #[serde(default = "StaffAuth::default_access_token_ttl_seconds")]
+    pub access_token_ttl_seconds: u32,
+
+    /// Single sign-on through an external OpenID Connect provider
+    /// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+    ///
+    /// **Present means active.** This is deployment configuration — which
+    /// identity provider this deployment trusts — and not a feature flag:
+    /// there is no `enabled` switch beside it, and a deployment that does not
+    /// write the block gets no SSO routes that answer anything but "not
+    /// configured". Password + TOTP sign-in is unaffected either way; it
+    /// stays as the break-glass path.
+    #[garde(dive)]
+    #[serde(default)]
+    pub sso: Option<StaffSso>,
+}
+
+/// The one OpenID Connect provider this deployment's staff may sign in
+/// through ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+///
+/// # One issuer, per deployment, and the shape that reaches per-merchant
+///
+/// ADR-0019 § R3 left "per deployment or per merchant" open; ADR-0030 takes
+/// it: per deployment. Everything in this block is therefore singular. The
+/// `credentials` row already carries the issuer string, so a later move to
+/// per-merchant issuers changes this block's cardinality and nothing in the
+/// schema.
+///
+/// # Roles stay local
+///
+/// Nothing here — and no token claim — reads or writes `is_admin` or
+/// `merchant_id` (ADR-0019 § R2). A member provisioned on first sign-in is a
+/// non-admin bound to `dashboard_client.merchant_id`.
+#[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct StaffSso {
+    /// The Issuer Identifier, written exactly as the provider publishes it —
+    /// `https://auth.example/realms/staff` for Keycloak. Discovery
+    /// (`<issuer>/.well-known/openid-configuration`) must answer an `issuer`
+    /// equal to this **byte for byte**, and a token's `iss` must equal it the
+    /// same way. No normalisation happens anywhere: a trailing slash is part
+    /// of the identifier.
+    #[garde(length(min = 1))]
+    pub issuer: String,
+
+    /// vpay's client identifier at the provider.
+    #[garde(length(min = 1))]
+    pub client_id: String,
+
+    /// vpay's client secret at the provider (`client_secret_basic` at the
+    /// token endpoint). A `${VAR}` reference in livemode, like every other
+    /// secret in this document.
+    #[garde(length(min = 1))]
+    pub client_secret: String,
+
+    /// **The dashboard's** callback — the URL the provider redirects the
+    /// browser back to, e.g. `https://dashboard.example/api/auth/sso/callback`.
+    /// Not a vpay URL: the dashboard app receives the `code` and hands it to
+    /// vpay server-side. Must be registered at the provider as a valid
+    /// redirect URI for `client_id`.
+    #[garde(length(min = 1))]
+    pub redirect_uri: String,
+
+    /// Scopes requested. Must include `openid`. Defaults to
+    /// `openid email profile`.
+    #[garde(skip)]
+    #[serde(default = "StaffSso::default_scopes")]
+    pub scopes: Vec<String>,
+
+    /// The provider group a person must be in to sign in at all, and to be
+    /// provisioned on first sign-in. Required: an SSO block that admitted
+    /// every account in a realm would make the realm's membership the
+    /// staff list.
+    #[garde(length(min = 1))]
+    pub required_group: String,
+
+    /// Which id_token claim carries the groups. A JSON array of strings, or
+    /// one string. Defaults to `groups`.
+    #[garde(length(min = 1))]
+    #[serde(default = "StaffSso::default_groups_claim")]
+    pub groups_claim: String,
+
+    /// `acr` values that prove a second factor. An id_token is accepted only
+    /// if its `acr` is in this list **or** its `amr` intersects
+    /// [`Self::accepted_amr`]. May be empty if `accepted_amr` is not, and
+    /// vice versa; both empty is a boot refusal (fail closed — ADR-0019 § R1).
+    ///
+    /// Provider-specific and not obvious: Keycloak's `acr` is a *level of
+    /// authentication* (`"1"` after a password alone, `"0"` on an SSO-cookie
+    /// re-entry), so listing its numbers proves nothing about a second factor
+    /// unless the realm maps them deliberately. `accepted_amr` is usually the
+    /// right one there (`["otp"]`).
+    #[garde(skip)]
+    #[serde(default)]
+    pub accepted_acr: Vec<String>,
+
+    /// `amr` values (RFC 8176) that prove a second factor, e.g. `["otp"]`.
+    /// See [`Self::accepted_acr`].
+    #[garde(skip)]
+    #[serde(default)]
+    pub accepted_amr: Vec<String>,
+}
+
+/// Redacts the client secret and prints everything else: the issuer, the
+/// group and the MFA rule are exactly what an operator checks against the
+/// provider's console from a startup log.
+impl fmt::Debug for StaffSso {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaffSso")
+            .field("issuer", &self.issuer)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("redirect_uri", &self.redirect_uri)
+            .field("scopes", &self.scopes)
+            .field("required_group", &self.required_group)
+            .field("groups_claim", &self.groups_claim)
+            .field("accepted_acr", &self.accepted_acr)
+            .field("accepted_amr", &self.accepted_amr)
+            .finish()
+    }
+}
+
+impl StaffSso {
+    /// `openid email profile` — what a Keycloak realm's default client scopes
+    /// offer, and the minimum that yields a display name and an address.
+    fn default_scopes() -> Vec<String> {
+        ["openid", "email", "profile"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    }
+
+    /// `groups`.
+    fn default_groups_claim() -> String {
+        "groups".to_owned()
+    }
+}
+
+impl Default for StaffAuth {
+    /// No secrets, no trusted proxies, the shipping limits and the shipping
+    /// token TTL.
+    ///
+    /// Written out rather than derived, and that is the point: `#[derive]`
+    /// would make [`Self::access_token_ttl_seconds`] **zero**, which
+    /// `garde` refuses — so a deployment that never wrote the key would fail
+    /// validation, and a test that built the struct with `..default()` would
+    /// mint tokens that expired the instant they were signed.
+    fn default() -> Self {
+        Self {
+            password_pepper: None,
+            totp_encryption_key: None,
+            trusted_proxies: Vec::new(),
+            rate_limits: RateLimits::default(),
+            access_token_ttl_seconds: Self::default_access_token_ttl_seconds(),
+            sso: None,
+        }
+    }
+}
+
+/// One fixed-window budget: how many attempts, over how long.
+///
+/// A *policy per action* rather than one pair of numbers for the whole
+/// deployment, because the two actions counted are not the same kind of
+/// event. Signing in is something a person does from a login form having
+/// possibly mistyped a generated one-time password; re-presenting a current
+/// password is something a person does inside a session that has already
+/// proved two factors, where a wrong answer is far more likely to be an
+/// attacker holding a stolen cookie than a typo.
+///
+/// Configurable at all — rather than two constants — for one reason that is
+/// worth stating plainly, because "make the security parameter tunable" is
+/// usually a smell: the budget stopped being per-replica on 2026-09-10, and
+/// a number that was chosen for a limiter three replicas multiplied by three
+/// is not obviously the right number for a limiter that no longer does. A
+/// deployment that measures its own traffic can now say so without a release,
+/// and `docs/flows/dashboard-auth.md` carries the defaults and the argument
+/// for them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct RateLimitPolicy {
+    /// Attempts admitted per window. The `n+1`th is refused with `429`.
+    ///
+    /// At least one: a policy of zero would refuse the first attempt, which
+    /// is a deployment nobody can sign in to, spelled as a number rather than
+    /// as a decision.
+    #[garde(range(min = 1))]
+    pub attempts: u32,
+    /// How long one window lasts, in seconds.
+    ///
+    /// At least one. Fixed, not sliding: an attacker who straddles a window
+    /// boundary gets twice `attempts` in one instant, which
+    /// `vpay_api::staff::rate_limit`'s header states rather than hides.
+    #[garde(range(min = 1))]
+    pub window_seconds: u32,
+}
+
+/// The policy for each rate-limited action.
+///
+/// A closed struct and not a map keyed by an action name: a typo'd key in a
+/// map is a policy that silently does not apply, and the failure is a limit
+/// that is looser than the operator wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct RateLimits {
+    /// Both legs of a sign-in — `POST /staff/login` and `POST /staff/totp` —
+    /// on one shared budget per email and per address.
+    ///
+    /// One budget across the two legs is ADR-0017 decision 2 and it is not
+    /// changed here: the second factor is six digits on a path with no
+    /// argon2id, so a separate budget for it would be a second, independent
+    /// allowance for the cheapest credential in the design to guess.
+    #[garde(dive)]
+    #[serde(default = "RateLimits::default_sign_in")]
+    pub sign_in: RateLimitPolicy,
+
+    /// The **current-password** check on `POST /staff/password`
+    /// (issue #79 item 3).
+    ///
+    /// Its own budget because its own key is: a password change is counted
+    /// per *session*, not per email or per address, because the caller has
+    /// already presented a session token and that is the narrowest thing
+    /// that identifies them. Tighter than [`Self::sign_in`] because there is
+    /// no one-time password to mistype here — the person is typing a
+    /// password they chose.
+    #[garde(dive)]
+    #[serde(default = "RateLimits::default_change_password")]
+    pub change_password: RateLimitPolicy,
+}
+
+impl RateLimits {
+    /// Ten attempts per five minutes.
+    ///
+    /// The numbers `vpay_api::staff::rate_limit` carried as constants until
+    /// 2026-09-10, unchanged. Ten is high enough that a person who mistypes a
+    /// generated one-time password twice and then fetches it from a terminal
+    /// is not locked out of their own first login, and low enough that online
+    /// guessing is not a strategy.
+    ///
+    /// Left at ten although the budget is now shared by every replica rather
+    /// than held per replica — which makes it strictly stricter than what
+    /// shipped — because lowering it is a *policy* change with a stated
+    /// rationale behind the current value, and this change's subject is where
+    /// the counter lives. `docs/status.md` records it as a maintainer
+    /// decision rather than taking it in passing.
+    fn default_sign_in() -> RateLimitPolicy {
+        RateLimitPolicy {
+            attempts: 10,
+            window_seconds: 300,
+        }
+    }
+
+    /// Five attempts per five minutes.
+    ///
+    /// Half of [`Self::default_sign_in`], for the reason
+    /// [`Self::change_password`] gives: nothing here is a printed password
+    /// somebody is copying by hand.
+    fn default_change_password() -> RateLimitPolicy {
+        RateLimitPolicy {
+            attempts: 5,
+            window_seconds: 300,
+        }
+    }
+}
+
+impl Default for RateLimits {
+    fn default() -> Self {
+        Self {
+            sign_in: Self::default_sign_in(),
+            change_password: Self::default_change_password(),
+        }
+    }
+}
+
+/// Prints presence for the two secrets and the values of everything else.
+///
+/// The secrets are redacted for the reason [`ProviderHost`]'s redaction does
+/// not apply to them: a pepper has no structure and a key is 32 random bytes,
+/// so there is no useful non-secret half to show. The proxy allow-list and
+/// the limits are the opposite — they are exactly what an operator wants to
+/// read back out of a startup log to check that the file they edited is the
+/// file this process loaded.
+impl fmt::Debug for StaffAuth {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("StaffAuth")
+            .field(
+                "password_pepper",
+                &self.password_pepper.as_deref().map(|_| "[redacted]"),
+            )
+            .field(
+                "totp_encryption_key",
+                &self.totp_encryption_key.as_deref().map(|_| "[redacted]"),
+            )
+            .field("trusted_proxies", &self.trusted_proxies)
+            .field("rate_limits", &self.rate_limits)
+            .field("access_token_ttl_seconds", &self.access_token_ttl_seconds)
+            .field("sso", &self.sso)
+            .finish()
+    }
+}
+
+impl StaffAuth {
+    /// The `/dash/v1` access-token TTL a deployment that says nothing gets.
+    ///
+    /// 900 seconds — the value `vpay_api::op::ACCESS_TOKEN_TTL_SECS` carried
+    /// for both halves of the OP until 2026-09-10, unchanged, so that not
+    /// writing the key is exactly what shipped.
+    pub const DEFAULT_ACCESS_TOKEN_TTL_SECONDS: u32 = 900;
+
+    /// [`Self::DEFAULT_ACCESS_TOKEN_TTL_SECONDS`], for `serde`.
+    fn default_access_token_ttl_seconds() -> u32 {
+        Self::DEFAULT_ACCESS_TOKEN_TTL_SECONDS
+    }
+
+    /// Both secrets, or `None` if either is missing.
+    ///
+    /// A pair rather than two accessors, because a deployment with one of
+    /// them can do nothing: it can hash a password it cannot pair with a
+    /// second factor, or seal a secret for an account whose password it
+    /// cannot check. `vpay-server` uses this to decide whether the staff
+    /// login mounts at all.
+    #[must_use]
+    pub fn both(&self) -> Option<(&str, &str)> {
+        Some((
+            self.password_pepper.as_deref()?,
+            self.totp_encryption_key.as_deref()?,
+        ))
+    }
+}
+
 impl Config {
     /// Loads, resolves `${ENV}` placeholders against the real process
     /// environment, and validates — steps 1-3 of the boot sequence
@@ -929,7 +1391,7 @@ impl Config {
             .extract()
             .map_err(|e| ConfigError::Load(base_path.display().to_string(), e.to_string()))?;
 
-        reject_retired_keys(&raw)?;
+        reject_near_misses(&raw)?;
 
         // Before step 2, because after it there is nothing left to ask —
         // see this module's header.
@@ -975,7 +1437,7 @@ impl Config {
         // permitted (ADR-0037) decides which blocks may exist at all, so a
         // contradiction is named here, not as whichever per-merchant rule
         // would have tripped on the block first.
-        let auth_methods = self.auth.resolve()?;
+        let auth_methods = self.auth_methods()?;
         crate::auth::validate_auth_methods(self, &auth_methods, surfaces)?;
         let machine_tokens = auth_methods.permits(crate::auth::AuthMethod::MachineTokens);
 
@@ -1076,6 +1538,11 @@ impl Config {
                 return Err(ConfigError::DuplicateClientId(service.client_id.clone()));
             }
         }
+        if let Some(dashboard) = &self.dashboard_client
+            && !seen_client_ids.insert(dashboard.client_id.as_str())
+        {
+            return Err(ConfigError::DuplicateClientId(dashboard.client_id.clone()));
+        }
 
         // Tenancy, not identity: two credentials mapping to one
         // `merchant_id` would be two clients that can read and cancel each
@@ -1172,6 +1639,34 @@ impl Config {
             // tenants is whatever `merchant_clients[].merchant_id` enumerates.
             validate_dashboard(dashboard, &self.merchant_clients)?;
         }
+        // The `human_login` blocks (ADR-0037). `validate_auth_methods` already
+        // proved they are both there, or both absent, and that the method is
+        // permitted; what is left is what each one says.
+        if let Some(client) = &self.dashboard_client {
+            validate_dashboard_client(client, livemode)?;
+            // Whole-document rules, for the reason the duplicate-`client_id`
+            // check lives here: each compares the registration to a *different*
+            // entry in the document.
+            validate_dashboard_client_binding(client, &self.merchant_clients)?;
+            validate_no_merchant_claims_the_dashboard_client(client, &self.merchant_clients)?;
+            if let Some(dashboard) = &self.dashboard
+                && dashboard.merchant_id != client.merchant_id
+            {
+                return Err(ConfigError::DashboardTenantMismatch {
+                    dashboard: dashboard.merchant_id.clone(),
+                    client: client.merchant_id.clone(),
+                });
+            }
+        }
+        if let Some(staff_auth) = &self.staff_auth {
+            validate_staff_auth(staff_auth, livemode, raw_secrets)?;
+            // After the secrets: an `sso` block is judged against a login that
+            // can run, and `validate_auth_methods` has already proved that
+            // `human_login` is permitted and that `dashboard_client` is here.
+            if let Some(sso) = &staff_auth.sso {
+                validate_staff_sso(sso, livemode, raw_secrets)?;
+            }
+        }
 
         Ok(())
     }
@@ -1218,6 +1713,10 @@ struct RawSecrets {
     /// resolved value traceable back to its own text at all: two secrets on
     /// one endpoint are two different strings with no key to tell them apart.
     webhook_secrets: BTreeMap<(String, String), Vec<String>>,
+    /// `staff_auth.<field>` -> the value as written (ADR-0017). A flat map
+    /// keyed by the field name, because unlike the two above there is exactly
+    /// one `staff_auth` block in a document and its keys are a closed set.
+    staff_auth: BTreeMap<String, String>,
 }
 
 impl RawSecrets {
@@ -1234,6 +1733,7 @@ impl RawSecrets {
         Self {
             provider_credentials: Self::provider_credentials_from(document),
             webhook_secrets: Self::webhook_secrets_from(document),
+            staff_auth: Self::staff_auth_from(document),
         }
     }
 
@@ -1331,6 +1831,41 @@ impl RawSecrets {
             .map(String::as_str)
     }
 
+    /// The same walk for the `staff_auth` block. A missing block, a block
+    /// that is not a map, or a non-string value is simply absent from the
+    /// map, which fails closed for
+    /// [`Self::provider_credential_as_written`]'s reason.
+    fn staff_auth_from(document: &figment::value::Value) -> BTreeMap<String, String> {
+        use figment::value::Value;
+
+        let mut out = BTreeMap::new();
+        let Some(dict) = document.find_ref("staff_auth").and_then(Value::as_dict) else {
+            return out;
+        };
+        for (key, value) in dict {
+            if let Some(text) = value.as_str() {
+                out.insert(key.clone(), text.to_owned());
+            } else if let Some(nested) = value.as_dict() {
+                // One level down, flattened as `<block>.<field>`: the
+                // `sso` block's `client_secret` is a secret like the two
+                // above and must be provable to have been written as a
+                // `${VAR}` for the same reason.
+                for (inner_key, inner) in nested {
+                    if let Some(text) = inner.as_str() {
+                        out.insert(format!("{key}.{inner_key}"), text.to_owned());
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// A staff-auth secret as the file wrote it. `None` fails closed for
+    /// [`Self::provider_credential_as_written`]'s reason.
+    fn staff_auth_as_written(&self, field: &str) -> Option<&str> {
+        self.staff_auth.get(field).map(String::as_str)
+    }
+
     /// One webhook secret as the file wrote it, by position. `None` fails
     /// closed for [`Self::provider_credential_as_written`]'s reason.
     fn webhook_secret_as_written(
@@ -1359,6 +1894,27 @@ impl RawSecrets {
     /// this shortcut cannot be used to fake that proof.
     fn identity(config: &Config) -> Self {
         Self {
+            staff_auth: config
+                .staff_auth
+                .iter()
+                .flat_map(|staff_auth| {
+                    [
+                        ("password_pepper", staff_auth.password_pepper.as_deref()),
+                        (
+                            "totp_encryption_key",
+                            staff_auth.totp_encryption_key.as_deref(),
+                        ),
+                        (
+                            "sso.client_secret",
+                            staff_auth
+                                .sso
+                                .as_ref()
+                                .map(|sso| sso.client_secret.as_str()),
+                        ),
+                    ]
+                })
+                .filter_map(|(field, value)| Some((field.to_owned(), value?.to_owned())))
+                .collect(),
             provider_credentials: config
                 .providers
                 .iter()
@@ -2278,6 +2834,289 @@ pub(crate) const WEBHOOK_URL_CHARS: std::ops::RangeInclusive<usize> = 1..=2048;
 /// ASCII one does not.
 pub(crate) const MIN_LIVEMODE_WEBHOOK_SECRET_BYTES: usize = 32;
 
+/// The dashboard client's rules (`docs/flows/dashboard-auth.md`): no client
+/// secret, ever; at least one redirect URI (unconditionally — a client that
+/// can never redirect can never complete a login, sandbox or not); and,
+/// under `livemode`, every redirect URI is `https://` and not stub-labelled.
+///
+/// The `livemode` half reuses [`validate_host`] rather than reimplementing
+/// the same two checks: a redirect URI is, structurally, exactly the kind of
+/// host `validate_host` already guards against — a livemode dashboard
+/// redirecting to `http://` or to a leftover `localhost`/`wiremock`-looking
+/// URL is exactly as dangerous as a stub payment rail reachable in
+/// production, for the same reason (the code cannot tell a stub from a real
+/// destination, so the boot guard has to). Each redirect URI is wrapped in a
+/// throwaway [`HostEntry`] purely to reuse that tested function; the
+/// synthetic `label` only feeds `validate_host`'s stub-marker text search; it is not
+/// stored anywhere.
+fn validate_dashboard_client(
+    dashboard: &DashboardClient,
+    livemode: bool,
+) -> Result<(), ConfigError> {
+    if dashboard.client_secret.is_some() {
+        return Err(ConfigError::ClientSecretPresent(
+            dashboard.client_id.clone(),
+        ));
+    }
+    if dashboard.redirect_uris.is_empty() {
+        return Err(ConfigError::DashboardMissingRedirectUri(
+            dashboard.client_id.clone(),
+        ));
+    }
+    for uri in &dashboard.redirect_uris {
+        let synthetic_host = HostEntry {
+            url: uri.clone(),
+            label: format!("dashboard-redirect-uri:{}", dashboard.client_id),
+        };
+        validate_host(&synthetic_host, livemode)?;
+    }
+    Ok(())
+}
+
+/// The dashboard client names a tenant some merchant registration actually
+/// registers.
+///
+/// Separate from [`validate_dashboard_client`] because it cannot be answered
+/// from one registration: the set of tenants is whatever
+/// `merchant_clients[].merchant_id` enumerates, and there is no `merchants`
+/// table to ask instead (ADR-0003).
+///
+/// A linear scan rather than a set: the list is the deployment's merchants,
+/// this runs once at boot, and a `BTreeSet` built here would exist for the
+/// length of one comparison.
+///
+/// # Errors
+///
+/// [`ConfigError::DashboardUnknownMerchant`] — see that variant for why a
+/// mistyped tenant must not be allowed to boot.
+fn validate_dashboard_client_binding(
+    dashboard: &DashboardClient,
+    merchants: &[MerchantClient],
+) -> Result<(), ConfigError> {
+    if merchants
+        .iter()
+        .any(|merchant| merchant.merchant_id == dashboard.merchant_id)
+    {
+        return Ok(());
+    }
+    Err(ConfigError::DashboardUnknownMerchant {
+        merchant_id: dashboard.merchant_id.clone(),
+    })
+}
+
+/// The staff-sign-in secrets: present whenever the block is, and never written
+/// as a literal in livemode.
+///
+/// Two rules, in that order, and the order matters for the same reason the
+/// audience rule is checked after the shape rules: an operator whose pepper
+/// is missing entirely should be told *that*, not that a value they did not
+/// write is not a `${VAR}`.
+///
+/// # Why in every deployment now
+///
+/// Until VPA-3 these were required in livemode alone, because the block was
+/// always there (it defaulted) and requiring a Secret of every sandbox would
+/// have made each fixture and each local `compose.yml` refuse to start for a
+/// feature it did not use. Writing `staff_auth` is the switch now, so a
+/// sandbox that writes it wants the login, and a login that cannot hash a
+/// password is refused rather than mounted half.
+///
+/// # Errors
+///
+/// [`ConfigError::StaffAuthSecretMissing`] when either is absent;
+/// [`ConfigError::LiteralSecret`] when either was written as a literal rather
+/// than a `${VAR}` reference in livemode: the same rule, and the same
+/// function, every rail credential and webhook secret in this document
+/// already obeys.
+fn validate_staff_auth(
+    staff_auth: &StaffAuth,
+    livemode: bool,
+    raw_secrets: &RawSecrets,
+) -> Result<(), ConfigError> {
+    for (field, value) in [
+        ("password_pepper", staff_auth.password_pepper.as_deref()),
+        (
+            "totp_encryption_key",
+            staff_auth.totp_encryption_key.as_deref(),
+        ),
+    ] {
+        if value.is_none() {
+            return Err(ConfigError::StaffAuthSecretMissing {
+                field: field.to_owned(),
+            });
+        }
+        // The value **as written**, never the resolved one — the ordering bug
+        // `a_livemode_config_whose_placeholders_resolve_loads` exists to
+        // catch, applied to a third kind of secret.
+        validate_secret(
+            &format!("staff_auth.{field}"),
+            raw_secrets.staff_auth_as_written(field).unwrap_or(""),
+            livemode,
+        )?;
+    }
+    Ok(())
+}
+
+/// The `staff_auth.sso` block's rules
+/// ([ADR-0030](../../../../docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md)).
+///
+/// Ordered as an operator reads them: the shape of each value, then the one
+/// policy rule that has no safe default. The contradictions with the rest of the
+/// document are not asked here, because they cannot reach it: SSO needs a
+/// dashboard client to land in and the staff secrets to seal a verifier with,
+/// and `validate_auth_methods` (both blocks, or neither, and only with
+/// `human_login`) and [`validate_staff_auth`] (both secrets) have already run.
+///
+/// # The second-factor rule has no default and is not livemode-only
+///
+/// An id_token is accepted only if it proves a second factor
+/// (ADR-0019 § R1, taken for the `oidc` kind by ADR-0030). A block with both
+/// `accepted_acr` and `accepted_amr` empty would accept nothing — or, worse, a
+/// future edit would make it accept everything — so it is refused at boot in
+/// every deployment rather than quietly meaning "no rule".
+///
+/// # Errors
+///
+/// [`ConfigError::StaffSsoMalformed`], [`ConfigError::StaffSsoNoSecondFactorRule`],
+/// [`ConfigError::LiteralSecret`] (livemode, `client_secret` not a `${VAR}`),
+/// and the livemode https / stub-host rules of
+/// [`crate::validate_webhook_url`] for `issuer` and `redirect_uri`.
+fn validate_staff_sso(
+    sso: &StaffSso,
+    livemode: bool,
+    raw_secrets: &RawSecrets,
+) -> Result<(), ConfigError> {
+    let malformed = |field: &'static str, reason: &'static str| ConfigError::StaffSsoMalformed {
+        field,
+        reason,
+    };
+
+    // The issuer: an absolute URL, no userinfo, no query, no fragment (OpenID
+    // Connect Discovery 1.0 §4.3 / RFC 8414 §2). NOT normalised: the value is
+    // compared byte for byte against what discovery and every token claim.
+    let issuer =
+        url::Url::parse(&sso.issuer).map_err(|_| malformed("issuer", "it is not a URL"))?;
+    if !matches!(issuer.scheme(), "http" | "https") {
+        return Err(malformed("issuer", "its scheme must be http or https"));
+    }
+    if issuer.host_str().is_none_or(str::is_empty) {
+        return Err(malformed("issuer", "it names no host"));
+    }
+    if !issuer.username().is_empty() || issuer.password().is_some() {
+        return Err(malformed("issuer", "it carries embedded credentials"));
+    }
+    if issuer.query().is_some() || issuer.fragment().is_some() {
+        return Err(malformed(
+            "issuer",
+            "it must carry no query and no fragment",
+        ));
+    }
+    validate_webhook_url(&issuer, &sso.issuer, livemode)?;
+
+    let redirect = url::Url::parse(&sso.redirect_uri)
+        .map_err(|_| malformed("redirect_uri", "it is not a URL"))?;
+    if !matches!(redirect.scheme(), "http" | "https") {
+        return Err(malformed(
+            "redirect_uri",
+            "its scheme must be http or https",
+        ));
+    }
+    if redirect.host_str().is_none_or(str::is_empty) {
+        return Err(malformed("redirect_uri", "it names no host"));
+    }
+    if redirect.fragment().is_some() {
+        return Err(malformed(
+            "redirect_uri",
+            "it must carry no fragment (RFC 6749 section 3.1.2)",
+        ));
+    }
+    validate_webhook_url(&redirect, &sso.redirect_uri, livemode)?;
+
+    if sso.client_id.trim() != sso.client_id || sso.client_id.contains(':') {
+        return Err(malformed(
+            "client_id",
+            "it must carry no surrounding whitespace and no `:` (client_secret_basic joins it \
+             to the secret with one)",
+        ));
+    }
+    if sso.client_secret.trim().is_empty() {
+        return Err(malformed("client_secret", "it is blank"));
+    }
+    // The value as written, never the resolved one — `validate_staff_auth`'s
+    // rule, applied to a fourth secret.
+    validate_secret(
+        "staff_auth.sso.client_secret",
+        raw_secrets
+            .staff_auth_as_written("sso.client_secret")
+            .unwrap_or(""),
+        livemode,
+    )?;
+
+    if !sso.scopes.iter().any(|scope| scope == "openid") {
+        return Err(malformed("scopes", "it must include `openid`"));
+    }
+    if sso
+        .scopes
+        .iter()
+        .any(|scope| scope.is_empty() || scope.chars().any(char::is_whitespace))
+    {
+        return Err(malformed(
+            "scopes",
+            "each scope must be one non-empty token with no whitespace",
+        ));
+    }
+    if sso.required_group.trim().is_empty() {
+        return Err(malformed("required_group", "it is blank"));
+    }
+    if sso.groups_claim.trim().is_empty() {
+        return Err(malformed("groups_claim", "it is blank"));
+    }
+
+    for (field, values) in [
+        ("accepted_acr", &sso.accepted_acr),
+        ("accepted_amr", &sso.accepted_amr),
+    ] {
+        if values.iter().any(|value| value.trim().is_empty()) {
+            return Err(malformed(field, "an entry is blank"));
+        }
+    }
+    if sso.accepted_acr.is_empty() && sso.accepted_amr.is_empty() {
+        return Err(ConfigError::StaffSsoNoSecondFactorRule);
+    }
+
+    Ok(())
+}
+
+/// No merchant registration may name the dashboard client's id as an
+/// audience it is allowed to request.
+///
+/// Whole-document scope, beside [`validate_dashboard_binding`], and for the
+/// same reason: the value being compared against comes from a *different*
+/// entry in the document. It used to be a constant checked per registration
+/// inside [`validate_merchant_client`]; ADR-0017 decision 3 retired that
+/// constant, and exp23's review had already recorded the move as the thing
+/// that would have to happen.
+///
+/// # Errors
+///
+/// [`ConfigError::MerchantClaimsDashboardAudience`] — see that variant for
+/// why refusing the *registration* matters when `/dash/v1` would refuse the
+/// token anyway.
+fn validate_no_merchant_claims_the_dashboard_client(
+    dashboard: &DashboardClient,
+    merchants: &[MerchantClient],
+) -> Result<(), ConfigError> {
+    for merchant in merchants {
+        if merchant.allowed_audiences.contains(&dashboard.client_id) {
+            return Err(ConfigError::MerchantClaimsDashboardAudience {
+                client_id: merchant.client_id.clone(),
+                audience: dashboard.client_id.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// See the module docs' "Locating the profile overlay" section.
 fn profile_overlay_path(base_path: &Path, profile: &str) -> Option<PathBuf> {
     let parent = base_path.parent().unwrap_or_else(|| Path::new(""));
@@ -2358,29 +3197,6 @@ fn resolve_string(s: &str, env: &dyn Fn(&str) -> Option<String>) -> Result<Strin
     Ok(out)
 }
 
-/// The top-level keys VP-6a deleted, and what replaced each.
-///
-/// The second column is the whole of the operator's instruction, so it says
-/// what to add as well as what to delete; [`ConfigError::RetiredKey`] supplies
-/// the "delete it, even as a null" half.
-const RETIRED_KEYS: [(&str, &str); 2] = [
-    (
-        "dashboard_client",
-        "The console has no OAuth client any more. To serve the console add \
-         `dashboard: {merchant_id: <the one tenant it reads>}` and a \
-         `service_clients:` entry for the service that pairs keys; to run \
-         without a console add nothing (ADR-0036)",
-    ),
-    (
-        "staff_auth",
-        "There is no password, TOTP or SSO sign-in any more; a person reads the \
-         console with a paired key. To serve the console add `dashboard: \
-         {merchant_id: <the one tenant it reads>}` and a `service_clients:` \
-         entry for the service that pairs keys; to run without a console add \
-         nothing (ADR-0036)",
-    ),
-];
-
 /// Top-level keys that are near misses of a real one, and what the real one is.
 /// Matched without regard to case, as is `auth` itself (only the exact lowercase
 /// `auth` is the key).
@@ -2401,23 +3217,16 @@ const NEAR_MISS_KEYS: [(&str, &str); 5] = [
 /// What every near miss of `auth` was meant to be.
 const AUTH_KEY_MEANT: &str = "auth: {methods: [...]}";
 
-/// Refuses a document that still carries a retired top-level key.
+/// Refuses a document that spells `auth` wrongly (see [`NEAR_MISS_KEYS`]).
 ///
 /// `Config` does not set `deny_unknown_fields` (an overlay may carry keys a
-/// later release reads), so a deleted feature's block would otherwise be
-/// dropped without a word.
-fn reject_retired_keys(raw: &figment::value::Value) -> Result<(), ConfigError> {
+/// later release reads), so a near miss of `auth` would otherwise be dropped
+/// without a word, and the deployment would believe it narrowed
+/// `auth.methods` while permitting all four.
+fn reject_near_misses(raw: &figment::value::Value) -> Result<(), ConfigError> {
     let Some(document) = raw.as_dict() else {
         return Ok(());
     };
-    for (key, instead) in RETIRED_KEYS {
-        if document.contains_key(key) {
-            return Err(ConfigError::RetiredKey {
-                key: key.to_owned(),
-                instead,
-            });
-        }
-    }
     // Case-insensitively: YAML keys are case-sensitive, so `Auth:` is a key
     // `Config` does not read and would drop, with the same fail-open. The exact
     // `auth` is the key and is the one spelling that passes.
@@ -2815,6 +3624,8 @@ mod tests {
             checkout: CheckoutConfig::default(),
             dashboard: None,
             service_clients: Vec::new(),
+            dashboard_client: None,
+            staff_auth: None,
         }
     }
 
@@ -2934,28 +3745,6 @@ merchant_clients:
         );
     }
 
-    /// A block whose feature was deleted is refused, not dropped: `Config`
-    /// ignores unknown keys, so without `reject_retired_keys` a deployment
-    /// that still writes `staff_auth:` boots happily with no sign-in at all.
-    /// The null form (`dashboard_client: ~`) is refused as firmly: it is how an
-    /// overlay switched the old block off, and the message has to say that the
-    /// line itself goes.
-    #[test]
-    fn a_deleted_features_block_is_refused_not_ignored() {
-        for (fixture, key) in [
-            ("retired-key-dashboard-client.yml", "dashboard_client"),
-            ("retired-key-staff-auth.yml", "staff_auth"),
-            ("retired-key-dashboard-client-null.yml", "dashboard_client"),
-            ("retired-key-staff-auth-null.yml", "staff_auth"),
-        ] {
-            let err = load_fixture(fixture).expect_err("a retired key must be refused");
-            assert!(
-                matches!(&err, ConfigError::RetiredKey { key: k, .. } if k == key),
-                "{fixture}: {err:?}"
-            );
-        }
-    }
-
     // ------------------------------------------------------ auth.methods ---
 
     /// ADR-0037, one fixture per rule: each file is valid in every respect but
@@ -2983,7 +3772,47 @@ merchant_clients:
             ),
             (
                 "auth-methods-human-login.yml",
-                ConfigError::AuthMethodUnavailable(HumanLogin),
+                ConfigError::AuthMethodNotConfigured {
+                    method: HumanLogin,
+                    key: "staff_auth".to_owned(),
+                },
+            ),
+            (
+                "auth-methods-human-login-without-dashboard-client.yml",
+                ConfigError::AuthMethodNotConfigured {
+                    method: HumanLogin,
+                    key: "dashboard_client".to_owned(),
+                },
+            ),
+            // The default permits the method; one block alone is still half a
+            // sign-in, and half a sign-in is refused, not silently not served.
+            (
+                "auth-methods-human-login-half-default.yml",
+                ConfigError::AuthMethodNotConfigured {
+                    method: HumanLogin,
+                    key: "staff_auth".to_owned(),
+                },
+            ),
+            (
+                "auth-methods-human-login-staff-auth-only-default.yml",
+                ConfigError::AuthMethodNotConfigured {
+                    method: HumanLogin,
+                    key: "dashboard_client".to_owned(),
+                },
+            ),
+            (
+                "auth-methods-staff-auth-without-human-login.yml",
+                disabled(HumanLogin, "staff_auth"),
+            ),
+            (
+                "auth-methods-dashboard-client-without-human-login.yml",
+                disabled(HumanLogin, "dashboard_client"),
+            ),
+            // The SSO block rides in `staff_auth`, so the method being off takes
+            // it with it and the refusal names the block to delete.
+            (
+                "auth-methods-staff-sso-without-human-login.yml",
+                disabled(HumanLogin, "staff_auth"),
             ),
             ("auth-methods-no-way-in.yml", ConfigError::NoWayIn),
             (
@@ -3220,7 +4049,7 @@ merchant_clients:
             .expect("a document");
             assert!(
                 matches!(
-                    reject_retired_keys(&raw),
+                    reject_near_misses(&raw),
                     Err(ConfigError::NearMissKey { key: ref k, .. }) if k == key
                 ),
                 "{key}"
@@ -3233,7 +4062,7 @@ merchant_clients:
         .extract()
         .expect("a document");
         assert!(
-            reject_retired_keys(&exact).is_ok(),
+            reject_near_misses(&exact).is_ok(),
             "the exact key is the key"
         );
     }
@@ -3342,7 +4171,7 @@ merchant_clients:
             ),
         ] {
             assert_eq!(
-                reject_retired_keys(&raw(yaml)),
+                reject_near_misses(&raw(yaml)),
                 Err(ConfigError::MisplacedAuthKey {
                     path: path.to_owned()
                 }),
@@ -3357,7 +4186,7 @@ merchant_clients:
             "providers:\n  - code: x\n    settings:\n      auth: v\n      Auth: v\n",
         ] {
             assert!(
-                reject_retired_keys(&raw(yaml)).is_ok(),
+                reject_near_misses(&raw(yaml)).is_ok(),
                 "a value, a longer word, the exact top-level key or an adapter-defined map's entry is not a misplaced key: {yaml}"
             );
         }
@@ -3377,14 +4206,14 @@ merchant_clients:
         for map in ["credentials", "settings"] {
             let yaml = format!("providers:\n  - code: x\n    {map}:\n      auth: ${{X}}\n");
             assert_eq!(
-                reject_retired_keys(&raw(&yaml)),
+                reject_near_misses(&raw(&yaml)),
                 Ok(()),
                 "providers[0].{map}.auth"
             );
         }
         let both = "providers:\n  - code: x\n    settings: {auth: a}\n    credentials: {auth: b}\n    auth: {methods: [keypair]}\n";
         assert_eq!(
-            reject_retired_keys(&raw(both)),
+            reject_near_misses(&raw(both)),
             Err(ConfigError::MisplacedAuthKey {
                 path: "providers[0].auth".to_owned()
             }),
@@ -3431,7 +4260,7 @@ merchant_clients:
                 figment::Figment::from(figment::providers::Yaml::string(&text))
                     .extract()
                     .unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-            assert_eq!(reject_retired_keys(&raw), Ok(()), "{}", path.display());
+            assert_eq!(reject_near_misses(&raw), Ok(()), "{}", path.display());
         }
     }
 
@@ -3485,34 +4314,14 @@ merchant_clients:
         let methods = config.auth_methods().expect("resolves");
         assert!(!methods.is_explicit());
         assert_eq!(methods.permitted().count(), 4);
-        // Permitted is not served: nothing restores staff sign-in yet.
+        // Permitted is not served: the shipped file writes neither block of
+        // `human_login`, so the default permits it and serves it nowhere.
+        assert!(methods.permits(crate::AuthMethod::HumanLogin));
+        assert!(!methods.human_login_served());
         assert!(
             !methods.served().any(|m| m == crate::AuthMethod::HumanLogin),
-            "human_login is permitted by the default and served by nothing"
+            "human_login is permitted by the default and its blocks are absent"
         );
-    }
-
-    /// The refusal is the operator's whole upgrade instruction: it names the
-    /// line to delete (null form included) and what to add instead.
-    #[test]
-    fn the_retired_key_refusal_says_what_to_delete_and_what_to_add() {
-        let err = load_fixture("retired-key-dashboard-client-null.yml")
-            .expect_err("a null retired key must be refused");
-        let message = err.to_string();
-        for needle in [
-            "`dashboard_client`",
-            "every profile overlay",
-            "even as a null",
-            "`dashboard_client: ~`",
-            "`dashboard: {merchant_id:",
-            "`service_clients:`",
-            "run without a console add nothing",
-        ] {
-            assert!(
-                message.contains(needle),
-                "{needle:?} missing from: {message}"
-            );
-        }
     }
 
     /// R4: the console is optional. A file with no `dashboard:` loads, carries
@@ -3529,7 +4338,7 @@ merchant_clients:
         );
         assert!(base.service_clients.is_empty());
 
-        // Retired keys removed, the fixture is an ordinary file with no console.
+        // An ordinary file with no console.
         let bare = load_fixture("console-off.yml").expect("a file with no dashboard loads");
         assert!(bare.dashboard.is_none());
     }
@@ -4762,6 +5571,8 @@ merchant_clients:
             checkout: CheckoutConfig::default(),
             dashboard: None,
             service_clients: Vec::new(),
+            dashboard_client: None,
+            staff_auth: None,
         };
 
         assert_eq!(
@@ -5198,6 +6009,444 @@ merchant_clients:
                 .expect_err(&format!("{fixture} must be refused"));
             assert_eq!(error, expected, "{fixture}");
         }
+    }
+
+    /// The `staff_auth` block's `Debug` prints neither secret, which are the
+    /// pepper every staff password hash is made with and the key every TOTP seed
+    /// is sealed under. Messages name the field, never the value: a failing
+    /// assertion here would otherwise write the secret to the CI log.
+    #[test]
+    fn a_staff_auth_block_prints_neither_secret() {
+        let staff_auth = StaffAuth {
+            password_pepper: Some("canary-pepper-77d0".to_owned()),
+            totp_encryption_key: Some("canary-key-31bb".to_owned()),
+            trusted_proxies: vec!["10.0.0.0/8".to_owned()],
+            ..StaffAuth::default()
+        };
+        let rendered = format!("{staff_auth:?}");
+        assert!(
+            !rendered.contains("canary-pepper-77d0"),
+            "StaffAuth Debug leaked staff_auth.password_pepper"
+        );
+        assert!(
+            !rendered.contains("canary-key-31bb"),
+            "StaffAuth Debug leaked staff_auth.totp_encryption_key"
+        );
+        assert!(rendered.contains("[redacted]"));
+        assert!(
+            rendered.contains("10.0.0.0/8"),
+            "the allow-list is configuration, not a secret, and stays visible"
+        );
+    }
+
+    /// The two secrets of a `staff_auth` block, for the in-memory tests.
+    fn fixture_staff_auth() -> StaffAuth {
+        StaffAuth {
+            password_pepper: Some("fixture-pepper".to_owned()),
+            totp_encryption_key: Some("fixture-key".to_owned()),
+            ..StaffAuth::default()
+        }
+    }
+
+    /// `staff_auth.access_token_ttl_seconds` is refused outside `10..=3600`,
+    /// and until the exp44 review nothing in this repository said so.
+    ///
+    /// # Why a bound needs a test and not only a doc comment
+    ///
+    /// Both ends are load-bearing, and neither is recoverable from the type.
+    ///
+    /// **The floor** is what stops the dashboard's re-mint margin collapsing.
+    /// `frontends/apps/dashboard/src/server/gate.ts` replaces the `/dash/v1`
+    /// token when a fifth of its life is left, so below ten seconds that
+    /// margin is under two — and every render on any real network becomes an
+    /// authorization-code leg. A credential operation per page view presents
+    /// as latency rather than as an error, which is the class of defect a
+    /// green suite is worst at catching.
+    ///
+    /// **The ceiling** is the only thing bounding how long a *signed-out*
+    /// session's already-minted JWT stays cryptographically valid.
+    /// [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)'s
+    /// Consequences records that as a residual and does not close it; this
+    /// bound is what says how long "the rest of its TTL" may be, and it sits
+    /// far below `vpay_api::op::keys::ROTATION_OVERLAP` so a token always dies
+    /// before the key that signed it stops being published.
+    ///
+    /// Measured before this test existed: `#[garde(range(min = 10, max =
+    /// 3600))]` replaced with `#[garde(skip)]`, `cargo nextest run -p
+    /// vpay-config` **112 passed, 0 failed** — the branch that added the field
+    /// claimed the bound in four places and asserted it in none.
+    ///
+    /// The accepted values are not decoration: a rule that refused
+    /// *everything* would satisfy the two fixtures and be caught only at
+    /// somebody's boot.
+    #[test]
+    fn the_dashboard_token_ttl_is_refused_outside_its_bounds() {
+        for fixture in [
+            "staff-auth-token-ttl-too-short.yml",
+            "staff-auth-token-ttl-too-long.yml",
+        ] {
+            let error = load_fixture(fixture).map(|_| ()).expect_err(&format!(
+                "{fixture} carries an access_token_ttl_seconds outside 10..=3600 and must be refused"
+            ));
+            let ConfigError::Validation(report) = &error else {
+                panic!("{fixture} must fail garde's structural pass, not with {error:?}");
+            };
+            assert!(
+                report.contains("access_token_ttl_seconds"),
+                "the refusal has to name the field an operator must edit: {report}"
+            );
+        }
+
+        // Both bounds are inclusive, and 900 is what a deployment that writes
+        // nothing gets.
+        for accepted in [10_u32, StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS, 3600] {
+            let staff_auth = StaffAuth {
+                access_token_ttl_seconds: accepted,
+                ..StaffAuth::default()
+            };
+            assert!(
+                staff_auth.validate().is_ok(),
+                "{accepted} is inside the bound and must load"
+            );
+        }
+        // Zero is the value a `#[derive(Default)]` would hand this field, and
+        // it is refused — which is why `StaffAuth`'s `Default` is written out.
+        for refused in [0_u32, 9, 3601, u32::MAX] {
+            let staff_auth = StaffAuth {
+                access_token_ttl_seconds: refused,
+                ..StaffAuth::default()
+            };
+            assert!(
+                staff_auth.validate().is_err(),
+                "{refused} is outside the bound and must be refused"
+            );
+        }
+        assert_eq!(
+            StaffAuth::default().access_token_ttl_seconds,
+            StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS,
+            "a derived `Default` would make this zero, which the bound refuses"
+        );
+    }
+
+    /// A block written without a TTL gets the shipping one, which is what "not
+    /// writing the key is exactly what shipped" means: asserted through the
+    /// **serde** default of a loaded file, not only the `Default` impl beside
+    /// it.
+    #[test]
+    fn a_staff_auth_block_that_writes_no_ttl_gets_the_shipping_token_ttl() {
+        let config = load_fixture("auth-methods-human-login-served.yml")
+            .expect("a human_login deployment loads");
+        let staff_auth = config.staff_auth.expect("the fixture writes staff_auth");
+        assert_eq!(
+            staff_auth.access_token_ttl_seconds,
+            StaffAuth::DEFAULT_ACCESS_TOKEN_TTL_SECONDS
+        );
+    }
+
+    #[test]
+    fn a_dashboard_client_with_no_redirect_uris_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-missing-redirect-uris.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an empty redirect_uris must be rejected, even outside livemode");
+        assert_eq!(
+            err,
+            ConfigError::DashboardMissingRedirectUri("vpay-dashboard".to_owned())
+        );
+    }
+
+    /// A dashboard client bound to a tenant nothing registers must not boot.
+    ///
+    /// The decisive part is that the failure has no *runtime* symptom to
+    /// find later: `/dash/v1` would filter every query by a `merchant_id` no
+    /// row carries, so the payments list is empty and the detail read is a
+    /// 404 — indistinguishable from a merchant who has taken no payments,
+    /// which is precisely the state the list page is designed to render
+    /// calmly. Deleting `validate_dashboard_client_binding`'s call makes this test
+    /// fail and makes that deployment bootable.
+    #[test]
+    fn a_dashboard_client_bound_to_an_unregistered_merchant_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-unknown-merchant.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a dashboard client naming an unregistered tenant must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::DashboardUnknownMerchant {
+                merchant_id: "typo-tenant".to_owned(),
+            }
+        );
+    }
+
+    /// A merchant registration must not be able to name the dashboard
+    /// client's own id as an audience it may request.
+    ///
+    /// This is the boot half of a two-part boundary and the cheaper half to
+    /// read. `handle_client_credentials` mints a token for any *requested*
+    /// audience `allowed_audiences` permits, so this one YAML line hands a
+    /// merchant credential a token whose `aud` the `/dash/v1` resource
+    /// validator accepts. Deleting the
+    /// `validate_no_merchant_claims_the_dashboard_client` call makes this
+    /// test fail and makes that registration loadable.
+    ///
+    /// **The fixture changed on 2026-09-07 and the change is the point.**
+    /// The forbidden value used to be the constant `vpay:dash/v1`, checked
+    /// per registration; ADR-0017 made it the dashboard client's own
+    /// `client_id`, so the fixture now has to carry a `dashboard_client` for
+    /// the rule to have anything to compare against — and the check had to
+    /// move to whole-document scope to see both halves.
+    #[test]
+    fn a_merchant_client_that_lists_the_dashboard_client_id_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-merchant-claims-dashboard-audience.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a merchant listing the dashboard client id must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::MerchantClaimsDashboardAudience {
+                client_id: "acme".to_owned(),
+                audience: "vpay-dashboard".to_owned(),
+            }
+        );
+    }
+
+    /// A merchant may not claim the dashboard client's id **whatever it is**
+    /// — the rule compares against the document, not against a constant.
+    ///
+    /// This is the assertion that would have been impossible before ADR-0017
+    /// and is the one that matters now: a deployment that renames its
+    /// dashboard client is still protected, because there is no constant left
+    /// to fall out of step with the registration.
+    #[test]
+    fn the_dashboard_audience_rule_follows_the_registered_client_id() {
+        let dashboard = |client_id: &str| DashboardClient {
+            client_id: client_id.to_owned(),
+            merchant_id: "merchant-one".to_owned(),
+            scope: "dashboard:read".to_owned(),
+            redirect_uris: vec!["http://localhost:3000/cb".to_owned()],
+            client_secret: None,
+        };
+        let mut config = valid_config();
+        let merchant = config
+            .merchant_clients
+            .first_mut()
+            .expect("valid_config registers one merchant");
+        merchant.merchant_id = "merchant-one".to_owned();
+        merchant
+            .allowed_audiences
+            .push("renamed-dashboard".to_owned());
+        let merchant_client_id = merchant.client_id.clone();
+        config.dashboard_client = Some(dashboard("renamed-dashboard"));
+        config.staff_auth = Some(fixture_staff_auth());
+        assert_eq!(
+            config.validate_all(&RawSecrets::identity(&config)),
+            Err(ConfigError::MerchantClaimsDashboardAudience {
+                client_id: merchant_client_id,
+                audience: "renamed-dashboard".to_owned(),
+            }),
+            "the forbidden value is whatever the document registers, not a constant"
+        );
+
+        // The same merchant, against a dashboard registered under a different
+        // id: legal, because `renamed-dashboard` is then nobody's audience.
+        config.dashboard_client = Some(dashboard("some-other-dashboard"));
+        assert!(
+            config.validate_all(&RawSecrets::identity(&config)).is_ok(),
+            "an audience no registered client owns is not the dashboard's"
+        );
+    }
+
+    #[test]
+    fn a_livemode_dashboard_redirect_uri_that_is_not_https_is_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-livemode-insecure-redirect.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("an http:// redirect_uri under livemode must be rejected");
+        assert_eq!(
+            err,
+            ConfigError::InsecureHost("http://dashboard.vpay.example/callback".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_dashboard_client_secret_is_also_rejected() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/oauth-dashboard-client-secret-present.yml"
+        );
+        let env = example_env(BTreeMap::new());
+        let err = Config::load_with_env(Some(Path::new(path)), "does-not-exist", &env)
+            .expect_err("a dashboard client_secret must be rejected too — it is a public client");
+        assert_eq!(
+            err,
+            ConfigError::ClientSecretPresent("vpay-dashboard".to_owned())
+        );
+    }
+
+    /// `human_login` is served when it is permitted and both blocks are
+    /// present, and by nothing less, whether the list was written or defaulted.
+    #[test]
+    fn human_login_is_served_exactly_when_permitted_and_both_blocks_are_present() {
+        for (fixture, explicit) in [
+            ("auth-methods-human-login-served.yml", true),
+            ("auth-methods-human-login-served-by-default.yml", false),
+            ("auth-methods-human-login-served-with-console.yml", false),
+        ] {
+            let config = load_fixture(fixture).unwrap_or_else(|e| panic!("{fixture}: {e}"));
+            let methods = config.auth_methods().expect("resolves");
+            assert_eq!(methods.is_explicit(), explicit, "{fixture}");
+            assert!(methods.human_login_served(), "{fixture}");
+            assert!(
+                methods.served().any(|m| m == crate::AuthMethod::HumanLogin),
+                "{fixture}"
+            );
+        }
+
+        // Permitted and absent: the default, with neither block. Loads, and is
+        // not served.
+        let config = load_fixture("auth-methods-default-cose-keys-only.yml").expect("loads");
+        let methods = config.auth_methods().expect("resolves");
+        assert!(methods.permits(crate::AuthMethod::HumanLogin));
+        assert!(!methods.human_login_served());
+
+        // And a list that does not name it never serves it, blocks or not: the
+        // fixtures that put blocks beside such a list are refused above.
+        let config = load_fixture("auth-methods-keypair-only.yml").expect("loads");
+        assert!(
+            !config
+                .auth_methods()
+                .expect("resolves")
+                .human_login_served()
+        );
+    }
+
+    /// `dashboard` and `dashboard_client` are two ways to the one `/dash/v1`
+    /// tenant; naming two tenants is refused, naming the same one loads.
+    #[test]
+    fn the_console_and_the_sign_in_must_name_one_tenant() {
+        assert_eq!(
+            load_fixture("dashboard-tenant-mismatch.yml").err(),
+            Some(ConfigError::DashboardTenantMismatch {
+                dashboard: "beta-tenant".to_owned(),
+                client: "acme-cameroon-tenant".to_owned(),
+            })
+        );
+        load_fixture("auth-methods-human-login-served-with-console.yml")
+            .expect("one tenant, named twice, loads");
+    }
+
+    /// The pepper and the TOTP key are required whenever the block is written,
+    /// in a sandbox too, and the refusal names the field and never a value.
+    #[test]
+    fn a_staff_auth_block_without_both_secrets_is_refused_in_every_deployment() {
+        assert_eq!(
+            load_fixture("staff-auth-secret-missing.yml").err(),
+            Some(ConfigError::StaffAuthSecretMissing {
+                field: "totp_encryption_key".to_owned()
+            })
+        );
+    }
+
+    /// In livemode both secrets must be `${VAR}` references, not literals, the
+    /// rule every other secret in this document obeys.
+    #[test]
+    fn a_livemode_staff_auth_secret_must_be_a_placeholder() {
+        let mut config = valid_config();
+        config.deployment.livemode = true;
+        let mut staff_auth = fixture_staff_auth();
+        staff_auth.totp_encryption_key = Some("${KEY}".to_owned());
+        let mut raw = RawSecrets::identity(&config);
+        config.staff_auth = Some(staff_auth);
+        raw.staff_auth
+            .insert("password_pepper".to_owned(), "a-literal".to_owned());
+        raw.staff_auth
+            .insert("totp_encryption_key".to_owned(), "${KEY}".to_owned());
+        // Only the secret rule is under test: `validate_staff_auth` directly.
+        let staff_auth = config.staff_auth.as_ref().expect("set above");
+        assert_eq!(
+            validate_staff_auth(staff_auth, true, &raw),
+            Err(ConfigError::LiteralSecret(
+                "staff_auth.password_pepper".to_owned()
+            ))
+        );
+        raw.staff_auth
+            .insert("password_pepper".to_owned(), "${PEPPER}".to_owned());
+        assert_eq!(validate_staff_auth(staff_auth, true, &raw), Ok(()));
+    }
+
+    /// The same rule, asked **through the loader**: the pre-substitution text
+    /// the rule needs is something `Config::load_with_env` supplies, and the
+    /// test above injects it by hand, so it cannot notice the loader stop doing
+    /// so (which is exactly how a livemode deployment became unbootable for rail
+    /// credentials once; `livemode-resolved-secret.yml`'s header).
+    ///
+    /// Both halves, or neither proves anything: a livemode file written with
+    /// `${VAR}` placeholders that resolve **loads** and carries the resolved
+    /// values, and the same file with a literal pepper is `LiteralSecret` naming
+    /// the pepper.
+    #[test]
+    fn a_livemode_staff_auth_written_as_placeholders_loads_and_carries_the_resolved_values() {
+        let env = example_env(
+            [
+                ("STAFF_PASSWORD_PEPPER", "resolved-pepper-value"),
+                (
+                    "STAFF_TOTP_ENCRYPTION_KEY",
+                    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                ),
+            ]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+        );
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-auth-livemode-resolved-secret.yml");
+        let config = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .expect("a livemode staff_auth whose ${VAR}s all resolve must load");
+
+        let staff_auth = config.staff_auth.as_ref().expect("the fixture writes it");
+        assert_eq!(
+            staff_auth.both(),
+            Some((
+                "resolved-pepper-value",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+            )),
+            "the loaded config carries the RESOLVED values; the raw text is only what the \
+             literal-secret rule is asked about"
+        );
+    }
+
+    /// See the test above: the refusal half of the pair.
+    #[test]
+    fn a_livemode_staff_auth_pepper_written_as_a_literal_is_rejected_by_the_loader() {
+        let env = example_env(
+            [(
+                "STAFF_TOTP_ENCRYPTION_KEY",
+                "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            )]
+            .into_iter()
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect(),
+        );
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-auth-livemode-literal-secret.yml");
+        assert_eq!(
+            Config::load_with_env(Some(&path), "does-not-exist", &env).err(),
+            Some(ConfigError::LiteralSecret(
+                "staff_auth.password_pepper".to_owned()
+            ))
+        );
     }
 
     /// The shapes `validate_checkout_base_url` accepts and refuses, as a
@@ -6343,6 +7592,327 @@ providers:
              service_clients:\n  - client_id: vaam\n    capabilities: [console_admin]\n",
         );
         assert!(bad.is_err());
+    }
+
+    // --- staff_auth.sso (ADR-0030, restored by VPA-4) ---
+
+    /// A deployment that satisfies every `staff_auth.sso` rule, in memory:
+    /// `valid_config()` plus a dashboard client, both staff secrets, and a
+    /// block with an `amr` rule only. Each case below breaks **one** thing.
+    fn sso_config() -> Config {
+        let mut config = valid_config();
+        config.dashboard_client = Some(DashboardClient {
+            client_id: "vpay-dashboard".to_owned(),
+            redirect_uris: vec!["http://localhost:3000/api/auth/callback".to_owned()],
+            merchant_id: "acme-cameroon-tenant".to_owned(),
+            scope: "dashboard:read".to_owned(),
+            client_secret: None,
+        });
+        config.staff_auth = Some(StaffAuth {
+            password_pepper: Some("pepper".to_owned()),
+            totp_encryption_key: Some("key".to_owned()),
+            sso: Some(StaffSso {
+                issuer: "https://auth.example.test/realms/staff".to_owned(),
+                client_id: "vpay-staff".to_owned(),
+                client_secret: "secret".to_owned(),
+                redirect_uri: "https://dashboard.example.test/api/auth/sso/callback".to_owned(),
+                scopes: StaffSso::default_scopes(),
+                required_group: "vpay-staff".to_owned(),
+                groups_claim: StaffSso::default_groups_claim(),
+                accepted_acr: Vec::new(),
+                accepted_amr: vec!["otp".to_owned()],
+            }),
+            ..StaffAuth::default()
+        });
+        config
+    }
+
+    fn sso_refusal(config: &Config) -> ConfigError {
+        config
+            .validate_all(&RawSecrets::identity(config))
+            .expect_err("the case breaks exactly one sso rule and must be refused")
+    }
+
+    fn sso_mut(config: &mut Config) -> &mut StaffSso {
+        config
+            .staff_auth
+            .as_mut()
+            .and_then(|staff_auth| staff_auth.sso.as_mut())
+            .expect("sso_config() carries an sso block")
+    }
+
+    /// The baseline every refusal below is measured against: if this stops
+    /// loading, the other cases would pass for the wrong reason.
+    #[test]
+    fn the_sso_baseline_is_valid() {
+        let config = sso_config();
+        config
+            .validate_all(&RawSecrets::identity(&config))
+            .expect("the baseline sso block satisfies every rule");
+    }
+
+    /// ADR-0019 § R1 for the `oidc` kind, fail closed: both lists empty is a
+    /// boot refusal, in sandbox as much as in livemode — and either list alone
+    /// is enough, because Keycloak's `acr` proves nothing about a second
+    /// factor (measured) and an `amr`-only rule is the production shape.
+    #[test]
+    fn an_sso_block_with_no_second_factor_rule_is_refused_and_either_list_alone_is_enough() {
+        let mut config = sso_config();
+        sso_mut(&mut config).accepted_amr.clear();
+        assert_eq!(
+            sso_refusal(&config),
+            ConfigError::StaffSsoNoSecondFactorRule
+        );
+
+        let mut acr_only = sso_config();
+        {
+            let sso = sso_mut(&mut acr_only);
+            sso.accepted_amr.clear();
+            sso.accepted_acr = vec!["mfa".to_owned()];
+        }
+        acr_only
+            .validate_all(&RawSecrets::identity(&acr_only))
+            .expect("an acr list with an empty amr list is a rule");
+
+        let mut blank = sso_config();
+        sso_mut(&mut blank).accepted_amr = vec!["  ".to_owned()];
+        assert!(matches!(
+            sso_refusal(&blank),
+            ConfigError::StaffSsoMalformed {
+                field: "accepted_amr",
+                ..
+            }
+        ));
+    }
+
+    /// SSO rides on the `human_login` blocks, so it can have neither a missing
+    /// `dashboard_client` nor a missing secret: the method-level rules
+    /// (`validate_auth_methods`, `validate_staff_auth`) refuse those first and
+    /// say what to add. VPA-3 had these as two SSO-specific variants; both
+    /// became unreachable once the method owned the pairing, and are gone.
+    #[test]
+    fn sso_cannot_outlive_the_blocks_it_rides_on() {
+        let mut no_dashboard = sso_config();
+        no_dashboard.dashboard_client = None;
+        assert_eq!(
+            sso_refusal(&no_dashboard),
+            ConfigError::AuthMethodNotConfigured {
+                method: crate::AuthMethod::HumanLogin,
+                key: "dashboard_client".to_owned(),
+            }
+        );
+
+        let mut no_secrets = sso_config();
+        no_secrets
+            .staff_auth
+            .as_mut()
+            .expect("sso_config() carries staff_auth")
+            .totp_encryption_key = None;
+        assert_eq!(
+            sso_refusal(&no_secrets),
+            ConfigError::StaffAuthSecretMissing {
+                field: "totp_encryption_key".to_owned()
+            }
+        );
+    }
+
+    /// Each shape rule refuses its own value, and names the field.
+    #[test]
+    fn every_sso_shape_rule_refuses_its_own_value() {
+        type Break = fn(&mut StaffSso);
+        let cases: [(&'static str, Break); 11] = [
+            ("issuer", |sso| sso.issuer = "not a url".to_owned()),
+            ("issuer", |sso| {
+                sso.issuer = "ftp://auth.example.test".to_owned()
+            }),
+            ("issuer", |sso| {
+                sso.issuer = "https://u:p@auth.example.test".to_owned()
+            }),
+            ("issuer", |sso| {
+                sso.issuer = "https://auth.example.test/r?x=1".to_owned()
+            }),
+            ("issuer", |sso| {
+                sso.issuer = "https://auth.example.test/r#frag".to_owned()
+            }),
+            ("redirect_uri", |sso| {
+                sso.redirect_uri = "/relative".to_owned()
+            }),
+            ("redirect_uri", |sso| {
+                sso.redirect_uri = "https://dashboard.example.test/cb#x".to_owned();
+            }),
+            ("client_id", |sso| sso.client_id = "has:colon".to_owned()),
+            ("scopes", |sso| sso.scopes = vec!["email".to_owned()]),
+            ("scopes", |sso| {
+                sso.scopes = vec!["openid".to_owned(), "two words".to_owned()];
+            }),
+            ("required_group", |sso| sso.required_group = "  ".to_owned()),
+        ];
+        for (field, break_it) in cases {
+            let mut config = sso_config();
+            break_it(sso_mut(&mut config));
+            match sso_refusal(&config) {
+                ConfigError::StaffSsoMalformed { field: got, .. } => {
+                    assert_eq!(got, field, "{config:?}");
+                }
+                other => panic!("expected StaffSsoMalformed for {field}, got {other:?}"),
+            }
+        }
+    }
+
+    /// Livemode: https only, no stub host, for both URLs.
+    #[test]
+    fn a_livemode_sso_block_needs_https_and_no_stub_host() {
+        let mut http_issuer = sso_config();
+        http_issuer.deployment.livemode = true;
+        sso_mut(&mut http_issuer).issuer = "http://auth.example.test/realms/staff".to_owned();
+        livemode_placeholders(&mut http_issuer);
+        assert!(matches!(
+            http_issuer.validate_all(&RawSecrets::identity(&http_issuer)),
+            Err(ConfigError::InsecureHost(_))
+        ));
+
+        let mut stub = sso_config();
+        stub.deployment.livemode = true;
+        sso_mut(&mut stub).redirect_uri = "https://localhost/api/auth/sso/callback".to_owned();
+        livemode_placeholders(&mut stub);
+        assert!(matches!(
+            stub.validate_all(&RawSecrets::identity(&stub)),
+            Err(ConfigError::StubHostInLivemode(_))
+        ));
+    }
+
+    /// Livemode wants every secret written as a placeholder; the cases that
+    /// are about something else must not fail on that first.
+    fn livemode_placeholders(config: &mut Config) {
+        if let Some(dashboard) = config.dashboard_client.as_mut() {
+            dashboard.redirect_uris = vec!["https://dashboard.example.test/cb".to_owned()];
+        }
+        if let Some(staff_auth) = config.staff_auth.as_mut() {
+            staff_auth.password_pepper = Some("${PEPPER}".to_owned());
+            staff_auth.totp_encryption_key = Some("${KEY}".to_owned());
+        }
+        sso_mut(config).client_secret = "${SECRET}".to_owned();
+    }
+
+    /// The block's secret is `Debug`-redacted.
+    #[test]
+    fn the_sso_client_secret_never_reaches_debug() {
+        let mut config = sso_config();
+        sso_mut(&mut config).client_secret = "canary-sso-secret-5e2d".to_owned();
+        let printed = format!("{:?}", config.staff_auth);
+        assert!(
+            !printed.contains("canary-sso-secret-5e2d"),
+            "the Debug output printed the SSO client secret"
+        );
+        assert!(
+            printed.contains("vpay-staff"),
+            "the client_id is public and stays visible"
+        );
+        assert!(printed.contains("[redacted]"));
+    }
+
+    /// The YAML shape reaches the struct, and what a deployment that writes
+    /// only the keys without defaults gets.
+    #[test]
+    fn the_sso_block_loads_from_yaml_with_its_defaults() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/staff-sso-valid.yml");
+        let env = example_env(BTreeMap::from([
+            ("STAFF_PEPPER".to_owned(), "pepper".to_owned()),
+            ("STAFF_TOTP_KEY".to_owned(), "key".to_owned()),
+            (
+                "STAFF_SSO_CLIENT_SECRET".to_owned(),
+                "the-resolved-secret".to_owned(),
+            ),
+        ]));
+        let config = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .expect("the fixture satisfies every sso rule");
+        assert!(
+            config
+                .auth_methods()
+                .expect("resolves")
+                .human_login_served(),
+            "the default permits the method and both blocks are written"
+        );
+        let sso = config
+            .staff_auth
+            .and_then(|staff_auth| staff_auth.sso)
+            .expect("the block reached the struct");
+
+        assert_eq!(sso.issuer, "https://auth.example.test/realms/staff");
+        assert_eq!(
+            sso.client_secret, "the-resolved-secret",
+            "resolved, like every placeholder"
+        );
+        assert_eq!(sso.scopes, ["openid", "email", "profile"]);
+        assert_eq!(sso.groups_claim, "groups");
+        assert!(sso.accepted_acr.is_empty());
+        assert_eq!(sso.accepted_amr, ["otp"]);
+    }
+
+    /// A deployment that writes no `sso` block gets none: SSO is
+    /// configuration, not a flag with a default.
+    #[test]
+    fn no_sso_block_means_no_sso() {
+        assert!(StaffAuth::default().sso.is_none());
+    }
+
+    /// A misspelt key inside the block is refused, not dropped: `scopes` and
+    /// `groups_claim` have defaults, so a typo of either would otherwise boot
+    /// with the default and no word, the "looks configured, is not" state.
+    #[test]
+    fn a_misspelt_sso_key_is_refused_rather_than_defaulted() {
+        let error = serde_yaml_ng::from_str::<StaffSso>(
+            "issuer: https://auth.example.test\nclient_id: x\nclient_secret: y\n\
+             redirect_uri: https://d.example.test/cb\nrequired_group: g\ngroup_claim: roles\n",
+        )
+        .map(|_| ())
+        .expect_err("`group_claim` is not a key of the block");
+        assert!(error.to_string().contains("group_claim"), "{error}");
+    }
+
+    /// The other half of the literal rule: a livemode block whose three secrets
+    /// are all `${VAR}`s loads, and the struct carries what they resolved to.
+    /// Without it a loader that could not see the nested `client_secret` as
+    /// written would fail closed on every correct document, and no test would
+    /// say so.
+    #[test]
+    fn a_livemode_sso_block_written_as_placeholders_loads_and_carries_the_resolved_secret() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-sso-livemode-placeholders.yml");
+        let env = example_env(BTreeMap::from([
+            ("STAFF_PEPPER".to_owned(), "pepper".to_owned()),
+            ("STAFF_TOTP_KEY".to_owned(), "key".to_owned()),
+            (
+                "STAFF_SSO_CLIENT_SECRET".to_owned(),
+                "the-resolved-secret".to_owned(),
+            ),
+        ]));
+        let config = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .expect("a livemode sso block written as placeholders satisfies every rule");
+        let sso = config
+            .staff_auth
+            .and_then(|staff_auth| staff_auth.sso)
+            .expect("the block reached the struct");
+        assert_eq!(sso.client_secret, "the-resolved-secret");
+    }
+
+    /// The literal-secret rule reaches the nested secret. The fixture is
+    /// livemode with placeholders everywhere else, so this is the SSO rule.
+    #[test]
+    fn a_livemode_sso_client_secret_must_be_a_placeholder() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/staff-sso-livemode-literal-secret.yml");
+        let env = example_env(BTreeMap::from([
+            ("STAFF_PEPPER".to_owned(), "pepper".to_owned()),
+            ("STAFF_TOTP_KEY".to_owned(), "key".to_owned()),
+        ]));
+        let error = Config::load_with_env(Some(&path), "does-not-exist", &env)
+            .map(|_| ())
+            .expect_err("a literal sso client_secret in livemode must be refused");
+        assert_eq!(
+            error,
+            ConfigError::LiteralSecret("staff_auth.sso.client_secret".to_owned())
+        );
     }
 
     /// `routing:` parses with every key optional, refuses a misspelt one,

@@ -1,0 +1,44 @@
+# Fixture for the `vpay-server serve` subprocess test of a MANAGEMENT-ONLY pod
+# that serves `human_login` (ADR-0037, ADR-0022, VPA-3): `deployment.surfaces`
+# names `management` alone, `auth.methods` is absent (every method permitted), and
+# BOTH blocks of the method are written, so the staff sign-in is mounted and
+# `/dash/v1` accepts a staff session beside a console key.
+#
+# What the test proves with it is the wiring only `serve` performs: the pod mounts
+# the OP's JWKS and discovery for its own session validator (`validates_tokens`),
+# builds that validator against its own loopback address, and builds the sign-in
+# from `staff_auth`. No integration harness reaches any of it.
+#
+# `totp_encryption_key` is a `${VAR}` so one fixture serves both halves of the
+# test: a 32-byte key that boots, and a 31-byte one that must not. `livemode:
+# false`, so the pepper may be a literal (the literal-secret rule is a livemode
+# rule) and is visibly a test value.
+
+deployment:
+  name: vpay-server-cli-test
+  livemode: false
+  public_base_url: http://localhost:8080
+  surfaces: [management]
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [vpay:v1]
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-cameroon-tenant
+  scope: dashboard:read
+  redirect_uris:
+    - http://localhost:3000/api/auth/callback
+
+staff_auth:
+  password_pepper: a-test-pepper-that-is-not-a-real-secret
+  totp_encryption_key: ${VPAY_TEST_STAFF_TOTP_KEY}

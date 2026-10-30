@@ -14,6 +14,8 @@
 // The table-family modules stay `pub` for the row/seed types and each
 // family's own trait, not for free functions. Why, in full: [docs/reference/vpay-db.md
 // § what stays pub, and why](../../../../docs/reference/vpay-db.md#what-stays-pub-and-why).
+/// The dashboard client's authorization-code store (ADR-0017 decision 3).
+pub mod authorization_codes;
 pub mod charges;
 // The hosted/embedded checkout object (Step 9). Its own module rather than
 // functions on `payment_intents`, because a session is not a property of an
@@ -88,6 +90,12 @@ pub mod settlement;
 /// credentials are NOT here — they moved to [`credentials`] in migration 0044
 /// (ADR-0019).
 pub mod staff;
+/// Server-side staff sessions: the two bounds, and the revocation that makes
+/// signing out mean something (ADR-0017 decision 2).
+pub mod staff_sessions;
+/// An SSO sign-in in flight: hashed state and nonce, sealed PKCE verifier, single
+/// use (ADR-0030).
+pub mod staff_sso_attempts;
 // The delivery side of the outbox. Its own module rather than functions on
 // `events`, because the fan-out transaction spans both tables and the write
 // that closes it (`mark_fanned_out_in_tx`) must not be reachable without the
@@ -131,6 +139,7 @@ mod signing_keys;
 #[cfg(test)]
 mod sql_audit;
 
+pub use authorization_codes::{AuthorizationCodeRow, AuthorizationCodes, NewAuthorizationCode};
 pub use charges::{ChargeAsOf, ChargeRow, Charges, NewCharge};
 pub use checkout_sessions::{
     CheckoutSessionRow, CheckoutSessions, NewCheckoutSession, SessionListPage,
@@ -144,7 +153,7 @@ pub use customers::{
     CustomerAddress, CustomerErasure, CustomerListPage, CustomerPatch, CustomerRow, Customers,
     NewCustomer, REDACTED,
 };
-pub use dashboard_transport::DashboardAuthFn;
+pub use dashboard_transport::{DashboardAuthFn, ProcedureSigning};
 pub use disabled_clients::DisabledClients;
 pub use envelope_nonces::EnvelopeNonces;
 pub use error::DbError;
@@ -192,4 +201,10 @@ pub use repository::{
 pub use settlement::{AttemptRow, InvoicePaidEvent, Settlement};
 pub use signing_keys::{ActivationOutcome, SigningKey, SigningKeys};
 pub use staff::{NewStaff, Staff, StaffRow, StaffStatus};
+pub use staff_sessions::{
+    ABSOLUTE_LIFETIME, IDLE_TIMEOUT, NewSession, SessionRow, SessionState, StaffSessions,
+};
+pub use staff_sso_attempts::{
+    NewSsoAttempt, SSO_ATTEMPT_LIFETIME, SsoAttemptRow, StaffSsoAttempts,
+};
 pub use webhook_deliveries::{DeliveryRow, WebhookDeliveries};

@@ -1,13 +1,17 @@
-//! Statically registered merchant clients (ADR-0010, ADR-0035).
+//! Statically registered clients (ADR-0010, ADR-0035, ADR-0037).
 //!
 //! [`MerchantClient`] is loaded from YAML (ADR-0003) and, structurally, carries
 //! no client secret: a merchant's `/v1` credential is a set of **public** keys
-//! (`cose_keys`, signed transport) and, until VP-4 deletes the OP, a public JWK
-//! set for `private_key_jwt`. The dashboard has no registration here any more
-//! (VP-6a): its tenant is [`crate::Dashboard`], and the people who sign in are
-//! keys in the database, not a client.
+//! (`cose_keys`, signed transport) and, when `auth.methods` permits
+//! `machine_tokens`, a public JWK set for `private_key_jwt`.
 //!
-//! It carries a `client_secret: Option<String>` whose only legitimate value is
+//! [`DashboardClient`] is the single `/dash/v1` OAuth client of the `human_login`
+//! method (authorization-code plus PKCE, one read-only scope). It is read only
+//! when `auth.methods` permits `human_login` and `staff_auth` is configured beside
+//! it (VPA-3); the console's own tenant, for a person who holds a paired key, is
+//! [`crate::Dashboard`].
+//!
+//! Both carry a `client_secret: Option<String>` whose only legitimate value is
 //! `None`: it exists so a config that accidentally carries a secret is *refused*
 //! at boot rather than silently ignored. Never populate it.
 //!
@@ -36,12 +40,41 @@ use crate::ConfigError;
 /// working: the merchant's token request (`audience=vpay:v1` — the SDKs send
 /// it by default, `docs/flows/merchant-auth.md`), the OP's own
 /// `allowed_audiences` gate on `handle_client_credentials`, and vpay's
-/// resource-server validator (`vpay_api::resource_auth::Surface::Merchant::audience`,
-/// which returns this constant rather than spelling it a second time). Two of
+/// resource-server validator (`vpay_api::resource_auth::merchant_token_validator`,
+/// which pins this constant rather than spelling it a second time). Two of
 /// the three disagreeing produces no error message anywhere near the cause —
 /// see [`crate::ConfigError::MerchantMissingV1Audience`] for the two concrete
 /// shapes that failure takes and why it is fatal at boot instead.
 pub const MERCHANT_AUDIENCE: &str = "vpay:v1";
+
+/// The claim a `/dash/v1` access token carries the merchant binding in.
+///
+/// **This is what replaced `DASHBOARD_AUDIENCE` on 2026-09-07**, and the
+/// replacement is [ADR-0017](../../../../docs/adr/0017-staff-authentication.md)
+/// decision 3 rather than a rename. The constant `vpay:dash/v1` existed
+/// because `Surface::Dashboard`'s validator demanded a literal audience; the
+/// authorization-code grant mints `aud = <client_id>` and has no
+/// requested-audience path at all
+/// (`authkestra-op-0.13.1/src/handlers/token.rs`, step 7), so a token from the
+/// only grant that can ever produce a dashboard credential would never have
+/// carried it. The validator was changed to expect what the grant produces:
+/// the audience is now [`DashboardClient::client_id`], passed to
+/// `vpay_api::resource_auth::JwtValidator::new` as a value rather than looked
+/// up from a constant.
+///
+/// What a constant is still needed for is the **tenant**. `aud` says which
+/// credential; this claim says which merchant, and
+/// `vpay_api::envelope::console::dash_scope` refuses a token whose value here is
+/// not [`DashboardClient::merchant_id`]. It is stamped by the one grant that
+/// mints these tokens and by nothing else, which is what makes a
+/// `client_credentials` token structurally unable to satisfy it — no machine
+/// client may read the dashboard.
+///
+/// `vpay_merchant_id` and not `merchant_id`: `authkestra_engine`'s
+/// `reject_named_claim_collisions` refuses an `extra` key that collides with
+/// a named `Claims` field, and a vendor prefix is what keeps this from
+/// colliding with one a future authkestra adds.
+pub const DASHBOARD_MERCHANT_CLAIM: &str = "vpay_merchant_id";
 
 /// OAuth2 grant types this workspace's clients can be registered for.
 ///
@@ -647,6 +680,77 @@ impl fmt::Debug for MerchantClient {
     }
 }
 
+/// The dashboard's OAuth2 client registration (`docs/flows/dashboard-auth.md`):
+/// authorization-code + PKCE, a public client with no secret at all, and
+/// exactly one read-only scope — the dashboard observes, it does not
+/// administer (ADR-0008).
+#[derive(Clone, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct DashboardClient {
+    /// Public client identifier. Must be unique across every merchant and
+    /// dashboard client combined — see [`MerchantClient::client_id`]'s doc
+    /// comment for why that check lives in `Config::validate_all` instead of
+    /// here.
+    #[garde(length(min = 1))]
+    pub client_id: String,
+    /// Exact-match redirect URIs (`authkestra_op::client::ClientRegistration::allows_redirect_uri`
+    /// matches these literally, no prefix/wildcard). Must be non-empty — a
+    /// client that can never redirect back can never complete the
+    /// authorization-code flow, so it is fatal at boot rather than a
+    /// runtime 404 on first login attempt.
+    #[garde(skip)]
+    #[serde(default)]
+    pub redirect_uris: Vec<String>,
+    /// The one tenant this dashboard client may read
+    /// (`payment_intents.merchant_id`, and the value every `/dash/v1` query
+    /// is filtered by).
+    ///
+    /// **Required, and deliberately singular.** ADR-0008's dashboard
+    /// observes records; a staff surface that could name any tenant would be
+    /// an authorisation decision taken per request against a list nothing
+    /// validates. One client, one tenant, fixed in YAML and checked at boot
+    /// against the registered merchants
+    /// ([`crate::ConfigError::DashboardUnknownMerchant`]) — so a typo is a
+    /// refused deployment rather than a dashboard that renders an empty
+    /// table and looks like a merchant with no payments.
+    ///
+    /// A deployment whose staff must see several tenants registers several
+    /// dashboard clients; it does not widen this field. That is not a
+    /// limitation this type invents — it is the same rule
+    /// [`MerchantClient::merchant_id`] states, applied to the other surface.
+    #[garde(length(min = 1))]
+    pub merchant_id: String,
+    /// The dashboard's single scope. A plain `String`, not a `Vec<String>`
+    /// with a length-1 rule — the maintainer's decision
+    /// (`docs/flows/dashboard-auth.md`'s "Scope" section: the dashboard is
+    /// read-only observability and governance, so one scope is all it ever
+    /// needs) is enforced by the type itself, not by a rule that could be
+    /// loosened without anyone noticing the shape changed.
+    #[garde(length(min = 1))]
+    pub scope: String,
+    /// Must never be set — see the module docs' "No secret, ever" section.
+    #[garde(skip)]
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
+/// Redacts [`DashboardClient::client_secret`] — see [`MerchantClient`]'s
+/// `Debug` impl for the identical reasoning.
+impl fmt::Debug for DashboardClient {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DashboardClient")
+            .field("client_id", &self.client_id)
+            .field("merchant_id", &self.merchant_id)
+            .field("redirect_uris", &self.redirect_uris)
+            .field("scope", &self.scope)
+            .field(
+                "client_secret",
+                &self.client_secret.as_deref().map(|_| "[redacted]"),
+            )
+            .finish()
+    }
+}
+
 impl MerchantClient {
     /// Reads every entry of [`Self::cose_keys`], in configuration order.
     ///
@@ -886,5 +990,27 @@ mod tests {
             formatted.contains("https://acme.example/hooks"),
             "{formatted}"
         );
+    }
+
+    #[test]
+    fn dashboard_client_debug_output_never_contains_a_client_secret_value() {
+        let client = DashboardClient {
+            client_id: "vpay-dashboard".to_owned(),
+            merchant_id: "acme-tenant".to_owned(),
+            redirect_uris: vec!["https://dashboard.example/callback".to_owned()],
+            scope: "dashboard:read".to_owned(),
+            client_secret: Some("this-should-never-be-here".to_owned()),
+        };
+
+        let formatted = format!("{client:?}");
+
+        assert!(
+            !formatted.contains("this-should-never-be-here"),
+            "{formatted}"
+        );
+        assert!(formatted.contains("[redacted]"), "{formatted}");
+        assert!(formatted.contains("vpay-dashboard"), "{formatted}");
+        assert!(formatted.contains("dashboard.example"), "{formatted}");
+        assert!(formatted.contains("dashboard:read"), "{formatted}");
     }
 }

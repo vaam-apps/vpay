@@ -830,6 +830,13 @@ pub struct ResourceConfig {
     /// question — "which of several dashboards is this?" — the configuration
     /// cannot ask.
     dashboard: Option<DashboardBinding>,
+    /// Whether a `dashboard:` block is configured: the console (paired keys,
+    /// `/svc/v1`). Distinct from [`Self::dashboard`], which is also present for
+    /// a deployment that serves `human_login` alone.
+    console_configured: bool,
+    /// The dashboard OAuth client, present exactly when `human_login` is
+    /// served (ADR-0037): the audience and the scope of the staff access token.
+    staff: Option<StaffBinding>,
     /// Which ways of authenticating this deployment permits (ADR-0037):
     /// `auth.methods`, resolved. The router reads it to decide whether
     /// `/v1/oauth/token` is mounted and what the discovery document says; the
@@ -892,6 +899,18 @@ pub struct DashboardBinding {
     /// The one tenant `/dash/v1` reads. Boot refuses a value no merchant
     /// registers (`vpay_config::ConfigError::DashboardUnknownMerchant`).
     pub merchant_id: String,
+}
+
+/// The `dashboard_client` block, projected, for a deployment that serves
+/// `human_login`: which audience and which scope a `/dash/v1` staff access token
+/// must carry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StaffBinding {
+    /// The registered client id, which is the audience of every token the
+    /// staff authorization-code grant mints (ADR-0017 decision 3).
+    pub client_id: String,
+    /// The registration's single scope.
+    pub scope: String,
 }
 
 impl ResourceConfig {
@@ -1007,6 +1026,8 @@ impl ResourceConfig {
                 .extend(client.publishable_keys.iter().cloned());
         }
 
+        let auth_methods = config.auth_methods()?;
+        let human_login = auth_methods.human_login_served();
         Ok(Self {
             livemode: config.deployment.livemode,
             merchant_id_by_client_id,
@@ -1036,12 +1057,33 @@ impl ResourceConfig {
             // Cloned rather than referenced for the reason every other field
             // here is: `ResourceConfig` outlives the `Config` it was
             // projected from, and the projection is what `AppState` holds.
-            dashboard: config.dashboard.as_ref().map(|dashboard| DashboardBinding {
-                merchant_id: dashboard.merchant_id.clone(),
-            }),
+            //
+            // The tenant is `dashboard.merchant_id`; on a deployment that
+            // serves `human_login` and configured no `dashboard:` it is the
+            // dashboard client's, which `validate_all` proved equal whenever
+            // both are written.
+            dashboard: config
+                .dashboard
+                .as_ref()
+                .map(|dashboard| dashboard.merchant_id.clone())
+                .or_else(|| {
+                    human_login
+                        .then_some(config.dashboard_client.as_ref())
+                        .flatten()
+                        .map(|client| client.merchant_id.clone())
+                })
+                .map(|merchant_id| DashboardBinding { merchant_id }),
+            console_configured: config.dashboard.is_some(),
+            staff: human_login
+                .then_some(config.dashboard_client.as_ref())
+                .flatten()
+                .map(|client| StaffBinding {
+                    client_id: client.client_id.clone(),
+                    scope: client.scope.clone(),
+                }),
             invoice_urls_by_merchant_id,
             routing_weights: config.routing.weights(),
-            auth_methods: config.auth_methods()?,
+            auth_methods,
         })
     }
 
@@ -1166,6 +1208,23 @@ impl ResourceConfig {
     #[must_use]
     pub fn dashboard(&self) -> Option<&DashboardBinding> {
         self.dashboard.as_ref()
+    }
+
+    /// Whether this deployment configured a `dashboard:` block, i.e. serves the
+    /// console's paired keys and `/svc/v1`. `/dash/v1` can be mounted without
+    /// it, for a deployment that serves `human_login` alone
+    /// ([`Self::staff_binding`]).
+    #[must_use]
+    pub fn console_configured(&self) -> bool {
+        self.console_configured
+    }
+
+    /// The dashboard OAuth client's audience and scope, or `None` when
+    /// `human_login` is not served. `Some` is the one condition under which the
+    /// `/dash/v1` scope step accepts a bearer token.
+    #[must_use]
+    pub fn staff_binding(&self) -> Option<&StaffBinding> {
+        self.staff.as_ref()
     }
 
     /// Whether `merchant_id` is one this deployment's `merchant_clients`
@@ -1403,6 +1462,8 @@ mod tests {
             webhooks: vpay_config::WebhookPolicy::default(),
             checkout: vpay_config::CheckoutConfig::default(),
             dashboard: None,
+            dashboard_client: None,
+            staff_auth: None,
             service_clients: Vec::new(),
             routing: Default::default(),
             auth: Default::default(),
@@ -1425,6 +1486,7 @@ mod tests {
         let claims = |sub: &str, scopes: &[&str]| ResourceClaims {
             subject: sub.to_owned(),
             scope: scopes.iter().map(|scope| (*scope).to_owned()).collect(),
+            merchant: None,
         };
 
         let both = claims(

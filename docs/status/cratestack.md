@@ -853,3 +853,42 @@ baseline --strict` on Postgres 16 migrated through `0056` and then `0057`
   index's shape and, with the unique index dropped in a rolled-back transaction
   and `enable_seqscan = off`, that the planner reaches the lookup through it.
   Delete `0057` and the plan is a `Seq Scan`.
+
+## 2026-10-28 — migration `0058` (the three sign-in tables return, empty), and drift goes 209 → 221, measured
+
+VPA-2 of owner ruling R5 ([ADR-0037](../adr/0037-authentication-methods-are-deployment-configuration.md))
+creates `staff_sessions`, `oauth_authorization_codes` and `staff_sso_attempts`
+again and drops `credentials_password_and_totp_are_retired`; the models
+(`StaffSession`, `OauthAuthorizationCode`, `StaffSsoAttempt`) are back in
+`schemas/vpay.cstack`, which declares 23 models now (20 after `0056`). Measured
+with `cratestack migrate baseline --strict` on Postgres 16 migrated through
+`0057` under the schema at `origin/master` (`drift detected in 27
+table(s)/view(s) (209 change(s) total)`, which reproduced the constant the
+suite pinned) and through `0058` under this schema:
+`drift detected in 30 table(s)/view(s) (221 change(s) total)`.
+
+- The three relations rejoin with exactly the lines `0056` removed:
+  `staff_sessions` 4 (CHECKs `_id_length` and `_state_is_known`, indexes
+  `_expiry_idx` and `_staff_idx`), `oauth_authorization_codes` 4 (CHECKs
+  `_code_hash_length` and `_method_is_s256`, indexes `_expiry_idx` and
+  `_session_idx`) and `staff_sso_attempts` 5 (CHECKs `_id_length`,
+  `_state_hash_length`, `_nonce_hash_length`, `_code_verifier_length`, index
+  `_expires_idx`): **+13**.
+- `credentials` loses the one line `0056` added: **-1**.
+- 209 + 13 - 1 = 221; `EXPECTED_DRIFTED_RELATIONS` is 30 (27 + 3). The two
+  multi-column CHECKs that return (`staff_sessions_token_expiry_is_paired`,
+  `staff_sso_attempts_lifetime_is_positive`) are invisible to the report and sit
+  in `postgres_smoke.rs`'s multi-column list again: 33 entries, the same 33 the
+  live `pg_constraint` returns (counted; the comments said 25 and were stale).
+- `pg_dump -s` of the three tables on a database migrated through `0055` and on
+  one migrated through `0058` is identical but for pg_dump's per-run
+  `\restrict` token, and so is `credentials`: `0058` is the originals' DDL, not
+  an approximation of it. The comparison files are in
+  [verification/2026-10-28-vpa2-human-login-persistence.md](verification/2026-10-28-vpa2-human-login-persistence.md).
+- `schema_migrates_cleanly_on_an_empty_database` pins **58** migrations, and
+  `vpay-db`'s `MODEL_TABLES` lists 23 models.
+- `frontends/packages/dash-client` is generated from the schema and carries the
+  three models' TypeScript types again (`just gen-dash-client`, gated by
+  `check-schema`); the dashboard mounts only `procedure_router`, so no CRUD route
+  for them is served (`no_generated_model_route_is_mounted_only_the_one_procedure_is`
+  now probes 184 paths).

@@ -245,6 +245,24 @@ shamefullyHoist: false
 #   `minimumReleaseAge`; no `minimumReleaseAgeExclude` entry was added for
 #   them, since 6.16.1 is fixed. Re-check on the next audit pass, as above.
 #
+# overrides['@zenstackhq/cli>@hono/node-server'] — 2026-10-29.
+#   GHSA-rmxm-3fg6-px4f (moderate): `serveStatic` decodes the request path a
+#   second time, bypassing middleware on static paths. Vulnerable
+#   >=1.19.10 <2.1.3, fixed in >=2.1.3 ONLY: the whole 1.x line is
+#   vulnerable and 1.19.17 is its last release. `@zenstackhq/cli` takes
+#   `@hono/node-server` on `^1.13.8` in 3.9.3 (the pin examples/shop is on),
+#   3.9.8 and 3.10.0 (the newest, 2026-10-27) alike, so no bump of the
+#   direct dependency clears it; the range cannot reach a 2.x. Scoped to
+#   that one dependent, as the lodash entries are, so nothing else that
+#   ever resolves `@hono/node-server` is frozen by this line. 2.x is a
+#   major over 1.x, declares `hono ^4 || ^5.0.0-0` (the CLI's own `hono
+#   ^4.11.10` satisfies it) and `node >=20`. The CLI imports exactly one
+#   thing from it, `serve`, in the `zen proxy` dev server; `zen generate`,
+#   the only command examples/shop runs (its `postinstall`), never starts
+#   it, and the package is a devDependency of examples/shop, so it reaches
+#   no production image. Remove when `@zenstackhq/cli` itself declares
+#   `@hono/node-server` >=2.1.3.
+#
 # NOT cleared by anything in this file: braces <=3.0.3 (GHSA-vfj7-8cjw-p6xm,
 #   high, stack exhaustion on deeply nested patterns), which names >=3.0.4 as
 #   the fix. npm has no braces newer than 3.0.3 (checked 2026-10-09 against
@@ -266,6 +284,7 @@ overrides:
   "chevrotain>lodash": ^4.18.1
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1
+  "@zenstackhq/cli>@hono/node-server": ^2.1.3
 
 # ---------------------------------------------------------------------------
 # allowBuilds

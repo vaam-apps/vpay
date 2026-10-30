@@ -5,6 +5,14 @@
   OIDC broker, the SSO block and its Keycloak suite are deleted (owner ruling Q1:
   phone pairing only); the `oidc` credential row survives as the link to a vaam
   identity. The text below is left as written.
+  **Restored 2026-10-30 (VPA-4)** under
+  [ADR-0037](0037-authentication-methods-are-deployment-configuration.md)
+  decision 8, as a part of the `human_login` method: ADR-0036's "phone pairing
+  only" became one deployment's choice (`auth.methods`), not every deployment's.
+  Every decision below holds as written, with one change of address: `staff_auth.sso`
+  is served only when `human_login` is, and written while it is not it is refused
+  (`AuthMethodDisabled`). The dashboard application's two SSO routes are not part
+  of this restoration (VPA-5).
 - **Date:** 2026-10-19
 - **Deciders:** the vpay maintainer, who took the four decisions ADR-0019 had
   reserved — R1 (for the `oidc` kind), R2, R3 and R4 — on 2026-10-19, and

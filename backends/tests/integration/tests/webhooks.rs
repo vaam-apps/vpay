@@ -1713,6 +1713,8 @@ fn cancel_config(base_url: &str, jwks_a: Value, receiver_url: &str) -> Config {
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }
@@ -1986,6 +1988,8 @@ fn events_config(base_url: &str, jwks_a: Value, jwks_b: Value, scopes: &[&str]) 
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
         service_clients: Vec::new(),
+        dashboard_client: None,
+        staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
     }

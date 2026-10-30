@@ -1,0 +1,43 @@
+# Fixture for `a_livemode_sso_block_written_as_placeholders_loads_and_carries_the_resolved_secret`
+# (backends/crates/vpay-config/src/config.rs).
+#
+# The same LIVEMODE document as `staff-sso-livemode-literal-secret.yml` with the
+# one defect repaired: `staff_auth.sso.client_secret` is a ${VAR}, like the
+# pepper and the TOTP key. It proves the nested secret is recognised as written
+# (a loader that could not see it would refuse this document as a literal) and
+# that the resolved value, not the placeholder, reaches the struct.
+
+deployment:
+  name: vpay
+  livemode: true
+  public_base_url: https://api.vpay.example
+
+merchant_clients:
+  - client_id: acme
+    merchant_id: acme-tenant
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: [vpay:v1]
+
+dashboard_client:
+  client_id: vpay-dashboard
+  merchant_id: acme-tenant
+  redirect_uris:
+    - https://dashboard.vpay.example/api/auth/callback
+  scope: dashboard:read
+
+staff_auth:
+  password_pepper: ${STAFF_PEPPER}
+  totp_encryption_key: ${STAFF_TOTP_KEY}
+  sso:
+    issuer: https://auth.example.test/realms/staff
+    client_id: vpay-staff
+    client_secret: ${STAFF_SSO_CLIENT_SECRET}
+    redirect_uri: https://dashboard.vpay.example/api/auth/sso/callback
+    required_group: vpay-staff
+    accepted_amr: [otp]

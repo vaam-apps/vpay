@@ -493,8 +493,11 @@ config:
   # The management tier's overlay carries `dashboard:` (the one tenant the
   # console reads) and, if vaam is to pair console keys, `service_clients:`
   # (ADR-0036). Neither is a value of this chart; the overlay is opaque text to
-  # Helm. There is no staff sign-in to configure any more: the `staff_auth` and
-  # `dashboard_client` blocks this comment used to describe are refused at boot.
+  # Helm. A staff password sign-in, if the deployment serves one, is the
+  # `human_login` method (ADR-0037): the `staff_auth` and `dashboard_client` blocks
+  # are overlay text too (both, or neither), and `staff_auth` names the pepper and
+  # the TOTP key as `${VAR}` placeholders, resolved from the environment (a
+  # workload's `extraEnv`, from a Secret you manage).
   #
   #     dashboard:
   #       merchant_id: <a merchant_clients entry>
@@ -1110,6 +1113,39 @@ networkPolicy:
     namespace: ""
     podSelector: {}
     port: 5432
+  # Egress to the staff SSO identity provider (`staff_auth.sso`, see
+  # README.md "Staff single sign-on"). The process that serves `/dash/v1` —
+  # `-management` when `management.enabled`, otherwise `-server` — makes
+  # OUTBOUND HTTPS to the IdP (discovery, JWKS, token endpoint); it never made
+  # an outbound call to anything but the rails before. The worker and, when the
+  # tiers are split, `-server` get no such rule.
+  #
+  # **You usually need nothing here.** `railsEgress` below already allows
+  # TCP 443 to every PUBLIC address from all three pods, so a public IdP
+  # (e.g. `https://auth.verif.fyi`) is reachable while `railsEgress.enabled`
+  # is true. This list is for what that rule deliberately excludes: an IdP on
+  # a private address or in the cluster, an IdP on a port other than
+  # `railsEgress.port`, or a release that has turned `railsEgress` off. An
+  # empty list is "no extra peers", not a switch: it renders nothing and the
+  # default render is byte-identical to a chart without this value.
+  #
+  # The shape is `database`'s, and the peers are NAMED destinations — there is
+  # no wildcard form, so this cannot reopen the metadata endpoint or the VPC at
+  # large the way a loosened `railsEgress.except` can. `values.schema.json`
+  # refuses `0.0.0.0/0`, `::/0` and anything starting `169.254.`; it cannot
+  # tell a merely too-wide block (`10.0.0.0/8`) from a right one, so scope it.
+  #
+  #   cidrs: ["10.20.0.5/32"]                          — a private-address IdP
+  #   namespace: keycloak, podSelector: {app: keycloak} — an in-cluster one
+  #   port: 8443                                        — if not 443
+  #
+  # Nothing here has been applied to a cluster; see the NetworkPolicy
+  # disclaimer in templates/networkpolicy.yaml.
+  idpEgress:
+    cidrs: []
+    namespace: ""
+    podSelector: {}
+    port: 443
   # Egress for outbound rail calls (HTTPS). `0.0.0.0/0` minus the private
   # ranges and the cloud metadata address, because a rail is on the public
   # internet and an SSRF-shaped egress to 169.254.169.254 is not.

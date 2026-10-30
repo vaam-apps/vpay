@@ -323,6 +323,54 @@ process. Update the Secret, then `kubectl rollout restart deploy/<release>-serve
 **Rolling back to a retired `kid` crash-loops with exit 78**, not 69 —
 `DbError::SigningKeyRetired`. Roll forward, never back.
 
+## Egress to the staff identity provider under `networkPolicy`
+
+vpay can let dashboard staff sign in through an external OpenID Connect provider
+(ADR-0030), served with `human_login` where the overlay writes `staff_auth.sso`
+([the flow](../../../docs/flows/dashboard-auth/sso.md)). **It is configured in the
+profile overlay, not in a value of this chart**: the overlay is opaque text to
+Helm, and this chart templates nothing for the block itself. What the chart does
+own is the one consequence for the network: the pod that serves `/dash/v1` now
+makes outbound HTTPS to the provider (discovery, JWKS, token endpoint) — `-management`
+when `management.enabled`, otherwise `-server`. No vpay process called anything
+but the rails before.
+
+Read from `templates/networkpolicy.yaml` and `templates/_egress.tpl`, not
+observed on a cluster:
+
+- All three policies (`-server`, `-worker`, `-management`) get the same shared
+  egress rules (`vpay.egressRules`): DNS, Postgres, and — while
+  `networkPolicy.railsEgress.enabled` is true, its default — TCP 443 to
+  `0.0.0.0/0` **minus** `railsEgress.except` (RFC1918 and `169.254.0.0/16`).
+  So **a public IdP on 443 is already reachable** from the pod that needs it,
+  and needs nothing added.
+- **An IdP on a private address or in the cluster is not**: those ranges are
+  excluded on purpose. Neither is an IdP on a non-443 port, nor any IdP when
+  `railsEgress.enabled` is false (then the management tier has no 443 egress at
+  all, and sign-in would fail at discovery with the policy as the only clue).
+- For those cases set `networkPolicy.idpEgress` — the shape of
+  `networkPolicy.database` (`cidrs`, or `namespace` + `podSelector`, plus
+  `port`). It renders onto the pod that serves `/dash/v1` only: `-management`
+  when `management.enabled`, else `-server`; **never `-worker`, and not
+  `-server` once the tiers are split**. Peers are named destinations; there is
+  no wildcard form, so it does not reopen the metadata endpoint or the VPC at
+  large. `values.schema.json` refuses `0.0.0.0/0`, `::/0` and anything under
+  `169.254.`; it cannot tell a too-wide block such as `10.0.0.0/8` from a
+  right one. Empty (the default) renders nothing — it is "no extra peers", not
+  a switch.
+
+```yaml
+networkPolicy:
+  idpEgress:
+    cidrs: ["10.20.0.5/32"]              # a private-address IdP, or:
+    # namespace: keycloak                # an in-cluster one
+    # podSelector: { app.kubernetes.io/name: keycloak }
+    port: 8443                           # default 443
+```
+
+The dashboard's pods have no NetworkPolicy in this chart, so the browser-side
+redirect and the dashboard's own calls are unaffected by any of this.
+
 ## Postgres
 
 There is none in this chart, deliberately (step-6 decision (9)). `DATABASE_URL`
@@ -632,6 +680,9 @@ no HPA either — nothing has measured what would drive one.
 | `networkPolicy.database.cidrs`                        | `[]`                        | A managed instance's address                                                                                                                |
 | `networkPolicy.database.namespace` / `.podSelector`   | `""` / `{}`                 | An in-cluster one                                                                                                                           |
 | `networkPolicy.database.port`                         | `5432`                      |                                                                                                                                             |
+| `networkPolicy.idpEgress.cidrs`                       | `[]`                        | Extra peers for the staff SSO IdP, `/dash/v1` pod only; none needed for a public IdP on 443, see "Egress to the staff identity provider"    |
+| `networkPolicy.idpEgress.namespace` / `.podSelector`  | `""` / `{}`                 | An in-cluster IdP                                                                                                                           |
+| `networkPolicy.idpEgress.port`                        | `443`                       |                                                                                                                                             |
 | `networkPolicy.railsEgress.enabled`                   | `true`                      | Outbound HTTPS to the rails                                                                                                                 |
 | `networkPolicy.railsEgress.port`                      | `443`                       |                                                                                                                                             |
 | `networkPolicy.railsEgress.except`                    | RFC1918 + `169.254.0.0/16`  | Keeps the rule from reaching the VPC or the metadata endpoint                                                                               |
@@ -967,6 +1018,15 @@ helm-check` report that the guard "did not fire" and name it. See the
 
 ### What has NOT been verified — most of it
 
+- **`networkPolicy.idpEgress` (restored 2026-10-30, VPA-4) has never run in a
+  cluster, nor against a real identity provider.** It is the rule #383 deleted,
+  put back as it stood. `just helm-check` passes with it (Helm 3.19.0,
+  kubeconform: 68 resources valid), with `ci/values-full.yaml` setting both of
+  its shapes on the `-management` policy. Not checked: that the CNI enforces it,
+  and the `-server`-tier branch of `vpay.idpEgressRules` (management off):
+  every CI values file that turns `networkPolicy` on also turns `management` on,
+  so `just helm-check` never renders that branch (rendered by hand once, with
+  the rule on `-server` and on neither the worker nor the split `-server`).
 - **No cluster has ever run this.** Not a real one, not kind, not minikube.
   Step-6 decision (9) put a kind smoke test out of scope for this step, so
   nothing here says anything about scheduling, admission, or whether these

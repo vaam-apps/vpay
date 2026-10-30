@@ -57,8 +57,10 @@
     (`auth.methods` names `machine_tokens`).
   - [ADR-0036](0036-the-console-is-a-signed-message-under-a-paired-key.md)
     (#383; dated 2026-10-26, merged 2026-10-27) superseded ADR-0017 entirely. It deleted the staff OP,
-    the staff sessions and the PKCE client D9's staff design relies on. See
-    "Left to the maintainer" item 5.
+    the staff sessions and the PKCE client D9's staff design relies on.
+    VPA-3 (#390, merged 2026-10-30) and VPA-4 (#391) restored that sign-in,
+    SSO included, behind ADR-0037's `human_login` method, beside the console
+    keys. See "Left to the maintainer" item 5.
 
 - **Amends:** two conventions that are not ADRs but are pinned by tests and
   comments. "CrateStack lives in `vpay-db` and nowhere else" is unchanged,
@@ -323,12 +325,17 @@ tenancy-safe ledger read does.
   - The token endpoint stays on the business tier (ADR-0022 §2). The
     discovery routes mount on `mcp` pods too, so the loopback JWKS validator
     works there.
-- **Staff.** **Superseded when #383 merged on 2026-10-27, and not replaced.** The two bullets
-  below assume ADR-0017's staff OP. #383 (ADR-0036) deleted that OP: the
-  console now signs every `/dash/v1` request under a paired P-256 key, and no
-  staff token exists. They are kept as what was designed, not as a plan. How
-  a staff member's agent authenticates to `/dash/mcp/v1` is open ("Left to the
-  maintainer" item 5).
+- **Staff.** **Suspended from #383 (merged 2026-10-27) until VPA-3 (#390,
+  merged 2026-10-30).** The two bullets below assume ADR-0017's staff OP. #383
+  (ADR-0036) deleted it, and VPA-3 restored it behind `human_login`: where a
+  deployment serves that method, `/dash/v1/oauth/*`, staff sessions and the
+  per-request member re-read exist again; where it does not (vaam's
+  `[keypair]`), the console signs every `/dash/v1` request under a paired
+  P-256 key and no staff token exists. So the bullets describe a design that
+  can be built only on a `human_login` deployment. Nothing of it is built:
+  the restored OP has one authorization-code client (`dashboard_client`), not
+  the second one below. How a staff agent authenticates on a keypair-only
+  deployment is open ("Left to the maintainer" item 5).
   - A second staff OP client, a public PKCE client with loopback redirect
     URIs, mints `aud = <staff MCP resource>`.
   - The endpoint's `AuthProvider` performs every check
@@ -414,12 +421,13 @@ it:
    an OAuth authorization server, so either VP-4 keeps the OP for MCP, or
    this endpoint gets another one first. Removing the OP with nothing in its
    place would make `/mcp/v1` unusable, and no gate would notice.
-5. How the staff MCP endpoint authenticates, now that #383 (ADR-0036) has
-   deleted the staff OP D9 designed it on. MCP's specification expects an
-   OAuth bearer token, and ADR-0036's console signs messages under a paired
-   key and holds no token. Either a staff agent gets an OAuth client again,
-   for this endpoint alone, or the staff endpoint uses the paired-key
-   transport, which MCP clients do not speak today. ADR-0037 (2026-10-27)
-   says staff sign-in returns under `human_login` in VPA-3, which may be the
-   first of those; it is not built in this release. Nothing is built either
-   way.
+5. How the staff MCP endpoint authenticates. MCP's specification expects an
+   OAuth bearer token. **On a deployment that serves `human_login`**, the
+   staff OP D9 designed on exists again (VPA-3, #390, merged 2026-10-30, after
+   #383 had deleted it on 2026-10-27), so D9's second, public PKCE client is
+   a buildable design there. **On a keypair-only deployment** (vaam's), the
+   console signs messages under a paired key and holds no token, so either a
+   staff agent gets an OAuth client for this endpoint alone, or the endpoint
+   uses the paired-key transport, which MCP clients do not speak today.
+   Whether a staff MCP endpoint should exist only where `human_login` is
+   served is the decision. Nothing is built either way.

@@ -25,7 +25,8 @@ deployment:
 # until sealed webhooks, VP-8) — and every block belonging to a method it does
 # not permit must then go: boot refuses `jwks`, `grant_types` and
 # `allowed_audiences` without `machine_tokens`, `cose_keys`, `dashboard` and
-# `service_clients` without `keypair`, and `webhooks` without `hmac_webhooks`
+# `service_clients` without `keypair`, `webhooks` without `hmac_webhooks`, and
+# `staff_auth` and `dashboard_client` without `human_login`
 # (docs/reference/vpay-config.md, "`auth:`"). Not written here, on purpose:
 # writing it would turn this file's shipped behaviour off.
 #
@@ -428,7 +429,13 @@ checkout:
 #   # tenant; this field does not become a list.
 #   merchant_id: acme-cameroon
 #
-# Upgrading from before VP-6a: `dashboard_client` and `staff_auth` are refused
-# at boot even as a null. Delete the keys, then add `dashboard:` (above) and a
-# `service_clients:` entry (the example earlier in this file) to keep a console
+# A staff password sign-in is the `human_login` method (ADR-0037, VPA-3) and its
+# two blocks, `dashboard_client` and `staff_auth`, are accepted again: write BOTH
+# (and `${VAR}` placeholders for the pepper and the TOTP key) to serve it. Neither
+# is written here, so this file serves no sign-in, and one block without the other,
+# or either with `auth.methods` leaving `human_login` out, is refused at boot
+# (docs/flows/dashboard-auth/human-login.md). On a release cut between VP-6a and
+# VPA-3 both keys are refused even as a null; there, delete them but keep
+# `staff_auth.password_pepper` and `staff_auth.totp_encryption_key` (the secret
+# store): exported staff passwords and TOTP seeds never verify again without them
 # (docs/flows/dashboard-auth.md, "Upgrading from before VP-6a").

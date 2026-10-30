@@ -250,6 +250,23 @@ fn staff_config_path() -> &'static str {
     )
 }
 
+/// The configuration `vpay-server staff add` needs on a deployment that serves
+/// `human_login`: the two blocks of the method, so `staff add` mints a password.
+fn staff_config_human_login_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/staff-config-human-login.yml"
+    )
+}
+
+/// The management-only pod that serves `human_login`: see the fixture's header.
+fn serve_management_human_login_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/serve-management-human-login.yml"
+    )
+}
+
 /// A real RSA private key on disk, generated once per run of this test
 /// binary, standing in for the Kubernetes Secret mount `vpay-server` reads
 /// at boot.
@@ -2181,6 +2198,212 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
     });
 }
 
+/// `serve` on a **management-only** pod that serves `human_login`: the wiring
+/// only `serve` performs, which no integration harness reaches.
+///
+/// Three things are `main.rs`'s alone and each fails silently without this test.
+/// The pod must mount the OP's JWKS and discovery for its own session validator
+/// (`validates_tokens` in `vpay_api::router`, whose management-only term is
+/// the one a pod with no `business` surface depends on); the session validator
+/// must actually be installed (`ManagementEnvelope::with_staff_sessions`,
+/// without which an unsigned `/dash/v1` request reaches the scope step with
+/// nothing to validate a bearer against and answers `500`); and the sign-in is
+/// built from `staff_auth` or the boot is `78`.
+///
+/// **Proved by sabotage** (`docs/status/verification/2026-10-29-vpa3-staff-sign-in.md`,
+/// "Review round 1"): deleting the `with_staff_sessions` call in `main.rs` fails
+/// the `401` assertion with a `500`, and dropping the management term from
+/// `validates_tokens` fails the JWKS assertion with a `404`.
+#[test]
+fn a_management_pod_serving_human_login_mounts_its_jwks_and_session_validator() {
+    with_live_postgres(|database_url| {
+        let addr = free_addr();
+        let valid_key = totp_key(32);
+        let mut guard = spawn_logged(
+            bin()
+                .env("VPAY_BIND", addr.to_string())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_CONFIG", serve_management_human_login_path())
+                .env("VPAY_TEST_STAFF_TOTP_KEY", &valid_key)
+                .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                .env(
+                    "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                    envelope_next_key_path(),
+                ),
+        );
+        assert_eq!(
+            poll_healthz(&mut guard, addr, Duration::from_secs(10)),
+            Some(200),
+            "the management pod never became healthy on {addr}"
+        );
+
+        // The OP's key set and discovery, mounted for the pod's own validator.
+        for path in [
+            "/v1/oauth/jwks.json",
+            "/v1/oauth/.well-known/openid-configuration",
+        ] {
+            let (code, response) = http_request(addr, &get_request(path)).expect("the pod answers");
+            assert_eq!(
+                code, 200,
+                "a management pod that serves human_login mounts {path}: {response}"
+            );
+        }
+
+        // The sign-in is mounted: a POST with no body is refused for its body,
+        // not for its route.
+        let (code, response) = http_request(
+            addr,
+            "POST /dash/v1/staff/login HTTP/1.1\r\nHost: localhost\r\n\
+             Content-Type: application/x-www-form-urlencoded\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+        )
+        .expect("the pod answers");
+        assert_ne!(
+            code, 404,
+            "/dash/v1/staff/login is mounted when human_login is served: {response}"
+        );
+        assert!(
+            code < 500,
+            "an empty login is the caller's fault: {response}"
+        );
+
+        // An unsigned read reaches the scope step (the layer runs `Optional`) and
+        // is refused for want of a bearer, by the validator the pod installed.
+        let (code, response) = http_request(addr, &get_request("/dash/v1/payment_intents"))
+            .expect("the signed /dash/v1 surface answers");
+        assert_eq!(
+            code, 401,
+            "an unsigned /dash/v1 read is 401, not a 500 from a missing validator: {response}"
+        );
+        assert!(
+            response.contains("missing_bearer_token"),
+            "the refusal names the missing bearer: {response}"
+        );
+
+        // A pod that serves no business surface mints no machine token.
+        let (code, _) = http_request(
+            addr,
+            "POST /v1/oauth/token HTTP/1.1\r\nHost: localhost\r\nContent-Length: 0\r\n\
+             Connection: close\r\n\r\n",
+        )
+        .expect("the pod answers");
+        assert_eq!(code, 404, "/v1/oauth/token is the business surface's");
+        drop(guard);
+
+        // A TOTP key of 31 bytes is a secret this process cannot use: the boot
+        // stops, 78, naming the block, instead of logging and mounting a
+        // `/dash/v1` with no way in.
+        let output = bin()
+            .env("VPAY_BIND", free_addr().to_string())
+            .env("DATABASE_URL", &database_url)
+            .env("VPAY_CONFIG", serve_management_human_login_path())
+            .env("VPAY_TEST_STAFF_TOTP_KEY", totp_key(31))
+            .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+            .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+            .env(
+                "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                envelope_next_key_path(),
+            )
+            .output()
+            .expect("running `vpay-server`");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(output.status.code(), Some(78), "{stderr}");
+        assert!(
+            stderr.contains("staff_auth"),
+            "the refusal names the block: {stderr}"
+        );
+        assert!(
+            !stderr.contains(&totp_key(31)),
+            "the refusal never prints the key"
+        );
+    });
+}
+
+/// The same management pod with `staff_auth.sso` written: see the fixture's header.
+fn serve_management_staff_sso_path() -> &'static str {
+    concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/tests/fixtures/serve-management-staff-sso.yml"
+    )
+}
+
+/// `serve` offers staff SSO exactly when `staff_auth.sso` is written (VPA-4,
+/// ADR-0030, ADR-0037): the provider is built by `StaffLogin::from_config`, so the
+/// wiring is the one that ships and not a harness's copy of it.
+///
+/// Two boots of the same management pod, one with the block and one without. With
+/// it, `GET /dash/v1/staff/sso` says `enabled: true` and `start` is mounted (the
+/// provider's issuer is unreachable by design, so the refusal is the module's one
+/// `401` and not a `404`); without it, the status route says `enabled: false` and
+/// `start` is the honest `404`.
+///
+/// **Proved by sabotage** (`docs/status/verification/2026-10-30-vpa4-staff-sso.md`):
+/// leaving `sso: None` in `StaffLogin::from_config` fails the first boot's
+/// `enabled` assertion.
+#[test]
+fn a_management_pod_offers_staff_sso_exactly_when_the_block_is_written() {
+    with_live_postgres(|database_url| {
+        for (config, offered) in [
+            (serve_management_staff_sso_path(), true),
+            (serve_management_human_login_path(), false),
+        ] {
+            let addr = free_addr();
+            let mut guard = spawn_logged(
+                bin()
+                    .env("VPAY_BIND", addr.to_string())
+                    .env("DATABASE_URL", &database_url)
+                    .env("VPAY_CONFIG", config)
+                    .env("VPAY_TEST_STAFF_TOTP_KEY", totp_key(32))
+                    .env("VPAY_OAUTH_SIGNING_KEY_FILE", generated_key_path())
+                    .env("VPAY_ENVELOPE_SIGNING_KEY_FILE", envelope_key_path())
+                    .env(
+                        "VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE",
+                        envelope_next_key_path(),
+                    ),
+            );
+            assert_eq!(
+                poll_healthz(&mut guard, addr, Duration::from_secs(10)),
+                Some(200),
+                "the management pod never became healthy on {addr}"
+            );
+
+            let (code, response) =
+                http_request(addr, &get_request("/dash/v1/staff/sso")).expect("the pod answers");
+            assert_eq!(code, 200, "the status route is always mounted: {response}");
+            let expected = if offered {
+                "\"enabled\":true"
+            } else {
+                "\"enabled\":false"
+            };
+            assert!(
+                response.replace(' ', "").contains(expected),
+                "staff_auth.sso written is {offered}: {response}"
+            );
+
+            let (code, response) = http_request(
+                addr,
+                "POST /dash/v1/staff/sso/start HTTP/1.1\r\nHost: localhost\r\n\
+                 Content-Length: 0\r\nConnection: close\r\n\r\n",
+            )
+            .expect("the pod answers");
+            let expected_status = if offered { 401 } else { 404 };
+            assert_eq!(
+                code, expected_status,
+                "start with the block written is refused for the provider, without it for the \
+                 route: {response}"
+            );
+        }
+    });
+}
+
+/// `n` zero bytes as unpadded base64url, the encoding `staff_auth.totp_encryption_key`
+/// is read in.
+fn totp_key(n: usize) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(vec![0_u8; n])
+}
+
 // ------------------------------------------- `staff add` / `staff pair-key` (ADR-0036)
 
 /// `vpay-server staff add` creates a staff member and prints its id **on
@@ -2191,9 +2414,9 @@ fn sigterm_immediately_after_startup_still_triggers_graceful_shutdown() {
 /// the binary accepts the flags at all, that it needs no signing key and binds
 /// no listener, and that the id is pipeable (`staff pair-key --staff $(…)`).
 ///
-/// It writes **no credential** since VP-6a — no password, no TOTP seed, no
-/// session: the member reads `/dash/v1` once a console key is attached. So the
-/// only thing on stdout is an `stf_…` id, and the tracing subscriber — JSON on
+/// On this fixture (`staff-config.yml`: a `dashboard:` and no `human_login`
+/// blocks) it writes **no credential**: the member reads `/dash/v1` once a
+/// console key is attached. So the only thing on stdout is an `stf_…` id, and the tracing subscriber — JSON on
 /// stderr, shipped to a log aggregator — must not be where it goes: a
 /// subcommand's logs are on stderr (`install_process_defaults`), the server's
 /// on stdout where a container log collector reads them.
@@ -2254,6 +2477,193 @@ fn staff_add_creates_a_staff_member_and_prints_its_id_on_stdout() {
             );
         }
     });
+}
+
+/// Where `human_login` is served, `vpay-server staff add` also writes a password
+/// credential (`must_change`) and prints the generated one-time password **on
+/// stdout, alone**; where it is not (every other fixture here), it writes none
+/// and prints the id.
+///
+/// The subprocess half of `backends/tests/integration/tests/staff_sign_in.rs`,
+/// which exercises every line of this subcommand *except* the ones only a
+/// process has: that the binary accepts the flags at all, that it needs no
+/// signing key and binds no listener, and that the password does not go through
+/// the tracing subscriber, which is JSON on stderr and is shipped to a log
+/// aggregator.
+///
+/// **The first draft of this test, before VP-6a, found a real defect**: the
+/// password reached stdout correctly and the tracing subscriber defaulted to
+/// stdout too, so it arrived as the fifth line of a JSON log. `install_process_defaults`
+/// now points a *subcommand's* logs at stderr. Two decisive assertions, then:
+/// move the `println!` to `tracing::info!` and stdout is empty; put the
+/// subcommand's logs back on stdout and the line count is more than one.
+///
+/// The row is read back through the repository rather than inferred from the
+/// exit code, and the pair of members is the contrast: the same command, the
+/// same merchant, differing only in what `auth.methods` serves.
+#[test]
+fn staff_add_mints_a_one_time_password_only_where_human_login_is_served() {
+    with_live_postgres(|database_url| {
+        let add = |config: &str, email: &str| {
+            let output = bin()
+                .args([
+                    "staff",
+                    "add",
+                    "--merchant",
+                    "acme-cameroon-tenant",
+                    "--email",
+                    email,
+                    "--name",
+                    "Ada Lovelace",
+                ])
+                .env("VPAY_CONFIG", config)
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_LOG_FORMAT", "json")
+                // Deliberately NOT set: this subcommand must need no signing key.
+                .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+                .output()
+                .expect("running `vpay-server staff add`");
+            let stdout = String::from_utf8_lossy(&output.stdout).into_owned();
+            let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+            // Never stdout: where this command succeeds it is the one-time
+            // password, and an assertion message must not print a credential.
+            assert!(
+                output.status.success(),
+                "staff add exited {:?}\nstderr: {stderr}",
+                output.status.code()
+            );
+            (stdout, stderr)
+        };
+
+        let (stdout, stderr) = add(staff_config_human_login_path(), "served@example.test");
+        let lines: Vec<&str> = stdout.lines().filter(|line| !line.is_empty()).collect();
+        assert_eq!(
+            lines.len(),
+            1,
+            "the password must be alone on stdout so an operator can pipe it, got {} lines",
+            lines.len()
+        );
+        let issued = lines.first().expect("exactly one line, asserted above");
+        assert_eq!(
+            issued.len(),
+            26,
+            "26 characters of Crockford base32 is 130 bits"
+        );
+        assert!(
+            issued
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()),
+            "the alphabet is `vpay_core::ids`', so nothing in it can be misread off a terminal"
+        );
+        assert!(
+            !stderr.contains(issued),
+            "the password must NOT reach the tracing subscriber"
+        );
+        assert!(
+            stderr.contains("created a staff member") && stderr.contains("\"staff_id\":\"stf_"),
+            "the creation is logged with the id, without the password: {stderr}"
+        );
+
+        let (stdout, _stderr) = add(staff_config_path(), "unserved@example.test");
+        let line = stdout.trim();
+        assert!(
+            line.starts_with("stf_"),
+            "where human_login is not served the command prints the id: {stdout:?}"
+        );
+
+        let (served, unserved) = read_back_password_credentials(
+            &database_url,
+            "served@example.test",
+            "unserved@example.test",
+        );
+        assert_eq!(
+            served,
+            Some(true),
+            "the served member holds a password credential that must be replaced"
+        );
+        assert_eq!(
+            unserved, None,
+            "the unserved member holds no credential at all"
+        );
+    });
+}
+
+/// `staff add` loads the same configuration the server does, so a `staff_auth`
+/// block where `auth.methods` does not permit `human_login` is the boot
+/// refusal, `78`, naming the block: the command never mints a password for a
+/// sign-in nothing serves.
+#[test]
+fn staff_add_refuses_a_staff_auth_block_where_human_login_is_not_permitted() {
+    let output = bin()
+        .args([
+            "staff",
+            "add",
+            "--merchant",
+            "acme-cameroon-tenant",
+            "--email",
+            "ada@example.test",
+            "--name",
+            "Ada Lovelace",
+        ])
+        .env(
+            "VPAY_CONFIG",
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/staff-config-staff-auth-without-method.yml"
+            ),
+        )
+        .env_remove("DATABASE_URL")
+        .output()
+        .expect("running `vpay-server staff add`");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(output.status.code(), Some(78), "{stderr}");
+    assert!(
+        stderr.contains("staff_auth") && stderr.contains("human_login"),
+        "the refusal names the block and the method: {stderr}"
+    );
+}
+
+/// Reads whether each member holds a password credential, and if so whether it
+/// must be replaced, on a thread of its own (see [`read_back_two_members`]).
+fn read_back_password_credentials(
+    database_url: &str,
+    first: &str,
+    second: &str,
+) -> (Option<bool>, Option<bool>) {
+    let (database_url, first, second) =
+        (database_url.to_owned(), first.to_owned(), second.to_owned());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a tokio runtime on the reader thread");
+        rt.block_on(async move {
+            let repositories = vpay_db::connect(&database_url)
+                .await
+                .expect("connecting to read the rows back");
+            let find = |email: String| {
+                let repositories = repositories.clone();
+                async move {
+                    let member = vpay_db::Staff::find_by_email(repositories.as_ref(), &email)
+                        .await
+                        .expect("reading a row")
+                        .expect("the command wrote it");
+                    vpay_db::Credentials::find_for_staff_member(
+                        repositories.as_ref(),
+                        &member.id,
+                        vpay_db::CredentialKind::Password,
+                    )
+                    .await
+                    .expect("reading a credential")
+                    .map(|credential| credential.must_change)
+                }
+            };
+            (find(first).await, find(second).await)
+        })
+    })
+    .join()
+    .expect("the reader thread panicked")
 }
 
 /// **The admin flag defaults to non-admin, and `--admin` is the only way to
