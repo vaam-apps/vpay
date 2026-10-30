@@ -17,6 +17,8 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { stripComments } from "../testing/sources";
+
 import type { DashboardConfig } from "../config/settings";
 import { challengeFor } from "./pkce";
 import { completeAuthorizationCode, readAuthorizationResponse } from "./oauth";
@@ -235,9 +237,10 @@ describe("the token exchange", () => {
  * scope — appears in no source file of this app, so a refresh cannot be wired
  * in by a change that no test reads.
  *
- * The files that may *name* the words are this one and the doc comment in
- * `api.ts` that says there is no such field; both are listed with a reason,
- * and an allowance that matches nothing fails the scan.
+ * Comments are stripped before the scan, so a sentence saying "there is no
+ * refresh_token" (as `api.ts` has) is not a use. The one file that may name the
+ * words in code is this one, listed with its reason; an allowance that matches
+ * nothing fails the scan.
  */
 describe("no refresh grant anywhere in this app", () => {
   const SERVER_DIR = dirname(fileURLToPath(import.meta.url));
@@ -245,8 +248,6 @@ describe("no refresh grant anywhere in this app", () => {
   const FORBIDDEN = /refresh_token|offline_access|"refresh"/i;
   const ALLOWED: Readonly<Record<string, string>> = {
     "src/server/oauth.test.ts": "this scan, and the assertions above it",
-    "src/server/api.ts":
-      "a doc comment that says the token response has no refresh_token",
   };
 
   function sources(dir: string): string[] {
@@ -266,7 +267,9 @@ describe("no refresh grant anywhere in this app", () => {
     const found = [
       ...sources(join(APP_ROOT, "src")),
       ...sources(join(APP_ROOT, "app")),
-    ].filter((path) => FORBIDDEN.test(readFileSync(path, "utf8")));
+    ].filter((path) =>
+      FORBIDDEN.test(stripComments(readFileSync(path, "utf8"))),
+    );
     const relative = found
       .map((path) => path.slice(APP_ROOT.length + 1))
       .sort();

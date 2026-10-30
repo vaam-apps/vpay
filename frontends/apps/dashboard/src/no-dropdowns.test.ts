@@ -29,8 +29,8 @@
  *
  * # The allow-list
  *
- * Keyed by file, each entry with its reason, and an entry that matches nothing
- * fails the scan — an allowance outliving what it allowed is how a gate rots.
+ * Keyed by file and by the one pattern it may name, each entry with its
+ * reason, and an entry that matches nothing fails the scan — an allowance outliving what it allowed is how a gate rots.
  * The one entry is the payments filter's date range: `DatePickerContent` is a
  * popover at `sm` and above (a full-screen dialog below), it is not mounted by
  * any page (the read screens are a later ticket), and it is replaced by a
@@ -60,16 +60,33 @@ const PATTERNS: readonly { readonly name: string; readonly re: RegExp }[] = [
   },
 ];
 
-/** File -> why it may name a popup control. */
-const ALLOWED: Readonly<Record<string, string>> = {
-  "src/components/payments-filters.tsx":
-    "the date range is a popover at sm and above; no page mounts the payments filters until the read screens return, and a sheet replaces it then",
+/**
+ * File -> the one kind of control it may name, and why.
+ *
+ * The allowance is for a **pattern**, not for the file: a `<select>` added to
+ * an allow-listed file is still a `<select>`.
+ */
+const ALLOWED: Readonly<
+  Record<string, { readonly pattern: string; readonly reason: string }>
+> = {
+  "src/components/payments-filters.tsx": {
+    pattern: "a popup component",
+    reason:
+      "the date range is a popover at sm and above; no page mounts the payments filters until the read screens return, and a sheet replaces it then",
+  },
 };
+
+/** Every pattern a text trips. */
+export function violations(text: string): string[] {
+  const stripped = stripComments(text);
+  return PATTERNS.filter((pattern) => pattern.re.test(stripped)).map(
+    (pattern) => pattern.name,
+  );
+}
 
 /** The first pattern a text trips, or `null`. */
 export function violation(text: string): string | null {
-  const stripped = stripComments(text);
-  return PATTERNS.find((pattern) => pattern.re.test(stripped))?.name ?? null;
+  return violations(text)[0] ?? null;
 }
 
 describe("this app has no dropdown", () => {
@@ -89,26 +106,25 @@ describe("this app has no dropdown", () => {
   });
 
   it("finds no popup control outside the allow-list", () => {
-    const found = sources
-      .filter((source) => !(source.path in ALLOWED))
-      .flatMap((source) => {
-        const name = violation(source.text);
-        return name === null ? [] : [`${source.path}: ${name}`];
-      });
+    const found = sources.flatMap((source) =>
+      violations(source.text)
+        .filter((name) => ALLOWED[source.path]?.pattern !== name)
+        .map((name) => `${source.path}: ${name}`),
+    );
     expect(found).toEqual([]);
   });
 
   it("holds every allowance to a file that still needs it", () => {
-    for (const path of Object.keys(ALLOWED)) {
+    for (const [path, allowance] of Object.entries(ALLOWED)) {
       const source = sources.find((candidate) => candidate.path === path);
       expect(
         source,
         `${path} is allow-listed but does not exist`,
       ).toBeDefined();
       expect(
-        violation(source?.text ?? ""),
-        `${path} is allow-listed but names no popup control`,
-      ).not.toBeNull();
+        violations(source?.text ?? ""),
+        `${path} is allow-listed for "${allowance.pattern}" and no longer names it`,
+      ).toContain(allowance.pattern);
     }
   });
 });

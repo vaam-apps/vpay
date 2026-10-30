@@ -63,7 +63,9 @@ describe("the signed-out response", () => {
     const cookie = setCookie(signedOutResponse());
     expect(cookie).toMatch(/HttpOnly/i);
     expect(cookie).toMatch(/Secure/i);
-    expect(cookie).toMatch(/Path=\//i);
+    // Exactly `/`: a prefix match would also pass `Path=/signed-out`, a
+    // different cookie to the browser, which leaves the original in place.
+    expect(cookie).toMatch(/Path=\/(;|$)/i);
     expect(cookie).toMatch(/SameSite=Lax/i);
   });
 });

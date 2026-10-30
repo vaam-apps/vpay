@@ -128,6 +128,43 @@ describe("one question per screen", () => {
     expect(form.get("password")).toBe(" pw with spaces ");
   });
 
+  it("mounts a new field for each question, so a password manager sees a password field and not an email field changed in place", () => {
+    render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    const email = screen.getByLabelText("Work email");
+    toThePasswordStep();
+    expect(screen.getByLabelText("Password")).not.toBe(email);
+  });
+
+  it("never lets the browser submit the form itself — the answers are not in the DOM all at once", () => {
+    render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    type("Work email", "ada@acme.test");
+    const form = screen
+      .getByLabelText("Work email")
+      .closest("form") as HTMLFormElement;
+    // `fireEvent` answers `false` when a handler called `preventDefault`.
+    expect(fireEvent.submit(form)).toBe(false);
+  });
+
+  it("takes a password of spaces as an answer — it is not trimmed", () => {
+    render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    toThePasswordStep();
+    type("Password", "   ");
+    expect(screen.getByRole("button", { name: "Sign in" })).toBeEnabled();
+  });
+
+  it("tells a password manager which field is the account name and which the password", () => {
+    render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
+    expect(screen.getByLabelText("Work email")).toHaveAttribute(
+      "autocomplete",
+      "username",
+    );
+    toThePasswordStep();
+    expect(screen.getByLabelText("Password")).toHaveAttribute(
+      "autocomplete",
+      "current-password",
+    );
+  });
+
   it("keeps both answers when the person goes Back and forward again", () => {
     render(<SignInForm action={vi.fn(() => Promise.resolve(CLEAN))} />);
     toThePasswordStep();

@@ -71,7 +71,9 @@ vi.mock("next/navigation", () => ({
 
 /**
  * Exactly plan §7 row 5's list, as `frontends/packages/ui/src/testing/axe.ts`
- * spells it — **plus `select-name`, 2026-09-12**.
+ * spells it — **plus `aria-dialog-name`, 2026-10-30 (VPA-5a)**: the key sheet
+ * is a dialog, and with an empty title the rules above passed it; the
+ * accessible name of a dialog is its own rule — **and `select-name`, 2026-09-12**.
  *
  * That addition is a hole being closed, not a rule being collected.
  * axe-core 4.13's `label` rule has the selector `input, textarea`: a
@@ -96,6 +98,7 @@ const STRUCTURAL_RULES = [
   "aria-valid-attr",
   "aria-valid-attr-value",
   "aria-command-name",
+  "aria-dialog-name",
   "region",
   "list",
   "listitem",

@@ -36,6 +36,12 @@ describe("the pending enrolment cookie", () => {
       encodeURIComponent(JSON.stringify({ otpauth: PENDING.otpauth })),
     ],
     [
+      "an empty sealed half",
+      encodeURIComponent(
+        JSON.stringify({ sealed: "", otpauth: PENDING.otpauth }),
+      ),
+    ],
+    [
       "missing the URI",
       encodeURIComponent(JSON.stringify({ sealed: PENDING.sealed })),
     ],
