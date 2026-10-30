@@ -3425,6 +3425,7 @@ mod tests {
             staff_auth: None,
             routing: Default::default(),
             auth: Default::default(),
+            privacy: vpay_config::PrivacyConfig::default(),
         })
         .expect("the fixture's rails project onto the port")
     }

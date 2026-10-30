@@ -203,6 +203,7 @@ pub(crate) fn config_with(public_base_url: &str, merchants: Vec<MerchantClient>)
         staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
+        privacy: vpay_config::PrivacyConfig::default(),
     }
 }
 

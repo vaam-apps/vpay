@@ -269,7 +269,7 @@ merchant_clients:
     # `SCOPE_PAYMENTS_READ`; nothing validates this list against them at
     # boot, so a typo here is a 403 at runtime rather than a refusal to
     # start.
-    scopes: [payments:write]
+    scopes: [payments:write, account_holders:read]
     # Must contain "vpay:v1" — `vpay_config::MERCHANT_AUDIENCE`, the `aud`
     # `vpay_api::resource_auth::Surface::Merchant` requires on every `/v1`
     # token. This said `vpay` until 2026-09-02, which would have booted fine
@@ -439,3 +439,11 @@ checkout:
 # `staff_auth.password_pepper` and `staff_auth.totp_encryption_key` (the secret
 # store): exported staff passwords and TOTP seeds never verify again without them
 # (docs/flows/dashboard-auth.md, "Upgrading from before VP-6a").
+
+# Privacy controls and account-holder lookup configuration (ADR-0020).
+# Provisional pending RFC-0002 D3 and D6. See PR #56/152.
+privacy:
+  lookup_audit_salt: "local-dev-lookup-salt"
+  lookup_rate_limit:
+    attempts: 10
+    window_seconds: 60

@@ -99,7 +99,7 @@ pub enum CredentialKind {
 ///
 /// Inserted into request extensions beside [`MerchantScope`] during the scope
 /// step (`envelope::scope`), and extracted by handlers that enforce per-credential
-/// controls such as rate limits.
+/// controls such as rate limits or scope checks.
 ///
 /// Provisional pending RFC-0002 D6: the credential identity is the
 /// signing-key thumbprint for signed requests and `client_id` for machine tokens.
@@ -108,22 +108,25 @@ pub enum CredentialKind {
 pub struct CallerCredential {
     kind: CredentialKind,
     id: String,
+    scopes: Vec<String>,
 }
 
 impl CallerCredential {
     /// Provisional pending RFC-0002 D6: minted for a verified COSE signer.
-    pub(crate) fn for_signer(thumbprint_hex: String) -> Self {
+    pub(crate) fn for_signer(thumbprint_hex: String, scopes: Vec<String>) -> Self {
         Self {
             kind: CredentialKind::Signer,
             id: thumbprint_hex,
+            scopes,
         }
     }
 
     /// Provisional pending RFC-0002 D6: minted for a verified machine bearer token.
-    pub(crate) fn for_machine_token(client_id: String) -> Self {
+    pub(crate) fn for_machine_token(client_id: String, scopes: Vec<String>) -> Self {
         Self {
             kind: CredentialKind::MachineToken,
             id: client_id,
+            scopes,
         }
     }
 
@@ -138,6 +141,18 @@ impl CallerCredential {
     #[must_use]
     pub fn id(&self) -> &str {
         &self.id
+    }
+
+    /// The scopes granted to this credential.
+    #[must_use]
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
+    }
+
+    /// Returns `true` if this credential was granted the given scope.
+    #[must_use]
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|held| held == scope)
     }
 }
 
@@ -273,11 +288,10 @@ pub(crate) async fn merchant_scope(
     }
 
     tracing::Span::current().record(AUTH_METHOD_FIELD, AUTH_METHOD_KEYPAIR);
-    parts
-        .extensions
-        .insert(CallerCredential::for_signer(hex::encode(
-            signer.thumbprint(),
-        )));
+    parts.extensions.insert(CallerCredential::for_signer(
+        hex::encode(signer.thumbprint()),
+        merchant.scopes.clone(),
+    ));
     parts
         .extensions
         .insert(MerchantScope::for_signed(merchant.merchant_id));
@@ -366,10 +380,23 @@ async fn token_scope(
         return ApiError::Forbidden.into_response();
     }
 
+    let token_scopes: Vec<String> = state
+        .resource_config
+        .scopes_for_client(&claims.subject)
+        .map(|granted| {
+            granted
+                .iter()
+                .filter(|scope| claims.has_scope(scope))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
     tracing::Span::current().record(AUTH_METHOD_FIELD, AUTH_METHOD_MACHINE_TOKEN);
-    parts
-        .extensions
-        .insert(CallerCredential::for_machine_token(claims.subject.clone()));
+    parts.extensions.insert(CallerCredential::for_machine_token(
+        claims.subject.clone(),
+        token_scopes,
+    ));
     parts.extensions.insert(claims);
     parts.extensions.insert(scope);
     next.run(Request::from_parts(parts, body)).await
@@ -403,7 +430,10 @@ mod tests {
     #[tokio::test]
     async fn caller_credential_extraction_succeeds_for_signer() {
         let thumbprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        let cred = CallerCredential::for_signer(thumbprint.to_owned());
+        let cred = CallerCredential::for_signer(
+            thumbprint.to_owned(),
+            vec!["payments:write".to_owned()],
+        );
         let mut req = Request::builder().body(()).unwrap();
         req.extensions_mut().insert(cred.clone());
         let (mut parts, ()) = req.into_parts();
@@ -412,13 +442,18 @@ mod tests {
             .expect("extraction must succeed");
         assert_eq!(extracted.kind(), CredentialKind::Signer);
         assert_eq!(extracted.id(), thumbprint);
+        assert!(extracted.has_scope("payments:write"));
+        assert!(!extracted.has_scope("account_holders:read"));
         assert_eq!(extracted, cred);
     }
 
     #[tokio::test]
     async fn caller_credential_extraction_succeeds_for_machine_token() {
         let client_id = "acme-test-client";
-        let cred = CallerCredential::for_machine_token(client_id.to_owned());
+        let cred = CallerCredential::for_machine_token(
+            client_id.to_owned(),
+            vec!["payments:read".to_owned()],
+        );
         let mut req = Request::builder().body(()).unwrap();
         req.extensions_mut().insert(cred.clone());
         let (mut parts, ()) = req.into_parts();
@@ -427,6 +462,8 @@ mod tests {
             .expect("extraction must succeed");
         assert_eq!(extracted.kind(), CredentialKind::MachineToken);
         assert_eq!(extracted.id(), client_id);
+        assert!(extracted.has_scope("payments:read"));
+        assert!(!extracted.has_scope("payments:write"));
         assert_eq!(extracted, cred);
     }
 }

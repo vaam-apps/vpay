@@ -83,7 +83,7 @@ use support::sealed::SealedHttp;
 
 use support::{
     adapters_by_code, ensure_crypto_provider_installed, generate_key, merchant_client,
-    migrated_postgres, serve, serve_with_adapters,
+    merchant_client_with_scopes, migrated_postgres, serve, serve_with_adapters,
 };
 
 /// The merchant every test acts as, and the tenant it acts for. Never the
@@ -195,6 +195,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         auth: Default::default(),
     }
@@ -2198,10 +2199,10 @@ impl RailHarness {
         self.post(path, body, &key).await
     }
 
-    async fn post(&self, path: &str, body: &str, key: &str) -> anyhow::Result<Answer> {
+    async fn post_as(&self, client_id: &str, path: &str, body: &str, key: &str) -> anyhow::Result<Answer> {
         let response = SealedHttp::new()
             .post(self.url(path))
-            .signed_by(CLIENT_A)
+            .signed_by(client_id)
             .header("Idempotency-Key", key)
             .header("content-type", "application/x-www-form-urlencoded")
             .body(body.to_owned())
@@ -2211,6 +2212,28 @@ impl RailHarness {
         let status = response.status().as_u16();
         let body = response.json().await.context("a JSON body")?;
         Ok(Answer { status, body })
+    }
+
+    async fn post(&self, path: &str, body: &str, key: &str) -> anyhow::Result<Answer> {
+        self.post_as(CLIENT_A, path, body, key).await
+    }
+
+    async fn create_refund_as(
+        &self,
+        client_id: &str,
+        intent_id: &str,
+        amount: Option<i64>,
+        payee: &str,
+    ) -> anyhow::Result<Answer> {
+        let amount = amount.map_or_else(String::new, |amount| format!("&amount={amount}"));
+        let key = format!("w3routes-{}", uuid::Uuid::new_v4());
+        self.post_as(
+            client_id,
+            "/v1/refunds",
+            &format!("payment_intent={intent_id}{amount}&destination[{RAIL}][msisdn]={payee}"),
+            &key,
+        )
+        .await
     }
 
     async fn get_json(&self, path: &str) -> anyhow::Result<Answer> {
@@ -2298,7 +2321,13 @@ fn mappings_dir(rail: &str) -> std::path::PathBuf {
 /// refund is a declared `NotImplemented` token, so a refund on that rail must
 /// be answered without a socket being opened. A test that passed because a
 /// stub said no would be measuring the stub.
-fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
+fn rail_config(
+    base_url: &str,
+    mtn_url: &str,
+    jwks_a: Value,
+    jwks_b: Value,
+    privacy: vpay_config::PrivacyConfig,
+) -> Config {
     Config {
         deployment: Deployment {
             name: "refunds-rails".to_owned(),
@@ -2372,7 +2401,15 @@ fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
             exponent: 0,
         }],
         merchant_clients: vec![
-            merchant_client(CLIENT_A, MERCHANT_A, jwks_a),
+            merchant_client_with_scopes(
+                CLIENT_A,
+                MERCHANT_A,
+                jwks_a,
+                &[
+                    vpay_api::SCOPE_PAYMENTS_WRITE,
+                    vpay_api::SCOPE_ACCOUNT_HOLDERS_READ,
+                ],
+            ),
             merchant_client(CLIENT_B, MERCHANT_B, jwks_b),
         ],
         webhooks: vpay_config::WebhookPolicy::default(),
@@ -2381,12 +2418,15 @@ fn rail_config(base_url: &str, mtn_url: &str, jwks_a: Value, jwks_b: Value) -> C
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy,
         routing: Default::default(),
         auth: Default::default(),
     }
 }
 
-async fn rail_harness() -> anyhow::Result<RailHarness> {
+async fn rail_harness_with_privacy(
+    privacy: vpay_config::PrivacyConfig,
+) -> anyhow::Result<RailHarness> {
     ensure_crypto_provider_installed();
 
     let (container, repositories, pool) = migrated_postgres().await?;
@@ -2405,8 +2445,14 @@ async fn rail_harness() -> anyhow::Result<RailHarness> {
     let (_pem_b, jwks_b) = generate_key();
 
     let mtn_url = mtn_origin.clone();
-    let served = serve(&repositories, &server_pem, |base_url| {
-        rail_config(base_url, &mtn_url, jwks_a, jwks_b)
+    let served = serve(&repositories, &server_pem, move |base_url| {
+        rail_config(
+            base_url,
+            &mtn_url,
+            jwks_a.clone(),
+            jwks_b.clone(),
+            privacy.clone(),
+        )
     })
     .await?;
 
@@ -2419,6 +2465,28 @@ async fn rail_harness() -> anyhow::Result<RailHarness> {
         base_url: served.base_url,
         origin_refunds: Arc::new(Mutex::new(Vec::new())),
     })
+}
+
+async fn rail_harness() -> anyhow::Result<RailHarness> {
+    rail_harness_with_privacy(vpay_config::PrivacyConfig {
+        lookup_audit_salt: Some("refunds-audit-salt".to_owned()),
+        lookup_rate_limit: None,
+    })
+    .await
+}
+
+async fn rail_harness_with_rate_limit(
+    limit: u32,
+    window_seconds: u32,
+) -> anyhow::Result<RailHarness> {
+    rail_harness_with_privacy(vpay_config::PrivacyConfig {
+        lookup_audit_salt: Some("refunds-audit-salt".to_owned()),
+        lookup_rate_limit: Some(vpay_config::RateLimitPolicy {
+            attempts: limit,
+            window_seconds,
+        }),
+    })
+    .await
 }
 
 // ------------------------------------------------------- the Origin rail --
@@ -2577,6 +2645,7 @@ fn origin_config(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         auth: Default::default(),
     }
@@ -3057,6 +3126,79 @@ async fn the_customer_filter_goes_through_the_intent_and_is_not_an_oracle() -> a
     assert!(deleted.deleted);
     let (ids, _) = page(format!("customer={x}")).await?;
     assert_eq!(ids, vec![rx1b, rx2, rx1a]);
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Issue #56 / ADR-0037: A refund nominating a payee requires `account_holders:read`.
+/// A caller with only `payments:write` (CLIENT_B) is refused 403 Forbidden.
+#[tokio::test]
+async fn a_nominated_payee_refund_without_account_holders_read_is_refused_403() -> anyhow::Result<()> {
+    let harness = rail_harness().await?;
+    let intent_id = harness.captured_intent_for(MERCHANT_B, AMOUNT).await?;
+
+    // CLIENT_B only has payments:write
+    let response = harness
+        .create_refund_as(CLIENT_B, &intent_id, Some(1000), UNREGISTERED_PAYEE)
+        .await?;
+    assert_eq!(
+        response.status, 403,
+        "nominated payee refund without account_holders:read must be 403: {:#}",
+        response.body
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// Test 56-3: A nominated payee refund spends the exact same lookup rate limit budget (inside `ask_rail`).
+#[tokio::test]
+async fn a_nominated_payee_refund_spends_the_lookup_rate_limit_budget() -> anyhow::Result<()> {
+    let harness = rail_harness_with_rate_limit(1, 60).await?;
+    let intent_1 = harness.captured_intent(AMOUNT).await?;
+    let intent_2 = harness.captured_intent(AMOUNT).await?;
+
+    // First refund with nominated payee spends the 1 attempt; reaches rail check and fails 400 (unregistered payee)
+    let response1 = harness
+        .create_refund(&intent_1, Some(1000), UNREGISTERED_PAYEE)
+        .await?;
+    assert_eq!(
+        response1.status, 400,
+        "1st attempt passes rate limit: {:#}",
+        response1.body
+    );
+    assert_eq!(
+        response1
+            .body
+            .pointer("/error/param")
+            .and_then(Value::as_str),
+        Some("destination")
+    );
+
+    // Second refund with nominated payee hits the rate limit (429) inside ask_rail!
+    let response2 = harness
+        .create_refund(&intent_2, Some(1000), UNREGISTERED_PAYEE)
+        .await?;
+    assert_eq!(
+        response2.status, 429,
+        "2nd attempt must be rate limited by lookup budget: {:#}",
+        response2.body
+    );
+    assert_eq!(
+        response2
+            .body
+            .pointer("/error/type")
+            .and_then(Value::as_str),
+        Some("rate_limit_error")
+    );
+    assert_eq!(
+        response2
+            .body
+            .pointer("/error/code")
+            .and_then(Value::as_str),
+        Some("rate_limit")
+    );
 
     harness.shutdown().await;
     Ok(())

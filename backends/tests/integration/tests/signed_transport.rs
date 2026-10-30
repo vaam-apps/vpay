@@ -88,6 +88,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         // `keypair` alone: this suite is about `Required`, where an unsigned
         // request, a bearer token and a replay are one coarse `401`. The default

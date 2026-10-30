@@ -78,6 +78,15 @@ use crate::error::{DbError, classify_write};
 /// `rate_limit_windows_window_idx`.
 const SWEEP_BATCH: i64 = 32;
 
+/// The outcome of counting one attempt against a rate limit window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
+pub struct RateLimitOutcome {
+    /// Attempts in the current window, including the attempt just counted.
+    pub attempts: i64,
+    /// When the current fixed window started.
+    pub window_started_at: OffsetDateTime,
+}
+
 /// Count one attempt against one key and learn where it lands in the window.
 ///
 /// One method, deliberately: see the module header for why there is no read
@@ -111,7 +120,7 @@ pub trait RateLimits {
         scope: &str,
         window: Duration,
         now: OffsetDateTime,
-    ) -> Result<i64, DbError>;
+    ) -> Result<RateLimitOutcome, DbError>;
 }
 
 #[async_trait]
@@ -122,7 +131,7 @@ impl RateLimits for crate::repository::PgRepositories {
         scope: &str,
         window: Duration,
         now: OffsetDateTime,
-    ) -> Result<i64, DbError> {
+    ) -> Result<RateLimitOutcome, DbError> {
         // `now - window` is the horizon: a window that opened at or before it
         // has elapsed. Computed here, from the caller's `now`, rather than
         // from the database's `now()` — every other bound in this design
@@ -131,7 +140,7 @@ impl RateLimits for crate::repository::PgRepositories {
         // compare one process's instant against another's.
         let horizon = now.saturating_sub(window);
 
-        sqlx::query_scalar::<_, i64>(COUNT_ATTEMPT)
+        sqlx::query_as::<_, RateLimitOutcome>(COUNT_ATTEMPT)
             .bind(id)
             .bind(scope)
             .bind(now)
@@ -176,7 +185,7 @@ const COUNT_ATTEMPT: &str = "WITH swept AS ( \
                      WHEN rate_limit_windows.window_started_at <= $4 THEN 1 \
                      ELSE rate_limit_windows.attempts + 1 END, \
                  updated_at = $3 \
-             RETURNING attempts";
+             RETURNING attempts, window_started_at";
 
 #[cfg(test)]
 mod tests {

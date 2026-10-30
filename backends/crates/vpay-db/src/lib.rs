@@ -193,7 +193,7 @@ pub use credentials::{CredentialKind, CredentialRow, Credentials, NewCredential}
 pub use persistence::PersistenceError;
 pub use pool::{MAX_CONNECTIONS, connect, connect_lazy};
 pub use provider_requests::ProviderRequests;
-pub use rate_limits::RateLimits;
+pub use rate_limits::{RateLimitOutcome, RateLimits};
 pub use refunds::{
     CancelOutcome, CancelRefusal, NewRefund, RefundListPage, RefundRow, Refunds, SettledRefund,
 };

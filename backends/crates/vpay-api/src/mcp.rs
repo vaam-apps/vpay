@@ -37,6 +37,7 @@ use vpay_db::{
 };
 use vpay_provider::ProviderAdapter;
 
+use crate::envelope::CallerCredential;
 use crate::error::ApiError;
 use crate::resource_auth::{AuthRejection, JwtValidator};
 use crate::v1::payment_intents::{self, PostRequest};
@@ -73,6 +74,13 @@ impl MerchantOps {
     }
 
     async fn run(&self, call: MerchantCall) -> Result<Response, ApiError> {
+        let caller = CallerCredential::for_machine_token(
+            format!("mcp:{}", call.merchant_id),
+            vec![
+                v1::SCOPE_PAYMENTS_WRITE.to_owned(),
+                v1::SCOPE_PAYMENTS_READ.to_owned(),
+            ],
+        );
         let scope = MerchantScope::for_mcp(call.merchant_id);
         let tool = call.operation.tool_name();
         let repositories = self.repositories.as_ref();
@@ -127,7 +135,15 @@ impl MerchantOps {
                 request,
             } => {
                 let post = PostRequest::for_tool(&idempotency_key, tool, refund_params(request))?;
-                refunds::create_with(repositories, &self.config, &self.adapters, &scope, post).await
+                refunds::create_with(
+                    repositories,
+                    &self.config,
+                    &self.adapters,
+                    &caller,
+                    &scope,
+                    post,
+                )
+                .await
             }
             MerchantOperation::CancelRefund {
                 idempotency_key,

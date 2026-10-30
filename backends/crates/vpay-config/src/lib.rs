@@ -31,8 +31,8 @@ pub use cli::{
 };
 pub use config::{
     CallbackRegistration, CallbackVerification, CheckoutConfig, Config, CurrencyEntry,
-    ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits, Routing,
-    RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
+    PrivacyConfig, ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits,
+    Routing, RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use console::{Dashboard, ServiceCapability, ServiceClient};
 pub use oauth::{

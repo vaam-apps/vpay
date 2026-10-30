@@ -138,6 +138,10 @@ pub const SCOPE_PAYMENTS_WRITE: &str = "payments:write";
 /// registration would be a trap with no security value.
 pub const SCOPE_PAYMENTS_READ: &str = "payments:read";
 
+/// The scope a token or signed request must carry to lookup account holders under `/v1`
+/// (issue #56, ADR-0020 §5).
+pub const SCOPE_ACCOUNT_HOLDERS_READ: &str = "account_holders:read";
+
 /// Which scopes satisfy a request by its method: *any one* of the returned
 /// scopes is enough.
 ///
@@ -172,6 +176,14 @@ pub const V1_NEST: &str = "/v1";
 #[must_use]
 pub fn default_payment_scopes(method: &Method) -> &'static [&'static str] {
     required_scopes(method)
+}
+
+/// The scope policy for `/v1/account_holders` (ADR-0020 §5).
+///
+/// Requires `account_holders:read` for GET (issue #56).
+#[must_use]
+pub fn account_holders_read_scope(_method: &Method) -> &'static [&'static str] {
+    &[SCOPE_ACCOUNT_HOLDERS_READ]
 }
 
 /// The scopes a request needs for a matched route template and method, or `None`.
@@ -272,7 +284,7 @@ pub const V1_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/account_holders",
         methods: &["GET"],
-        scopes: default_payment_scopes,
+        scopes: account_holders_read_scope,
         mount: || get(account_holders::retrieve),
     },
     V1Route {
@@ -912,6 +924,8 @@ pub struct ResourceConfig {
     /// common case — a merchant that never pays an invoice through vpay — is
     /// an absence rather than a pair of `None`s.
     invoice_urls_by_merchant_id: BTreeMap<String, InvoiceUrlDefaults>,
+    /// Privacy controls (ADR-0020, provisional pending RFC-0002 D3/D6).
+    privacy: vpay_config::PrivacyConfig,
 }
 
 /// One tenant's default forwarding URLs for `POST /v1/invoices/{id}/pay`,
@@ -1134,6 +1148,7 @@ impl ResourceConfig {
             invoice_urls_by_merchant_id,
             routing_weights: config.routing.weights(),
             auth_methods,
+            privacy: config.privacy.clone(),
         })
     }
 
@@ -1217,6 +1232,24 @@ impl ResourceConfig {
                 .scopes_by_client_id
                 .get(&claims.subject)
                 .is_some_and(|granted| granted.iter().any(|held| held == scope))
+    }
+
+    /// The scopes granted to a client_id by current YAML configuration.
+    #[must_use]
+    pub fn scopes_for_client(&self, client_id: &str) -> Option<&[String]> {
+        self.scopes_by_client_id.get(client_id).map(Vec::as_slice)
+    }
+
+    /// The salt used to HMAC-SHA256 account-holder lookup phone numbers in audit logs.
+    #[must_use]
+    pub fn lookup_audit_salt(&self) -> Option<&str> {
+        self.privacy.lookup_audit_salt.as_deref()
+    }
+
+    /// The rate limit policy for account-holder lookups.
+    #[must_use]
+    pub fn lookup_rate_limit(&self) -> Option<vpay_config::RateLimitPolicy> {
+        self.privacy.lookup_rate_limit
     }
 
     /// This tenant's configured default forwarding URLs for
@@ -1517,6 +1550,7 @@ mod tests {
             service_clients: Vec::new(),
             routing: Default::default(),
             auth: Default::default(),
+            privacy: vpay_config::PrivacyConfig::default(),
         }
     }
 

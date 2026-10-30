@@ -68,6 +68,14 @@ use support::{
 const CLIENT_A: &str = "acme-cameroon";
 const MERCHANT_A: &str = "acme-cameroon-tenant";
 
+const CLIENT_B: &str = "acme-douala";
+const MERCHANT_B: &str = "acme-douala-tenant";
+
+const CLIENT_READ_ONLY: &str = "acme-no-lookup";
+const MERCHANT_READ_ONLY: &str = "acme-no-lookup-tenant";
+
+const AUDIT_SALT: &str = "integration-test-audit-salt";
+
 /// The rail that declares `supports_account_holder_lookup` and implements it.
 const PUSH_RAIL: &str = "mtn_momo";
 /// The rail that declares it `false` and inherits the port's `Unsupported`.
@@ -104,6 +112,7 @@ struct Harness {
     _mtn: ContainerAsync<GenericImage>,
     server: tokio::task::JoinHandle<()>,
     base_url: String,
+    pool: sqlx::PgPool,
 }
 
 impl Harness {
@@ -132,10 +141,14 @@ fn plain_http() -> reqwest::Client {
         .expect("a plain reqwest client builds")
 }
 
-/// Two rails, one merchant, one currency — shaped exactly like
-/// `config/application.yml`'s, including the settings and credentials keys
-/// `vpay_config`'s `REQUIRED_RAIL_KEYS` insists on.
-fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
+fn config_with(
+    base_url: &str,
+    mtn_url: &str,
+    jwks_a: Value,
+    privacy: vpay_config::PrivacyConfig,
+) -> Config {
+    let (_pem_b, jwks_b) = generate_key();
+    let (_pem_ro, jwks_ro) = generate_key();
     Config {
         deployment: Deployment {
             name: "account-holders".to_owned(),
@@ -170,11 +183,6 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
                 display_name: None,
                 callbacks: None,
             },
-            // Pointed at nothing, deliberately: no case here reaches it over
-            // the network, because the capability check refuses the request
-            // before a rail call — which is what `ADR-0002` asks the core to
-            // do, and what the refusal case below proves by the *absence* of
-            // a connection failure.
             ProviderHost {
                 code: REDIRECT_RAIL.to_owned(),
                 enabled: true,
@@ -201,19 +209,30 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
             code: "XAF".to_owned(),
             exponent: 0,
         }],
-        // **`payments:read`, not `payments:write`.** This is a `GET`, and
-        // `required_scopes` says a read scope is enough for one — asserting it
-        // with the write scope would leave the route's actual authorisation
-        // untested, and a read-only credential is exactly what a merchant
-        // would issue to the thing that checks nominated destinations. (A
-        // bearer token carried its scope until VP-3; a signed request's scopes
-        // are its registration's.)
-        merchant_clients: vec![merchant_client_with_scopes(
-            CLIENT_A,
-            MERCHANT_A,
-            jwks_a,
-            &[vpay_api::SCOPE_PAYMENTS_READ],
-        )],
+        merchant_clients: vec![
+            merchant_client_with_scopes(
+                CLIENT_A,
+                MERCHANT_A,
+                jwks_a,
+                &[
+                    vpay_api::SCOPE_PAYMENTS_READ,
+                    vpay_api::SCOPE_ACCOUNT_HOLDERS_READ,
+                ],
+            ),
+            merchant_client_with_scopes(
+                CLIENT_B,
+                MERCHANT_B,
+                jwks_b,
+                &[vpay_api::SCOPE_ACCOUNT_HOLDERS_READ],
+            ),
+            merchant_client_with_scopes(
+                CLIENT_READ_ONLY,
+                MERCHANT_READ_ONLY,
+                jwks_ro,
+                &[vpay_api::SCOPE_PAYMENTS_READ],
+            ),
+        ],
+        privacy,
         webhooks: vpay_config::WebhookPolicy::default(),
         checkout: vpay_config::CheckoutConfig::default(),
         dashboard: None,
@@ -225,16 +244,20 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
     }
 }
 
-/// Boots Postgres, the MTN stub, and a server wired to both rails.
-///
-/// `mtn_url` is a parameter so the one case that needs an **unreachable**
-/// MTN can boot the same deployment pointed at a dead port — same rail, same
-/// route, one wrong value, which is how it happens in production on the day
-/// a host moves.
-async fn harness_with_mtn_at(mtn_url: Option<&str>) -> anyhow::Result<Harness> {
+fn default_privacy() -> vpay_config::PrivacyConfig {
+    vpay_config::PrivacyConfig {
+        lookup_audit_salt: Some(AUDIT_SALT.to_owned()),
+        lookup_rate_limit: None,
+    }
+}
+
+async fn harness_configured(
+    mtn_url: Option<&str>,
+    privacy: vpay_config::PrivacyConfig,
+) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
 
-    let (postgres, repositories, _pool) = migrated_postgres().await?;
+    let (postgres, repositories, pool) = migrated_postgres().await?;
 
     let mtn = vpay_testkit::containers::start_wiremock(&mappings_dir("mtn"))
         .await
@@ -250,8 +273,8 @@ async fn harness_with_mtn_at(mtn_url: Option<&str>) -> anyhow::Result<Harness> {
     let (server_pem, _server_jwks) = generate_key();
     let (_pem_a, jwks_a) = generate_key();
 
-    let served = serve(&repositories, &server_pem, |base_url| {
-        config_with(base_url, &configured, jwks_a)
+    let served = serve(&repositories, &server_pem, move |base_url| {
+        config_with(base_url, &configured, jwks_a.clone(), privacy.clone())
     })
     .await?;
 
@@ -260,7 +283,23 @@ async fn harness_with_mtn_at(mtn_url: Option<&str>) -> anyhow::Result<Harness> {
         _mtn: mtn,
         server: served.server,
         base_url: served.base_url,
+        pool,
     })
+}
+
+async fn harness_with_rate_limit(limit: u32, window_seconds: u32) -> anyhow::Result<Harness> {
+    let privacy = vpay_config::PrivacyConfig {
+        lookup_audit_salt: Some(AUDIT_SALT.to_owned()),
+        lookup_rate_limit: Some(vpay_config::RateLimitPolicy {
+            attempts: limit,
+            window_seconds,
+        }),
+    };
+    harness_configured(None, privacy).await
+}
+
+async fn harness_with_mtn_at(mtn_url: Option<&str>) -> anyhow::Result<Harness> {
+    harness_configured(mtn_url, default_privacy()).await
 }
 
 async fn harness() -> anyhow::Result<Harness> {
@@ -269,16 +308,36 @@ async fn harness() -> anyhow::Result<Harness> {
 
 /// One lookup, as a merchant's backend makes it.
 async fn lookup(h: &Harness, msisdn: &str, rail: &str) -> anyhow::Result<(u16, Value)> {
+    lookup_as(h, CLIENT_A, msisdn, rail).await
+}
+
+async fn lookup_as(
+    h: &Harness,
+    client_id: &str,
+    msisdn: &str,
+    rail: &str,
+) -> anyhow::Result<(u16, Value)> {
+    let (status, _headers, body) = lookup_response_as(h, client_id, msisdn, rail).await?;
+    Ok((status, body))
+}
+
+async fn lookup_response_as(
+    h: &Harness,
+    client_id: &str,
+    msisdn: &str,
+    rail: &str,
+) -> anyhow::Result<(u16, reqwest::header::HeaderMap, Value)> {
     let response = merchant_http()
         .get(h.url("/v1/account_holders"))
-        .signed_by(CLIENT_A)
+        .signed_by(client_id)
         .query(&[("msisdn", msisdn), ("payment_method_type", rail)])
         .send()
         .await
         .context("GET /v1/account_holders")?;
     let status = response.status().as_u16();
+    let headers = response.headers().clone();
     let body: Value = response.json().await.context("the body is JSON")?;
-    Ok((status, body))
+    Ok((status, headers, body))
 }
 
 // -------------------------------------------------------------------- cases
@@ -465,6 +524,140 @@ async fn the_route_is_not_reachable_without_a_signature() -> anyhow::Result<()> 
     assert!(
         !body.to_string().contains(REGISTERED_HOLDER_NAME),
         "an unauthenticated caller must learn nothing about the holder: {body:#}"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Test 56-1 & 56-2: Rate limit blocks at N+1, returns 429 with Retry-After, and a second credential is unaffected.
+#[tokio::test]
+async fn rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected()
+-> anyhow::Result<()> {
+    let h = harness_with_rate_limit(2, 60).await?;
+
+    // Attempt 1: succeeds (200)
+    let (status1, _) = lookup_as(&h, CLIENT_A, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(status1, 200);
+
+    // Attempt 2: succeeds (200)
+    let (status2, _) = lookup_as(&h, CLIENT_A, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(status2, 200);
+
+    // Attempt 3 (N+1): rate limited (429)
+    let (status3, headers, body) =
+        lookup_response_as(&h, CLIENT_A, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(status3, 429, "3rd attempt must be rate limited: {body:#}");
+    assert_eq!(
+        body.pointer("/error/type").and_then(Value::as_str),
+        Some("rate_limit_error")
+    );
+    assert_eq!(
+        body.pointer("/error/code").and_then(Value::as_str),
+        Some("rate_limit")
+    );
+
+    // 56-2: Verify Retry-After header is present and valid
+    let retry_after = headers
+        .get("retry-after")
+        .and_then(|h| h.to_str().ok())
+        .and_then(|s| s.parse::<u64>().ok())
+        .expect("Retry-After header must be a positive integer");
+    assert!(
+        retry_after > 0 && retry_after <= 60,
+        "retry_after was {retry_after}"
+    );
+
+    // 56-1: Second credential CLIENT_B is unaffected and succeeds
+    let (status_b, _) = lookup_as(&h, CLIENT_B, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(
+        status_b, 200,
+        "second credential must not share the rate limit budget"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Test 56-7: Credential lacking `account_holders:read` is refused 403 Forbidden.
+#[tokio::test]
+async fn credential_without_account_holders_read_scope_is_refused_403() -> anyhow::Result<()> {
+    let h = harness().await?;
+
+    // CLIENT_READ_ONLY has only payments:read
+    let (status, body) = lookup_as(&h, CLIENT_READ_ONLY, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(
+        status, 403,
+        "caller lacking account_holders:read must be 403: {body:#}"
+    );
+    assert_eq!(
+        body.pointer("/error/type").and_then(Value::as_str),
+        Some("invalid_request_error")
+    );
+
+    // CLIENT_A has account_holders:read and succeeds
+    let (status_a, _) = lookup_as(&h, CLIENT_A, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(status_a, 200);
+
+    h.shutdown().await;
+    Ok(())
+}
+
+/// Test 56-5: Audit table holds HMAC target representation, no raw phone number or name.
+#[tokio::test]
+async fn audit_table_holds_hmac_target_representation_and_no_raw_pii() -> anyhow::Result<()> {
+    let h = harness().await?;
+
+    let (status, _) = lookup_as(&h, CLIENT_A, MSISDN_REGISTERED, PUSH_RAIL).await?;
+    assert_eq!(status, 200);
+
+    // Expected HMAC-SHA256 of tenant + canonical MSISDN with AUDIT_SALT
+    use sqlx::Row as _;
+    let expected_hash = vpay_api::v1::account_holders::audit_target_hash(
+        MERCHANT_A,
+        MSISDN_REGISTERED,
+        AUDIT_SALT,
+    );
+
+    let rows = sqlx::query(
+        "SELECT action, target_repr, outcome FROM audit_events WHERE tenant = $1 ORDER BY occurred_at ASC",
+    )
+    .bind(MERCHANT_A)
+    .fetch_all(&h.pool)
+    .await?;
+
+    assert_eq!(
+        rows.len(),
+        2,
+        "must have initiated and completed audit events"
+    );
+    let action_0: String = rows[0].get("action");
+    let outcome_0: String = rows[0].get("outcome");
+    let target_repr_0: String = rows[0].get("target_repr");
+    assert_eq!(action_0, "account_holder:lookup");
+    assert_eq!(outcome_0, "initiated");
+    assert_eq!(target_repr_0, expected_hash);
+
+    let action_1: String = rows[1].get("action");
+    let outcome_1: String = rows[1].get("outcome");
+    let target_repr_1: String = rows[1].get("target_repr");
+    assert_eq!(action_1, "account_holder:lookup");
+    assert_eq!(outcome_1, "found");
+    assert_eq!(target_repr_1, expected_hash);
+
+    // Confirm raw phone number and raw name never appear in any column of audit_events
+    let leaked: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM audit_events
+           WHERE target_repr LIKE '%237600000200%'
+              OR target_repr LIKE '%Mbarga%'
+              OR actor_id LIKE '%237600000200%'
+              OR actor_id LIKE '%Mbarga%'"#,
+    )
+    .fetch_one(&h.pool)
+    .await?;
+    assert_eq!(
+        leaked, 0,
+        "raw MSISDN or holder name leaked into audit_events table"
     );
 
     h.shutdown().await;

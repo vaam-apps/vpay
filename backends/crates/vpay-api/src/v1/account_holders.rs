@@ -31,59 +31,34 @@
 //! `400`, so a rate limit that covered only this route would not be the
 //! control it reads as.
 //!
-//! # This route is materially different from the rest of `/v1`
+//! # Account-holder lookup controls (ADR-0020, issue #56)
 //!
-//! Everything else on this surface is about the merchant's own objects. This
-//! is a lookup of **a third party** by phone number, so four rules apply
-//! here and nowhere else, and each one is a thing this module does rather
-//! than a sentence somewhere:
+//! Four controls govern every lookup vpay makes, across both callers:
 //!
 //! 1. **A name, and nothing else.** MTN's `basicuserinfo` body carries a
 //!    birthdate, a locale and a gender too; the projection happens in the
 //!    adapter's wire type, which has no field for them, so nothing this
 //!    module could render even exists. See
 //!    `vpay_adapter_mtn_momo::wire::BasicUserInfo`.
-//! 2. **Nothing is persisted** — not the name, not the number, not the fact
-//!    that the question was asked. There is no repository call in this file
-//!    and no migration behind it, and none on the refund path's use of
-//!    [`ask_rail`] either: a refund refused for an unregistered payee is
-//!    refused before any row is written, so it too leaves nothing but the
-//!    log line. That is a decision with a cost, and the flow doc records
-//!    both halves: it also means a merchant enumerating the number space
-//!    leaves no record in vpay.
-//! 3. **The log carries a masked number and never a name.** One line, at
-//!    `info`, with [`masked`]'s `+2376••••000` shape and the outcome.
-//!    `an_account_holder_body_of_personal_data_yields_a_name_and_leaks_nothing`
-//!    in `backends/tests/conformance` asserts the adapter half against
-//!    captured `tracing` output; [`a_lookup_logs_a_masked_number_and_never_a_name`]
-//!    asserts this half the same way.
-//! 4. **The metric's labels carry neither.** One counter, one label, four
-//!    constants ([`vpay_core::metrics::account_holder_outcome`]) — a
-//!    Prometheus label is retained and shipped wherever the scrape goes, so
-//!    a number in one would be the record rule 2 exists not to keep.
-//!
-//! # What this route deliberately does not do
-//!
-//! **No rate limit.** Issue #47 §3 asks for one, and it is not here: rate
-//! limiting in this deployment is an ingress concern
-//! (`docs/flows/provider-port.md` records the same gap for the callback
-//! route) and inventing a per-merchant bucket in one handler would be a
-//! control nothing else on this surface has. It is a **reserved decision**
-//! for the maintainer, written down in the flow doc rather than defaulted
-//! to here.
-//!
-//! **No scope of its own.** §3 also asks for one, and this route is served
-//! under [`crate::v1::SCOPE_PAYMENTS_READ`] like every other `GET`. Adding
-//! `identity:read` means minting it, checking it, and documenting it in
-//! three places that fail *silently* when they disagree (see
-//! `SCOPE_PAYMENTS_WRITE`'s own doc comment) — and it would refuse every
-//! existing merchant credential on the day it landed. Also a reserved
-//! decision, also in the flow doc.
-//!
-//! **No audit log.** §3 asks for that too, and it contradicts rule 2 above:
-//! a per-merchant, per-MSISDN audit trail *is* a stored record of who asked
-//! about whom. Which of the two wins is exactly the sort of choice this
-//! repository does not let an implementer make quietly.
+//! 2. **Generic, privacy-minimal audit logging.** An append-only journal in
+//!    `audit_events` records `initiated` before the rail call and a terminal
+//!    event (`found`, `not_found`, `invalid`, `unsupported`, `rate_limited`,
+//!    `rail_error`) after it, sharing one operation id (provisional pending
+//!    RFC-0002 D7). The stored `target_repr` holds a keyed HMAC-SHA256 digest
+//!    of `tenant_id` + normalized MSISDN under `privacy.lookup_audit_salt`
+//!    (provisional pending RFC-0002 D3); the raw MSISDN and returned name are
+//!    never stored. If the initial audit write fails, the lookup is refused
+//!    (fail closed).
+//! 3. **Per-credential fixed-window rate limiting.** Fixed-window counter in
+//!    `rate_limit_windows` keyed by signing-key thumbprint for signed calls or
+//!    `client_id` for machine tokens (provisional pending RFC-0002 D6). Budget
+//!    comes from `privacy.lookup_rate_limit`. Refusals return `429` with
+//!    `Retry-After` matching remaining window seconds.
+//! 4. **Dedicated scope.** Lookups require `account_holders:read` (provisional
+//!    pending RFC-0002 D5), enforced on `GET /v1/account_holders` and on
+//!    nominated-payee refunds via `POST /v1/refunds`.
+//! 5. **Masked logs and clean metrics.** The log line carries `+2376••••000`
+//!    and never a name ([`masked`]). Metrics carry only closed outcome labels.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -93,8 +68,10 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use serde::Deserialize;
 use vpay_core::metrics::{ACCOUNT_HOLDER_LOOKUPS_TOTAL, account_holder_outcome};
+use vpay_db::{AuditEvents, RateLimits, Repositories};
 use vpay_provider::ProviderAdapter;
 
+use crate::envelope::{CallerCredential, CredentialKind};
 use crate::error::ApiError;
 use crate::form::VpayQuery;
 use crate::model::{AccountHolderObject, AccountHolderTag};
@@ -142,36 +119,54 @@ pub(crate) struct RetrieveParams {
     payment_method_type: Option<String>,
 }
 
+/// The persistence capabilities required by account-holder lookups (ADR-0020 §3, §5).
+pub(crate) trait LookupStore: RateLimits + AuditEvents + Send + Sync {}
+impl<T: RateLimits + AuditEvents + Send + Sync + ?Sized> LookupStore for T {}
+
+/// Keyed HMAC-SHA256 digest of `tenant_id` + normalized MSISDN (provisional pending RFC-0002 D3).
+///
+/// Salted with the deployment's `privacy.lookup_audit_salt`.
+#[must_use]
+pub fn audit_target_hash(tenant_id: &str, msisdn: &str, salt: &str) -> String {
+    use hmac::{Hmac, Mac as _};
+    use sha2::Sha256;
+
+    let mut mac = Hmac::<Sha256>::new_from_slice(salt.as_bytes())
+        .expect("HMAC can take key of any size");
+    mac.update(tenant_id.as_bytes());
+    mac.update(b":");
+    mac.update(msisdn.as_bytes());
+    hex::encode(mac.finalize().into_bytes())
+}
+
 /// `GET /v1/account_holders?msisdn=…&payment_method_type=…`.
-///
-/// # Why `MerchantScope` is extracted and then unused
-///
-/// There is nothing to scope: no query is run, no row is read, and the
-/// answer is a property of the rail rather than of a tenant. Binding it
-/// anyway is what makes the *authentication* boundary structural rather than
-/// remembered — the extractor fails closed with a paging 500 when the
-/// middleware is not mounted in front of the route
-/// (`MerchantScope::from_request_parts`), so a future refactor that dropped
-/// the layer would fail here instead of serving an unauthenticated identity
-/// lookup. It is also the value an audit log would be keyed on the day the
-/// reserved decision in this module's header is taken.
-///
-/// # Errors
-///
-/// [`ApiError::InvalidParam`] naming `payment_method_type` for a missing
-/// one, for a rail this deployment does not offer, and for a rail whose
-/// [`vpay_provider::Capabilities::supports_account_holder_lookup`] is false;
-/// naming `msisdn` for a missing or malformed number.
-/// [`ApiError::Internal`] for a configured rail with no linked adapter,
-/// which boot refuses (`crate::boot::boot_seeds`) and is therefore an
-/// invariant failure rather than a merchant's mistake. Otherwise whatever
-/// the rail's [`vpay_provider::ProviderError`] classifies to — a 502 for a
-/// rail that could not be reached, never a `200`.
 pub(crate) async fn retrieve(
     State(config): State<Arc<ResourceConfig>>,
     State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
-    _scope: MerchantScope,
+    State(repositories): State<Arc<dyn Repositories>>,
+    caller: CallerCredential,
+    scope: MerchantScope,
     VpayQuery(params): VpayQuery<RetrieveParams>,
+) -> Result<Response, ApiError> {
+    retrieve_with(
+        repositories.as_ref(),
+        &config,
+        &adapters,
+        &caller,
+        &scope,
+        params,
+    )
+    .await
+}
+
+/// Inner implementation of `retrieve` allowing a custom [`LookupStore`].
+pub(crate) async fn retrieve_with(
+    store: &(impl LookupStore + ?Sized),
+    config: &ResourceConfig,
+    adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    caller: &CallerCredential,
+    scope: &MerchantScope,
+    params: RetrieveParams,
 ) -> Result<Response, ApiError> {
     let code = params
         .payment_method_type
@@ -216,23 +211,17 @@ pub(crate) async fn retrieve(
         return Err(unsupported_rail());
     }
 
-    let msisdn = params
-        .msisdn
-        .as_deref()
-        .and_then(canonical_msisdn)
-        .ok_or_else(|| {
-            count(account_holder_outcome::ERROR);
-            ApiError::invalid_param(
-                MSISDN_PARAM,
-                "`msisdn` must be a Cameroon mobile number in E.164 — `+2376XXXXXXXX`, \
-                 `2376XXXXXXXX` or the national `6XXXXXXXX`.",
-            )
-        })?;
-
+    let msisdn_raw = params.msisdn.as_deref().unwrap_or("");
+    let salt = config.lookup_audit_salt().unwrap_or("");
     let holder = ask_rail(
+        store,
+        scope,
+        caller,
+        salt,
+        config.lookup_rate_limit(),
         adapter.as_ref(),
         rail.code(),
-        &msisdn,
+        msisdn_raw,
         &rail.provider_config(),
         caller::ROUTE,
     )
@@ -325,51 +314,185 @@ pub(crate) mod caller {
 /// `Ok(None)`. Collapsing the two is what the three-way answer exists to
 /// prevent; see this module's flow doc.
 pub(crate) async fn ask_rail(
+    store: &(impl LookupStore + ?Sized),
+    scope: &MerchantScope,
+    caller: &CallerCredential,
+    salt: &str,
+    rate_limit: Option<vpay_config::RateLimitPolicy>,
     adapter: &dyn ProviderAdapter,
     rail_code: &str,
-    msisdn: &str,
+    msisdn_raw: &str,
     config: &vpay_provider::ProviderConfig,
-    caller: &'static str,
+    caller_trace: &'static str,
 ) -> Result<Option<vpay_provider::AccountHolder>, ApiError> {
-    // Matched rather than `?`d, so the counter sees the failure too: "a
-    // merchant is asking a rail that is not answering" is precisely the rate
-    // an operator wants, and a `?` here would leave it invisible.
-    let holder = match adapter.account_holder_name(msisdn, config).await {
-        Ok(holder) => holder,
-        Err(error) => {
+    // 1. Fixed-window rate limiting per credential (ADR-0020, provisional pending RFC-0002 D6)
+    if let Some(policy) = rate_limit {
+        use sha2::Digest as _;
+        let pre_image = format!("lookup:merchant_key:{}:{}", scope.merchant_id(), caller.id());
+        let rate_limit_id = hex::encode(sha2::Sha256::digest(pre_image.as_bytes()));
+        let now = time::OffsetDateTime::now_utc();
+        let window = time::Duration::seconds(policy.window_seconds as i64);
+
+        let outcome = store
+            .count_attempt(&rate_limit_id, "lookup:merchant_key", window, now)
+            .await
+            .map_err(|error| {
+                tracing::error!(
+                    %error,
+                    "failed to count rate limit attempt for account-holder lookup; failing closed"
+                );
+                ApiError::from(error)
+            })?;
+
+        if outcome.attempts > policy.attempts as i64 {
+            let elapsed = now - outcome.window_started_at;
+            let remaining = window.saturating_sub(elapsed);
+            let retry_after_seconds = if remaining.subsec_nanoseconds() > 0 {
+                (remaining.whole_seconds() + 1).max(1) as u64
+            } else {
+                remaining.whole_seconds().max(1) as u64
+            };
+
+            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, salt);
+            let actor_kind = match caller.kind() {
+                CredentialKind::Signer => "signer",
+                CredentialKind::MachineToken => "machine_token",
+            };
+            let _ = store
+                .append_audit_event(&vpay_db::NewAuditEvent {
+                    id: vpay_core::ids::audit_event_id(),
+                    occurred_at: now,
+                    tenant: scope.merchant_id().to_owned(),
+                    actor_kind: actor_kind.to_owned(),
+                    actor_id: caller.id().to_owned(),
+                    action: "account_holder:lookup".to_owned(),
+                    outcome: "rate_limited".to_owned(),
+                    target_class: "account_holder".to_owned(),
+                    target_repr,
+                    operation_id: vpay_core::ids::operation_id(),
+                })
+                .await;
+
+            return Err(ApiError::AccountHolderLookupRateLimited {
+                retry_after_seconds,
+            });
+        }
+    }
+
+    // 2. Canonicalize MSISDN (probes with malformed numbers have now spent budget)
+    let msisdn = match canonical_msisdn(msisdn_raw) {
+        Some(m) => m,
+        None => {
             count(account_holder_outcome::ERROR);
-            // The masked number and the rail, at `warn` — the log line that
-            // correlates this refusal with the rail's own. The error itself
-            // is rendered by `ApiError::into_response`, at its own severity,
-            // which is where its `Display` and source chain reach the log.
-            tracing::warn!(
-                rail = %rail_code,
-                msisdn = %masked(msisdn),
-                caller,
-                "account-holder lookup failed at the rail"
-            );
-            return Err(error.into());
+            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, salt);
+            let actor_kind = match caller.kind() {
+                CredentialKind::Signer => "signer",
+                CredentialKind::MachineToken => "machine_token",
+            };
+            let _ = store
+                .append_audit_event(&vpay_db::NewAuditEvent {
+                    id: vpay_core::ids::audit_event_id(),
+                    occurred_at: time::OffsetDateTime::now_utc(),
+                    tenant: scope.merchant_id().to_owned(),
+                    actor_kind: actor_kind.to_owned(),
+                    actor_id: caller.id().to_owned(),
+                    action: "account_holder:lookup".to_owned(),
+                    outcome: "invalid".to_owned(),
+                    target_class: "account_holder".to_owned(),
+                    target_repr,
+                    operation_id: vpay_core::ids::operation_id(),
+                })
+                .await;
+
+            return Err(ApiError::invalid_param(
+                MSISDN_PARAM,
+                "`msisdn` must be a Cameroon mobile number in E.164 — `+2376XXXXXXXX`, \
+                 `2376XXXXXXXX` or the national `6XXXXXXXX`.",
+            ));
         }
     };
 
-    count(if holder.is_some() {
-        account_holder_outcome::FOUND
-    } else {
-        account_holder_outcome::NOT_FOUND
-    });
+    // 3. Initiated audit event (provisional pending RFC-0002 D7). Fails closed if write fails.
+    let target_repr = audit_target_hash(scope.merchant_id(), &msisdn, salt);
+    let operation_id = vpay_core::ids::operation_id();
+    let actor_kind = match caller.kind() {
+        CredentialKind::Signer => "signer",
+        CredentialKind::MachineToken => "machine_token",
+    };
 
-    // **The number is masked and the name is absent.** `found = true/false`
-    // is the whole of what an operator learns about the answer, which is
-    // enough to read a rate off a log and not enough to rebuild the lookup.
-    tracing::info!(
-        rail = %rail_code,
-        msisdn = %masked(msisdn),
-        found = holder.is_some(),
-        caller,
-        "account-holder lookup served"
-    );
+    store
+        .append_audit_event(&vpay_db::NewAuditEvent {
+            id: vpay_core::ids::audit_event_id(),
+            occurred_at: time::OffsetDateTime::now_utc(),
+            tenant: scope.merchant_id().to_owned(),
+            actor_kind: actor_kind.to_owned(),
+            actor_id: caller.id().to_owned(),
+            action: "account_holder:lookup".to_owned(),
+            outcome: "initiated".to_owned(),
+            target_class: "account_holder".to_owned(),
+            target_repr: target_repr.clone(),
+            operation_id: operation_id.clone(),
+        })
+        .await
+        .map_err(|error| {
+            tracing::error!(
+                %error,
+                "failed to append 'initiated' audit event; refusing lookup"
+            );
+            ApiError::from(error)
+        })?;
 
-    Ok(holder)
+    // 4. Query the rail
+    let call_res = adapter.account_holder_name(&msisdn, config).await;
+
+    // 5. Terminal audit event
+    let (terminal_outcome, metric_outcome) = match &call_res {
+        Ok(Some(_)) => ("found", account_holder_outcome::FOUND),
+        Ok(None) => ("not_found", account_holder_outcome::NOT_FOUND),
+        Err(vpay_provider::ProviderError::Unsupported) => {
+            ("unsupported", account_holder_outcome::UNSUPPORTED)
+        }
+        Err(_) => ("rail_error", account_holder_outcome::ERROR),
+    };
+
+    count(metric_outcome);
+
+    let _ = store
+        .append_audit_event(&vpay_db::NewAuditEvent {
+            id: vpay_core::ids::audit_event_id(),
+            occurred_at: time::OffsetDateTime::now_utc(),
+            tenant: scope.merchant_id().to_owned(),
+            actor_kind: actor_kind.to_owned(),
+            actor_id: caller.id().to_owned(),
+            action: "account_holder:lookup".to_owned(),
+            outcome: terminal_outcome.to_owned(),
+            target_class: "account_holder".to_owned(),
+            target_repr,
+            operation_id,
+        })
+        .await;
+
+    match call_res {
+        Ok(holder) => {
+            tracing::info!(
+                rail = %rail_code,
+                msisdn = %masked(&msisdn),
+                found = holder.is_some(),
+                caller = caller_trace,
+                "account-holder lookup served"
+            );
+            Ok(holder)
+        }
+        Err(error) => {
+            tracing::warn!(
+                rail = %rail_code,
+                msisdn = %masked(&msisdn),
+                caller = caller_trace,
+                "account-holder lookup failed at the rail"
+            );
+            Err(error.into())
+        }
+    }
 }
 
 /// Counts one lookup outcome.
@@ -495,6 +618,78 @@ pub(crate) fn masked(canonical: &str) -> String {
         .skip(digits.len().saturating_sub(VISIBLE_TAIL))
         .collect();
     format!("+{head}••••{tail}")
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct TestStore {
+    pub(crate) attempts: std::sync::atomic::AtomicI64,
+    pub(crate) audit_events: std::sync::Mutex<Vec<vpay_db::NewAuditEvent>>,
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl vpay_db::RateLimits for TestStore {
+    async fn count_attempt(
+        &self,
+        _id: &str,
+        _scope: &str,
+        _window: time::Duration,
+        now: time::OffsetDateTime,
+    ) -> Result<vpay_db::RateLimitOutcome, vpay_db::DbError> {
+        let attempts = self.attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        Ok(vpay_db::RateLimitOutcome {
+            attempts,
+            window_started_at: now,
+        })
+    }
+}
+
+#[cfg(test)]
+#[async_trait::async_trait]
+impl vpay_db::AuditEvents for TestStore {
+    async fn append_audit_event(
+        &self,
+        event: &vpay_db::NewAuditEvent,
+    ) -> Result<vpay_db::AuditEventRow, vpay_db::DbError> {
+        self.audit_events.lock().unwrap().push(event.clone());
+        Ok(vpay_db::AuditEventRow {
+            id: event.id.clone(),
+            occurred_at: event.occurred_at,
+            tenant: event.tenant.clone(),
+            actor_kind: event.actor_kind.clone(),
+            actor_id: event.actor_id.clone(),
+            action: event.action.clone(),
+            outcome: event.outcome.clone(),
+            target_class: event.target_class.clone(),
+            target_repr: event.target_repr.clone(),
+            operation_id: event.operation_id.clone(),
+        })
+    }
+
+    async fn list_audit_events_by_tenant(
+        &self,
+        tenant: &str,
+        _limit: i64,
+    ) -> Result<Vec<vpay_db::AuditEventRow>, vpay_db::DbError> {
+        let events = self.audit_events.lock().unwrap();
+        Ok(events
+            .iter()
+            .filter(|e| e.tenant == tenant)
+            .map(|e| vpay_db::AuditEventRow {
+                id: e.id.clone(),
+                occurred_at: e.occurred_at,
+                tenant: e.tenant.clone(),
+                actor_kind: e.actor_kind.clone(),
+                actor_id: e.actor_id.clone(),
+                action: e.action.clone(),
+                outcome: e.outcome.clone(),
+                target_class: e.target_class.clone(),
+                target_repr: e.target_repr.clone(),
+                operation_id: e.operation_id.clone(),
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -668,6 +863,10 @@ mod tests {
             staff_auth: None,
             routing: Default::default(),
             auth: Default::default(),
+            privacy: vpay_config::PrivacyConfig {
+                lookup_audit_salt: Some("unit-test-lookup-salt".to_owned()),
+                lookup_rate_limit: None,
+            },
         };
         Arc::new(
             ResourceConfig::from_config(&config).expect("the fixture rail projects onto the port"),
@@ -692,14 +891,22 @@ mod tests {
         msisdn: Option<&str>,
         payment_method_type: Option<&str>,
     ) -> Result<Response, ApiError> {
-        retrieve(
-            State(resource_config(enabled)),
-            State(adapters(answer)),
-            MerchantScope::for_payer("acme-cameroon-tenant".to_owned()),
-            VpayQuery(RetrieveParams {
+        let store = TestStore::default();
+        let caller = CallerCredential::for_signer(
+            "test_thumbprint".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+        let scope = MerchantScope::for_payer("acme-cameroon-tenant".to_owned());
+        retrieve_with(
+            &store,
+            &resource_config(enabled),
+            &adapters(answer),
+            &caller,
+            &scope,
+            RetrieveParams {
                 msisdn: msisdn.map(ToOwned::to_owned),
                 payment_method_type: payment_method_type.map(ToOwned::to_owned),
-            }),
+            },
         )
         .await
     }
@@ -1135,5 +1342,140 @@ mod tests {
                 .is_some_and(|map| map.contains_key("name")),
             "`name` must be present and null, never absent: {rendered}"
         );
+    }
+
+    #[test]
+    fn audit_target_hash_produces_consistent_hmac_sha256() {
+        let hash1 = audit_target_hash("tenant-a", "237600000200", "my-secret-salt");
+        let hash2 = audit_target_hash("tenant-a", "237600000200", "my-secret-salt");
+        assert_eq!(hash1, hash2);
+        assert_eq!(hash1.len(), 64);
+        assert!(!hash1.contains("237600000200"));
+        assert!(!hash1.contains("tenant-a"));
+
+        let diff_tenant = audit_target_hash("tenant-b", "237600000200", "my-secret-salt");
+        assert_ne!(hash1, diff_tenant);
+
+        let diff_msisdn = audit_target_hash("tenant-a", "237600000201", "my-secret-salt");
+        assert_ne!(hash1, diff_msisdn);
+    }
+
+    #[tokio::test]
+    async fn rate_limiting_refuses_when_over_budget_with_retry_after() {
+        let store = TestStore::default();
+        store.attempts.store(10, std::sync::atomic::Ordering::SeqCst);
+
+        let config = Config {
+            deployment: Deployment {
+                name: "test".to_owned(),
+                livemode: false,
+                public_base_url: "http://localhost:8080".to_owned(),
+                surfaces: None,
+            },
+            providers: vec![ProviderHost {
+                code: RAIL.to_owned(),
+                enabled: true,
+                host: HostEntry {
+                    url: "http://127.0.0.1:1".to_owned(),
+                    label: "unreachable".to_owned(),
+                },
+                settings: BTreeMap::new(),
+                callback_url: None,
+                currency: "XAF".to_owned(),
+                credentials: BTreeMap::new(),
+                display_name: None,
+                callbacks: None,
+            }],
+            currencies: vec![CurrencyEntry {
+                code: "xaf".to_owned(),
+                exponent: 0,
+            }],
+            merchant_clients: Vec::new(),
+            webhooks: vpay_config::WebhookPolicy::default(),
+            checkout: vpay_config::CheckoutConfig::default(),
+            dashboard: None,
+            service_clients: Vec::new(),
+            dashboard_client: None,
+            staff_auth: None,
+            routing: Default::default(),
+            auth: Default::default(),
+            privacy: vpay_config::PrivacyConfig {
+                lookup_audit_salt: Some("unit-test-salt".to_owned()),
+                lookup_rate_limit: Some(vpay_config::RateLimitPolicy {
+                    attempts: 10,
+                    window_seconds: 60,
+                }),
+            },
+        };
+        let resources = Arc::new(ResourceConfig::from_config(&config).unwrap());
+        let caller = CallerCredential::for_signer(
+            "thumbprint".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+        let scope = MerchantScope::for_payer("tenant".to_owned());
+
+        let err = retrieve_with(
+            &store,
+            &resources,
+            &adapters(Answer::Holder),
+            &caller,
+            &scope,
+            RetrieveParams {
+                msisdn: Some(MSISDN.to_owned()),
+                payment_method_type: Some(RAIL.to_owned()),
+            },
+        )
+        .await
+        .expect_err("over budget must be refused");
+
+        match err {
+            ApiError::AccountHolderLookupRateLimited { retry_after_seconds } => {
+                assert!(retry_after_seconds > 0 && retry_after_seconds <= 60);
+            }
+            other => panic!("expected AccountHolderLookupRateLimited, got: {other:?}"),
+        }
+
+        // Verify a rate_limited audit event was appended
+        let events = store.audit_events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].outcome, "rate_limited");
+    }
+
+    #[tokio::test]
+    async fn successful_lookup_appends_initiated_and_terminal_audit_events() {
+        let store = TestStore::default();
+        let caller = CallerCredential::for_signer(
+            "thumbprint-123".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+        let scope = MerchantScope::for_payer("tenant-xyz".to_owned());
+        let resources = resource_config(true);
+
+        let res = retrieve_with(
+            &store,
+            &resources,
+            &adapters(Answer::Holder),
+            &caller,
+            &scope,
+            RetrieveParams {
+                msisdn: Some(MSISDN.to_owned()),
+                payment_method_type: Some(RAIL.to_owned()),
+            },
+        )
+        .await
+        .expect("successful lookup");
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let events = store.audit_events.lock().unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].outcome, "initiated");
+        assert_eq!(events[1].outcome, "found");
+        assert_eq!(events[0].operation_id, events[1].operation_id);
+        assert_eq!(events[0].actor_kind, "signer");
+        assert_eq!(events[0].actor_id, "thumbprint-123");
+        assert_eq!(events[0].tenant, "tenant-xyz");
+        assert_eq!(events[0].target_class, "account_holder");
+        assert!(!events[0].target_repr.contains(MSISDN));
+        assert!(!events[0].target_repr.contains(HOLDER_NAME));
     }
 }

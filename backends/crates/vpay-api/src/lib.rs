@@ -183,9 +183,9 @@ pub use svc::{SVC_NEST, SVC_ROUTES, SvcRoute};
 /// did.
 pub use v1::boot;
 pub use v1::{
-    DashboardBinding, MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE,
-    V1_NEST, V1_ROUTES, V1Route, WebhookEndpointConfig, default_payment_scopes, required_scopes,
-    required_scopes_for,
+    DashboardBinding, MerchantScope, ResourceConfig, SCOPE_ACCOUNT_HOLDERS_READ,
+    SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE, V1_NEST, V1_ROUTES, V1Route, WebhookEndpointConfig,
+    account_holders_read_scope, default_payment_scopes, required_scopes, required_scopes_for,
 };
 
 /// The header carrying the request id, in and out.

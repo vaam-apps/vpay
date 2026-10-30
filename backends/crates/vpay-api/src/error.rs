@@ -78,7 +78,7 @@ use std::fmt;
 
 use axum::Json;
 use axum::extract::rejection::{FormRejection, JsonRejection, PathRejection, QueryRejection};
-use axum::http::{HeaderName, HeaderValue, StatusCode};
+use axum::http::{HeaderName, HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use vpay_core::{Category, Classify, Retry, Severity};
 use vpay_ledger::LedgerError;
@@ -548,6 +548,17 @@ pub enum ApiError {
     #[error("staff sign-in refused: over the rate limit")]
     StaffSignInRateLimited,
 
+    /// Account-holder lookup rate limit exceeded (issue #56, ADR-0020).
+    ///
+    /// `Category::RateLimited` → `429`, `Retry::AfterBackoff`.
+    /// Provisional pending RFC-0002 D6. The response carries a `Retry-After`
+    /// header indicating how many seconds remain in the window.
+    #[error("account-holder lookup refused: over the rate limit")]
+    AccountHolderLookupRateLimited {
+        /// Seconds remaining until the rate limit window resets.
+        retry_after_seconds: u64,
+    },
+
     /// A staff credential operation failed for a reason that is nobody's
     /// fault but this deployment's: a misconfigured key, or a stored secret
     /// that will not open.
@@ -897,7 +908,9 @@ impl Classify for ApiError {
             // has not authenticated at all, and `403` would tell them they
             // had.
             Self::StaffSignInRefused { .. } => Category::Authentication,
-            Self::StaffSignInRateLimited => Category::RateLimited,
+            Self::StaffSignInRateLimited | Self::AccountHolderLookupRateLimited { .. } => {
+                Category::RateLimited
+            }
             // Delegated, never re-decided (ADR-0011). Named explicitly rather
             // than caught by a wildcard, which is what `verify-errors`
             // checks.
@@ -960,7 +973,9 @@ impl Classify for ApiError {
             // per sign-in step would be exactly the oracle the single
             // variant exists to remove.
             Self::StaffSignInRefused { .. } => Category::Authentication.default_code(),
-            Self::StaffSignInRateLimited => Category::RateLimited.default_code(),
+            Self::StaffSignInRateLimited | Self::AccountHolderLookupRateLimited { .. } => {
+                Category::RateLimited.default_code()
+            }
             Self::StaffAuth(e) => e.code(),
             // The third deliberate override in this enum. The category
             // default, `misconfigured`, is what *every* configuration failure
@@ -1006,6 +1021,7 @@ impl Classify for ApiError {
             | Self::Forbidden
             | Self::StaffSignInRefused { .. }
             | Self::StaffSignInRateLimited
+            | Self::AccountHolderLookupRateLimited { .. }
             | Self::StaffAuth(_)
             | Self::CheckoutNotConfigured(_)
             | Self::CheckoutSessionNotOpen { .. }
@@ -1034,6 +1050,7 @@ impl Classify for ApiError {
             | Self::Forbidden
             | Self::StaffSignInRefused { .. }
             | Self::StaffSignInRateLimited
+            | Self::AccountHolderLookupRateLimited { .. }
             | Self::CheckoutNotConfigured(_)
             | Self::CheckoutSessionNotOpen { .. }
             | Self::Internal(_) => self.category().default_severity(),
@@ -1113,6 +1130,14 @@ impl Classify for ApiError {
             }
             Self::StaffSignInRateLimited => {
                 "Too many sign-in attempts. Wait a few minutes and try again.".to_owned()
+            }
+            Self::AccountHolderLookupRateLimited {
+                retry_after_seconds,
+            } => {
+                format!(
+                    "Too many account-holder lookup requests. Please wait {retry_after_seconds} \
+                     seconds before trying again."
+                )
             }
             // Never the detail: every variant of `StaffAuthError` is about a
             // deployment secret or a stored ciphertext, and the caller is a
@@ -1260,10 +1285,20 @@ impl IntoResponse for ApiError {
             Retry::Never | Retry::NewAttempt => RETRY_NO,
         };
 
+        let retry_after = match self {
+            Self::AccountHolderLookupRateLimited {
+                retry_after_seconds,
+            } => HeaderValue::from_str(&retry_after_seconds.to_string()).ok(),
+            _ => None,
+        };
+
         let mut response = (status, Json(body)).into_response();
         response
             .headers_mut()
             .insert(STRIPE_SHOULD_RETRY_HEADER, should_retry);
+        if let Some(retry_after) = retry_after {
+            response.headers_mut().insert(header::RETRY_AFTER, retry_after);
+        }
         response
     }
 }

@@ -755,6 +755,12 @@ pub struct Config {
     #[garde(skip)]
     #[serde(default)]
     pub auth: crate::auth::AuthConfig,
+    /// Privacy controls (ADR-0020).
+    ///
+    /// Provisional pending RFC-0002 D3 and D6. See PR #56/152.
+    #[garde(dive)]
+    #[serde(default)]
+    pub privacy: PrivacyConfig,
 }
 
 /// `routing:`: the deployment's inputs to the router's score.
@@ -1254,6 +1260,39 @@ impl Default for RateLimits {
     }
 }
 
+/// Privacy controls and account-holder lookup configuration (ADR-0020).
+///
+/// Provisional pending RFC-0002 D3 and D6. See PR #56/152.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize, Validate)]
+#[serde(rename_all = "snake_case")]
+pub struct PrivacyConfig {
+    /// Deployment secret used to key HMAC-SHA256 digests of phone numbers for
+    /// account-holder lookup audit logs (ADR-0020 §3, provisional pending RFC-0002 D3).
+    #[garde(skip)]
+    #[serde(default)]
+    pub lookup_audit_salt: Option<String>,
+
+    /// Account-holder lookup rate limit budget per credential.
+    ///
+    /// Provisional pending RFC-0002 D6. The budget must come from configuration
+    /// with no code default.
+    #[garde(dive)]
+    #[serde(default)]
+    pub lookup_rate_limit: Option<RateLimitPolicy>,
+}
+
+impl fmt::Debug for PrivacyConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PrivacyConfig")
+            .field(
+                "lookup_audit_salt",
+                &self.lookup_audit_salt.as_deref().map(|_| "[redacted]"),
+            )
+            .field("lookup_rate_limit", &self.lookup_rate_limit)
+            .finish()
+    }
+}
+
 /// Prints presence for the two secrets and the values of everything else.
 ///
 /// The secrets are redacted for the reason [`ProviderHost`]'s redaction does
@@ -1667,6 +1706,15 @@ impl Config {
                 validate_staff_sso(sso, livemode, raw_secrets)?;
             }
         }
+        if self.privacy.lookup_audit_salt.is_some() {
+            validate_secret(
+                "privacy.lookup_audit_salt",
+                raw_secrets
+                    .privacy_as_written("lookup_audit_salt")
+                    .unwrap_or(""),
+                livemode,
+            )?;
+        }
 
         Ok(())
     }
@@ -1717,6 +1765,8 @@ struct RawSecrets {
     /// keyed by the field name, because unlike the two above there is exactly
     /// one `staff_auth` block in a document and its keys are a closed set.
     staff_auth: BTreeMap<String, String>,
+    /// `privacy.<field>` -> the value as written (ADR-0020).
+    privacy: BTreeMap<String, String>,
 }
 
 impl RawSecrets {
@@ -1734,6 +1784,7 @@ impl RawSecrets {
             provider_credentials: Self::provider_credentials_from(document),
             webhook_secrets: Self::webhook_secrets_from(document),
             staff_auth: Self::staff_auth_from(document),
+            privacy: Self::privacy_from(document),
         }
     }
 
@@ -1879,6 +1930,28 @@ impl RawSecrets {
             .get(index)
             .map(String::as_str)
     }
+
+    /// A privacy secret as the file wrote it. `None` fails closed for
+    /// [`Self::provider_credential_as_written`]'s reason.
+    fn privacy_as_written(&self, field: &str) -> Option<&str> {
+        self.privacy.get(field).map(String::as_str)
+    }
+
+    /// The same walk for the `privacy` block.
+    fn privacy_from(document: &figment::value::Value) -> BTreeMap<String, String> {
+        use figment::value::Value;
+
+        let mut out = BTreeMap::new();
+        let Some(dict) = document.find_ref("privacy").and_then(Value::as_dict) else {
+            return out;
+        };
+        for (key, value) in dict {
+            if let Some(text) = value.as_str() {
+                out.insert(key.clone(), text.to_owned());
+            }
+        }
+        out
+    }
 }
 
 #[cfg(test)]
@@ -1915,6 +1988,12 @@ impl RawSecrets {
                 })
                 .filter_map(|(field, value)| Some((field.to_owned(), value?.to_owned())))
                 .collect(),
+            privacy: config
+                .privacy
+                .lookup_audit_salt
+                .as_deref()
+                .map(|salt| BTreeMap::from([("lookup_audit_salt".to_owned(), salt.to_owned())]))
+                .unwrap_or_default(),
             provider_credentials: config
                 .providers
                 .iter()
@@ -3626,6 +3705,7 @@ mod tests {
             service_clients: Vec::new(),
             dashboard_client: None,
             staff_auth: None,
+            privacy: PrivacyConfig::default(),
         }
     }
 
@@ -5573,6 +5653,7 @@ merchant_clients:
             service_clients: Vec::new(),
             dashboard_client: None,
             staff_auth: None,
+            privacy: PrivacyConfig::default(),
         };
 
         assert_eq!(
@@ -8062,5 +8143,42 @@ providers:
         );
         let unknown = serde_yaml_ng::from_str::<ProviderCallbacks>("register: sometimes");
         assert!(unknown.is_err(), "an unknown mode must not parse");
+    }
+
+    #[test]
+    fn lookup_audit_salt_never_reaches_debug() {
+        let privacy = PrivacyConfig {
+            lookup_audit_salt: Some("canary-lookup-salt-9f1a".to_owned()),
+            lookup_rate_limit: Some(RateLimitPolicy {
+                attempts: 10,
+                window_seconds: 60,
+            }),
+        };
+        let printed = format!("{privacy:?}");
+        assert!(
+            !printed.contains("canary-lookup-salt-9f1a"),
+            "the Debug output printed the lookup audit salt"
+        );
+        assert!(printed.contains("[redacted]"));
+    }
+
+    #[test]
+    fn a_livemode_deployment_refuses_a_literal_lookup_audit_salt() {
+        let mut config = valid_config();
+        config.deployment.livemode = true;
+        config.privacy.lookup_audit_salt = Some("literal-salt".to_owned());
+        let raw = RawSecrets::identity(&config);
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::LiteralSecret(
+                "privacy.lookup_audit_salt".to_owned(),
+            ))
+        );
+
+        config.privacy.lookup_audit_salt = Some("${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
+        let mut raw = RawSecrets::identity(&config);
+        raw.privacy.insert("lookup_audit_salt".to_owned(), "${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
+        assert_eq!(config.validate_all(&raw), Ok(()));
     }
 }

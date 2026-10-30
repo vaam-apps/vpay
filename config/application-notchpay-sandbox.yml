@@ -86,8 +86,16 @@ merchant_clients:
       - public_key: ${NOTCHPAY_SANDBOX_MERCHANT_COSE_KEY}
         label: notchpay-sandbox
     grant_types: [client_credentials]
-    scopes: [payments:write, payments:read]
+    scopes: [payments:write, payments:read, account_holders:read]
     allowed_audiences: ["vpay:v1"]
+
+# Privacy controls and account-holder lookup configuration (ADR-0020).
+# Provisional pending RFC-0002 D3 and D6. See PR #56/152.
+privacy:
+  lookup_audit_salt: "notchpay-sandbox-lookup-salt"
+  lookup_rate_limit:
+    attempts: 10
+    window_seconds: 60
 
 # Serve the management console, reading this overlay's one merchant. The base
 # file serves none (R4); boot refuses a tenant no `merchant_clients` entry

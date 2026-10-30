@@ -11561,7 +11561,8 @@ async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyh
     for expected in 1..=3_i64 {
         let attempts = repositories
             .count_attempt(&key, "sign_in:email", window, start)
-            .await?;
+            .await?
+            .attempts;
         assert_eq!(attempts, expected, "the position inside the first window");
     }
 
@@ -11573,14 +11574,16 @@ async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyh
             window,
             start + window - time::Duration::seconds(1),
         )
-        .await?;
+        .await?
+        .attempts;
     assert_eq!(attempts, 4, "inside the window, the count carries on");
 
     // At the boundary the window has elapsed — `window_started_at <= now -
     // window` — and is replaced.
     let attempts = repositories
         .count_attempt(&key, "sign_in:email", window, start + window)
-        .await?;
+        .await?
+        .attempts;
     assert_eq!(
         attempts, 1,
         "an elapsed window is a NEW window starting now, so the answer is 1. Anything else is a \
@@ -11620,14 +11623,16 @@ async fn the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label() 
     assert_eq!(
         repositories
             .count_attempt(&two, "sign_in:email", window, now)
-            .await?,
+            .await?
+            .attempts,
         1,
         "another key's first attempt is its first attempt"
     );
     assert_eq!(
         repositories
             .count_attempt(&one, "sign_in:address", window, now)
-            .await?,
+            .await?
+            .attempts,
         6,
         "the SAME id under another scope is the SAME row. The scope column is not part of the \
          key, so a caller that stopped hashing the scope into the id would merge two budgets \
