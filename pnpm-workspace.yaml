@@ -285,6 +285,8 @@ overrides:
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1
   "@zenstackhq/cli>@hono/node-server": ^2.1.3
+  "minimatch@<11.0.1": ^11.0.1
+  "glob@>=9.0.0 <=14.0.1": ^14.0.3
 
 # ---------------------------------------------------------------------------
 # allowBuilds

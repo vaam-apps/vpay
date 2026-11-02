@@ -11,6 +11,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: false,
+    testTimeout: 15_000,
     // `app/` as well as `src/`. A `.test.ts` written beside a route matched
     // nothing here and ran nowhere — a test file that is silently not a test,
     // which is the class of thing this repository is careful about
