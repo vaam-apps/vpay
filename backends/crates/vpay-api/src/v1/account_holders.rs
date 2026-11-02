@@ -331,6 +331,14 @@ pub(crate) async fn ask_rail(
     config: &vpay_provider::ProviderConfig,
     caller_trace: &'static str,
 ) -> Result<Option<vpay_provider::AccountHolder>, ApiError> {
+    // Privacy controls require an explicit non-empty salt to key target HMACs (RFC-0002 D3 fail-closed).
+    if salt.trim().is_empty() {
+        tracing::error!("lookup audit salt is empty or unconfigured; failing closed");
+        return Err(ApiError::Internal(
+            "privacy controls not configured".to_owned(),
+        ));
+    }
+
     // 1. Fixed-window rate limiting per credential (ADR-0020, provisional pending RFC-0002 D6)
     if let Some(policy) = rate_limit {
         use sha2::Digest as _;
@@ -368,7 +376,7 @@ pub(crate) async fn ask_rail(
                 CredentialKind::Signer => "signer",
                 CredentialKind::MachineToken => "machine_token",
             };
-            let _ = store
+            if let Err(error) = store
                 .append_audit_event(&vpay_db::NewAuditEvent {
                     id: vpay_core::ids::audit_event_id(),
                     occurred_at: now,
@@ -381,7 +389,10 @@ pub(crate) async fn ask_rail(
                     target_repr,
                     operation_id: vpay_core::ids::operation_id(),
                 })
-                .await;
+                .await
+            {
+                tracing::error!(%error, "failed to append rate_limited audit event for account-holder lookup");
+            }
 
             return Err(ApiError::AccountHolderLookupRateLimited {
                 retry_after_seconds,
@@ -399,7 +410,7 @@ pub(crate) async fn ask_rail(
                 CredentialKind::Signer => "signer",
                 CredentialKind::MachineToken => "machine_token",
             };
-            let _ = store
+            if let Err(error) = store
                 .append_audit_event(&vpay_db::NewAuditEvent {
                     id: vpay_core::ids::audit_event_id(),
                     occurred_at: time::OffsetDateTime::now_utc(),
@@ -412,7 +423,10 @@ pub(crate) async fn ask_rail(
                     target_repr,
                     operation_id: vpay_core::ids::operation_id(),
                 })
-                .await;
+                .await
+            {
+                tracing::error!(%error, "failed to append invalid audit event for account-holder lookup");
+            }
 
             return Err(ApiError::invalid_param(
                 MSISDN_PARAM,
@@ -467,7 +481,7 @@ pub(crate) async fn ask_rail(
 
     count(metric_outcome);
 
-    let _ = store
+    if let Err(error) = store
         .append_audit_event(&vpay_db::NewAuditEvent {
             id: vpay_core::ids::audit_event_id(),
             occurred_at: time::OffsetDateTime::now_utc(),
@@ -480,7 +494,10 @@ pub(crate) async fn ask_rail(
             target_repr,
             operation_id,
         })
-        .await;
+        .await
+    {
+        tracing::error!(%error, "failed to append terminal audit event for account-holder lookup");
+    }
 
     match call_res {
         Ok(holder) => {

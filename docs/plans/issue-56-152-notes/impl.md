@@ -36,30 +36,30 @@ Per `task.md` Section 3, implementation proceeds without waiting for pending mai
 
 ### Ticket #56
 
-| ID       | Criterion                                     | Evidence Path / Proving Test                                                                                                                                           | Status |
-| -------- | --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| **56-1** | Per-key fixed-window rate limit on lookups    | `backends/tests/integration/tests/account_holders.rs::rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected`                                 | Done   |
-| **56-2** | Refusal is `429` with `Retry-After` header    | `backends/tests/integration/tests/account_holders.rs::rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected`                                 | Done   |
-| **56-3** | Limit covers every lookup (including refunds) | `backends/tests/integration/tests/refunds.rs::a_nominated_payee_refund_spends_the_lookup_rate_limit_budget`                                                              | Done   |
-| **56-4** | Append-only audit row per lookup              | `backends/crates/vpay-db/tests/repositories.rs::audit_events_append_and_query_by_tenant`                                                                                 | Done   |
-| **56-5** | Audit holds no raw MSISDN / no returned name  | `backends/tests/integration/tests/account_holders.rs::audit_table_holds_hmac_target_representation_and_no_raw_pii`                                                     | Done   |
-| **56-6** | Audit queryable by operator (repo layer)      | `vpay_db::AuditEvents::list_audit_events_by_tenant`                                                                                                                    | Done   |
-| **56-7** | Dedicated scope for lookups                   | `backends/tests/integration/tests/account_holders.rs::credential_without_account_holders_read_scope_is_refused_403`                                                     | Done   |
-| **56-8** | Scope is route-declared, not method-inferred  | `backends/crates/vpay-api/src/v1/mod.rs::tests::every_mounted_v1_route_has_a_declared_scope_policy`                                                                    | Done   |
+| ID       | Criterion                                     | Evidence Path / Proving Test                                                                                                          | Status |
+| -------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **56-1** | Per-key fixed-window rate limit on lookups    | `backends/tests/integration/tests/account_holders.rs::rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` | Done   |
+| **56-2** | Refusal is `429` with `Retry-After` header    | `backends/tests/integration/tests/account_holders.rs::rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` | Done   |
+| **56-3** | Limit covers every lookup (including refunds) | `backends/tests/integration/tests/refunds.rs::a_nominated_payee_refund_spends_the_lookup_rate_limit_budget`                           | Done   |
+| **56-4** | Append-only audit row per lookup              | `backends/crates/vpay-db/tests/repositories.rs::audit_events_append_and_query_by_tenant`                                              | Done   |
+| **56-5** | Audit holds no raw MSISDN / no returned name  | `backends/tests/integration/tests/account_holders.rs::audit_table_holds_hmac_target_representation_and_no_raw_pii`                    | Done   |
+| **56-6** | Audit queryable by operator (repo layer)      | `vpay_db::AuditEvents::list_audit_events_by_tenant`                                                                                   | Done   |
+| **56-7** | Dedicated scope for lookups                   | `backends/tests/integration/tests/account_holders.rs::credential_without_account_holders_read_scope_is_refused_403`                   | Done   |
+| **56-8** | Scope is route-declared, not method-inferred  | `backends/crates/vpay-api/src/v1/mod.rs::tests::every_mounted_v1_route_has_a_declared_scope_policy`                                   | Done   |
 
 ### Ticket #152
 
-| ID        | Criterion                                      | Evidence Path / Proving Test                                                                                                                | Status |
-| --------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
-| **152-1** | Role/scope model across privileged interfaces  | `docs/security/privileged-access-matrix.md`, `backends/tests/integration/tests/signed_transport.rs::a_console_or_service_key_cannot_reach_v1`         | Done   |
-| **152-2** | Prohibition of shared admin credentials        | `docs/runbooks/deploy-and-rollback.md`, `backends/crates/vpay-api/src/console_keys.rs::pairing_never_creates_or_upgrades_an_administrator` | Done   |
-| **152-3** | Secrets & private keys never logged/in source  | `backends/crates/vpay-api/src/v1/boot.rs::boot_logging_never_leaks_configured_secrets`, CI Trivy scan                                       | Done   |
-| **152-4** | Rotation/revocation runbooks & tests           | `docs/runbooks/rotate-signing-key.md`, `backends/tests/integration/tests/signed_transport.rs::a_console_key_revocation_denies_subsequent_calls`             | Done   |
-| **152-5** | Access review evidence repeatable export       | `docs/runbooks/access-review.md` (SQL exports for staff, paired console keys, web sessions)                                                 | Done   |
-| **152-6** | Time-bounded, auditable break-glass access     | `docs/runbooks/deploy-and-rollback.md` (break-glass statement & auditability)                                                               | Done   |
-| **152-7** | #56 linked / implemented                       | Implemented in PR; GAP-56 closed in `schemas/security-inventory.yaml`; operator surface noted pending D8                                    | Done   |
-| **152-8** | Negative security tests (privilege escalation) | `backends/tests/integration/tests/signed_transport.rs::a_console_or_service_key_cannot_reach_v1`                                            | Done   |
-| **152-9** | Inventory reconciliation                       | `schemas/security-inventory.yaml` (A.5.15, A.8.2, A.8.24 updated), `docs/reference/security-asset-inventory.md`                            | Done   |
+| ID        | Criterion                                      | Evidence Path / Proving Test                                                                                                                    | Status |
+| --------- | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ------ |
+| **152-1** | Role/scope model across privileged interfaces  | `docs/security/privileged-access-matrix.md`, `backends/tests/integration/tests/signed_transport.rs::a_console_or_service_key_cannot_reach_v1`   | Done   |
+| **152-2** | Prohibition of shared admin credentials        | `docs/runbooks/deploy-and-rollback.md`, `backends/crates/vpay-api/src/console_keys.rs::pairing_never_creates_or_upgrades_an_administrator`      | Done   |
+| **152-3** | Secrets & private keys never logged/in source  | `backends/crates/vpay-api/src/v1/boot.rs::boot_logging_never_leaks_configured_secrets`, CI Trivy scan                                           | Done   |
+| **152-4** | Rotation/revocation runbooks & tests           | `docs/runbooks/rotate-signing-key.md`, `backends/tests/integration/tests/signed_transport.rs::a_console_key_revocation_denies_subsequent_calls` | Done   |
+| **152-5** | Access review evidence repeatable export       | `docs/runbooks/access-review.md` (SQL exports for staff, paired console keys, web sessions)                                                     | Done   |
+| **152-6** | Time-bounded, auditable break-glass access     | `docs/runbooks/deploy-and-rollback.md` (break-glass statement & auditability)                                                                   | Done   |
+| **152-7** | #56 linked / implemented                       | Implemented in PR; GAP-56 closed in `schemas/security-inventory.yaml`; operator surface noted pending D8                                        | Done   |
+| **152-8** | Negative security tests (privilege escalation) | `backends/tests/integration/tests/signed_transport.rs::a_console_or_service_key_cannot_reach_v1`                                                | Done   |
+| **152-9** | Inventory reconciliation                       | `schemas/security-inventory.yaml` (A.5.15, A.8.2, A.8.24 updated), `docs/reference/security-asset-inventory.md`                                 | Done   |
 
 ---
 
@@ -70,8 +70,8 @@ Per `task.md` Section 3, implementation proceeds without waiting for pending mai
 | One `/v1` route's declared scope policy removed (set to `\|_\| &[]`) | `v1::tests::every_mounted_v1_route_has_a_declared_scope_policy`                     | PASS (panicked at `route /payment_intents POST has an empty declared scope policy`)                       |
 | `CallerCredential` default-constructed when missing                  | `envelope::scope::tests::caller_credential_extraction_refuses_when_absent_with_500` | PASS (panicked at `missing credential must fail: CallerCredential { kind: MachineToken, id: "default" }`) |
 | Unclassified outcome written to `audit_events`                       | `vpay-db/tests/repositories.rs::audit_events_append_and_query_by_tenant`            | PASS (refused with `DbError::Query` pointing to constraint `audit_events_outcome_is_known`)               |
-| Rate limit counter budget condition changed to strict inequality     | `vpay-api::v1::account_holders::tests::over_budget_refuses_with_429`                | PASS (failed on boundary count equal to limit)                                                           |
-| Lookup route policy reverted to `payments:read`                      | `account_holders::credential_without_account_holders_read_scope_is_refused_403`      | PASS (received 200 instead of 403 Forbidden)                                                              |
-| Refund nominated payee path skips scope requirement                  | `refunds::a_nominated_payee_refund_without_account_holders_read_is_refused_403`      | PASS (received 200 instead of 403 Forbidden)                                                              |
-| Redacting `Debug` removed from `LookupAuditSalt`                     | `vpay-api::v1::boot::tests::boot_logging_never_leaks_configured_secrets`             | PASS (panicked asserting raw salt was found in captured tracing logs)                                     |
+| Rate limit counter budget condition changed to strict inequality     | `vpay-api::v1::account_holders::tests::over_budget_refuses_with_429`                | PASS (failed on boundary count equal to limit)                                                            |
+| Lookup route policy reverted to `payments:read`                      | `account_holders::credential_without_account_holders_read_scope_is_refused_403`     | PASS (received 200 instead of 403 Forbidden)                                                              |
+| Refund nominated payee path skips scope requirement                  | `refunds::a_nominated_payee_refund_without_account_holders_read_is_refused_403`     | PASS (received 200 instead of 403 Forbidden)                                                              |
+| Redacting `Debug` removed from `LookupAuditSalt`                     | `vpay-api::v1::boot::tests::boot_logging_never_leaks_configured_secrets`            | PASS (panicked asserting raw salt was found in captured tracing logs)                                     |
 | Limiter called only in route instead of `ask_rail`                   | `refunds::a_nominated_payee_refund_spends_the_lookup_rate_limit_budget`             | PASS (refund lookup did not increment rate limit counter)                                                 |

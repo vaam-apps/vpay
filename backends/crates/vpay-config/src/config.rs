@@ -1706,7 +1706,10 @@ impl Config {
                 validate_staff_sso(sso, livemode, raw_secrets)?;
             }
         }
-        if self.privacy.lookup_audit_salt.is_some() {
+        if let Some(salt) = &self.privacy.lookup_audit_salt {
+            if livemode && salt.trim().is_empty() {
+                return Err(ConfigError::MissingPrivacyLookupAuditSalt);
+            }
             validate_secret(
                 "privacy.lookup_audit_salt",
                 raw_secrets
@@ -1714,6 +1717,8 @@ impl Config {
                     .unwrap_or(""),
                 livemode,
             )?;
+        } else if livemode && self.privacy.lookup_rate_limit.is_some() {
+            return Err(ConfigError::MissingPrivacyLookupAuditSalt);
         }
 
         Ok(())
@@ -8183,5 +8188,18 @@ providers:
             "${VPAY_LOOKUP_AUDIT_SALT}".to_owned(),
         );
         assert_eq!(config.validate_all(&raw), Ok(()));
+    }
+
+    #[test]
+    fn a_livemode_deployment_refuses_an_empty_lookup_audit_salt() {
+        let mut config = valid_config();
+        config.deployment.livemode = true;
+        config.privacy.lookup_audit_salt = Some("".to_owned());
+        let raw = RawSecrets::identity(&config);
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::MissingPrivacyLookupAuditSalt)
+        );
     }
 }

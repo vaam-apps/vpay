@@ -3207,6 +3207,85 @@ async fn a_nominated_payee_refund_spends_the_lookup_rate_limit_budget() -> anyho
         Some("rate_limit")
     );
 
+    // Criterion 56-4: Verify audit_events in Postgres on the refund path
+    use sqlx::Row as _;
+    let expected_hash = vpay_api::v1::account_holders::audit_target_hash(
+        MERCHANT_A,
+        UNREGISTERED_PAYEE.trim_start_matches('+'),
+        "refunds-audit-salt",
+    );
+    let rows = sqlx::query(
+        "SELECT action, target_repr, outcome FROM audit_events WHERE tenant = $1 ORDER BY occurred_at ASC",
+    )
+    .bind(MERCHANT_A)
+    .fetch_all(&harness.pool)
+    .await?;
+
+    assert_eq!(
+        rows.len(),
+        3,
+        "refund lookups must write initiated, terminal (not_found), and terminal (rate_limited) audit events"
+    );
+    assert_eq!(
+        rows.first()
+            .map(|r| r.get::<String, _>("action"))
+            .as_deref(),
+        Some("account_holder:lookup")
+    );
+    assert_eq!(
+        rows.first()
+            .map(|r| r.get::<String, _>("outcome"))
+            .as_deref(),
+        Some("initiated")
+    );
+    assert_eq!(
+        rows.first()
+            .map(|r| r.get::<String, _>("target_repr"))
+            .as_deref(),
+        Some(expected_hash.as_str())
+    );
+
+    assert_eq!(
+        rows.get(1).map(|r| r.get::<String, _>("action")).as_deref(),
+        Some("account_holder:lookup")
+    );
+    assert_eq!(
+        rows.get(1)
+            .map(|r| r.get::<String, _>("outcome"))
+            .as_deref(),
+        Some("not_found")
+    );
+    assert_eq!(
+        rows.get(1)
+            .map(|r| r.get::<String, _>("target_repr"))
+            .as_deref(),
+        Some(expected_hash.as_str())
+    );
+
+    assert_eq!(
+        rows.get(2).map(|r| r.get::<String, _>("action")).as_deref(),
+        Some("account_holder:lookup")
+    );
+    assert_eq!(
+        rows.get(2)
+            .map(|r| r.get::<String, _>("outcome"))
+            .as_deref(),
+        Some("rate_limited")
+    );
+
+    // Confirm raw phone number never appears in any column of audit_events
+    let leaked: i64 = sqlx::query_scalar(
+        r#"SELECT count(*) FROM audit_events
+           WHERE target_repr LIKE '%237600000404%'
+              OR actor_id LIKE '%237600000404%'"#,
+    )
+    .fetch_one(&harness.pool)
+    .await?;
+    assert_eq!(
+        leaked, 0,
+        "raw MSISDN leaked into audit_events table on refund path"
+    );
+
     harness.shutdown().await;
     Ok(())
 }

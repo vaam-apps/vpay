@@ -1733,6 +1733,11 @@ pub enum ConfigError {
         /// The configuration that belongs to it.
         key: String,
     },
+
+    /// In `livemode: true`, `privacy.lookup_audit_salt` must be configured and non-empty
+    /// (`docs/flows/configuration.md`).
+    #[error("livemode requires privacy.lookup_audit_salt to be configured and non-empty")]
+    MissingPrivacyLookupAuditSalt,
 }
 
 impl vpay_core::Classify for ConfigError {

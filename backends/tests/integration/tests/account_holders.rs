@@ -210,15 +210,22 @@ fn config_with(
             exponent: 0,
         }],
         merchant_clients: vec![
-            merchant_client_with_scopes(
-                CLIENT_A,
-                MERCHANT_A,
-                jwks_a,
-                &[
-                    vpay_api::SCOPE_PAYMENTS_READ,
-                    vpay_api::SCOPE_ACCOUNT_HOLDERS_READ,
-                ],
-            ),
+            {
+                let mut client_a = merchant_client_with_scopes(
+                    CLIENT_A,
+                    MERCHANT_A,
+                    jwks_a,
+                    &[
+                        vpay_api::SCOPE_PAYMENTS_READ,
+                        vpay_api::SCOPE_ACCOUNT_HOLDERS_READ,
+                    ],
+                );
+                client_a.cose_keys.push(vpay_config::CoseKey {
+                    public_key: support::sealed::merchant_public_b64("acme-cameroon-key-2"),
+                    label: Some("secondary".to_owned()),
+                });
+                client_a
+            },
             merchant_client_with_scopes(
                 CLIENT_B,
                 MERCHANT_B,
@@ -568,7 +575,25 @@ async fn rate_limit_blocks_and_retry_after_is_provided_and_second_credential_una
         "retry_after was {retry_after}"
     );
 
-    // 56-1: Second credential CLIENT_B is unaffected and succeeds
+    // 56-1: Second credential of the SAME merchant (CLIENT_A with key-2) is unaffected and succeeds
+    let response_a2 = merchant_http()
+        .get(h.url("/v1/account_holders"))
+        .signed_by(CLIENT_A)
+        .signed_with_seed(support::sealed::merchant_seed("acme-cameroon-key-2"))
+        .query(&[
+            ("msisdn", MSISDN_REGISTERED),
+            ("payment_method_type", PUSH_RAIL),
+        ])
+        .send()
+        .await
+        .context("GET /v1/account_holders with key-2")?;
+    assert_eq!(
+        response_a2.status().as_u16(),
+        200,
+        "second credential of the same merchant must not share the rate limit budget"
+    );
+
+    // Also verify credential CLIENT_B (different tenant) is unaffected
     let (status_b, _) = lookup_as(&h, CLIENT_B, MSISDN_REGISTERED, PUSH_RAIL).await?;
     assert_eq!(
         status_b, 200,
