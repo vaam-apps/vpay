@@ -19,6 +19,17 @@ vpay {{ .Chart.AppVersion }} — chart {{ .Chart.Version }}, release {{ .Release
   worker:     {{ .Values.worker.replicaCount }} replicas (args: ["worker"] — the job loop)
 {{- if .Values.dashboard.enabled }}
   dashboard:  {{ .Values.dashboard.replicaCount }} replicas, the admin frontend at {{ .Values.dashboard.publicOrigin }}
+{{- if and .Values.dashboard.clientId .Values.dashboard.redirectUri .Values.dashboard.scope }}
+              sign-in client: {{ .Values.dashboard.clientId }}, redirect URI {{ .Values.dashboard.redirectUri }}, scope {{ .Values.dashboard.scope }}
+              (these must equal the overlay's dashboard_client block byte for byte; Helm cannot check it, and a
+              mismatch is a sign-in that fails, not a release that does)
+{{- else if or .Values.dashboard.clientId .Values.dashboard.redirectUri .Values.dashboard.scope }}
+              sign-in client: INCOMPLETE — dashboard.clientId, dashboard.redirectUri and dashboard.scope are all
+              needed. /login will list the ones missing and render no form.
+{{- else }}
+              sign-in client: none set — /login says the console signs in with a paired key if vpay serves no
+              human_login, and names the three missing variables if it does
+{{- end }}
 {{- end }}
 {{- if .Values.checkout.enabled }}
   checkout:   {{ .Values.checkout.replicaCount }} replicas, the payment page
@@ -81,6 +92,21 @@ READ THIS.
         listed in networkPolicy.serviceIngress.peers or the CNI drops it.
         /dash/v1 and /svc/v1 are both served only when the overlay carries a
         dashboard: block; without one this release has no console at all.
+{{- end }}
+{{ if .Values.dashboard.enabled }}
+  * The dashboard's staff sign-in is configured in two places that must agree, and Helm sees only one.
+    dashboard.clientId / redirectUri / scope are this chart's; the overlay's dashboard_client block
+    (and staff_auth, both or neither) is overlay text. The cookies are __Host- prefixed and Secure: reach
+    the dashboard over https{{ if hasPrefix "http://" .Values.dashboard.publicOrigin }} — dashboard.publicOrigin is {{ .Values.dashboard.publicOrigin }}, which only a browser on localhost will keep a cookie for{{ end }}, or the sign-in does not stick.
+{{- if .Values.dashboard.ssoIssuer }}
+  * Single sign-on is offered on /login: dashboard.ssoIssuer is {{ .Values.dashboard.ssoIssuer }}. It must be the
+    issuer staff_auth.sso.issuer carries. Register {{ .Values.dashboard.publicOrigin }}/api/auth/sso/callback at the
+    provider and write the same string as staff_auth.sso.redirect_uri. That is NOT dashboard.redirectUri, which is
+    never visited. Without staff_auth.sso in the overlay (and human_login served) the button is not drawn.
+{{- else }}
+  * Single sign-on is not offered: dashboard.ssoIssuer is empty. If the overlay writes staff_auth.sso, set it
+    to that block's issuer, or /login names the variable and draws no button.
+{{- end }}
 {{- end }}
 {{ if not .Values.metrics.prometheusRule.enabled }}
   * The PrometheusRule is disabled. Enabling it installs alerts whose

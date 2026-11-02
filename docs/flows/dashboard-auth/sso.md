@@ -243,8 +243,10 @@ _Built 2026-10-30._ The sequence above is what the application does:
 URL `staff_auth.sso.issuer` carries. It is optional: without it the button is
 not offered and `/login` says which variable to set. Nothing else is new — the
 three client values and `VPAY_DASHBOARD_PUBLIC_ORIGIN` are VPA-5a's. The Helm
-chart does not template the new variable yet (the chart's dashboard values are
-VPA-5c's).
+chart renders the new variable from `dashboard.ssoIssuer` since VPA-5c, only when
+it is set ([the chart's README](../../../deploy/helm/vpay/README.md), "The
+dashboard's sign-in: four values, and the overlay text they must equal");
+`compose.e2e.yml` deliberately does not set it.
 
 [The VPA-5b page](../../status/verification/2026-10-30-vpa5b-dashboard-sso.md)
 has the tests and the sabotage log.
@@ -269,9 +271,17 @@ rather than skipping it.
 
 **Not built, and none of it is implied above:**
 
-- **No browser has completed it.** The two routes are proved against a stubbed
-  `fetch` and the page in jsdom and Chromium (contrast); no end-to-end case
-  drives them (VPA-5c), and none ran against Keycloak or any provider.
+- **No browser has completed it, and no end-to-end case drives it.** The two
+  routes are proved against a stubbed `fetch` and the page in jsdom and Chromium
+  (contrast). VPA-5c wrote the dashboard's end-to-end cases for the password
+  sign-in ([human-login.md](human-login.md), "Tests") and left this one out on
+  purpose: SSO needs an OpenID Connect provider, and the e2e compose stack has
+  none (no Keycloak, no fake issuer; `staff_sso_keycloak.rs` runs its Keycloak in
+  a testcontainer, which that stack cannot reach). The stack therefore writes no
+  `staff_auth.sso` and gives the dashboard no `VPAY_DASHBOARD_SSO_ISSUER`, and
+  `/login` draws no button there. Closing the gap means standing up a provider
+  in the stack (Keycloak, or a fake that signs its own tokens) and is unticketed.
+  None ran against Keycloak or any provider through these routes.
 - **No way to link an existing member to an SSO identity.** Members are created
   by first sign-in; password members stay password members.
 - **No back-channel or RP-initiated logout.** Signing out of vpay does not end

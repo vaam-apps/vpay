@@ -71,14 +71,14 @@ just demo-down          # containers AND volumes
 `just demo` is a composition of two recipes that also exist on their own, so
 nothing on this page runs a path the one-liner does not:
 
-| Recipe             | What it does                                                                                                                                                                                                               |
-| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `just demo-up`     | `gen-demo-keys`, `docker compose up -d --build --wait`, then poll `/healthz`                                                                                                                                               |
-| `just demo-walk`   | run `examples/merchant-demo` against a stack that is already up                                                                                                                                                            |
-| `just demo-status` | what is running, under which project, on which host ports                                                                                                                                                                  |
-| `just demo-down`   | stop the stack and delete its volumes                                                                                                                                                                                      |
-| `just demo`        | `demo-up` then `demo-walk`                                                                                                                                                                                                 |
-| `just demo-staff`  | create the dashboard's staff member against a **running** stack and write its id to `.e2e/<demo_project>/staff-id.txt`; attach a key with `staff pair-key` ([§6](demo/dashboard-sign-in.md#6-signing-in-to-the-dashboard)) |
+| Recipe             | What it does                                                                                                                                                                           |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `just demo-up`     | `gen-demo-keys`, `docker compose up -d --build --wait`, then poll `/healthz`                                                                                                           |
+| `just demo-walk`   | run `examples/merchant-demo` against a stack that is already up                                                                                                                        |
+| `just demo-status` | what is running, under which project, on which host ports                                                                                                                              |
+| `just demo-down`   | stop the stack and delete its volumes                                                                                                                                                  |
+| `just demo`        | `demo-up` then `demo-walk`                                                                                                                                                             |
+| `just demo-staff`  | create the dashboard's staff member against a **running** stack and keep the one-time password it prints in `.e2e/<demo_project>/staff-password.txt` ([§6](demo/dashboard-sign-in.md)) |
 
 **`just demo-walk` takes about a minute** — 58 s measured on 2026-09-10, six
 payments, of which two wait a ten-second rung of `vpay_worker::poll_delay` (the
@@ -239,7 +239,7 @@ longer list and shows only the first six. _(This said "Six services" and "The se
 `dashboard`, is deliberately absent" until 2026-09-23. `vpay-checkout` and
 `vpay-shop` joined the list in Step 9 (2026-09-04), and `dashboard` joined in
 exp28 (2026-09-07); see
-[§6](demo/dashboard-sign-in.md#6-signing-in-to-the-dashboard).)_
+[§6](demo/dashboard-sign-in.md#signing-in-with-a-password).)_
 
 ## The rest of the procedure, in order
 
