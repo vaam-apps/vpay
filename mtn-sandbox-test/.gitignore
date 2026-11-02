@@ -1,0 +1,3 @@
+# Test output and cached sandbox credentials. Never commit either.
+evidence/
+.state/
