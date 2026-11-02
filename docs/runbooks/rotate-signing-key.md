@@ -199,7 +199,7 @@ There are no down-migrations here. See [release.md](release.md) §5.
 - `--envelope-signing-key-file` / `VPAY_ENVELOPE_SIGNING_KEY_FILE`: current signing key
 - `--envelope-signing-key-next-file` / `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE`: upcoming key published in server keys for clients to pre-warm pins
 
-### Procedure:
+### Procedure
 
 1. Generate a new Ed25519 keypair.
 2. Mount the new key as `VPAY_ENVELOPE_SIGNING_KEY_NEXT_FILE` alongside the current key and restart `vpay-server`.
@@ -212,7 +212,7 @@ _Proven by:_ `an_answer_is_refused_by_a_client_pinning_the_wrong_server_key` (`b
 
 ## 6. Console Key and Service Client Revocation (ADR-0036, issue #152)
 
-### Revoking a Console Key:
+### Revoking a Console Key
 
 If an operator console key is lost, stolen, or compromised:
 
@@ -225,7 +225,7 @@ If an operator console key is lost, stolen, or compromised:
 
 _Proven by:_ `a_revoked_key_is_refused_on_its_very_next_request` (`backends/tests/integration/tests/dashboard_read_surface.rs:1350`).
 
-### Revoking a Service Client:
+### Revoking a Service Client
 
 Internal service clients (such as `vaam` on `/svc/v1`) authenticate via registered COSE keys in `config/application.yml` under `service_clients`.
 
