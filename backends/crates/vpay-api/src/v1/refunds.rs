@@ -554,11 +554,19 @@ async fn resolve_target<'a>(
             return Err(ApiError::Forbidden);
         }
 
+        let audit_key = config
+            .lookup_audit_salt()
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| {
+                tracing::error!("lookup audit key is empty or unconfigured; failing closed");
+                ApiError::Internal("privacy controls not configured".to_owned())
+            })?;
+
         verify_registered_holder(
             repositories,
             scope,
             caller,
-            config.lookup_audit_salt().unwrap_or(""),
+            audit_key,
             config.lookup_rate_limit(),
             adapter.as_ref(),
             &charge.provider_code,
@@ -819,7 +827,7 @@ async fn verify_registered_holder(
     store: &(impl crate::v1::account_holders::LookupStore + ?Sized),
     scope: &MerchantScope,
     caller: &CallerCredential,
-    salt: &str,
+    key: &str,
     rate_limit: Option<vpay_config::RateLimitPolicy>,
     adapter: &dyn ProviderAdapter,
     code: &str,
@@ -834,7 +842,7 @@ async fn verify_registered_holder(
         store,
         scope,
         caller,
-        salt,
+        key,
         rate_limit,
         adapter,
         code,
@@ -1982,6 +1990,11 @@ mod tests {
         }
     }
 
+    fn test_audit_key() -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(b"refunds-unit-test-key-seed"))
+    }
+
     async fn verify_payee(
         adapter: &dyn ProviderAdapter,
         code: &str,
@@ -1994,11 +2007,12 @@ mod tests {
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
             vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
         );
+        let key = test_audit_key();
         verify_registered_holder(
             &store,
             &scope,
             &caller,
-            "unit-test-salt",
+            &key,
             None,
             adapter,
             code,
@@ -2517,11 +2531,12 @@ mod tests {
             let _logs = tracing::subscriber::set_default(crate::test_log::captured_log_subscriber(
                 sink.clone(),
             ));
+            let key = test_audit_key();
             verify_registered_holder(
                 &store,
                 &scope,
                 &caller,
-                "unit-test-salt",
+                &key,
                 None,
                 &found,
                 "required_rail",

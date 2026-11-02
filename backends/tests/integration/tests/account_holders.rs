@@ -74,7 +74,10 @@ const MERCHANT_B: &str = "acme-douala-tenant";
 const CLIENT_READ_ONLY: &str = "acme-no-lookup";
 const MERCHANT_READ_ONLY: &str = "acme-no-lookup-tenant";
 
-const AUDIT_SALT: &str = "integration-test-audit-salt";
+fn test_audit_key() -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(b"integration-test-audit-key-seed"))
+}
 
 /// The rail that declares `supports_account_holder_lookup` and implements it.
 const PUSH_RAIL: &str = "mtn_momo";
@@ -253,7 +256,7 @@ fn config_with(
 
 fn default_privacy() -> vpay_config::PrivacyConfig {
     vpay_config::PrivacyConfig {
-        lookup_audit_salt: Some(AUDIT_SALT.to_owned()),
+        lookup_audit_salt: Some(test_audit_key()),
         lookup_rate_limit: None,
     }
 }
@@ -296,7 +299,7 @@ async fn harness_configured(
 
 async fn harness_with_rate_limit(limit: u32, window_seconds: u32) -> anyhow::Result<Harness> {
     let privacy = vpay_config::PrivacyConfig {
-        lookup_audit_salt: Some(AUDIT_SALT.to_owned()),
+        lookup_audit_salt: Some(test_audit_key()),
         lookup_rate_limit: Some(vpay_config::RateLimitPolicy {
             attempts: limit,
             window_seconds,
@@ -636,10 +639,13 @@ async fn audit_table_holds_hmac_target_representation_and_no_raw_pii() -> anyhow
     let (status, _) = lookup_as(&h, CLIENT_A, MSISDN_REGISTERED, PUSH_RAIL).await?;
     assert_eq!(status, 200);
 
-    // Expected HMAC-SHA256 of tenant + canonical MSISDN with AUDIT_SALT
+    // Expected HMAC-SHA256 of tenant + canonical MSISDN with test_audit_key
     use sqlx::Row as _;
-    let expected_hash =
-        vpay_api::v1::account_holders::audit_target_hash(MERCHANT_A, MSISDN_REGISTERED, AUDIT_SALT);
+    let expected_hash = vpay_api::v1::account_holders::audit_target_hash(
+        MERCHANT_A,
+        MSISDN_REGISTERED,
+        &test_audit_key(),
+    );
 
     let rows = sqlx::query(
         "SELECT action, target_repr, outcome FROM audit_events WHERE tenant = $1 ORDER BY occurred_at ASC",

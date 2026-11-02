@@ -4792,6 +4792,11 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
             | grep -qE '^  merchant_id: {{demo_dashboard_merchant}}$'
     }
 
+    # Privacy scope for account holder lookup (RFC-0002 D5 provisional).
+    demo_scopes_present() {
+        grep -q 'account_holders:read' "$overlay"
+    }
+
     if [ -e "$key" ] && [ -e "$shop_key" ] && [ -e "$overlay" ] && [ -e "$demo_seed" ] && [ -e "$shop_seed" ] && [ -e "$staff_env" ]; then
         # ...unless the overlay predates a required field. `merchant_id`
         # became required on `merchant_clients` in Step 2, and an overlay
@@ -4823,7 +4828,8 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
             && auth_methods_present \
             && dashboard_client_present \
             && staff_auth_present \
-            && cose_keys_present; then
+            && cose_keys_present \
+            && demo_scopes_present; then
             echo "gen-demo-keys: $key, $shop_key, $demo_seed, $shop_seed, $staff_env and $overlay already exist, keeping them"
             exit 0
         fi
@@ -4888,6 +4894,8 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
             echo "gen-demo-keys: $overlay or $staff_env does not carry the staff_auth secrets — regenerating the pair"
         elif ! cose_keys_present; then
             echo "gen-demo-keys: $overlay does not register the merchants' current Ed25519 signing keys (cose_keys) — regenerating the pair"
+        elif ! demo_scopes_present; then
+            echo "gen-demo-keys: $overlay is missing account_holders:read scope for demo-merchant — regenerating the pair"
         elif ! checkout_base_present; then
             # Added 2026-09-04 (Step 9, D3/D6). `checkout.public_base_url` is
             # the origin every payer link vpay mints is built on. Stale, and
@@ -5219,9 +5227,9 @@ gen-demo-keys: gen-e2e-signing-key gen-envelope-keys
         cose_keys: [{ public_key: "$cose_demo", label: demo }]
         # What the demo is authorised to do: \`payments:write\` is what /v1
         # requires on the demo's POST /v1/payment_intents, and the signed path
-        # checks it against this list on every request. An empty list would
-        # still verify a signature and then 403 every call.
-        scopes: ["payments:write"]
+        # checks it against this list on every request. \`account_holders:read\`
+        # is required for lookups and nominated payee refunds (RFC-0002 D5 provisional).
+        scopes: ["payments:write", "account_holders:read"]
         # What a payer's browser presents on /v1/browser alongside the payment
         # intent's own client_secret (Step 5c, @vaam-apps/vpay-stripe-js). Not secret:
         # it is rendered into the checkout page, it names this tenant, and it

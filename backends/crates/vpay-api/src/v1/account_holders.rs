@@ -125,13 +125,13 @@ impl<T: RateLimits + AuditEvents + Send + Sync + ?Sized> LookupStore for T {}
 
 /// Keyed HMAC-SHA256 digest of `tenant_id` + normalized MSISDN (provisional pending RFC-0002 D3).
 ///
-/// Salted with the deployment's `privacy.lookup_audit_salt`.
+/// Keyed with the deployment's `privacy.lookup_audit_salt`.
 #[must_use]
-pub fn audit_target_hash(tenant_id: &str, msisdn: &str, salt: &str) -> String {
+pub fn audit_target_hash(tenant_id: &str, msisdn: &str, key: &str) -> String {
     use hmac::{Hmac, Mac as _};
     use sha2::Sha256;
 
-    let mut mac = match Hmac::<Sha256>::new_from_slice(salt.as_bytes()) {
+    let mut mac = match Hmac::<Sha256>::new_from_slice(key.as_bytes()) {
         Ok(m) => m,
         Err(_) => return String::new(),
     };
@@ -214,12 +214,18 @@ pub(crate) async fn retrieve_with(
     }
 
     let msisdn_raw = params.msisdn.as_deref().unwrap_or("");
-    let salt = config.lookup_audit_salt().unwrap_or("");
+    let audit_key = config
+        .lookup_audit_salt()
+        .filter(|k| !k.trim().is_empty())
+        .ok_or_else(|| {
+            tracing::error!("lookup audit key is empty or unconfigured; failing closed");
+            ApiError::Internal("privacy controls not configured".to_owned())
+        })?;
     let holder = ask_rail(
         store,
         scope,
         caller,
-        salt,
+        audit_key,
         config.lookup_rate_limit(),
         adapter.as_ref(),
         rail.code(),
@@ -317,13 +323,13 @@ pub(crate) mod caller {
 /// prevent; see this module's flow doc.
 #[expect(
     clippy::too_many_arguments,
-    reason = "lookup pipeline parameters: store, scope, caller, salt, rate_limit, adapter, rail_code, msisdn, config, caller_trace"
+    reason = "lookup pipeline parameters: store, scope, caller, key, rate_limit, adapter, rail_code, msisdn, config, caller_trace"
 )]
 pub(crate) async fn ask_rail(
     store: &(impl LookupStore + ?Sized),
     scope: &MerchantScope,
     caller: &CallerCredential,
-    salt: &str,
+    key: &str,
     rate_limit: Option<vpay_config::RateLimitPolicy>,
     adapter: &dyn ProviderAdapter,
     rail_code: &str,
@@ -331,9 +337,9 @@ pub(crate) async fn ask_rail(
     config: &vpay_provider::ProviderConfig,
     caller_trace: &'static str,
 ) -> Result<Option<vpay_provider::AccountHolder>, ApiError> {
-    // Privacy controls require an explicit non-empty salt to key target HMACs (RFC-0002 D3 fail-closed).
-    if salt.trim().is_empty() {
-        tracing::error!("lookup audit salt is empty or unconfigured; failing closed");
+    // Privacy controls require an explicit non-empty HMAC key to key target hashes (RFC-0002 D3 fail-closed).
+    if key.trim().is_empty() {
+        tracing::error!("lookup audit key is empty or unconfigured; failing closed");
         return Err(ApiError::Internal(
             "privacy controls not configured".to_owned(),
         ));
@@ -371,7 +377,7 @@ pub(crate) async fn ask_rail(
                 remaining.whole_seconds().max(1) as u64
             };
 
-            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, salt);
+            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, key);
             let actor_kind = match caller.kind() {
                 CredentialKind::Signer => "signer",
                 CredentialKind::MachineToken => "machine_token",
@@ -405,7 +411,7 @@ pub(crate) async fn ask_rail(
         Some(m) => m,
         None => {
             count(account_holder_outcome::ERROR);
-            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, salt);
+            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, key);
             let actor_kind = match caller.kind() {
                 CredentialKind::Signer => "signer",
                 CredentialKind::MachineToken => "machine_token",
@@ -437,7 +443,7 @@ pub(crate) async fn ask_rail(
     };
 
     // 3. Initiated audit event (provisional pending RFC-0002 D7). Fails closed if write fails.
-    let target_repr = audit_target_hash(scope.merchant_id(), &msisdn, salt);
+    let target_repr = audit_target_hash(scope.merchant_id(), &msisdn, key);
     let operation_id = vpay_core::ids::operation_id();
     let actor_kind = match caller.kind() {
         CredentialKind::Signer => "signer",
@@ -864,6 +870,11 @@ mod tests {
     const MSISDN: &str = "237600000200";
     const HOLDER_NAME: &str = "David Mbarga";
 
+    fn test_audit_key(seed: &str) -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(seed.as_bytes()))
+    }
+
     fn resource_config(enabled: bool) -> Arc<ResourceConfig> {
         let config = Config {
             deployment: Deployment {
@@ -900,7 +911,7 @@ mod tests {
             routing: Default::default(),
             auth: Default::default(),
             privacy: vpay_config::PrivacyConfig {
-                lookup_audit_salt: Some("unit-test-lookup-salt".to_owned()),
+                lookup_audit_salt: Some(test_audit_key("fixture-lookup-key")),
                 lookup_rate_limit: None,
             },
         };
@@ -1382,18 +1393,24 @@ mod tests {
 
     #[test]
     fn audit_target_hash_produces_consistent_hmac_sha256() {
-        let hash1 = audit_target_hash("tenant-a", "237600000200", "my-secret-salt");
-        let hash2 = audit_target_hash("tenant-a", "237600000200", "my-secret-salt");
+        let key_a = test_audit_key("key-seed-a");
+        let key_b = test_audit_key("key-seed-b");
+
+        let hash1 = audit_target_hash("tenant-a", "237600000200", &key_a);
+        let hash2 = audit_target_hash("tenant-a", "237600000200", &key_a);
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 64);
         assert!(!hash1.contains("237600000200"));
         assert!(!hash1.contains("tenant-a"));
 
-        let diff_tenant = audit_target_hash("tenant-b", "237600000200", "my-secret-salt");
+        let diff_tenant = audit_target_hash("tenant-b", "237600000200", &key_a);
         assert_ne!(hash1, diff_tenant);
 
-        let diff_msisdn = audit_target_hash("tenant-a", "237600000201", "my-secret-salt");
+        let diff_msisdn = audit_target_hash("tenant-a", "237600000201", &key_a);
         assert_ne!(hash1, diff_msisdn);
+
+        let diff_key = audit_target_hash("tenant-a", "237600000200", &key_b);
+        assert_ne!(hash1, diff_key);
     }
 
     #[tokio::test]
@@ -1438,7 +1455,7 @@ mod tests {
             routing: Default::default(),
             auth: Default::default(),
             privacy: vpay_config::PrivacyConfig {
-                lookup_audit_salt: Some("unit-test-salt".to_owned()),
+                lookup_audit_salt: Some(test_audit_key("unit-test-rate-limit-key")),
                 lookup_rate_limit: Some(vpay_config::RateLimitPolicy {
                     attempts: 10,
                     window_seconds: 60,

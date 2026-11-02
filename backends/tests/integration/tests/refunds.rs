@@ -2473,9 +2473,14 @@ async fn rail_harness_with_privacy(
     })
 }
 
+fn test_audit_key() -> String {
+    use sha2::Digest as _;
+    hex::encode(sha2::Sha256::digest(b"refunds-integration-test-audit-key"))
+}
+
 async fn rail_harness() -> anyhow::Result<RailHarness> {
     rail_harness_with_privacy(vpay_config::PrivacyConfig {
-        lookup_audit_salt: Some("refunds-audit-salt".to_owned()),
+        lookup_audit_salt: Some(test_audit_key()),
         lookup_rate_limit: None,
     })
     .await
@@ -2486,7 +2491,7 @@ async fn rail_harness_with_rate_limit(
     window_seconds: u32,
 ) -> anyhow::Result<RailHarness> {
     rail_harness_with_privacy(vpay_config::PrivacyConfig {
-        lookup_audit_salt: Some("refunds-audit-salt".to_owned()),
+        lookup_audit_salt: Some(test_audit_key()),
         lookup_rate_limit: Some(vpay_config::RateLimitPolicy {
             attempts: limit,
             window_seconds,
@@ -3212,7 +3217,7 @@ async fn a_nominated_payee_refund_spends_the_lookup_rate_limit_budget() -> anyho
     let expected_hash = vpay_api::v1::account_holders::audit_target_hash(
         MERCHANT_A,
         UNREGISTERED_PAYEE.trim_start_matches('+'),
-        "refunds-audit-salt",
+        &test_audit_key(),
     );
     let rows = sqlx::query(
         "SELECT action, target_repr, outcome FROM audit_events WHERE tenant = $1 ORDER BY occurred_at ASC",
