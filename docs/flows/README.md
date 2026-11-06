@@ -39,6 +39,8 @@ code expresses it belongs in `../reference/`.
 | [adapter-orange-money.md](adapter-orange-money.md)   | Orange specifics — redirect flow                                                                                                                                                                                 |
 | [adapter-notchpay.md](adapter-notchpay.md)           | Notch Pay specifics — push flow through an aggregator, admitted under ADR-0031; its **Production risks** are the first thing to read                                                                             |
 | [deployment.md](deployment.md)                       | What ships, what must exist before a pod starts, the boot order, the `subPath` overlay rule, and what guards a bad deployment                                                                                    |
+| [sdlc.md](sdlc.md)                                   | The ISO 27001 A.8.25 secure-SDLC control: the change-to-production path, the threat-assessment trigger, advisory scanning and its exception path, the remediation SLA, and CI evidence                           |
+| [emergency-changes.md](emergency-changes.md)         | The auditable exception to the normal path: what counts as emergency, the non-negotiable gates, and the retrospective review requirement                                                                         |
 | [mcp.md](mcp.md)                                     | The merchant MCP endpoint (ADR-0033): opting in, the token, a tool call reaching `/v1`'s own code, and what is proven                                                                                            |
 
 Every flow here is _designed_. See [../status.md](../status.md) for which parts

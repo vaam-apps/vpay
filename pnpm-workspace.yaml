@@ -349,10 +349,9 @@ minimumReleaseAgeExclude:
 # ---------------------------------------------------------------------------
 # auditConfig
 # ---------------------------------------------------------------------------
-# ONE advisory, ignored by id, by the maintainer's decision of 2026-10-09
-# (vaam-apps/vpay#272). Not a severity threshold and not a package name, so
-# every other advisory, including any NEW one against braces, still fails
-# `just audit-web`.
+# THREE advisories, ignored by id, each under a dated maintainer decision.
+# Not a severity threshold and not a package name, so every other advisory,
+# including any NEW one against the same packages, still fails `just audit-web`.
 #
 # GHSA-vfj7-8cjw-p6xm: braces <=3.0.3, high, stack exhaustion on deeply
 #   nested brace patterns. The advisory names >=3.0.4 as the fix, and npm
@@ -365,11 +364,38 @@ minimumReleaseAgeExclude:
 #   no app, SDK or server loads `@vpay/config` at run time, and no pattern it
 #   expands comes from a user. Trivy's gate already skips it
 #   (`--ignore-unfixed`).
+#   REMOVE WHEN: braces publishes a fixed release. Then add a floor for it
+#   under `overrides` like the brace-expansion ones, and delete this block.
 #
-# REMOVE WHEN: braces publishes a fixed release. Then add a floor for it under
-# `overrides` like the brace-expansion ones, and delete this block. Re-check
-# on every audit pass, since an ignore that outlives its reason hides the next
-# finding against the same id.
+# GHSA-3g3m-2fjr-6pw4: glob >=9.0.0 <=14.0.1, moderate, AbortSignal
+#   cancellation bypass allows post-timeout filesystem traversal. The
+#   advisory names >=14.0.2 as the fix, and the only consumer in this
+#   workspace, `@joshwooding/vite-plugin-react-docgen-typescript@0.7.0`
+#   (Storybook's react-docgen Vite plugin), declares `glob: ^13.0.1` — a
+#   range that cannot reach 14.x, a major over 13. It is reached only through
+#   the Storybook build of the two frontends
+#   (`frontends/apps/* > @storybook/react-vite`), a development-time doc
+#   generation step that ships no runtime code, and no glob pattern it expands
+#   comes from a user.
+#   REMOVE WHEN: `@joshwooding/vite-plugin-react-docgen-typescript` publishes
+#   a version that bumps its `glob` floor to >=14.0.2.
+#
+# GHSA-g3hv-75wg-m249: minimatch >=7.0.0 <11.0.1, moderate, potential DoS
+#   via globparts amplification. The advisory names >=11.0.1 as the fix.
+#   Reached through two dev-only tool chains that constrain it below the fix:
+#   `@typescript-eslint/typescript-estree` (the lint path via `@vpay/config >`
+#   `typescript-eslint > ... > typescript-estree`) and `glob@13` (above),
+#   both on the vulnerable `minimatch@10.x` line, while `brace-expansion`
+#   needs the non-vulnerable `minimatch@3.x`. 11.x is a major over 10.x, so
+#   no declared range in either tool reaches it. None of these is in the
+#   runtime dependency graph of a shipped application; they run at
+#   lint/build time only.
+#   REMOVE WHEN: `@typescript-eslint` and `glob` resolve `minimatch`
+#   >=11.0.1 on the ranges their current releases declare. Re-check on every
+#   audit pass, since an ignore that outlives its reason hides the next
+#   finding against the same id.
 auditConfig:
   ignoreGhsas:
     - GHSA-vfj7-8cjw-p6xm
+    - GHSA-3g3m-2fjr-6pw4
+    - GHSA-g3hv-75wg-m249
