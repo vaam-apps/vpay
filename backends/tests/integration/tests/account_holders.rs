@@ -652,7 +652,10 @@ async fn a_head_to_account_holders_is_held_to_the_get_scope_policy() -> anyhow::
     let refused = merchant_http()
         .request("HEAD", &url)
         .signed_by(CLIENT_READ_ONLY)
-        .query(&[("msisdn", MSISDN_REGISTERED), ("payment_method_type", PUSH_RAIL)])
+        .query(&[
+            ("msisdn", MSISDN_REGISTERED),
+            ("payment_method_type", PUSH_RAIL),
+        ])
         .send()
         .await
         .context("HEAD /v1/account_holders as a payments-only credential")?;
@@ -666,7 +669,10 @@ async fn a_head_to_account_holders_is_held_to_the_get_scope_policy() -> anyhow::
     let allowed = merchant_http()
         .request("HEAD", &url)
         .signed_by(CLIENT_B)
-        .query(&[("msisdn", MSISDN_REGISTERED), ("payment_method_type", PUSH_RAIL)])
+        .query(&[
+            ("msisdn", MSISDN_REGISTERED),
+            ("payment_method_type", PUSH_RAIL),
+        ])
         .send()
         .await
         .context("HEAD /v1/account_holders as an account-holders-only credential")?;
