@@ -634,52 +634,68 @@ async fn credential_without_account_holders_read_scope_is_refused_403() -> anyho
 /// Test 56-7 (PR #396 P2): an implicit `HEAD` is held to the `GET` route
 /// policy, not the method-based default.
 ///
-/// Axum serves `HEAD` from the same handler as `GET`, so a `HEAD` to
-/// `/v1/account_holders` is a real rail lookup whose observable outcome (an
-/// audit row, a rate-limit spend) occurs even though Axum strips the body. It
-/// must therefore demand `account_holders:read` exactly as `GET` does — a
-/// payments-only credential must be refused `403`, and an account-holders-only
-/// credential must be served, rather than the pre-396 fallback to
-/// `payments:read`/`payments:write` which refused the one and admitted the
-/// other.
+/// Axum serves `HEAD` from the same handler as `GET` and strips the response
+/// body — so the sealed (COSE) client cannot read the status back (an empty
+/// body has no envelope to verify), even though the server fully processed the
+/// request. What the reviewer named as the observable outcome is therefore the
+/// **audit trail**: whether the rail lookup ran at all. That is asserted here,
+/// over the real database. A payments-only credential's `HEAD` must be refused
+/// at the scope step *before* the handler, so it writes **no** audit event; an
+/// account-holders-only credential's `HEAD` is served, so it writes the
+/// `initiated` + terminal pair. The pre-396 fallback to
+/// `payments:read`/`payments:write` admitted the first and refused the second,
+/// which this test's two assertions each catch.
 #[tokio::test]
 async fn a_head_to_account_holders_is_held_to_the_get_scope_policy() -> anyhow::Result<()> {
     let h = harness().await?;
 
     let url = h.url("/v1/account_holders");
 
-    // CLIENT_READ_ONLY (payments:read only) must be refused 403, exactly as on GET.
-    let refused = merchant_http()
-        .request("HEAD", &url)
-        .signed_by(CLIENT_READ_ONLY)
-        .query(&[
-            ("msisdn", MSISDN_REGISTERED),
-            ("payment_method_type", PUSH_RAIL),
-        ])
-        .send()
-        .await
-        .context("HEAD /v1/account_holders as a payments-only credential")?;
+    // The HEAD response carries no body, so the sealed client's response
+    // verification necessarily fails even though the request was processed.
+    // That failure is expected and irrelevant here: the assertion is the
+    // server-side observable outcome in `audit_events`, not the response body.
+    async fn send_head(url: &str, client_id: &str) -> anyhow::Result<()> {
+        let _ = merchant_http()
+            .request("HEAD", url)
+            .signed_by(client_id)
+            .query(&[
+                ("msisdn", MSISDN_REGISTERED),
+                ("payment_method_type", PUSH_RAIL),
+            ])
+            .send()
+            .await;
+        Ok(())
+    }
+
+    // CLIENT_READ_ONLY (payments:read only) must be refused before the handler.
+    send_head(&url, CLIENT_READ_ONLY).await?;
+
+    // The scope step refused it, so no lookup ran and no audit row exists.
+    let refused_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant = $1")
+            .bind(MERCHANT_READ_ONLY)
+            .fetch_one(&h.pool)
+            .await?;
     assert_eq!(
-        refused.status().as_u16(),
-        403,
-        "a payments-only credential must not trigger the lookup via HEAD"
+        refused_rows, 0,
+        "a payments-only credential's HEAD must be refused before the lookup, so it writes no \
+         audit event — the pre-396 fallback would have admitted it and triggered the rail"
     );
 
-    // CLIENT_B (account_holders:read only) must be served, exactly as on GET.
-    let allowed = merchant_http()
-        .request("HEAD", &url)
-        .signed_by(CLIENT_B)
-        .query(&[
-            ("msisdn", MSISDN_REGISTERED),
-            ("payment_method_type", PUSH_RAIL),
-        ])
-        .send()
-        .await
-        .context("HEAD /v1/account_holders as an account-holders-only credential")?;
+    // CLIENT_B (account_holders:read only) is served: the lookup runs and its
+    // observable outcome (the initiated + terminal audit pair) is recorded.
+    send_head(&url, CLIENT_B).await?;
+
+    let allowed_rows: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM audit_events WHERE tenant = $1")
+            .bind(MERCHANT_B)
+            .fetch_one(&h.pool)
+            .await?;
     assert_eq!(
-        allowed.status().as_u16(),
-        200,
-        "an account-holders-only credential must be served on HEAD, as it is on GET"
+        allowed_rows, 2,
+        "an account-holders-only credential's HEAD must be served, so the lookup runs and \
+         writes its initiated + terminal audit pair"
     );
 
     h.shutdown().await;
