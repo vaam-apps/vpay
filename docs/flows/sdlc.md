@@ -23,7 +23,13 @@ references.
 ## What a change must pass, in order
 
 `just ci` is the recipe a contributor runs before opening a pull request, and
-the `ci.yml` workflow runs the same set on every pull request. In order:
+the `ci.yml` workflow runs the same set on every pull request, subject to CI's
+per-job path filtering: a job whose inputs a change does not touch is skipped
+rather than run to green. The one a security reader should notice is the
+supply-chain `deny` job, which CI runs only when the change touches a
+`Cargo.toml`, `Cargo.lock`, `deny.toml` or `ci.yml` itself — so a web-only
+change does not get a `cargo deny` run in CI, even though `just ci` always runs
+`deny` locally. In order:
 
 | Step (recipe)    | What it refuses                                                                                     | Evidence of it passing |
 | ---------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
@@ -110,8 +116,10 @@ both dependency graphs:
   CI's `web` job. GAP-103's original complaint — that it ran at `high`, was
   not in `just ci`, and stayed green over a moderate advisory for two days —
   is resolved: the level is `moderate`, it is in `just ci` and in CI.
-- **Rust:** `cargo deny check` runs in CI's supply-chain job and locally via
-  `just deny`, refusing banned, unlicensed, unvetted-source and advisory
+- **Rust:** `cargo deny check` runs in CI's supply-chain job — which CI triggers
+  only when the change touches a `Cargo.toml`, `Cargo.lock`, `deny.toml` or
+  `ci.yml` — and locally via `just deny` (part of `just ci`, so run on every
+  change), refusing banned, unlicensed, unvetted-source and advisory
   findings.
 
 ### The exception and acceptance path
