@@ -847,6 +847,7 @@ fn config_with(base_url: &str, mtn_url: &str, jwks_a: Value) -> Config {
         staff_auth: None,
         routing: Default::default(),
         auth: Default::default(),
+        privacy: Default::default(),
     }
 }
 

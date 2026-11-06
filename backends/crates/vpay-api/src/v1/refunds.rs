@@ -111,6 +111,7 @@ use vpay_provider::{
     Refunded,
 };
 
+use crate::envelope::CallerCredential;
 use crate::error::ApiError;
 use crate::form::VpayQuery;
 use crate::model::{ListObject, RefundObject};
@@ -248,11 +249,20 @@ pub(crate) async fn create(
     State(repositories): State<Arc<dyn Repositories>>,
     State(config): State<Arc<ResourceConfig>>,
     State(adapters): State<Arc<BTreeMap<String, Box<dyn ProviderAdapter>>>>,
+    caller: CallerCredential,
     scope: MerchantScope,
     request: Request,
 ) -> Result<Response, ApiError> {
     let post = PostRequest::read(request).await?;
-    create_with(repositories.as_ref(), &config, &adapters, &scope, post).await
+    create_with(
+        repositories.as_ref(),
+        &config,
+        &adapters,
+        &caller,
+        &scope,
+        post,
+    )
+    .await
 }
 
 /// [`create`] once its request has been read into a [`PostRequest`]: every
@@ -262,6 +272,7 @@ pub(crate) async fn create_with(
     repositories: &dyn Repositories,
     config: &ResourceConfig,
     adapters: &BTreeMap<String, Box<dyn ProviderAdapter>>,
+    caller: &CallerCredential,
     scope: &MerchantScope,
     post: PostRequest,
 ) -> Result<Response, ApiError> {
@@ -301,7 +312,8 @@ pub(crate) async fn create_with(
     // and it is why the release is here rather than left to
     // [`PostRequest::finish`], which would store the refusal and replay it at
     // a merchant who has since corrected their request.
-    let target = match resolve_target(repositories, config, adapters, scope, &params).await {
+    let target = match resolve_target(repositories, config, adapters, caller, scope, &params).await
+    {
         Ok(target) => target,
         Err(error) => {
             post.release(repositories, scope, claim_id).await;
@@ -455,6 +467,7 @@ async fn resolve_target<'a>(
     repositories: &dyn Repositories,
     config: &'a ResourceConfig,
     adapters: &'a BTreeMap<String, Box<dyn ProviderAdapter>>,
+    caller: &CallerCredential,
     scope: &MerchantScope,
     params: &CreateParams,
 ) -> Result<RefundTargetResolved<'a>, ApiError> {
@@ -533,7 +546,28 @@ async fn resolve_target<'a>(
     )?;
 
     if let Some(destination) = destination.as_ref() {
+        if !caller.has_scope(crate::v1::SCOPE_ACCOUNT_HOLDERS_READ) {
+            tracing::warn!(
+                client_id = %caller.id(),
+                "a refund nominated a payee destination but caller credential lacks account_holders:read; refusing"
+            );
+            return Err(ApiError::Forbidden);
+        }
+
+        let audit_key = config
+            .lookup_audit_salt()
+            .filter(|k| !k.trim().is_empty())
+            .ok_or_else(|| {
+                tracing::error!("lookup audit key is empty or unconfigured; failing closed");
+                ApiError::Internal("privacy controls not configured".to_owned())
+            })?;
+
         verify_registered_holder(
+            repositories,
+            scope,
+            caller,
+            audit_key,
+            config.lookup_rate_limit(),
             adapter.as_ref(),
             &charge.provider_code,
             destination,
@@ -785,7 +819,16 @@ fn resolve_destination(
 /// it — and would let a refused payee leave **no trace at all**, since the
 /// refusal happens before any row, any attempt and any rail instruction.
 /// Added by review, 2026-09-16; see that function's own doc.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "delegates to ask_rail with caller credential, provider, payee details and config"
+)]
 async fn verify_registered_holder(
+    store: &(impl crate::v1::account_holders::LookupStore + ?Sized),
+    scope: &MerchantScope,
+    caller: &CallerCredential,
+    key: &str,
+    rate_limit: Option<vpay_config::RateLimitPolicy>,
     adapter: &dyn ProviderAdapter,
     code: &str,
     destination: &RefundTarget,
@@ -796,6 +839,11 @@ async fn verify_registered_holder(
     }
 
     match crate::v1::account_holders::ask_rail(
+        store,
+        scope,
+        caller,
+        key,
+        rate_limit,
         adapter,
         code,
         destination.msisdn(),
@@ -1942,6 +1990,38 @@ mod tests {
         }
     }
 
+    fn test_audit_key() -> String {
+        use sha2::Digest as _;
+        hex::encode(sha2::Sha256::digest(b"refunds-unit-test-key-seed"))
+    }
+
+    async fn verify_payee(
+        adapter: &dyn ProviderAdapter,
+        code: &str,
+        destination: &RefundTarget,
+        rail: &ProviderConfig,
+    ) -> Result<(), ApiError> {
+        let store = crate::v1::account_holders::TestStore::default();
+        let scope = MerchantScope::for_payer("acct_test".to_owned());
+        let caller = CallerCredential::for_signer(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+        let key = test_audit_key();
+        verify_registered_holder(
+            &store,
+            &scope,
+            &caller,
+            &key,
+            None,
+            adapter,
+            code,
+            destination,
+            rail,
+        )
+        .await
+    }
+
     fn intent(amount: i64, refunded: i64, pending: i64) -> vpay_db::PaymentIntentRow {
         vpay_db::PaymentIntentRow {
             id: "pi_000000000000000000000001".to_owned(),
@@ -2389,7 +2469,7 @@ mod tests {
             lookup: Some(Ok(None)),
         };
         let destination = RefundTarget::mobile_money(PAYEE).expect("a documentation MSISDN");
-        let error = verify_registered_holder(&unregistered, "required_rail", &destination, &rail)
+        let error = verify_payee(&unregistered, "required_rail", &destination, &rail)
             .await
             .expect_err("the rail has no record of this number");
         assert_eq!(param_of(&error), DESTINATION_PARAM);
@@ -2397,7 +2477,7 @@ mod tests {
         let unreachable = RequiredRail {
             lookup: Some(Err(ProviderError::transport("unreachable"))),
         };
-        let error = verify_registered_holder(&unreachable, "required_rail", &destination, &rail)
+        let error = verify_payee(&unreachable, "required_rail", &destination, &rail)
             .await
             .expect_err("nobody asked");
         assert!(matches!(error, ApiError::Provider(_)), "{error:?}");
@@ -2435,6 +2515,13 @@ mod tests {
             lookup: Some(Ok(Some(AccountHolder::new(holder_name.to_owned())))),
         };
 
+        let store = crate::v1::account_holders::TestStore::default();
+        let scope = MerchantScope::for_payer("acct_test".to_owned());
+        let caller = CallerCredential::for_signer(
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+
         let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
         let handle = recorder.handle();
         let sink = crate::test_log::CapturedLog::default();
@@ -2444,10 +2531,27 @@ mod tests {
             let _logs = tracing::subscriber::set_default(crate::test_log::captured_log_subscriber(
                 sink.clone(),
             ));
-            verify_registered_holder(&found, "required_rail", &destination, &rail)
-                .await
-                .expect("a registered payee may be paid");
+            let key = test_audit_key();
+            verify_registered_holder(
+                &store,
+                &scope,
+                &caller,
+                &key,
+                None,
+                &found,
+                "required_rail",
+                &destination,
+                &rail,
+            )
+            .await
+            .expect("a registered payee may be paid");
         }
+
+        assert_eq!(
+            store.audit_events.lock().unwrap().len(),
+            2,
+            "initiated and terminal audit events must be recorded on the refund path"
+        );
 
         let scrape = handle.render();
         assert!(
@@ -2485,7 +2589,7 @@ mod tests {
     async fn a_rail_without_a_lookup_accepts_the_destination_unverified() {
         let rail = provider_config();
         let destination = RefundTarget::mobile_money(PAYEE).expect("a documentation MSISDN");
-        verify_registered_holder(&required(), "required_rail", &destination, &rail)
+        verify_payee(&required(), "required_rail", &destination, &rail)
             .await
             .expect("a rail with no lookup has nothing to ask");
     }

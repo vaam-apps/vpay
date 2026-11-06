@@ -112,7 +112,35 @@ ignore = [
   # (or authkestra) reaches p256 0.14 / elliptic-curve 0.14, or `cargo deny`
   # reports it as no longer matching (`advisory-not-detected`).
   "RUSTSEC-2026-0387",
+
+  # RUSTSEC-2026-0440: `astral-tokio-tar` is unmaintained (Astral ended
+  # maintenance on 2026-11-03; the crate is deprecated and recommends
+  # `tar-codec`). An "unmaintained" notice, not a vulnerability: no exploitable
+  # defect is named.
+  #
+  # Where it comes from (`cargo tree -i astral-tokio-tar -e normal`):
+  #     astral-tokio-tar <- testcontainers 0.27 <- vpay-testkit
+  #     (and testcontainers-modules <- vpay-testkit)
+  # so it is reached ONLY through vpay-testkit, which is itself a
+  # `[dev-dependencies]`-only crate — `cargo xtask verify-no-mocks` (in `just
+  # verify`) fails the build if testcontainers or vpay-testkit is linked into a
+  # shipping binary. It is therefore never in the shipped image, which is the
+  # same reason this repository accepts the `unsafe-libyaml` "unmaintained"
+  # notice above (RUSTSEC-2024-0449).
+  #
+  # Why it is accepted rather than fixed: the notice is less than three days
+  # old, the crate is an unambiguous dev-only leaf reached only by
+  # testcontainers (which itself has no maintained replacement that vpay's
+  # `[dev-dependencies]` could drop in for), and no security defect is
+  # published against it. Revisit if `testcontainers` adopts a maintained tar
+  # implementation, or immediately if a vulnerability (not only
+  # "unmaintained") is published against astral-tokio-tar.
+  #
+  # Added 2026-11-06, when the freshly-fetched advisory database began failing
+  # `cargo deny check advisories` on the PR's CI.
+  "RUSTSEC-2026-0440",
 ]
+
 
 [licenses]
 version = 2

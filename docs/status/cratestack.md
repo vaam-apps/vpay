@@ -892,3 +892,24 @@ suite pinned) and through `0058` under this schema:
   `check-schema`); the dashboard mounts only `procedure_router`, so no CRUD route
   for them is served (`no_generated_model_route_is_mounted_only_the_one_procedure_is`
   now probes 184 paths).
+
+## 2026-11-06 — migration `0059` (`audit_events`) and `0060` (`rate_limit_windows.window_expires_at`), and drift goes 221 → 232, measured
+
+PR #396 (issue #56/#152) adds `model AuditEvent` and `model RateLimitWindow`
+gains `window_expires_at` in `schemas/vpay.cstack`; migrations `0059` and `0060`
+create the matching tables/columns. Measured with `cratestack migrate baseline
+--strict` (the pinned 0.16.0) on Postgres 16 migrated through `0059` and `0060`:
+`drift detected in 31 table(s)/view(s) (232 change(s) total)`.
+
+- `audit_events` rejoins declared-but-differing as a modelled table: 11 `[safe]`
+  lines (the 9 hand-named CHECKs and 2 indexes 0059 ships), which the report
+  counts, for **+11**.
+- `rate_limit_windows.window_expires_at` is declared in the model and created by
+  `0060`, so it adds **no** net line (the column matches the model).
+- 221 + 11 = 232; `EXPECTED_DRIFTED_RELATIONS` is 31 (30 + `audit_events`). The
+  two multi-column CHECKs `0059`/`0060` carry (`audit_events` has none;
+  `rate_limit_windows` has none) leave the count unchanged.
+- `schema_migrates_cleanly_on_an_empty_database` pins **60** migrations, and
+  `vpay-db`'s `MODEL_TABLES` lists 24 models.
+- `audit_events` holds no `@@allow` arm (ADR-0034; the query surface is the
+  hand-written `vpay_db::AuditEvents` repository), so it contributes no route.

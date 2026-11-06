@@ -107,10 +107,13 @@ elements:
     necessary: true
     tenant_boundary: merchant
     recipients: []
-    retention: operational
+    retention: operational # audit_events provisional pending RFC-0002 D9
     owner: maintainer
     control: none
     copies:
+      - kind: column
+        table: audit_events
+        column: occurred_at
       - kind: column
         table: charges
         column: created_at
@@ -269,6 +272,9 @@ elements:
         column: updated_at
       - kind: column
         table: rate_limit_windows
+        column: window_expires_at
+      - kind: column
+        table: rate_limit_windows
         column: window_started_at
       - kind: column
         table: refunds
@@ -333,10 +339,22 @@ elements:
     necessary: true
     tenant_boundary: merchant
     recipients: []
-    retention: operational
+    retention: operational # audit_events provisional pending RFC-0002 D9
     owner: maintainer
     control: none
     copies:
+      - kind: column
+        table: audit_events
+        column: action
+      - kind: column
+        table: audit_events
+        column: actor_kind
+      - kind: column
+        table: audit_events
+        column: outcome
+      - kind: column
+        table: audit_events
+        column: target_class
       - kind: column
         table: charges
         column: failure_code
@@ -527,10 +545,25 @@ elements:
     necessary: true
     tenant_boundary: merchant
     recipients: []
-    retention: operational
+    retention: operational # audit_events provisional pending RFC-0002 D9
     owner: maintainer
     control: none
     copies:
+      - kind: column
+        table: audit_events
+        column: actor_id
+      - kind: column
+        table: audit_events
+        column: id
+      - kind: column
+        table: audit_events
+        column: operation_id
+      - kind: column
+        table: audit_events
+        column: target_repr
+      - kind: column
+        table: audit_events
+        column: tenant
       - kind: column
         table: charges
         column: id

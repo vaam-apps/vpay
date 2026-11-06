@@ -343,6 +343,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, staff_auth: StaffAu
             client_secret: None,
         }),
         staff_auth: Some(staff_auth),
+        privacy: Default::default(),
         routing: Default::default(),
         dashboard: None,
         service_clients: Vec::new(),

@@ -24,7 +24,7 @@ integrator's job and is still what this route is for — see
 
 Both callers go through one function,
 `vpay_api::v1::account_holders::ask_rail`, so the counter, the masked log
-line and the three-way answer below are the same in both. That was **not**
+line, audit events, rate limits, and the three-way answer below are the same in both. That was **not**
 true as the refund routes were first written: the refund path called the
 adapter directly and so incremented nothing and logged nothing, which is
 recorded here because both halves of it mattered — the metric stopped being
@@ -36,31 +36,33 @@ at all. `a_refund_path_lookup_is_counted_and_logged_like_the_routes`
 (`vpay-api`) is the case that fails if a future author points that call back
 at the adapter.
 
-**This widens the abuse question below rather than adding a second one.** A
+**Controls apply across both paths.** A
 credential with `payments:write` can put any number in `destination` on a
 refund of its own intent and read "not a registered account" off the `400`,
-without ever calling `GET /v1/account_holders`. So the reserved decisions —
-rate limit, dedicated scope, audit log — are reserved about **lookups**, not
-about a path, and a control fitted to this route alone would not be the
-control it reads as.
+without ever calling `GET /v1/account_holders`. So the lookup controls —
+rate limit, dedicated scope, audit log — govern **lookups** across both
+`GET /v1/account_holders` and `POST /v1/refunds` (ADR-0020, issue #56).
 
 ## What happens, in order
 
 ```text
 merchant server
   -> GET /v1/account_holders?msisdn=…&payment_method_type=mtn_momo
-       Authorization: Bearer <merchant token, payments:read or :write>
+       Authorization: Bearer <merchant token with account_holders:read> or signed COSE envelope
 
 vpay_api::v1::account_holders::retrieve
-  1. MerchantScope           the auth middleware resolved a tenant, or this
-                             fails closed with a 500 (nothing is scoped by
-                             it — see "the tenant is bound and unused")
-  2. payment_method_type     present? names a rail this deployment offers and
+  1. Scope policy            checks account_holders:read on CallerCredential (provisional pending RFC-0002 D5) -> else 403
+  2. Rate limiting           checks and counts attempt on CallerCredential in rate_limit_windows
+                             under privacy.lookup_rate_limit (provisional pending RFC-0002 D6) -> else 429 Retry-After
+  3. Initiated audit         writes initiated record with HMAC-SHA256(lookup_audit_salt, tenant:msisdn) to audit_events
+                             (provisional pending RFC-0002 D3/D7). Fails closed -> else 500
+  4. payment_method_type     present? names a rail this deployment offers and
                              has enabled?                       -> else 400
-  3. capabilities()          supports_account_holder_lookup?    -> else 400
-  4. msisdn                  Cameroon E.164, three input shapes -> else 400
-  5. ProviderAdapter::account_holder_name(msisdn, config)
-  6. count one outcome, log one line, render four keys
+  5. capabilities()          supports_account_holder_lookup?    -> else 400
+  6. msisdn                  Cameroon E.164, three input shapes -> else 400
+  7. ProviderAdapter::account_holder_name(msisdn, config)
+  8. Terminal audit          writes terminal record (found / not_found / rail_error) to audit_events
+  9. count one outcome, log one masked line, render four keys
 ```
 
 ```text
@@ -117,15 +119,15 @@ in the conformance suite, whose stub sends eleven fields including five MTN
 does not document (`sub`, `email`, `address`, `national_id`,
 `phone_number`), and asserts each one absent from the returned value.
 
-### 2. Nothing is persisted
+### 2. Privacy-minimal audit journal (ADR-0020 §3, ISO 27001 A.12.4, issue #56)
 
-Not the name, not the number, not the fact that the question was asked.
-There is no repository call in `vpay_api::v1::account_holders` and no
-migration behind it.
+An append-only journal in `audit_events` (migration `0059`) records two events per lookup: `initiated` before the rail call, and a terminal event (`found`, `not_found`, `invalid`, `unsupported`, `rate_limited`, `rail_error`) after it, sharing a single `operation_id` (provisional pending RFC-0002 D7).
 
-**This has a cost and it is not hidden:** it is also why rule 4 below is a
-reserved decision rather than a feature. A merchant enumerating the number
-space leaves no record in vpay.
+The stored `target_repr` holds a keyed HMAC-SHA256 digest of `tenant_id` + normalized MSISDN under `privacy.lookup_audit_salt` (provisional pending RFC-0002 D3); the raw MSISDN and returned name are never stored in the database.
+
+If writing the `initiated` event to the database fails, the lookup is immediately refused with `500 Internal Server Error` (fail-closed). Retention is operational (provisional pending RFC-0002 D9).
+
+_Proven by_ `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration).
 
 ### 3. Logs carry a masked number and never a name
 
@@ -147,43 +149,42 @@ path stores `NULL` there, and this route's mask is the first producer of the
 shape in the workspace. The two are not wired together, because writing that
 column is a change to the charge path and not to this route.
 
-### 4. Rate limiting — **a reserved decision, not built**
+### 4. Rate limiting — per-credential fixed window (ADR-0020, issue #56, provisional pending RFC-0002 D6)
 
-Issue #47 §3 asks for a per-merchant rate limit, and says why: "unlimited
-lookup of arbitrary MSISDNs is a name-harvesting oracle", and the abuse here
-is _exfiltration_ rather than load.
+Each lookup is counted against the caller's credential before the rail call. Lookups share a single fixed-window budget per credential across both `GET /v1/account_holders` and nominated-payee refunds on `POST /v1/refunds`.
 
-**It is not built, and no default was chosen.** Rate limiting in this
-deployment is an ingress concern — [provider-port.md](provider-port.md)
-records the same "**no rate limit**, per charge or per source" for the
-callback route — and inventing a per-merchant token bucket inside one
-handler would be a control nothing else on this surface has, with a limit
-nobody chose. It is left to the maintainer, who has to decide the shape (per
-merchant? per merchant per MSISDN? a daily ceiling?), the enforcement point
-(ingress, or `/v1`) and what a merchant who exceeds it is told.
+- For signed COSE envelopes: keyed by the signing-key thumbprint (`lookup:merchant_key:SHA-256:<thumbprint>`).
+- For machine tokens: keyed by the client ID (`lookup:machine_token:<client_id>`).
 
-Until then: **this route lets any merchant with a valid credential turn a
-list of phone numbers into a list of names, at whatever rate they can make
-HTTP requests.** That sentence is the honest description of what shipping
-this costs.
+The window duration and attempt limit are configured via `privacy.lookup_rate_limit` (provisional pending RFC-0002 D6).
 
-### 5. Audit logging and a scope of its own — **also reserved**
+When the limit is reached, vpay returns HTTP 429 Too Many Requests with a `Retry-After: <seconds>` header rounding up the remaining seconds in the window, and error body:
 
-§3 asks for both. Neither is built.
+```json
+{
+  "error": {
+    "type": "rate_limit_error",
+    "code": "rate_limit",
+    "message": "account-holder lookup rate limit exceeded"
+  }
+}
+```
 
-_The audit log_ contradicts rule 2 above: a per-merchant, per-MSISDN trail
-**is** a stored record of who asked about whom, and it is precisely the
-record rule 2 declines to keep. Which of the two wins is a policy choice, not
-an implementation detail, and taking it quietly in either direction would be
-wrong. (`MerchantScope` is already bound on the handler, so the value such a
-log would be keyed on is in hand the day it is decided.)
+If counting the attempt fails in the database, the lookup fails closed with a `500`.
 
-_A scope of its own_ (`identity:read` rather than `payments:read`) is a
-three-place change that fails **silently** when the places disagree — see
-`SCOPE_PAYMENTS_WRITE`'s own doc comment: the string an operator writes in a
-registration, the string the OP mints, and the string the middleware checks.
-It would also refuse every existing merchant credential on the day it landed.
-The route is served under `payments:read` today, like every other `GET`.
+_Proven by_ `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` and `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration).
+
+### 5. Dedicated scope (`account_holders:read`, issue #56, provisional pending RFC-0002 D5)
+
+`GET /v1/account_holders` requires the `account_holders:read` scope.
+Nominated-payee refunds via `POST /v1/refunds` also require `account_holders:read` in addition to `payments:write`.
+Any credential lacking this scope is refused with HTTP 403 Forbidden (`insufficient_scope`).
+Since PR #396 an implicit `HEAD` to the route is held to the same `GET` policy
+— Axum serves `HEAD` from the `GET` handler, so a payments-only credential
+cannot trigger the rail lookup via `HEAD` without `account_holders:read`, and
+an account-holders-only credential is not refused for it.
+
+_Proven by_ `credential_without_account_holders_read_scope_is_refused_403` and `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration), and `a_head_to_account_holders_is_held_to_the_get_scope_policy` (integration).
 
 ## The wire
 
@@ -279,7 +280,11 @@ about the _rail_, and this one answers a question about the _route_.
 > of phone numbers into a list of names at whatever rate it can make HTTP
 > requests, and vpay keeps no record that it happened (rules 2 and 4 below —
 > and they are the same fact, pointing in two directions). That is the
-> condition on turning this route on, not a caveat about it.
+> condition on turning this route on, not a caveat about it. Since PR #396 the
+> per-credential limit is **required at boot** (`privacy.lookup_rate_limit` must
+> accompany `privacy.lookup_audit_salt`), so an operator can no longer
+> configure the salt and forget the limit; the ingress-scale question remains
+> an operator concern, not a code one.
 
 - `GET /v1/account_holders` — served (`vpay_api::v1::V1_ROUTES`). Merchant
   token required (`payments:read` or `payments:write`), tenant-scoped
@@ -337,11 +342,9 @@ about the _rail_, and this one answers a question about the _route_.
 
 - **Orange's route is unconfirmed**, so `false` there is "we do not know of
   one", not "Orange has none".
-- **No rate limit, no audit log, no dedicated scope** — the three reserved
-  decisions above, and since 2026-09-16 they are reserved about **lookups**
-  and not about this route: `POST /v1/refunds` reaches the same rail method,
-  so a control fitted to `GET /v1/account_holders` alone would leave the
-  question askable by any credential that can write a refund.
+- **Rate limiting, audit logging, dedicated scope** — built (issue #56, ADR-0020),
+  governing lookups across both `GET /v1/account_holders` and `POST /v1/refunds`
+  nominated payee paths.
 - **Neither SDK has run against a live vpay** for this resource; both are
   tested against in-process HTTP stubs
   ([../sdks/parity.md](../sdks/parity.md)'s gap ledger, 2026-09-05).
@@ -361,7 +364,13 @@ about the _rail_, and this one answers a question about the _route_.
 | every lookup vpay makes is counted and masked, from either caller               | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`, `a_lookup_logs_a_masked_number_and_never_a_name` (the route), `a_refund_path_lookup_is_counted_and_logged_like_the_routes` (`POST /v1/refunds`)                                |
 | the refund path's three-way answer: unregistered is a `400`, unreachable is not | `an_unregistered_payee_is_a_400_and_an_unreachable_rail_is_not`, `a_rail_without_a_lookup_accepts_the_destination_unverified` (`vpay-api`), `a_payee_the_rail_does_not_know_is_refused_before_the_transfer` (integration, against a real WireMock MTN) |
 | every outcome counted, no label carrying the number or the name                 | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                                                                                 |
-| the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — six cases                                                                                                                                                                                      |
+| rate limit: exceeding budget is refused 429 with Retry-After                    | `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` (integration)                                                                                                                                                         |
+| rate limit: nominated payee refund spends lookup budget                         | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                           |
+| rate limit: a short scope never resets a longer one's counter                   | `a_short_scope_count_never_sweeps_a_longer_scope_row_inside_its_own_window` (`vpay-db`), the per-row `window_expires_at` sweep (migration 0060)                                                                                                        |
+| rate limit: a salt without a configured limit refuses at boot                   | `an_audit_salt_without_a_lookup_rate_limit_is_refused_at_boot` (`vpay-config`) — lookups can no longer boot into an unlimited per-credential budget                                                                                                    |
+| audit log: initiated and terminal events with HMAC target, no raw PII           | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
+| scope: lacking `account_holders:read` refused 403 Forbidden                     | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                   |
+| the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — nine cases                                                                                                                                                                                     |
 | both SDKs speak the same query string and read the same object                  | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                                                                                     |
 
 See [../status.md](../status.md).

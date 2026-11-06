@@ -2320,6 +2320,11 @@ model RateLimitWindow {
   // with `try_get::<String>()`.
   scope String @length(min: 1, max: 64)
   window_started_at DateTime
+  // `window_started_at + window`: the instant this row's own fixed window ends
+  // (migration 0060). The sweep in `vpay_db::rate_limits::COUNT_ATTEMPT` deletes
+  // only rows whose OWN `window_expires_at` has passed, so one scope's shorter
+  // window never resets another scope's longer one (PR #396, P1).
+  window_expires_at DateTime
   // `Int` is `int8`, hence `BIGINT` in the migration: `int4` is one of the
   // six types `map_scalar` does not map, and an unmapped column is excluded
   // from the drift comparison outright.
@@ -2352,6 +2357,27 @@ model EnvelopeNonce {
   id String @id @length(min: 1, max: 64)
   // NO `@default`, 0034's rule: the writer names it.
   expires_at DateTime
+}
+
+// `audit_events` (migration 0059, ADR-0020 §3, ISO 27001 A.12.4) — the generic,
+// privacy-minimal, append-only journal for privacy-sensitive actions.
+//
+// NO `@@allow` ARM, per ADR-0034 rule and for RateLimitWindow's reason: nothing queries
+// this model through the generated layer; queries are hand-written statements in
+// `vpay_db::audit_events`. The model is here so the drift report compares the table.
+// `vpay_db::audit_events::tests::the_audit_event_model_answers_no_rows_to_every_action`
+// pins the arms' absence.
+model AuditEvent {
+  id String @id @length(min: 1, max: 64)
+  occurred_at DateTime
+  tenant String @length(min: 1, max: 64)
+  actor_kind String @length(min: 1, max: 64)
+  actor_id String @length(min: 1, max: 128)
+  action String @length(min: 1, max: 64)
+  outcome String @length(min: 1, max: 64)
+  target_class String @length(min: 1, max: 64)
+  target_repr String @length(min: 1, max: 128)
+  operation_id String @length(min: 1, max: 64)
 }
 
 // `console_keys` (migration 0056, VP-6a) — a person's registered console signing

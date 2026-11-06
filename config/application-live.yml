@@ -110,8 +110,8 @@ merchant_clients:
       - public_key: ${LIVE_MERCHANT_COSE_KEY}
         label: live-sandbox
     grant_types: [client_credentials]
-    # Both scopes, so a single merchant can read its own intents too.
-    scopes: [payments:write, payments:read]
+    # All three scopes, so a single merchant can read its own intents and lookup account holders.
+    scopes: [payments:write, payments:read, account_holders:read]
     # The `aud` the OP must stamp on every /v1 token. REQUIRED, or boot fails.
     allowed_audiences: ["vpay:v1"]
     # Optional: a publishable key for the payer-facing /v1/browser surface.
@@ -129,3 +129,11 @@ merchant_clients:
 # (ConfigError::DashboardUnknownMerchant).
 dashboard:
   merchant_id: live-merchant
+
+# Privacy controls and account-holder lookup configuration (ADR-0020).
+# Provisional pending RFC-0002 D3 and D6. See PR #56/152.
+privacy:
+  lookup_audit_salt: ${VPAY_LOOKUP_AUDIT_SALT}
+  lookup_rate_limit:
+    attempts: 10
+    window_seconds: 60

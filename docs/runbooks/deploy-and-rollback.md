@@ -39,7 +39,7 @@ just helm-check                          # helm lint + template + 24 guards + ku
 helm template <release> deploy/helm/vpay -f my-values.yaml | less   # read it
 ```
 
-Four things the tooling will not check for you:
+Five things the tooling will not check for you:
 
 1. **The digest is pinned.** Since issue #77 (2026-09-07) there is one
    backend image and both Deployments run it, so "pinned together" is now
@@ -94,6 +94,16 @@ Four things the tooling will not check for you:
    `auth.methods` (`human_login`); **staff SSO** (`staff_auth.sso`) is restored by
    VPA-4, so a deployment that signs staff in through an identity provider waits
    for the release that carries it.
+
+5. **Shared administrator prohibition and break-glass procedures (ISO 27001 A.8.2, issue #152).**
+   Shared administrative accounts are strictly prohibited across all deployments. Every
+   staff operator must possess an individual account created via
+   `vpay-server staff add --merchant <id> --email <email> --name <name> [--admin]`. Emergency
+   access (break-glass) is strictly limited to host/pod execution of `vpay-server staff pair-key`
+   (to pair an individual console key when no IdP or vaam pairing service is reachable)
+   and `vpay-server staff revoke-key` (to immediately revoke a compromised key).
+   Neither break-glass subcommand creates or upgrades an administrator; cross-tenant admin reads
+   remain explicitly scoped and audited ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
 
 ### Two things this release changes on `/dash/v1`
 

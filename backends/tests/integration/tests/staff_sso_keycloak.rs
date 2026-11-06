@@ -374,6 +374,7 @@ async fn stack() -> anyhow::Result<Stack> {
             client_secret: None,
         }),
         staff_auth: Some(staff_auth),
+        privacy: Default::default(),
         routing: Default::default(),
         dashboard: None,
         service_clients: Vec::new(),

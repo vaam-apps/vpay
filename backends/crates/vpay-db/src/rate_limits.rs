@@ -50,6 +50,14 @@
 //!   size, so the first attempt after a long idle period does not pay for
 //!   every row that accumulated during it.
 //!
+//! **A row is swept by its OWN expiry, not the caller's window** (migration
+//! 0060, `window_expires_at = window_started_at + window`). The sweep's
+//! predicate is `window_expires_at <= now`, so a 60-second lookup deletes
+//! only rows whose own 60 seconds are up — never a staff sign-in counter
+//! (300 seconds) that is still inside its own window. Before 0060 the sweep
+//! judged every row by the *calling* request's window, which let a lookup
+//! reset every staff brute-force budget it touched (PR #396, P1).
+//!
 //! One attempt writes at most two rows (one per dimension) and removes up to
 //! thirty-two, so a caller spending fresh keys drains the table faster than
 //! they fill it.
@@ -77,6 +85,15 @@ use crate::error::{DbError, classify_write};
 /// that the extra work is one bounded index scan on
 /// `rate_limit_windows_window_idx`.
 const SWEEP_BATCH: i64 = 32;
+
+/// The outcome of counting one attempt against a rate limit window.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, sqlx::FromRow)]
+pub struct RateLimitOutcome {
+    /// Attempts in the current window, including the attempt just counted.
+    pub attempts: i64,
+    /// When the current fixed window started.
+    pub window_started_at: OffsetDateTime,
+}
 
 /// Count one attempt against one key and learn where it lands in the window.
 ///
@@ -111,7 +128,7 @@ pub trait RateLimits {
         scope: &str,
         window: Duration,
         now: OffsetDateTime,
-    ) -> Result<i64, DbError>;
+    ) -> Result<RateLimitOutcome, DbError>;
 }
 
 #[async_trait]
@@ -122,20 +139,25 @@ impl RateLimits for crate::repository::PgRepositories {
         scope: &str,
         window: Duration,
         now: OffsetDateTime,
-    ) -> Result<i64, DbError> {
-        // `now - window` is the horizon: a window that opened at or before it
-        // has elapsed. Computed here, from the caller's `now`, rather than
-        // from the database's `now()` — every other bound in this design
-        // (`SessionRow::is_live_at`, the TOTP step) is decided from a clock
-        // the caller passes in, and a statement that mixed the two would
-        // compare one process's instant against another's.
-        let horizon = now.saturating_sub(window);
+    ) -> Result<RateLimitOutcome, DbError> {
+        // `now + window` is this row's own expiry: the instant its window
+        // ends. Stored on the row (`window_expires_at`, migration 0060) so the
+        // sweep can ask "has *this* row's window elapsed" instead of "has a
+        // window as long as the caller's elapsed since this row started" — the
+        // latter would let a 60-second lookup delete a staff sign-in counter
+        // (300 seconds) still inside its own window, resetting its brute-force
+        // budget (PR #396, stephane-segning P1). Computed here, from the
+        // caller's `now`, rather than from the database's `now()` — every
+        // other bound in this design (`SessionRow::is_live_at`, the TOTP step)
+        // is decided from a clock the caller passes in, and a statement that
+        // mixed the two would compare one process's instant against another's.
+        let expires_at = now.saturating_add(window);
 
-        sqlx::query_scalar::<_, i64>(COUNT_ATTEMPT)
+        sqlx::query_as::<_, RateLimitOutcome>(COUNT_ATTEMPT)
             .bind(id)
             .bind(scope)
             .bind(now)
-            .bind(horizon)
+            .bind(expires_at)
             .bind(SWEEP_BATCH)
             .fetch_one(&self.pool)
             .await
@@ -159,24 +181,27 @@ const COUNT_ATTEMPT: &str = "WITH swept AS ( \
                  DELETE FROM rate_limit_windows \
                   WHERE id IN ( \
                         SELECT id FROM rate_limit_windows \
-                         WHERE id <> $1 AND window_started_at <= $4 \
-                         ORDER BY window_started_at \
+                         WHERE id <> $1 AND window_expires_at <= $3 \
+                         ORDER BY window_expires_at \
                          LIMIT $5 \
                          FOR UPDATE SKIP LOCKED \
                   ) \
                  RETURNING 1 \
              ) \
-             INSERT INTO rate_limit_windows (id, scope, window_started_at, attempts, updated_at) \
-             VALUES ($1, $2, $3, 1, $3) \
+             INSERT INTO rate_limit_windows (id, scope, window_started_at, window_expires_at, attempts, updated_at) \
+             VALUES ($1, $2, $3, $4, 1, $3) \
              ON CONFLICT (id) DO UPDATE SET \
                  window_started_at = CASE \
-                     WHEN rate_limit_windows.window_started_at <= $4 THEN $3 \
+                     WHEN rate_limit_windows.window_expires_at <= $3 THEN $3 \
                      ELSE rate_limit_windows.window_started_at END, \
+                 window_expires_at = CASE \
+                     WHEN rate_limit_windows.window_expires_at <= $3 THEN $4 \
+                     ELSE rate_limit_windows.window_expires_at END, \
                  attempts = CASE \
-                     WHEN rate_limit_windows.window_started_at <= $4 THEN 1 \
+                     WHEN rate_limit_windows.window_expires_at <= $3 THEN 1 \
                      ELSE rate_limit_windows.attempts + 1 END, \
                  updated_at = $3 \
-             RETURNING attempts";
+             RETURNING attempts, window_started_at";
 
 #[cfg(test)]
 mod tests {

@@ -14,7 +14,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 // `tracing::warn!`, never a rejection. Empty when the CLI wasn't given a
 // schema fingerprint (e.g. this crate used as a library directly, or a
 // test) — the header is simply omitted in that case.
-export const SCHEMA_SHA256: string = "ef435cddd5b252013eaf9456bb45d67a082c1da5c9579d72e5db63c798ee390b";
+export const SCHEMA_SHA256: string = "1618a6a42036216a50ae7cefea2d5b10e8b2a667baae8d07f5facccc2df1699e";
 const SCHEMA_SHA_HEADER = "x-cratestack-schema-sha";
 
 // Per-op contract digests (binding version 2, cratestack#1123): what a signed
@@ -24,6 +24,7 @@ const SCHEMA_SHA_HEADER = "x-cratestack-schema-sha";
 // function the Rust macros call, so the two cannot disagree. Not used by the
 // unsigned runtime below: the sealers (ADR 0006 §11) read them.
 export const OP_CONTRACTS: Readonly<Record<string, string>> = {
+  "DELETE /audit_events/{id}": "3844a163d154df7e15f49eca763784834d1b9f622a5baa89c3a0aff31a612d60",
   "DELETE /charges/{id}": "bb86fbe329a502c5a2fbf6920a221091ce2eadffce90d195b2c16e925d7f0bf3",
   "DELETE /checkout_sessions/{id}": "a6b03e2cada51446ef6f5bc47ce8d863583d2dd343f33c980cfbcfc4c57c1481",
   "DELETE /console_keys/{id}": "386ceecfbe1b41c45c273c3461c42292480139a40c14b7e75f9371799217b3ee",
@@ -41,12 +42,14 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "DELETE /oauth_authorization_codes/{id}": "211a323f650d8bc6360fa7bb781d9920ce20eb996a176453e864c16ff300180d",
   "DELETE /payment_intents/{id}": "5b7fbf8b21a32fc844db2cc3cd4d1d4002117eea644ba157d1ed9df6b5f15cb3",
   "DELETE /providers/{id}": "097f1a76fc74cba16200aa66ed7ba9c1640c0d6cea24e4dd21ff6cb140d39690",
-  "DELETE /rate_limit_windows/{id}": "9a3f8efc48501b7ec27c7c5311a4b1bff7cf6bfbc13c1014ed9f18738cb216c5",
+  "DELETE /rate_limit_windows/{id}": "b33df2a38ce1cb617165c775eeba2a9f8bda8234f514d5ecb281a351893dc242",
   "DELETE /refunds/{id}": "22d8ca2d3a918d89b5c84a4eff0256cd5aeb6bff1488b008e9db2865962b6f63",
   "DELETE /staff_members/{id}": "297924590c456f5103a8ee50854645af3047abc1cdc1a4eea0461571e5f40293",
   "DELETE /staff_sessions/{id}": "1b478df8e4f83a42eede9a733a9746a406cca1975f167dbb8e1738da6c300ebf",
   "DELETE /staff_sso_attempts/{id}": "3fde5a604a2f95783f8714d7fa42ee53a60dcb5210a1b1518342c8f8cda35d66",
   "DELETE /webhook_deliveries/{id}": "c933ad51461dfef2f33e0347c976adcf1c813cfcc0b250851b8e899ada2a90c5",
+  "GET /audit_events": "1a75fab039020267a65aadeb44db4ae16495db856204c77b5a7ee9291ebef9c2",
+  "GET /audit_events/{id}": "6956d546ec33089f82db47e6efeaeecb82b188778987ae54b4b186587210c3de",
   "GET /charges": "46b42c73dedfed8753afc333ac03608a16856dca79b98d02d754e37448038441",
   "GET /charges/{id}": "c0bc4e04a6e70fa27ca91df51fe01e9813fe9f74326c204e79d62672d027fb91",
   "GET /checkout_sessions": "8221c2f98f35b20ee6943d27103ec3bde901aba11d2bde5a3ef22f29195c71cf",
@@ -81,8 +84,8 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "GET /payment_intents/{id}": "d8d653fd1042951bb0292b54ff0203e02e043df1055093bebba57d1458c82562",
   "GET /providers": "fc9a715266e47c168f97c3a24e19d900babfc1cbbd900113c02976ee3895b151",
   "GET /providers/{id}": "38789f82433aeb4f04dc26d29a4d266305b875088c0f1897331004a68742afe8",
-  "GET /rate_limit_windows": "4b30db3823d7d9cdec901fd16ef711b8d8e5deb2f7d34f83dfe1af85cff38197",
-  "GET /rate_limit_windows/{id}": "16932cad305d15e8cf68c58940905de90f575c1d29c2acbb833bf16d1e93f67a",
+  "GET /rate_limit_windows": "dd79409754f3cb94d06eb7d7db8ee9aadb9a034fcf9324c569763e79e73c1a94",
+  "GET /rate_limit_windows/{id}": "b39d7948e85d828f260b0271bb52ae117eb47622c8358b9a592fd5dddeccbe08",
   "GET /refunds": "4643acc6074e96db36aba2b513a56ada52b4532c501b1d2f845d55eeea26e27a",
   "GET /refunds/{id}": "85f8ce99899f5769b40f6af2695862192d49a54ef5f5e56519c4cb0dae2c094c",
   "GET /staff_members": "4457b142704afbb576673ffaac74722298230be7acc4e84f3844568fc5227329",
@@ -93,6 +96,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "GET /staff_sso_attempts/{id}": "c2fdd77b6cdd4c90919ada1d67538c84210be645b9406b8edee41c0a9ca72d23",
   "GET /webhook_deliveries": "9badb9354e589222950861d232dda972eb4699574a9ec1ce3facfb1a16430ed2",
   "GET /webhook_deliveries/{id}": "a86d427b4c6965633b6da74948b237843cf2841d680ec93b4c44161f9ce920cb",
+  "PATCH /audit_events/{id}": "6ea2500a8dbbf8bbda8036b976659c308fc8e144ac5e0531725a8c62a9c97441",
   "PATCH /charges/{id}": "f4f3dd033dedfd304ccc30709ab3c4d669a957b226eb5a411c6efba42f49dc12",
   "PATCH /checkout_sessions/{id}": "8b47a5ad83226ce24ba361b57df609f0ff1d3d9ff17d9347274e63da9e74eb62",
   "PATCH /console_keys/{id}": "c45066cd69a1c9d066d9109f0a3a598eb545d0da7905d32edc60eb4ca4ce55c3",
@@ -110,7 +114,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "PATCH /oauth_authorization_codes/{id}": "cd31e144adb7560852821bcaade261ce13f9221479373df5cfa4f86e90d3151a",
   "PATCH /payment_intents/{id}": "a30a55e8e4ad1d414a43e260a42a0d6f6570055bd4cf59d38f6b9b5f65a8f8c3",
   "PATCH /providers/{id}": "bd6c763e8341a85529702eeae53cefee4d3fe8354d6e5b531be121b1a10366d3",
-  "PATCH /rate_limit_windows/{id}": "3d78ae1dc1b48798cdf7544045fe953d7256457f796bd6382dfbd41ac99c1cb2",
+  "PATCH /rate_limit_windows/{id}": "81a82cfc58030a94150a43f8a4a5486d22194b8f1e956cdda49cac2c6f8a6da4",
   "PATCH /refunds/{id}": "950f6db52865f84c25f05756d439211585cf4793af110b4be59d516af691a6c9",
   "PATCH /staff_members/{id}": "b3d30f0956ce4e9f801ccc48d259765349f5b81742e652c65b52eb1eaec56f0f",
   "PATCH /staff_sessions/{id}": "8966f3d246071c32c2e5ae9b25762a006713ac948653b1fe2e7017b7b2539415",
@@ -128,6 +132,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "POST /$procs/searchPaymentIntents": "2f918f5b87a52f5db1db458f1ca96aa56534f6599b72cfce10320d69152122c9",
   "POST /$procs/searchRefunds": "5a2f8082d20c4d73117248f0928959d089dd8e88c0f205e2d40142953780f556",
   "POST /$procs/searchWebhookDeliveries": "308f1caac73923b98cadd75717df8512413b8850f5a4cd38d0f61d1578fa6b8d",
+  "POST /audit_events": "bf8770cf81a855b922e20063aba570129e6fa4c836683eead0491838a519d4d7",
   "POST /charges": "2a13836c3dd7276a5137600888d3b0f110a1123b8ce228d94c8635cf6c1d65e5",
   "POST /checkout_sessions": "8e4f0344f28c442d6e7d4a198efb1900f11db61f32dca042250947e2c22dbf7e",
   "POST /console_keys": "e576d6cb5b4d39d64fa3e5c3d29619b5d31f65c94f4bcd7776232e0def53acd5",
@@ -145,7 +150,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "POST /oauth_authorization_codes": "58cb6f1bafdb5793af321cbc10e695517e6cf3b91e1e44ae25d37104de7427f8",
   "POST /payment_intents": "6822517dbb5cbd357bff770ca1deee2637aa1f73b38bd9bf7cef59c3951da1fa",
   "POST /providers": "e4e0c29313568396b78d6b4578bfa6302f42159388ece156e77b551dc8a19c46",
-  "POST /rate_limit_windows": "4b4b8a3906915b04773ca6339e561820bfd0732d6e4d2f66e11d54ca9fbe18cd",
+  "POST /rate_limit_windows": "96a928e39fa773693232871aa0dbd27deaa168d1b3a620f3aa2370dbe16ba27f",
   "POST /refunds": "1e9867672bb60ffdfbb1a800edc4daab7b23a70351e60985c82e21623b79db3a",
   "POST /staff_members": "d0478d912e102d3f35725b4385ee5426d4767e7b0b01c1e925b99660b410d6f5",
   "POST /staff_sessions": "7e0e8b50aa357e6d9e052a1be0e0e654885a49ffcfaf9fc1a74d6c11ffe176db",
@@ -153,7 +158,7 @@ export const OP_CONTRACTS: Readonly<Record<string, string>> = {
   "POST /webhook_deliveries": "313534735f7d8114795740a6a144bf641e1f055f7ccdc9407c946c0c60a35ba6",
 };
 // Hex of the whole-contract digest: moves when any op's contract does.
-export const CLIENT_CONTRACT_SHA256: string = "eaf89f1077ca264d57a1bc9530ec48ad625804ce0711923b8e9152a04ae945fd";
+export const CLIENT_CONTRACT_SHA256: string = "ffe9d4f02fcc94daab4bdd03f83c006f80ea8f7ae538942937052831e86af168";
 
 export interface CratestackClientOptions {
   basePath?: string;

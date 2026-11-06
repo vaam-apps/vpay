@@ -72,7 +72,8 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::{Request, State};
+use axum::extract::{FromRequestParts, MatchedPath, Request, State};
+use axum::http::request::Parts;
 use axum::http::{Method, header};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
@@ -81,7 +82,102 @@ use cratestack_core::VerifiedSigner;
 use crate::ApiError;
 use crate::merchant_keys::MerchantKeyResolver;
 use crate::resource_auth::{AuthRejection, JwtValidator, extract_bearer_token};
-use crate::v1::{MerchantScope, ResourceConfig, required_scopes};
+use crate::v1::{MerchantScope, ResourceConfig, V1_NEST, required_scopes, required_scopes_for};
+
+/// The kind of caller credential that authenticated the request (ADR-0037).
+///
+/// Provisional pending RFC-0002 D6: the credential identity is either a
+/// registered COSE signing key (identified by its RFC 9679 thumbprint hex)
+/// or a machine token (identified by its client_id). See PR #56/152.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKind {
+    Signer,
+    MachineToken,
+}
+
+/// The authenticated credential on a `/v1` request.
+///
+/// Inserted into request extensions beside [`MerchantScope`] during the scope
+/// step (`envelope::scope`), and extracted by handlers that enforce per-credential
+/// controls such as rate limits or scope checks.
+///
+/// Provisional pending RFC-0002 D6: the credential identity is the
+/// signing-key thumbprint for signed requests and `client_id` for machine tokens.
+/// See PR #56/152.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CallerCredential {
+    kind: CredentialKind,
+    id: String,
+    scopes: Vec<String>,
+}
+
+impl CallerCredential {
+    /// Provisional pending RFC-0002 D6: minted for a verified COSE signer.
+    pub(crate) fn for_signer(thumbprint_hex: String, scopes: Vec<String>) -> Self {
+        Self {
+            kind: CredentialKind::Signer,
+            id: thumbprint_hex,
+            scopes,
+        }
+    }
+
+    /// Provisional pending RFC-0002 D6: minted for a verified machine bearer token.
+    pub(crate) fn for_machine_token(client_id: String, scopes: Vec<String>) -> Self {
+        Self {
+            kind: CredentialKind::MachineToken,
+            id: client_id,
+            scopes,
+        }
+    }
+
+    /// The kind of credential presented by the caller.
+    #[must_use]
+    pub fn kind(&self) -> CredentialKind {
+        self.kind
+    }
+
+    /// The credential's unique identifier (RFC 9679 key thumbprint hex for signers,
+    /// or `client_id` for machine tokens).
+    #[must_use]
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
+    /// The scopes granted to this credential.
+    #[must_use]
+    pub fn scopes(&self) -> &[String] {
+        &self.scopes
+    }
+
+    /// Returns `true` if this credential was granted the given scope.
+    #[must_use]
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|held| held == scope)
+    }
+}
+
+impl<S> FromRequestParts<S> for CallerCredential
+where
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    /// Fails closed with [`ApiError::Internal`] (500, paged) rather than
+    /// inventing or default-constructing a credential, mirroring [`MerchantScope`].
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
+        parts
+            .extensions
+            .get::<CallerCredential>()
+            .cloned()
+            .ok_or_else(|| {
+                ApiError::Internal(
+                    "a /v1 handler ran with no CallerCredential on the request: the merchant \
+                     authentication middleware is not mounted in front of this route"
+                        .to_owned(),
+                )
+            })
+    }
+}
 
 /// The `auth.method` span field's two values on `/v1` (ADR-0037, tracing
 /// only: no policy reads it).
@@ -166,7 +262,17 @@ pub(crate) async fn merchant_scope(
         Err(error) => return ApiError::from(error).into_response(),
     };
 
-    let required = required_scopes(&parts.method);
+    let required = parts
+        .extensions
+        .get::<MatchedPath>()
+        .and_then(|matched| {
+            if matched.as_str().starts_with(V1_NEST) {
+                required_scopes_for(matched.as_str(), &parts.method)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| required_scopes(&parts.method));
     if !required
         .iter()
         .any(|scope| merchant.scopes.iter().any(|granted| granted == scope))
@@ -182,6 +288,10 @@ pub(crate) async fn merchant_scope(
     }
 
     tracing::Span::current().record(AUTH_METHOD_FIELD, AUTH_METHOD_KEYPAIR);
+    parts.extensions.insert(CallerCredential::for_signer(
+        hex::encode(signer.thumbprint()),
+        merchant.scopes.clone(),
+    ));
     parts
         .extensions
         .insert(MerchantScope::for_signed(merchant.merchant_id));
@@ -244,7 +354,17 @@ async fn token_scope(
     // the token's own: the signed path above reads the YAML alone, so a scope
     // removed there reaches a token minted before the change on the next
     // restart.
-    let required = required_scopes(&parts.method);
+    let required = parts
+        .extensions
+        .get::<MatchedPath>()
+        .and_then(|matched| {
+            if matched.as_str().starts_with(V1_NEST) {
+                required_scopes_for(matched.as_str(), &parts.method)
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| required_scopes(&parts.method));
     if !required
         .iter()
         .any(|needed| state.resource_config.token_holds(&claims, needed))
@@ -260,8 +380,88 @@ async fn token_scope(
         return ApiError::Forbidden.into_response();
     }
 
+    let token_scopes: Vec<String> = state
+        .resource_config
+        .scopes_for_client(&claims.subject)
+        .map(|granted| {
+            granted
+                .iter()
+                .filter(|scope| claims.has_scope(scope))
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+
     tracing::Span::current().record(AUTH_METHOD_FIELD, AUTH_METHOD_MACHINE_TOKEN);
+    parts.extensions.insert(CallerCredential::for_machine_token(
+        claims.subject.clone(),
+        token_scopes,
+    ));
     parts.extensions.insert(claims);
     parts.extensions.insert(scope);
     next.run(Request::from_parts(parts, body)).await
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::extract::FromRequestParts;
+    use axum::http::Request;
+
+    use super::*;
+
+    #[tokio::test]
+    async fn caller_credential_extraction_refuses_when_absent_with_500() {
+        let req = Request::builder().body(()).unwrap();
+        let (mut parts, ()) = req.into_parts();
+        let err = CallerCredential::from_request_parts(&mut parts, &())
+            .await
+            .expect_err("missing credential must fail");
+        match err {
+            ApiError::Internal(msg) => {
+                assert!(
+                    msg.contains("no CallerCredential"),
+                    "expected internal error message mentioning CallerCredential, got: {msg}"
+                );
+            }
+            other => panic!("expected ApiError::Internal, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn caller_credential_extraction_succeeds_for_signer() {
+        let thumbprint = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let cred =
+            CallerCredential::for_signer(thumbprint.to_owned(), vec!["payments:write".to_owned()]);
+        let mut req = Request::builder().body(()).unwrap();
+        req.extensions_mut().insert(cred.clone());
+        let (mut parts, ()) = req.into_parts();
+        let extracted = CallerCredential::from_request_parts(&mut parts, &())
+            .await
+            .expect("extraction must succeed");
+        assert_eq!(extracted.kind(), CredentialKind::Signer);
+        assert_eq!(extracted.id(), thumbprint);
+        assert!(extracted.has_scope("payments:write"));
+        assert!(!extracted.has_scope("account_holders:read"));
+        assert_eq!(extracted, cred);
+    }
+
+    #[tokio::test]
+    async fn caller_credential_extraction_succeeds_for_machine_token() {
+        let client_id = "acme-test-client";
+        let cred = CallerCredential::for_machine_token(
+            client_id.to_owned(),
+            vec!["payments:read".to_owned()],
+        );
+        let mut req = Request::builder().body(()).unwrap();
+        req.extensions_mut().insert(cred.clone());
+        let (mut parts, ()) = req.into_parts();
+        let extracted = CallerCredential::from_request_parts(&mut parts, &())
+            .await
+            .expect("extraction must succeed");
+        assert_eq!(extracted.kind(), CredentialKind::MachineToken);
+        assert_eq!(extracted.id(), client_id);
+        assert!(extracted.has_scope("payments:read"));
+        assert!(!extracted.has_scope("payments:write"));
+        assert_eq!(extracted, cred);
+    }
 }

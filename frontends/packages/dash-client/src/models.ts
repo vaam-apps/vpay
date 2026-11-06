@@ -107,6 +107,7 @@ export const wireShapes: Readonly<Record<string, WireShape>> = {
   ManualPayment: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   RateLimitWindow: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   EnvelopeNonce: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
+  AuditEvent: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   ConsoleKey: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   PaymentIntentSummary: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
   PaymentIntentListFilter: { decimalKeys: [], bigintKeys: [], bytesKeys: [], bytesListKeys: [], nested: {  } },
@@ -936,11 +937,12 @@ export const ManualPaymentSortFieldValues = [
   "paid_out_of_band",
 ] as const satisfies readonly ManualPaymentSortField[];
 
-export type RateLimitWindowSortField = 'id' | 'scope' | 'window_started_at' | 'attempts' | 'updated_at';
+export type RateLimitWindowSortField = 'id' | 'scope' | 'window_started_at' | 'window_expires_at' | 'attempts' | 'updated_at';
 export const RateLimitWindowSortFieldValues = [
   "id",
   "scope",
   "window_started_at",
+  "window_expires_at",
   "attempts",
   "updated_at",
 ] as const satisfies readonly RateLimitWindowSortField[];
@@ -950,6 +952,20 @@ export const EnvelopeNonceSortFieldValues = [
   "id",
   "expires_at",
 ] as const satisfies readonly EnvelopeNonceSortField[];
+
+export type AuditEventSortField = 'id' | 'occurred_at' | 'tenant' | 'actor_kind' | 'actor_id' | 'action' | 'outcome' | 'target_class' | 'target_repr' | 'operation_id';
+export const AuditEventSortFieldValues = [
+  "id",
+  "occurred_at",
+  "tenant",
+  "actor_kind",
+  "actor_id",
+  "action",
+  "outcome",
+  "target_class",
+  "target_repr",
+  "operation_id",
+] as const satisfies readonly AuditEventSortField[];
 
 export type ConsoleKeySortField = 'id' | 'staff_member_id' | 'alg' | 'public_key' | 'thumbprint' | 'label' | 'paired_at' | 'expires_at' | 'revoked_at';
 export const ConsoleKeySortFieldValues = [
@@ -2298,6 +2314,7 @@ export interface RateLimitWindow {
   id?: string;
   scope?: string;
   window_started_at?: string;
+  window_expires_at?: string;
   attempts?: number;
   updated_at?: string;
 }
@@ -2305,6 +2322,7 @@ export interface RateLimitWindow {
 export interface UpdateRateLimitWindowInput {
   scope?: string;
   window_started_at?: string;
+  window_expires_at?: string;
   attempts?: number;
   updated_at?: string;
 }
@@ -2313,6 +2331,7 @@ export interface RateLimitWindowWhere {
   id?: StringFilter;
   scope?: StringFilter;
   window_started_at?: DateTimeFilter;
+  window_expires_at?: DateTimeFilter;
   attempts?: NumberFilter;
   updated_at?: DateTimeFilter;
 }
@@ -2349,6 +2368,54 @@ export interface EnvelopeNonceOrderByClause {
 export interface EnvelopeNonceFindMany {
   where?: EnvelopeNonceWhere;
   orderBy?: EnvelopeNonceOrderByClause[];
+}
+
+export interface AuditEvent {
+  id?: string;
+  occurred_at?: string;
+  tenant?: string;
+  actor_kind?: string;
+  actor_id?: string;
+  action?: string;
+  outcome?: string;
+  target_class?: string;
+  target_repr?: string;
+  operation_id?: string;
+}
+
+export interface UpdateAuditEventInput {
+  occurred_at?: string;
+  tenant?: string;
+  actor_kind?: string;
+  actor_id?: string;
+  action?: string;
+  outcome?: string;
+  target_class?: string;
+  target_repr?: string;
+  operation_id?: string;
+}
+
+export interface AuditEventWhere {
+  id?: StringFilter;
+  occurred_at?: DateTimeFilter;
+  tenant?: StringFilter;
+  actor_kind?: StringFilter;
+  actor_id?: StringFilter;
+  action?: StringFilter;
+  outcome?: StringFilter;
+  target_class?: StringFilter;
+  target_repr?: StringFilter;
+  operation_id?: StringFilter;
+}
+
+export interface AuditEventOrderByClause {
+  field: AuditEventSortField;
+  direction: SortDirection;
+}
+
+export interface AuditEventFindMany {
+  where?: AuditEventWhere;
+  orderBy?: AuditEventOrderByClause[];
 }
 
 export interface ConsoleKey {
