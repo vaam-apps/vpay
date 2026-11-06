@@ -1496,7 +1496,8 @@ deny:
 # 2026-10-09, as `auditConfig.ignoreGhsas` in `pnpm-workspace.yaml`
 # (the settings moved out of `package.json` on 2026-09-19), which carries the
 # maintainer's dated decision, the scope of exposure and a REMOVE WHEN
-# condition for the one advisory it suppresses, GHSA-vfj7-8cjw-p6xm. #103 is
+# condition for each of the three advisories it suppresses (GHSA-vfj7-8cjw-p6xm,
+# GHSA-3g3m-2fjr-6pw4, GHSA-g3hv-75wg-m249). #103 is
 # closed; the exception path is documented in docs/flows/sdlc.md.
 #
 # This paragraph said "is NOT BUILT … #103 stays open for it" until

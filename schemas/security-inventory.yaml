@@ -554,7 +554,7 @@ material_controls:
       - "pnpm-lock.yaml"
       - "deny.toml"
       - "pnpm-workspace.yaml"
-    evidence: "cargo deny check (bans, licenses, sources, advisories) and pnpm audit at moderate. One JS advisory is risk-accepted by id under a dated, reasoned auditConfig.ignoreGhsas entry; the allowlist-with-reason escape hatch #103 asked for is built (GAP-103, closed)."
+    evidence: "cargo deny check (bans, licenses, sources, advisories) and pnpm audit at moderate. Three JS advisories are risk-accepted by id under dated, reasoned auditConfig.ignoreGhsas entries; the allowlist-with-reason escape hatch #103 asked for is built (GAP-103, closed)."
     evidence_paths:
       - "deny.toml"
       - "pnpm-workspace.yaml"
@@ -737,9 +737,9 @@ material_controls:
 
 known_security_gaps:
   - id: "GAP-103"
-    title: "Web dependency audit allowlist and one ignored advisory"
+    title: "Web dependency audit allowlist and ignored advisories"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/103"
-    description: "Resolved: audit-web runs pnpm audit at --audit-level=moderate in just ci and in CI's web job, so moderate, high and critical all fail. The dated allowlist-with-reason escape hatch #103 asked for is built: GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) is ignored by id under auditConfig.ignoreGhsas in pnpm-workspace.yaml with the maintainer decision of 2026-10-09, the scope of exposure and a REMOVE WHEN condition, and the exception path is documented in docs/flows/sdlc.md."
+    description: "Resolved: audit-web runs pnpm audit at --audit-level=moderate in just ci and in CI's web job, so moderate, high and critical all fail. The dated allowlist-with-reason escape hatch #103 asked for is built: GHSA-vfj7-8cjw-p6xm (braces <=3.0.3), GHSA-3g3m-2fjr-6pw4 (glob, Storybook react-docgen) and GHSA-g3hv-75wg-m249 (minimatch, lint toolchain) are ignored by id under auditConfig.ignoreGhsas in pnpm-workspace.yaml, each with a dated decision, the scope of exposure and a REMOVE WHEN condition, and the exception path is documented in docs/flows/sdlc.md."
     status: "closed"
     related_control: "A.8.7"
 
