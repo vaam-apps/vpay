@@ -452,7 +452,13 @@ mutation-checked on 2026-10-23
 
 ## `privacy:` — lookup audit salt and rate limits (ADR-0020, issue #56)
 
-An optional block in YAML (defaulting to empty salt and no rate limit if omitted, though in `livemode: true` an empty `lookup_audit_salt` is refused with `ConfigError::MissingPrivacyLookupAuditSalt` at boot):
+An optional block in YAML. Since PR #396 a configured `lookup_audit_salt` **requires**
+`lookup_rate_limit` to accompany it — a salt that enables lookups with no per-credential
+budget is refused at boot with `ConfigError::MissingPrivacyLookupRateLimit`, because that
+is the per-credential control being silently absent (issue #56). With neither key set,
+the block is empty and lookups are refused at request time for want of the salt. In
+`livemode: true` an empty `lookup_audit_salt` is refused with
+`ConfigError::MissingPrivacyLookupAuditSalt` at boot:
 
 ```yaml
 privacy:
@@ -463,7 +469,7 @@ privacy:
 ```
 
 - `lookup_audit_salt`: 32-byte secret used to key HMAC-SHA256 digests of phone numbers stored in `audit_events.target_repr` (provisional pending RFC-0002 D3). Redacted in `Debug` output to prevent secret leakage in logs. In livemode, must be present and non-empty.
-- `lookup_rate_limit`: fixed-window rate limit configuration applied to account-holder lookups across `GET /v1/account_holders` and `POST /v1/refunds` (provisional pending RFC-0002 D6). Requires both `window_seconds > 0` and `max_attempts > 0` if specified.
+- `lookup_rate_limit`: fixed-window rate limit configuration applied to account-holder lookups across `GET /v1/account_holders` and `POST /v1/refunds` (provisional pending RFC-0002 D6). Requires both `window_seconds > 0` and `max_attempts > 0`, and **must be present whenever `lookup_audit_salt` is configured** (PR #396).
 
 ## The checkout page reads its own two files, and they are not these
 

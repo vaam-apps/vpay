@@ -272,6 +272,9 @@ elements:
         column: updated_at
       - kind: column
         table: rate_limit_windows
+        column: window_expires_at
+      - kind: column
+        table: rate_limit_windows
         column: window_started_at
       - kind: column
         table: refunds

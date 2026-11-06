@@ -11721,6 +11721,73 @@ async fn the_rate_limit_table_grows_by_one_window_and_is_then_swept() -> anyhow:
     Ok(())
 }
 
+/// **A short-window scope's count never sweeps a longer-window row that is
+/// still inside its own window.**
+///
+/// Before migration 0060 the sweep judged every row by the *calling* request's
+/// window: a 60-second `lookup:merchant_key` (issue #56) deleted staff
+/// `sign_in:email` rows (300 seconds) whose `window_started_at` was more than
+/// 60 seconds old but still inside their own 300-second window, resetting their
+/// brute-force budget the moment a merchant performed a lookup. `COUNT_ATTEMPT`
+/// now stores each row's own `window_expires_at` and sweeps only rows whose own
+/// expiry has passed.
+///
+/// **The mutation:** go back to `window_started_at <= $4` (the calling window's
+/// horizon) in the sweep, and the `staff` row below is deleted by the lookup's
+/// count — this test then fails on the `remaining == 1` assertion.
+#[tokio::test]
+async fn a_short_scope_count_never_sweeps_a_longer_scope_row_inside_its_own_window()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    let short_window = time::Duration::seconds(60);
+    let long_window = time::Duration::seconds(300);
+
+    let staff_key = "s".repeat(64);
+    let lookup_key = "l".repeat(64);
+
+    // A staff sign-in counter, opened now, live for 300 seconds.
+    repositories
+        .count_attempt(&staff_key, "sign_in:email", long_window, now)
+        .await?;
+
+    // 100 seconds later — inside the staff row's window (300s) but past a
+    // 60-second window's end — a merchant performs a lookup. Its sweep must
+    // not take the staff row.
+    let later = now + time::Duration::seconds(100);
+    repositories
+        .count_attempt(&lookup_key, "lookup:merchant_key", short_window, later)
+        .await?;
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rate_limit_windows WHERE id = $1")
+            .bind(&staff_key)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        remaining, 1,
+        "the 300-second staff sign-in row must survive the 60-second lookup's sweep; the lookup \
+         must only remove rows whose OWN window has elapsed"
+    );
+
+    // Once the staff row's own window has truly elapsed, a later count does
+    // take it.
+    let past = later + time::Duration::seconds(300);
+    let _ = repositories
+        .count_attempt(&staff_key, "sign_in:email", long_window, past)
+        .await?;
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM rate_limit_windows WHERE id = $1")
+        .bind(&staff_key)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(
+        after, 1,
+        "the staff row is replaced (same id), not doubled, once its own window elapses"
+    );
+
+    Ok(())
+}
+
 // ----------------------------------------------------- envelope_nonces ----
 //
 // Every nonce below is drawn at run time by `fresh_envelope_nonce`, once per

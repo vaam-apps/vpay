@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 58,
-        "all fifty-eight migration files under backends/migrations should be recorded as applied \
+        applied, 60,
+        "all sixty migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -395,7 +395,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          decision for each routed charge, written in the transaction that \
          opens it (D10), and 0054, which copies the charge's rail and type \
          onto payment_intents.charge_rail and charge_method_type -- what /v1 \
-         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VPA-2's 0058, which creates staff_sessions, oauth_authorization_codes and staff_sso_attempts again, empty and exactly as 0035, 0040 and 0050 shipped them, and drops credentials_password_and_totp_are_retired so a password or a TOTP seed may be stored (owner ruling R5: authentication methods are deployment configuration), and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
+         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VPA-2's 0058, which creates staff_sessions, oauth_authorization_codes and staff_sso_attempts again, empty and exactly as 0035, 0040 and 0050 shipped them, and drops credentials_password_and_totp_are_retired so a password or a TOTP seed may be stored (owner ruling R5: authentication methods are deployment configuration), and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock, and #56's 0059, audit_events: the append-only generic audit journal (ADR-0020 §3, provisional RFC-0002 D7), plus the 'lookup:merchant_key' scope that extends rate_limit_windows_scope_is_known, and PR #396's 0060, which adds rate_limit_windows.window_expires_at so the count sweep removes each row under its own window rather than the caller's.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -5120,7 +5120,7 @@ async fn swallowing_a_duplicate_write_inside_a_transaction_discards_the_whole_tr
 /// `oauth_authorization_codes` 4, `staff_sso_attempts` 5: **+13**, the same
 /// lines 0056 removed) and `credentials_password_and_totp_are_retired` is gone
 /// (**-1**): 209 + 13 - 1 = 221. `EXPECTED_DRIFTED_RELATIONS` moves 27 -> 30.
-const EXPECTED_DRIFT_CHANGES: u32 = 221;
+const EXPECTED_DRIFT_CHANGES: u32 = 232;
 
 /// Tables and views the drift above is spread across. Reported on the same
 /// header line as the change count and pinned for the same reason: 85 changes
@@ -5220,7 +5220,7 @@ const EXPECTED_DRIFT_CHANGES: u32 = 221;
 /// `oauth_authorization_codes` and `staff_sso_attempts` rejoin the list, each as
 /// a relation the schema declares and the migrations decorate with CHECKs and
 /// indexes it does not spell.
-const EXPECTED_DRIFTED_RELATIONS: u32 = 30;
+const EXPECTED_DRIFTED_RELATIONS: u32 = 31;
 
 /// Live columns `cratestack` declines to compare because it cannot map their
 /// Postgres type onto a `.cstack` scalar, which it reports as a trailing

@@ -179,8 +179,12 @@ _Proven by_ `rate_limit_blocks_and_retry_after_is_provided_and_second_credential
 `GET /v1/account_holders` requires the `account_holders:read` scope.
 Nominated-payee refunds via `POST /v1/refunds` also require `account_holders:read` in addition to `payments:write`.
 Any credential lacking this scope is refused with HTTP 403 Forbidden (`insufficient_scope`).
+Since PR #396 an implicit `HEAD` to the route is held to the same `GET` policy
+— Axum serves `HEAD` from the `GET` handler, so a payments-only credential
+cannot trigger the rail lookup via `HEAD` without `account_holders:read`, and
+an account-holders-only credential is not refused for it.
 
-_Proven by_ `credential_without_account_holders_read_scope_is_refused_403` and `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration).
+_Proven by_ `credential_without_account_holders_read_scope_is_refused_403` and `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration), and `a_head_to_account_holders_is_held_to_the_get_scope_policy` (integration).
 
 ## The wire
 
@@ -276,7 +280,11 @@ about the _rail_, and this one answers a question about the _route_.
 > of phone numbers into a list of names at whatever rate it can make HTTP
 > requests, and vpay keeps no record that it happened (rules 2 and 4 below —
 > and they are the same fact, pointing in two directions). That is the
-> condition on turning this route on, not a caveat about it.
+> condition on turning this route on, not a caveat about it. Since PR #396 the
+> per-credential limit is **required at boot** (`privacy.lookup_rate_limit` must
+> accompany `privacy.lookup_audit_salt`), so an operator can no longer
+> configure the salt and forget the limit; the ingress-scale question remains
+> an operator concern, not a code one.
 
 - `GET /v1/account_holders` — served (`vpay_api::v1::V1_ROUTES`). Merchant
   token required (`payments:read` or `payments:write`), tenant-scoped
@@ -358,6 +366,8 @@ about the _rail_, and this one answers a question about the _route_.
 | every outcome counted, no label carrying the number or the name                 | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                                                                                 |
 | rate limit: exceeding budget is refused 429 with Retry-After                    | `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` (integration)                                                                                                                                                         |
 | rate limit: nominated payee refund spends lookup budget                         | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                           |
+| rate limit: a short scope never resets a longer one's counter                  | `a_short_scope_count_never_sweeps_a_longer_scope_row_inside_its_own_window` (`vpay-db`), the per-row `window_expires_at` sweep (migration 0060)                                                                                                          |
+| rate limit: a salt without a configured limit refuses at boot                  | `an_audit_salt_without_a_lookup_rate_limit_is_refused_at_boot` (`vpay-config`) — lookups can no longer boot into an unlimited per-credential budget                                                                                                      |
 | audit log: initiated and terminal events with HMAC target, no raw PII           | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
 | scope: lacking `account_holders:read` refused 403 Forbidden                     | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                   |
 | the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — nine cases                                                                                                                                                                                     |

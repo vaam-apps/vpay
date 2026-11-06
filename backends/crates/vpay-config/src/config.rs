@@ -1717,6 +1717,14 @@ impl Config {
                     .unwrap_or(""),
                 livemode,
             )?;
+            // A configured audit salt enables account-holder lookups, and a
+            // lookup without a rate limit is the per-credential control being
+            // silently absent (PR #396, stephane-segning P1). Fail closed at
+            // boot rather than serve unlimited lookups under a config that
+            // documented the control and left it out.
+            if self.privacy.lookup_rate_limit.is_none() {
+                return Err(ConfigError::MissingPrivacyLookupRateLimit);
+            }
         } else if livemode && self.privacy.lookup_rate_limit.is_some() {
             return Err(ConfigError::MissingPrivacyLookupAuditSalt);
         }
@@ -8182,6 +8190,46 @@ providers:
         );
 
         config.privacy.lookup_audit_salt = Some("${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
+        config.privacy.lookup_rate_limit = Some(RateLimitPolicy {
+            attempts: 10,
+            window_seconds: 60,
+        });
+        let mut raw = RawSecrets::identity(&config);
+        raw.privacy.insert(
+            "lookup_audit_salt".to_owned(),
+            "${VPAY_LOOKUP_AUDIT_SALT}".to_owned(),
+        );
+        assert_eq!(config.validate_all(&raw), Ok(()));
+    }
+
+    #[test]
+    fn an_audit_salt_without_a_lookup_rate_limit_is_refused_at_boot() {
+        let mut config = valid_config();
+        config.privacy.lookup_audit_salt = Some("${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
+        config.privacy.lookup_rate_limit = None;
+        let mut raw = RawSecrets::identity(&config);
+        raw.privacy.insert(
+            "lookup_audit_salt".to_owned(),
+            "${VPAY_LOOKUP_AUDIT_SALT}".to_owned(),
+        );
+
+        assert_eq!(
+            config.validate_all(&raw),
+            Err(ConfigError::MissingPrivacyLookupRateLimit),
+            "a salt that enables lookups must carry the per-credential limit the control \
+             promises (PR #396, P1); a config that documents the limit and omits it must not \
+             boot into unlimited lookups"
+        );
+    }
+
+    #[test]
+    fn an_audit_salt_with_a_lookup_rate_limit_boots() {
+        let mut config = valid_config();
+        config.privacy.lookup_audit_salt = Some("${VPAY_LOOKUP_AUDIT_SALT}".to_owned());
+        config.privacy.lookup_rate_limit = Some(RateLimitPolicy {
+            attempts: 10,
+            window_seconds: 60,
+        });
         let mut raw = RawSecrets::identity(&config);
         raw.privacy.insert(
             "lookup_audit_salt".to_owned(),

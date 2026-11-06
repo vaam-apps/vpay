@@ -631,6 +631,55 @@ async fn credential_without_account_holders_read_scope_is_refused_403() -> anyho
     Ok(())
 }
 
+/// Test 56-7 (PR #396 P2): an implicit `HEAD` is held to the `GET` route
+/// policy, not the method-based default.
+///
+/// Axum serves `HEAD` from the same handler as `GET`, so a `HEAD` to
+/// `/v1/account_holders` is a real rail lookup whose observable outcome (an
+/// audit row, a rate-limit spend) occurs even though Axum strips the body. It
+/// must therefore demand `account_holders:read` exactly as `GET` does — a
+/// payments-only credential must be refused `403`, and an account-holders-only
+/// credential must be served, rather than the pre-396 fallback to
+/// `payments:read`/`payments:write` which refused the one and admitted the
+/// other.
+#[tokio::test]
+async fn a_head_to_account_holders_is_held_to_the_get_scope_policy() -> anyhow::Result<()> {
+    let h = harness().await?;
+
+    let url = h.url("/v1/account_holders");
+
+    // CLIENT_READ_ONLY (payments:read only) must be refused 403, exactly as on GET.
+    let refused = merchant_http()
+        .request("HEAD", &url)
+        .signed_by(CLIENT_READ_ONLY)
+        .query(&[("msisdn", MSISDN_REGISTERED), ("payment_method_type", PUSH_RAIL)])
+        .send()
+        .await
+        .context("HEAD /v1/account_holders as a payments-only credential")?;
+    assert_eq!(
+        refused.status().as_u16(),
+        403,
+        "a payments-only credential must not trigger the lookup via HEAD"
+    );
+
+    // CLIENT_B (account_holders:read only) must be served, exactly as on GET.
+    let allowed = merchant_http()
+        .request("HEAD", &url)
+        .signed_by(CLIENT_B)
+        .query(&[("msisdn", MSISDN_REGISTERED), ("payment_method_type", PUSH_RAIL)])
+        .send()
+        .await
+        .context("HEAD /v1/account_holders as an account-holders-only credential")?;
+    assert_eq!(
+        allowed.status().as_u16(),
+        200,
+        "an account-holders-only credential must be served on HEAD, as it is on GET"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
 /// Test 56-5: Audit table holds HMAC target representation, no raw phone number or name.
 #[tokio::test]
 async fn audit_table_holds_hmac_target_representation_and_no_raw_pii() -> anyhow::Result<()> {

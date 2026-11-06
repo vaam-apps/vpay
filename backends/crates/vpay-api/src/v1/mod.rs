@@ -193,10 +193,23 @@ pub fn account_holders_read_scope(_method: &Method) -> &'static [&'static str] {
 #[must_use]
 pub fn required_scopes_for(matched: &str, method: &Method) -> Option<&'static [&'static str]> {
     let template = matched.strip_prefix(V1_NEST).unwrap_or(matched);
+    // Axum serves HEAD from the same handler as GET (`MethodRouter::get`), so
+    // a HEAD must be held to the *route's* GET policy, not fall back to the
+    // method-based default. Without this, a HEAD to `/v1/account_holders` was
+    // matched against the route's `methods: ["GET"]`, found nothing, and fell
+    // through to `required_scopes(HEAD)` = `payments:read`/`payments:write` —
+    // so a payments-only credential could trigger the rail lookup without
+    // `account_holders:read`, and an account-holders-only one was refused (PR
+    // #396, P2).
+    let effective = if *method == Method::HEAD {
+        Method::GET
+    } else {
+        method.clone()
+    };
     V1_ROUTES
         .iter()
-        .find(|route| route.path == template && route.methods.contains(&method.as_str()))
-        .map(|route| (route.scopes)(method))
+        .find(|route| route.path == template && route.methods.contains(&effective.as_str()))
+        .map(|route| (route.scopes)(&effective))
 }
 
 /// One mounted `/v1` route: the path axum matches, the methods it answers,
@@ -1904,5 +1917,27 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// A `HEAD` to `/v1/account_holders` is held to the route's `GET` policy,
+    /// not the method-based default (PR #396, P2).
+    ///
+    /// Axum serves `HEAD` from the same handler as `GET`, so a payments-only
+    /// credential must not be able to trigger the rail lookup via `HEAD` while
+    /// an account-holders-only one is refused — the scope middleware must
+    /// demand `account_holders:read` either way.
+    #[test]
+    fn a_head_to_account_holders_uses_the_get_scope_policy() {
+        let head = Method::HEAD;
+        assert_eq!(
+            required_scopes_for("/account_holders", &head),
+            Some(&[SCOPE_ACCOUNT_HOLDERS_READ][..]),
+            "HEAD /v1/account_holders must require account_holders:read, exactly as GET does"
+        );
+        assert_eq!(
+            required_scopes_for("/v1/account_holders", &head),
+            Some(&[SCOPE_ACCOUNT_HOLDERS_READ][..]),
+            "the /v1-prefixed template must resolve the same way"
+        );
     }
 }

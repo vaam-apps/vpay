@@ -937,11 +937,12 @@ export const ManualPaymentSortFieldValues = [
   "paid_out_of_band",
 ] as const satisfies readonly ManualPaymentSortField[];
 
-export type RateLimitWindowSortField = 'id' | 'scope' | 'window_started_at' | 'attempts' | 'updated_at';
+export type RateLimitWindowSortField = 'id' | 'scope' | 'window_started_at' | 'window_expires_at' | 'attempts' | 'updated_at';
 export const RateLimitWindowSortFieldValues = [
   "id",
   "scope",
   "window_started_at",
+  "window_expires_at",
   "attempts",
   "updated_at",
 ] as const satisfies readonly RateLimitWindowSortField[];
@@ -2313,6 +2314,7 @@ export interface RateLimitWindow {
   id?: string;
   scope?: string;
   window_started_at?: string;
+  window_expires_at?: string;
   attempts?: number;
   updated_at?: string;
 }
@@ -2320,6 +2322,7 @@ export interface RateLimitWindow {
 export interface UpdateRateLimitWindowInput {
   scope?: string;
   window_started_at?: string;
+  window_expires_at?: string;
   attempts?: number;
   updated_at?: string;
 }
@@ -2328,6 +2331,7 @@ export interface RateLimitWindowWhere {
   id?: StringFilter;
   scope?: StringFilter;
   window_started_at?: DateTimeFilter;
+  window_expires_at?: DateTimeFilter;
   attempts?: NumberFilter;
   updated_at?: DateTimeFilter;
 }
