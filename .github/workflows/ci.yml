@@ -567,6 +567,12 @@ jobs:
       # like the steps above, so the recipe and this workflow cannot drift.
       - name: verify-mcp-parity (every /v1 route has an MCP row)
         run: just verify-mcp-parity
+      # New 2026-11-16, the eighteenth gate (issue #170). Every file in
+      # docs/adr/ must match NNNN-slug.md and no two files may share a leading
+      # number (gaps are allowed). Through the justfile, like the steps above
+      # it, so the recipe and this workflow cannot drift.
+      - name: verify-adr-numbers (no duplicate or malformed ADR filenames)
+        run: just verify-adr-numbers
       # A report, not a gate — it exits 0 whatever it finds (Step 7,
       # decision (4)). It is here so `justfile`'s claim that this job runs
       # exactly what `just verify` runs stays true, and so the doc-volume,

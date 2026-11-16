@@ -19,12 +19,12 @@ CI runs it.
 `just verify` is the gates the `verify` recipe lists in the `justfile`, and
 one report. **The recipe is the list; this paragraph is a description of it,
 and it has gone stale at nearly every count it has carried** — see below. On
-this commit the gates are 17 <!-- count:verify-gates --> (`verify-no-mocks`, `verify-status`,
+this commit the gates are 18 <!-- count:verify-gates --> (`verify-no-mocks`, `verify-status`,
 `verify-errors`, `verify-sdk-parity`, `verify-links`, `verify-npm-scope`,
 `check-schema`, `verify-serde`, `verify-repositories`, `verify-toolchain`,
 `verify-ui`, `verify-migrations`, `verify-versions`,
 `verify-privacy-inventory`, `verify-doc-counts`, `verify-security-inventory`,
-`verify-mcp-parity`)
+`verify-mcp-parity`, `verify-adr-numbers`)
 and they fail the build. That
 number is written in digits and carries a `count:verify-gates` marker because
 `verify-doc-counts` re-reads it off the recipe on every `just verify`; the
@@ -100,7 +100,7 @@ said "Eleven of the thirteen", which was right for a tree that had not seen
 #201 and wrong for one that had. `master` at `eb078020` said "twelve" and "Ten
 of the twelve". Neither side was right for the merge, which is fourteen and
 twelve.)_
-Fifteen of the seventeen are `cargo xtask` commands; `check-schema` and
+Sixteen of the eighteen are `cargo xtask` commands; `check-schema` and
 `verify-ui` are justfile recipes — the first shells out to the CrateStack CLI,
 a binary this workspace does not build, and the second is a handful of
 `git grep`s.

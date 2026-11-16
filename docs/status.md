@@ -170,7 +170,7 @@ token written in a comment of any kind, in a `#[doc = "…"]` attribute or insid
 any string, raw-string or character literal is prose, and prose declares
 nothing.
 
-`just verify` is **17** <!-- count:verify-gates --> gates and one advisory
+`just verify` is **18** <!-- count:verify-gates --> gates and one advisory
 report. What each one refuses, and what the first fourteen printed when they
 were re-run, one invocation each, on **2026-09-18** on this branch's merge of
 `master` at `bd5c85d1`, on macOS with `cratestack` 0.12.0 on `PATH`; the
@@ -224,6 +224,7 @@ no longer exists; the history is the paragraph you are reading.)_
 | `verify-doc-counts`         | a documented number that no longer equals what the tree measures, a marker whose kind no measurer knows, and finding no marker at all (2026-09-20)                                           | 13 counts in 11 of 262 markdown files                             |
 | `verify-security-inventory` | an unknown inventory key, a nonexistent path or cited test, a table missing in either direction, an invented config key, or a gap with no live tracker (2026-10-26)                          | 5 services / 33 tables / 10 secret classes / 15 controls / 7 gaps |
 | `verify-mcp-parity`         | a mounted `/v1` route with no row in `docs/api/mcp-parity.md`, a row naming an unmounted route or an undeclared tool, an undated gap, or a declared tool no row names (2026-10-26, ADR-0033) | 37 routes: 9 tools, 28 dated gaps                                 |
+| `verify-adr-numbers`        | two files in `docs/adr/` sharing a leading number, or a filename not matching `NNNN-slug.md` (2026-11-16, #170)                                                                              | 37 files, unique numbers                                          |
 | `verify-docs`               | **nothing — it exits 0 whatever it finds**                                                                                                                                                   | advisory report                                                   |
 
 _(**Two rows were re-run on 2026-09-20** with the fifteenth gate, because
