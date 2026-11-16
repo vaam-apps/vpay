@@ -343,7 +343,7 @@ vpay merchant demo
   (an orange_money confirm answers next_action.redirect_to_url.url on that host:
    open it for the RAIL's stub hosted page, with a Pay link and a Cancel link)
   rail journal  docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml exec wiremock-mtn curl -s localhost:8080/__admin/requests
-  (no dashboard: it has no data source to show — docs/runbooks/demo.md)
+  (no dashboard: the stack serves one at :3000, but the dashboard signs a staff member in and reads no /dash/v1 until VP-6b — docs/runbooks/demo/dashboard-sign-in.md)
 
   tear down with: just demo_project=vpay-demo demo-down
 ```

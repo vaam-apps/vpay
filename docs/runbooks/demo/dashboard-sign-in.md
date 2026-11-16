@@ -31,29 +31,24 @@ sign-on button: the demo stack has no identity provider.
 
 ## Which payments
 
-**`/dash/v1` shows the SHOP's payments.** It does not show `just demo-walk`'s,
-and that is a choice rather than a gap: a request reads exactly one tenant's rows
-— the one `dashboard.merchant_id` names, checked at boot and filtered on in every
-query ([dashboard.md](../../flows/dashboard.md)) — and this stack registers two
-merchant clients on two tenants (`ConfigError::DuplicateMerchantId` refuses to
-merge them).
+**None — the dashboard reads no `/dash/v1` yet.** It signs a staff member in and
+lands on an account page, and no page reads the payments API until VP-6b. This
+supersedes the older distinction this section used to draw between the SHOP's
+payments and `just demo-walk`'s: even `demo_dashboard_merchant`'s binding to one
+tenant (`dashboard.merchant_id`, checked at boot and filtered on in every query —
+see [dashboard.md](../../flows/dashboard.md)) cannot be *seen* anywhere until a
+payments page exists. The two tenants are still registered and still distinct —
 
 | client          | tenant                 | who pays as it                         |
 | --------------- | ---------------------- | -------------------------------------- |
 | `shop-merchant` | `shop-merchant-tenant` | `examples/shop`, and the browser demos |
 | `demo-merchant` | `demo-merchant-tenant` | `just demo-walk`                       |
 
-To look at the walkthrough's payments instead, move the binding on **both**
-commands, because the member has to exist in the tenant the dashboard is bound
-to:
-
-```bash
-just demo_dashboard_merchant=demo-merchant-tenant demo-up
-just demo_dashboard_merchant=demo-merchant-tenant demo-staff
-```
-
-`just gen-demo-keys` regenerates an overlay whose `dashboard.merchant_id` no
-longer matches, so nothing has to be cleaned up by hand.
+— but `demo_dashboard_merchant` only chooses which tenant's rows the *future*
+payments page will read, so moving it now (`just demo_dashboard_merchant=
+demo-merchant-tenant demo-up` + `demo-staff`) is preparing for VP-6b rather
+than making the walkthrough's intents visible today. The way to read either
+tenant's data by hand is the console key in the next section.
 
 ## Reading it by hand: the break-glass
 

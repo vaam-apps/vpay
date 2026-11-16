@@ -5433,7 +5433,7 @@ demo-walk:
     echo "  (an orange_money confirm answers next_action.redirect_to_url.url on that host:"
     echo "   open it for the RAIL's stub hosted page, with a Pay link and a Cancel link)"
     echo "  rail journal  docker compose {{demo_compose}} exec wiremock-mtn curl -s localhost:8080/__admin/requests"
-    echo "  (no dashboard: it has no data source to show — docs/runbooks/demo.md)"
+    echo "  dashboard   http://localhost:{{demo_dashboard_port}}  (staff sign-in; reads no /dash/v1 until VP-6b — docs/runbooks/demo.md)"
     echo
     echo "  tear down with: just demo_project={{demo_project}} demo-down"
     exit $status

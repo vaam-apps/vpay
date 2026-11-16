@@ -209,28 +209,33 @@ enum Steering {
     /// MTN: the payer's MSISDN, which is the one field of a push exchange a
     /// merchant chooses.
     ///
-    /// The three [`OUTCOMES`] carry are **hex steering codes, not phone
-    /// numbers** — the last three characters are what the rail stub keys a
-    /// WireMock scenario on, and a Cameroon E.164 number has eight digits
-    /// after the `6`, no letters:
+    /// The three [`OUTCOMES`] carry are **phonenumber-valid CM mobile numbers
+    /// whose last three digits select a WireMock scenario** on the rail stub:
     ///
     /// | Value | Outcome | Mapping that keys on it |
     /// |---|---|---|
-    /// | `237600000ce0` | settles (`PENDING`, then `SUCCESSFUL`) | `wiremock/mtn/mappings/requesttopay-scenario.json`, scenario `mtn-e2e-poll` |
-    /// | `237600000f01` | `insufficient_funds` (`FAILED`/`NOT_ENOUGH_FUNDS`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-decline` |
-    /// | `237600000f02` | `payer_timeout` (`FAILED`/`COULD_NOT_PERFORM_TRANSACTION`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-expiry` |
+    /// | `237670000900` | settles (`PENDING`, then `SUCCESSFUL`) | `wiremock/mtn/mappings/requesttopay-scenario.json`, scenario `mtn-e2e-poll` |
+    /// | `237670000101` | `insufficient_funds` (`FAILED`/`NOT_ENOUGH_FUNDS`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-decline` |
+    /// | `237670000102` | `payer_timeout` (`FAILED`/`COULD_NOT_PERFORM_TRANSACTION`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-expiry` |
     ///
-    /// Each has a digits-only twin — `…100`, `…101`, `…102` — matched into
-    /// the *same* scenario by the same mapping's regex, because the checkout
-    /// page's own validator
-    /// (`frontends/apps/checkout/src/lib/msisdn.ts`) refuses a letter and a
-    /// payer could never type the hex form. This program sends the hex
-    /// spelling, and step 6 shows `/v1` refusing one of them with a `400`.
+    /// These are **not** the hex steering codes this program used to send.
+    /// Since issue #186 the server validates `payment_method_data[mtn_momo]
+    /// [msisdn]` with libphonenumber (`vpay_api::v1::payer_fields`), which
+    /// refuses the whole `2376000000xx` block — prefix `60` is not a Cameroon
+    /// mobile prefix, so even the digits-only `…100` twin is invalid — and a
+    /// confirm carrying one is a `400` before the rail is ever asked. The
+    /// `…900`/`…101`/`…102` numbers above validate (`+237670000900`,
+    /// `Mobile`), are already in each mapping's own `partyId` matcher, and
+    /// drive the identical walk the hex codes did (the same migration
+    /// `frontends/tests/e2e/cypress/support/shop.ts` and `checkout.cy.ts`
+    /// made for issue #189).
     ///
     /// **Corrected 2026-09-10 (issue #87):** this said "a documentation
     /// number in the `2376000000xx` block", which none of the three is —
     /// they are `2376000000f0x`/`…0ce0`, and calling them documentation
-    /// numbers is what made the `400` in step 6 read as a bug.
+    /// numbers is what made the `400` in step 6 read as a bug. That sentence
+    /// and the whole hex family were retired when issue #186's server-side
+    /// validation made them unusable from a real confirm.
     Msisdn(&'static str),
     /// Orange: where the rail returns the payer afterwards. The *outcome* on
     /// this rail is steered by the amount instead (see [`Outcome::amount`]),
@@ -320,8 +325,8 @@ const OUTCOMES: [Outcome; 6] = [
         rail: PaymentMethodType::MtnMomo,
         currency: "xaf",
         amount: 5000,
-        steering: Steering::Msisdn("237600000ce0"),
-        selected_by: "MSISDN 237600000ce0 enters the `mtn-e2e-poll` scenario \
+        steering: Steering::Msisdn("237670000900"),
+        selected_by: "MSISDN 237670000900 enters the `mtn-e2e-poll` scenario \
                       (requesttopay-scenario.json): PENDING on the first status query, \
                       SUCCESSFUL on the second",
         after_confirm: IntentStatus::Processing,
@@ -334,8 +339,8 @@ const OUTCOMES: [Outcome; 6] = [
         rail: PaymentMethodType::MtnMomo,
         currency: "xaf",
         amount: 5000,
-        steering: Steering::Msisdn("237600000f01"),
-        selected_by: "MSISDN 237600000f01 arms the `mtn-demo-decline` scenario \
+        steering: Steering::Msisdn("237670000101"),
+        selected_by: "MSISDN 237670000101 arms the `mtn-demo-decline` scenario \
                       (demo-outcomes.json), which answers the next status query \
                       FAILED/NOT_ENOUGH_FUNDS",
         after_confirm: IntentStatus::Processing,
@@ -348,8 +353,8 @@ const OUTCOMES: [Outcome; 6] = [
         rail: PaymentMethodType::MtnMomo,
         currency: "xaf",
         amount: 5000,
-        steering: Steering::Msisdn("237600000f02"),
-        selected_by: "MSISDN 237600000f02 arms the `mtn-demo-expiry` scenario \
+        steering: Steering::Msisdn("237670000102"),
+        selected_by: "MSISDN 237670000102 arms the `mtn-demo-expiry` scenario \
                       (demo-outcomes.json), which answers FAILED with the OBJECT-shaped \
                       reason COULD_NOT_PERFORM_TRANSACTION — MTN's ~5-minute PIN window",
         after_confirm: IntentStatus::Processing,
@@ -1515,14 +1520,14 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
 /// The first two are digits only and are the pair
 /// `wiremock/mtn/mappings/basicuserinfo.json` answers for: `GET
 /// /v1/account_holders` validates Cameroon E.164 server-side, so the hex
-/// steering numbers step 4 uses (`237600000f01`) are refused before the rail
-/// is called — which is itself worth a reader seeing, and is why the third
-/// row exists.
+/// steering number (`237600000f01`) that step 4 used to send is refused
+/// before the rail is called — which is itself worth a reader seeing, and
+/// is why the third row exists.
 ///
 /// **Corrected 2026-09-10 (issue #87).** This said "`237600000100` is the
 /// same number step 4's *settling* MTN outcome uses". It is not: step 4
-/// sends `237600000ce0` ([`OUTCOMES`]). `…100` is that number's digits-only
-/// **twin** — `requesttopay-scenario.json` matches
+/// sends `237670000900` ([`OUTCOMES`]). `…100` is that number's old hex
+/// family's digits-only **twin** — `requesttopay-scenario.json` matches
 /// `237600000(ce0|100)` into the one `mtn-e2e-poll` scenario, so it walks
 /// the identical `PENDING` → `SUCCESSFUL` path — and `basicuserinfo.json`
 /// gives it a named holder on top. The point the old sentence was making
@@ -1530,7 +1535,11 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
 /// deleted: a merchant's real question is "does the number I am about to
 /// send money to belong to the person I think it does", and one number that
 /// both pays and has a name is closer to that than two unrelated fixtures.
-/// It is simply not the number this program pays with.
+/// It is simply not the number this program pays with. (`…100` itself is
+/// also no longer payable from a real confirm — issue #186 refuses the whole
+/// `2376000000xx` block — which is why step 4 now uses `237670000900`; the
+/// account-holder lookup below reaches the rail through `canonical_msisdn`,
+/// a digit-stripper, so the digits-only cases here are unaffected.)
 const ACCOUNT_HOLDER_CASES: [(&str, AccountHolderExpectation, &str); 3] = [
     (
         "237600000100",
