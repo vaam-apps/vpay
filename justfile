@@ -1,6 +1,6 @@
 # vpay task runner. `just` with no argument lists everything.
 #
-# Seventeen invariants this repo enforces on itself, all wired into `just verify`:
+# Eighteen invariants this repo enforces on itself, all wired into `just verify`:
 #   * no test double is reachable from a shipping binary
 #   * every unimplemented item is declared in docs/status.md
 #   * every error type is classified (ADR-0011) and anyhow stays in the binaries
@@ -79,12 +79,15 @@
 # `verify-mcp-parity` makes it **seventeen** on 2026-10-26 (ADR-0033 D8): every
 # `/v1` route is mapped to an MCP tool or a dated gap, in both directions.
 #
-# `just verify` prints an eighteenth thing that is NOT an invariant and never
+# `verify-adr-numbers` makes it **eighteen** on 2026-11-16 (issue #170): every
+# file in `docs/adr/` matches `NNNN-slug.md` and no two share a leading number.
+#
+# `just verify` prints a nineteenth thing that is NOT an invariant and never
 # fails the build: `verify-docs`, a report on doc-comment volume, in-file
 # comment volume, externalised module docs, long functions, ```ignore fences
 # and #[allow]s (Step 7 decision 4; ADR-0016 standard 6 keeps it a report).
 #
-# A nineteenth check is a gate that is NOT in `just ci`, because it needs the
+# A twentieth check is a gate that is NOT in `just ci`, because it needs the
 # network: `just docs-check-citations` resolves every run id, PR and issue a
 # document cites against GitHub. See its recipe at the bottom of this file.
 
@@ -1560,10 +1563,10 @@ deny:
 # nobody reads.
 #
 # The escape hatch issue #103 asked for alongside the lower ceiling — a
-# documented allowlist with a dated reason per entry — is NOT BUILT.
-# `pnpm.auditConfig.ignoreCves` is absent from `package.json` and no advisory
-# is being suppressed (checked 2026-09-16). Until it exists, an accepted
-# advisory has nowhere to go but this comment, and #103 stays open for it.
+# documented allowlist with a dated reason per entry — lives in
+# `pnpm-workspace.yaml` under `auditConfig.ignoreGhsas` (added 2026-10-09,
+# vaam-apps/vpay#272; cross-referenced in `docs/status/gates.md`).
+# (Until 2026-11-16 this comment said it was NOT BUILT.)
 #
 # IS part of `just ci`, since 2026-09-11 — and it is the one thing in `just
 # ci` that needs the network. See the `ci` recipe's own comment: the
@@ -1627,7 +1630,8 @@ audit-web:
 # verify-links, verify-npm-scope, check-schema, verify-serde,
 # verify-repositories, verify-toolchain, verify-ui, verify-migrations,
 # verify-versions, verify-privacy-inventory, verify-doc-counts,
-# verify-security-inventory, and then verify-docs last.
+# verify-security-inventory, verify-mcp-parity, verify-adr-numbers, and then
+# verify-docs last.
 #
 # _(That list named eleven and stopped at `verify-ui` until 2026-09-17. It had
 # been three gates short since `verify-versions` (PR #201) and one short since
@@ -1724,9 +1728,19 @@ audit-web:
 # serves it, or a dated gap, and every declared tool is named. Last, for the
 # chronological reason above.
 #
-# The seventeen self-checks, then the advisory verify-docs report.
-verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-security-inventory verify-mcp-parity verify-docs
-    @echo "verify: ok — the seventeen gates above passed; the verify-docs report is advisory"
+# `verify-adr-numbers` joined on 2026-11-16 as the eighteenth (issue #170),
+# after `verify-mcp-parity`: every file in `docs/adr/` matches `NNNN-slug.md`
+# and no two share a leading number (gaps are allowed).
+#
+# The eighteen self-checks, then the advisory verify-docs report.
+verify: verify-no-mocks verify-status verify-errors verify-sdk-parity verify-links verify-npm-scope check-schema verify-serde verify-repositories verify-toolchain verify-ui verify-migrations verify-versions verify-privacy-inventory verify-doc-counts verify-security-inventory verify-mcp-parity verify-adr-numbers verify-docs
+    @echo "verify: ok — the eighteen gates above passed; the verify-docs report is advisory"
+
+# Issue #170: every file in `docs/adr/` matches `NNNN-slug.md` and no two
+# share a leading number (gaps are allowed). Names all colliding files on
+# failure. See `verify_adr_numbers` in `.xtask/src/main.rs`.
+verify-adr-numbers:
+    cargo xtask verify-adr-numbers
 
 # ADR-0033 D8: the merchant MCP endpoint's parity with `/v1` is a gate, not a
 # promise. Two-directional: a mounted `/v1` route with no row in

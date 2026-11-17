@@ -1220,3 +1220,28 @@ the same change. The full `just ci` evidence is in
 tool, 28 dated gap(s), 0 excluded; all 9 declared tool(s) named". Its three
 unit tests (`mcp_parity_tests`) drive each direction against a table that
 breaks it.
+
+## 2026-11-16 — `verify-adr-numbers`, the eighteenth gate (#170), and #103/#125 confirmation
+
+**What `verify-adr-numbers` refuses.** Every file in `docs/adr/` must match
+`NNNN-slug.md` (four ASCII digits, a hyphen, lowercase ASCII alphanumeric /
+hyphen slug, `.md`) and no two files may share a leading `NNNN` number. Gaps
+in numbering are allowed. On collision, the error names all colliding files.
+Its four unit tests (`adr_numbers_tests`) cover valid names with gaps,
+duplicate numbers, malformed filenames, and an empty directory.
+
+**#103 (`audit-web`) allowlist cross-reference.** `just audit-web` runs
+`pnpm audit --audit-level=moderate` over `--prod` and the whole workspace, is
+a dependency of `just ci`, and runs in CI's `web` job. Accepted-advisory
+allowlisting uses `auditConfig.ignoreGhsas` in
+[pnpm-workspace.yaml](../../pnpm-workspace.yaml), where each entry carries a
+dated reason (e.g. `2026-10-09`, `GHSA-vfj7-8cjw-p6xm`, `vaam-apps/vpay#272`).
+
+**#125 (`test-e2e`) confirmation.** Confirmed on `master` (2026-11-16): `just
+test-e2e` exports `VPAY_DEMO_PROJECT={{ demo_project }}`, runs
+`docker compose {{ demo_compose }} down -v` and removes
+`{{ demo_staff_password_file }}` before `up -d --build --wait`, and tears down
+with `down -v` and `rm -f {{ demo_staff_password_file }}` at the end. Not
+re-executed locally against Docker due to host OOM risk (the repo notes this
+constraint; see [verification/2026-09-11.md](verification/2026-09-11.md));
+relies on static inspection of `justfile` and CI's `e2e (compose)` job.
