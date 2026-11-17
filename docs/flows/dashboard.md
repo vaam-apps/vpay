@@ -183,6 +183,15 @@ WireMock rails) — 24/24 and 6/6 twice; no real rail has. Details on
 [dashboard/status-read-seam-and-bff.md](dashboard/status-read-seam-and-bff.md)
 and [../status/verification/2026-10-26-dashboard-cratestack-refine.md](../status/verification/2026-10-26-dashboard-cratestack-refine.md).
 
+**The payer mask, 2026-11-17 (issue #79 item 4)** — the `/dash/v1` detail's
+`charge.payer_ref_masked` now carries `+237••••67` for a push-rail payment
+(the confirm path writes it; migration `0062` backfilled older rows) and
+stays `null` for a redirect rail, an erased payer or a pre-normalisation
+row. Server side only: **the application renders nothing from `/dash/v1`
+until VP-6b**, so no person sees it yet. Details on
+[dashboard/slice-1-gaps.md](dashboard/slice-1-gaps.md) and
+[../status/verification/2026-11-17-payer-mask.md](../status/verification/2026-11-17-payer-mask.md).
+
 **The one thing a reader must not conclude from this document is that the
 dashboard is finished.** A staff member can sign in and read this merchant's
 payments. What the dashboard still cannot do is anything at all to them.

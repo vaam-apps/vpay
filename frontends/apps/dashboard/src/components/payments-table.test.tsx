@@ -79,9 +79,9 @@ describe("the payments table", () => {
   });
 
   it("has no payer column — the list response carries no payer field at all", () => {
-    // `charges.payer_ref_masked` is never written (docs/status.md) AND is
-    // absent from this response. The detail page renders it from the column
-    // as a dash; a column here would be sourced from nothing.
+    // `charges.payer_ref_masked` is absent from this response: the list
+    // carries no charge. The detail view renders it from the column; a
+    // column here would be sourced from nothing.
     render(<PaymentsTable rows={[INTENT]} />);
     expect(screen.queryByRole("columnheader", { name: /payer/i })).toBeNull();
   });

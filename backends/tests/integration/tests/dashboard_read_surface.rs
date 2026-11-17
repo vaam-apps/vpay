@@ -106,6 +106,11 @@ const PUSH_RAIL: &str = "mtn_momo";
 const CURRENCY: &str = "XAF";
 const AMOUNT: i64 = 5000;
 
+/// The payer's normalised number on the detail test's charge. The detail
+/// renders `+237••••89` from it; the whole string must never appear in a
+/// rendered body.
+const PAYER_NUMBER: &str = "237671234589";
+
 /// The recognisable prefix every seeded intent's `client_secret_suffix`
 /// carries, so the detail test can grep a rendered body for it.
 const SECRET_MARKER: &str = "dashsuffixmarker";
@@ -527,12 +532,12 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
                     state: vpay_core::ChargeState::INITIAL.as_wire_str().to_owned(),
                     amount: AMOUNT,
                     currency_code: CURRENCY.to_owned(),
-                    payer_ref: None,
-                    // `None`, because nothing in this system writes it — see
-                    // `vpay_api::dash::payment_intents::ChargeSummary`.
-                    // Written out rather than left implicit so the day it
-                    // *is* written, this fixture is where a reader looks.
-                    payer_ref_masked: None,
+                    payer_ref: Some(PAYER_NUMBER.to_owned()),
+                    // Issue #79: the confirm path writes the mask with this
+                    // function in the same insert as the number
+                    // (`vpay_api::v1::payment_intents`' `open_charge`), and
+                    // migration 0062's CHECK refuses any other value here.
+                    payer_ref_masked: vpay_core::privacy::payer_msisdn_mask(PAYER_NUMBER),
                     method_type: None,
                 })
                 .await
@@ -551,10 +556,17 @@ async fn the_detail_read_carries_the_charge_and_never_the_client_secret() -> any
     assert_eq!(at(&body, "/payment_intent/id"), "pi_dash_detail", "{body}");
     assert_eq!(at(&body, "/charge/id"), "ch_dash_detail", "{body}");
     assert_eq!(at(&body, "/charge/provider_code"), PUSH_RAIL, "{body}");
+    // The staff detail renders the payer mask (issue #79, decision 4) — and
+    // the number it was taken from appears nowhere in the body, so the field
+    // cannot have quietly become the unmasked value.
     assert_eq!(
         at(&body, "/charge/payer_ref_masked"),
-        &Value::Null,
+        "+237••••89",
         "{body}"
+    );
+    assert!(
+        !body.to_string().contains(PAYER_NUMBER),
+        "the staff surface must render the mask and never the number: {body}"
     );
     assert_eq!(at(&body, "/refunds"), &serde_json::json!([]), "{body}");
     assert_eq!(at(&body, "/events"), &serde_json::json!([]), "{body}");

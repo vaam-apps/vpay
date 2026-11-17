@@ -1013,8 +1013,8 @@ async fn refund_at_rail(
     // The one place this handler says anything about the payee, and it says
     // it masked. `RefundTarget`'s redacting `Debug` makes every other
     // rendering safe by default; this line is the deliberate exception its
-    // doc comment names, and it is the same mask `charges.payer_ref_masked`
-    // is documented to hold.
+    // doc comment names. It is the LOG mask, deliberately not the stored
+    // `charges.payer_ref_masked` one, until RFC-0002 D3 decides log shapes.
     tracing::info!(
         refund_id = %row.id,
         payment_intent_id = %row.payment_intent_id,

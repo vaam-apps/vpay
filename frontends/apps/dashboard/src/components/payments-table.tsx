@@ -38,13 +38,11 @@ export interface PaymentsTableProps {
  * "Rail" filled from it would be wrong for every intent that offers two and
  * was taken by one.
  *
- * **The payer.** `charges.payer_ref_masked` is `NULL` on every row this
- * deployment has ever written — the confirm path stores `None` in it and in
- * the unmasked `payer_ref` (`docs/status.md`) — and, like the rail, it is not
- * in this response in the first place. The detail page renders it, from the
- * column, as {@link ABSENT}, and says so. Deriving a mask here would mean
- * reading the unmasked number into a staff surface to make a column look
- * populated.
+ * **The payer.** `charges.payer_ref_masked` is, like the rail, not in this
+ * response in the first place: the list carries no charge. The detail view
+ * renders it from the column, and as {@link ABSENT} where the column is null.
+ * Deriving a mask here would mean reading the unmasked number into a staff
+ * surface to make a column look populated.
  *
  * `rows` is a prop. Nothing in this file fetches, and nothing in it invents a
  * row — "rendering fake rows in the dashboard so a screenshot looks good" is

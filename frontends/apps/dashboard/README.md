@@ -185,10 +185,10 @@ render them again:
   `data-theme` that names neither renders the page unstyled with no error.
 - **Absence is the honest shape.** The list has no "Rail" column
   (`payment_method_types` are the rails an intent _may_ use, headed
-  **Methods**), and the detail page renders the masked payer from
-  `charges.payer_ref_masked`, which nothing writes, as a dash. Deriving a mask
-  from the payer's phone number to make a row look full is the trade this
-  refuses.
+  **Methods**), and the detail view renders the masked payer from
+  `charges.payer_ref_masked` — `+237••••67` since issue #79 — and a null one
+  as a dash. Deriving a mask from the payer's phone number to make a row look
+  full is the trade this refuses. No page mounts the detail view until VP-6b.
 - **Only the generated client's types may be imported** (`eslint.config.js`):
   no module runs `@vpay/dash-client` until VP-6b builds the signed reader.
 - **One credential per request, forwarded from nowhere**

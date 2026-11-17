@@ -178,9 +178,10 @@ export interface ChargeSummary {
   readonly amount: number;
   readonly currency: string;
   /**
-   * `null` on every row this deployment has ever written — nothing writes
-   * `charges.payer_ref_masked` (`docs/status.md`). Rendered from the column
-   * and never derived; see `src/components/payment-detail.tsx`.
+   * `+237••••67` — `charges.payer_ref_masked`, written by the confirm path
+   * since 2026-11-17 (issue #79) — or `null` where there is no normalised
+   * number to mask. Rendered from the column and never derived; see
+   * `src/components/payment-detail.tsx`.
    */
   readonly payer_ref_masked: string | null;
   readonly failure_code: string | null;

@@ -13,29 +13,28 @@ describe("the payment detail", () => {
     expect(screen.getByText("payment_intent.succeeded")).toBeInTheDocument();
   });
 
-  it("renders the masked payer as a dash — the column is never written", () => {
-    // THE case this test exists for. `charges.payer_ref_masked` is NULL on
-    // every row this deployment has ever stored (docs/status.md); the value
-    // is rendered from the column and never derived, because the only other
-    // value that could produce a mask is the payer unmasked phone number.
+  it("renders a null masked payer as a dash — never a derived value", () => {
+    // THE case this test exists for. `charges.payer_ref_masked` is NULL on a
+    // redirect-rail charge, an erased payer's and a pre-normalisation row;
+    // the value is rendered from the column and never derived, because the
+    // only other value that could produce a mask is the payer's unmasked
+    // phone number.
     render(<PaymentDetailView detail={DETAIL} />);
     expect(screen.getByTestId("detail-payer")).toHaveTextContent(ABSENT);
   });
 
-  it("renders a masked payer the day the column is written", () => {
-    // The field is here so that value appears, rather than a field having to
-    // be added then.
+  it("renders the masked payer the confirm path writes", () => {
+    // The shape issue #79 decided and `vpay_core::privacy::payer_msisdn_mask`
+    // writes: the first three and last two digits of the normalised number.
     render(
       <PaymentDetailView
         detail={{
           ...DETAIL,
-          charge: { ...CHARGE, payer_ref_masked: "+237 6•• ••• •89" },
+          charge: { ...CHARGE, payer_ref_masked: "+237••••89" },
         }}
       />,
     );
-    expect(screen.getByTestId("detail-payer")).toHaveTextContent(
-      "+237 6•• ••• •89",
-    );
+    expect(screen.getByTestId("detail-payer")).toHaveTextContent("+237••••89");
   });
 
   it("says plainly that an unconfirmed intent has no charge", () => {

@@ -170,12 +170,17 @@ Three things the detail deliberately omits:
   and `return_url`.** A rail's own blob and a payer's browsing path are not
   what "which rail, what did it say, when" needs.
 
-`payer_ref_masked` **is** rendered, and is `null` on every row this system
-has ever written — nothing populates the column (`open_attempt` stores
-`None`). It is rendered from the column rather than derived in the renderer
-on purpose: deriving a mask would mean reading the _unmasked_ value into a
+`payer_ref_masked` **is** rendered. Since 2026-11-17 (issue #79) a push
+confirm writes it in the same insert as `payer_ref` — `+237••••67`, the
+first three and last two digits of the normalised number,
+`vpay_core::privacy::payer_msisdn_mask` — and migration `0062` backfilled
+earlier rows. It is `null` on a redirect-rail charge, on a charge whose payer
+was erased and on a row whose number was stored before normalisation. The log mask `account_holders` and `refunds` write (`+2376••••200`) is deliberately a different shape: the two stay separate until RFC-0002 D3 decides the log and telemetry shape, because #79 decided only the stored column. It is
+rendered from the column rather than derived in the renderer on purpose: deriving a mask would mean reading the _unmasked_ value into a
 staff surface, and the failure mode to avoid is this field quietly becoming
-the unmasked number because the masked one was empty.
+the unmasked number because the masked one was empty. The column cannot hold
+one: migration `0062`'s `payer_ref_masked_derives_from_payer_ref` CHECK
+admits only `NULL` or the exact mask of the row's own number.
 
 The filter predicates live in the SQL statement rather than in the handler,
 because a caller cannot filter a page: `list_page` fetches `limit + 1` rows

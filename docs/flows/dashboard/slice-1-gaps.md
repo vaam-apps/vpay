@@ -320,30 +320,34 @@ replaced by the real two-leg forms.
 
 ### Two columns the list cannot show
 
-- **The payer's phone is always blank.** `charges.payer_ref_masked` is never
-  written — the confirm path stores `None`
-  (`vpay_api::v1::payment_intents`'s `open_attempt`). The detail read
-  renders the column rather than deriving a mask from the unmasked
-  `payer_ref`, so the field appears the day the column is written and not
-  before. `docs/status.md` carries the gap.
+- **The payer's phone was always blank until 2026-11-17.** Then issue #79
+  landed: a push confirm writes `charges.payer_ref_masked` (`+237••••67`,
+  the first three and last two digits of the normalised number) in the same
+  insert as `payer_ref`, and migration `0062` backfilled earlier rows. The
+  detail read renders the column rather than deriving a mask from the unmasked
+  `payer_ref`, and `dashboard_read_surface.rs`'s detail case asserts the
+  mask arrives and the number does not. **The application does not show it**:
+  it reads nothing from `/dash/v1` until VP-6b, so the history below is
+  about a page that no longer exists.
 
-  **The page renders it as an em dash, `—`, and that dash is a real `null`
-  rather than a hard-coded string**: it comes from the column, on a payment
-  that _has_ a charge, and `dashboard.cy.ts` walks the list until it finds one
-  before asserting it — a dash on an intent nobody confirmed would prove
-  nothing. The row exists rather than being omitted so that the day the column
-  is written the value appears, instead of a field having to be added then.
-  What must not happen is this quietly becoming the _unmasked_ value because
-  the masked one was empty, and `payment-detail.test.tsx` pins both directions.
+  _History (exp28):_ the page rendered the then-always-null column as an em
+  dash, `—`, a real `null` rather than a hard-coded string, and
+  `dashboard.cy.ts` walked the list until it found a payment with a charge
+  before asserting it. A dash is still what a null renders — a redirect-rail
+  charge, an erased payer, a pre-normalisation row — and
+  `payment-detail.test.tsx` pins both directions: a null is a dash, and a
+  mask is rendered as written, never the unmasked value.
 
-  The **list** has no payer column at all, which is a second and stronger
-  reason: `GET /dash/v1/payment_intents` does not return a charge, so there is
-  no `payer_ref_masked` in that response to be null. A column there would be
-  sourced from nothing.
+  The **list** has no payer column at all: `GET /dash/v1/payment_intents`
+  does not return a charge, so there is no `payer_ref_masked` in that
+  response. A column there would be sourced from nothing.
 
-- **There is no search by phone**, for the same reason: a filter over a
-  column that is always `NULL` answers "no results" for every payer who ever
-  paid, which reads as an answer.
+- **There is no search by phone.** Until 2026-11-17 the reason was that the
+  column was always `NULL`. It is now written, and the reason is different:
+  the mask keeps five digits, three of them the country code, so it names a
+  bucket of payers rather than one, and a filter over the unmasked
+  `payer_ref` would make a staff surface accept a third party's full number
+  as input, which nobody has decided it may (RFC-0002 D3).
 
 ### No writes, no other slices
 

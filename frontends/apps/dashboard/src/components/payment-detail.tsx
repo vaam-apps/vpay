@@ -77,20 +77,22 @@ export function PaymentDetailHeader() {
  * component's shape — events are written for terminal transitions only, and
  * `TimelineGap` says so beside them.
  *
- * # `Payer` is a dash, and that is a fact rather than a placeholder
+ * # `Payer` is the column, and a dash when the column is null
  *
- * `charges.payer_ref_masked` is **never written**: the confirm path stores
- * `None` in it and in the unmasked `payer_ref` (`vpay_api::v1::payment_intents`'
- * `open_attempt`, listed as a gap in `docs/status.md`). The field is rendered
- * from the column and shown as {@link ABSENT} when it is null — never derived
- * from anything else, because the only other value that could produce a mask
- * is the unmasked phone number, and deriving one here would read a payer's
- * full number into a staff surface to make a row look populated.
+ * Since 2026-11-17 a push confirm writes `charges.payer_ref_masked` —
+ * `+237••••67`, the first three and last two digits of the normalised number
+ * (issue #79) — and migration 0062 backfilled earlier rows. It is still null
+ * for a redirect-rail charge (vpay never learns that payer's number), for a
+ * payer who was erased, and for a pre-normalisation row. The field is
+ * rendered from the column and shown as {@link ABSENT} when it is null —
+ * never derived from anything else, because the only other value that could
+ * produce a mask is the unmasked phone number, and deriving one here would
+ * read a payer's full number into a staff surface to make a row look
+ * populated. What must not happen is this quietly becoming the unmasked
+ * value because the masked one was empty.
  *
- * The row is here rather than omitted so that the day the column is written
- * the value appears, instead of a field having to be added then. What must
- * not happen is this quietly becoming the unmasked value because the masked
- * one was empty.
+ * Nothing mounts this view yet: no page in this app reads `/dash/v1` until
+ * VP-6b builds the signed reader.
  */
 export function PaymentDetailView({ detail }: PaymentDetailViewProps) {
   const intent = detail.payment_intent;

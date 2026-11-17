@@ -73,16 +73,15 @@ escape keeps inside its segment
 
 ### The mask, and the column it does not write
 
-`masked` produces `+2376••••200` — the shape
-`charges.payer_ref_masked` is documented to hold, with a **fixed** four
+`masked` produces `+2376••••200`, with a **fixed** four
 bullets rather than one per hidden digit, because a mask whose length revealed
 the input's length would be a small oracle for free.
 
-**Nothing writes that column.** The confirm path stores `NULL`
-(`open_attempt`), so this is the first producer of the shape in the workspace
-and the two are not wired together. That is a gap rather than an oversight:
-writing the column is a change to the charge path, not to this route, and
-`docs/status.md` says so rather than this function pretending otherwise.
+**It is not the column's mask.** Since 2026-11-17 the confirm path writes
+`charges.payer_ref_masked` with `vpay_core::privacy::payer_msisdn_mask`
+(`+237••••00`, issue #79). The log mask and the stored mask are deliberately
+separate until RFC-0002 D3 decides the log and telemetry shape; #79 decided
+only the stored column.
 
 ## Customers (`v1/customers.rs`)
 

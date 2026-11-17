@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 61,
-        "all sixty-one migration files under backends/migrations should be recorded as applied \
+        applied, 62,
+        "all sixty-two migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -395,7 +395,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          decision for each routed charge, written in the transaction that \
          opens it (D10), and 0054, which copies the charge's rail and type \
          onto payment_intents.charge_rail and charge_method_type -- what /v1 \
-         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VPA-2's 0058, which creates staff_sessions, oauth_authorization_codes and staff_sso_attempts again, empty and exactly as 0035, 0040 and 0050 shipped them, and drops credentials_password_and_totp_are_retired so a password or a TOTP seed may be stored (owner ruling R5: authentication methods are deployment configuration), and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock., and issue #96's 0059, which adds requires_review to charges_state_enum_check: a charge the rail reported paid after its intent was canceled, parked by the settlement for an operator instead of rolled back, and deliberately absent from charges_live_idx so nothing polls it again, and #56's 0060, audit_events: the append-only generic audit journal (ADR-0020 §3, provisional RFC-0002 D7), plus the 'lookup:merchant_key' scope that extends rate_limit_windows_scope_is_known, and PR #396's 0061, which adds rate_limit_windows.window_expires_at so the count sweep removes each row under its own window rather than the caller's.)"
+         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VPA-2's 0058, which creates staff_sessions, oauth_authorization_codes and staff_sso_attempts again, empty and exactly as 0035, 0040 and 0050 shipped them, and drops credentials_password_and_totp_are_retired so a password or a TOTP seed may be stored (owner ruling R5: authentication methods are deployment configuration), and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock., and issue #96's 0059, which adds requires_review to charges_state_enum_check: a charge the rail reported paid after its intent was canceled, parked by the settlement for an operator instead of rolled back, and deliberately absent from charges_live_idx so nothing polls it again, and #56's 0060, audit_events: the append-only generic audit journal (ADR-0020 §3, provisional RFC-0002 D7), plus the 'lookup:merchant_key' scope that extends rate_limit_windows_scope_is_known, and PR #396's 0061, which adds rate_limit_windows.window_expires_at so the count sweep removes each row under its own window rather than the caller's, and #79's 0062, which backfills charges.payer_ref_masked from each normalised payer_ref and adds payer_ref_masked_derives_from_payer_ref so a mask is absent or exactly the mask of its row's number.)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -5695,6 +5695,14 @@ async fn the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount() -> 
     assert_eq!(
         observed,
         [
+            // Issue #79, migration 0062: a payer mask is absent or exactly
+            // the mask of this row's normalised `payer_ref` — so neither an
+            // unmasked number nor a mask beside erasure's marker can be
+            // stored. Two columns, so invisible to the report;
+            // `vpay-db`'s
+            // `migration_0062_backfills_the_payer_mask_and_leaves_the_rest_null`
+            // is what proves it fires.
+            ("charges", "payer_ref_masked_derives_from_payer_ref"),
             ("checkout_sessions", "urls_match_ui_mode"),
             // VP-6a, migration 0056 (ADR-0036): a console key lives exactly
             // 720 hours from `paired_at`. Two columns, so the drift report is

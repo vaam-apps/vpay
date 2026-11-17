@@ -134,7 +134,11 @@ pub struct ChargeRow {
     pub currency_code: String,
     /// The payer's instrument, where the rail's flow tells us who they are.
     pub payer_ref: Option<String>,
-    /// The same instrument, masked for display.
+    /// The same instrument, masked for display: `+237••••67`, from
+    /// [`vpay_core::privacy::payer_msisdn_mask`] (issue #79 decision 4).
+    /// `NULL` where there is no normalised number to mask — a redirect rail,
+    /// a row erasure redacted — and migration `0062`'s CHECKs refuse any
+    /// other shape and a mask beside erasure's marker.
     pub payer_ref_masked: Option<String>,
     /// Closed failure vocabulary as text, once the charge has failed.
     pub failure_code: Option<String>,
@@ -299,7 +303,7 @@ pub struct NewCharge {
     /// The payer's instrument, on rails that name one up front (a push
     /// rail's MSISDN).
     pub payer_ref: Option<String>,
-    /// The masked form for display.
+    /// The masked form for display — [`ChargeRow::payer_ref_masked`].
     pub payer_ref_masked: Option<String>,
     /// The payment-method type, when the charge has one (see
     /// [`ChargeRow::method_type`]).
@@ -886,7 +890,7 @@ mod tests {
     /// the canary every negative assertion keys on.
     const PAYER_REF: &str = "237600000789";
     /// The same payer, as `payer_ref_masked` would carry them.
-    const PAYER_REF_MASKED: &str = "2376*****789";
+    const PAYER_REF_MASKED: &str = "+237••••89";
     /// A rail's own words for a failure — the text `failure_raw` stores.
     const FAILURE_RAW: &str = "237600000789 has insufficient funds";
     /// A redirect URL whose query carries the token that completes the

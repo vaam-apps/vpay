@@ -654,21 +654,18 @@ pub(crate) fn canonical_msisdn(input: &str) -> Option<String> {
     Some(format!("{CM_COUNTRY_CODE}{national}"))
 }
 
-/// A canonical MSISDN in the shape `charges.payer_ref_masked` is documented
-/// to hold: `+2376••••000`.
+/// A canonical MSISDN masked for a log line: `+2376••••000`.
 ///
 /// Country code, the leading `6` every Cameroon mobile number starts with,
 /// four bullets, and the last three digits — enough for a merchant reading
 /// their own logs to tell two of their payers apart, and not enough to
-/// reconstruct a number. The literal shape is the one
-/// `backends/crates/vpay-db/tests/repositories.rs` pins for that column.
+/// reconstruct a number.
 ///
-/// **Nothing writes that column yet.** The confirm path stores `None`
-/// (`crate::v1::payment_intents`'s `open_attempt`), so this is the first
-/// producer of the shape in the workspace and the two are not yet wired
-/// together — a gap, named in `docs/status.md` rather than closed here,
-/// because writing the column is a change to the charge path and not to this
-/// route.
+/// **Not the stored mask.** Since 2026-11-17 the confirm path writes
+/// `charges.payer_ref_masked` with `vpay_core::privacy::payer_msisdn_mask`
+/// (`+237••••00`, issue #79). The two are deliberately separate until
+/// RFC-0002 D3 decides the log and telemetry shape; #79 decided only the
+/// stored column.
 ///
 /// The bullet count is **fixed at four** and is not the number of digits
 /// hidden; a mask whose length revealed the input's length would be a small
@@ -1433,9 +1430,8 @@ mod tests {
         assert_eq!(canonical_msisdn(&"6".repeat(100_000)), None);
     }
 
-    /// The mask is the shape `charges.payer_ref_masked` is documented to
-    /// hold, and it hides the middle of the number rather than a count of
-    /// its digits.
+    /// The log mask is the documented shape, and it hides the middle of the
+    /// number rather than a count of its digits.
     #[test]
     fn the_mask_is_the_documented_shape_and_reveals_only_the_ends() {
         assert_eq!(masked("237600000000"), "+2376••••000");
