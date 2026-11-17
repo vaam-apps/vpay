@@ -296,16 +296,11 @@ a redirect rail, so vpay never sees the number.
 > charges in flight: the second never gets its `PENDING` rung, because the
 > first consumed it; and a payer clicking **Pay** or **Cancel** on one charge's
 > page decides _whichever charge asks the rail next_ — including a charge these
-> numbers promise will fail. Nothing here drives two at once, so you will not
+> numbers promise will fail. Since 2026-11-17 (issue #106) a click no longer
+> decides a charge whose _amount_ the demo steers (`5001`, `5002`): those
+> answers outrank every payer action. A charge steered by a number typed on its
+> own page is still exposed. Nothing here drives two at once, so you will not
 > meet it by following this README; two browser tabs on two orders will.
->
-> **And the stub's page is not safe for a `return_url` containing a `"`.** The
-> two links percent-encode; the test-number form's hidden inputs do not, and
-> vpay's own `return_url` validation checks only the scheme and the length. A
-> quote closes the attribute and injects into the stub's page. It is a WireMock
-> test stub (ADR-0006) and no test in this repository sends such a URL, so it is
-> recorded — on the page itself, in the mapping's metadata and in
-> `docs/status.md` — rather than fixed.
 
 | Number         | What happens                                     | Order    | vpay code        | The rail said |
 | -------------- | ------------------------------------------------ | -------- | ---------------- | ------------- |

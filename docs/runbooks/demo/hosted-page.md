@@ -193,9 +193,10 @@ Two things to know before you drive them:
   a single container, keyed on nothing per charge, because WireMock scenarios
   cannot be. Measured 2026-09-10: with two Orange charges in flight the second
   never gets its `PENDING` rung, and a payer clicking Pay or Cancel on one
-  charge's page decides whichever charge the worker asks about next — a `5001`
-  charge included, whose amount-keyed mapping the payer-action mappings
-  outrank. `just demo-walk` is strictly sequential and opens no page, so it
+  charge's page decides whichever charge the worker asks about next. A `5001`
+  or `5002` charge is the exception since 2026-11-17 (issue #106): the payer's
+  actions now sit below the amount-keyed mappings, so those keep their
+  documented answer. `just demo-walk` is strictly sequential and opens no page, so it
   never meets this; two browser tabs on two orders will. See
   [../status.md](../../status.md) §"The Orange stub's hosted page grew a payer's
   window" for the measurements.
