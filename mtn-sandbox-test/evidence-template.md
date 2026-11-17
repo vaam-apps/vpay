@@ -3,15 +3,15 @@
 Copy this file into `evidence/` before filling it in, so the filled copy stays
 out of Git.
 
-| Field                     | Value                                    |
-| ------------------------- | ---------------------------------------- |
-| Tester                    |                                          |
-| Date                      |                                          |
-| Base URL                  | `https://sandbox.momodeveloper.mtn.com`  |
-| Product                   | Collections                              |
-| `providerCallbackHost`    |                                          |
-| Inspector URL             |                                          |
-| Setup time (UTC)          | from `evidence/setup.json`               |
+| Field                  | Value                                   |
+| ---------------------- | --------------------------------------- |
+| Tester                 |                                         |
+| Date                   |                                         |
+| Base URL               | `https://sandbox.momodeveloper.mtn.com` |
+| Product                | Collections                             |
+| `providerCallbackHost` |                                         |
+| Inspector URL          |                                         |
+| Setup time (UTC)       | from `evidence/setup.json`              |
 
 Fill each table from `evidence/payment-N/payment.json` and from the
 inspector. Write what you saw, not what you expected. If a callback never
@@ -19,60 +19,60 @@ arrived, the callback count is 0 and the rows about it say "none".
 
 ## Payment 1
 
-| Field                                   | Value |
-| --------------------------------------- | ----- |
-| Inspector configured to answer          |       |
-| Request sent at (UTC)                   |       |
-| 202 received at (UTC)                   |       |
-| `X-Reference-Id`                        |       |
-| Callback count                          |       |
-| Callback received at (inspector times)  |       |
-| HTTP method                             |       |
-| `Content-Type`                          |       |
-| Body field names                        |       |
-| `externalId` matches `X-Reference-Id`?  |       |
-| `referenceId` present and matches?      |       |
-| Final GET status                        |       |
-| SUCCESSFUL at (UTC)                     |       |
-| Notes                                   |       |
+| Field                                  | Value |
+| -------------------------------------- | ----- |
+| Inspector configured to answer         |       |
+| Request sent at (UTC)                  |       |
+| 202 received at (UTC)                  |       |
+| `X-Reference-Id`                       |       |
+| Callback count                         |       |
+| Callback received at (inspector times) |       |
+| HTTP method                            |       |
+| `Content-Type`                         |       |
+| Body field names                       |       |
+| `externalId` matches `X-Reference-Id`? |       |
+| `referenceId` present and matches?     |       |
+| Final GET status                       |       |
+| SUCCESSFUL at (UTC)                    |       |
+| Notes                                  |       |
 
 ## Payment 2
 
-| Field                                   | Value |
-| --------------------------------------- | ----- |
-| Inspector configured to answer          |       |
-| Request sent at (UTC)                   |       |
-| 202 received at (UTC)                   |       |
-| `X-Reference-Id`                        |       |
-| Callback count                          |       |
-| Callback received at (inspector times)  |       |
-| HTTP method                             |       |
-| `Content-Type`                          |       |
-| Body field names                        |       |
-| `externalId` matches `X-Reference-Id`?  |       |
-| `referenceId` present and matches?      |       |
-| Final GET status                        |       |
-| SUCCESSFUL at (UTC)                     |       |
-| Notes                                   |       |
+| Field                                  | Value |
+| -------------------------------------- | ----- |
+| Inspector configured to answer         |       |
+| Request sent at (UTC)                  |       |
+| 202 received at (UTC)                  |       |
+| `X-Reference-Id`                       |       |
+| Callback count                         |       |
+| Callback received at (inspector times) |       |
+| HTTP method                            |       |
+| `Content-Type`                         |       |
+| Body field names                       |       |
+| `externalId` matches `X-Reference-Id`? |       |
+| `referenceId` present and matches?     |       |
+| Final GET status                       |       |
+| SUCCESSFUL at (UTC)                    |       |
+| Notes                                  |       |
 
 ## Payment 3
 
-| Field                                   | Value |
-| --------------------------------------- | ----- |
-| Inspector configured to answer          |       |
-| Request sent at (UTC)                   |       |
-| 202 received at (UTC)                   |       |
-| `X-Reference-Id`                        |       |
-| Callback count                          |       |
-| Callback received at (inspector times)  |       |
-| HTTP method                             |       |
-| `Content-Type`                          |       |
-| Body field names                        |       |
-| `externalId` matches `X-Reference-Id`?  |       |
-| `referenceId` present and matches?      |       |
-| Final GET status                        |       |
-| SUCCESSFUL at (UTC)                     |       |
-| Notes                                   |       |
+| Field                                  | Value |
+| -------------------------------------- | ----- |
+| Inspector configured to answer         |       |
+| Request sent at (UTC)                  |       |
+| 202 received at (UTC)                  |       |
+| `X-Reference-Id`                       |       |
+| Callback count                         |       |
+| Callback received at (inspector times) |       |
+| HTTP method                            |       |
+| `Content-Type`                         |       |
+| Body field names                       |       |
+| `externalId` matches `X-Reference-Id`? |       |
+| `referenceId` present and matches?     |       |
+| Final GET status                       |       |
+| SUCCESSFUL at (UTC)                    |       |
+| Notes                                  |       |
 
 ## Observations
 
