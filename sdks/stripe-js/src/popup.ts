@@ -9,31 +9,51 @@
  * |---|---|---|
  * | hosted   | the payer's own tab, after a full navigation | `success_url`, then the merchant's own webhook |
  * | embedded | an `<iframe>` on the merchant's page | `vpay:complete` from the frame ([embedded.ts](./embedded.ts)) |
- * | popup    | a separate top-level window | `vpay:complete` from the merchant's **own return page**, via `window.opener` |
+ * | popup    | a separate top-level window | `vpay:complete` from vpay's page via `window.opener`, else from the merchant's **own return page** |
  *
- * ## Why the message comes from the merchant's page and not from vpay's
+ * ## Two channels, one completion (issue #65)
  *
- * A popup is not framed: inside it `window.parent === window`, so vpay's
- * checkout page — whose child channel posts to `window.parent` and returns
- * `null` when there is no framer
- * (`frontends/apps/checkout/src/lib/frame.ts`) — has nobody to talk to and
- * deliberately says nothing. A popup integration therefore loads the
- * **hosted** session (`session.url`), exactly as a redirect integration
- * does, and the completion signal is emitted by the page vpay sends the
- * payer back to: the merchant's own `success_url`, which runs in the popup,
- * calls {@link notifyCheckoutOpener}, and closes itself.
+ * A popup is not framed: inside it `window.parent === window`. vpay's
+ * checkout page therefore opens its channel to `window.opener` instead
+ * (`frontends/apps/checkout/src/lib/frame.ts`, `peer: 'opener'`), and posts
+ * `{type: 'vpay:complete', session, status}` — the checkout session's id and
+ * its re-read `status` — **at most once**, when the outcome appears or when
+ * the payer presses "Back to {merchant}". That is the **primary** channel,
+ * and this side accepts it only from the **configured checkout origin**
+ * (`loadStripe`'s `checkoutBaseUrl`) and only from the window it opened.
  *
- * That has two consequences worth stating rather than discovering:
+ * The page cannot always open that channel. It pins the opener's origin by
+ * matching `document.referrer` against the merchant's registered
+ * `checkout_origins`, and refuses rather than guesses when there is no
+ * referrer — which is exactly what a merchant page served with
+ * `Referrer-Policy: no-referrer` produces. The page then says nothing and,
+ * when the payer is finished, navigates the popup itself to `success_url`.
+ * So the second channel stays as the **fallback**: the merchant's own
+ * `success_url`, running in the popup, calls {@link notifyCheckoutOpener}.
+ * A merchant page that wants the primary channel must therefore keep its
+ * referrer to its own origin (`strict-origin-when-cross-origin`, the browser
+ * default, or `origin`); see this package's README.
  *
- * 1. **The origin this side pins is the merchant's, not vpay's.** The
- *    message is sent by the merchant's return page, so
- *    {@link OpenCheckoutPopupOptions.completionOrigin} defaults to the
- *    opener's own origin. Pinning vpay's checkout origin here would accept
- *    nothing at all.
- * 2. **A completion message is still only a cue.** It says the popup reached
- *    the return page; it does not say money moved. The order is settled by
- *    the merchant's signature-verified webhook, and every one of this
- *    package's completion paths says so.
+ * Both channels can fire for one payment, in either order, so completion is
+ * **deduplicated per checkout session id** on the opener: `onComplete` runs
+ * once for a session, whichever message arrives first, and a later message
+ * naming the same session — on this handle or on a later one that reused
+ * the window by name — is dropped. A message naming a *different* session
+ * is not deduplicated against.
+ *
+ * Two consequences worth stating rather than discovering:
+ *
+ * 1. **Two origins are pinned, one per channel.** vpay's checkout origin
+ *    for the primary, the merchant's own for the fallback
+ *    ({@link OpenCheckoutPopupOptions.completionOrigin}, defaulting to the
+ *    opener's own origin). Without `checkoutBaseUrl` the primary channel is
+ *    simply off, and completion arrives by the fallback alone, as it did
+ *    before issue #65.
+ * 2. **A completion message is still only a cue.** It says the payer is
+ *    finished with the window; it does not say money moved — vpay's page
+ *    posts it for a failed outcome too, with the session's own `status`.
+ *    The order is settled by the merchant's signature-verified webhook,
+ *    and every one of this package's completion paths says so.
  *
  * ## The window is opened before the URL is known, and that is deliberate
  *
@@ -86,16 +106,25 @@ export interface OpenCheckoutPopupOptions {
    */
   fetchCheckoutUrl: () => Promise<string>;
   /**
-   * The single origin a `vpay:complete` message is accepted from — the
-   * merchant's own page, since that is what sends it (see this module's
-   * header). Defaults to the opener's own origin, which is right whenever
-   * `success_url` is on the same origin as the page that opened the popup.
+   * The origin the **fallback** `vpay:complete` is accepted from — the
+   * merchant's own `success_url` page, which sends it with
+   * {@link notifyCheckoutOpener} (see this module's header). Defaults to the
+   * opener's own origin, which is right whenever `success_url` is on the
+   * same origin as the page that opened the popup.
+   *
+   * The **primary** message, from vpay's checkout page, is pinned to
+   * `loadStripe`'s `checkoutBaseUrl` instead, and this option does not
+   * change that.
    */
   completionOrigin?: string | undefined;
   /**
-   * Called when the merchant's return page reports the payer is finished.
-   * **Not** proof of payment — re-read the order from the merchant's own
-   * server, which the webhook is what writes.
+   * Called **once per checkout session** when the payer is finished with
+   * the window: vpay's page reported the outcome (primary), or the
+   * merchant's return page did (fallback) — whichever arrived first.
+   * `status` is the session's own as vpay's page last read it, and may be
+   * `open` or `expired` for a payment that did not succeed. **Not** proof of
+   * payment — re-read the order from the merchant's own server, which the
+   * webhook is what writes.
    */
   onComplete?: ((event: EmbeddedCheckoutCompleteEvent) => void) | undefined;
   /**
@@ -146,16 +175,86 @@ function isSafeTopLevelUrl(url: string): boolean {
   return parsed.protocol === "http:" || parsed.protocol === "https:";
 }
 
-/** Reads a `vpay:complete` payload, or `undefined` if it is not one. */
+/**
+ * Reads a `vpay:complete` payload, or `undefined` if it is not one.
+ *
+ * The shape is the one both senders post: `{type, session, status}`, from
+ * vpay's page (`CompleteMessage` in the checkout app's `frame.ts`) and from
+ * {@link notifyCheckoutOpener}. An empty `session` is refused: it is the
+ * key completion is deduplicated on, and an empty key would make every
+ * later empty-session message a "duplicate" of a session nobody named.
+ */
 function parseCompleteEvent(
   data: Record<string, unknown>,
 ): EmbeddedCheckoutCompleteEvent | undefined {
   const session = data["session"];
   const status = data["status"];
-  if (typeof session !== "string" || typeof status !== "string") {
+  if (
+    typeof session !== "string" ||
+    session.length === 0 ||
+    typeof status !== "string"
+  ) {
     return undefined;
   }
   return { session, status };
+}
+
+/**
+ * The checkout session ids whose completion has already been reported, per
+ * opening window.
+ *
+ * Keyed by the opener rather than held in one `openCheckoutPopup` call,
+ * because the duplicate this exists for can outlive the call that saw the
+ * original: `windowName` makes a second `openCheckoutPopup` reuse the same
+ * window, and a late fallback message for the first session would otherwise
+ * reach the second call's listener — same origin, same `source` — and fire
+ * its `onComplete` for an order it did not create. A `WeakMap`, so a test's
+ * stub window (or a torn-down document) takes its record with it.
+ *
+ * The value is the status the claim was made with. A session reported as
+ * `open` — the payer pressed "Back to merchant" before paying — can be
+ * opened again, so its claim lasts only until the next `openCheckoutPopup`
+ * call on that window ({@link releaseReopenableClaims}); otherwise reopening
+ * it would drop its real completion and leave the handle waiting forever.
+ * Every other status is kept for the life of the page. The residue: a late
+ * fallback for an `open` session that arrives after the merchant has
+ * reopened that same session completes the new handle with the stale
+ * `open`, which is the same session and the same answer the first handle got.
+ */
+const completedSessions = new WeakMap<Window, Map<string, string>>();
+
+/** vpay's status for a session the payer can still come back to. */
+const REOPENABLE_STATUS = "open";
+
+/** Records `session` as completed for `win`; `false` if it already was. */
+function claimCompletion(
+  win: Window,
+  session: string,
+  status: string,
+): boolean {
+  let seen = completedSessions.get(win);
+  if (seen === undefined) {
+    seen = new Map<string, string>();
+    completedSessions.set(win, seen);
+  }
+  if (seen.has(session)) {
+    return false;
+  }
+  seen.set(session, status);
+  return true;
+}
+
+/** Forgets `win`'s claims on sessions that were still `open` when reported. */
+function releaseReopenableClaims(win: Window): void {
+  const seen = completedSessions.get(win);
+  if (seen === undefined) {
+    return;
+  }
+  for (const [session, status] of seen) {
+    if (status === REOPENABLE_STATUS) {
+      seen.delete(session);
+    }
+  }
 }
 
 /** `window`, or `undefined` where there is none (Node, SSR, a worker). */
@@ -193,6 +292,12 @@ export interface CheckoutPopupConfig {
   /** The window doing the opening — injectable so a test can supply its own. */
   win: Window;
   options: OpenCheckoutPopupOptions;
+  /**
+   * The origin of vpay's checkout app — `loadStripe`'s `checkoutBaseUrl` —
+   * that the **primary** `vpay:complete` is accepted from. `undefined`
+   * turns the primary channel off; the fallback still works.
+   */
+  checkoutOrigin?: string | undefined;
 }
 
 /**
@@ -250,6 +355,8 @@ export async function openCheckoutPopup(
   }
 
   const completionOrigin = options.completionOrigin ?? win.location.origin;
+  const checkoutOrigin = config.checkoutOrigin;
+  releaseReopenableClaims(win);
 
   let finished = false;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -266,7 +373,12 @@ export async function openCheckoutPopup(
     // The whole security boundary of this file. Everything below trusts the
     // sender: `message` is a global event, and without this check any page
     // holding a handle to this document could report a completed checkout.
-    if (event.origin !== completionOrigin) {
+    // Exactly two origins pass: vpay's checkout app (the primary channel,
+    // only when `checkoutBaseUrl` was configured) and the merchant's own
+    // return page (the fallback). See this module's header.
+    const fromCheckout =
+      checkoutOrigin !== undefined && event.origin === checkoutOrigin;
+    if (!fromCheckout && event.origin !== completionOrigin) {
       return;
     }
     // …and it must be *this* window, not merely something else on the same
@@ -286,11 +398,18 @@ export async function openCheckoutPopup(
     if (payload === undefined) {
       return;
     }
+    // Per session, not per handle: see `completedSessions`. A duplicate is
+    // dropped *without* finishing this handle, because it says nothing about
+    // the session this handle is waiting for.
+    if (!claimCompletion(win, payload.session, payload.status)) {
+      return;
+    }
     finished = true;
     stop();
     // Closed by this side, so the payer is not left staring at a window
-    // that has already done its job. The merchant's return page closes
-    // itself too; whichever wins, `close()` on a closed window is a no-op.
+    // that has already done its job. vpay's page and the merchant's return
+    // page may close it too; whichever wins, `close()` on a closed window
+    // is a no-op.
     popup.close();
     options.onComplete?.(payload);
   }
@@ -377,9 +496,16 @@ export interface NotifyCheckoutOpenerOptions {
 }
 
 /**
- * The popup half: tells the opener the payer is finished, then closes.
+ * The popup half of the **fallback** channel: tells the opener the payer is
+ * finished, then closes.
  *
- * Called from the merchant's own `success_url` page. Returns `false` — and
+ * Called from the merchant's own `success_url` page. vpay's checkout page
+ * usually reports first, through its own `window.opener` channel; when it
+ * does, this message names the same session and the opener drops it as a
+ * duplicate, so calling this unconditionally is correct. It is what still
+ * completes the popup when vpay's page could not pin the opener's origin —
+ * a merchant page served with `Referrer-Policy: no-referrer` is the usual
+ * cause (see this module's header). Returns `false` — and
  * does nothing at all — when there is no opener, which is exactly what
  * happens when the same page is reached by an ordinary redirect. That is
  * the property that lets one return page serve the hosted and the popup

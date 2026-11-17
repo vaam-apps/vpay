@@ -68,15 +68,30 @@
           "  1  transactionstatus.json's order_id-keyed cases. The conformance",
           "     suite depends on them and they must keep winning: a case that",
           "     submits and then asks about REF_SLOW is asking about REF_SLOW.",
-          "  3  every mapping below that answers from a payer's PRESENCE or ACTION.",
+          "  3  the payer's PRESENCE: this page's PENDING chain and its expiry.",
           "     Above the amount-keyed demo mappings (4) deliberately: a payer",
           "     standing on this page is the strongest statement about a charge",
           "     that this stub can have, and settling it from the amount while they",
-          "     are still reading is the bug this file exists to fix.",
+          "     are still reading is the bug this file exists to fix. A PENDING",
+          "     answer settles nothing, so outranking an amount here pays nothing.",
+          "     demo-outcomes.json's test-number arms are also 3.",
           "  4  demo-outcomes.json's amount-keyed mappings -- the HEADLESS demo",
           "     (`just demo-walk`), which opens no browser and never GETs this page.",
+          "  5  the payer's ACTIONS: /pay (both arms), /cancel, and the SUCCESS and",
+          "     EXPIRED answers they arm. BELOW every mapping in demo-outcomes.json,",
+          "     by the decision in issue #106 (2026-11-17): a click on one charge's",
+          "     page must never pay -- or expire -- a charge the demo has promised a",
+          "     different answer, and below 3 is also what lets a typed test number",
+          "     win over the form's own catch-all arm.",
           "  6  the two unconditional rungs above. Below 4 on purpose.",
           "  10 transactionstatus.json's catch-all SUCCESS.",
+          "",
+          "That ladder is a TEST, not only this comment:",
+          "`the_payers_actions_on_the_hosted_page_sit_below_every_demo_mapping` in",
+          "backends/tests/conformance reads this file and demo-outcomes.json and",
+          "fails if any action mapping here is not numerically above every priority",
+          "there; `a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge`",
+          "drives the case the ladder exists for against a real container.",
           "",
           "STRICTLY SEQUENTIAL. One scenario per container, so two Orange charges",
           "in flight against one stub share it and the wrong one could be answered.",
@@ -92,13 +107,16 @@
           "    FIRST poll is SUCCESS: A consumed the rung B was going to stand in.",
           "  C submits, D submits, C's payer clicks Cancel, D polls -> D gets EXPIRED.",
           "  G submits at amount 5001, H submits, H's payer clicks Pay, G polls ->",
-          "    G gets SUCCESS, because the payer-action mappings are priority 3 and",
-          "    demo-outcomes.json's amount-keyed ones are 4. A click on one charge's",
-          "    page can therefore pay a charge the shop's README promises will expire.",
-          "Whether 3 should instead be BELOW 4 is a maintainer decision; the argument",
-          "for 3 is under PRIORITIES above and its cost is the third line here.",
+          "    G got SUCCESS, because the payer-action mappings were priority 3 and",
+          "    demo-outcomes.json's amount-keyed ones are 4.",
+          "The third line is CLOSED since 2026-11-17 (issue #106): the action",
+          "mappings are 5, G gets its documented EXPIRED, and H, which is still",
+          "armed, gets SUCCESS on its own next poll. The first two are not",
+          "closable here and stand. A test number typed on one charge's page still",
+          "outranks a 5001/5002 charge (3 over 4), so it can give such a charge the",
+          "wrong FAILURE -- EXPIRED for FAILED or the reverse -- but never pay it.",
           "This limit is on the rendered page too (`id=\"stub-limits\"`), in",
-          "examples/shop/README.md, in docs/runbooks/demo.md and in docs/status.md.",
+          "examples/shop/README.md and in docs/runbooks/demo/hosted-page.md.",
           "",
           "Commentary lives in `metadata` because WireMock fails to start on a",
           "mapping document containing any field it does not recognise."
@@ -124,7 +142,8 @@
           "templates payment_url as",
           "  /stub-hosted-page/{pay_token}?return=<urlEncoded>&cancel=<urlEncoded>",
           "and this mapping carries them straight back out -- on the form's hidden",
-          "inputs, and, since 2026-09-10, on the two links as well. The pairing is",
+          "inputs, and, since 2026-09-10, on the two links as well (all four",
+          "percent-encoded, below). The pairing is",
           "preserved -- these are the exact bytes THAT submit carried, not a",
           "deployment-wide constant -- which is the property a test of the return",
           "trip needs. What is lost is the rail-side storage, and with it any claim",
@@ -149,44 +168,41 @@
           "inputs below could be written with it and a `&` would reach the browser as",
           "`&amp;` and be read back as `&`. That is Handlebars' documented behaviour",
           "and it is NOT this image's. Driven against wiremock/wiremock:3.9.2 with a",
-          "return URL of `https://m.test/back?q=\"x\"&y=<z>`, the rendered page carries",
+          "return URL of `https://m.test/back?q=\"x\"&y=<z>`, the rendered page carried",
           "",
           "  <input type=\"hidden\" name=\"return\" value=\"https://m.test/back?q=\"x\"&y=<z>\">",
           "",
-          "-- unescaped, quotes and all, which closes the attribute early. So the",
-          "double stache is not protecting anything, and the choice between the two",
-          "staches changes nothing at all for a value with no HTML metacharacters in",
-          "it. It is left as the double stache only because changing it would be a",
-          "diff that fixes nothing.",
+          "-- unescaped, quotes and all, which closed the attribute early and let the",
+          "return URL inject into this page. Neither stache protects an attribute.",
           "",
-          "The two HREFS are a different matter and are safe, because they do not rely",
-          "on the stache: they wrap the URL in WireMock's `urlEncode` helper first, so",
-          "what lands in the attribute is percent-encoded and contains no `\"`, `<` or",
-          "`&` at all. The literal separator between this container's own two query",
-          "parameters is written `&amp;` because it is inside an attribute, and that",
-          "one IS a literal in the template rather than something a stache produced.",
+          "So NOTHING that carries a URL into an attribute here relies on a stache.",
+          "Every one of them -- the two hrefs and, since 2026-11-17 (issue #106), the",
+          "form's two hidden inputs -- wraps the URL in WireMock's `urlEncode` helper",
+          "first, so what lands in the attribute is percent-encoded and contains no",
+          "`\"`, `<`, `&` or space at all. The literal separator between this",
+          "container's own two query parameters in the hrefs is written `&amp;`",
+          "because it is inside an attribute, and that one IS a literal in the",
+          "template rather than something a stache produced.",
           "",
-          "WHAT IS STILL BROKEN, AND IS NOT THIS CHANGE'S TO FIX: a return_url",
-          "containing a double quote would break the FORM below, because a GET form's",
-          "hidden input has to carry the DECODED value (the browser percent-encodes it",
-          "again on submit) and WireMock cannot HTML-escape an attribute. The links",
-          "are immune; the form is not. No test in this repository sends such a URL,",
-          "and `vpay_api`'s `checked_return_url` is what would have to refuse one --",
-          "it checks the scheme and the length and nothing else, so it would NOT.",
+          "THE FORM PAYS FOR THAT WITH ONE DECODING HOP, and it is why /pay has two",
+          "arms. A link's href is a URL, so the browser sends its percent-encoding as",
+          "is and WireMock decodes it once: `request.query.return` is the original.",
+          "A GET form's hidden input is a VALUE, so the browser percent-encodes it",
+          "AGAIN on submit and WireMock's one decode leaves the urlEncoded string.",
+          "The two arms are told apart by the PRESENCE of `msisdn`, which only the",
+          "form sends: the links' arm (msisdn absent) answers `{{{request.query.return}}}`",
+          "as it always did, and the form's arm (msisdn present) and demo-outcomes.json's",
+          "two test-number arms -- which only the form reaches -- answer",
+          "`{{{urlEncode request.query.return decode=true}}}`. Measured on 2026-11-17",
+          "against this image with `https://m.test/back?q=\"x\"&y=<z> w` (a quote, an",
+          "angle bracket, an ampersand and a space): the hidden input renders",
+          "percent-encoded and the form's 302 lands on the original bytes.",
           "",
-          "Since the sabotage review of 2026-09-10 that is also written on the PAGE,",
-          "under `id=\"stub-limits\"`, beside the one-payment-at-a-time limit, because a",
-          "limit recorded only in a `metadata` block no reader renders is a limit",
-          "nobody meets until it bites. `the_hosted_pages_pending_chain_is_bounded_",
-          "and_ends_in_an_expiry` asserts that section is there.",
-          "",
-          "The fix that exists, and was not taken: write the hidden inputs",
-          "`{{{urlEncode ...}}}` (percent-encoded, so no quote can reach the attribute)",
-          "and split the /pay mappings on the PRESENCE of `msisdn` -- only the form",
-          "sends it -- so the form's arm can answer `{{{urlEncode ... decode=true}}}`",
-          "while the links' arm stays as it is. It is surgery on a stub four suites",
-          "share, for a value nothing here sends, and needs a full `just test-e2e` to",
-          "validate. Maintainer decision.",
+          "`a_hostile_return_url_survives_the_form_on_the_rails_page` in",
+          "backends/tests/conformance submits that URL, reads the hidden inputs with",
+          "the page's own markup, submits the form the way a browser does and asserts",
+          "the Location is the original; revert the inputs to the raw stache and it",
+          "fails on the truncated value.",
           "",
           "The urlPathPattern is loose on the token because it is generated per",
           "charge: pay-<uuid> from the catch-all, pay-dup-1 from the duplicate",
@@ -212,7 +228,7 @@
           "Content-Type": "text/html; charset=utf-8",
           "Cache-Control": "no-store"
         },
-        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>While you are on this page the rail answers vpay's status query <code>PENDING</code>, for a bounded number of polls. Choose one of the two links below, or pay with a test number; do nothing for long enough and the page expires.</p>\n<p>\n<a id=\"pay\" href=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay?return={{{urlEncode request.query.return}}}&amp;cancel={{{urlEncode request.query.cancel}}}\">Pay</a>\n<a id=\"cancel\" href=\"/stub-hosted-page/{{request.pathSegments.[1]}}/cancel?return={{{urlEncode request.query.return}}}&amp;cancel={{{urlEncode request.query.cancel}}}\">Cancel</a>\n</p>\n<h2>Or pay with one of the demo's test numbers</h2>\n<p>Orange is a <strong>redirect</strong> rail: the number is typed here, on the rail's own page, and vpay never sees it. That is why the demo steers this rail's outcome from this form rather than from anything the merchant sent. The numbers are documented in <code>examples/shop/README.md</code>; anything not listed there pays.</p>\n<form id=\"test-number-form\" method=\"get\" action=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay\">\n<input type=\"hidden\" name=\"return\" value=\"{{request.query.return}}\">\n<input type=\"hidden\" name=\"cancel\" value=\"{{request.query.cancel}}\">\n<label for=\"msisdn\">Orange Money number</label>\n<input id=\"msisdn\" name=\"msisdn\" value=\"237600000000\" size=\"20\">\n<button id=\"pay-with-number\" type=\"submit\">Pay with this number</button>\n</form>\n<h2 id=\"stub-limits\">Two limits of this stub, written here because nothing else on this page shows them</h2>\n<ul>\n<li><strong>One payment at a time.</strong> The window you are standing in is a single WireMock scenario on this container, and WireMock scenarios cannot be keyed on a payment. If a second Orange charge is in flight it does not get a window of its own, and whichever of the two links above you press decides <em>whichever charge vpay asks about next</em> &mdash; including a charge whose amount the demo has promised will fail. Measured 2026-09-10; see <code>docs/status.md</code>, &sect; &ldquo;The Orange stub&rsquo;s hosted page grew a payer&rsquo;s window&rdquo;.</li>\n<li><strong>The form above is not safe for a return URL containing a double quote.</strong> Its two hidden inputs carry the URLs undecoded and unescaped, because a GET form has to, and WireMock cannot HTML-escape an attribute. Such a URL closes the attribute and injects into this page. The two links are immune &mdash; they percent-encode first. vpay&rsquo;s own <code>return_url</code> check looks at the scheme and the length and nothing else, so it would accept one. Recorded, not fixed: this is a WireMock stub of a rail (ADR-0006) and no test in this repository sends such a URL.</li>\n</ul>\n</body>\n</html>\n"
+        "body": "<!doctype html>\n<html lang=\"fr\">\n<head>\n<meta charset=\"utf-8\">\n<title>Orange Money (stub) &mdash; paiement</title>\n</head>\n<body>\n<h1>Orange Money &mdash; page de paiement (stub)</h1>\n<p>This page is a WireMock stub of the rail's hosted page. It is not Orange, it moves no money, and it decides nothing: the outcome of this charge comes from vpay's authenticated status query.</p>\n<p>Reference: <code>{{request.pathSegments.[1]}}</code></p>\n<p>While you are on this page the rail answers vpay's status query <code>PENDING</code>, for a bounded number of polls. Choose one of the two links below, or pay with a test number; do nothing for long enough and the page expires.</p>\n<p>\n<a id=\"pay\" href=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay?return={{{urlEncode request.query.return}}}&amp;cancel={{{urlEncode request.query.cancel}}}\">Pay</a>\n<a id=\"cancel\" href=\"/stub-hosted-page/{{request.pathSegments.[1]}}/cancel?return={{{urlEncode request.query.return}}}&amp;cancel={{{urlEncode request.query.cancel}}}\">Cancel</a>\n</p>\n<h2>Or pay with one of the demo's test numbers</h2>\n<p>Orange is a <strong>redirect</strong> rail: the number is typed here, on the rail's own page, and vpay never sees it. That is why the demo steers this rail's outcome from this form rather than from anything the merchant sent. The numbers are documented in <code>examples/shop/README.md</code>; anything not listed there pays.</p>\n<form id=\"test-number-form\" method=\"get\" action=\"/stub-hosted-page/{{request.pathSegments.[1]}}/pay\">\n<input type=\"hidden\" name=\"return\" value=\"{{{urlEncode request.query.return}}}\">\n<input type=\"hidden\" name=\"cancel\" value=\"{{{urlEncode request.query.cancel}}}\">\n<label for=\"msisdn\">Orange Money number</label>\n<input id=\"msisdn\" name=\"msisdn\" value=\"237600000000\" size=\"20\">\n<button id=\"pay-with-number\" type=\"submit\">Pay with this number</button>\n</form>\n<h2 id=\"stub-limits\">A limit of this stub, written here because nothing else on this page shows it</h2>\n<ul>\n<li><strong>One payment at a time.</strong> The window you are standing in is a single WireMock scenario on this container, and WireMock scenarios cannot be keyed on a payment. If a second Orange charge is in flight it does not get a window of its own, and whatever you do on this page decides <em>whichever charge vpay asks about next</em>. The two links and an unlisted number give way to a charge whose amount the demo steers (5001, 5002); a listed test number does not. Measured 2026-09-10, and the give-way since 2026-11-17 (issue #106); see <code>docs/status/backend-orange-hosted-page.md</code>.</li>\n</ul>\n</body>\n</html>\n"
       }
     },
     {
@@ -426,19 +442,23 @@
       }
     },
     {
-      "name": "the payer paid: the #pay link, and the form with any number the demo does not steer",
+      "name": "the payer paid: the #pay link",
       "metadata": {
         "why": [
-          "The success exit, and the DISARM. Priority 5 so demo-outcomes.json's",
-          "two number-keyed arms (3) win when the payer typed one of those; this",
-          "one carries every other number, and the `#pay` link, which carries no",
-          "`msisdn` parameter at all.",
+          "The success exit, and the DISARM, for the `#pay` link -- which is the",
+          "only control on the page that reaches /pay WITHOUT an `msisdn`",
+          "parameter, and that absence is what this arm matches on.",
           "",
           "302 to the return URL THIS submit carried, taken out of the query",
-          "string the page put on the link (or out of the form's hidden input,",
-          "which holds the same bytes). Not followed by the conformance suite's",
-          "client -- `vpay_provider::http::client` refuses redirects on purpose --",
-          "so the Location is directly assertable."
+          "string the page put on the link. The href carries it percent-encoded",
+          "and WireMock decodes it once, so `request.query.return` is already the",
+          "original bytes and is answered as is. Not followed by the conformance",
+          "suite's client -- `vpay_provider::http::client` refuses redirects on",
+          "purpose -- so the Location is directly assertable.",
+          "",
+          "PRIORITY 5: below every mapping in demo-outcomes.json (3 and 4), by the",
+          "decision in issue #106 -- see the PRIORITIES block on the page's own",
+          "mapping, and the conformance test that reads both files."
         ]
       },
       "scenarioName": "orange-hosted-page-payer",
@@ -446,12 +466,57 @@
       "priority": 5,
       "request": {
         "method": "GET",
-        "urlPathPattern": "/stub-hosted-page/[^/]+/pay"
+        "urlPathPattern": "/stub-hosted-page/[^/]+/pay",
+        "queryParameters": {
+          "msisdn": {
+            "absent": true
+          }
+        }
       },
       "response": {
         "status": 302,
         "headers": {
           "Location": "{{{request.query.return}}}",
+          "Cache-Control": "no-store"
+        }
+      }
+    },
+    {
+      "name": "the payer paid: the form, with any number the demo does not steer",
+      "metadata": {
+        "why": [
+          "The success exit for the test-number FORM, which always sends",
+          "`msisdn` -- that presence is what tells this arm from the link's.",
+          "demo-outcomes.json's two number-keyed arms (3) win when the payer typed",
+          "one of those; this one (5) carries every other number.",
+          "",
+          "ONE DECODING HOP, and it is the only difference from the link's arm.",
+          "The page writes the form's hidden inputs `{{{urlEncode ...}}}` so that",
+          "no quote can reach the attribute (issue #106); a GET form then",
+          "percent-encodes that VALUE again on submit, WireMock decodes once, and",
+          "`request.query.return` is still the urlEncoded string. `decode=true`",
+          "undoes the page's own encoding and the Location is the original return",
+          "URL, byte for byte -- measured on 2026-11-17 with a quote, an angle",
+          "bracket, an ampersand and a space in it, and pinned by",
+          "`a_hostile_return_url_survives_the_form_on_the_rails_page`."
+        ]
+      },
+      "scenarioName": "orange-hosted-page-payer",
+      "newScenarioState": "payer-paid",
+      "priority": 5,
+      "request": {
+        "method": "GET",
+        "urlPathPattern": "/stub-hosted-page/[^/]+/pay",
+        "queryParameters": {
+          "msisdn": {
+            "matches": ".*"
+          }
+        }
+      },
+      "response": {
+        "status": 302,
+        "headers": {
+          "Location": "{{{urlEncode request.query.return decode=true}}}",
           "Cache-Control": "no-store"
         }
       }
@@ -467,13 +532,19 @@
           "a stub that had never noticed the click. This mapping is what the",
           "'drop the click arming' mutation deletes.",
           "",
-          "PRIORITY 3, with the rest of the payer's own actions."
+          "PRIORITY 5, with the rest of the payer's own actions, and THIS is the",
+          "mapping issue #106's decision is really about: at 3 it outranked",
+          "demo-outcomes.json's amount-keyed answers (4), so a Pay click on one",
+          "charge's page answered SUCCESS to a 5001 charge polled next. At 5 the",
+          "5001 charge gets its EXPIRED, this state survives it (an amount-keyed",
+          "mapping moves no scenario), and the charge that was clicked gets this",
+          "answer on its own next poll."
         ]
       },
       "scenarioName": "orange-hosted-page-payer",
       "requiredScenarioState": "payer-paid",
       "newScenarioState": "Started",
-      "priority": 3,
+      "priority": 5,
       "request": {
         "method": "POST",
         "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"
@@ -505,12 +576,17 @@
           "who abandons the page is a page that ages out unpaid, which is",
           "EXPIRED, which is payer_timeout. That is also why this shares",
           "`payer-gave-up` with nothing: it is its own state so a captured",
-          "journal says which exit a payer took."
+          "journal says which exit a payer took.",
+          "",
+          "PRIORITY 5, with #pay (issue #106). It matches a different URL from",
+          "every demo mapping, so this number decides no overlap today; it is 5 so",
+          "that the ladder has one rule for every payer action and the",
+          "conformance test that pins it has no exception to carry."
         ]
       },
       "scenarioName": "orange-hosted-page-payer",
       "newScenarioState": "payer-gave-up",
-      "priority": 3,
+      "priority": 5,
       "request": {
         "method": "GET",
         "urlPathPattern": "/stub-hosted-page/[^/]+/cancel"
@@ -529,13 +605,17 @@
         "why": [
           "EXPIRED -> payer_timeout, the same mapping the chain's own expiry",
           "uses and for the same reason: the page ended without a payment.",
-          "Answered once and disarmed, because it is terminal."
+          "Answered once and disarmed, because it is terminal.",
+          "",
+          "PRIORITY 5, for the reason the armed SUCCESS above gives: a Cancel on",
+          "one charge's page must not answer a 5002 charge EXPIRED in place of",
+          "the FAILED the demo documents for it."
         ]
       },
       "scenarioName": "orange-hosted-page-payer",
       "requiredScenarioState": "payer-gave-up",
       "newScenarioState": "Started",
-      "priority": 3,
+      "priority": 5,
       "request": {
         "method": "POST",
         "urlPathPattern": "/orange-money-webpay/[^/]+/v1/transactionstatus"

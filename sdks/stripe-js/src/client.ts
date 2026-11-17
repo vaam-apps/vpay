@@ -23,7 +23,7 @@ import {
   unexpectedResponseError,
   type StripeError,
 } from "./errors.js";
-import { createEmbeddedCheckout } from "./embedded.js";
+import { createEmbeddedCheckout, originOf } from "./embedded.js";
 import {
   openCheckoutPopup,
   type CheckoutPopup,
@@ -480,12 +480,21 @@ export class VpayStripe implements Stripe {
         "openCheckoutPopup: there is no browser window to open one from",
       );
     }
-    // No `checkoutBaseUrl` is consulted, and that is not an oversight: a
-    // popup loads the **hosted** session's own `url`, which vpay minted and
-    // the merchant's server just handed back. `checkoutBaseUrl` exists to
-    // build an embedded frame `src` and to pin the origin a framed page
-    // posts from; neither applies here (see `popup.ts`).
-    return openCheckoutPopup({ win, options });
+    // A popup loads the **hosted** session's own `url`, which vpay minted
+    // and the merchant's server just handed back, so `checkoutBaseUrl` does
+    // not build anything here. It does pin one thing: the origin vpay's page
+    // posts its own `vpay:complete` from through `window.opener` — the
+    // primary completion channel (issue #65, see `popup.ts`). Not
+    // configured, and that channel is off; the merchant's `success_url`
+    // fallback still completes the popup, exactly as before.
+    return openCheckoutPopup({
+      win,
+      options,
+      checkoutOrigin:
+        this.#checkoutBaseUrl === undefined
+          ? undefined
+          : originOf(this.#checkoutBaseUrl),
+    });
   }
 
   /** A safe, redacted representation. This object holds no secret to redact. */

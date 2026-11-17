@@ -201,6 +201,23 @@ other three make.
 
 ## Status
 
+**Updated 2026-11-17 (issue #65): the merchant's side now listens to vpay's
+popup message.** Until today `@vaam-apps/vpay-stripe-js` ignored the
+`vpay:complete` this page posts to an opener it could pin, and completed a
+popup only on the merchant's own `success_url` message. It now takes this
+page's message as the primary completion (origin-pinned to `checkoutBaseUrl`,
+source-pinned to the popup) and the `success_url` one as the fallback,
+deduplicated per session id — see
+[hosted-checkout/page-memory-and-protocols.md](hosted-checkout/page-memory-and-protocols.md)
+§ "Who listens on the opener's side". Nothing on this page changed: its
+`CompleteMessage` already named the session. The referrer rule is now a
+stated merchant requirement, and `examples/shop` sets
+`Referrer-Policy: strict-origin-when-cross-origin`. Proven against stub
+windows only; [browser-checkout.md](browser-checkout.md)'s Status has the
+detail and
+[../status/verification/2026-11-17-popup-completion.md](../status/verification/2026-11-17-popup-completion.md)
+the gate output.
+
 **Updated 2026-09-23 (RFC-0004 § 5): `GET /v1/checkout/sessions` takes a
 `customer` filter.** It compares the session's **own** `customer_id`
 (migration `0034`), not its intent's — the two differ for a session created

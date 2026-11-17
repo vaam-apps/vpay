@@ -27,7 +27,7 @@
     "@zenstackhq/orm": "3.9.3",
     "@zenstackhq/plugin-policy": "3.9.3",
     "@zenstackhq/schema": "3.9.3",
-    "next": "16.4.2",
+    "next": "16.4.6",
     "pg": "^8.13.1",
     "react": "19.2.8",
     "react-dom": "19.2.8",

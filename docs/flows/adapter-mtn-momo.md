@@ -381,6 +381,16 @@ first; its § 12, item 16 is the same question.
    inspector, recording each one's method and body and whether a refused one
    is resent.
 
+   _2026-11-17:_ [`mtn-sandbox-test/test.sh`](../../mtn-sandbox-test/test.sh)
+   (from [#395](https://github.com/vaam-apps/vpay/pull/395)) is a by-hand
+   helper for that test: it creates the sandbox API user with the
+   inspector's host as `providerCallbackHost`, sends request-to-pays, polls
+   them and writes redacted evidence to `mtn-sandbox-test/evidence/`
+   following `evidence-template.md`. **It has not yet completed a payment:**
+   its author's one sandbox run ended `FAILED` /
+   `INTERNAL_PROCESSING_ERROR` with no callback received, so #330 is
+   unanswered and nothing above moved.
+
 ## Status
 
 **Updated 2026-10-20: the account-holder lookup refuses a dot-segment

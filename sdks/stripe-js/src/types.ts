@@ -267,9 +267,10 @@ export interface Stripe {
   ): Promise<EmbeddedCheckout>;
   /**
    * Opens vpay's **hosted** checkout page in a popup window the merchant's
-   * page owns, and reports completion through `window.opener` (see
-   * `src/popup.ts` for why the message comes from the merchant's own return
-   * page and not from vpay's).
+   * page owns, and reports completion through `window.opener` — from vpay's
+   * own page when `checkoutBaseUrl` was configured and it could pin the
+   * opener, else from the merchant's own return page, once per checkout
+   * session either way (see `src/popup.ts`).
    *
    * **This one rejects**, like {@link initEmbeddedCheckout}: with
    * `CheckoutPopupBlockedError` when the browser refused the window — the
