@@ -29,8 +29,8 @@ describes the older hex-vs-digits distinction and is kept as history.)_
 | What you want                | Type this MSISDN | Why not the one the demo prints                                                                                                                                                                                                                                                                               |
 | ---------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | The payment succeeds         | `237670000900`   | The page validates Cameroon E.164 — `237`, then `6`, then eight **digits** — and correctly refuses `237600000ce0`, which has hex letters in it. Both numbers enter the same WireMock scenario by the same mapping (Step 9, lane 2b)                                                                           |
-| The payer has no balance     | `237670000101`   | as above, twin of `237600000f01`                                                                                                                                                                                                                                                                              |
-| The prompt expires           | `237670000102`   | as above, twin of `237600000f02`                                                                                                                                                                                                                                                                              |
+| The payer has no balance     | `237670000101`   | as above; the walkthrough also sends this number, and `237600000f01` is its retired hex predecessor                                                                                                                                                                                                           |
+| The prompt expires           | `237670000102`   | as above; the walkthrough also sends this number, and `237600000f02` is its retired hex predecessor                                                                                                                                                                                                           |
 | The payer refuses the prompt | `237670000103`   | New 2026-09-10 ([issue #59](https://github.com/vaam-apps/vpay/issues/59)); digits-only and no hex twin, because the hex family predates the page's validator. It arms `mtn-demo-refused`, which answers `FAILED`/`PAYMENT_NOT_APPROVED` → `payer_declined` — a code that until that day no rail could produce |
 
 For Orange, pick it in the selector and follow the redirect: you land on the
@@ -131,11 +131,13 @@ because between them they are most of what a merchant actually has to build.
   the shop's own return page — running inside that window — tells the opener
   and closes it.
 - **The test numbers** are documentation MSISDNs the rail stubs are configured
-  to answer particular things for. `237600000000` (or anything unlisted) pays;
-  `237600000101` is insufficient funds on MTN; `237600000102` is a timeout on
-  either rail; `237600000103` is a payer who refuses the prompt on MTN;
-  `237600000400` is a refusal on either; `237600000503` is an unavailable rail
-  on MTN. The full table, including the **four** outcomes Orange cannot
+  to answer particular things for, the same table as
+  `examples/shop/README.md`'s: `237670000000` (or anything unlisted) pays;
+  `237670000101` is insufficient funds on MTN; `237670000102` is a timeout on
+  MTN; `237670000103` is a payer who refuses the prompt on MTN;
+  `237670000400` is a refusal at submit on MTN; `237670000503` is an
+  unavailable rail on MTN. (This listed the `2376000001xx` block until
+  2026-11-17; issue #186's validation refuses those on confirm.) The full table, including the **four** outcomes Orange cannot
   express, is on the page itself and in
   [../../examples/shop/README.md](../../../examples/shop/README.md).
 
