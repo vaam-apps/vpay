@@ -1464,8 +1464,10 @@ except `/v1`.
 Every write runs the `/v1` route's own operation, with a required
 `idempotency_key` claimed in vpay's own store. The tokens come from vpay's
 own OP, with the MCP resource as audience; the OP now honours RFC 8707
-`resource`. Since VP-3 (#380) `/v1` is signed and takes no bearer token, so
-the OP's `client_credentials` grant serves this endpoint alone.
+`resource`. From VP-3 (#380) the OP's `client_credentials` grant served this
+endpoint alone; since ADR-0037 (#384, 2026-10-27) it serves `/v1` too
+wherever `auth.methods` permits `machine_tokens`, and `mcp` needs
+`machine_tokens` to boot (`McpNeedsMachineTokens`).
 `/dash/v1/$procs` serves only the dashboard's five procedures, and the
 dashboard's wrapper over the generated client hands out only those five.
 
@@ -1487,6 +1489,12 @@ case; [the flow page](../flows/mcp.md) has the list.
 - **What issues its tokens after VP-4 is undecided.** VP-4 plans to retire the
   OP's token path, which this endpoint is the last user of (ADR-0033, "Left to
   the maintainer" item 4).
+- **How a staff MCP endpoint would authenticate is undecided** (added
+  2026-10-27). ADR-0033 D9 designed it on the staff OP. #383 (ADR-0036)
+  deleted that OP, and VPA-3 (#390, 2026-10-30) restored it behind
+  `human_login`, so D9's design is buildable only on a deployment that serves
+  that method; vaam's does not. D9's staff half and the threat model's staff
+  column say so ("Left to the maintainer" item 5). Nothing is built.
 
 A new gate, `verify-mcp-parity`, makes `just verify` seventeen gates, after
 #356's `verify-security-inventory`. CI's `self-checks` job runs it too.
@@ -1668,7 +1676,9 @@ fallback.
   unsigned-401 tests assert the layer's own body, not only the status, so
   loosening `Required` to `Optional` fails them. The guard proofs are in
   [verification/2026-10-26-vp6a-console-keys.md](verification/2026-10-26-vp6a-console-keys.md).
-- **Not done.** The dashboard application cannot sign in until VP-6b (key
+- **Not done.** ~~The dashboard application cannot sign in until VP-6b~~ (VPA-5a,
+  2026-10-30: it signs in with a password where vpay serves `human_login`;
+  with a paired key it still cannot until VP-6b — key
   generation in the browser, the pairing request, request signing); vaam's side
   of `/svc/v1` is not built; `rate_limit_windows` and `RateLimits` are unused
   scaffolding with no caller; `staff_members.last_sign_in_at` is never written;
@@ -1832,7 +1842,7 @@ throwaway Postgres; no deployment has run it.**
   TOTP key VPA-2's runbook told an operator to keep. A deployment that did not
   keep them cannot verify an old hash and must enrol its staff again.
 - **Not done.** ~~Staff SSO (VPA-4; `staff_auth.sso` is refused as an unknown
-  field).~~ (Restored 2026-10-30, VPA-4: next section.) The dashboard application's login pages (VPA-5). The SDKs' token mode
+  field).~~ (Restored 2026-10-30, VPA-4: next section.) ~~The dashboard application's login pages (VPA-5).~~ (Built 2026-10-30, VPA-5a: [status/frontend.md](frontend.md#the-dashboard-application-signs-in-with-a-password-vpa-5a).) The SDKs' token mode
   (VPA-6). **A way to remove a member, disable one or reset a password: no
   `staff remove`, `staff disable` or `staff reset-password` command exists
   (gap, 2026-10-30).** `staff add` refuses a second account for an address, so a
@@ -1897,7 +1907,52 @@ was broken on purpose, is
   (Helm 3.19.0, kubeconform, 68 resources valid). A private or in-cluster
   provider, or any provider once `railsEgress` is off, can be reached again.
 - **Not done.** The dashboard application's two SSO routes and sign-in button
-  (VPA-5; `redirect_uri` names a page that does not exist until then). Never run
+  (VPA-5b, not VPA-5a, which built the password sign-in only; `redirect_uri`
+  names a page that does not exist until then). Never run
   against any provider but a simulated one and Keycloak 26.6.1 in a container,
   and the Keycloak suite was **not run in this session** (no Docker daemon).
   Nothing in the chart has run in a cluster.
+
+## The Orange stub's form stops injecting, and the payer's actions sit below the demo (2026-11-17, #106)
+
+**A change to a stub and its tests, and to nothing else** — no adapter,
+handler or ladder moved. Two follow-ups to
+[the payer's window](backend-orange-hosted-page.md), both decided in
+[#106](https://github.com/vaam-apps/vpay/issues/106); the issue's third item
+(the e2e fixture ports) had already landed in #127.
+
+- **The hidden inputs are percent-encoded.** `stub-hosted-page.json`'s
+  test-number form wrote `value="{{request.query.return}}"`, and WireMock
+  3.9.2 escapes no stache, so a `return_url` carrying `"` — which
+  `checked_return_url` accepts — closed the attribute and injected into the
+  page. Measured before the change on a bare `wiremock/wiremock:3.9.2` with
+  `https://m.test/back?q="x"&y=<z> w`: the input rendered raw, a parser read
+  it as `https://m.test/back?q=`, and the form's `302` went there. Both inputs
+  are now `{{{urlEncode …}}}`, as the links always were, and `/pay` is split on
+  the presence of `msisdn` (only the form sends it): the links' arm answers as
+  before, and the form's arm and `demo-outcomes.json`'s two test-number arms
+  answer `{{{urlEncode request.query.return decode=true}}}`, undoing the layer
+  a GET form adds. Same URL after: the input renders percent-encoded and the
+  form, `#pay` and `#cancel` all `302` to it byte for byte. The page's
+  `stub-limits` note is down to its one remaining limit.
+- **Every payer action is priority 5**: `/pay` (both arms), `/cancel` (was 3)
+  and the `SUCCESS`/`EXPIRED` answers they arm (were 3), below every mapping in
+  `demo-outcomes.json` (3 and 4). The sabotage review's third measurement — G
+  at `5001`, H clicks Pay, G polls, G is **paid** — is closed: G gets its
+  `EXPIRED`, and H, still armed, gets `SUCCESS` on its own next poll.
+- **Tests** (`backends/tests/conformance`): `the_payers_actions_on_the_hosted_page_sit_below_every_demo_mapping`
+  reads both files and pins the ladder (no container);
+  `a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge` (pay,
+  cancel) drives the overlap against a container;
+  `a_hostile_return_url_survives_the_form_on_the_rails_page` submits the page's
+  own form and links with that URL. `a_test_number_typed…` now submits the
+  page's form as a browser does instead of rebuilding the URL from the
+  `payment_url`. Five mutations, each caught — see
+  [verification/2026-11-17-orange-stub-106.md](verification/2026-11-17-orange-stub-106.md).
+- **Still not fixed, and not fixable by a priority.** One scenario per
+  container: two overlapping Orange charges still share it, and a click on one
+  page still decides a charge steered by a test number typed on another (the
+  click overwrites that state). Nothing here drives two at once.
+- **Not run:** `just test-e2e` (no Cypress spec touches the form — they click
+  `#pay`/`#cancel` only — so the browser half of this is the conformance case,
+  not a browser). See the verification page.

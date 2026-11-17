@@ -112,6 +112,37 @@ ignore = [
   # (or authkestra) reaches p256 0.14 / elliptic-curve 0.14, or `cargo deny`
   # reports it as no longer matching (`advisory-not-detected`).
   "RUSTSEC-2026-0387",
+
+  # RUSTSEC-2026-0543: `chrono` is unmaintained ("all versions are
+  # affected", no safe upgrade). An "unmaintained" notice, not a
+  # vulnerability: no exploitable defect is named.
+  #
+  # Where it comes from (`cargo deny check advisories`): authkestra-engine,
+  # authkestra-op, authkestra-resource, cratestack-client-rust (so
+  # cratestack-pg and both SDKs) and schemars all depend on it, so it is in
+  # every shipping binary, and none of those is ours to change in a lockfile
+  # bump. Replacing it means the upstream crates moving to `jiff` or `time`.
+  #
+  # Added 2026-11-17, when the advisory began failing `cargo deny` (CI's
+  # supply-chain job on #397). Pending the maintainer's acceptance; revisit
+  # when authkestra or cratestack drop chrono, or at once if a vulnerability
+  # (not only "unmaintained") is published against it.
+  "RUSTSEC-2026-0543",
+
+  # RUSTSEC-2026-0440: `astral-tokio-tar` is unmaintained (Astral ended it
+  # on 2026-11-03; no safe upgrade). An "unmaintained" notice, not a
+  # vulnerability.
+  #
+  # Where it comes from: testcontainers 0.27 <- vpay-testkit and
+  # testcontainers-modules, which only test code and dev-dependencies use
+  # (`cargo tree -i astral-tokio-tar -e normal,build` reaches no shipping
+  # crate). What it unpacks is the Docker daemon's own tar streams on a
+  # developer's or CI's machine. testcontainers 0.28.0 exists; moving to it
+  # is a 0.x major on the integration harness and belongs in its own PR.
+  #
+  # Added 2026-11-17 alongside RUSTSEC-2026-0543. Pending the maintainer's
+  # acceptance; revisit with the testcontainers upgrade.
+  "RUSTSEC-2026-0440",
 ]
 
 [licenses]

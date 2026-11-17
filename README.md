@@ -351,11 +351,13 @@ Six steps, the fourth of which is a table:
 **Every outcome is chosen at the rail stub, never in the demo.** MTN's is
 selected by the payer's MSISDN and Orange's by the amount, because those are
 the only fields of each rail's protocol a merchant actually controls. The
-three MSISDNs the walkthrough pays from — `237600000ce0`, `237600000f01`,
-`237600000f02` — are **not phone numbers**: the last three characters are a
-hex steering code the stub keys its scenario on, and step 6 shows
-`GET /v1/account_holders` refusing one of them with a `400` because it is not
-a Cameroon E.164 number. Nothing rewrites stored state to
+three MSISDNs the walkthrough pays from — `237670000900`, `237670000101`,
+`237670000102` — are valid Cameroon mobile numbers that the stub's `partyId`
+matchers key its scenarios on; since issue #186 a confirm refuses anything
+libphonenumber does not accept, so the older hex steering codes
+(`237600000ce0`, `…f01`, `…f02`) are stub keys only, and step 6 shows
+`GET /v1/account_holders` refusing `237600000f01` with a `400` because it is
+not a Cameroon E.164 number. Nothing rewrites stored state to
 make an outcome happen. The stubs are WireMock containers reached over HTTP
 exactly as a real rail would be — that is the rule in [AGENTS.md](AGENTS.md): a
 stub rail is a _host_, never a linked implementation. **This demo calls neither
@@ -383,8 +385,10 @@ just made.~~ **Corrected 2026-09-23:** wrong since exp28 (2026-09-07), when the
 dashboard gained staff sign-in and joined `demo_services`. It starts with the
 rest of the demo: `/dash/v1` serves **one** merchant's payments, refunds,
 deliveries, customers and checkout sessions to a signed request under a paired
-console key (`just demo-staff` creates the member; **the dashboard application
-cannot sign in until VP-6b**, see the runbook). It shows the **shop's** tenant,
+console key (`just demo-staff` creates the member and keeps the one-time
+password it prints; **the dashboard application signs in with that password
+since VPA-5a and the demo overlay serves it since VPA-5c, but reads none of
+`/dash/v1` until VP-6b**, see the runbook). It shows the **shop's** tenant,
 not the walkthrough's, on purpose.
 [docs/runbooks/demo/dashboard-sign-in.md](docs/runbooks/demo/dashboard-sign-in.md)
 is how to get in and why. It is read-only, and it has never run in a

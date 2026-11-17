@@ -235,6 +235,16 @@ shamefullyHoist: false
 #   constrain nothing a fresh resolution would not choose anyway, so deleting
 #   one is safe once `pnpm install` has moved the lockfile past it for good.
 #
+# overrides['qs@<6.16.1'] — 2026-10-27. GHSA-6pq8-jhm2-2vcw (moderate) against
+#   qs >=6.7.0 <=6.16.0; fixed in 6.16.1 (2026-10-14). A floor, for the same
+#   reason as the four above: every dependent takes qs on a caret range
+#   (`@refinedev/core` 5.0.12 and `@refinedev/nextjs-router` 7.0.5 on
+#   `^6.10.1`, `@cypress/request` 4.0.1 on `^6.15.2`), and the lockfile held
+#   6.16.0. It resolves 6.16.1 rather than 6.16.2 or 6.17.0, because both of
+#   those were published on 2026-10-27, inside pnpm 11's 24h
+#   `minimumReleaseAge`; no `minimumReleaseAgeExclude` entry was added for
+#   them, since 6.16.1 is fixed. Re-check on the next audit pass, as above.
+#
 # overrides['@zenstackhq/cli>@hono/node-server'] — 2026-10-29.
 #   GHSA-rmxm-3fg6-px4f (moderate): `serveStatic` decodes the request path a
 #   second time, bypassing middleware on static paths. Vulnerable
@@ -252,6 +262,77 @@ shamefullyHoist: false
 #   it, and the package is a devDependency of examples/shop, so it reaches
 #   no production image. Remove when `@zenstackhq/cli` itself declares
 #   `@hono/node-server` >=2.1.3.
+#   UPDATE 2026-11-17: raised ^2.1.3 -> ^2.1.6 for GHSA-qv5m-9pm6-hqp3 (an
+#   unhandled ECONNRESET during an async WebSocket upgrade crashes the
+#   process) and GHSA-jpvv-r467-5p4w (a backslash in the path is read as a
+#   separator, bypassing path-based access control at a reverse proxy),
+#   both moderate, `>=2.0.0 <2.1.6`, fixed in 2.1.6. The 2.1.5 the old
+#   floor had settled on is inside both. It resolves 2.1.8 (2026-11-12);
+#   2.1.9 was published 2026-11-17T08:20Z, inside `minimumReleaseAge`, and
+#   no exclusion was added for it. The CLI's range is unchanged: 3.10.2,
+#   the newest (2026-11-13), still declares `^1.13.8`. The two new ranges
+#   start at 2.0.0, but 1.x is no way out: npm's bulk advisory endpoint
+#   still reports GHSA-rmxm-3fg6-px4f (`>=1.19.10 <2.1.3`) against 1.19.19,
+#   the newest 1.x (2026-11-11), so the 2.x major stays. The removal
+#   condition becomes `@hono/node-server` >=2.1.6.
+#
+# overrides['hono@<4.13.16'] — 2026-11-17. Four moderate advisories
+#   against hono, all fixed in 4.13.16 (2026-11-01): GHSA-4m76-xfj5-7975
+#   (`mount()` can forward a path that bypasses middleware scoped inside the
+#   mount prefix), GHSA-h7mg-cq63-vhpq (RegExpRouter skips wildcard
+#   middleware for some route sets), GHSA-46wx-v44x-9hh2 (`csrf()` misses
+#   `text/ping` hyperlink-auditing requests) and GHSA-4h7h-rv7c-7m2v
+#   (`validator('form')` skips multipart requests with extra parameters).
+#   A floor, the `qs` class: every dependent takes hono on a caret range
+#   (`@zenstackhq/cli` 3.9.3 `^4.11.10`, `@zenstackhq/server` 3.9.3
+#   `^4.6.0`, `@hono/node-server` 2.x `^4 || ^5.0.0-0`) and the lockfile
+#   held 4.13.13. It resolves 4.13.18 (2026-11-11); 4.13.19 was inside the
+#   24h window and no exclusion was added. All three dependents are under
+#   `examples/shop`'s `@zenstackhq/cli` devDependency, so it reaches no
+#   production image. Re-check on the next audit pass; once a fresh
+#   resolution lands past 4.13.15 for good it constrains nothing.
+#
+# overrides['@joshwooding/vite-plugin-react-docgen-typescript>glob'] —
+#   2026-11-17. GHSA-3g3m-2fjr-6pw4 (moderate): an AbortSignal cancellation
+#   does not stop the filesystem walk. Vulnerable `>=9.0.0 <=14.0.1`, fixed
+#   in >=14.0.2 ONLY: the whole 13.x line is inside the range, 13.0.7 (the
+#   `v13-legacy` tag, 2026-11-06) included. The plugin is reached through
+#   `@storybook/react-vite`, which declares it on `^0.7.0` in every 10.6.x
+#   through 10.6.7 (the newest), and 0.7.0 declares `glob ^13.0.1`, so no
+#   bump of a direct dependency reaches a 14.x; the plugin's own 0.9.1
+#   drops glob entirely but `^0.7.0` cannot reach it. Scoped to that one
+#   dependent. 14.x is a major over 13.x. The plugin's only use is one
+#   `globSync(pattern, { absolute, cwd, ignore, nodir })` call, and it was
+#   measured rather than assumed: glob 13.0.6 and 14.0.6 return identical
+#   file lists for eight include patterns over both apps with those exact
+#   options (docs/status/verification/2026-11-17-npm-advisories.md). Neither
+#   app's `.storybook/main.ts` sets `reactDocgen: "react-docgen-typescript"`,
+#   and `@storybook/react-vite`'s preset imports the plugin only when it
+#   does, so today the plugin is never even loaded. 14.x also takes
+#   `minimatch ^11.0.5`, which clears the glob half of GHSA-g3hv-75wg-m249
+#   (below). Remove when `@storybook/react-vite` declares a plugin release
+#   that drops glob or takes glob >=14.0.2.
+#
+# overrides['@typescript-eslint/typescript-estree>minimatch'] — 2026-11-17.
+#   GHSA-g3hv-75wg-m249 (moderate): denial of service through globparts
+#   amplification. Vulnerable `>=7.0.0 <11.0.1`, fixed in >=11.0.1 ONLY;
+#   10.2.6 is the last 10.x and minimatch's README says the v11 matcher
+#   "will not be backported". `@vpay/config` pins `typescript-eslint`
+#   8.69.0, whose `typescript-estree` declares `minimatch ^10.2.2`. The
+#   upstream fix is real and is a direct bump - typescript-eslint 8.73.0
+#   declares `^11.0.1` - but npm dates 8.73.0 2026-11-16T17:06Z, inside
+#   `minimumReleaseAge` when this was written, and taking it would have
+#   meant an exact-version `minimumReleaseAgeExclude` entry for each of its
+#   eleven packages. The override applies the same change upstream made,
+#   to the same call: `typescript-estree`'s only use is
+#   `minimatch(filePath, pattern, { dot: true })` for `allowDefaultProject`,
+#   textually identical in 8.69.0 and 8.73.0, and minimatch 10.2.6 and
+#   11.0.8 agree on all 63 path/pattern pairs tried with that option
+#   (same verification page). This repository's lint config sets
+#   `projectService: true` without `allowDefaultProject`, so the call is
+#   never reached; the module is still loaded, and `pnpm -r lint` passes
+#   with it. Remove when `typescript-eslint` is bumped to >=8.73.0, which
+#   needs no override.
 #
 # NOT cleared by anything in this file: braces <=3.0.3 (GHSA-vfj7-8cjw-p6xm,
 #   high, stack exhaustion on deeply nested patterns), which names >=3.0.4 as
@@ -270,10 +351,14 @@ overrides:
   "brace-expansion@>=4.0.0 <5.0.12": ^5.0.12
   "sharp@<0.35.5": ^0.35.5
   "source-map-js@<1.2.2": ^1.2.2
+  "qs@<6.16.1": ^6.16.1
+  "hono@<4.13.16": ^4.13.16
   "chevrotain>lodash": ^4.18.1
   "@chevrotain/gast>lodash": ^4.18.1
   "@chevrotain/cst-dts-gen>lodash": ^4.18.1
-  "@zenstackhq/cli>@hono/node-server": ^2.1.3
+  "@zenstackhq/cli>@hono/node-server": ^2.1.6
+  "@joshwooding/vite-plugin-react-docgen-typescript>glob": ^14.0.2
+  "@typescript-eslint/typescript-estree>minimatch": ^11.0.1
 
 # ---------------------------------------------------------------------------
 # allowBuilds
@@ -338,9 +423,10 @@ minimumReleaseAgeExclude:
 # ---------------------------------------------------------------------------
 # auditConfig
 # ---------------------------------------------------------------------------
-# THREE advisories, ignored by id, each under a dated maintainer decision.
-# Not a severity threshold and not a package name, so every other advisory,
-# including any NEW one against the same packages, still fails `just audit-web`.
+# ONE advisory, ignored by id, by the maintainer's decision of 2026-10-09
+# (vaam-apps/vpay#272). Not a severity threshold and not a package name, so
+# every other advisory, including any NEW one against braces, still fails
+# `just audit-web`.
 #
 # GHSA-vfj7-8cjw-p6xm: braces <=3.0.3, high, stack exhaustion on deeply
 #   nested brace patterns. The advisory names >=3.0.4 as the fix, and npm
@@ -353,38 +439,31 @@ minimumReleaseAgeExclude:
 #   no app, SDK or server loads `@vpay/config` at run time, and no pattern it
 #   expands comes from a user. Trivy's gate already skips it
 #   (`--ignore-unfixed`).
-#   REMOVE WHEN: braces publishes a fixed release. Then add a floor for it
-#   under `overrides` like the brace-expansion ones, and delete this block.
 #
-# GHSA-3g3m-2fjr-6pw4: glob >=9.0.0 <=14.0.1, moderate, AbortSignal
-#   cancellation bypass allows post-timeout filesystem traversal. The
-#   advisory names >=14.0.2 as the fix, and the only consumer in this
-#   workspace, `@joshwooding/vite-plugin-react-docgen-typescript@0.7.0`
-#   (Storybook's react-docgen Vite plugin), declares `glob: ^13.0.1` — a
-#   range that cannot reach 14.x, a major over 13. It is reached only through
-#   the Storybook build of the two frontends
-#   (`frontends/apps/* > @storybook/react-vite`), a development-time doc
-#   generation step that ships no runtime code, and no glob pattern it expands
-#   comes from a user.
-#   REMOVE WHEN: `@joshwooding/vite-plugin-react-docgen-typescript` publishes
-#   a version that bumps its `glob` floor to >=14.0.2.
+# REMOVE WHEN: braces publishes a fixed release. Then add a floor for it under
+# `overrides` like the brace-expansion ones, and delete this block. Re-check
+# on every audit pass, since an ignore that outlives its reason hides the next
+# finding against the same id.
+# GHSA-fc5q-39xc-vjpf: picomatch <=4.0.7, high, ReDoS through
+#   single-branch repeated extglobs. Published 2026-11-17; the advisory names
+#   >=4.0.8 as the fix, and npm has no such release (dist-tags.latest is
+#   4.0.7, last published 2026-08-24, checked 2026-11-17T17:22Z against
+#   registry.npmjs.org), so there is nothing to pin to. `pnpm audit --json`
+#   on 2026-11-17 reaches it only through build, test and lint tooling:
+#   `@vpay/config > @next/eslint-plugin-next` and `typescript-eslint` (the
+#   `--prod` pass, for the same reason as braces above), `vite`, `vitest`
+#   and Storybook in examples/shop, examples/tauri-checkout and
+#   frontends/apps/checkout. Every pattern those match is written in this
+#   repository's own config; none comes from a request.
 #
-# GHSA-g3hv-75wg-m249: minimatch >=7.0.0 <11.0.1, moderate, potential DoS
-#   via globparts amplification. The advisory names >=11.0.1 as the fix.
-#   Reached through two dev-only tool chains that constrain it below the fix:
-#   `@typescript-eslint/typescript-estree` (the lint path via `@vpay/config >`
-#   `typescript-eslint > ... > typescript-estree`) and `glob@13` (above),
-#   both on the vulnerable `minimatch@10.x` line, while `brace-expansion`
-#   needs the non-vulnerable `minimatch@3.x`. 11.x is a major over 10.x, so
-#   no declared range in either tool reaches it. None of these is in the
-#   runtime dependency graph of a shipped application; they run at
-#   lint/build time only.
-#   REMOVE WHEN: `@typescript-eslint` and `glob` resolve `minimatch`
-#   >=11.0.1 on the ranges their current releases declare. Re-check on every
-#   audit pass, since an ignore that outlives its reason hides the next
-#   finding against the same id.
+#   **Proposed, pending the maintainer's acceptance (2026-11-17).** Unlike
+#   braces, no maintainer has decided this one; it was added because the
+#   advisory turned `web` red on master and on every open PR the day it was
+#   published.
+#
+# REMOVE WHEN: picomatch publishes 4.0.8 (or a fixed 2.x for micromatch's
+# `^2.3.1`). Then add a floor under `overrides` and delete this block.
 auditConfig:
   ignoreGhsas:
     - GHSA-vfj7-8cjw-p6xm
-    - GHSA-3g3m-2fjr-6pw4
-    - GHSA-g3hv-75wg-m249
+    - GHSA-fc5q-39xc-vjpf

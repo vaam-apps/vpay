@@ -87,10 +87,16 @@ interface StubOpener {
   post(data: unknown, origin: string, source: unknown): void;
 }
 
-/** A window that records `open` calls and dispatches `message` events by hand. */
+/**
+ * A window that records `open` calls and dispatches `message` events by hand.
+ *
+ * `open` hands back whatever `popup` holds *at call time*, so a test can
+ * swap it to make a second `openCheckoutPopup` get a different window.
+ */
 function stubWindow(popup: StubPopup | null = stubPopup()): StubOpener {
   const handlers = new Set<(event: MessageEvent) => void>();
   const openCalls: { url: string; name: string; features: string }[] = [];
+  const state = { popup };
   const win = {
     location: { origin: SHOP_ORIGIN },
     screenX: 0,
@@ -99,7 +105,7 @@ function stubWindow(popup: StubPopup | null = stubPopup()): StubOpener {
     outerHeight: 800,
     open(url: string, name: string, features: string) {
       openCalls.push({ url, name, features });
-      return popup;
+      return state.popup;
     },
     addEventListener(type: string, handler: (event: MessageEvent) => void) {
       if (type === "message") {
@@ -114,7 +120,12 @@ function stubWindow(popup: StubPopup | null = stubPopup()): StubOpener {
   } as unknown as Window;
   return {
     win,
-    popup,
+    get popup() {
+      return state.popup;
+    },
+    set popup(next: StubPopup | null) {
+      state.popup = next;
+    },
     openCalls,
     get listeners() {
       return handlers.size;
@@ -458,6 +469,279 @@ describe("openCheckoutPopup: the payer closing the window", () => {
     });
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+});
+
+/**
+ * Issue #65: vpay's page posts `vpay:complete` to its opener (the primary
+ * channel) and the merchant's `success_url` page may post it too (the
+ * fallback). Every message from vpay's page below is the exact shape the
+ * checkout app's `CompleteMessage` declares
+ * (`frontends/apps/checkout/src/lib/frame.ts`) and both its controllers post:
+ * `{type: 'vpay:complete', session: <cs id>, status: <session status>}`.
+ */
+describe("openCheckoutPopup: vpay's page first, the return page as fallback", () => {
+  const CHECKOUT_ORIGIN = "https://checkout.vpay.example";
+
+  function fromVpay(session: string, status = "complete"): unknown {
+    return { type: "vpay:complete", session, status };
+  }
+
+  async function open(
+    opener: StubOpener,
+    seen: { session: string; status: string }[],
+    checkoutOrigin: string | null = CHECKOUT_ORIGIN,
+  ) {
+    return openCheckoutPopup({
+      win: opener.win,
+      checkoutOrigin: checkoutOrigin ?? undefined,
+      options: {
+        fetchCheckoutUrl: () => Promise.resolve(HOSTED_URL),
+        onComplete: (event) => seen.push(event),
+      },
+    });
+  }
+
+  it("completes on vpay's own message from the configured checkout origin and this window", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    opener.post(fromVpay("cs_123"), CHECKOUT_ORIGIN, opener.popup);
+    expect(seen).toEqual([{ session: "cs_123", status: "complete" }]);
+    expect(opener.popup?.closed).toBe(true);
+    expect(opener.listeners).toBe(0);
+  });
+
+  it("passes on the status vpay's page sent, including one that is not a success", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    opener.post(fromVpay("cs_123", "expired"), CHECKOUT_ORIGIN, opener.popup);
+    expect(seen).toEqual([{ session: "cs_123", status: "expired" }]);
+  });
+
+  it("fires once when vpay's page reports first and the return page follows", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    opener.post(fromVpay("cs_123", "complete"), CHECKOUT_ORIGIN, opener.popup);
+    opener.post(
+      { type: "vpay:complete", session: "cs_123", status: "paid" },
+      SHOP_ORIGIN,
+      opener.popup,
+    );
+    expect(seen).toEqual([{ session: "cs_123", status: "complete" }]);
+  });
+
+  it("fires once when the return page reports first and vpay's page follows", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    opener.post(
+      { type: "vpay:complete", session: "cs_123", status: "paid" },
+      SHOP_ORIGIN,
+      opener.popup,
+    );
+    opener.post(fromVpay("cs_123", "complete"), CHECKOUT_ORIGIN, opener.popup);
+    expect(seen).toEqual([{ session: "cs_123", status: "paid" }]);
+  });
+
+  it("drops a session already reported even on a later popup that reused the opener, and not a different one", async () => {
+    // The first checkout completes through vpay's page. The merchant then
+    // opens a second checkout from the same page, and the first session's
+    // late fallback reaches the second call's listener from the second
+    // call's own window — right origin, right source. It must not complete
+    // the second checkout; the second session's own message must.
+    const opener = stubWindow();
+    const first: { session: string; status: string }[] = [];
+    await open(opener, first);
+    opener.post(fromVpay("cs_1"), CHECKOUT_ORIGIN, opener.popup);
+    expect(first).toEqual([{ session: "cs_1", status: "complete" }]);
+
+    opener.popup = stubPopup();
+    const second: { session: string; status: string }[] = [];
+    await open(opener, second);
+    opener.post(
+      { type: "vpay:complete", session: "cs_1", status: "complete" },
+      SHOP_ORIGIN,
+      opener.popup,
+    );
+    expect(second).toEqual([]);
+    expect(opener.popup?.closed).toBe(false);
+    expect(opener.listeners).toBe(1);
+
+    opener.post(fromVpay("cs_2"), CHECKOUT_ORIGIN, opener.popup);
+    expect(second).toEqual([{ session: "cs_2", status: "complete" }]);
+    expect(first).toEqual([{ session: "cs_1", status: "complete" }]);
+  });
+
+  it("completes a session reopened after the payer left it open, and still drops the duplicate within one popup", async () => {
+    // "Back to merchant" on a session that is still `open`: vpay's page
+    // reports it, the return page repeats it. The merchant then reopens the
+    // SAME session and the payer pays. That completion must fire; a claim
+    // kept from the first round would drop it and the handle would hang.
+    const opener = stubWindow();
+    const first: { session: string; status: string }[] = [];
+    await open(opener, first);
+    opener.post(fromVpay("cs_back", "open"), CHECKOUT_ORIGIN, opener.popup);
+    opener.post(
+      { type: "vpay:complete", session: "cs_back", status: "open" },
+      SHOP_ORIGIN,
+      opener.popup,
+    );
+    expect(first).toEqual([{ session: "cs_back", status: "open" }]);
+
+    opener.popup = stubPopup();
+    const second: { session: string; status: string }[] = [];
+    await open(opener, second);
+    opener.post(fromVpay("cs_back", "complete"), CHECKOUT_ORIGIN, opener.popup);
+    expect(second).toEqual([{ session: "cs_back", status: "complete" }]);
+    expect(opener.popup?.closed).toBe(true);
+    expect(opener.listeners).toBe(0);
+  });
+
+  it("keeps a session that ended in anything but open claimed across later popups", async () => {
+    const opener = stubWindow();
+    const first: { session: string; status: string }[] = [];
+    await open(opener, first);
+    opener.post(fromVpay("cs_exp", "expired"), CHECKOUT_ORIGIN, opener.popup);
+    expect(first).toEqual([{ session: "cs_exp", status: "expired" }]);
+
+    opener.popup = stubPopup();
+    const second: { session: string; status: string }[] = [];
+    await open(opener, second);
+    opener.post(fromVpay("cs_exp", "expired"), SHOP_ORIGIN, opener.popup);
+    expect(second).toEqual([]);
+    expect(opener.listeners).toBe(1);
+  });
+
+  it("does not share its record of completed sessions between opener windows", async () => {
+    const one = stubWindow();
+    const two = stubWindow();
+    const seenOne: { session: string; status: string }[] = [];
+    const seenTwo: { session: string; status: string }[] = [];
+    await open(one, seenOne);
+    await open(two, seenTwo);
+    one.post(fromVpay("cs_same"), CHECKOUT_ORIGIN, one.popup);
+    two.post(fromVpay("cs_same"), CHECKOUT_ORIGIN, two.popup);
+    expect(seenOne).toHaveLength(1);
+    expect(seenTwo).toHaveLength(1);
+  });
+
+  it("ignores vpay's message from an origin that is neither the checkout's nor the shop's", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    for (const origin of [
+      "https://checkout.attacker.example",
+      "http://checkout.vpay.example",
+      "https://checkout.vpay.example:8443",
+      "null",
+    ]) {
+      opener.post(fromVpay("cs_123"), origin, opener.popup);
+    }
+    expect(seen).toEqual([]);
+    expect(opener.popup?.closed).toBe(false);
+  });
+
+  it("ignores vpay's message from another window on the checkout origin", async () => {
+    // Another tab or popup on vpay's own origin — a second checkout, say —
+    // is not this popup, and its completion is not this checkout's.
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    opener.post(fromVpay("cs_123"), CHECKOUT_ORIGIN, stubPopup());
+    expect(seen).toEqual([]);
+    // …and the record was not touched: this popup's own message still lands.
+    opener.post(fromVpay("cs_123"), CHECKOUT_ORIGIN, opener.popup);
+    expect(seen).toEqual([{ session: "cs_123", status: "complete" }]);
+  });
+
+  it("ignores vpay's message entirely when no checkout origin is configured, and still takes the fallback", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen, null);
+    opener.post(fromVpay("cs_123"), CHECKOUT_ORIGIN, opener.popup);
+    expect(seen).toEqual([]);
+    opener.post(fromVpay("cs_123"), SHOP_ORIGIN, opener.popup);
+    expect(seen).toEqual([{ session: "cs_123", status: "complete" }]);
+  });
+
+  it("ignores a malformed message from the checkout origin without spending the session", async () => {
+    const opener = stubWindow();
+    const seen: { session: string; status: string }[] = [];
+    await open(opener, seen);
+    for (const data of [
+      { type: "vpay:complete", session: "", status: "complete" },
+      { type: "vpay:complete", session: "cs_123" },
+      { type: "vpay:complete", session: "cs_123", status: 1 },
+      { type: "vpay:complete", status: "complete" },
+      { type: "vpay:redirect", url: "https://rail.example" },
+      { type: "vpay:resize", height: 10 },
+      { session: "cs_123", status: "complete" },
+      "vpay:complete",
+      null,
+      undefined,
+    ]) {
+      opener.post(data, CHECKOUT_ORIGIN, opener.popup);
+    }
+    expect(seen).toEqual([]);
+    expect(opener.popup?.closed).toBe(false);
+    opener.post(fromVpay("cs_123"), CHECKOUT_ORIGIN, opener.popup);
+    expect(seen).toEqual([{ session: "cs_123", status: "complete" }]);
+  });
+});
+
+describe("Stripe.openCheckoutPopup: the checkout origin comes from loadStripe", () => {
+  afterEach(() => {
+    delete (globalThis as { window?: unknown }).window;
+  });
+
+  it("pins vpay's message to checkoutBaseUrl's origin", async () => {
+    const opener = stubWindow();
+    (globalThis as { window?: unknown }).window = opener.win;
+    const stripe = await loadStripe("pk_test_x", {
+      baseUrl: "https://api.vpay.example",
+      checkoutBaseUrl: "https://checkout.vpay.example/base/",
+      fetch: () => Promise.reject(new Error("no request expected")),
+    });
+    const seen: { session: string; status: string }[] = [];
+    await stripe.openCheckoutPopup({
+      fetchCheckoutUrl: () => Promise.resolve(HOSTED_URL),
+      onComplete: (event) => seen.push(event),
+    });
+    opener.post(
+      { type: "vpay:complete", session: "cs_123", status: "complete" },
+      "https://elsewhere.vpay.example",
+      opener.popup,
+    );
+    expect(seen).toEqual([]);
+    opener.post(
+      { type: "vpay:complete", session: "cs_123", status: "complete" },
+      "https://checkout.vpay.example",
+      opener.popup,
+    );
+    expect(seen).toEqual([{ session: "cs_123", status: "complete" }]);
+  });
+
+  it("leaves the primary channel off when loadStripe had no checkoutBaseUrl", async () => {
+    const opener = stubWindow();
+    (globalThis as { window?: unknown }).window = opener.win;
+    const stripe = await loadStripe("pk_test_x", {
+      baseUrl: "https://api.vpay.example",
+      fetch: () => Promise.reject(new Error("no request expected")),
+    });
+    const seen: { session: string; status: string }[] = [];
+    await stripe.openCheckoutPopup({
+      fetchCheckoutUrl: () => Promise.resolve(HOSTED_URL),
+      onComplete: (event) => seen.push(event),
+    });
+    opener.post(
+      { type: "vpay:complete", session: "cs_123", status: "complete" },
+      "https://checkout.vpay.example",
+      opener.popup,
+    );
+    expect(seen).toEqual([]);
   });
 });
 

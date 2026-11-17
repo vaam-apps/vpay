@@ -65,7 +65,7 @@ vpay merchant demo
       each one: create → retrieve → confirm → the worker settles it → the signed webhook it produced
 
   ── 1/6  mtn_momo · the payer approves on their handset ─────────────────────────
-     selected by: MSISDN 237600000ce0 enters the `mtn-e2e-poll` scenario (requesttopay-scenario.json): PENDING on the first status query, SUCCESSFUL on the second
+     selected by: MSISDN 237670000900 enters the `mtn-e2e-poll` scenario (requesttopay-scenario.json): PENDING on the first status query, SUCCESSFUL on the second
      ✔ POST /v1/payment_intents
        id             pi_sjt5sp38m962z3xgs66vrxq7
        status         requires_payment_method
@@ -97,7 +97,7 @@ vpay merchant demo
        data.object.status succeeded
 
   ── 2/6  mtn_momo · the payer has no balance ─────────────────────────
-     selected by: MSISDN 237600000f01 arms the `mtn-demo-decline` scenario (demo-outcomes.json), which answers the next status query FAILED/NOT_ENOUGH_FUNDS
+     selected by: MSISDN 237670000101 arms the `mtn-demo-decline` scenario (demo-outcomes.json), which answers the next status query FAILED/NOT_ENOUGH_FUNDS
      ✔ POST /v1/payment_intents
        id             pi_jfk35g1bkd6y1be1w1wwftcp
        status         requires_payment_method
@@ -131,7 +131,7 @@ vpay merchant demo
        data.object.status requires_payment_method
 
   ── 3/6  mtn_momo · the prompt expires unanswered ─────────────────────────
-     selected by: MSISDN 237600000f02 arms the `mtn-demo-expiry` scenario (demo-outcomes.json), which answers FAILED with the OBJECT-shaped reason COULD_NOT_PERFORM_TRANSACTION — MTN's ~5-minute PIN window
+     selected by: MSISDN 237670000102 arms the `mtn-demo-expiry` scenario (demo-outcomes.json), which answers FAILED with the OBJECT-shaped reason COULD_NOT_PERFORM_TRANSACTION — MTN's ~5-minute PIN window
      ✔ POST /v1/payment_intents
        id             pi_fqd7rpchax5v5ddfgz92wg6f
        status         requires_payment_method
@@ -343,7 +343,7 @@ vpay merchant demo
   (an orange_money confirm answers next_action.redirect_to_url.url on that host:
    open it for the RAIL's stub hosted page, with a Pay link and a Cancel link)
   rail journal  docker compose -f compose.yml -f compose.e2e.yml -f compose.demo.yml exec wiremock-mtn curl -s localhost:8080/__admin/requests
-  (no dashboard: it has no data source to show — docs/runbooks/demo.md)
+  (no dashboard: the stack serves one at :3000, but the dashboard signs a staff member in and reads no /dash/v1 until VP-6b — docs/runbooks/demo/dashboard-sign-in.md)
 
   tear down with: just demo_project=vpay-demo demo-down
 ```

@@ -165,6 +165,31 @@ than one to pin to. `middleware.ts` resolves the list for `/c/{id}/return` as
 well, and — the third path it now does that for — **its CSP is still
 `frame-ancestors 'none'`**.
 
+### Who listens on the opener's side (issue #65, 2026-11-17)
+
+Until 2026-11-17 nobody did: `@vaam-apps/vpay-stripe-js`'s
+`openCheckoutPopup` accepted `vpay:complete` only from the merchant's own
+origin, so this page's message was posted and dropped, and the popup
+completed on the merchant's `success_url` calling `notifyCheckoutOpener`.
+Now the SDK takes **this page's message as the primary completion** —
+accepted only from the origin of `loadStripe`'s `checkoutBaseUrl` and only
+from the window it opened — and keeps the `success_url` message as the
+**fallback**. Both carry `{type, session, status}`, and the SDK deduplicates
+on `session` per opening window, so `onComplete` fires once for a session
+whichever arrives first; a message naming a different session is not
+deduplicated against. Without `checkoutBaseUrl` the primary channel is off.
+
+The fallback is not redundant. When this page cannot pin its opener — the
+referrer is empty, or names no registered origin — it opens no channel and,
+when the payer is finished, navigates the popup to `success_url`, which is
+the only thing left that can tell the opener. The commonest cause is still
+the merchant's own `Referrer-Policy: no-referrer` (or `same-origin`), and it
+is silent: the popup completes anyway, through the fallback. So the
+requirement is now stated in the SDK's README, and `examples/shop` serves
+`Referrer-Policy: strict-origin-when-cross-origin` from `next.config.ts`,
+pinned by `src/referrer-policy.test.ts`. The return trip after a redirect
+rail is unaffected by the merchant's policy: its rule is `soleOrigin`, above.
+
 ## Where the headers come from
 
 `frame-ancestors` is **configuration, resolved server-side, before any script

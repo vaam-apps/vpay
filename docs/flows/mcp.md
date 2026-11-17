@@ -15,9 +15,11 @@ checks it.
    `POST {public_base_url}/mcp/v1`, and that URL is also the resource
    identifier.
 2. **The merchant opts in.** Its `merchant_clients[]` entry lists the resource
-   identifier in `allowed_audiences`. Since VP-3, `/v1` itself takes no
-   bearer token (every request is signed), so this endpoint is what the OP's
-   `client_credentials` grant now serves.
+   identifier in `allowed_audiences`. The OP's `client_credentials` grant
+   mints it. That grant also serves `/v1` where `auth.methods` permits
+   `machine_tokens` (ADR-0037, since 2026-10-27; from VP-3 until then it
+   served this endpoint alone), and the `mcp` surface refuses to boot
+   without `machine_tokens` (`McpNeedsMachineTokens`).
 3. **The agent gets a token.** It discovers the authorization server from
    `GET /.well-known/oauth-protected-resource/mcp/v1` (RFC 9728), which names
    `{public_base_url}/v1/oauth`. It then runs the usual `/v1` flow,
@@ -76,7 +78,8 @@ arguments)`. A replay returns the first answer. The same key with different
   (ADR-0033, "Left to the maintainer").
 - **A token for the wrong audience** is answered `401` with a challenge naming
   the metadata document. That covers a `vpay:v1` token on `/mcp/v1`. An MCP
-  token on `/v1` is the unsigned `401` every bearer token gets there.
+  token on `/v1` is a `401` too: `/v1` takes a bearer token only for
+  `vpay:v1`, and only where `machine_tokens` is permitted (ADR-0037).
 - **The OP is retired (VP-4) while MCP still needs it.** The merchant OP is the
   only authorization server this endpoint has. VP-4 plans to remove `jwks` and
   the token path, and doing that without a replacement would leave `/mcp/v1`

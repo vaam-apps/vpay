@@ -140,22 +140,26 @@ the same way they read any other security decision:
 
 The current state of this exception path is recorded in the `A.8.7` control and
 the `GAP-103` gap in `schemas/security-inventory.yaml`. On the **web** graph
-three advisories are accepted today, each a dated, reasoned entry with a
+two advisories are accepted today (2026-11-17), each a reasoned entry with a
 `REMOVE WHEN` condition in `pnpm-workspace.yaml`'s `auditConfig.ignoreGhsas`:
 
 - `GHSA-vfj7-8cjw-p6xm` (braces, high, stack exhaustion on deeply nested
   patterns), maintainer decision 2026-10-09, because no fixed release exists
   and it is reached only through a lint-time glob matcher;
-- `GHSA-3g3m-2fjr-6pw4` (glob, moderate, AbortSignal cancellation bypass),
-  reached only through Storybook's react-docgen Vite plugin, which constrains
-  `glob` to the vulnerable 13.x line below the 14.0.2 fix;
-- `GHSA-g3hv-75wg-m249` (minimatch, moderate, globparts amplification),
-  reached only through the lint toolchain and `glob@13`, both constrained
-  below the 11.0.1 fix.
+- `GHSA-fc5q-39xc-vjpf` (picomatch, high, ReDoS through repeated extglobs),
+  added 2026-11-17 **pending the maintainer's acceptance**, because no fixed
+  release is published and it is reached only through build, test and lint
+  tooling.
 
-On the **Rust** graph `deny.toml` accepts three advisories
-(`RUSTSEC-2023-0071`, `RUSTSEC-2024-0449`, `RUSTSEC-2026-0387`), each with a
-dated decision and reasoning. Every other advisory — including any new one
+The glob and minimatch advisories this page listed when it was drafted
+(`GHSA-3g3m-2fjr-6pw4`, `GHSA-g3hv-75wg-m249`) were fixed by scoped overrides
+on 2026-11-17 (vaam-apps/vpay#400) and are no longer accepted.
+
+On the **Rust** graph `deny.toml` accepts five advisories: `RUSTSEC-2023-0071`,
+`RUSTSEC-2024-0449` and `RUSTSEC-2026-0387` under dated maintainer decisions,
+and `RUSTSEC-2026-0543` (chrono) and `RUSTSEC-2026-0440` (astral-tokio-tar),
+both "unmaintained" notices added 2026-11-17 pending the maintainer's
+acceptance (vaam-apps/vpay#402). Each carries its reasoning. Every other advisory — including any new one
 against the same packages — still fails the gate.
 
 ## Vulnerability remediation: severity, owner, target, and record

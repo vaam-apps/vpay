@@ -50,16 +50,20 @@ by `vpay-db` as a CrateStack error whose message starts with `/v1`'s `code`.
 
 ## Authentication
 
-`MerchantMcpAuth` makes `require_merchant_token`'s three checks against a
-validator whose audience is the MCP resource identifier:
+`MerchantMcpAuth` makes three checks against a validator whose audience is
+the MCP resource identifier. Until 2026-10-26 they were the same checks
+`require_merchant_token` made on `/v1`; #380 deleted that middleware when it
+signed `/v1`, so this is now the only bearer-token check on a merchant
+surface:
 
 1. the token validates;
 2. its client is registered to a merchant;
 3. it holds `payments:read` or `payments:write`.
 
-`can_write` is the second scope. The validator is a separate `JwtValidator`
-for `loopback_dashboard_validator`'s reason: a validator holding two
-audiences accepts a token for either.
+`can_write` is the second scope. The validator is a `JwtValidator` holding
+**one** audience, because a validator holding two accepts a token for either.
+That was `loopback_dashboard_validator`'s reason too; #383 deleted that
+validator with the staff tokens it checked.
 
 The OP side is one function in `op/token.rs`, `apply_resource_indicator`.
 `authkestra_op`'s `TokenRequest` has no `resource` field, and the form

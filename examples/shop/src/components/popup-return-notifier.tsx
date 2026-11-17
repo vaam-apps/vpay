@@ -4,13 +4,17 @@ import { useEffect } from "react";
 import { notifyCheckoutOpener } from "@vaam-apps/vpay-stripe-js";
 
 /**
- * The popup half of the popup integration, on the shop's own return page.
+ * The **fallback** half of the popup integration, on the shop's own return
+ * page (issue #65).
  *
- * A popup is not a frame: inside one `window.parent === window`, so vpay's
- * checkout page has no framer to post `vpay:complete` to and deliberately
- * says nothing. What closes the loop is this — `success_url`, running
- * **inside the popup**, telling `window.opener` the payer is finished and
- * closing the window.
+ * vpay's checkout page posts `vpay:complete` to `window.opener` itself — the
+ * primary channel — whenever it could pin the opener's origin from
+ * `document.referrer` (which is why `next.config.ts` sets a
+ * `Referrer-Policy`). When it could not, it navigates the popup here
+ * instead, and this is what closes the loop: `success_url`, running
+ * **inside the popup**, telling `window.opener` the payer is finished. If
+ * both messages arrive, `openCheckoutPopup` completes once per session and
+ * drops the second.
  *
  * It renders nothing and it is safe on every other path:
  * `notifyCheckoutOpener` answers `false` and does nothing at all when there

@@ -190,7 +190,7 @@ Rust SDK or the Flutter plugin.
 
 ## 7. Known Gaps and Residual Risks
 
-1. **GAP-103: Web dependency audit allowlist** ([#103](https://github.com/vaam-apps/vpay/issues/103)) — **Closed**: `pnpm audit` runs at `--audit-level=moderate` in `just ci` and CI; GHSA-vfj7-8cjw-p6xm, GHSA-3g3m-2fjr-6pw4 and GHSA-g3hv-75wg-m249 are risk-accepted by id under dated, reasoned `auditConfig.ignoreGhsas` entries documented in [flows/sdlc.md](../flows/sdlc.md).
+1. **GAP-103: Web dependency audit allowlist** ([#103](https://github.com/vaam-apps/vpay/issues/103)) — **Closed**: `pnpm audit` runs at `--audit-level=moderate` in `just ci` and CI; the dated allowlist-with-reason is `auditConfig.ignoreGhsas` in `pnpm-workspace.yaml`. GHSA-vfj7-8cjw-p6xm (braces) is ignored under the maintainer decision of 2026-10-09, and GHSA-fc5q-39xc-vjpf (picomatch, no fixed release yet) since 2026-11-17 pending the maintainer's acceptance.
 2. **GAP-56: Account-holder lookup audit and rate limiting** ([#56](https://github.com/vaam-apps/vpay/issues/56)) — A dedicated scope and durable per-key audit log are not built.
 3. **GAP-151: Secure SDLC and vulnerability management evidence** ([#151](https://github.com/vaam-apps/vpay/issues/151)) — The repository-side SDLC policy and emergency-change procedure are now written ([flows/sdlc.md](../flows/sdlc.md), [flows/emergency-changes.md](../flows/emergency-changes.md)); what remains out of repository scope is the organisational ISMS risk treatment, SoA and cross-release CVE history ledger.
 4. **GAP-152: Production key lifecycle hardening** ([#152](https://github.com/vaam-apps/vpay/issues/152)) — Automated rotation and dual control for rail and signing keys are not built.

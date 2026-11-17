@@ -75,6 +75,22 @@
       "properties": {
         "enabled": { "type": "boolean" },
         "publicOrigin": { "type": "string" },
+        "clientId": {
+          "type": "string",
+          "description": "VPAY_DASHBOARD_CLIENT_ID: dashboard_client.client_id. Rendered only when set."
+        },
+        "redirectUri": {
+          "type": "string",
+          "description": "VPAY_DASHBOARD_REDIRECT_URI: one of dashboard_client.redirect_uris, byte for byte; never visited by a browser. Rendered only when set."
+        },
+        "scope": {
+          "type": "string",
+          "description": "VPAY_DASHBOARD_SCOPE: dashboard_client.scope. Rendered only when set."
+        },
+        "ssoIssuer": {
+          "type": "string",
+          "description": "VPAY_DASHBOARD_SSO_ISSUER: staff_auth.sso.issuer as written there. Optional; without it /login draws no single sign-on button. Rendered only when set."
+        },
         "replicaCount": { "type": "integer", "minimum": 0 },
         "port": { "type": "integer", "minimum": 1, "maximum": 65535 },
         "resources": { "$ref": "#/definitions/resources" },

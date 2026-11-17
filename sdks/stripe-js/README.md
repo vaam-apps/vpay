@@ -226,7 +226,7 @@ const session = await vpay.checkout.sessions.create({
 // browser
 const stripe = await loadStripe(publishableKey, {
   baseUrl: "https://api.vpay.example",
-  checkoutBaseUrl: "https://checkout.vpay.example", // required for embedded
+  checkoutBaseUrl: "https://checkout.vpay.example", // required for embedded and for the popup's primary channel
 });
 
 const checkout = await stripe.initEmbeddedCheckout({
@@ -277,14 +277,20 @@ was designed to preclude). The frame is sandboxed
 `allow-top-navigation`, which is why the redirect rail's hand-off is a
 message your page acts on rather than something the frame does itself.
 
-### The popup, and why its message comes from _your_ page
+### The popup, and its two completion channels
 
 `openCheckoutPopup` is the third surface: vpay's **hosted** page in a
 top-level window your page opened, rather than in an iframe or in the
 payer's own tab.
 
 ```ts
-// browser, inside a click handler
+// browser — `checkoutBaseUrl` is what lets vpay's own page complete the popup
+const stripe = await loadStripe("pk_test_…", {
+  baseUrl: "https://api.vpay.example",
+  checkoutBaseUrl: "https://checkout.vpay.example",
+});
+
+// inside a click handler
 try {
   const popup = await stripe.openCheckoutPopup({
     // Your own server's `POST /v1/checkout/sessions` with ui_mode: 'hosted'.
@@ -292,8 +298,8 @@ try {
       (await fetch("/checkout-url", { method: "POST" }).then((r) => r.json()))
         .url,
     onComplete: ({ session, status }) => {
-      // A message, not proof of payment: re-read the order from your own
-      // server, which your webhook is what writes.
+      // Once per checkout session. A message, not proof of payment: re-read
+      // the order from your own server, which your webhook is what writes.
       refresh(session, status);
     },
     onCancel: () => show("The payment window was closed."),
@@ -306,28 +312,60 @@ try {
 ```
 
 ```ts
-// browser, on the success_url page — which loads *inside* the popup
+// browser, on the success_url page — which may load *inside* the popup
 import { notifyCheckoutOpener } from "@vaam-apps/vpay-stripe-js";
 
 notifyCheckoutOpener({ session: sessionIdFromTheUrl, status: "complete" });
 ```
 
-Three things about this differ from the embedded surface, and each of them
-is a consequence of a popup not being a frame:
+A popup is not a frame, so completion reaches your page by one of **two
+channels**, and `onComplete` fires **once per checkout session**, whichever
+arrives first (issue #65):
 
-1. **The completion message is sent by your return page, not by vpay's.**
-   Inside a popup `window.parent === window`, so vpay's checkout page has no
-   framer to post to and deliberately says nothing. What closes the loop is
-   `success_url` — your page, running in the popup, calling
-   `notifyCheckoutOpener`, which posts `{type:'vpay:complete', session,
-status}` to `window.opener` and closes the window.
-2. **`completionOrigin` therefore defaults to your own origin**, not to
-   `checkoutBaseUrl`. Pinning vpay's checkout origin here would accept
-   nothing at all. `checkoutBaseUrl` is not consulted by this method.
-3. **`notifyCheckoutOpener` answers `false` and does nothing when there is
+1. **Primary — vpay's own page.** Inside a popup `window.parent === window`,
+   so vpay's checkout page posts to `window.opener` instead:
+   `{type:'vpay:complete', session, status}`, with the checkout session's id
+   and its own `status`, at most once, when the outcome appears. This side
+   accepts it only from the origin of `loadStripe`'s **`checkoutBaseUrl`**
+   and only from the window it opened. Without `checkoutBaseUrl` this
+   channel is off. `status` is the session's — a payment that did not
+   succeed arrives here too, with a status other than `complete`. After a
+   redirect rail, the page the payer comes back to pins the opener by a
+   different rule — only when you registered **exactly one** checkout
+   origin — because its referrer is the rail's
+   (`docs/flows/hosted-checkout/page-memory-and-protocols.md`).
+2. **Fallback — your `success_url`.** When vpay's page could not open the
+   primary channel it navigates the popup to your `success_url`, which calls
+   `notifyCheckoutOpener` and posts the same shape to `window.opener`. This
+   side accepts it from `completionOrigin` — **your** origin by default,
+   since your page is the sender — and from the window it opened.
+3. **Deduplicated per session id.** If both arrive, the second is dropped;
+   so is a late one reaching a later `openCheckoutPopup` that reused the
+   window by name. A message naming a _different_ session is not dropped.
+4. **`notifyCheckoutOpener` answers `false` and does nothing when there is
    no opener**, which is exactly what happens when the same page is reached
    by an ordinary redirect. One return page serves both integrations
-   without branching on a query parameter.
+   without branching on a query parameter, and calling it unconditionally
+   is correct: when vpay's page has already reported, the opener drops this
+   one as a duplicate.
+
+#### Your page's `Referrer-Policy` must send vpay your origin
+
+vpay's page learns which window it may post to by matching
+`document.referrer` against the origins you registered
+(`checkout_origins`), and it **refuses rather than guesses** when there is
+no referrer. A page that opens the popup while served with
+`Referrer-Policy: no-referrer` — or `same-origin`, which strips a
+cross-origin referrer just as completely — gets **no** primary message.
+Nothing errors: the popup still completes through the `success_url`
+fallback, later and only on the paths that reach your return page, so the
+loss is silent. Serve the opening page with a policy that sends your origin
+cross-origin: `strict-origin-when-cross-origin` (the browsers' default — set
+it explicitly if a proxy, CDN or header middleware might set a stricter one)
+or `origin`. Neither sends a path. With either `strict-` policy an `https`
+page opening an `http` checkout sends nothing, so do not mix the two.
+`examples/shop` sets `strict-origin-when-cross-origin` on every route in its
+`next.config.ts` and pins it with a test.
 
 Two limits of that third property, stated because they are easy to meet and
 neither is visible from the call site (review finding, 2026-09-06):
@@ -474,11 +512,13 @@ a shipping process in ADR-0006's sense.
   `docs/status.md` row.
 - **The popup surface (`openCheckoutPopup` / `notifyCheckoutOpener`) is
   unit-tested and has not been driven by a real browser.** `src/popup.test.ts`
-  (26 tests) drives it against stub windows, because jsdom implements
-  neither `window.open` nor cross-window `postMessage` — so what is proven
-  is the origin check, the source check, the open-before-await ordering, the
-  blocked-window error, the cancel poll and the round trip between the two
-  halves. What is **not** proven anywhere yet is a real browser opening a
+  (39 tests since issue #65) drives it against stub windows, because jsdom
+  implements neither `window.open` nor cross-window `postMessage` — so what
+  is proven is both channels' origin and source checks, the per-session
+  deduplication in both orders of arrival, the open-before-await ordering,
+  the blocked-window error, the cancel poll and the round trip between the
+  two halves. vpay's page's own message is a literal of the checkout app's
+  `CompleteMessage` shape in those tests, not the page itself. What is **not** proven anywhere yet is a real browser opening a
   real window: no Cypress spec covers it, and the hand-run of
   `examples/shop`'s popup mode on 2026-09-06 reached only the **fallback** —
   the automation's synthetic click carries no user activation, so

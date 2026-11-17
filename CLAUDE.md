@@ -28,9 +28,9 @@ said "ten" until `verify-migrations` landed on 2026-09-07, and "thirteen"
 until `verify-versions` (#201) and `verify-privacy-inventory` (#187) both
 landed on 2026-09-17. It said "fourteen" until `verify-doc-counts` landed on
 2026-09-20, and `verify-security-inventory` and `verify-mcp-parity` on
-2026-10-26 — gates that keep this
+2026-10-26, and `verify-adr-numbers` on 2026-11-16 — gates that keep this
 particular sequence honest, because the count is
-**17** <!-- count:verify-gates --> and a `just verify` whose recipe disagreed
+**18** <!-- count:verify-gates --> and a `just verify` whose recipe disagreed
 with that figure would now fail on it.
 [AGENTS.md](AGENTS.md) carries the count and the history of every gate that
 moved it; that is the copy to trust, and this one now agrees with it.)_

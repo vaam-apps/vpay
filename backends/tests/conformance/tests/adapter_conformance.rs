@@ -148,7 +148,7 @@
 // failing assertion SHOULD panic, that is how a test reports (ADR-0007).
 #![allow(clippy::expect_used, clippy::unwrap_used, clippy::panic)]
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -3571,36 +3571,22 @@ fn href_of(page: &str, id: &str) -> String {
 /// rail minted, and the merchant's own return URL.
 ///
 /// Returns the charge, the page's path-and-query on the stub, and the page
-/// itself. Shared by the four cases below because each of them needs the same
+/// itself. Shared by the cases below because each of them needs the same
 /// three steps first — submit, follow the `payment_url`, read the page — and
-/// a copy of them in each would be four places for the arming step to be
+/// a copy of them in each would be one more place for the arming step to be
 /// dropped from.
 async fn a_payer_lands_on_the_rails_page(rail: &Rail) -> (ChargeRef, String, String) {
-    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
-    let mut charge = ChargeRef {
-        reference_id: Uuid::new_v4(),
-        method_type: None,
-        amount: Money::new(5_000, rail.config.currency).expect("non-negative"),
-        payer_ref: None,
-        ref_extra: BTreeMap::new(),
-        return_url: Some(RETURN_URL.to_owned()),
-    };
+    a_payer_lands_on_the_rails_page_returning_to(rail, RETURN_URL).await
+}
 
-    let submitted = rail
-        .adapter
-        .submit(&charge, &rail.config)
-        .await
-        .unwrap_or_else(|error| panic!("the submit is accepted, got {error:?}"));
-    // What `vpay_api`'s confirm handler commits before it answers: a redirect
-    // rail's status read is addressed by the `pay_token` the rail handed back,
-    // not by the reference we generated, and a charge that has not stored it
-    // cannot be asked about at all (`crash-safety.md`). Taken from the submit
-    // rather than manufactured, because that is the value under test.
-    charge.ref_extra = submitted.ref_extra.clone();
-    let redirect = submitted
-        .redirect_url
-        .as_deref()
-        .expect("a redirect rail's submit carries a URL");
+/// [`a_payer_lands_on_the_rails_page`], for a charge whose merchant asked for
+/// the payer to be sent back to `return_url` rather than to [`RETURN_URL`].
+async fn a_payer_lands_on_the_rails_page_returning_to(
+    rail: &Rail,
+    return_url: &str,
+) -> (ChargeRef, String, String) {
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let (charge, redirect) = a_redirect_charge_is_submitted(rail, 5_000, return_url).await;
 
     // The rail's own URL, on the container actually serving it — the same
     // substitution `the_stub_hosted_page_links_to_the_return_url_the_submit_carried`
@@ -3624,6 +3610,40 @@ async fn a_payer_lands_on_the_rails_page(rail: &Rail) -> (ChargeRef, String, Str
         .expect("the page body is readable");
 
     (charge, path_and_query.to_owned(), page)
+}
+
+/// Submits a charge of `amount_minor` on the redirect rail, and returns it as
+/// the confirm handler would commit it together with the `payment_url` the
+/// rail answered.
+async fn a_redirect_charge_is_submitted(
+    rail: &Rail,
+    amount_minor: i64,
+    return_url: &str,
+) -> (ChargeRef, String) {
+    let mut charge = ChargeRef {
+        reference_id: Uuid::new_v4(),
+        method_type: None,
+        amount: Money::new(amount_minor, rail.config.currency).expect("non-negative"),
+        payer_ref: None,
+        ref_extra: BTreeMap::new(),
+        return_url: Some(return_url.to_owned()),
+    };
+
+    let submitted = rail
+        .adapter
+        .submit(&charge, &rail.config)
+        .await
+        .unwrap_or_else(|error| panic!("the submit is accepted, got {error:?}"));
+    // What `vpay_api`'s confirm handler commits before it answers: a redirect
+    // rail's status read is addressed by the `pay_token` the rail handed back,
+    // not by the reference we generated, and a charge that has not stored it
+    // cannot be asked about at all (`crash-safety.md`). Taken from the submit
+    // rather than manufactured, because that is the value under test.
+    charge.ref_extra = submitted.ref_extra.clone();
+    let redirect = submitted
+        .redirect_url
+        .expect("a redirect rail's submit carries a URL");
+    (charge, redirect)
 }
 
 /// `query_status`, insisting the rail answered rather than failed.
@@ -3911,15 +3931,19 @@ async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_out
     )
     .await;
     let http = vpay_provider::http::client().expect("the vendored-roots client builds");
-    let (charge, path_and_query, page) = a_payer_lands_on_the_rails_page(&rail).await;
+    let (charge, _, page) = a_payer_lands_on_the_rails_page(&rail).await;
 
     assert!(
         page.contains(r#"<button id="pay-with-number" type="submit">"#),
         "msisdn {msisdn}: the page must carry the form a payer types a test number into: {page}"
     );
-    assert!(
-        page.contains(&format!(r#"name="return" value="{RETURN_URL}""#)),
-        "msisdn {msisdn}: the form must carry THIS charge's return URL, not a constant: {page}"
+    // WireMock's `urlEncode` is `java.net.URLEncoder`: this is RETURN_URL with
+    // `:` and `/` escaped, and nothing a browser would read as markup.
+    assert_eq!(
+        hidden_input_of(&page, "return"),
+        "https%3A%2F%2Fshop.example%2Forder%2F1234%2Freturn",
+        "msisdn {msisdn}: the form must carry THIS charge's return URL, not a constant, and \
+         percent-encoded (issue #106): {page}"
     );
 
     assert_eq!(
@@ -3929,14 +3953,12 @@ async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_out
          this is the assertion issue #58 was about"
     );
 
-    let (token, query) = path_and_query
-        .split_once('?')
-        .unwrap_or_else(|| panic!("msisdn {msisdn}: the payment_url carries its two URLs"));
+    // The page's OWN form, submitted the way a browser submits it — since
+    // issue #106 the hidden inputs carry the return URL percent-encoded and the
+    // stub decodes it on the way out, so a URL built here from the
+    // `payment_url` would test a request no browser makes.
     let submitted_form = http
-        .get(format!(
-            "{}/stub-hosted-page/{token}/pay?{query}&msisdn={msisdn}",
-            rail.stub_origin
-        ))
+        .get(the_test_number_form_submission(&rail, &page, msisdn))
         .send()
         .await
         .expect("the stub answers the form submission");
@@ -3967,5 +3989,351 @@ async fn a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_out
         (expected, other) => {
             panic!("msisdn {msisdn}: expected {expected:?}, got {other:?}")
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The hosted page's form, and the priority ladder under the payer's actions
+// (issue #106).
+// ---------------------------------------------------------------------------
+
+/// A return URL carrying every character that used to break the stub page's
+/// form: a double quote (which closed the hidden input's `value` attribute),
+/// angle brackets, an ampersand and a space.
+///
+/// `vpay_api::v1::payment_intents::checked_return_url` checks the scheme and
+/// the length and nothing else, so `/v1` accepts this URL and the Orange
+/// adapter forwards it to the rail byte for byte.
+const HOSTILE_RETURN_URL: &str =
+    r#"https://shop.example/order/1234/return?note="paid"&next=<b>bold</b> now"#;
+
+/// The `value` of the hidden input named `name` on the stub's page, exactly as
+/// the page wrote it — read up to the first `"`, which is where a browser's
+/// parser ends the attribute too. A value that carried a raw quote is
+/// therefore read back truncated here, as it would be in a browser.
+fn hidden_input_of(page: &str, name: &str) -> String {
+    let marker = format!(r#"<input type="hidden" name="{name}" value=""#);
+    let (_, rest) = page
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("no hidden input named {name} on the page: {page}"));
+    let (value, _) = rest
+        .split_once('"')
+        .unwrap_or_else(|| panic!("unterminated value for hidden input {name}: {page}"));
+    value.to_owned()
+}
+
+/// The `application/x-www-form-urlencoded` serializer from the WHATWG URL
+/// standard — what a browser does to a GET form's fields: ASCII alphanumerics
+/// and `*-._` stay, a space becomes `+`, and every other byte of the UTF-8
+/// encoding is percent-encoded.
+///
+/// Written out here because reqwest 0.13 puts `RequestBuilder::query` behind a
+/// feature this workspace does not enable, and the property under test is
+/// exactly this second encoding: the hidden inputs hold a percent-encoded
+/// string, and the browser encodes it *again* on submit.
+fn form_urlencoded(pairs: &[(&str, &str)]) -> String {
+    let mut out = String::new();
+    for (index, (name, value)) in pairs.iter().enumerate() {
+        if index > 0 {
+            out.push('&');
+        }
+        for (position, text) in [name, value].into_iter().enumerate() {
+            if position > 0 {
+                out.push('=');
+            }
+            for byte in text.bytes() {
+                match byte {
+                    b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'*' | b'-' | b'.' | b'_' => {
+                        out.push(char::from(byte));
+                    }
+                    b' ' => out.push('+'),
+                    other => out.push_str(&format!("%{other:02X}")),
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The URL a browser requests when a payer types `msisdn` into the stub page's
+/// test-number form and submits it: the form's own `action`, and its two
+/// hidden inputs and the number, form-encoded in document order.
+///
+/// Built from the page, not from the `payment_url`, for the reason
+/// [`href_of`] parses the links: the property under test is that the page's
+/// *own* control gets the payer back to the merchant.
+fn the_test_number_form_submission(rail: &Rail, page: &str, msisdn: &str) -> String {
+    let marker = r#"<form id="test-number-form" method="get" action=""#;
+    let (_, rest) = page
+        .split_once(marker)
+        .unwrap_or_else(|| panic!("no test-number form on the page: {page}"));
+    let (action, _) = rest
+        .split_once('"')
+        .unwrap_or_else(|| panic!("unterminated form action: {page}"));
+    let return_value = hidden_input_of(page, "return");
+    let cancel_value = hidden_input_of(page, "cancel");
+    let query = form_urlencoded(&[
+        ("return", &return_value),
+        ("cancel", &cancel_value),
+        ("msisdn", msisdn),
+    ]);
+    format!("{}{action}?{query}", rail.stub_origin)
+}
+
+/// **A return URL with a quote in it can no longer inject into the rail's
+/// page, and still gets the payer home** — issue #106's item 2.
+///
+/// Until 2026-11-17 the stub page's two hidden inputs were written
+/// `value="{{request.query.return}}"`, and WireMock 3.9.2 does not escape a
+/// stache: a quote in the merchant's `return_url` closed the attribute and the
+/// rest of the URL became markup. Now every attribute that carries the URL is
+/// `{{{urlEncode …}}}`, and the form's arm of `/pay` decodes the one extra
+/// layer a GET form adds on submit.
+///
+/// Both halves are asserted, because each is a way to get this wrong:
+///
+/// * the URL's raw bytes appear nowhere on the page. Revert the hidden inputs
+///   to the bare stache and this fails first.
+/// * the form, submitted as a browser submits it, lands on the original URL
+///   byte for byte. Encode the inputs without the form's decoding arm and the
+///   Location is the percent-encoded string instead. The two links are
+///   followed as well, so this is the whole page's round trip.
+#[tokio::test]
+async fn a_hostile_return_url_survives_the_form_on_the_rails_page() {
+    let rail = start(
+        RailUnderTest::OrangeMoney,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+    let (_, _, page) =
+        a_payer_lands_on_the_rails_page_returning_to(&rail, HOSTILE_RETURN_URL).await;
+
+    assert!(
+        !page.contains(HOSTILE_RETURN_URL),
+        "the merchant's return URL must reach the page percent-encoded, never raw — a raw \
+         quote closes the attribute it is written into: {page}"
+    );
+
+    let form = http
+        .get(the_test_number_form_submission(
+            &rail,
+            &page,
+            "237600000000",
+        ))
+        .send()
+        .await
+        .expect("the stub answers the form submission");
+    assert_eq!(form.status().as_u16(), 302, "the form sends the payer back");
+    assert_eq!(
+        form.headers()
+            .get("location")
+            .and_then(|value| value.to_str().ok()),
+        Some(HOSTILE_RETURN_URL),
+        "the form must land the payer on the merchant's URL byte for byte"
+    );
+
+    for link_id in ["pay", "cancel"] {
+        let clicked = http
+            .get(format!("{}{}", rail.stub_origin, href_of(&page, link_id)))
+            .send()
+            .await
+            .expect("the stub answers the payer's click");
+        assert_eq!(clicked.status().as_u16(), 302, "{link_id}: a redirect");
+        assert_eq!(
+            clicked
+                .headers()
+                .get("location")
+                .and_then(|value| value.to_str().ok()),
+            Some(HOSTILE_RETURN_URL),
+            "{link_id}: the link must land the payer on the merchant's URL byte for byte"
+        );
+    }
+}
+
+/// **The payer's actions sit below every demo mapping** — the ladder issue
+/// #106 decided, read out of the two mapping files rather than restated.
+///
+/// "The payer's actions" are every `GET` on the hosted page's `/pay` or
+/// `/cancel`, and every mapping that answers from a scenario state one of
+/// those arms. Each must carry a priority numerically *greater* than every
+/// priority in `demo-outcomes.json` (WireMock: lower wins). Two things follow,
+/// and both are the point:
+///
+/// * a click on one charge's page can never pay — or expire — a charge whose
+///   amount the demo steers (`5001`, `5002`, priority 4). At 3 it could:
+///   measured by the sabotage review on 2026-09-10, and driven against a real
+///   container by
+///   [`a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge`];
+/// * a documented test number typed into the form (priority 3) always wins
+///   over the form's own catch-all arm.
+///
+/// No container: it is arithmetic over two JSON documents, and it fails the
+/// moment either file moves under the other.
+#[test]
+fn the_payers_actions_on_the_hosted_page_sit_below_every_demo_mapping() {
+    let dir = mappings_dir(RailUnderTest::OrangeMoney).join("mappings");
+    let read = |file: &str| -> Vec<serde_json::Value> {
+        let path = dir.join(file);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", path.display()));
+        let document: serde_json::Value = serde_json::from_str(&text)
+            .unwrap_or_else(|error| panic!("{} is not JSON: {error}", path.display()));
+        document
+            .get("mappings")
+            .and_then(serde_json::Value::as_array)
+            .cloned()
+            .unwrap_or_else(|| panic!("{} carries no mappings", path.display()))
+    };
+    let text_at = |mapping: &serde_json::Value, pointer: &str| -> Option<String> {
+        mapping
+            .pointer(pointer)
+            .and_then(serde_json::Value::as_str)
+            .map(ToOwned::to_owned)
+    };
+    // Explicit, never WireMock's default of 5: a ladder argued in comments
+    // must not rest on a number nobody wrote down.
+    let priority_of = |mapping: &serde_json::Value| -> u64 {
+        mapping
+            .get("priority")
+            .and_then(serde_json::Value::as_u64)
+            .unwrap_or_else(|| panic!("this mapping states no priority: {mapping}"))
+    };
+
+    let demo = read("demo-outcomes.json");
+    assert!(
+        demo.iter()
+            .any(|mapping| mapping.pointer("/request/bodyPatterns").is_some()),
+        "demo-outcomes.json must still carry its amount-keyed mappings — the floor below \
+         would otherwise be measured against nothing that matters"
+    );
+    let floor = demo
+        .iter()
+        .map(priority_of)
+        .max()
+        .unwrap_or_else(|| panic!("demo-outcomes.json carries no mappings"));
+
+    let page = read("stub-hosted-page.json");
+    let clicks: Vec<&serde_json::Value> = page
+        .iter()
+        .filter(|mapping| {
+            text_at(mapping, "/request/method").as_deref() == Some("GET")
+                && text_at(mapping, "/request/urlPathPattern")
+                    .is_some_and(|path| path.ends_with("/pay") || path.ends_with("/cancel"))
+        })
+        .collect();
+    for exit in ["/pay", "/cancel"] {
+        assert!(
+            clicks.iter().any(|mapping| {
+                text_at(mapping, "/request/urlPathPattern").is_some_and(|path| path.ends_with(exit))
+            }),
+            "stub-hosted-page.json no longer answers {exit} — this ladder has lost an exit"
+        );
+    }
+    let armed: BTreeSet<String> = clicks
+        .iter()
+        .filter_map(|mapping| text_at(mapping, "/newScenarioState"))
+        .collect();
+    let answers: Vec<&serde_json::Value> = page
+        .iter()
+        .filter(|mapping| {
+            text_at(mapping, "/requiredScenarioState").is_some_and(|state| armed.contains(&state))
+        })
+        .collect();
+    for state in &armed {
+        assert!(
+            answers.iter().any(|mapping| {
+                text_at(mapping, "/requiredScenarioState").as_deref() == Some(state.as_str())
+            }),
+            "a click arms `{state}` and no mapping answers from it"
+        );
+    }
+
+    for mapping in clicks.iter().chain(answers.iter()) {
+        let name = text_at(mapping, "/name").unwrap_or_default();
+        let priority = priority_of(mapping);
+        assert!(
+            priority > floor,
+            "`{name}` is priority {priority}; every payer action must sit strictly below \
+             every mapping in demo-outcomes.json (its lowest-ranked is {floor}), or a click \
+             on one charge's page can decide a charge the demo documents (issue #106)"
+        );
+    }
+}
+
+/// **A click on one charge's page does not decide a charge whose amount the
+/// demo steers** — the third measurement of the 2026-09-10 sabotage review,
+/// closed by issue #106's decision.
+///
+/// Two Orange charges in flight on one stub: a bystander at a demo amount,
+/// then a charge whose payer lands on the page and clicks. The stub's scenario
+/// is one per container and is keyed on nothing per charge, so the click arms
+/// a terminal answer for *whichever charge asks next*. That much is not
+/// fixable in WireMock. What the ladder decides is who wins when the bystander
+/// asks first:
+///
+/// | click | bystander | at priority 3 (before) | at 5 (now) |
+/// |---|---|---|---|
+/// | `#pay` | `5001` | `SUCCESS` — **paid** | `EXPIRED` — `payer_timeout` |
+/// | `#cancel` | `5002` | `EXPIRED` — `payer_timeout` | `FAILED` — `provider_error` |
+///
+/// and the clicked charge, which is still armed because an amount-keyed
+/// answer moves no scenario, then gets its own click's answer.
+#[rstest]
+#[case::pay("pay", 5_001, FailureCode::PayerTimeout, None)]
+#[case::cancel(
+    "cancel",
+    5_002,
+    FailureCode::ProviderError,
+    Some(FailureCode::PayerTimeout)
+)]
+#[tokio::test]
+async fn a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge(
+    #[case] link_id: &str,
+    #[case] demo_amount: i64,
+    #[case] demo_answer: FailureCode,
+    #[case] clicked_answer: Option<FailureCode>,
+) {
+    let rail = start(
+        RailUnderTest::OrangeMoney,
+        Credentials::Valid,
+        Duration::from_secs(10),
+    )
+    .await;
+    let http = vpay_provider::http::client().expect("the vendored-roots client builds");
+
+    let (bystander, _) = a_redirect_charge_is_submitted(&rail, demo_amount, RETURN_URL).await;
+    let (clicked, _, page) = a_payer_lands_on_the_rails_page(&rail).await;
+    let click = http
+        .get(format!("{}{}", rail.stub_origin, href_of(&page, link_id)))
+        .send()
+        .await
+        .expect("the stub answers the payer's click");
+    assert_eq!(click.status().as_u16(), 302, "{link_id}: a redirect");
+
+    match status_of(&rail, &bystander, "the bystander").await {
+        ChargeStatus::Failed { code, .. } => assert_eq!(
+            code, demo_answer,
+            "{link_id} on another charge's page must not decide a {demo_amount} charge"
+        ),
+        other => panic!(
+            "{link_id} on another charge's page decided a {demo_amount} charge: expected \
+             Failed({demo_answer}), got {other:?}"
+        ),
+    }
+
+    match (clicked_answer, status_of(&rail, &clicked, link_id).await) {
+        (None, ChargeStatus::Succeeded { .. }) => {}
+        (Some(expected), ChargeStatus::Failed { code, .. }) => {
+            assert_eq!(
+                code, expected,
+                "{link_id}: the clicked charge mapped to {code}"
+            );
+        }
+        (expected, other) => panic!(
+            "{link_id}: the clicked charge is still armed and gets its own answer: expected \
+             {expected:?}, got {other:?}"
+        ),
     }
 }

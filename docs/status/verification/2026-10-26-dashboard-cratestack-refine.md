@@ -53,7 +53,8 @@ Found while wiring it: cratestack 0.15.0's `--check` reported six
 pnpm's symlink and `git check-ignore` answers exit 128 ("beyond a symbolic
 link"), which `drift.rs`'s `git_ignored` reads as "nothing ignored". The
 recipe checks a `tar --exclude=./node_modules` copy instead. Upstream bug,
-not filed from here.
+filed 2026-10-27 as
+[cratestack#1235](https://github.com/cratestack/cratestack/issues/1235).
 
 ## Dashboard suite
 
@@ -148,7 +149,8 @@ at boot (`src/dash/cratestack-client.ts`); the browser constructs no generated
 client, and no request data reaches the constructor. The maintainer chose
 dismissal over excluding the package from scanning or waiting on an upstream
 fix. The real fix is a non-backtracking trim in cratestack's
-`rest-runtime.ts.j2`; it is not filed from here.
+`rest-runtime.ts.j2` (and `rpc-runtime.ts.j2`), filed 2026-10-27 as
+[cratestack#1236](https://github.com/cratestack/cratestack/issues/1236).
 
 ## e2e: the compose stack and Cypress (head `f3ffa70d`)
 
