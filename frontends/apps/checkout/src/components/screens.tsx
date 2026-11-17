@@ -300,18 +300,26 @@ export function SupportLine({
  *
  * `merchant` is `null` when the browser read carried no usable name; the
  * heading is then the neutral one, and no identifier stands in for it.
+ *
+ * `invoiceNumber` is the number of the invoice this payment settles (issue
+ * #91, D6), so a payer who followed a link out of an e-mail can tie the
+ * amount to the document that asked for it. `null` — every payment that
+ * settles no invoice — draws no line at all: an empty "Invoice:" would read
+ * as a bill whose reference was lost.
  */
 export function PaymentSummary({
   t,
   merchant,
   amount,
   reference,
+  invoiceNumber,
   livemode,
 }: {
   t: Translate;
   merchant: string | null;
   amount: string;
   reference: string;
+  invoiceNumber: string | null;
   livemode: boolean;
 }) {
   return (
@@ -356,6 +364,14 @@ export function PaymentSummary({
           <span className="sr-only">{t("page.amount_label")}: </span>
           {amount}
         </p>
+        {invoiceNumber === null ? null : (
+          <p
+            className="text-caption wrap-anywhere text-muted-foreground"
+            data-testid="invoice-number"
+          >
+            {t("page.invoice_label")}: {invoiceNumber}
+          </p>
+        )}
         <p
           className="text-caption wrap-anywhere text-muted-foreground"
           data-testid="reference"

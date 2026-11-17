@@ -965,8 +965,32 @@ pub struct CheckoutMerchantObject {
     pub name: String,
 }
 
+/// The invoice a checkout is paying, as a **payer** is shown it: its number
+/// and nothing else (issue #91, D6).
+///
+/// An object rather than a bare `invoice_number`, for
+/// [`CheckoutMerchantObject`]'s reason: the page's guard reads a member by
+/// name, and a second payer-facing fact would otherwise be a second
+/// top-level key with its own absence rules.
+///
+/// Deliberately *not* the `in_…` id, the customer, the lines, the amounts
+/// or the due date. The amount the payer approves is the intent's, already
+/// on the read; the number is what ties that amount to the paper or e-mail
+/// that asked for it, and everything else on an invoice is the merchant's
+/// record, not the payer's receipt. The browser surface renders the least
+/// that answers the question in front of it, and the question here is
+/// "which bill is this?".
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub struct CheckoutInvoiceObject {
+    /// `invoices.number` — `{prefix}-{000001}`, the identifier a human types
+    /// back in (`docs/flows/invoices.md` § Numbering).
+    pub number: String,
+}
+
 /// A `checkout.session` as **vpay's own checkout page** reads it: the session,
-/// its expanded intent, and the merchant's name.
+/// its expanded intent, the merchant's name, and the number of the invoice it
+/// pays when it pays one.
 ///
 /// # Why a wrapper, and not a field on [`CheckoutSessionObject`]
 ///
@@ -993,6 +1017,12 @@ pub struct CheckoutSessionForPayer {
     /// `display_name`, never an internal identifier in its place.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub merchant: Option<CheckoutMerchantObject>,
+    /// The invoice this session's intent was minted to pay
+    /// (`POST /v1/invoices/{id}/pay`) — absent for every intent that pays no
+    /// invoice, which is most of them. Omitted rather than `null`, matching
+    /// [`Self::merchant`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub invoice: Option<CheckoutInvoiceObject>,
     /// The server-driven rail spec: one entry per code in the intent's
     /// `payment_method_types`, in that order, and everything a native payer
     /// sheet needs to render an unfamiliar rail with no `if code ==
@@ -1022,8 +1052,22 @@ impl CheckoutSessionForPayer {
         Self {
             session,
             merchant: name.map(|name| CheckoutMerchantObject { name }),
+            invoice: None,
             rails,
         }
+    }
+
+    /// Names the invoice this session pays, by its number alone.
+    ///
+    /// A builder rather than a fourth argument to [`Self::new`], for
+    /// [`CheckoutSessionObject::with_expanded_intent`]'s reason: `None` is
+    /// the answer for most sessions, and the one caller that looks the
+    /// number up (`crate::browser::checkout_sessions`'s `for_payer`) is the
+    /// only one that should be able to set it.
+    #[must_use]
+    pub fn with_invoice_number(mut self, number: Option<String>) -> Self {
+        self.invoice = number.map(|number| CheckoutInvoiceObject { number });
+        self
     }
 }
 

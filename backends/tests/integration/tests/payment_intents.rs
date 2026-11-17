@@ -312,6 +312,7 @@ fn config_with(
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         // `keypair` alone: this suite signs every call, and its boundary case
         // (`every_registered_v1_path_answers_401_without_a_token`) is about

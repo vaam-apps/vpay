@@ -13,6 +13,7 @@ import {
   INITIAL_STATE,
   contextOf,
   intentOutcome,
+  invoiceOf,
   merchantOf,
   reduce,
   stateForContext,
@@ -470,8 +471,21 @@ describe("contextOf", () => {
       session,
       intent,
       merchant: { name: "Boutique" },
+      invoice: null,
       allowedMethods: null,
     });
+  });
+
+  it("carries the invoice number when the read names one, and keeps it off the session half", () => {
+    const session = makeContext().session;
+    const view = {
+      ...session,
+      payment_intent: makeIntent(),
+      invoice: { number: "K7Q2M9XD-000042" },
+    };
+    const context = contextOf(view);
+    expect(context.invoice).toEqual({ number: "K7Q2M9XD-000042" });
+    expect("invoice" in context.session).toBe(false);
   });
 
   it("drops the session’s client_secret, so no rendered state carries one", () => {
@@ -526,10 +540,42 @@ describe("merchantOf", () => {
   });
 });
 
+describe("invoiceOf", () => {
+  it("reads the documented shape", () => {
+    expect(invoiceOf({ number: "K7Q2M9XD-000042" })).toEqual({
+      number: "K7Q2M9XD-000042",
+    });
+  });
+
+  it("is null for every shape that is not one — none of which is a reason to refuse a payment", () => {
+    for (const value of [
+      undefined, // the server's answer for a payment that settles no invoice
+      null,
+      "K7Q2M9XD-000042", // a bare string rather than `{ number }`
+      42,
+      {},
+      { number: null },
+      { number: 42 },
+      { number: "" },
+      { number: "   " }, // renders "Invoice: " — a reference with the reference missing
+      { id: "in_0123456789abcdefghjkmnpq" },
+      [],
+    ]) {
+      expect(
+        invoiceOf(value),
+        JSON.stringify(value ?? String(value)),
+      ).toBeNull();
+    }
+  });
+});
+
 describe("contextOf and a missing merchant", () => {
   it("carries null rather than throwing when the read had no merchant member", () => {
     const view = { ...makeContext().session, payment_intent: makeIntent() };
     expect(contextOf(view).merchant).toBeNull();
+    // A read with no `invoice` member — every payment that settles no
+    // invoice — is `null` too, which is what draws no invoice line.
+    expect(contextOf(view).invoice).toBeNull();
     // Everything the page actually needs is still there.
     expect(contextOf(view).intent.amount).toBe(5000);
   });

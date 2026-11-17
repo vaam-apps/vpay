@@ -359,7 +359,12 @@ the job finished and raises an alert
 ([docs/runbooks/unresolved-charges.md](../runbooks/unresolved-charges.md) is the
 reconciliation this starts).
 
-Only the two money-bearing disagreements count. `Pending` against a terminal
+Only the money-bearing disagreements count: a decline against a charge
+recorded as paid, and a success against a `failed` one. "Recorded as paid"
+has meant `succeeded` **or `requires_review`** since 2026-11-17 (issue #96).
+A parked charge is one the rail said was paid, so a later decline reverses
+it, while a second `succeeded` is the duplicate delivery the parking absorbs
+and must not page twice. `Pending` against a terminal
 charge is a rail that has not caught up with itself, and `NotFound` is never on
 its own grounds for any conclusion — neither says the money moved differently
 than recorded, and alerting on them would bury the two that do. The test is

@@ -389,3 +389,20 @@ theme `@import` fails the case, and so does deleting the role declarations
 from the artefact while the `var()` mapping stays. The recipe's grep passes
 the second of those. Evidence:
 [../../status/verification/2026-10-23-a11y-gate-built-stylesheet.md](../../status/verification/2026-10-23-a11y-gate-built-stylesheet.md).
+
+**Not built, recorded 2026-11-17: a list of charges parked in
+`requires_review` (issue #96).** Issue #96 asks for a dashboard listing of
+charges the settlement parks when a rail-accepted payment lands on a canceled
+intent. There is nothing to add the state to. `/dash/v1` has no charges list,
+and no procedure searches charges. `GET /dash/v1/payment_intents` and
+`searchPaymentIntents` filter by **intent** status, and a parked charge's
+intent is `canceled`, like every other cancelled intent. The dashboard has no
+charge-state status system either. `PAYMENT_STATUS_SYSTEM` is intent
+statuses, and the payment detail prints `charge.state` as text, so a parked
+charge reads `requires_review` there only for someone who already has its
+intent id. The regenerated `@vpay/dash-client` knows the label
+(`ChargeStateValues`), and nothing renders it through a pill. Building the
+list means a new read (a procedure or a route) with a tenant filter that goes
+through the intent, because `charges` has no `merchant_id`. Until then
+[docs/runbooks/charges-requires-review.md](../../runbooks/charges-requires-review.md)'s
+SQL is the listing.

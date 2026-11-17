@@ -1839,6 +1839,22 @@ async fn settle_succeeded(
         .await?;
 
     match settled {
+        // The intent had been canceled before this charge committed (issue
+        // #96): `vpay_db` parked the charge for an operator instead of
+        // settling it, and has already counted the transition and written the
+        // `alert = true` line after its commit. Nothing more to do here, and
+        // nothing to retry: the rail's answer is recorded on the charge.
+        Some((parked, _))
+            if ChargeState::from_wire(&parked.state) == Some(ChargeState::RequiresReview) =>
+        {
+            tracing::warn!(
+                job_id = %job.id,
+                charge_id = %charge.id,
+                payment_intent_id = %charge.payment_intent_id,
+                "the rail reported a charge as paid after its intent was canceled; \
+                 it was parked in requires_review"
+            );
+        }
         Some(_) => tracing::info!(
             job_id = %job.id,
             charge_id = %charge.id,

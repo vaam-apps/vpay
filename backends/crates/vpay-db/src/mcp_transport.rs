@@ -15,6 +15,15 @@
 //! | `tenant.id` | the merchant | every procedure body, through `tenant_of` |
 //! | `audience` | `"merchant"` | every MCP procedure's `@allow` |
 //! | `can_write` | the token holds `payments:write` | every write's `@allow` |
+//! | `client_id` | the token's OAuth client | [`crate::MerchantCall::client_id`]: the lookup budget and audit actor |
+//! | `scopes` | the token's scopes, held to the registration's current YAML | [`crate::MerchantCall::scopes`]: `account_holders:read` on a nominated-payee refund |
+//!
+//! `client_id` and `scopes` are read by no `@allow`. They exist so a tool call
+//! reaches `/v1`'s code as the credential that made it, with that
+//! credential's real scopes, rather than as a principal `vpay-api` invents
+//! (PR #396 review): a nominated-payee refund is checked against
+//! `account_holders:read` exactly as `/v1` checks it, and is never granted a
+//! scope the token lacks.
 //!
 //! Never a system context: nothing here calls
 //! [`crate::persistence`]'s `system_context`.
@@ -28,6 +37,12 @@ use cratestack::{CratestackContext, CratestackError, PrincipalContext, Principal
 /// The `audience` claim a merchant MCP context carries.
 pub(crate) const MERCHANT_AUDIENCE_CLAIM: &str = "merchant";
 
+/// The claim naming the token's OAuth client.
+pub(crate) const CLIENT_ID_CLAIM: &str = "client_id";
+
+/// The claim listing the token's effective scopes.
+pub(crate) const SCOPES_CLAIM: &str = "scopes";
+
 /// Who an authenticated merchant MCP request acts as.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpCaller {
@@ -35,6 +50,13 @@ pub struct McpCaller {
     pub merchant_id: String,
     /// Whether the token holds `payments:write`.
     pub can_write: bool,
+    /// The token's OAuth client (`sub`): the credential identity the
+    /// account-holder lookup budget and audit rows are kept under
+    /// (provisional pending RFC-0002 D6).
+    pub client_id: String,
+    /// The scopes the token holds **and** its registration grants today:
+    /// the intersection `/v1`'s bearer path computes. Never widened here.
+    pub scopes: Vec<String>,
 }
 
 /// Why a request was not authenticated.
@@ -143,6 +165,20 @@ pub(crate) fn merchant_context(caller: &McpCaller) -> CratestackContext {
                 Value::String(MERCHANT_AUDIENCE_CLAIM.to_owned()),
             ),
             ("can_write".to_owned(), Value::Bool(caller.can_write)),
+            (
+                CLIENT_ID_CLAIM.to_owned(),
+                Value::String(caller.client_id.clone()),
+            ),
+            (
+                SCOPES_CLAIM.to_owned(),
+                Value::List(
+                    caller
+                        .scopes
+                        .iter()
+                        .map(|scope| Value::String(scope.clone()))
+                        .collect(),
+                ),
+            ),
         ]),
         ..PrincipalContext::default()
     })
@@ -157,6 +193,8 @@ mod tests {
         let ctx = merchant_context(&McpCaller {
             merchant_id: "acct_1".to_owned(),
             can_write: false,
+            client_id: "client-1".to_owned(),
+            scopes: vec!["payments:read".to_owned()],
         });
         assert_eq!(ctx.tenant_id(), Some("acct_1"));
         assert_eq!(
@@ -164,6 +202,16 @@ mod tests {
             Some(&Value::String("merchant".to_owned()))
         );
         assert_eq!(ctx.auth_field("can_write"), Some(&Value::Bool(false)));
+        assert_eq!(
+            ctx.auth_field("client_id"),
+            Some(&Value::String("client-1".to_owned()))
+        );
+        assert_eq!(
+            ctx.auth_field("scopes"),
+            Some(&Value::List(vec![Value::String(
+                "payments:read".to_owned()
+            )]))
+        );
         assert!(ctx.is_authenticated());
         assert!(!ctx.is_system());
     }

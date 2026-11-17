@@ -953,6 +953,46 @@ pub trait Invoices: Send + Sync {
         &self,
         payment_intent_id: &str,
     ) -> Result<Option<InvoiceRow>, DbError>;
+
+    /// The **number** of the invoice this merchant's intent was minted to
+    /// pay, and nothing else about it — the one invoice fact a payer is
+    /// shown (issue #91, D6).
+    ///
+    /// The checkout page's read (`vpay_api::browser::checkout_sessions`)
+    /// renders it beside the merchant's name, so a payer who followed a
+    /// `hosted_invoice_url` out of an e-mail can tie the bill to the
+    /// document that asked for it. That read is **unauthenticated by a
+    /// merchant** — a session secret or a return token is all its caller
+    /// holds — so this returns a `String` rather than an [`InvoiceRow`]: the
+    /// customer, the lines, the amounts and the metadata never leave this
+    /// crate on that path, and a future renderer cannot reach for a field
+    /// the query did not select.
+    ///
+    /// # Any status, not only `open`
+    ///
+    /// Unlike [`Self::find_open_by_intent`], deliberately. The return page
+    /// renders after the settlement has flipped the invoice to `paid`, and
+    /// that is exactly when a payer most wants the number for their records.
+    /// A row only ever has an intent once it has been finalized
+    /// (`only_a_live_invoice_has_an_intent`), and a finalized row always has
+    /// a number (`number_is_assigned_at_finalize`), so `number IS NOT NULL`
+    /// below is the CHECK restated rather than a filter that ever drops a row.
+    ///
+    /// # Scoped to the merchant
+    ///
+    /// The caller has already proved the session belongs to `merchant_id`;
+    /// binding it here as well means a bug in that proof cannot put another
+    /// tenant's invoice number on this tenant's page.
+    /// `invoices_payment_intent_key` makes the answer unique.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Query`] if the read fails.
+    async fn number_for_intent(
+        &self,
+        merchant_id: &str,
+        payment_intent_id: &str,
+    ) -> Result<Option<String>, DbError>;
 }
 
 #[async_trait::async_trait]
@@ -1322,6 +1362,24 @@ impl Invoices for crate::repository::PgRepositories {
         );
 
         sqlx::query_as::<_, InvoiceRow>(AssertSqlSafe(sql))
+            .bind(payment_intent_id)
+            .fetch_optional(&self.pool)
+            .await
+            .map_err(DbError::Query)
+    }
+
+    async fn number_for_intent(
+        &self,
+        merchant_id: &str,
+        payment_intent_id: &str,
+    ) -> Result<Option<String>, DbError> {
+        // A `&'static str`: nothing is interpolated, so sqlx needs no
+        // `AssertSqlSafe` and `sql_audit`'s count does not move.
+        let sql = "SELECT number FROM invoices \
+                   WHERE merchant_id = $1 AND payment_intent_id = $2 AND number IS NOT NULL";
+
+        sqlx::query_scalar::<_, String>(sql)
+            .bind(merchant_id)
             .bind(payment_intent_id)
             .fetch_optional(&self.pool)
             .await

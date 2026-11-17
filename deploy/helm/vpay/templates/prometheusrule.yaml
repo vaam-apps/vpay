@@ -104,6 +104,61 @@ spec:
               disposition is unknown until someone reconciles it by hand.
             runbook_url: {{ $repo }}/unresolved-charges.md
 
+        - alert: VpayChargeRequiresReview
+          # `requires_review` is where a charge lands when the rail reports it
+          # paid and its intent was already `canceled` (issue #96): the money
+          # moved, the merchant was told the payment was withdrawn, and vpay
+          # neither refunds nor settles it on its own. Every one is a person's
+          # problem, so the threshold is "more than none", as for `unresolved`.
+          #
+          # `critical`, unlike `unresolved`: an `unresolved` charge's outcome
+          # is unknown, a `requires_review` charge's is known and it is the
+          # one nobody wanted — a payer was charged for a payment the merchant
+          # cancelled. The transition is counted once per charge, after the
+          # commit that parks it (`vpay_db::settlement`), so a duplicate rail
+          # answer cannot fire this twice. The charge id is not a label (one
+          # series per charge is unbounded cardinality); it is on the
+          # `alert=true` log line the same commit writes, and the runbook's
+          # query lists every parked charge.
+          #
+          # TWO HALVES, because `increase(...) > 0` alone misses the first
+          # parked charge. Nothing registers this series at 0: it is created by
+          # its first increment, so its first sample is already 1, and
+          # `increase()` over a series with no earlier sample is 0. Parking is
+          # rare enough that the first one on a pod is the normal case, not an
+          # edge. The first half fires on a series that exists now and did not
+          # an hour ago, with a value above 0; the second on a series that
+          # grew. Both are aggregated to `{provider, from, to}` so that one
+          # charge counted by both halves is one alert, not two label sets
+          # that collide once `__name__` is dropped.
+          # `prometheusrule.test.yaml` pins both, with a series that appears
+          # already at 1.
+          expr: >-
+            (
+              sum by (provider, from, to) (
+                vpay_charge_transitions_total{to="requires_review"}
+                unless vpay_charge_transitions_total{to="requires_review"} offset 1h
+              ) > 0
+            )
+            or
+            (
+              sum by (provider, from, to) (
+                increase(vpay_charge_transitions_total{to="requires_review"}[1h])
+              ) > 0
+            )
+          for: 0m
+          labels:
+            severity: critical
+            provisional: "true"
+          annotations:
+            summary: "A rail-accepted payment landed on a canceled intent and was parked for review"
+            description: >-
+              At least one charge on {{ `{{ $labels.provider }}` }} was reported paid by the rail after its
+              payment intent had been canceled. vpay parked it in `requires_review`: the intent stays
+              `canceled`, nothing was posted to the ledger, and no refund was made. Each one is a payer
+              who was charged for a payment the merchant withdrew; find it with the runbook's query.
+            runbook_url: {{ $repo }}/charges-requires-review.md
+
         - alert: VpayJobQueueBehind
           expr: vpay_jobs_oldest_claimable_age_seconds > {{ $r.jobQueueBehindSeconds }}
           for: 10m

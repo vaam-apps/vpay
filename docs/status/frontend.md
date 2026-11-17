@@ -370,3 +370,42 @@ round 1 spec (the first CI run was of the version before it) and a local
 `just test-e2e`. The pages that read
 `/dash/v1` (VP-6b), which is also why the spec asserts an account page and no
 payments.
+
+## The checkout page names the invoice it is paying (issue #91, D6)
+
+**Built 2026-11-17; jsdom-tested and axe-checked in Chromium through
+Storybook; not driven end to end in a browser.** When the
+browser read carries an `invoice` member (the server renders it only for an
+intent `POST /v1/invoices/{id}/pay` minted — see
+[backend.md](backend.md), "The checkout read names the invoice a payment
+settles"), `frontends/apps/checkout` draws one more caption line in the
+payment summary, under the amount: `Invoice: {number}` / `Facture:
+{number}` (`page.invoice_label`, both dictionaries). It does so on the
+payment page and on the return page. A read with no member, or with one that
+is not `{ number: string }` with a non-blank number, draws **no** line —
+`invoiceOf` in `src/lib/machine.ts` reads it defensively, for `merchantOf`'s
+reason: it is a nicety beside the amount, never a reason to refuse a payment.
+
+- **Tests.** `checkout-view.test.tsx` "the invoice a payment settles":
+  the line's exact text in both locales on both pages, and its absence on
+  every payment-page screen with a summary (both locales) and every
+  return-page screen with one. `machine.test.ts` (`invoiceOf` over eleven
+  malformed shapes; `contextOf` keeps the member off the session half),
+  `controller.test.ts` and `return.test.ts` (the member rides from a stubbed
+  read into the context, and is `null` without one). `pnpm --filter
+@vpay/checkout test`: **569 passed, 1 skipped** (thirteen of them new; the skip is the pre-existing
+  `a11y-gate` case that needs a built Storybook) in 30 files.
+- **Mutations, each measured:** never rendering the line fails the four
+  "names it" cases; rendering it unconditionally fails the two "draws no
+  invoice line" cases; dropping the member in `return.ts` fails the return
+  controller case; `invoiceOf` answering `null` fails the `contextOf` and
+  session-controller cases.
+- **Three stories** (`ChooseRailForAnInvoice`, its English twin,
+  `ReturnSucceededForAnInvoice`) put the line in front of
+  the real-browser axe and colour-contrast run: `vitest run --config
+vitest.storybook.config.ts` (the command `just test-storybook` runs, with
+  the Vite cache cleared first), headless Chromium 1243, **29 of 29 stories
+  passed**, three of them new.
+- **Not done:** no Cypress case drives a browser from an invoice's
+  `hosted_invoice_url` to a paid charge (issue #91 item 5); see
+  [../flows/invoices.md](../flows/invoices.md) § Status.

@@ -26,6 +26,11 @@
 //!   `401`, identical for each.
 //! - **(f)** a client that pins the **wrong server key** refuses the answer
 //!   rather than trusting it.
+//! - **(g)** a **console key** and a **service key** that are each genuinely
+//!   live on their own surface — a paired, unrevoked console key that reads
+//!   `/dash/v1`, a registered service that reaches `/svc/v1` — are the coarse
+//!   `401` on `/v1`, and the console key cannot read another tenant's rows on
+//!   its own surface (issue #152, criteria 1 and 8).
 //!
 //! No test doubles (ADR-0006): the signing side is `support::sealed`, which
 //! seals with cratestack's own client and binds routes from `vpay-wire`
@@ -43,7 +48,8 @@ mod support;
 
 use support::sealed::SealedHttp;
 use support::{
-    ensure_crypto_provider_installed, generate_key, merchant_client, migrated_postgres, serve,
+    create_staff, ensure_crypto_provider_installed, generate_key, merchant_client,
+    migrated_postgres, pair_console_key, serve, service_client,
 };
 
 const CLIENT_A: &str = "acme-cameroon";
@@ -55,6 +61,7 @@ struct Harness {
     _container: ContainerAsync<PostgresImage>,
     server: tokio::task::JoinHandle<()>,
     repositories: std::sync::Arc<dyn vpay_db::Repositories>,
+    pool: sqlx::PgPool,
     base_url: String,
 }
 
@@ -67,6 +74,13 @@ impl Harness {
         self.server.abort();
     }
 }
+
+/// The registered service case (g) signs as.
+const SERVICE: &str = "vaam";
+/// The tenant-A member case (g) pairs a console key to.
+const STAFF_A: &str = "stf_signed_transport_a";
+/// That console key's label (`support::sealed` derives the key from it).
+const CONSOLE_A: &str = "signed-transport-console-a";
 
 fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
     Config {
@@ -88,6 +102,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         // `keypair` alone: this suite is about `Required`, where an unsigned
         // request, a bearer token and a replay are one coarse `401`. The default
@@ -100,21 +115,67 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value) -> Config {
 }
 
 async fn harness() -> anyhow::Result<Harness> {
+    harness_configured(|config| config).await
+}
+
+/// [`harness`], with `adjust` applied to the configuration before it boots.
+async fn harness_configured(adjust: impl FnOnce(Config) -> Config) -> anyhow::Result<Harness> {
     ensure_crypto_provider_installed();
-    let (container, repositories, _pool) = migrated_postgres().await?;
+    let (container, repositories, pool) = migrated_postgres().await?;
     let (server_pem, _server_jwks) = generate_key();
     let (_pem_a, jwks_a) = generate_key();
     let (_pem_b, jwks_b) = generate_key();
     let served = serve(&repositories, &server_pem, |base_url| {
-        config_with(base_url, jwks_a, jwks_b)
+        adjust(config_with(base_url, jwks_a, jwks_b))
     })
     .await?;
     Ok(Harness {
         _container: container,
         server: served.server,
         repositories,
+        pool,
         base_url: served.base_url,
     })
+}
+
+/// [`harness`] with the two privileged surfaces live: the dashboard for
+/// tenant A (so a console key has somewhere it is valid) and one registered
+/// service holding `console_pairing` (so a service key has somewhere it is
+/// valid), plus a plain tenant-A member with a freshly paired console key.
+async fn privileged_harness() -> anyhow::Result<Harness> {
+    let h = harness_configured(|mut config| {
+        config.dashboard = Some(vpay_config::Dashboard {
+            merchant_id: MERCHANT_A.to_owned(),
+        });
+        // The seeded intents' currency (`payment_intents.currency_code`
+        // references `currencies`, which boot reconciles from this list).
+        config.currencies = vec![vpay_config::CurrencyEntry {
+            code: "XAF".to_owned(),
+            exponent: 0,
+        }];
+        config.service_clients = vec![service_client(
+            SERVICE,
+            &[vpay_config::ServiceCapability::ConsolePairing],
+        )];
+        config
+    })
+    .await?;
+    create_staff(
+        h.repositories.as_ref(),
+        STAFF_A,
+        MERCHANT_A,
+        "signed-transport-a@example.test",
+        false,
+    )
+    .await?;
+    pair_console_key(
+        h.repositories.as_ref(),
+        STAFF_A,
+        CONSOLE_A,
+        time::OffsetDateTime::now_utc(),
+    )
+    .await?;
+    Ok(h)
 }
 
 fn plain() -> reqwest::Client {
@@ -495,6 +556,146 @@ async fn an_answer_is_refused_by_a_client_pinning_the_wrong_server_key() -> anyh
         .send()
         .await?;
     assert!(current.is_sealed());
+
+    h.shutdown().await;
+    Ok(())
+}
+
+// --------------------------------------------------------------- case (g)
+
+/// Privileged-access matrix (issue #152, criteria 1 and 8): a console key and
+/// a service key are each refused on `/v1` with the coarse `401` — **while
+/// each is genuinely live on its own surface**, which the controls prove — and
+/// a tenant-A console key cannot reach tenant B's rows on `/dash/v1`.
+///
+/// The controls are the point. Until the PR #396 review this case used a
+/// console key that was never paired and a service that was never
+/// registered, so the `401` it asserted was the answer *any* unknown key
+/// gets, and it would have passed if `/v1` accepted every console key there
+/// is. Here the same key that `/v1` refuses reads `/dash/v1` (`200`), and the
+/// same service that `/v1` refuses is answered by `/svc/v1` (sealed, not the
+/// `401`).
+///
+/// The decisive mutation: resolve a `/v1` signature against `console_keys`
+/// or `service_clients` as well as the merchant registry, and the `/v1`
+/// requests below stop being the coarse `401`.
+#[tokio::test]
+async fn a_console_or_service_key_cannot_reach_v1() -> anyhow::Result<()> {
+    let h = privileged_harness().await?;
+
+    // Tenant B owns one intent; tenant A owns one.
+    for (id, merchant) in [
+        ("pi_st_tenant_a", MERCHANT_A),
+        ("pi_st_tenant_b", MERCHANT_B),
+    ] {
+        sqlx::query(
+            "INSERT INTO payment_intents \
+                 (id, merchant_id, livemode, amount, currency_code, status, \
+                  payment_method_types, metadata, client_secret_suffix) \
+             VALUES ($1, $2, false, 500, 'XAF', 'requires_payment_method', \
+                     '[\"mtn_momo\"]'::jsonb, '{}'::jsonb, $3)",
+        )
+        .bind(id)
+        .bind(merchant)
+        .bind(format!("{id:x<32}"))
+        .execute(&h.pool)
+        .await
+        .with_context(|| format!("seeding {id}"))?;
+    }
+
+    // Control 1: the console key is live — it reads tenant A on /dash/v1.
+    let dash = SealedHttp::new()
+        .get(h.url("/dash/v1/payment_intents"))
+        .signed_by_console(CONSOLE_A)
+        .send()
+        .await?;
+    assert_eq!(
+        dash.status().as_u16(),
+        200,
+        "the control: a paired key reads"
+    );
+    let listed: Value = serde_json::from_str(&dash.text().await?)?;
+    let ids: Vec<&str> = listed
+        .pointer("/data")
+        .and_then(Value::as_array)
+        .context("the list envelope carries an array")?
+        .iter()
+        .filter_map(|intent| intent.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(
+        ids,
+        vec!["pi_st_tenant_a"],
+        "a tenant-A console key lists tenant A's rows and never tenant B's"
+    );
+
+    // Cross-tenant: naming tenant B's intent from tenant A's console key is
+    // the uniform 404, the same answer an id that never existed gets.
+    for path in [
+        "/dash/v1/payment_intents/pi_st_tenant_b",
+        "/dash/v1/payment_intents/pi_st_never_existed",
+    ] {
+        let foreign = SealedHttp::new()
+            .get(h.url(path))
+            .signed_by_console(CONSOLE_A)
+            .send()
+            .await?;
+        assert_eq!(
+            foreign.status().as_u16(),
+            404,
+            "{path}: {}",
+            foreign.text().await?
+        );
+    }
+
+    // Control 2: the service key is live — /svc/v1 answers it, sealed. A
+    // revoke of a thumbprint nobody holds is the cheapest call that reaches
+    // the handler; what matters is that it is not the layer's coarse 401.
+    let svc = SealedHttp::new()
+        .delete(h.url(&format!("/svc/v1/console_keys/{}", "0".repeat(64))))
+        .signed_by_service(SERVICE)
+        .send()
+        .await?;
+    assert!(svc.is_sealed(), "the control: /svc/v1 answered the service");
+    assert_ne!(
+        svc.status().as_u16(),
+        401,
+        "the control: the service key is live"
+    );
+
+    // The refusals: both keys, on a /v1 read and a /v1 write, are the coarse 401.
+    for (method, path) in [
+        ("GET", "/v1/payment_intents"),
+        ("GET", "/v1/payment_intents/pi_st_tenant_a"),
+        ("POST", "/v1/customers"),
+    ] {
+        let console = SealedHttp::new()
+            .request(method, h.url(path))
+            .signed_by_console(CONSOLE_A)
+            .send()
+            .await?;
+        let status = console.status().as_u16();
+        let sealed = console.is_sealed();
+        assert_coarse_401(
+            status,
+            sealed,
+            &console.bytes().await?,
+            &format!("a live console key on {method} {path}"),
+        );
+
+        let service = SealedHttp::new()
+            .request(method, h.url(path))
+            .signed_by_service(SERVICE)
+            .send()
+            .await?;
+        let status = service.status().as_u16();
+        let sealed = service.is_sealed();
+        assert_coarse_401(
+            status,
+            sealed,
+            &service.bytes().await?,
+            &format!("a live service key on {method} {path}"),
+        );
+    }
 
     h.shutdown().await;
     Ok(())

@@ -24,6 +24,11 @@ export const en = {
   "page.pay_to_unnamed": "Payment",
   "page.amount_label": "Amount",
   "page.reference_label": "Reference",
+  /*
+   * The invoice this payment settles (issue #91, D6). Rendered only when the
+   * server named one — a payment that settles no invoice shows no line.
+   */
+  "page.invoice_label": "Invoice",
   "page.testmode": "Test mode — no money moves on this deployment.",
   /*
    * Branding, from the deployment's own `branding.yaml` (runtime, not build

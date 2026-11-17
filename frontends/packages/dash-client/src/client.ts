@@ -142,6 +142,10 @@ import type {
   EnvelopeNonceWhere,
   EnvelopeNonceOrderByClause,
   EnvelopeNonceFindMany,
+  AuditEvent,
+  AuditEventWhere,
+  AuditEventOrderByClause,
+  AuditEventFindMany,
   ConsoleKey,
   CreateConsoleKeyInput,
   UpdateConsoleKeyInput,
@@ -191,6 +195,7 @@ import type {
   ManualPaymentSortField,
   RateLimitWindowSortField,
   EnvelopeNonceSortField,
+  AuditEventSortField,
   ConsoleKeySortField,
   Page,
 } from "./models.js";
@@ -227,6 +232,7 @@ export class VpayDashClientClient {
   readonly manualPayments: ManualPaymentApi;
   readonly rateLimitWindows: RateLimitWindowApi;
   readonly envelopeNonces: EnvelopeNonceApi;
+  readonly auditEvents: AuditEventApi;
   readonly consoleKeys: ConsoleKeyApi;
 
   constructor(originOrRuntime: string | CratestackRuntime, options: CratestackClientOptions = {}) {
@@ -256,6 +262,7 @@ export class VpayDashClientClient {
     this.manualPayments = new ManualPaymentApi(this.runtime);
     this.rateLimitWindows = new RateLimitWindowApi(this.runtime);
     this.envelopeNonces = new EnvelopeNonceApi(this.runtime);
+    this.auditEvents = new AuditEventApi(this.runtime);
     this.consoleKeys = new ConsoleKeyApi(this.runtime);
   }
 }
@@ -1535,6 +1542,44 @@ export class EnvelopeNonceApi {
       signal: options.signal,
     });
   }
+}
+
+export class AuditEventApi {
+  constructor(private readonly runtime: CratestackRuntime) {}
+
+  list(options: CratestackQueryRequestConfig = {}): Promise<AuditEvent[]> {
+    return this.runtime.get<unknown>("/audit_events", {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'AuditEvent') as AuditEvent[]);
+  }
+
+  get(id: string, options: CratestackQueryRequestConfig = {}): Promise<AuditEvent> {
+    return this.runtime.get<unknown>(`/audit_events/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((value) => reviveWireFields(value, 'AuditEvent') as AuditEvent);
+  }
+
+  // Same call as `get`, but returns the response alongside the record
+  // (issue #610) — read `.response.headers.get("etag")` off the result
+  // to get the value `update`/`delete`'s `ifMatch` option needs.
+  getWithResponse(
+    id: string,
+    options: CratestackQueryRequestConfig = {},
+  ): Promise<CratestackResponseEnvelope<AuditEvent>> {
+    return this.runtime.getWithResponse<unknown>(`/audit_events/${encodeURIComponent(String(id))}`, {
+      headers: options.headers,
+      query: toSearchQuery(options.query),
+      signal: options.signal,
+    }).then((result) => ({
+      value: reviveWireFields(result.value, 'AuditEvent') as AuditEvent,
+      response: result.response,
+    }));
+  }
+
 }
 
 export class ConsoleKeyApi {

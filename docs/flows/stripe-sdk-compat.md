@@ -297,6 +297,11 @@ predictable consequence of the header, not because anything observed it.
     `CreateRefundParams` in `sdks/nodejs/src/types.ts`, each sending
     `destination[<rail>][msisdn]` — so a vpay SDK is not where this
     divergence bites; a Stripe-shaped client is.
+    **Since PR #396 that destination also costs a scope:** a refund that
+    carries one needs `account_holders:read` as well as `payments:write`, and
+    on `mtn_momo` and `orange_money` that is every refund — a credential
+    without it is `403` `forbidden` on all of them
+    ([account-holder-lookup.md](account-holder-lookup.md) rule 5).
     ~~Neither merchant SDK carries the field either — a dated gap in
     [../sdks/parity.md](../sdks/parity.md).~~ **— corrected 2026-09-16.** That
     sentence was written by the seam pass when it was true, and the same day's
@@ -367,6 +372,30 @@ middleware, which is a larger surface than this and was scoped as a follow-up
 [`sdks/rust`](../../sdks/rust/).
 
 ## Status
+
+**Invoices, 2026-11-17 (issue #91): six new cases, run.**
+`sdks/stripe-compat/src/invoices.compat.test.ts` drives `stripe.invoices`
+through the nine routes it can reach and asserts the bodies, not only the
+statuses: a draft's Stripe-shaped object, a line, `update`'s key-wise
+`metadata` merge, `list` and `autoPagingToArray`, `del`'s
+`{"object": "invoice", "deleted": true}` and the `404` after it,
+`finalizeInvoice`'s number, `pay` with Stripe's own `paid_out_of_band` (no
+cast) and hosted (one cast, `payInvoiceHosted` in `src/client.ts`, for the
+`success_url`/`cancel_url` Stripe's `InvoicePayParams` lacks), the `409`
+naming the live intent and `voidInvoice` once it is cancelled, and
+`markUncollectible`. **`stripe.invoiceItems` cannot drive vpay at all**: it
+addresses `/v1/invoiceitems` and vpay mounts `/v1/invoice_items`, so the
+sealing client refuses the operation unsent (`404`, `unknown_operation`) —
+a case pins that, and lines are added through the same client's
+`rawRequest`. `stripe.invoices.listLineItems` (`/v1/invoices/{id}/lines`) is
+not mounted either. **Run:** 6 of 6 passed against the branch's own
+`vpay-server`, run natively (`cargo build --profile test`) with the
+`just gen-demo-keys` overlay over a `postgres:16-alpine` container — not the
+compose images, and with no worker, rails or receiver, which no invoice case
+needs; flipping two expectations made exactly those two cases fail. The
+other five files were **not** re-run (they need the worker and the rails).
+Evidence:
+[../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
 
 **Moved onto a sealing `httpClient`, 2026-10-26 (VP-3 + VP-5 + VP-7).** The
 `authenticator` this page described is deleted (`createStripeAuthenticator`, the

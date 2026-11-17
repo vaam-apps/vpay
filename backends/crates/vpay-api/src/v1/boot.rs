@@ -978,6 +978,7 @@ mod tests {
             staff_auth: None,
             routing: Default::default(),
             auth: Default::default(),
+            privacy: vpay_config::PrivacyConfig::default(),
         }
     }
 
@@ -1343,6 +1344,41 @@ mod tests {
         assert!(log.contains("permitted=keypair "), "{log}");
         assert!(log.contains("explicit=true"), "{log}");
         assert!(!log.contains("machine_tokens"), "{log}");
+    }
+
+    /// Privileged-access hardening (ISO 27001 A.8.24, issue #152): tracing output
+    /// across boot and config inspection never leaks configured secrets, pepper,
+    /// rail credentials, or lookup audit salt.
+    #[test]
+    fn boot_logging_never_leaks_configured_secrets() {
+        let mut config = crate::test_fixtures::config();
+        config.privacy.lookup_audit_salt = Some("super-secret-audit-salt-6789".to_owned());
+        config.providers.push(vpay_config::ProviderHost {
+            code: "mtn_momo".to_owned(),
+            enabled: true,
+            host: HostEntry {
+                url: "https://rail.example".to_owned(),
+                label: "rail".to_owned(),
+            },
+            display_name: None,
+            settings: BTreeMap::new(),
+            credentials: BTreeMap::from([(
+                "api_key".to_owned(),
+                "super-secret-mtn-api-key-9999".to_owned(),
+            )]),
+            callback_url: None,
+            currency: "XAF".to_owned(),
+            callbacks: None,
+        });
+
+        let (_res, log) = crate::test_log::with_captured_log(|| {
+            let _ = log_auth_methods(&config);
+            tracing::info!(config = ?config, "server booting with configuration");
+        });
+
+        assert!(!log.contains("super-secret-audit-salt-6789"), "{log}");
+        assert!(!log.contains("super-secret-mtn-api-key-9999"), "{log}");
+        assert!(log.contains("[redacted]"), "{log}");
     }
 
     /// RFC-0014 security review (2026-10-23): while a previous secret is

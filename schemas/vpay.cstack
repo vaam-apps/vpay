@@ -158,7 +158,11 @@ enum IntentStatus {
 }
 
 // backends/crates/vpay-core/src/state.rs — ChargeState. Charge, unlike
-// PaymentIntent, does have a real terminal `failed`.
+// PaymentIntent, does have a real terminal `failed`. `requires_review` since
+// migration 0059 (issue #96): the rail reported the charge paid after its
+// intent was canceled, and the settlement parked it for an operator. The
+// label is added to charges_state_enum_check in the same migration, so the
+// drift report sees one enum on both sides.
 enum ChargeState {
   submitting
   submitted
@@ -166,6 +170,7 @@ enum ChargeState {
   unresolved
   succeeded
   failed
+  requires_review
 }
 
 // backends/crates/vpay-core/src/failure.rs — FailureCode. Closed vocabulary
@@ -2320,6 +2325,11 @@ model RateLimitWindow {
   // with `try_get::<String>()`.
   scope String @length(min: 1, max: 64)
   window_started_at DateTime
+  // `window_started_at + window`: the instant this row's own fixed window ends
+  // (migration 0061). The sweep in `vpay_db::rate_limits::COUNT_ATTEMPT` deletes
+  // only rows whose OWN `window_expires_at` has passed, so one scope's shorter
+  // window never resets another scope's longer one (PR #396, P1).
+  window_expires_at DateTime
   // `Int` is `int8`, hence `BIGINT` in the migration: `int4` is one of the
   // six types `map_scalar` does not map, and an unmapped column is excluded
   // from the drift comparison outright.
@@ -2352,6 +2362,40 @@ model EnvelopeNonce {
   id String @id @length(min: 1, max: 64)
   // NO `@default`, 0034's rule: the writer names it.
   expires_at DateTime
+}
+
+// `audit_events` (migration 0060, ADR-0020 §3, ISO 27001 A.12.4) — the generic,
+// privacy-minimal, append-only journal for privacy-sensitive actions.
+//
+// NO `@@allow` ARM, per ADR-0034 rule and for RateLimitWindow's reason: nothing queries
+// this model through the generated layer; queries are hand-written statements in
+// `vpay_db::audit_events`. The model is here so the drift report compares the table.
+// `vpay_db::audit_events::tests::the_audit_event_model_answers_no_rows_to_every_action`
+// pins the arms' absence.
+//
+// APPEND-ONLY, and the wire says so: `@@internal` removes the create, update
+// and delete verbs from every generated surface (no REST route, no RPC arm,
+// no `@vpay/dash-client` method), so no client is offered an `update()` or a
+// `delete()` on audit evidence that could only ever be refused. Rows are
+// written only by `vpay_db::audit_events`' hand-written INSERT, and migration
+// 0060's trigger refuses UPDATE, DELETE and TRUNCATE in the database itself.
+// The read verbs stay: with no `@@allow` arm they answer no rows, exactly as
+// `RateLimitWindow`'s do.
+model AuditEvent {
+  id String @id @length(min: 1, max: 64)
+  occurred_at DateTime
+  tenant String @length(min: 1, max: 64)
+  actor_kind String @length(min: 1, max: 64)
+  actor_id String @length(min: 1, max: 128)
+  action String @length(min: 1, max: 64)
+  outcome String @length(min: 1, max: 64)
+  target_class String @length(min: 1, max: 64)
+  target_repr String @length(min: 1, max: 128)
+  operation_id String @length(min: 1, max: 64)
+
+  @@internal("create")
+  @@internal("update")
+  @@internal("delete")
 }
 
 // `console_keys` (migration 0056, VP-6a) — a person's registered console signing
@@ -3084,7 +3128,7 @@ procedure retrieveRefund(id: String): McpRefund
 mutation procedure issueRefund(args: IssueRefundInput): McpRefund
   @allow(auth().audience == "merchant" && auth().can_write == true)
   @no_idempotency
-  @mcp(tool: "create_refund", description: "Refund some or all of a succeeded payment intent. A refund starts `pending`. Nothing in vpay settles a pending refund yet, and the orange_money and notchpay rails cannot refund at all (NotImplemented). `idempotency_key` is required.")
+  @mcp(tool: "create_refund", description: "Refund some or all of a succeeded payment intent. A refund starts `pending`. Nothing in vpay settles a pending refund yet, and the orange_money and notchpay rails cannot refund at all (NotImplemented). A payee `destination` is required on mtn_momo and orange_money and refused on notchpay, and a refund that carries one also needs the `account_holders:read` scope — so every mtn_momo or orange_money refund does — because vpay first asks a rail that can look a payee up whether it is a registered account. `idempotency_key` is required.")
 
 mutation procedure cancelRefund(args: CancelInput): McpRefund
   @allow(auth().audience == "merchant" && auth().can_write == true)
