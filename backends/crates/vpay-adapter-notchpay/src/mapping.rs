@@ -344,13 +344,10 @@ fn not_found_elsewhere(doing: &str) -> ProviderError {
 /// Our own keys, refused. It pages (`docs/flows/failures.md`), because every
 /// charge on the rail is failing and no payer can fix it.
 pub(crate) fn keys_refused(refusal: &Refusal, doing: &str) -> ProviderError {
-    ProviderError::Rejected {
-        code: FailureCode::ProviderAccountBlocked,
-        message: format!(
-            "notchpay: {doing} answered {}: the account's keys were refused",
-            refusal.http_status
-        ),
-    }
+    ProviderError::credentials_refused(format!(
+        "notchpay: {doing} answered {}: the account's keys were refused",
+        refusal.http_status
+    ))
 }
 
 /// A `422` whose `errors` name the payer's `phone` and no other field.
@@ -376,6 +373,7 @@ fn names_only_the_payers_phone(refusal: &Refusal) -> bool {
 /// of its words are carried.
 fn wrong_number(doing: &str) -> ProviderError {
     ProviderError::Rejected {
+        context: None,
         code: FailureCode::InvalidPayer,
         message: format!(
             "notchpay: {doing} answered 422 on the payer's phone alone: the number is not one \
@@ -400,7 +398,27 @@ fn declined(refusal: &Refusal, doing: &str) -> ProviderError {
         .map(String::as_str)
         .collect::<Vec<_>>()
         .join(", ");
+    // `Display` carries the status and the field *names* — each only when it
+    // has a key's shape (`vpay_provider::http::rail_token`) — and never Notch
+    // Pay's message, which is the rail's prose and stays in `message`, the
+    // part only `failure_raw` stores (issue #147, RFC-0002 PR 4).
+    let named = refusal
+        .errors
+        .keys()
+        .filter_map(|field| vpay_provider::http::rail_token(field))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let context = if named.is_empty() {
+        format!("notchpay: {doing} answered {}", refusal.http_status)
+    } else {
+        format!(
+            "notchpay: {doing} answered {} (fields: {})",
+            refusal.http_status,
+            truncated(&named)
+        )
+    };
     ProviderError::Rejected {
+        context: Some(context),
         code: FailureCode::ProviderError,
         message: format!(
             "notchpay: {doing} answered {}: {}{}",
@@ -749,7 +767,7 @@ mod tests {
                 message: Some(said.to_owned()),
                 errors: BTreeMap::from([("phone".to_owned(), vec![said.to_owned()])]),
             };
-            let Processed::Refused(ProviderError::Rejected { code, message }) =
+            let Processed::Refused(ProviderError::Rejected { code, message, .. }) =
                 process_refusal(&refused)
             else {
                 panic!("a wrong-network refusal is a decline");

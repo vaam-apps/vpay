@@ -1391,7 +1391,7 @@ non_db_surfaces:
     surface: telemetry
     description: stdout/stderr tracing fields (tracing-subscriber)
     enumerable: false
-    unmet: no static scanner over tracing!() sites yet; the Debug-redaction rule and CustomerRow hand-written impls are the only guard
+    unmet: no static scanner over tracing!() sites yet; the registered hand-written Debug impls, the Display-side redactions of issue #147's PR 4 (rail URLs, rail text, serde values) and one manual sweep (2026-11-17, docs/runbooks/privacy-telemetry.md) are the only guard
   - id: metrics
     surface: telemetry
     description: /metrics Prometheus text on the observability listener

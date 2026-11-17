@@ -363,6 +363,23 @@ storage error's leaf text reaches the log and never the body
 idempotency key is never echoed past an 8-character hint, in the log only
 (`an_idempotency_key_is_never_echoed_past_its_hint`).
 
+**Updated 2026-11-17 (issue #147, RFC-0002 PR 4): the log half no longer
+carries a payer's data either.** "The leaf's text reaches the log" stays true
+of storage errors and stops being true of three rail-authored things: a
+decline's `Display` is `rail rejected the request: <failure_code>` without the
+rail's words (`no_declines_display_prints_the_rails_words`); a transport
+failure's source chain names the rail's **origin** where reqwest's own
+`Display` used to print the whole URL — MTN's account-holder path carries the
+MSISDN (`no_transport_failures_display_chain_prints_the_request_urls_path_or_query`,
+`a_lookup_transport_failure_never_prints_the_payers_number`); and a rail body
+that serde could not decode, or that the adapters used to quote after a
+non-2xx, is withheld (`ProviderError::malformed_json`). Asserted at the sink,
+through `ApiError::into_response`, by
+`a_rail_error_carrying_a_payers_number_never_reaches_the_log_or_the_body` and
+`a_failed_lookup_never_logs_the_number_it_was_asked_about`. The rail's words
+are still stored in `failure_raw`; what a log may hold is
+[runbooks/privacy-telemetry.md](../runbooks/privacy-telemetry.md).
+
 **Updated 2026-09-03 (Step 3): two of these codes are now produced by a
 rail.** `POST …/confirm` calls a real adapter over real HTTP, so:
 

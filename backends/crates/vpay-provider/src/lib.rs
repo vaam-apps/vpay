@@ -1220,13 +1220,23 @@ pub struct CallbackRef {
 /// `reqwest`'s own `Display` stops at the first of those.
 ///
 /// `Debug` is **hand-written** below: the `reqwest::Error` inside prints the
-/// request URL, which can hold a payer's MSISDN or a payment token.
+/// request URL, which can hold a payer's MSISDN or a payment token. And the
+/// `From<reqwest::Error>` impl is hand-written too, for the `Display` half of
+/// the same leak: it passes the error through [`http::redact_url`], so the
+/// `for url (…)` reqwest's `Display` ends in names the rail's origin and
+/// nothing after it (issue #147, RFC-0002 PR 4). Every adapter reaches this
+/// variant through [`ProviderError::transport_from`] /
+/// [`ProviderError::malformed_from`], which take `impl Into<RailFailure>` —
+/// i.e. through that impl.
 #[derive(thiserror::Error)]
 #[non_exhaustive]
 pub enum RailFailure {
     /// DNS, connect, TLS, or a deadline from [`ProviderConfig`].
+    ///
+    /// Build it with `RailFailure::from(error)` (or `?`), not by naming the
+    /// variant: the `From` impl is where the URL is redacted.
     #[error("sending the request")]
-    Http(#[from] reqwest::Error),
+    Http(#[source] reqwest::Error),
     /// The response body could not be read within its bound.
     #[error("reading the response")]
     Body(#[from] http::HttpBodyError),
@@ -1242,6 +1252,14 @@ pub enum RailFailure {
 /// MTN's account-holder URL carries the payer's MSISDN in its path. This
 /// closes the **`Debug`** path only; the `Display` chain still ends in
 /// reqwest's `for url (…)`, which is recorded as open.
+/// Redacts the URL on the way in — see [`RailFailure`]'s own doc and
+/// [`http::redact_url`].
+impl From<reqwest::Error> for RailFailure {
+    fn from(error: reqwest::Error) -> Self {
+        Self::Http(http::redact_url(error))
+    }
+}
+
 impl fmt::Debug for RailFailure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -1270,8 +1288,34 @@ pub enum ProviderError {
         #[source]
         source: Option<RailFailure>,
     },
-    #[error("rail rejected the request: {code} — {message}")]
-    Rejected { code: FailureCode, message: String },
+    /// The rail decided against the request.
+    ///
+    /// `message` is the rail's own words — the `rail_failure_text` inventory
+    /// element — and is **not** in `Display` (issue #147, RFC-0002 PR 4).
+    /// Rail-authored prose can quote the payer back, and `Display` is what
+    /// every `ApiError`/`JobError` log line, `jobs.last_error` and the
+    /// worker's `job failed: …` line render: copies the personal-data
+    /// inventory does not govern. The words are kept in the columns it does
+    /// (`charges.failure_raw`, `refunds.failure_raw`, `control: redact`),
+    /// written by the settle paths that match this variant by name, and an
+    /// operator reads them there. `code` is vpay's own closed vocabulary and
+    /// stays.
+    ///
+    /// `context` is the **adapter's** own sentence, when it has one worth an
+    /// operator's alert — which rail, which operation, which HTTP status
+    /// (`mtn_momo: the rail refused our credentials (HTTP 403)`). It is in
+    /// `Display`, under the same rule as [`ProviderError::Transport`]'s
+    /// `context`: never rail-authored text, never a payer's identifier.
+    /// Splitting it from `message` is what lets a `ProviderAccountBlocked`
+    /// page still say 401 or 403 while the rail's words stay out of the log
+    /// (review of issue #147's PR 4). `None` for a decline whose only
+    /// description is the rail's.
+    #[error("rail rejected the request: {code}{}", context.as_deref().map(|c| format!(" — {c}")).unwrap_or_default())]
+    Rejected {
+        code: FailureCode,
+        message: String,
+        context: Option<String>,
+    },
     /// The rail answered something this adapter cannot act on.
     ///
     /// Same two fields, same rule, as [`ProviderError::Transport`].
@@ -1357,10 +1401,15 @@ impl fmt::Debug for ProviderError {
                 .field("context", context)
                 .field("source", source)
                 .finish(),
-            Self::Rejected { code, message } => f
+            Self::Rejected {
+                code,
+                message,
+                context,
+            } => f
                 .debug_struct("ProviderError::Rejected")
                 .field("code", code)
                 .field("message", &Secret::new(message))
+                .field("context", context)
                 .finish(),
             Self::Malformed { context, source } => f
                 .debug_struct("ProviderError::Malformed")
@@ -1511,6 +1560,104 @@ impl ProviderError {
             context: context.into(),
             source: Some(source.into()),
         }
+    }
+
+    /// The rail refusing **this deployment's own** credentials:
+    /// [`FailureCode::ProviderAccountBlocked`], with the adapter's sentence as
+    /// both the stored `message` and the `Display`-visible `context`.
+    ///
+    /// The one constructor for that refusal, so every adapter's page carries
+    /// which rail, which operation and which HTTP status — 401 and 403 mean
+    /// different fixes — while no rail-authored text reaches `Display`
+    /// (review of issue #147's PR 4). `context` must be the adapter's own
+    /// words; a rail's body belongs in a separate `message`, built by hand.
+    ///
+    /// ```
+    /// use vpay_provider::ProviderError;
+    ///
+    /// let error = ProviderError::credentials_refused("mtn_momo: the rail refused our credentials (HTTP 403)");
+    /// assert_eq!(
+    ///     error.to_string(),
+    ///     "rail rejected the request: provider_account_blocked — \
+    ///      mtn_momo: the rail refused our credentials (HTTP 403)"
+    /// );
+    /// ```
+    #[must_use]
+    pub fn credentials_refused(context: impl Into<String>) -> Self {
+        let context = context.into();
+        Self::Rejected {
+            code: FailureCode::ProviderAccountBlocked,
+            message: context.clone(),
+            context: Some(context),
+        }
+    }
+
+    /// An answer `serde_json` could not decode, described **without any
+    /// value the rail sent**.
+    ///
+    /// `serde_json`'s own message quotes the offending scalar —
+    /// `invalid type: string "+237670000000", expected u64` — and a rail's
+    /// body is where a payer's number, a holder's name and a token live. That
+    /// message used to be `format!`ed into `context` by both shipping
+    /// adapters, which put it in the `Display` every `ApiError`/`JobError`
+    /// log line and `jobs.last_error` render (issue #147, RFC-0002 PR 4).
+    /// This keeps what an operator can act on — which answer, serde's
+    /// [`serde_json::error::Category`], the line and column, and the *field
+    /// name* when serde says one is missing (a name from this adapter's own
+    /// wire struct, never the rail's data) — and nothing else. `vpay-notchpay`
+    /// drops the serde error entirely for the same reason; this is the same
+    /// rule with the position kept.
+    ///
+    /// ```
+    /// use vpay_provider::ProviderError;
+    ///
+    /// #[derive(Debug, serde::Deserialize)]
+    /// struct Wire {
+    ///     #[allow(dead_code)]
+    ///     amount: u64,
+    /// }
+    ///
+    /// let serde_error = serde_json::from_str::<Wire>(r#"{"amount":"+237670000000"}"#)
+    ///     .expect_err("a string where a number belongs");
+    /// assert!(serde_error.to_string().contains("+237670000000"), "serde quotes it");
+    ///
+    /// let error = ProviderError::malformed_json("mtn_momo: status response", &serde_error);
+    /// let text = error.to_string();
+    /// assert!(!text.contains("237670000000"), "{text}");
+    /// assert!(text.contains("mtn_momo: status response"), "{text}");
+    /// assert!(text.contains("line 1 column"), "{text}");
+    ///
+    /// // A missing field is named: the name is ours, not the rail's data.
+    /// let missing = serde_json::from_str::<Wire>("{}").expect_err("no amount");
+    /// let text = ProviderError::malformed_json("orange_money: status", &missing).to_string();
+    /// assert!(text.contains("missing field `amount`"), "{text}");
+    /// ```
+    #[must_use]
+    pub fn malformed_json(context: impl fmt::Display, error: &serde_json::Error) -> Self {
+        use serde_json::error::Category;
+
+        let message = error.to_string();
+        // `missing field `x`` names a field of the adapter's own wire struct;
+        // every other message serde writes may quote the rail's value.
+        let named = message
+            .strip_prefix("missing field `")
+            .and_then(|rest| rest.split_once('`'))
+            .map(|(field, _)| field);
+        let kind = match error.classify() {
+            Category::Io => "an I/O error",
+            Category::Syntax => "a syntax error",
+            Category::Data => "a data error",
+            Category::Eof => "a truncated body",
+        };
+        let what = named.map_or_else(
+            || format!("{kind}, value withheld"),
+            |field| format!("missing field `{field}`"),
+        );
+        Self::malformed(format!(
+            "{context}: {what} at line {} column {}",
+            error.line(),
+            error.column()
+        ))
     }
 
     /// An answer the adapter understood, refused, and that asking again
@@ -1672,7 +1819,9 @@ impl vpay_core::Classify for ProviderError {
     fn public_message(&self) -> String {
         match self {
             // The taxonomy's meaning is public by design; the rail's raw
-            // reason string is not — it is logged via Display, never sent.
+            // reason string is not — it is stored on the charge or refund,
+            // never logged (not even via Display, since issue #147's PR 4)
+            // and never sent.
             // The `FailureCode` moves here now that the envelope's `code` is
             // a constant, so a merchant still learns *why* without the two
             // vocabularies colliding on one field.
@@ -2383,6 +2532,7 @@ mod tests {
 
     fn rejected(code: FailureCode) -> ProviderError {
         ProviderError::Rejected {
+            context: None,
             code,
             message: "the rail's own words".to_owned(),
         }
@@ -2419,10 +2569,12 @@ mod tests {
             rejected(FailureCode::InsufficientFunds).public_message(),
             "The payment was declined (insufficient_funds)."
         );
-        // The rail's own reason string stays in `Display` (an operator's
-        // half) and never crosses into the merchant's.
+        // The rail's own reason string crosses into neither half: not the
+        // merchant's, and — since issue #147's PR 4 — not `Display` either,
+        // which is what reaches a log line. It lives in `failure_raw`.
         let e = rejected(FailureCode::PayerDeclined);
-        assert!(e.to_string().contains("the rail's own words"));
+        assert!(!e.to_string().contains("the rail's own words"));
+        assert!(e.to_string().contains("payer_declined"));
         assert!(!e.public_message().contains("the rail's own words"));
     }
 
@@ -3237,6 +3389,7 @@ mod debug_tests {
 
     fn rejected() -> super::ProviderError {
         super::ProviderError::Rejected {
+            context: None,
             code: FailureCode::InsufficientFunds,
             message: RAIL_WORDS.to_owned(),
         }
@@ -3339,6 +3492,71 @@ mod debug_tests {
             );
             assert!(printed.contains("connect: true"), "no cause in {printed}");
         }
+    }
+
+    /// **The `Display` chain of a transport failure built the way every
+    /// adapter builds one never prints the request URL's path or query** —
+    /// the half of the leak the `Debug` test above could not reach, and the
+    /// one `ApiError`'s `source_chain` log field, `jobs.last_error` and the
+    /// worker's `job failed: …` line all render (issue #147, RFC-0002 PR 4).
+    ///
+    /// Two directions: the MSISDN, the token and the path never appear; the
+    /// adapter's sentence, the rail's origin and reqwest's cause always do.
+    /// Restoring `#[from]` on `RailFailure::Http` (so the URL is not
+    /// redacted on the way in) is the mutation this catches.
+    #[tokio::test]
+    async fn no_transport_failures_display_chain_prints_the_request_urls_path_or_query() {
+        let error = super::ProviderError::transport_from(
+            "mtn_momo: the request to the rail failed",
+            reqwest_failure().await,
+        );
+        let chain = vpay_core::error::display_with_chain(&error);
+        for literal in [PAYER_REF, "secref04", "pay_token", "basicuserinfo"] {
+            assert!(!chain.contains(literal), "leaked {literal:?} in {chain}");
+        }
+        assert!(chain.contains("mtn_momo"), "no context in {chain}");
+        assert!(
+            chain.contains("http://127.0.0.1:1/"),
+            "no origin in {chain}"
+        );
+        assert!(
+            chain.contains("error sending request"),
+            "reqwest's own cause must stay on the chain: {chain}"
+        );
+    }
+
+    /// **A decline's `Display` never carries the rail's words**, and the
+    /// `FailureCode` — vpay's own vocabulary — always does. `Display` is
+    /// what reaches a log line and `jobs.last_error`; the words belong to
+    /// `failure_raw` (issue #147, RFC-0002 PR 4). Putting `{message}` back
+    /// in the variant's `#[error]` is the mutation this catches.
+    #[test]
+    fn no_declines_display_prints_the_rails_words() {
+        let error = rejected();
+        for printed in [
+            error.to_string(),
+            vpay_core::error::display_with_chain(&error),
+        ] {
+            assert!(!printed.contains(RAIL_WORDS), "leaked in {printed}");
+            assert!(
+                printed.contains("insufficient_funds"),
+                "no failure code in {printed}"
+            );
+        }
+
+        // The adapter's own sentence, kept apart from the rail's words, is
+        // what does reach `Display` — and the rail's words still do not.
+        let with_context = super::ProviderError::Rejected {
+            code: FailureCode::ProviderAccountBlocked,
+            message: RAIL_WORDS.to_owned(),
+            context: Some("mtn_momo: the rail refused our credentials (HTTP 403)".to_owned()),
+        };
+        let printed = with_context.to_string();
+        assert!(!printed.contains(RAIL_WORDS), "leaked in {printed}");
+        assert!(
+            printed.contains("(HTTP 403)"),
+            "no adapter context in {printed}"
+        );
     }
 
     #[test]

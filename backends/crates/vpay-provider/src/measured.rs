@@ -417,6 +417,7 @@ mod tests {
         ) -> Result<Submitted, ProviderError> {
             match self.error {
                 Some(code) => Err(ProviderError::Rejected {
+                    context: None,
                     code,
                     message: "the rail's own words".to_owned(),
                 }),

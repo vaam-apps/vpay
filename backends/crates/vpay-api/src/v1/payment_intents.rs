@@ -1802,7 +1802,7 @@ async fn refuse_confirm(
         // arm of [`finish_confirm`], on purpose: an answered row beside a
         // `submitting` charge is what `recovery_step` reads as `Advance`,
         // which is wrong for a decline. See that function's doc.
-        ProviderError::Rejected { code, message } => {
+        ProviderError::Rejected { code, message, .. } => {
             persist_decline(
                 repositories,
                 scope,
@@ -3685,6 +3685,7 @@ mod tests {
         );
         assert_eq!(
             error_kind(&ProviderError::Rejected {
+                context: None,
                 code: vpay_core::FailureCode::InsufficientFunds,
                 message: "NOT_ENOUGH_FUNDS".to_owned(),
             }),

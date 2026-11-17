@@ -2014,3 +2014,67 @@ case needs either); see
 [../flows/stripe-sdk-compat.md](../flows/stripe-sdk-compat.md) § Status.
 Evidence for both:
 [verification/2026-11-17-invoice-number-on-checkout.md](verification/2026-11-17-invoice-number-on-checkout.md).
+
+## Personal data stops reaching telemetry through error chains (2026-11-17, issue #147, RFC-0002 PR 4 — the parts not blocked on D3/D4)
+
+One manual sweep of the 249 shipping `tracing` invocations (48 files) and of
+every `Display` an error chain renders into a log line, `jobs.last_error` or
+`webhook_deliveries.response_excerpt`. Every site read is listed, changed or
+left with its reason, in
+[verification/2026-11-17-telemetry-sweep.md](verification/2026-11-17-telemetry-sweep.md).
+
+- **A rail URL reaches a `Display` chain as its origin.** reqwest's own
+  `Display` ends in `for url (…)` with the URL in full, and MTN's
+  `basicuserinfo` URL carries the payer's MSISDN in its path. PR 3 closed the
+  `Debug` half and recorded this half as open.
+  `vpay_provider::http::redact_url` now cuts the URL to
+  `scheme://host[:port]/` at `RailFailure`'s (now hand-written)
+  `From<reqwest::Error>` and at `HttpBodyError::read`, the constructor
+  `bounded_body` uses. The worker's webhook transport excerpt goes through the
+  same function, so a receiver credential in an endpoint's query is no longer
+  copied into `response_excerpt` on every failed attempt.
+- **A decline's `Display` no longer carries the rail's words.**
+  `ProviderError::Rejected` renders `rail rejected the request: <code>`; the
+  `message` (`rail_failure_text`) still reaches `charges.failure_raw` /
+  `refunds.failure_raw` through the settle paths that match the variant by
+  name. A new `context: Option<String>` field carries the **adapter's** own
+  sentence into `Display` when it has one: `ProviderError::credentials_refused`
+  builds every 401/403 refusal of our own keys with it (MTN ×2, Orange ×3,
+  Notch Pay ×1), so the `ProviderAccountBlocked` page still says which rail
+  and 401 or 403, and Notch Pay's validation refusal names its fields there.
+- **Rail bodies are withheld from `Transport`/`Config`/`Malformed`
+  contexts.** `ProviderError::malformed_json` replaces `format!("…: {e}")` at
+  the eight `serde_json` sites in the MTN and Orange adapters (serde's message
+  quotes the scalar it chokes on); MTN's unexplained HTTP 500 and refused
+  `basicuserinfo` 400, and Orange's submit 5xx/404 and status-query 5xx/4xx,
+  keep the status, the documented error fields, and the body's length — never
+  its free text. A code is printed only if `vpay_provider::http::rail_token`
+  admits it (a token of at most four digits); Orange's envelope `message` only
+  if it is an HTTP reason phrase; its `description` never. Orange's
+  `token_url` prints the configured `base_url` through `SafeUrl`.
+- **The webhook `exhausted` alert prints `SafeUrl(scheme://host)`**, not the
+  stored URL.
+- **Not changed, deliberately:** the three log lines that print a masked
+  MSISDN (`+2376••••NNN`: the account-holder lookup's two, the refund
+  instruction's one). They predate RFC-0002, are documented in
+  `flows/account-holder-lookup.md` § 3, and whether a masked identifier may
+  appear in a log at all is **RFC-0002 D3, open** — neither kept as approved
+  nor removed here. No `Masked`/`Pseudonymous` consumer was added. The
+  webhook URL policy (D4) and the payload projections (PR 5, D2) are not
+  built.
+- **Tests:** 18 new canary cases and three doctests — `vpay-provider` 4 (+3
+  doctests), MTN 5, Orange 5, `vpay-worker` 1, `vpay-api` 2, and one
+  container-backed case in `backends/tests/integration/tests/webhooks.rs` —
+  each asserting the protected literal absent **and** the correlation (code,
+  origin, delivery id) present, each proven red by a named mutation (the
+  verification page has them). One existing test encoded the old rule and was
+  inverted: `a_decline_names_the_failure_code_in_the_message_a_merchant_sees`
+  asserted the rail's words **were** in `Display`.
+- **Operator documentation:**
+  [../runbooks/privacy-telemetry.md](../runbooks/privacy-telemetry.md), new —
+  which personal data each telemetry surface can hold and in what form, how
+  to find the copies earlier builds wrote, and, for every retention period and
+  owner, "undecided (RFC-0002 D1/D9/D13)".
+- **Still open:** no static scanner over `tracing!` sites (the inventory's
+  `logs` surface stays `enumerable: false`); a livemode webhook URL refused
+  at boot is printed as written (D4).

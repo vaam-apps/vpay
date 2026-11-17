@@ -24,6 +24,7 @@ use sha2::{Digest, Sha256};
 use time::OffsetDateTime;
 use vpay_api::model::EventObject;
 use vpay_core::metrics::{WEBHOOK_DELIVERIES_TOTAL, webhook_outcome};
+use vpay_core::privacy::SafeUrl;
 use vpay_db::{DeliveryRow, EventRow, JobRow, Repositories, TxOutcome, UnitOfWork as _};
 use vpay_provider::http::bounded_body;
 
@@ -792,7 +793,7 @@ pub async fn handle_deliver(
             )
             .await
         }
-        Err(error) => record_no_response(repositories, job, &delivery, &sha, &error).await,
+        Err(error) => record_no_response(repositories, job, &delivery, &sha, error).await,
     }
 }
 
@@ -1035,7 +1036,7 @@ async fn record_no_response(
     job: &JobRow,
     delivery: &DeliveryRow,
     sha: &str,
-    error: &reqwest::Error,
+    error: reqwest::Error,
 ) -> Result<Outcome, JobError> {
     record_failure(
         repositories,
@@ -1043,9 +1044,24 @@ async fn record_no_response(
         delivery,
         Some(sha),
         None,
-        Some(&no_response_excerpt(error)),
+        Some(&transport_excerpt(error)),
     )
     .await
+}
+
+/// [`no_response_excerpt`] for the `reqwest::Error` a delivery that got no
+/// answer holds, with the URL first cut back to its origin by
+/// [`vpay_provider::http::redact_url`].
+///
+/// reqwest's `Display` ends in `for url (…)` with the endpoint URL in full,
+/// and an endpoint's query may carry the receiver's credential — whether it
+/// may at all is RFC-0002 D4, open. Before issue #147's sweep that credential
+/// was copied into `webhook_deliveries.response_excerpt` on every failed
+/// attempt; the endpoint id beside the row is what finds the configuration,
+/// so the origin is all the excerpt keeps. Pinned by
+/// `tests::a_failed_attempts_excerpt_keeps_the_origin_and_never_the_query`.
+fn transport_excerpt(error: reqwest::Error) -> String {
+    no_response_excerpt(&vpay_provider::http::redact_url(error))
 }
 
 /// What `webhook_deliveries.response_excerpt` says when nothing came back.
@@ -1057,8 +1073,11 @@ async fn record_no_response(
 /// without the chain repeats a URL the operator already has and omits the only
 /// part that says what went wrong.
 ///
-/// Safe to store: the error's `Display` names the host and the cause and never
-/// the request body — `reqwest` does not put one into it. Bounded by
+/// Safe to store: the error's `Display` names the cause and never the request
+/// body — `reqwest` does not put one into it — and, because
+/// [`transport_excerpt`] passes the error through
+/// [`vpay_provider::http::redact_url`] first, names only the endpoint's
+/// **origin**, never its path or query (issue #147). Bounded by
 /// `vpay_db`'s own excerpt truncation against migration 0022's
 /// `excerpt_length` CHECK, which no chain a transport failure produces comes
 /// near.
@@ -1147,7 +1166,10 @@ async fn record_failure(
                 delivery_id = %delivery.id,
                 event_id = %delivery.event_id,
                 endpoint_id = %delivery.endpoint_id,
-                url = %delivery.url,
+                // Origin only: the endpoint id above is what finds the
+                // configuration, and the URL's query may hold the receiver's
+                // credential (RFC-0002 D4, open; issue #147).
+                url = ?SafeUrl::new(&delivery.url),
                 attempt = delivery.attempt.saturating_add(1),
                 "webhook delivery exhausted the retry ladder; the merchant has not \
                  been told about this event"
@@ -1564,6 +1586,42 @@ mod tests {
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
         );
     }
+
+    /// **A failed attempt's excerpt keeps the endpoint's origin and never its
+    /// path or query** (issue #147, RFC-0002 PR 4). The error is a real
+    /// `reqwest::Error` against a closed loopback port whose URL carries a
+    /// receiver credential in its query, exactly as a merchant may configure
+    /// it while RFC-0002 D4 is open. Before the fix the whole URL — token and
+    /// all — was stored in `webhook_deliveries.response_excerpt`. Dropping
+    /// `redact_url` from [`super::transport_excerpt`] is the mutation this
+    /// catches.
+    #[tokio::test]
+    async fn a_failed_attempts_excerpt_keeps_the_origin_and_never_the_query() {
+        let url = "http://127.0.0.1:1/hooks/acct-canary?vpay_token=secref07#frag";
+        let error = vpay_provider::http::client()
+            .expect("the vendored-roots client builds")
+            .post(url)
+            .send()
+            .await
+            .expect_err("nothing listens on loopback port 1");
+        assert!(
+            error.to_string().contains("secref07"),
+            "the fixture must make reqwest print the token, or this proves nothing: {error}"
+        );
+
+        let excerpt = super::transport_excerpt(error);
+        for literal in ["secref07", "vpay_token", "acct-canary", "frag"] {
+            assert!(
+                !excerpt.contains(literal),
+                "leaked {literal:?} in {excerpt}"
+            );
+        }
+        assert!(
+            excerpt.starts_with("no response: ") && excerpt.contains("http://127.0.0.1:1/"),
+            "the origin and the shape must survive: {excerpt}"
+        );
+    }
+
     /// The excerpt carries the whole chain, not just the outermost sentence.
     /// Without it `webhook_deliveries.response_excerpt` repeats the URL an
     /// operator already has and omits "connection refused" — the same loss

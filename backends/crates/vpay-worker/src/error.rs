@@ -403,6 +403,7 @@ mod tests {
             Case {
                 name: "Provider(Rejected) — a rail decision: terminal here, new intent elsewhere",
                 error: JobError::Provider(ProviderError::Rejected {
+                    context: None,
                     code: vpay_core::FailureCode::InsufficientFunds,
                     message: "balance too low".to_owned(),
                 }),
@@ -544,10 +545,12 @@ mod tests {
     #[test]
     fn wrapping_a_leaf_preserves_every_classification_the_leaf_chose() {
         let leaf = ProviderError::Rejected {
+            context: None,
             code: vpay_core::FailureCode::PayerDeclined,
             message: "payer said no".to_owned(),
         };
         let wrapped = JobError::Provider(ProviderError::Rejected {
+            context: None,
             code: vpay_core::FailureCode::PayerDeclined,
             message: "payer said no".to_owned(),
         });

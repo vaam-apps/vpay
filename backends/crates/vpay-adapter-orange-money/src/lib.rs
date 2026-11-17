@@ -189,13 +189,10 @@ impl Adapter {
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
             // Not a payer's problem and not retryable by anyone but us: every
             // charge on this rail is failing (docs/flows/failures.md).
-            return Err(ProviderError::Rejected {
-                code: FailureCode::ProviderAccountBlocked,
-                message: format!(
-                    "orange_money: the rail refused the configured client credentials (HTTP {})",
-                    status.as_u16()
-                ),
-            });
+            return Err(ProviderError::credentials_refused(format!(
+                "orange_money: the rail refused the configured client credentials (HTTP {})",
+                status.as_u16()
+            )));
         }
         if status.is_server_error() {
             return Err(ProviderError::transport(format!(
@@ -223,10 +220,13 @@ impl Adapter {
             )));
         }
 
+        // `malformed_json`: serde's own message quotes the scalar it choked
+        // on, and this body's scalars are a bearer token (issue #147).
         let parsed: TokenResponse = serde_json::from_slice(&body).map_err(|error| {
-            ProviderError::malformed(format!(
-                "orange_money: the token response is not the documented JSON: {error}"
-            ))
+            ProviderError::malformed_json(
+                "orange_money: the token response is not the documented JSON",
+                &error,
+            )
         })?;
         if parsed.access_token.trim().is_empty() {
             return Err(ProviderError::malformed(
@@ -559,20 +559,17 @@ impl ProviderAdapter for Adapter {
             return mapping::charge_status(&response_body);
         }
         if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-            return Err(ProviderError::Rejected {
-                code: FailureCode::ProviderAccountBlocked,
-                message: format!(
-                    "orange_money: the rail refused the configured credentials on a status query \
-                     (HTTP {})",
-                    status.as_u16()
-                ),
-            });
+            return Err(ProviderError::credentials_refused(format!(
+                "orange_money: the rail refused the configured credentials on a status query \
+                 (HTTP {})",
+                status.as_u16()
+            )));
         }
         if status.is_server_error() {
             return Err(ProviderError::transport(format!(
-                "orange_money: the rail answered HTTP {} to a status query: {}",
+                "orange_money: the rail answered HTTP {} to a status query; {}",
                 status.as_u16(),
-                rail_reason(&response_body)
+                rail_error_summary(&response_body)
             )));
         }
         if status.is_redirection() {
@@ -591,9 +588,9 @@ impl ProviderAdapter for Adapter {
         // string. Classifying it as a decline would fail a live charge on the
         // strength of a malformed request.
         Err(ProviderError::Config(format!(
-            "orange_money: the rail answered HTTP {} to a status query: {}",
+            "orange_money: the rail answered HTTP {} to a status query; {}",
             status.as_u16(),
-            rail_reason(&response_body)
+            rail_error_summary(&response_body)
         )))
     }
 
@@ -613,10 +610,13 @@ impl ProviderAdapter for Adapter {
     /// `order_id`, carries an `order_id` that is not a reference we could have
     /// generated, or carries no `notif_token`.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
+        // An unauthenticated body carrying the `notif_token`: serde's own
+        // message would quote whatever it chokes on (issue #147).
         let parsed: CallbackBody = serde_json::from_slice(body).map_err(|error| {
-            ProviderError::malformed(format!(
-                "orange_money: the notification body is not JSON: {error}"
-            ))
+            ProviderError::malformed_json(
+                "orange_money: the notification body is not the documented JSON",
+                &error,
+            )
         })?;
 
         let order_id = parsed.order_id.ok_or_else(|| {
@@ -861,26 +861,24 @@ fn setting<'a>(config: &'a ProviderConfig, key: &str) -> Option<&'a str> {
 fn submit_error(status: StatusCode, body: &[u8]) -> ProviderError {
     let reason = rail_reason(body);
     if status == StatusCode::UNAUTHORIZED || status == StatusCode::FORBIDDEN {
-        return ProviderError::Rejected {
-            code: FailureCode::ProviderAccountBlocked,
-            message: format!(
-                "orange_money: the rail refused the configured credentials on a submit (HTTP {})",
-                status.as_u16()
-            ),
-        };
+        return ProviderError::credentials_refused(format!(
+            "orange_money: the rail refused the configured credentials on a submit (HTTP {})",
+            status.as_u16()
+        ));
     }
     if status.is_server_error() {
         return ProviderError::transport(format!(
-            "orange_money: the rail answered HTTP {} to a submit: {reason}",
-            status.as_u16()
+            "orange_money: the rail answered HTTP {} to a submit; {}",
+            status.as_u16(),
+            rail_error_summary(body)
         ));
     }
     if status == StatusCode::NOT_FOUND {
         // The payment API is not where the configuration says it is. A charge
         // must not be declined for that.
         return ProviderError::Config(format!(
-            "orange_money: no webpayment endpoint under the configured base_url (HTTP 404): \
-             {reason}"
+            "orange_money: no webpayment endpoint under the configured base_url (HTTP 404); {}",
+            rail_error_summary(body)
         ));
     }
     if status.is_redirection() {
@@ -897,6 +895,7 @@ fn submit_error(status: StatusCode, body: &[u8]) -> ProviderError {
         ));
     }
     ProviderError::Rejected {
+        context: None,
         code: FailureCode::ProviderError,
         message: format!(
             "orange_money: the rail refused the payment (HTTP {}): {reason}",
@@ -905,7 +904,57 @@ fn submit_error(status: StatusCode, body: &[u8]) -> ProviderError {
     }
 }
 
-/// The rail's own words, bounded, for an operator.
+/// What a `Transport` or `Config` context says about a rail's error body:
+/// its documented code and reason phrase when it carries them, its length,
+/// and never its free text.
+///
+/// Those contexts are `Display`, which every `ApiError`/`JobError` log line
+/// and `jobs.last_error` render, and a non-2xx body is rail-authored text
+/// that can echo the request it refuses — a status query carries the
+/// `pay_token`, a submit the `merchant_key` (issue #147, RFC-0002 PR 4). So
+/// only the two enum-like fields of [`wire::ErrorEnvelope`] are read, and each
+/// only when it has the shape it is documented to have: `code` through
+/// [`vpay_provider::http::rail_token`] (the same rule MTN's adapter applies to
+/// its `code`), `message` only when it is an HTTP reason phrase — the
+/// vocabulary Orange's gateway fills it from (`Bad Request`, `Unauthorized`).
+/// A body that is not the envelope, or whose fields are anything else, is
+/// reported by status and length alone. `description` is never read. The
+/// rail's whole words still reach `failure_raw` through a decline's
+/// [`ProviderError::Rejected`] `message`, which no `Display` renders.
+fn rail_error_summary(body: &[u8]) -> String {
+    let envelope = wire::ErrorEnvelope::parse(body);
+    let code = envelope.code.as_ref().and_then(|code| match code {
+        serde_json::Value::Number(number) => {
+            vpay_provider::http::rail_token(&number.to_string()).map(str::to_owned)
+        }
+        serde_json::Value::String(text) => vpay_provider::http::rail_token(text).map(str::to_owned),
+        _ => None,
+    });
+    let reason = envelope
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|message| {
+            (100..600).any(|status| {
+                StatusCode::from_u16(status)
+                    .ok()
+                    .and_then(|status| status.canonical_reason())
+                    .is_some_and(|phrase| phrase.eq_ignore_ascii_case(message))
+            })
+        });
+    let named = match (code, reason) {
+        (Some(code), Some(reason)) => format!("error code {code} ({reason}); "),
+        (Some(code), None) => format!("error code {code}; "),
+        (None, Some(reason)) => format!("{reason}; "),
+        (None, None) => String::new(),
+    };
+    format!(
+        "{named}the rest of its body ({} bytes) is withheld",
+        body.len()
+    )
+}
+
+/// The rail's own words, bounded, for a decline's `failure_raw`.
 ///
 /// Only ever called on a non-2xx body: a success body carries the `pay_token`
 /// and must not reach a message. Lossy UTF-8 because a rail behind a proxy can
@@ -1445,11 +1494,102 @@ mod tests {
         assert!(matches!(error, ProviderError::Config(_)), "{error:?}");
     }
 
+    /// **A submit the rail answers with a 5xx or a 404 never puts the rail's
+    /// body in the error's `Display`** (issue #147, RFC-0002 PR 4): a body
+    /// that echoes the request would carry the `merchant_key`. Both
+    /// directions — the canary is absent, the status and the body's length
+    /// are present. Putting `{reason}` back in either context is the
+    /// mutation this catches.
+    #[test]
+    fn a_submit_failure_withholds_the_rails_body() {
+        let body = b"proxy echo: merchant_key=mk-canary-secref09";
+        for status in [StatusCode::BAD_GATEWAY, StatusCode::NOT_FOUND] {
+            let printed = vpay_core::error::display_with_chain(&submit_error(status, body));
+            assert!(!printed.contains("secref09"), "{printed}");
+            assert!(
+                printed.contains(&status.as_u16().to_string())
+                    && printed.contains(&format!("{} bytes", body.len())),
+                "{printed}"
+            );
+        }
+    }
+
+    /// **An Orange error envelope surfaces its documented code and reason
+    /// phrase and never its free text** (review of issue #147's PR 4): the
+    /// operator still learns `503 (Service Unavailable)` or `1102`, and a
+    /// `description` — or a `message`/`code` that is not the shape the
+    /// envelope documents — never reaches the `Display`. Two directions on
+    /// each body. Printing the envelope's `description`, or dropping the
+    /// reason-phrase check on `message`, or the `rail_token` check on `code`,
+    /// is what this catches.
+    #[test]
+    fn an_orange_error_envelope_surfaces_its_code_and_never_its_free_text() {
+        let documented = br#"{"code": 503, "message": "Service Unavailable", "description": "party 237600000789 secref10 could not be reached"}"#;
+        let printed = vpay_core::error::display_with_chain(&submit_error(
+            StatusCode::BAD_GATEWAY,
+            documented,
+        ));
+        assert!(
+            printed.contains("error code 503 (Service Unavailable)"),
+            "the documented fields must survive: {printed}"
+        );
+        for canary in ["237600000789", "secref10", "could not be reached"] {
+            assert!(!printed.contains(canary), "leaked {canary:?}: {printed}");
+        }
+
+        // A vendor code survives; a `message` that is a sentence and a `code`
+        // with a phone number's digits do not.
+        let vendor = br#"{"code": "1102", "message": "payer Ada Lovelace secref10 is unknown"}"#;
+        let printed =
+            vpay_core::error::display_with_chain(&submit_error(StatusCode::NOT_FOUND, vendor));
+        assert!(printed.contains("error code 1102;"), "{printed}");
+        assert!(
+            !printed.contains("Lovelace") && !printed.contains("secref10"),
+            "{printed}"
+        );
+        let number = br#"{"code": 237600000789, "message": "secref10"}"#;
+        let printed =
+            vpay_core::error::display_with_chain(&submit_error(StatusCode::BAD_GATEWAY, number));
+        assert!(
+            !printed.contains("237600000789") && !printed.contains("secref10"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains(&format!("{} bytes", number.len())),
+            "{printed}"
+        );
+    }
+
+    /// **A refusal of this deployment's own credentials keeps the adapter's
+    /// sentence and its HTTP status in `Display`** (review of issue #147's PR
+    /// 4): 401 and 403 are different fixes, and the `ProviderAccountBlocked`
+    /// page is the line that has to say which. The decline's `Display` drops
+    /// the rail-authored `message`; this is the adapter-authored `context`
+    /// that stays. Building the refusal without `context` is what this
+    /// catches.
+    #[test]
+    fn a_credential_refusal_keeps_its_status_on_the_page() {
+        for (status, digits) in [
+            (StatusCode::UNAUTHORIZED, "401"),
+            (StatusCode::FORBIDDEN, "403"),
+        ] {
+            let error = submit_error(status, br#"{"description":"secref11"}"#);
+            let printed = vpay_core::error::display_with_chain(&error);
+            assert!(
+                printed.contains("provider_account_blocked")
+                    && printed.contains("orange_money")
+                    && printed.contains(digits),
+                "{printed}"
+            );
+            assert!(!printed.contains("secref11"), "{printed}");
+        }
+    }
+
     #[test]
     fn an_unmapped_submit_refusal_carries_the_rails_own_words() {
         let error = submit_error(StatusCode::BAD_REQUEST, br#"{"message":"bad order_id"}"#);
         match &error {
-            ProviderError::Rejected { code, message } => {
+            ProviderError::Rejected { code, message, .. } => {
                 assert_eq!(*code, FailureCode::ProviderError);
                 assert!(message.contains("bad order_id"), "{message}");
             }

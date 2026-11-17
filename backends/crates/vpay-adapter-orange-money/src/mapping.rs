@@ -133,10 +133,13 @@ fn meaning(status: &str) -> Option<Meaning> {
 /// `http(s)` URL. The body itself never reaches the message: it contains
 /// the token that gates a payer's redirect.
 pub(crate) fn submitted(body: &[u8]) -> Result<Submitted, ProviderError> {
+    // `malformed_json`, for the reason above: serde's own message quotes the
+    // scalar it choked on, which here can be the `pay_token` (issue #147).
     let parsed: WebPaymentResponse = serde_json::from_slice(body).map_err(|error| {
-        ProviderError::malformed(format!(
-            "orange_money: the webpayment response is not the documented JSON: {error}"
-        ))
+        ProviderError::malformed_json(
+            "orange_money: the webpayment response is not the documented JSON",
+            &error,
+        )
     })?;
 
     let pay_token = non_empty(parsed.pay_token).ok_or_else(|| {
@@ -180,9 +183,10 @@ pub(crate) fn submitted(body: &[u8]) -> Result<Submitted, ProviderError> {
 /// or carries one that is not in [`STATUS_TABLE`].
 pub(crate) fn charge_status(body: &[u8]) -> Result<ChargeStatus, ProviderError> {
     let parsed: TransactionStatusResponse = serde_json::from_slice(body).map_err(|error| {
-        ProviderError::malformed(format!(
-            "orange_money: the transactionstatus response is not the documented JSON: {error}"
-        ))
+        ProviderError::malformed_json(
+            "orange_money: the transactionstatus response is not the documented JSON",
+            &error,
+        )
     })?;
 
     let status = non_empty(parsed.status).ok_or_else(|| {
@@ -565,6 +569,47 @@ mod tests {
             submitted(br#"{"pay_token":"pt","payment_url":"javascript:steal(pay-secret)"}"#)
                 .expect_err("not an http(s) URL");
         assert!(!error.to_string().contains("pay-secret"), "{error}");
+    }
+
+    /// **A body serde cannot decode never has its values quoted** (issue
+    /// #147, RFC-0002 PR 4): serde's own message for each of these quotes the
+    /// canary, and both parsers used to forward that message into
+    /// `Malformed`'s context — the `Display` every log line renders. Going
+    /// back to `format!("…: {error}")` at either site is the mutation this
+    /// catches.
+    #[test]
+    fn an_undecodable_body_never_quotes_a_value() {
+        let submit_body = r#"{"pay_token":237600000789,"payment_url":"https://p/x"}"#;
+        let status_body = r#"{"status":"SUCCESS","txnid":237600000789}"#;
+        let serde_says = [
+            serde_json::from_str::<crate::wire::WebPaymentResponse>(submit_body)
+                .err()
+                .map(|error| error.to_string()),
+            serde_json::from_str::<crate::wire::TransactionStatusResponse>(status_body)
+                .err()
+                .map(|error| error.to_string()),
+        ];
+        for said in &serde_says {
+            assert!(
+                said.as_deref()
+                    .is_some_and(|text| text.contains("237600000789")),
+                "the canary must make serde quote the value: {said:?}"
+            );
+        }
+        for (body, error) in [
+            (
+                submit_body,
+                submitted(submit_body.as_bytes()).expect_err("undecodable"),
+            ),
+            (
+                status_body,
+                charge_status(status_body.as_bytes()).expect_err("undecodable"),
+            ),
+        ] {
+            let printed = format!("{error} {error:?}");
+            assert!(!printed.contains("237600000789"), "{body}: {printed}");
+            assert!(printed.contains("line 1 column"), "{body}: {printed}");
+        }
     }
 
     #[test]

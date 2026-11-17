@@ -1102,6 +1102,107 @@ async fn a_delivery_past_the_last_rung_is_exhausted_and_not_rescheduled() {
     metrics_task.abort();
 }
 
+/// **A delivery that fails for the last time against an endpoint whose URL
+/// carries a receiver credential never copies that credential into the log
+/// or the row** (issue #147, RFC-0002 PR 4).
+///
+/// Whether a webhook URL may carry a query at all is RFC-0002 D4 and is open;
+/// until it is answered vpay accepts one, so the representations it renders
+/// must not repeat it. Two sinks, each through the shipping handler: the
+/// `alert = true` line `record_failure` writes when the ladder is exhausted
+/// (which logged `url = %delivery.url` in full), and the
+/// `webhook_deliveries.response_excerpt` the attempt stores (which held
+/// reqwest's `for url (…)` with the whole URL). Both directions: the token,
+/// its key and the path never appear, and the endpoint's origin and the
+/// delivery id — the correlation an operator needs — do.
+///
+/// The endpoint is a closed loopback port, so the attempt is a real transport
+/// failure and needs no receiver container.
+#[tokio::test]
+async fn an_exhausted_delivery_never_logs_or_stores_the_endpoints_query() {
+    const TOKEN: &str = "secref08-receiver-token";
+    let logs = CapturedLog::default();
+    let _guard = tracing::subscriber::set_default(
+        tracing_subscriber::fmt()
+            .with_writer(logs.clone())
+            .with_ansi(false)
+            .finish(),
+    );
+    ensure_crypto_provider_installed();
+    let (_postgres, repositories, pool) = migrated_postgres().await.expect("postgres");
+    let endpoints = EndpointRegistry::from_pairs([(
+        MERCHANT_A.to_owned(),
+        vec![Endpoint {
+            id: ENDPOINT_ID.to_owned(),
+            url: format!("http://127.0.0.1:1/hooks/acct-path-canary?vpay_token={TOKEN}"),
+            secrets: vec![SECRET.to_owned()],
+        }],
+    )]);
+
+    let event = insert_event(repositories.as_ref(), MERCHANT_A, "pi_query_secret")
+        .await
+        .expect("an event");
+    let fanout = claim_fanout_job(repositories.as_ref())
+        .await
+        .expect("the fan-out job");
+    handle_fan_out(repositories.as_ref(), &endpoints, &fanout)
+        .await
+        .expect("fan-out");
+    let delivery = repositories
+        .for_event(&event.id)
+        .await
+        .expect("deliveries")
+        .pop()
+        .expect("one delivery");
+    assert!(
+        delivery.url.contains(TOKEN),
+        "the fixture must store the credential-bearing URL, as vpay does while D4 is open"
+    );
+    force_attempt(&pool, delivery.id, 7)
+        .await
+        .expect("staging seven recorded failures");
+
+    let job = claim_delivery_job(&pool, delivery.id)
+        .await
+        .expect("the delivery job");
+    let outcome = handle_deliver(repositories.as_ref(), delivery_egress(), &endpoints, &job)
+        .await
+        .expect("the handler ran");
+    assert!(matches!(outcome, Outcome::Done), "{outcome:?}");
+
+    let row = repositories
+        .get(delivery.id)
+        .await
+        .expect("the delivery row")
+        .expect("it still exists");
+    assert_eq!(
+        row.state, "exhausted",
+        "the last rung must have been walked"
+    );
+    let excerpt = row.response_excerpt.unwrap_or_default();
+    let captured = logs.text();
+    assert!(
+        captured.contains("exhausted the retry ladder") && captured.contains("alert=true"),
+        "the alert line must have been written, or the assertions below are vacuous:\n{captured}"
+    );
+    for (sink, text) in [("log", captured.as_str()), ("excerpt", excerpt.as_str())] {
+        for literal in [TOKEN, "vpay_token", "acct-path-canary"] {
+            assert!(
+                !text.contains(literal),
+                "the {sink} leaked {literal:?}:\n{text}"
+            );
+        }
+        assert!(
+            text.contains("127.0.0.1:1"),
+            "the {sink} must still name the endpoint's origin:\n{text}"
+        );
+    }
+    assert!(
+        captured.contains(&delivery.id.to_string()),
+        "correlation by delivery id must survive:\n{captured}"
+    );
+}
+
 // -------------------------------------------------------- GET /v1/events --
 
 /// The merchant surface, over the real router: newest first, cursors, and

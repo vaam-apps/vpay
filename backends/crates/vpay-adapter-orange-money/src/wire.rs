@@ -96,6 +96,32 @@ pub(crate) struct TokenResponse {
     pub(crate) expires_in: Option<u64>,
 }
 
+/// Orange's error envelope, as its developer gateway answers every non-2xx
+/// this repository's stubs reproduce: `{"code": 401, "message":
+/// "Unauthorized", "description": "…"}`.
+///
+/// `description` is deliberately absent: it is the free text, the part that
+/// can echo the request it refuses, and the one field nothing here prints
+/// (issue #147). `code` is read as any JSON value because Orange sends it as
+/// a number and nothing documents that it always will. Parsing never fails —
+/// a body that is not this shape is an envelope with nothing in it, exactly
+/// as MTN's `wire::ApiError::parse` treats a plain-text 500.
+#[derive(Debug, Default, Deserialize)]
+pub(crate) struct ErrorEnvelope {
+    // Each field renamed to Orange's own spelling, and no `rename_all`: this
+    // module's header says why a rail's casing is never normalised.
+    #[serde(default, rename = "code")]
+    pub(crate) code: Option<serde_json::Value>,
+    #[serde(default, rename = "message")]
+    pub(crate) message: Option<String>,
+}
+
+impl ErrorEnvelope {
+    pub(crate) fn parse(body: &[u8]) -> Self {
+        serde_json::from_slice(body).unwrap_or_default()
+    }
+}
+
 /// The body Orange POSTs to `notif_url`.
 ///
 /// It also carries a `status`, and this struct deliberately has no field for

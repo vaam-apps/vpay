@@ -1151,7 +1151,7 @@ async fn finish_refund(
         // instruction is not in flight, so the reservation must go back —
         // an intent holding a reservation for a refund that will never
         // happen cannot be refunded again up to its own amount.
-        ProviderError::Rejected { code, message } => {
+        ProviderError::Rejected { code, message, .. } => {
             repositories
                 .record_response(
                     attempt,
