@@ -177,9 +177,13 @@ callers share one in-flight token request rather than each minting their
 own; two assertions minted in the same second would spend two `jti`s for no
 reason.
 
-**Scopes, and what an omitted `scope` means.** The vocabulary is two
+**Scopes, and what an omitted `scope` means.** The vocabulary is three
 strings, defined once in `vpay_api::v1`: `payments:write`
-(`SCOPE_PAYMENTS_WRITE`) and `payments:read` (`SCOPE_PAYMENTS_READ`). The
+(`SCOPE_PAYMENTS_WRITE`), `payments:read` (`SCOPE_PAYMENTS_READ`) and, since
+PR #396, `account_holders:read` (`SCOPE_ACCOUNT_HOLDERS_READ`), which neither
+payment scope implies. It is required by `GET /v1/account_holders` and by every
+refund that carries a `destination` — on `mtn_momo` and `orange_money`, every
+refund ([account-holder-lookup.md](account-holder-lookup.md) rule 5). The
 `/v1` boundary requires `payments:write` for any method that is not a read
 and either scope for `GET`/`HEAD` — write implies read, and an unknown verb
 requires write, which is fail-closed

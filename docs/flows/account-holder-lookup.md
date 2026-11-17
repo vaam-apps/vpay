@@ -178,7 +178,7 @@ column is a change to the charge path and not to this route.
 
 ### 4. Rate limiting — per-credential fixed window (ADR-0020, issue #56, provisional pending RFC-0002 D6)
 
-Each lookup is counted against the caller's credential before the rail call. Lookups share a single fixed-window budget per credential across `GET /v1/account_holders`, nominated-payee refunds on `POST /v1/refunds`, and the MCP `create_refund` tool with a destination.
+Each lookup is counted against the caller's credential before the rail call. Lookups share a single fixed-window budget per credential across `GET /v1/account_holders`, refunds on `POST /v1/refunds`, and the MCP `create_refund` tool. On the refund paths only a rail whose `supports_account_holder_lookup` is `true` is asked, and that is `mtn_momo` alone today: **every** accepted `mtn_momo` refund spends one attempt from the same budget as the route, because every one carries a `destination` (rule 5). An `orange_money` refund spends none — the lookup is skipped on its `false` capability — and a `notchpay` refund takes no destination at all.
 
 Every row is stored under the scope `lookup:merchant_key`, with the id
 `SHA-256("lookup:merchant_key:<merchant_id>:<credential id>")`, where the
@@ -215,23 +215,47 @@ _Proven by_ `rate_limit_blocks_and_retry_after_is_provided_and_second_credential
 ### 5. Dedicated scope (`account_holders:read`, issue #56, provisional pending RFC-0002 D5)
 
 `GET /v1/account_holders` requires the `account_holders:read` scope.
-Nominated-payee refunds via `POST /v1/refunds` also require `account_holders:read` in addition to `payments:write`,
-and so does the merchant MCP `create_refund` tool when it names a destination:
-since the PR #396 review a tool call runs as the token's own client with
+A refund via `POST /v1/refunds` that carries a `destination` also requires
+`account_holders:read` in addition to `payments:write`, and so does the
+merchant MCP `create_refund` tool when it names a destination.
+
+**On a transfer rail that is every refund, not some.** `mtn_momo` and
+`orange_money` declare `RefundDestination::Required` (a refund there is an
+outbound transfer and needs a payee, RFC-0003 § 1), so `POST /v1/refunds`
+refuses a refund on either without a `destination` (`400` naming
+`destination`, before any scope is read) and checks `account_holders:read` on
+every refund that has one — `vpay_api::v1::refunds::resolve_target`, after
+`resolve_destination`. A credential holding only `payments:write` can
+therefore refund **nothing** on those two rails; "nominated payee" is not a
+subset of their refunds, it is all of them. It applies on `orange_money` too,
+although that rail is never asked (its lookup capability is `false`) and its
+refund is still a `NotImplemented` token: the scope is checked before either.
+Only a `RefundDestination::Origin` rail — `notchpay`, which refunds to the
+instrument that paid and refuses a `destination` — refunds under
+`payments:write` alone.
+
+For MCP, since the PR #396 review a tool call runs as the token's own client with
 exactly the token's scopes (held to its registration's YAML), so a token that
 holds `account_holders:read` is served and one that does not is refused.
 
 > **Breaking change, enforced on release, with no migration window
 > (provisional pending RFC-0002 D5).** No payment scope implies
 > `account_holders:read`. A credential registered with only `payments:read` /
-> `payments:write` that calls `GET /v1/account_holders` or nominates a refund
-> payee is refused `403` from the first request after deploy. RFC-0002 D5
+> `payments:write` that calls `GET /v1/account_holders` or refunds a payment
+> made on `mtn_momo` or `orange_money` — **every** refund there names a payee
+> (rule 5) — is refused `403` from the first request after deploy; until it
+> gains the scope, such a merchant can refund only `notchpay` payments. RFC-0002 D5
 > _recommends_ a documented migration before enforcement and lists a dated
 > compatibility interval as an option; this implementation chose immediate
 > enforcement, and that choice is not yet the maintainer's. Operators must add
 > `account_holders:read` to each `merchant_clients[].scopes` that needs it
 > before upgrading (the shipped overlays and `just gen-demo-keys` already do).
-> Any credential lacking this scope is refused with HTTP 403 Forbidden (`insufficient_scope`).
+> Any credential lacking this scope is refused with HTTP 403, `type`
+> `invalid_request_error`, `code` `forbidden` — `/v1`'s one `ApiError::Forbidden`,
+> which names no scope (`every_variant_answers_with_the_classification_its_leaf_chose`
+> in `vpay-api`'s `error.rs`). There is no `insufficient_scope` code on `/v1`;
+> that word belongs to `/mcp/v1`, for a bearer token that holds no MCP scope at
+> all. _(This box said `insufficient_scope` until 2026-11-17.)_
 > Since PR #396 an implicit `HEAD` to the route is held to the same `GET` policy
 > — Axum serves `HEAD` from the `GET` handler, so a payments-only credential
 > cannot trigger the rail lookup via `HEAD` without `account_holders:read`, and
@@ -336,13 +360,13 @@ about the _rail_, and this one answers a question about the _route_.
 > the repository owner decided on 2026-11-17 to merge it on that basis. **None of them is
 > a decision**, and each is a change point if the decision differs:
 >
-> | RFC-0002 | What ships today                                                                                                                                                                                                       | Where it would change                                                           |
-> | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-> | D3       | `target_repr` = HMAC-SHA256(`tenant_id` `:` canonical MSISDN) under `privacy.lookup_audit_salt`. Key custody, rotation and overlap are undecided; rotating the key today breaks correlation with every earlier row.    | `vpay_api::v1::account_holders::audit_target_hash`, `privacy.lookup_audit_salt` |
-> | D5       | `account_holders:read`, implied by no payment scope, **enforced immediately with no migration window** — a breaking change for every credential without it (rule 5).                                                   | `vpay_api::v1::SCOPE_ACCOUNT_HOLDERS_READ`, `v1::refunds::resolve_target`       |
-> | D6       | Per credential (thumbprint / `client_id`); `attempts: 10` per `window_seconds: 60` in all three shipped configs; **malformed requests spend budget**; `Retry-After` is the remaining window, rounded up; fail closed.  | `privacy.lookup_rate_limit` in `config/application*.yml`, `ask_rail`            |
-> | D7       | `initiated` + terminal rows under one `operation_id`; the outcome vocabulary (`initiated`, `found`, `not_found`, `invalid`, `unsupported`, `rate_limited`, `rail_error`) is **frozen by a CHECK** in migration `0060`. | a new migration that replaces `audit_events_outcome_is_known`                   |
-> | D9       | Class `operational` in `schemas/privacy-inventory.yaml`. **No retention handler exists: the journal is unbounded.**                                                                                                    | a handler + class registration, RFC-0002 Stage 3 PR 7 — not built               |
+> | RFC-0002 | What ships today                                                                                                                                                                                                                  | Where it would change                                                           |
+> | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+> | D3       | `target_repr` = HMAC-SHA256(`tenant_id` `:` canonical MSISDN) under `privacy.lookup_audit_salt`. Key custody, rotation and overlap are undecided; rotating the key today breaks correlation with every earlier row.               | `vpay_api::v1::account_holders::audit_target_hash`, `privacy.lookup_audit_salt` |
+> | D5       | `account_holders:read`, implied by no payment scope, **enforced immediately with no migration window** — a breaking change for every credential without it, which on `mtn_momo` and `orange_money` cannot refund at all (rule 5). | `vpay_api::v1::SCOPE_ACCOUNT_HOLDERS_READ`, `v1::refunds::resolve_target`       |
+> | D6       | Per credential (thumbprint / `client_id`); `attempts: 10` per `window_seconds: 60` in all three shipped configs; **malformed requests spend budget**; `Retry-After` is the remaining window, rounded up; fail closed.             | `privacy.lookup_rate_limit` in `config/application*.yml`, `ask_rail`            |
+> | D7       | `initiated` + terminal rows under one `operation_id`; the outcome vocabulary (`initiated`, `found`, `not_found`, `invalid`, `unsupported`, `rate_limited`, `rail_error`) is **frozen by a CHECK** in migration `0060`.            | a new migration that replaces `audit_events_outcome_is_known`                   |
+> | D9       | Class `operational` in `schemas/privacy-inventory.yaml`. **No retention handler exists: the journal is unbounded.**                                                                                                               | a handler + class registration, RFC-0002 Stage 3 PR 7 — not built               |
 >
 > D8 (the operator surface) has no provisional answer at all: it is not built.
 
@@ -358,8 +382,9 @@ about the _rail_, and this one answers a question about the _route_.
   four-key response; writes `rate_limit_windows` and `audit_events` rows
   (rules 2 and 4).
 - `POST /v1/refunds` — **a second caller since 2026-09-16** (RFC-0003 § 2).
-  Refuses a nominated payee the rail has no record of with a `400` naming
-  `destination`; never compares a name; skips the lookup entirely on a rail
+  Every refund on `mtn_momo` or `orange_money` carries a payee and so needs
+  `account_holders:read` (rule 5). Refuses a payee the rail has no record of
+  with a `400` naming `destination`; never compares a name; skips the lookup entirely on a rail
   whose capability is `false`, which is `orange_money`. Counted and logged
   through the same function as the route
   (`a_refund_path_lookup_is_counted_and_logged_like_the_routes`).
@@ -412,7 +437,7 @@ about the _rail_, and this one answers a question about the _route_.
   one", not "Orange has none".
 - **Rate limiting, audit logging, dedicated scope** — built (issue #56, ADR-0020),
   governing lookups across `GET /v1/account_holders`, `POST /v1/refunds`
-  nominated-payee paths and the MCP `create_refund` tool — on the provisional
+  (every refund on a transfer rail) and the MCP `create_refund` tool — on the provisional
   answers in the box above.
 - **No operator can query the audit journal** (RFC-0002 D8, unbuilt). The only
   reader is `vpay_db::AuditEvents::list_audit_events_by_tenant`, a repository
@@ -449,7 +474,7 @@ about the _rail_, and this one answers a question about the _route_.
 | the refund path's three-way answer: unregistered is a `400`, unreachable is not | `an_unregistered_payee_is_a_400_and_an_unreachable_rail_is_not`, `a_rail_without_a_lookup_accepts_the_destination_unverified` (`vpay-api`), `a_payee_the_rail_does_not_know_is_refused_before_the_transfer` (integration, against a real WireMock MTN) |
 | every outcome counted, no label carrying the number or the name                 | `every_outcome_is_counted_and_no_label_carries_the_number_or_the_name`                                                                                                                                                                                 |
 | rate limit: exceeding budget is refused 429 with Retry-After                    | `rate_limit_blocks_and_retry_after_is_provided_and_second_credential_unaffected` (integration)                                                                                                                                                         |
-| rate limit: nominated payee refund spends lookup budget                         | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                           |
+| rate limit: every `mtn_momo` refund spends lookup budget                        | `a_nominated_payee_refund_spends_the_lookup_rate_limit_budget` (integration)                                                                                                                                                                           |
 | rate limit: a short scope never resets a longer one's counter                   | `a_short_scope_count_never_sweeps_a_longer_scope_row_inside_its_own_window` (`vpay-db`), the per-row `window_expires_at` sweep (migration 0061)                                                                                                        |
 | rate limit: a salt without a configured limit refuses at boot                   | `an_audit_salt_without_a_lookup_rate_limit_is_refused_at_boot` (`vpay-config`) — lookups can no longer boot into an unlimited per-credential budget                                                                                                    |
 | audit log: initiated and terminal events with HMAC target, no raw PII           | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
@@ -458,7 +483,7 @@ about the _rail_, and this one answers a question about the _route_.
 | audit log: append-only in the database (UPDATE, DELETE, TRUNCATE refused)       | `the_audit_journal_refuses_update_delete_and_truncate` (`vpay-db`, real Postgres)                                                                                                                                                                      |
 | migration 0061 keeps each in-flight counter's own window                        | `migration_0061_backfills_each_in_flight_window_from_its_own_start` (`vpay-db`, real Postgres)                                                                                                                                                         |
 | MCP: a tool call carries the token's own client and scopes, never more          | `an_mcp_callers_scopes_are_the_tokens_held_to_the_yaml_and_never_widened` (`vpay-api`), `the_call_carries_the_contexts_client_and_exactly_its_scopes` (`vpay-db`)                                                                                      |
-| scope: lacking `account_holders:read` refused 403 Forbidden                     | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                   |
+| scope: lacking `account_holders:read` refused 403 `forbidden`                   | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                   |
 | the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — nine cases                                                                                                                                                                                     |
 | both SDKs speak the same query string and read the same object                  | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                                                                                     |
 

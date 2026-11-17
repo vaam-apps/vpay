@@ -14,7 +14,7 @@ export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue
 // `tracing::warn!`, never a rejection. Empty when the CLI wasn't given a
 // schema fingerprint (e.g. this crate used as a library directly, or a
 // test) — the header is simply omitted in that case.
-export const SCHEMA_SHA256: string = "81f3c525779a4d32ba7fb65876adb4dbe496aaa7291f20693b91ac5b4bbf0862";
+export const SCHEMA_SHA256: string = "ff0be8444058eb156f4781cee1e53847c5648e944cc0dacb2725558bc81e7740";
 const SCHEMA_SHA_HEADER = "x-cratestack-schema-sha";
 
 // Per-op contract digests (binding version 2, cratestack#1123): what a signed

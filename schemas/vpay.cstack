@@ -3128,7 +3128,7 @@ procedure retrieveRefund(id: String): McpRefund
 mutation procedure issueRefund(args: IssueRefundInput): McpRefund
   @allow(auth().audience == "merchant" && auth().can_write == true)
   @no_idempotency
-  @mcp(tool: "create_refund", description: "Refund some or all of a succeeded payment intent. A refund starts `pending`. Nothing in vpay settles a pending refund yet, and the orange_money and notchpay rails cannot refund at all (NotImplemented). Naming a payee `destination` also needs the `account_holders:read` scope, because vpay first asks the rail whether the payee is a registered account. `idempotency_key` is required.")
+  @mcp(tool: "create_refund", description: "Refund some or all of a succeeded payment intent. A refund starts `pending`. Nothing in vpay settles a pending refund yet, and the orange_money and notchpay rails cannot refund at all (NotImplemented). A payee `destination` is required on mtn_momo and orange_money and refused on notchpay, and a refund that carries one also needs the `account_holders:read` scope — so every mtn_momo or orange_money refund does — because vpay first asks a rail that can look a payee up whether it is a registered account. `idempotency_key` is required.")
 
 mutation procedure cancelRefund(args: CancelInput): McpRefund
   @allow(auth().audience == "merchant" && auth().can_write == true)

@@ -297,6 +297,11 @@ predictable consequence of the header, not because anything observed it.
     `CreateRefundParams` in `sdks/nodejs/src/types.ts`, each sending
     `destination[<rail>][msisdn]` — so a vpay SDK is not where this
     divergence bites; a Stripe-shaped client is.
+    **Since PR #396 that destination also costs a scope:** a refund that
+    carries one needs `account_holders:read` as well as `payments:write`, and
+    on `mtn_momo` and `orange_money` that is every refund — a credential
+    without it is `403` `forbidden` on all of them
+    ([account-holder-lookup.md](account-holder-lookup.md) rule 5).
     ~~Neither merchant SDK carries the field either — a dated gap in
     [../sdks/parity.md](../sdks/parity.md).~~ **— corrected 2026-09-16.** That
     sentence was written by the seam pass when it was true, and the same day's
