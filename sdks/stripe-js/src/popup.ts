@@ -210,21 +210,51 @@ function parseCompleteEvent(
  * reach the second call's listener — same origin, same `source` — and fire
  * its `onComplete` for an order it did not create. A `WeakMap`, so a test's
  * stub window (or a torn-down document) takes its record with it.
+ *
+ * The value is the status the claim was made with. A session reported as
+ * `open` — the payer pressed "Back to merchant" before paying — can be
+ * opened again, so its claim lasts only until the next `openCheckoutPopup`
+ * call on that window ({@link releaseReopenableClaims}); otherwise reopening
+ * it would drop its real completion and leave the handle waiting forever.
+ * Every other status is kept for the life of the page. The residue: a late
+ * fallback for an `open` session that arrives after the merchant has
+ * reopened that same session completes the new handle with the stale
+ * `open`, which is the same session and the same answer the first handle got.
  */
-const completedSessions = new WeakMap<Window, Set<string>>();
+const completedSessions = new WeakMap<Window, Map<string, string>>();
+
+/** vpay's status for a session the payer can still come back to. */
+const REOPENABLE_STATUS = "open";
 
 /** Records `session` as completed for `win`; `false` if it already was. */
-function claimCompletion(win: Window, session: string): boolean {
+function claimCompletion(
+  win: Window,
+  session: string,
+  status: string,
+): boolean {
   let seen = completedSessions.get(win);
   if (seen === undefined) {
-    seen = new Set<string>();
+    seen = new Map<string, string>();
     completedSessions.set(win, seen);
   }
   if (seen.has(session)) {
     return false;
   }
-  seen.add(session);
+  seen.set(session, status);
   return true;
+}
+
+/** Forgets `win`'s claims on sessions that were still `open` when reported. */
+function releaseReopenableClaims(win: Window): void {
+  const seen = completedSessions.get(win);
+  if (seen === undefined) {
+    return;
+  }
+  for (const [session, status] of seen) {
+    if (status === REOPENABLE_STATUS) {
+      seen.delete(session);
+    }
+  }
 }
 
 /** `window`, or `undefined` where there is none (Node, SSR, a worker). */
@@ -326,6 +356,7 @@ export async function openCheckoutPopup(
 
   const completionOrigin = options.completionOrigin ?? win.location.origin;
   const checkoutOrigin = config.checkoutOrigin;
+  releaseReopenableClaims(win);
 
   let finished = false;
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -370,7 +401,7 @@ export async function openCheckoutPopup(
     // Per session, not per handle: see `completedSessions`. A duplicate is
     // dropped *without* finishing this handle, because it says nothing about
     // the session this handle is waiting for.
-    if (!claimCompletion(win, payload.session)) {
+    if (!claimCompletion(win, payload.session, payload.status)) {
       return;
     }
     finished = true;

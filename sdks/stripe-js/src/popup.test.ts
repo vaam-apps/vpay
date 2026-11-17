@@ -575,6 +575,46 @@ describe("openCheckoutPopup: vpay's page first, the return page as fallback", ()
     expect(first).toEqual([{ session: "cs_1", status: "complete" }]);
   });
 
+  it("completes a session reopened after the payer left it open, and still drops the duplicate within one popup", async () => {
+    // "Back to merchant" on a session that is still `open`: vpay's page
+    // reports it, the return page repeats it. The merchant then reopens the
+    // SAME session and the payer pays. That completion must fire; a claim
+    // kept from the first round would drop it and the handle would hang.
+    const opener = stubWindow();
+    const first: { session: string; status: string }[] = [];
+    await open(opener, first);
+    opener.post(fromVpay("cs_back", "open"), CHECKOUT_ORIGIN, opener.popup);
+    opener.post(
+      { type: "vpay:complete", session: "cs_back", status: "open" },
+      SHOP_ORIGIN,
+      opener.popup,
+    );
+    expect(first).toEqual([{ session: "cs_back", status: "open" }]);
+
+    opener.popup = stubPopup();
+    const second: { session: string; status: string }[] = [];
+    await open(opener, second);
+    opener.post(fromVpay("cs_back", "complete"), CHECKOUT_ORIGIN, opener.popup);
+    expect(second).toEqual([{ session: "cs_back", status: "complete" }]);
+    expect(opener.popup?.closed).toBe(true);
+    expect(opener.listeners).toBe(0);
+  });
+
+  it("keeps a session that ended in anything but open claimed across later popups", async () => {
+    const opener = stubWindow();
+    const first: { session: string; status: string }[] = [];
+    await open(opener, first);
+    opener.post(fromVpay("cs_exp", "expired"), CHECKOUT_ORIGIN, opener.popup);
+    expect(first).toEqual([{ session: "cs_exp", status: "expired" }]);
+
+    opener.popup = stubPopup();
+    const second: { session: string; status: string }[] = [];
+    await open(opener, second);
+    opener.post(fromVpay("cs_exp", "expired"), SHOP_ORIGIN, opener.popup);
+    expect(second).toEqual([]);
+    expect(opener.listeners).toBe(1);
+  });
+
   it("does not share its record of completed sessions between opener windows", async () => {
     const one = stubWindow();
     const two = stubWindow();

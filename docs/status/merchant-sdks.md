@@ -395,7 +395,7 @@ is the behaviour before this change. The page's message already carried the
 session id (`CompleteMessage` in `frontends/apps/checkout/src/lib/frame.ts`:
 `{type, session, status}`), so the checkout app did not change.
 
-- 12 new cases in `src/popup.test.ts` (39 in all, from 27), named in
+- 14 new cases in `src/popup.test.ts` (41 in all, from 27), named in
   [../sdks/parity.md](../sdks/parity.md) § "The browser surface": both
   orders of arrival, a different session not deduplicated against, wrong
   origin, wrong source, malformed and empty-session messages, no
