@@ -214,9 +214,9 @@ enum Steering {
     ///
     /// | Value | Outcome | Mapping that keys on it |
     /// |---|---|---|
-    /// | `237670000900` | settles (`PENDING`, then `SUCCESSFUL`) | `wiremock/mtn/mappings/requesttopay-scenario.json`, scenario `mtn-e2e-poll` |
-    /// | `237670000101` | `insufficient_funds` (`FAILED`/`NOT_ENOUGH_FUNDS`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-decline` |
-    /// | `237670000102` | `payer_timeout` (`FAILED`/`COULD_NOT_PERFORM_TRANSACTION`) | `wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-expiry` |
+    /// | `237670000900` | settles (`PENDING`, then `SUCCESSFUL`) | `backends/tests/conformance/wiremock/mtn/mappings/requesttopay-scenario.json`, scenario `mtn-e2e-poll` |
+    /// | `237670000101` | `insufficient_funds` (`FAILED`/`NOT_ENOUGH_FUNDS`) | `backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-decline` |
+    /// | `237670000102` | `payer_timeout` (`FAILED`/`COULD_NOT_PERFORM_TRANSACTION`) | `backends/tests/conformance/wiremock/mtn/mappings/demo-outcomes.json`, scenario `mtn-demo-expiry` |
     ///
     /// These are **not** the hex steering codes this program used to send.
     /// Since issue #186 the server validates `payment_method_data[mtn_momo]
@@ -1518,7 +1518,7 @@ async fn step_5_checkout_sessions(client: &Client) -> anyhow::Result<()> {
 /// The three numbers step 6 looks up, and what each one is here to show.
 ///
 /// The first two are digits only and are the pair
-/// `wiremock/mtn/mappings/basicuserinfo.json` answers for: `GET
+/// `backends/tests/conformance/wiremock/mtn/mappings/basicuserinfo.json` answers for: `GET
 /// /v1/account_holders` validates Cameroon E.164 server-side, so the hex
 /// steering number (`237600000f01`) that step 4 used to send is refused
 /// before the rail is called — which is itself worth a reader seeing, and

@@ -36,7 +36,7 @@ lands on an account page, and no page reads the payments API until VP-6b. This
 supersedes the older distinction this section used to draw between the SHOP's
 payments and `just demo-walk`'s: even `demo_dashboard_merchant`'s binding to one
 tenant (`dashboard.merchant_id`, checked at boot and filtered on in every query —
-see [dashboard.md](../../flows/dashboard.md)) cannot be *seen* anywhere until a
+see [dashboard.md](../../flows/dashboard.md)) cannot be _seen_ anywhere until a
 payments page exists. The two tenants are still registered and still distinct —
 
 | client          | tenant                 | who pays as it                         |
@@ -44,7 +44,7 @@ payments page exists. The two tenants are still registered and still distinct �
 | `shop-merchant` | `shop-merchant-tenant` | `examples/shop`, and the browser demos |
 | `demo-merchant` | `demo-merchant-tenant` | `just demo-walk`                       |
 
-— but `demo_dashboard_merchant` only chooses which tenant's rows the *future*
+— but `demo_dashboard_merchant` only chooses which tenant's rows the _future_
 payments page will read, so moving it now (`just demo_dashboard_merchant=
 demo-merchant-tenant demo-up` + `demo-staff`) is preparing for VP-6b rather
 than making the walkthrough's intents visible today. The way to read either

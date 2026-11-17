@@ -62,9 +62,9 @@ merchant would use them. It stops there: this program has no browser. 6. **`GET 
 
 | #   | Rail           | Outcome                               | Steered by            | After confirm     | Settles to                | `failure_code`       | Event                           |
 | --- | -------------- | ------------------------------------- | --------------------- | ----------------- | ------------------------- | -------------------- | ------------------------------- |
-| 1   | `mtn_momo`     | the payer approves on their handset   | MSISDN `237600000ce0` | `processing`      | `succeeded`               | —                    | `payment_intent.succeeded`      |
-| 2   | `mtn_momo`     | the payer has no balance              | MSISDN `237600000f01` | `processing`      | `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
-| 3   | `mtn_momo`     | the prompt expires unanswered         | MSISDN `237600000f02` | `processing`      | `requires_payment_method` | `payer_timeout`      | `payment_intent.payment_failed` |
+| 1   | `mtn_momo`     | the payer approves on their handset   | MSISDN `237670000900` | `processing`      | `succeeded`               | —                    | `payment_intent.succeeded`      |
+| 2   | `mtn_momo`     | the payer has no balance              | MSISDN `237670000101` | `processing`      | `requires_payment_method` | `insufficient_funds` | `payment_intent.payment_failed` |
+| 3   | `mtn_momo`     | the prompt expires unanswered         | MSISDN `237670000102` | `processing`      | `requires_payment_method` | `payer_timeout`      | `payment_intent.payment_failed` |
 | 4   | `orange_money` | the payer completes the hosted page   | 5000 XAF              | `requires_action` | `succeeded`               | —                    | `payment_intent.succeeded`      |
 | 5   | `orange_money` | the hosted page expires               | 5001 XAF              | `requires_action` | `requires_payment_method` | `payer_timeout`      | `payment_intent.payment_failed` |
 | 6   | `orange_money` | the rail refuses, reason undocumented | 5002 XAF              | `requires_action` | `requires_payment_method` | `provider_error`     | `payment_intent.payment_failed` |
