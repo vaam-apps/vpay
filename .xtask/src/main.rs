@@ -7,8 +7,8 @@
 //! recipe rather than an xtask command because it shells out to the
 //! CrateStack CLI, a binary this workspace does not build — see the
 //! `justfile` for it, and for `verify-ui` (2026-09-07), a `git grep` gate on
-//! daisyUI 4 classes daisyUI 5 removed. The recipe lists **sixteen**,
-//! fourteen of them commands here.
+//! daisyUI 4 classes daisyUI 5 removed. The recipe lists **eighteen**,
+//! sixteen of them commands here.
 //!
 //! _(This said "All but one" while naming two, and "On 2026-09-07 the recipe
 //! lists twelve", until 2026-09-18. The count was two behind by then —
@@ -95,13 +95,16 @@
 //!   issue number must be cited by a document under `docs/`. New 2026-10-26
 //!   (issue #150, ADR-0034).
 //!
-//! An **eighteenth** gate needs the network, so it is opt-in
+//! * `verify-adr-numbers` — every file in `docs/adr/` matches `NNNN-slug.md`
+//!   and no two files share a leading number (issue #170).
+//!
+//! A **nineteenth** gate needs the network, so it is opt-in
 //! (`just docs-check-citations`) and is **not** part of `just ci`.
-//! Eighteenth and not eleventh: sixteen gates, then the advisory
+//! Nineteenth and not eleventh: eighteen gates, then the advisory
 //! `verify-docs` report, then this. _(It said "eleventh" — true when the
 //! recipe listed ten — until 2026-09-18, "sixteenth" until 2026-09-20 and
-//! "seventeenth" until 2026-10-26. The `justfile`'s own header block already
-//! counted it this way.)_:
+//! "seventeenth" until 2026-10-26, and "eighteenth" until 2026-11-16. The
+//! `justfile`'s own header block already counted it this way.)_:
 //!
 //! * `verify-citations` — every workflow-run id, pull request and issue a
 //!   document cites as evidence exists. It fails rather than skips when `gh`
@@ -174,6 +177,7 @@ fn main() -> ExitCode {
         "verify-security-inventory" => verify_security_inventory(&root),
         "verify-doc-counts" => verify_doc_counts(&root),
         "verify-mcp-parity" => verify_mcp_parity(&root),
+        "verify-adr-numbers" => verify_adr_numbers(&root),
         "verify-citations" => verify_citations(&root),
         // `verify-citations` is deliberately absent from `verify-all`: it
         // needs the network, and `verify-all` is what an offline gate list
@@ -192,7 +196,8 @@ fn main() -> ExitCode {
             .and_then(|()| verify_privacy_inventory(&root))
             .and_then(|()| verify_security_inventory(&root))
             .and_then(|()| verify_doc_counts(&root))
-            .and_then(|()| verify_mcp_parity(&root)),
+            .and_then(|()| verify_mcp_parity(&root))
+            .and_then(|()| verify_adr_numbers(&root)),
         // Not `Result`-shaped like the gates above, and that is the
         // point: there is nothing here for a caller to fail on. See
         // `verify_docs`.
@@ -208,7 +213,7 @@ fn main() -> ExitCode {
                  <verify-no-mocks|verify-status|verify-errors|verify-sdk-parity|verify-links\
                  |verify-npm-scope|verify-serde|verify-repositories\
                  |verify-toolchain|verify-migrations|verify-versions\
-                 |verify-privacy-inventory|verify-security-inventory|verify-doc-counts|verify-mcp-parity|verify-all>\n\
+                 |verify-privacy-inventory|verify-security-inventory|verify-doc-counts|verify-mcp-parity|verify-adr-numbers|verify-all>\n\
                  \x20      cargo xtask verify-citations   (a gate; needs `gh` and the network)\n\
                  \x20      cargo xtask verify-docs        (a report; never fails)\n\
                  \x20      cargo xtask gen-signing-key --out <dir>\n\
@@ -17799,5 +17804,177 @@ pub const V1_ROUTES: &[V1Route] = &[
         assert!(mcp_parity_rows("| `GET /v1/x` | gap 2026-10-26: |\n").is_err());
         assert!(mcp_parity_rows("| `GET /v1/x` | excluded: |\n").is_err());
         assert!(mcp_parity_rows("| `GET /v1/x` | |\n").is_err());
+    }
+}
+
+// ------------------------------------------------------ verify-adr-numbers --
+
+const ADR_DIR: &str = "docs/adr";
+
+/// Refuses duplicate ADR leading numbers and malformed filenames in `docs/adr/`
+/// (issue #170).
+///
+/// Gaps in numbering are allowed; only collisions and names not matching
+/// `NNNN-slug.md` fail.
+fn verify_adr_numbers(root: &Path) -> Result<(), String> {
+    let adr_dir = root.join(ADR_DIR);
+    let entries =
+        fs::read_dir(&adr_dir).map_err(|e| format!("{ADR_DIR}: cannot read directory: {e}"))?;
+
+    let mut filenames = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|e| format!("{ADR_DIR}: cannot read entry: {e}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            return Err(format!(
+                "{ADR_DIR}: non-UTF-8 filename {:?}",
+                path.file_name()
+            ));
+        };
+        filenames.push(name.to_string());
+    }
+
+    match check_adr_filenames(&filenames) {
+        Ok(counted) => {
+            println!(
+                "verify-adr-numbers: ok — {counted} ADR file(s) in {ADR_DIR}/ have valid \
+                 NNNN-slug.md names and unique numbers"
+            );
+            Ok(())
+        }
+        Err(problems) => Err(format!(
+            "verify-adr-numbers: {} problem(s) in {ADR_DIR}/:\n  - {}",
+            problems.len(),
+            problems.join("\n  - ")
+        )),
+    }
+}
+
+/// Validates that every filename matches `NNNN-slug.md` and has a unique
+/// `NNNN` prefix. Gaps in numbering are not an error.
+fn check_adr_filenames(filenames: &[String]) -> Result<usize, Vec<String>> {
+    if filenames.is_empty() {
+        return Err(vec![format!("no ADR files found in {ADR_DIR}/")]);
+    }
+    let mut by_number: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut problems = Vec::new();
+    let mut sorted = filenames.to_vec();
+    sorted.sort();
+
+    for name in &sorted {
+        match parse_adr_number(name) {
+            Some(num) => {
+                by_number
+                    .entry(num.to_string())
+                    .or_default()
+                    .push(name.clone());
+            }
+            None => {
+                problems.push(format!(
+                    "malformed ADR filename `{name}` (expected NNNN-slug.md)"
+                ));
+            }
+        }
+    }
+
+    for (num, files) in &by_number {
+        if files.len() > 1 {
+            problems.push(format!("duplicate ADR number {num}: {}", files.join(", ")));
+        }
+    }
+
+    if problems.is_empty() {
+        Ok(sorted.len())
+    } else {
+        Err(problems)
+    }
+}
+
+/// Extracts the 4-digit leading number from `NNNN-slug.md` if valid.
+fn parse_adr_number(name: &str) -> Option<&str> {
+    let stem = name.strip_suffix(".md")?;
+    let (num, slug) = stem.split_once('-')?;
+    if num.len() != 4 || !num.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    if slug.is_empty()
+        || slug.starts_with('-')
+        || slug.ends_with('-')
+        || !slug
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return None;
+    }
+    Some(num)
+}
+
+#[cfg(test)]
+mod adr_numbers_tests {
+    use super::check_adr_filenames;
+
+    fn list(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn valid_names_with_gaps_pass() {
+        let files = list(&[
+            "0001-record-architecture-decisions.md",
+            "0018-cross-tenant-admin-reads.md",
+            "0020-privacy-controls-and-evidence.md",
+        ]);
+        assert_eq!(check_adr_filenames(&files), Ok(3));
+    }
+
+    #[test]
+    fn duplicate_number_fails_naming_both_files() {
+        let files = list(&[
+            "0018-cross-tenant-admin-reads.md",
+            "0018-privacy-controls-and-evidence.md",
+            "0019-credential-model.md",
+        ]);
+        let problems = check_adr_filenames(&files).unwrap_err();
+        assert_eq!(problems.len(), 1);
+        let problem = problems.first().expect("one problem");
+        assert!(problem.contains("0018"), "{problems:?}");
+        assert!(
+            problem.contains("0018-cross-tenant-admin-reads.md"),
+            "{problems:?}"
+        );
+        assert!(
+            problem.contains("0018-privacy-controls-and-evidence.md"),
+            "{problems:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_filenames_fail() {
+        let files = list(&[
+            "001-too-short.md",
+            "00012-too-long.md",
+            "0001-.md",
+            "0001-UpperCase.md",
+            "0001-trailing-.md",
+            "README.md",
+            "0001-not-markdown.txt",
+        ]);
+        let problems = check_adr_filenames(&files).unwrap_err();
+        assert_eq!(problems.len(), files.len(), "{problems:?}");
+    }
+
+    #[test]
+    fn empty_directory_fails() {
+        let problems = check_adr_filenames(&[]).unwrap_err();
+        assert_eq!(problems.len(), 1);
+        assert!(
+            problems
+                .first()
+                .expect("one problem")
+                .contains("no ADR files")
+        );
     }
 }
