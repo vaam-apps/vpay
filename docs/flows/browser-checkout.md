@@ -400,6 +400,28 @@ tests or establish production payments.
 
 ## Status
 
+**Updated 2026-11-17 (issue #65): the popup's two completion channels are
+reconciled.** `@vaam-apps/vpay-stripe-js`'s `openCheckoutPopup` now takes the
+`vpay:complete` vpay's checkout page posts to `window.opener` as the
+**primary** completion — pinned to the origin of `loadStripe`'s
+`checkoutBaseUrl` and to the window it opened — and keeps the merchant's
+`success_url` → `notifyCheckoutOpener` message as the **fallback**, pinned
+to `completionOrigin` as before. Completion is deduplicated per checkout
+session id on the opening window, so `onComplete` fires once whichever
+arrives first; a message naming a different session is not deduplicated
+against. The page's message already carried the session id, so
+`frontends/apps/checkout` is unchanged. The merchant page that opens the
+popup must send vpay its origin as the referrer (vpay's page pins the opener
+by `document.referrer`), so `examples/shop` now serves
+`Referrer-Policy: strict-origin-when-cross-origin` on every route and the
+SDK README states the requirement. Proven by `src/popup.test.ts` — **39**
+cases now, every window still a **stub** — and `examples/shop`'s
+`src/referrer-policy.test.ts`; rows in [../sdks/parity.md](../sdks/parity.md),
+evidence in
+[../status/verification/2026-11-17-popup-completion.md](../status/verification/2026-11-17-popup-completion.md).
+Still true: no test opens a real popup. Not changed: the Tauri and Flutter
+plugins' web popups, which still complete on the fallback only.
+
 **Updated 2026-09-17: the return page knows a sheet's redirect leg.** Issue
 #195 — the Flutter native sheet's redirect rail landed the payer back on this
 return page, which rendered a full outcome on top of the sheet's own. There is
