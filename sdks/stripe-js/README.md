@@ -512,7 +512,7 @@ a shipping process in ADR-0006's sense.
   `docs/status.md` row.
 - **The popup surface (`openCheckoutPopup` / `notifyCheckoutOpener`) is
   unit-tested and has not been driven by a real browser.** `src/popup.test.ts`
-  (39 tests since issue #65) drives it against stub windows, because jsdom
+  (41 tests since issue #65) drives it against stub windows, because jsdom
   implements neither `window.open` nor cross-window `postMessage` — so what
   is proven is both channels' origin and source checks, the per-session
   deduplication in both orders of arrival, the open-before-await ordering,
