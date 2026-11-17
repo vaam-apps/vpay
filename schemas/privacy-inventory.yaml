@@ -107,13 +107,10 @@ elements:
     necessary: true
     tenant_boundary: merchant
     recipients: []
-    retention: operational # audit_events provisional pending RFC-0002 D9
+    retention: operational
     owner: maintainer
     control: none
     copies:
-      - kind: column
-        table: audit_events
-        column: occurred_at
       - kind: column
         table: charges
         column: created_at
@@ -339,22 +336,10 @@ elements:
     necessary: true
     tenant_boundary: merchant
     recipients: []
-    retention: operational # audit_events provisional pending RFC-0002 D9
+    retention: operational
     owner: maintainer
     control: none
     copies:
-      - kind: column
-        table: audit_events
-        column: action
-      - kind: column
-        table: audit_events
-        column: actor_kind
-      - kind: column
-        table: audit_events
-        column: outcome
-      - kind: column
-        table: audit_events
-        column: target_class
       - kind: column
         table: charges
         column: failure_code
@@ -545,25 +530,10 @@ elements:
     necessary: true
     tenant_boundary: merchant
     recipients: []
-    retention: operational # audit_events provisional pending RFC-0002 D9
+    retention: operational
     owner: maintainer
     control: none
     copies:
-      - kind: column
-        table: audit_events
-        column: actor_id
-      - kind: column
-        table: audit_events
-        column: id
-      - kind: column
-        table: audit_events
-        column: operation_id
-      - kind: column
-        table: audit_events
-        column: target_repr
-      - kind: column
-        table: audit_events
-        column: tenant
       - kind: column
         table: charges
         column: id
@@ -1341,6 +1311,81 @@ elements:
       - kind: column
         table: console_keys
         column: thumbprint
+  # ---- audit_events (migration 0059, issues #56/#152) ----------------------
+  # PROVISIONAL pending RFC-0002 D9 (and D3/D7 for what the rows hold). The
+  # `operational` class below is the implementing PR's provisional answer, NOT a
+  # decision: RFC-0002's register still reads D9 OPEN. And whatever the class,
+  # **no retention handler exists for this table**: nothing deletes,
+  # anonymises or pseudonymises an `audit_events` row, so the journal grows
+  # without bound. That is an open gap, recorded in docs/status/backend.md and
+  # docs/flows/account-holder-lookup.md § Status. RFC-0002 Stage 3 PR 7 asks
+  # for a bounded handler under an approved class; it is not built. The rows
+  # are append-only (migration 0059's trigger refuses UPDATE and DELETE), so a
+  # handler will need its own, deliberate exception when D9 is decided.
+  lookup_audit_target:
+    # The keyed HMAC-SHA256 of tenant + canonical MSISDN (provisional D3). A
+    # pseudonym of a payer's phone number is still personal data, so this is
+    # `subject: payer`, not `none`.
+    subject: payer
+    purpose: account-holder-lookup-audit
+    necessary: true
+    tenant_boundary: merchant
+    recipients: []
+    retention: operational # PROVISIONAL pending RFC-0002 D9; no handler: unbounded
+    owner: maintainer
+    control: none
+    copies:
+      - kind: column
+        table: audit_events
+        column: target_repr
+  lookup_audit_actor:
+    # The calling credential: a signing-key thumbprint or an OAuth client_id.
+    subject: merchant
+    purpose: account-holder-lookup-audit
+    necessary: true
+    tenant_boundary: merchant
+    recipients: []
+    retention: operational # PROVISIONAL pending RFC-0002 D9; no handler: unbounded
+    owner: maintainer
+    control: none
+    copies:
+      - kind: column
+        table: audit_events
+        column: actor_id
+  lookup_audit_record:
+    subject: none
+    purpose: account-holder-lookup-audit
+    necessary: true
+    tenant_boundary: merchant
+    recipients: []
+    retention: operational # PROVISIONAL pending RFC-0002 D9; no handler: unbounded
+    owner: maintainer
+    control: none
+    copies:
+      - kind: column
+        table: audit_events
+        column: action
+      - kind: column
+        table: audit_events
+        column: actor_kind
+      - kind: column
+        table: audit_events
+        column: id
+      - kind: column
+        table: audit_events
+        column: occurred_at
+      - kind: column
+        table: audit_events
+        column: operation_id
+      - kind: column
+        table: audit_events
+        column: outcome
+      - kind: column
+        table: audit_events
+        column: target_class
+      - kind: column
+        table: audit_events
+        column: tenant
 non_db_surfaces:
   - id: logs
     surface: telemetry

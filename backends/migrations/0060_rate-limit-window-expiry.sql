@@ -10,19 +10,36 @@
 -- elapsed since THIS row started".
 --
 -- `window_expires_at` is `window_started_at + window`. It is written by
--- `count_attempt`, never by a generated builder, so 0034's rule applies and
--- the temporary DEFAULT is dropped in the very next statement.
+-- `count_attempt`, never by a generated builder, so 0034's rule applies: the
+-- column carries no DEFAULT at all.
 
-ALTER TABLE rate_limit_windows ADD COLUMN window_expires_at TIMESTAMPTZ NOT NULL DEFAULT now();
+-- Added NULLABLE, backfilled, then made NOT NULL — in that order, on purpose.
+--
+-- The obvious `ADD COLUMN ... NOT NULL DEFAULT now()` followed by
+-- `UPDATE ... WHERE window_expires_at IS NULL` is a no-op backfill: the
+-- DEFAULT has already filled every existing row with the migration's own
+-- instant, so the WHERE matches nothing and every in-flight counter would
+-- "expire" the moment the migration ran — resetting each staff sign-in and
+-- change-password budget an attacker was part-way through. Proven against a
+-- real Postgres by `vpay-db`'s
+-- `migration_0060_backfills_each_in_flight_window_from_its_own_start`.
+ALTER TABLE rate_limit_windows ADD COLUMN window_expires_at TIMESTAMPTZ;
 
--- Backfill pre-existing rows (all written under the 300-second staff windows)
--- so the new NOT NULL column has a value on every row before the DEFAULT goes.
+-- Every row that can exist before this migration was written under a staff
+-- budget (`sign_in:email`, `sign_in:address`, `change_password:session`);
+-- `lookup:merchant_key` arrives in 0059, one migration earlier, and no server
+-- can have counted under it in between. Those budgets' windows are
+-- configuration (`vpay_config::RateLimitPolicy`), which a migration cannot
+-- read; 300 seconds is the shipped default for all three, so that is the
+-- window each in-flight row is given. A deployment that configured a longer
+-- window has its in-flight counters shortened to 300 seconds once, at
+-- migration — never reset to zero.
 UPDATE rate_limit_windows
-   SET window_expires_at = window_started_at + interval '5 minutes'
- WHERE window_expires_at IS NULL;
+   SET window_expires_at = window_started_at + interval '300 seconds';
 
--- No DEFAULT on a column a writer names (0034's rule).
-ALTER TABLE rate_limit_windows ALTER COLUMN window_expires_at DROP DEFAULT;
+-- No DEFAULT on a column a writer names (0034's rule): `count_attempt` always
+-- writes it.
+ALTER TABLE rate_limit_windows ALTER COLUMN window_expires_at SET NOT NULL;
 
 COMMENT ON COLUMN rate_limit_windows.window_expires_at IS
     'window_started_at + window: the instant this row''s own fixed window ends, decided by the writer. The COUNT_ATTEMPT sweep removes only rows whose own window_expires_at has passed, so one scope''s shorter window never resets another scope''s longer one (PR #396, stephane-segning P1).';

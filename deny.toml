@@ -141,7 +141,6 @@ ignore = [
   "RUSTSEC-2026-0440",
 ]
 
-
 [licenses]
 version = 2
 # Permissive only. A copyleft dependency in a payment gateway is a legal

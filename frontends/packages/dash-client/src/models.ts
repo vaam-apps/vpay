@@ -2383,18 +2383,6 @@ export interface AuditEvent {
   operation_id?: string;
 }
 
-export interface UpdateAuditEventInput {
-  occurred_at?: string;
-  tenant?: string;
-  actor_kind?: string;
-  actor_id?: string;
-  action?: string;
-  outcome?: string;
-  target_class?: string;
-  target_repr?: string;
-  operation_id?: string;
-}
-
 export interface AuditEventWhere {
   id?: StringFilter;
   occurred_at?: DateTimeFilter;

@@ -13908,3 +13908,194 @@ async fn audit_events_append_and_query_by_tenant() -> anyhow::Result<()> {
 
     Ok(())
 }
+
+/// `audit_events` is append-only **in the database**, not only by the Rust
+/// convention that `vpay_db::audit_events` exposes no update or delete
+/// (PR #396 review, P2). Migration 0059's triggers refuse `UPDATE`, `DELETE`
+/// and `TRUNCATE` for the role the application runs as, and the row is
+/// unchanged afterwards.
+///
+/// The decisive mutation: drop either trigger from 0059 and the matching
+/// statement below succeeds.
+#[tokio::test]
+async fn the_audit_journal_refuses_update_delete_and_truncate() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let event = vpay_db::NewAuditEvent {
+        id: "aud_0aaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        occurred_at: time::OffsetDateTime::now_utc(),
+        tenant: "merchant_append_only".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "initiated".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_0aaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+    };
+    repositories.append_audit_event(&event).await?;
+
+    for statement in [
+        "UPDATE audit_events SET outcome = 'found' WHERE id = 'aud_0aaaaaaaaaaaaaaaaaaaaaaaa'",
+        "UPDATE audit_events SET target_repr = 'rewritten'",
+        "DELETE FROM audit_events WHERE id = 'aud_0aaaaaaaaaaaaaaaaaaaaaaaa'",
+        "DELETE FROM audit_events",
+        "TRUNCATE audit_events",
+    ] {
+        let error = sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect_err(statement);
+        let database = error
+            .as_database_error()
+            .with_context(|| format!("{statement}: not a database error: {error}"))?;
+        assert_eq!(
+            database.code().as_deref(),
+            Some("23001"),
+            "{statement}: refused as restrict_violation by the trigger, not by anything else: \
+             {database}"
+        );
+        assert!(
+            database.message().contains("append-only"),
+            "{statement}: the trigger's own message: {database}"
+        );
+    }
+
+    let rows = repositories
+        .list_audit_events_by_tenant("merchant_append_only", 10)
+        .await?;
+    assert_eq!(rows.len(), 1, "nothing was removed");
+    assert_eq!(
+        rows.first().map(|row| row.outcome.as_str()),
+        Some("initiated"),
+        "nothing was rewritten"
+    );
+    Ok(())
+}
+
+/// Migration 0060 gives every **in-flight** rate-limit row the expiry of its
+/// own window, measured from its own start — it does not expire them all at
+/// the instant the migration runs (PR #396 review, P2).
+///
+/// The migration as first written added the column `NOT NULL DEFAULT now()`
+/// and then backfilled `WHERE window_expires_at IS NULL`, which matched no
+/// row: the DEFAULT had already filled them all with the migration's own
+/// instant. Every staff sign-in and change-password counter part-way through
+/// its window was therefore reset at deploy. This test applies migrations up
+/// to 0059, writes counters as the pre-0060 code wrote them, applies 0060, and
+/// then counts one more attempt through the shipping statement: a budget
+/// that survived the migration answers `attempts + 1`, a reset one answers 1.
+///
+/// The decisive mutation: restore the DEFAULT-then-`IS NULL` shape and the
+/// in-flight row's expiry is the migration instant, so the count answers 1.
+#[tokio::test]
+async fn migration_0060_backfills_each_in_flight_window_from_its_own_start() -> anyhow::Result<()> {
+    let container = vpay_testkit::containers::start_postgres_with_retry()
+        .await
+        .context("postgres:16-alpine container starts")?;
+    let host = container.get_host().await.context("container host")?;
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .context("container port")?;
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPool::connect(&url)
+        .await
+        .context("the raw pool connects")?;
+
+    // --- the world as it was before 0060 -----------------------------------
+    let migrator = sqlx::migrate!("../../migrations");
+    let mut applied = 0_u32;
+    for migration in migrator.iter() {
+        if migration.version > 59 {
+            continue;
+        }
+        // `AssertSqlSafe`: the string is `backends/migrations/*.sql`, embedded
+        // by `sqlx::migrate!` at compile time from this repository's own
+        // files. It interpolates nothing and no caller's value reaches it.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration.sql.as_str().to_owned()))
+            .execute(&pool)
+            .await
+            .with_context(|| format!("applying migration {}", migration.version))?;
+        applied += 1;
+    }
+    assert_eq!(applied, 59, "the pre-0060 schema was actually built");
+
+    // An attacker two minutes into a five-minute sign-in window, nine
+    // attempts spent; and a row whose window ended an hour ago.
+    sqlx::query(
+        "INSERT INTO rate_limit_windows (id, scope, window_started_at, attempts, updated_at) \
+         VALUES (repeat('a', 64), 'sign_in:email', now() - interval '2 minutes', 9, now()), \
+                (repeat('b', 64), 'sign_in:address', now() - interval '1 hour', 4, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("writing counters in the pre-0060 shape")?;
+
+    // --- the change under test ---------------------------------------------
+    let zero_zero_six_zero = migrator
+        .iter()
+        .find(|migration| migration.version == 60)
+        .context("migration 0060 is in the embedded set")?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        zero_zero_six_zero.sql.as_str().to_owned(),
+    ))
+    .execute(&pool)
+    .await
+    .context("migration 0060 applies to a table that already has rows")?;
+
+    // Each row's expiry is its own start plus the 300-second staff window.
+    let off_by: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT id, \
+                CAST(EXTRACT(EPOCH FROM window_expires_at - window_started_at) AS BIGINT) \
+           FROM rate_limit_windows ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(
+        off_by,
+        vec![("a".repeat(64), 300), ("b".repeat(64), 300)],
+        "every pre-existing row expires window_started_at + 300 seconds"
+    );
+
+    let nullable: String = sqlx::query_scalar(
+        "SELECT is_nullable FROM information_schema.columns \
+          WHERE table_name = 'rate_limit_windows' AND column_name = 'window_expires_at'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(nullable, "NO", "the column ends NOT NULL");
+    let default: Option<String> = sqlx::query_scalar(
+        "SELECT column_default FROM information_schema.columns \
+          WHERE table_name = 'rate_limit_windows' AND column_name = 'window_expires_at'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(default, None, "and carries no DEFAULT (0034's rule)");
+
+    // The behaviour that matters, through the shipping statement.
+    let repositories = vpay_db::connect(&url).await?;
+    let now = time::OffsetDateTime::now_utc();
+    let in_flight = repositories
+        .count_attempt(
+            &"a".repeat(64),
+            "sign_in:email",
+            time::Duration::minutes(5),
+            now,
+        )
+        .await?;
+    assert_eq!(
+        in_flight.attempts, 10,
+        "the in-flight budget survived the migration: nine spent, this is the tenth"
+    );
+    let long_gone = repositories
+        .count_attempt(
+            &"b".repeat(64),
+            "sign_in:address",
+            time::Duration::minutes(5),
+            now,
+        )
+        .await?;
+    assert_eq!(long_gone.attempts, 1, "an elapsed window still restarts");
+    Ok(())
+}

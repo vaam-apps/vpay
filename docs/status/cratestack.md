@@ -913,3 +913,24 @@ create the matching tables/columns. Measured with `cratestack migrate baseline
   `vpay-db`'s `MODEL_TABLES` lists 24 models.
 - `audit_events` holds no `@@allow` arm (ADR-0034; the query surface is the
   hand-written `vpay_db::AuditEvents` repository), so it contributes no route.
+
+## 2026-11-17 — `model AuditEvent` gains `@@internal`, and `0059` gains an append-only trigger (PR #396 review)
+
+`model AuditEvent` now declares `@@internal("create")`, `@@internal("update")`
+and `@@internal("delete")` — cratestack 0.16.0's route-suppression attribute
+(`cratestack_core::model_verbs`), one action per declaration. The generated
+surfaces stop offering the three verbs: `just gen-dash-client` dropped
+`AuditEventApi.update`, `AuditEventApi.delete`, `UpdateAuditEventInput` and the
+`DELETE /audit_events/{id}` op contract from `frontends/packages/dash-client`
+(there was no `create` to drop: a model with no `@@allow` arm already had
+none). `list`/`get` stay and answer no rows, as `RateLimitWindow`'s do. The
+attribute is a generation-time decision, so it changes no column and no drift
+line.
+
+Migration `0059` (new in the same PR, never on `master`, so edited in place with
+`MANIFEST.sha256` updated) now also creates `audit_events_refuse_mutation()` and
+two triggers refusing `UPDATE`, `DELETE` and `TRUNCATE`. Migration `0060`
+(likewise) adds `window_expires_at` nullable, backfills it, then sets
+`NOT NULL`. See [backend.md](backend.md)'s account-holder row and
+[verification/2026-11-17-pr396-review.md](verification/2026-11-17-pr396-review.md)
+for the drift figure measured after both.

@@ -47,8 +47,15 @@
 //!    RFC-0002 D7). The stored `target_repr` holds a keyed HMAC-SHA256 digest
 //!    of `tenant_id` + normalized MSISDN under `privacy.lookup_audit_salt`
 //!    (provisional pending RFC-0002 D3); the raw MSISDN and returned name are
-//!    never stored. If the initial audit write fails, the lookup is refused
-//!    (fail closed).
+//!    never stored. **Which writes fail closed** is one rule: a row that
+//!    precedes or accompanies a disclosure fails closed. `initiated` is
+//!    written before the rail is asked, and the lookup is refused if it
+//!    cannot be; the terminal row is written before the answer is released,
+//!    and the answer is withheld (`500`, the name never sent) if it cannot
+//!    be. The `rate_limited` and `invalid` rows record refusals in which the
+//!    rail was not asked and nothing was disclosed, so their write is
+//!    best-effort and logged: failing them would turn a `429`/`400` into a
+//!    `500` and protect nothing. Provisional pending RFC-0002 D7.
 //! 3. **Per-credential fixed-window rate limiting.** Fixed-window counter in
 //!    `rate_limit_windows` keyed by signing-key thumbprint for signed calls or
 //!    `client_id` for machine tokens (provisional pending RFC-0002 D6). Budget
@@ -139,6 +146,45 @@ pub fn audit_target_hash(tenant_id: &str, msisdn: &str, key: &str) -> String {
     mac.update(b":");
     mac.update(msisdn.as_bytes());
     hex::encode(mac.finalize().into_bytes())
+}
+
+/// One `account_holder:lookup` row, as every write in [`ask_rail`] builds it.
+///
+/// One function so the tenant, actor and vocabulary cannot differ between
+/// the five places a row is written. Provisional pending RFC-0002 D7 (the
+/// outcome vocabulary, which migration 0059's CHECK freezes) and D3 (what
+/// `target_repr` holds).
+fn lookup_event(
+    scope: &MerchantScope,
+    caller: &CallerCredential,
+    outcome: &str,
+    target_repr: String,
+    operation_id: String,
+) -> vpay_db::NewAuditEvent {
+    let actor_kind = match caller.kind() {
+        CredentialKind::Signer => "signer",
+        CredentialKind::MachineToken => "machine_token",
+    };
+    vpay_db::NewAuditEvent {
+        id: vpay_core::ids::audit_event_id(),
+        occurred_at: time::OffsetDateTime::now_utc(),
+        tenant: scope.merchant_id().to_owned(),
+        actor_kind: actor_kind.to_owned(),
+        actor_id: caller.id().to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: outcome.to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr,
+        operation_id,
+    }
+}
+
+/// The value a refusal row's `target_repr` is keyed over: the canonical
+/// number when the input is one, so a refused probe correlates with the
+/// `initiated`/terminal rows of the same number however the caller spelled
+/// it; the trimmed input only when it is not a number at all.
+fn audit_subject(msisdn_raw: &str) -> String {
+    canonical_msisdn(msisdn_raw).unwrap_or_else(|| msisdn_raw.trim().to_owned())
 }
 
 /// `GET /v1/account_holders?msisdn=…&payment_method_type=…`.
@@ -377,24 +423,20 @@ pub(crate) async fn ask_rail(
                 remaining.whole_seconds().max(1) as u64
             };
 
-            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, key);
-            let actor_kind = match caller.kind() {
-                CredentialKind::Signer => "signer",
-                CredentialKind::MachineToken => "machine_token",
-            };
+            // Best-effort: the rail is not asked and nothing is disclosed, so
+            // a failed write must not turn the 429 into a 500 (module doc,
+            // rule 2). Canonicalised first so the row correlates with the
+            // same number's other rows however the caller spelled it.
+            let target_repr =
+                audit_target_hash(scope.merchant_id(), &audit_subject(msisdn_raw), key);
             if let Err(error) = store
-                .append_audit_event(&vpay_db::NewAuditEvent {
-                    id: vpay_core::ids::audit_event_id(),
-                    occurred_at: now,
-                    tenant: scope.merchant_id().to_owned(),
-                    actor_kind: actor_kind.to_owned(),
-                    actor_id: caller.id().to_owned(),
-                    action: "account_holder:lookup".to_owned(),
-                    outcome: "rate_limited".to_owned(),
-                    target_class: "account_holder".to_owned(),
+                .append_audit_event(&lookup_event(
+                    scope,
+                    caller,
+                    "rate_limited",
                     target_repr,
-                    operation_id: vpay_core::ids::operation_id(),
-                })
+                    vpay_core::ids::operation_id(),
+                ))
                 .await
             {
                 tracing::error!(%error, "failed to append rate_limited audit event for account-holder lookup");
@@ -411,24 +453,18 @@ pub(crate) async fn ask_rail(
         Some(m) => m,
         None => {
             count(account_holder_outcome::ERROR);
-            let target_repr = audit_target_hash(scope.merchant_id(), msisdn_raw, key);
-            let actor_kind = match caller.kind() {
-                CredentialKind::Signer => "signer",
-                CredentialKind::MachineToken => "machine_token",
-            };
+            // Best-effort, for the rate_limited row's reason. There is no
+            // canonical form to key over here, so the trimmed input is.
+            let target_repr =
+                audit_target_hash(scope.merchant_id(), &audit_subject(msisdn_raw), key);
             if let Err(error) = store
-                .append_audit_event(&vpay_db::NewAuditEvent {
-                    id: vpay_core::ids::audit_event_id(),
-                    occurred_at: time::OffsetDateTime::now_utc(),
-                    tenant: scope.merchant_id().to_owned(),
-                    actor_kind: actor_kind.to_owned(),
-                    actor_id: caller.id().to_owned(),
-                    action: "account_holder:lookup".to_owned(),
-                    outcome: "invalid".to_owned(),
-                    target_class: "account_holder".to_owned(),
+                .append_audit_event(&lookup_event(
+                    scope,
+                    caller,
+                    "invalid",
                     target_repr,
-                    operation_id: vpay_core::ids::operation_id(),
-                })
+                    vpay_core::ids::operation_id(),
+                ))
                 .await
             {
                 tracing::error!(%error, "failed to append invalid audit event for account-holder lookup");
@@ -445,24 +481,15 @@ pub(crate) async fn ask_rail(
     // 3. Initiated audit event (provisional pending RFC-0002 D7). Fails closed if write fails.
     let target_repr = audit_target_hash(scope.merchant_id(), &msisdn, key);
     let operation_id = vpay_core::ids::operation_id();
-    let actor_kind = match caller.kind() {
-        CredentialKind::Signer => "signer",
-        CredentialKind::MachineToken => "machine_token",
-    };
 
     store
-        .append_audit_event(&vpay_db::NewAuditEvent {
-            id: vpay_core::ids::audit_event_id(),
-            occurred_at: time::OffsetDateTime::now_utc(),
-            tenant: scope.merchant_id().to_owned(),
-            actor_kind: actor_kind.to_owned(),
-            actor_id: caller.id().to_owned(),
-            action: "account_holder:lookup".to_owned(),
-            outcome: "initiated".to_owned(),
-            target_class: "account_holder".to_owned(),
-            target_repr: target_repr.clone(),
-            operation_id: operation_id.clone(),
-        })
+        .append_audit_event(&lookup_event(
+            scope,
+            caller,
+            "initiated",
+            target_repr.clone(),
+            operation_id.clone(),
+        ))
         .await
         .map_err(|error| {
             tracing::error!(
@@ -487,23 +514,29 @@ pub(crate) async fn ask_rail(
 
     count(metric_outcome);
 
-    if let Err(error) = store
-        .append_audit_event(&vpay_db::NewAuditEvent {
-            id: vpay_core::ids::audit_event_id(),
-            occurred_at: time::OffsetDateTime::now_utc(),
-            tenant: scope.merchant_id().to_owned(),
-            actor_kind: actor_kind.to_owned(),
-            actor_id: caller.id().to_owned(),
-            action: "account_holder:lookup".to_owned(),
-            outcome: terminal_outcome.to_owned(),
-            target_class: "account_holder".to_owned(),
+    // Fails closed, like `initiated` (module doc, rule 2): the rail has
+    // answered, and the answer — a name, or the fact that nobody holds the
+    // number — is released only once its terminal row is stored. A write that
+    // fails withholds it; the `initiated` row with no terminal row is then the
+    // record that the rail was asked (provisional pending RFC-0002 D7).
+    store
+        .append_audit_event(&lookup_event(
+            scope,
+            caller,
+            terminal_outcome,
             target_repr,
             operation_id,
-        })
+        ))
         .await
-    {
-        tracing::error!(%error, "failed to append terminal audit event for account-holder lookup");
-    }
+        .map_err(|error| {
+            tracing::error!(
+                %error,
+                rail = %rail_code,
+                caller = caller_trace,
+                "failed to append the terminal audit event; withholding the rail's answer"
+            );
+            ApiError::from(error)
+        })?;
 
     match call_res {
         Ok(holder) => {
@@ -658,6 +691,8 @@ pub(crate) fn masked(canonical: &str) -> String {
 pub(crate) struct TestStore {
     pub(crate) attempts: std::sync::atomic::AtomicI64,
     pub(crate) audit_events: std::sync::Mutex<Vec<vpay_db::NewAuditEvent>>,
+    /// Outcomes whose append fails, as a database outage would.
+    pub(crate) failing_outcomes: Vec<&'static str>,
 }
 
 #[cfg(test)]
@@ -688,6 +723,13 @@ impl vpay_db::AuditEvents for TestStore {
         &self,
         event: &vpay_db::NewAuditEvent,
     ) -> Result<vpay_db::AuditEventRow, vpay_db::DbError> {
+        if self
+            .failing_outcomes
+            .iter()
+            .any(|outcome| *outcome == event.outcome)
+        {
+            return Err(vpay_db::DbError::Query(sqlx::Error::PoolTimedOut));
+        }
         if let Ok(mut lock) = self.audit_events.lock() {
             lock.push(event.clone());
         }
@@ -1501,6 +1543,104 @@ mod tests {
         assert_eq!(events.len(), 1);
         let first = events.first().expect("rate_limited event was appended");
         assert_eq!(first.outcome, "rate_limited");
+    }
+
+    /// The terminal row fails closed (PR #396 review, P3): a rail answer
+    /// whose terminal audit row cannot be written is withheld, so no name is
+    /// ever released without both rows. The `initiated` row stays as the
+    /// record that the rail was asked.
+    ///
+    /// The decisive mutation: log the terminal write's error and carry on,
+    /// as this function did before, and the `200` with the name comes back.
+    #[tokio::test]
+    async fn a_terminal_row_that_cannot_be_written_withholds_the_answer() {
+        let store = TestStore {
+            failing_outcomes: vec!["found"],
+            ..TestStore::default()
+        };
+        let caller = CallerCredential::for_signer(
+            "thumbprint-123".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+        let scope = MerchantScope::for_payer("tenant-xyz".to_owned());
+        let refused = retrieve_with(
+            &store,
+            &resource_config(true),
+            &adapters(Answer::Holder),
+            &caller,
+            &scope,
+            RetrieveParams {
+                msisdn: Some(MSISDN.to_owned()),
+                payment_method_type: Some(RAIL.to_owned()),
+            },
+        )
+        .await
+        .expect_err("the answer must be withheld");
+        assert!(
+            !format!("{refused:?}").contains(HOLDER_NAME),
+            "the refusal must not carry the name: {refused:?}"
+        );
+        let outcomes: Vec<String> = store
+            .audit_events
+            .lock()
+            .map(|events| events.iter().map(|event| event.outcome.clone()).collect())
+            .unwrap_or_default();
+        assert_eq!(outcomes, vec!["initiated".to_owned()]);
+    }
+
+    /// A refusal row is keyed over the canonical number, so a probe refused
+    /// for budget correlates with the same number's lookup rows however it
+    /// was spelled (PR #396 review, P3). It hashed the raw input until then,
+    /// so `+237 6…` and `2376…` were two different targets.
+    #[tokio::test]
+    async fn a_rate_limited_row_is_keyed_over_the_canonical_number() {
+        let store = TestStore::default();
+        store
+            .attempts
+            .store(10_000, std::sync::atomic::Ordering::SeqCst);
+        let caller = CallerCredential::for_signer(
+            "thumbprint-123".to_owned(),
+            vec![crate::v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned()],
+        );
+        let scope = MerchantScope::for_payer("tenant-xyz".to_owned());
+        let key = "k".repeat(64);
+        let spelled = "+237 6 00 00 02 00";
+        let rail_config = resource_config(true)
+            .enabled_rail(RAIL)
+            .expect("the fixture rail is enabled")
+            .provider_config();
+        let _ = ask_rail(
+            &store,
+            &scope,
+            &caller,
+            &key,
+            Some(vpay_config::RateLimitPolicy {
+                attempts: 1,
+                window_seconds: 60,
+            }),
+            &AnsweringRail {
+                code: RAIL,
+                answer: Answer::Holder,
+            },
+            RAIL,
+            spelled,
+            &rail_config,
+            caller::ROUTE,
+        )
+        .await
+        .expect_err("over budget");
+        let events = store
+            .audit_events
+            .lock()
+            .map(|events| events.clone())
+            .unwrap_or_default();
+        let row = events.first().expect("a rate_limited row");
+        assert_eq!(row.outcome, "rate_limited");
+        assert_eq!(
+            row.target_repr,
+            audit_target_hash("tenant-xyz", "237600000200", &key),
+            "keyed over the canonical 2376XXXXXXXX, not the spelling sent"
+        );
     }
 
     #[tokio::test]

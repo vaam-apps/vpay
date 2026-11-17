@@ -125,9 +125,36 @@ An append-only journal in `audit_events` (migration `0059`) records two events p
 
 The stored `target_repr` holds a keyed HMAC-SHA256 digest of `tenant_id` + normalized MSISDN under `privacy.lookup_audit_salt` (provisional pending RFC-0002 D3); the raw MSISDN and returned name are never stored in the database.
 
-If writing the `initiated` event to the database fails, the lookup is immediately refused with `500 Internal Server Error` (fail-closed). Retention is operational (provisional pending RFC-0002 D9).
+**Which writes fail closed is one rule: a row that precedes or accompanies a
+disclosure fails closed; a row that records a refusal is best-effort.**
+`initiated` is written before the rail is asked, and the lookup is refused
+(`500`) if it cannot be. The terminal row is written before the rail's answer
+is released, and the answer is withheld (`500`, the name never sent) if it
+cannot be — the `initiated` row with no terminal row is then the record that
+the rail was asked. The `rate_limited` and `invalid` rows record refusals in
+which the rail was not asked and nothing was disclosed; failing them would turn
+a `429`/`400` into a `500` and protect nothing, so their write is logged at
+`error` and the refusal stands. (Until the PR #396 review the terminal row was
+best-effort too.) A refusal row is keyed over the canonical number when the
+input is one, so a refused probe correlates with the same number's other rows
+however it was spelled.
 
-_Proven by_ `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration).
+**Append-only is enforced by the database**, not only by the repository
+exposing no update: migration `0059`'s triggers refuse `UPDATE`, `DELETE` and
+`TRUNCATE` on `audit_events` for every role (`restrict_violation`). That is a
+guard against mistakes, not tamper-proofing — the table's owner can disable a
+trigger. The generated `@vpay/dash-client` offers no `create`, `update` or
+`delete` on `auditEvents` (`@@internal` in `schemas/vpay.cstack`).
+
+**Retention: none.** The provisional class is `operational`, and no handler
+exists for this table, so the journal grows without bound (RFC-0002 D9 — see
+§ Status).
+
+_Proven by_ `audit_table_holds_hmac_target_representation_and_no_raw_pii`
+(integration), `a_terminal_row_that_cannot_be_written_withholds_the_answer`,
+`a_rate_limited_row_is_keyed_over_the_canonical_number` (`vpay-api`) and
+`the_audit_journal_refuses_update_delete_and_truncate` (`vpay-db`, real
+Postgres).
 
 ### 3. Logs carry a masked number and never a name
 
@@ -151,14 +178,25 @@ column is a change to the charge path and not to this route.
 
 ### 4. Rate limiting — per-credential fixed window (ADR-0020, issue #56, provisional pending RFC-0002 D6)
 
-Each lookup is counted against the caller's credential before the rail call. Lookups share a single fixed-window budget per credential across both `GET /v1/account_holders` and nominated-payee refunds on `POST /v1/refunds`.
+Each lookup is counted against the caller's credential before the rail call. Lookups share a single fixed-window budget per credential across `GET /v1/account_holders`, nominated-payee refunds on `POST /v1/refunds`, and the MCP `create_refund` tool with a destination.
 
-- For signed COSE envelopes: keyed by the signing-key thumbprint (`lookup:merchant_key:SHA-256:<thumbprint>`).
-- For machine tokens: keyed by the client ID (`lookup:machine_token:<client_id>`).
+Every row is stored under the scope `lookup:merchant_key`, with the id
+`SHA-256("lookup:merchant_key:<merchant_id>:<credential id>")`, where the
+credential id is:
+
+- for a signed COSE envelope, the signing key's RFC 9679 thumbprint (hex);
+- for a `/v1` bearer token, its `client_id`;
+- for a merchant MCP tool call, the token's `client_id` too — so one client's
+  `/v1` token and MCP calls spend one budget. (Until the PR #396 review the
+  MCP path was counted under `mcp:<merchant_id>`, a per-**tenant** budget.)
+
+**Every attempt counts, including a malformed number**: the count happens
+before the number is parsed, so probing with garbage still spends budget.
+Whether a malformed request should spend budget is RFC-0002 D6's to decide.
 
 The window duration and attempt limit are configured via `privacy.lookup_rate_limit` (provisional pending RFC-0002 D6).
 
-When the limit is reached, vpay returns HTTP 429 Too Many Requests with a `Retry-After: <seconds>` header rounding up the remaining seconds in the window, and error body:
+When the limit is reached, vpay returns HTTP 429 Too Many Requests with a `Retry-After: <seconds>` header carrying the **remaining** seconds in the current window, rounded up (never the full window length; RFC-0002 D6 leaves that choice open), and error body:
 
 ```json
 {
@@ -177,12 +215,27 @@ _Proven by_ `rate_limit_blocks_and_retry_after_is_provided_and_second_credential
 ### 5. Dedicated scope (`account_holders:read`, issue #56, provisional pending RFC-0002 D5)
 
 `GET /v1/account_holders` requires the `account_holders:read` scope.
-Nominated-payee refunds via `POST /v1/refunds` also require `account_holders:read` in addition to `payments:write`.
-Any credential lacking this scope is refused with HTTP 403 Forbidden (`insufficient_scope`).
-Since PR #396 an implicit `HEAD` to the route is held to the same `GET` policy
-— Axum serves `HEAD` from the `GET` handler, so a payments-only credential
-cannot trigger the rail lookup via `HEAD` without `account_holders:read`, and
-an account-holders-only credential is not refused for it.
+Nominated-payee refunds via `POST /v1/refunds` also require `account_holders:read` in addition to `payments:write`,
+and so does the merchant MCP `create_refund` tool when it names a destination:
+since the PR #396 review a tool call runs as the token's own client with
+exactly the token's scopes (held to its registration's YAML), so a token that
+holds `account_holders:read` is served and one that does not is refused.
+
+> **Breaking change, enforced on release, with no migration window
+> (provisional pending RFC-0002 D5).** No payment scope implies
+> `account_holders:read`. A credential registered with only `payments:read` /
+> `payments:write` that calls `GET /v1/account_holders` or nominates a refund
+> payee is refused `403` from the first request after deploy. RFC-0002 D5
+> _recommends_ a documented migration before enforcement and lists a dated
+> compatibility interval as an option; this implementation chose immediate
+> enforcement, and that choice is not yet the maintainer's. Operators must add
+> `account_holders:read` to each `merchant_clients[].scopes` that needs it
+> before upgrading (the shipped overlays and `just gen-demo-keys` already do).
+> Any credential lacking this scope is refused with HTTP 403 Forbidden (`insufficient_scope`).
+> Since PR #396 an implicit `HEAD` to the route is held to the same `GET` policy
+> — Axum serves `HEAD` from the `GET` handler, so a payments-only credential
+> cannot trigger the rail lookup via `HEAD` without `account_holders:read`, and
+> an account-holders-only credential is not refused for it.
 
 _Proven by_ `credential_without_account_holders_read_scope_is_refused_403` and `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration), and `a_head_to_account_holders_is_held_to_the_get_scope_policy` (integration).
 
@@ -273,22 +326,37 @@ about the _rail_, and this one answers a question about the _route_.
 
 ## Status
 
-**Built, and proven against a WireMock stub only.**
+**Built, and proven against a WireMock stub only. The privacy controls
+(issue #56) are built on PROVISIONAL policy answers — see the box below.**
 
-> **Not safe to expose to untrusted merchants without ingress rate
-> limiting.** As shipped, any credential that can call `/v1` can turn a list
-> of phone numbers into a list of names at whatever rate it can make HTTP
-> requests, and vpay keeps no record that it happened (rules 2 and 4 below —
-> and they are the same fact, pointing in two directions). That is the
-> condition on turning this route on, not a caveat about it. Since PR #396 the
-> per-credential limit is **required at boot** (`privacy.lookup_rate_limit` must
-> accompany `privacy.lookup_audit_salt`), so an operator can no longer
-> configure the salt and forget the limit; the ingress-scale question remains
-> an operator concern, not a code one.
+> **Provisional, pending RFC-0002 D3/D5/D6/D7/D9.** Every one of these is
+> still `OPEN` in [RFC-0002's decision register](../rfc/0002-gdpr-policy-and-operator-decisions.md#decision-register);
+> PR #396 implemented the RFC's _recommendations_ (or its own choice where the
+> RFC recommends nothing) so they could be reviewed against working code, and
+> the repository owner decided on 2026-11-17 to merge it on that basis. **None of them is
+> a decision**, and each is a change point if the decision differs:
+>
+> | RFC-0002 | What ships today                                                                                                                                                                                                       | Where it would change                                                           |
+> | -------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+> | D3       | `target_repr` = HMAC-SHA256(`tenant_id` `:` canonical MSISDN) under `privacy.lookup_audit_salt`. Key custody, rotation and overlap are undecided; rotating the key today breaks correlation with every earlier row.    | `vpay_api::v1::account_holders::audit_target_hash`, `privacy.lookup_audit_salt` |
+> | D5       | `account_holders:read`, implied by no payment scope, **enforced immediately with no migration window** — a breaking change for every credential without it (rule 5).                                                   | `vpay_api::v1::SCOPE_ACCOUNT_HOLDERS_READ`, `v1::refunds::resolve_target`       |
+> | D6       | Per credential (thumbprint / `client_id`); `attempts: 10` per `window_seconds: 60` in all three shipped configs; **malformed requests spend budget**; `Retry-After` is the remaining window, rounded up; fail closed.  | `privacy.lookup_rate_limit` in `config/application*.yml`, `ask_rail`            |
+> | D7       | `initiated` + terminal rows under one `operation_id`; the outcome vocabulary (`initiated`, `found`, `not_found`, `invalid`, `unsupported`, `rate_limited`, `rail_error`) is **frozen by a CHECK** in migration `0059`. | a new migration that replaces `audit_events_outcome_is_known`                   |
+> | D9       | Class `operational` in `schemas/privacy-inventory.yaml`. **No retention handler exists: the journal is unbounded.**                                                                                                    | a handler + class registration, RFC-0002 Stage 3 PR 7 — not built               |
+>
+> D8 (the operator surface) has no provisional answer at all: it is not built.
 
-- `GET /v1/account_holders` — served (`vpay_api::v1::V1_ROUTES`). Merchant
-  token required (`payments:read` or `payments:write`), tenant-scoped
-  extractor bound, no persistence, four-key response.
+> **Still not a substitute for ingress rate limiting.** The per-credential
+> budget bounds one key; a merchant holding many keys, or many merchants, are
+> bounded only by what sits in front of vpay. Since PR #396 the limit is
+> **required at boot** (`privacy.lookup_rate_limit` must accompany
+> `privacy.lookup_audit_salt`), and each lookup leaves `audit_events` rows —
+> but no operator can read those rows except with ad-hoc SQL (D8, below).
+
+- `GET /v1/account_holders` — served (`vpay_api::v1::V1_ROUTES`).
+  `account_holders:read` required (rule 5), tenant-scoped extractor bound,
+  four-key response; writes `rate_limit_windows` and `audit_events` rows
+  (rules 2 and 4).
 - `POST /v1/refunds` — **a second caller since 2026-09-16** (RFC-0003 § 2).
   Refuses a nominated payee the rail has no record of with a `400` naming
   `destination`; never compares a name; skips the lookup entirely on a rail
@@ -343,8 +411,24 @@ about the _rail_, and this one answers a question about the _route_.
 - **Orange's route is unconfirmed**, so `false` there is "we do not know of
   one", not "Orange has none".
 - **Rate limiting, audit logging, dedicated scope** — built (issue #56, ADR-0020),
-  governing lookups across both `GET /v1/account_holders` and `POST /v1/refunds`
-  nominated payee paths.
+  governing lookups across `GET /v1/account_holders`, `POST /v1/refunds`
+  nominated-payee paths and the MCP `create_refund` tool — on the provisional
+  answers in the box above.
+- **No operator can query the audit journal** (RFC-0002 D8, unbuilt). The only
+  reader is `vpay_db::AuditEvents::list_audit_events_by_tenant`, a repository
+  method no route, CLI or dashboard screen calls. RFC-0002 Stage 3 PR 8 says
+  #56 "is not complete with an append-only table that only ad-hoc SQL can
+  read"; that is exactly what exists. GAP-56 stays open on it
+  (`schemas/security-inventory.yaml`).
+- **No retention handler for `audit_events`** (RFC-0002 D9, unbuilt): rows are
+  never deleted, anonymised or pseudonymised, so the journal grows without
+  bound. The append-only trigger means the handler, when D9 is decided, will
+  need its own deliberate exception.
+- **The MCP nominated-payee path is proven at its seams, not end to end**:
+  `an_mcp_callers_scopes_are_the_tokens_held_to_the_yaml_and_never_widened`
+  (`vpay-api`) and `the_call_carries_the_contexts_client_and_exactly_its_scopes`
+  (`vpay-db`). No integration test drives `create_refund` with a destination
+  over `/mcp/v1` against a WireMock rail.
 - **Neither SDK has run against a live vpay** for this resource; both are
   tested against in-process HTTP stubs
   ([../sdks/parity.md](../sdks/parity.md)'s gap ledger, 2026-09-05).
@@ -369,6 +453,11 @@ about the _rail_, and this one answers a question about the _route_.
 | rate limit: a short scope never resets a longer one's counter                   | `a_short_scope_count_never_sweeps_a_longer_scope_row_inside_its_own_window` (`vpay-db`), the per-row `window_expires_at` sweep (migration 0060)                                                                                                        |
 | rate limit: a salt without a configured limit refuses at boot                   | `an_audit_salt_without_a_lookup_rate_limit_is_refused_at_boot` (`vpay-config`) — lookups can no longer boot into an unlimited per-credential budget                                                                                                    |
 | audit log: initiated and terminal events with HMAC target, no raw PII           | `audit_table_holds_hmac_target_representation_and_no_raw_pii` (integration)                                                                                                                                                                            |
+| audit log: a terminal row that cannot be written withholds the answer           | `a_terminal_row_that_cannot_be_written_withholds_the_answer` (`vpay-api`)                                                                                                                                                                              |
+| audit log: refusal rows are keyed over the canonical number                     | `a_rate_limited_row_is_keyed_over_the_canonical_number` (`vpay-api`)                                                                                                                                                                                   |
+| audit log: append-only in the database (UPDATE, DELETE, TRUNCATE refused)       | `the_audit_journal_refuses_update_delete_and_truncate` (`vpay-db`, real Postgres)                                                                                                                                                                      |
+| migration 0060 keeps each in-flight counter's own window                        | `migration_0060_backfills_each_in_flight_window_from_its_own_start` (`vpay-db`, real Postgres)                                                                                                                                                         |
+| MCP: a tool call carries the token's own client and scopes, never more          | `an_mcp_callers_scopes_are_the_tokens_held_to_the_yaml_and_never_widened` (`vpay-api`), `the_call_carries_the_contexts_client_and_exactly_its_scopes` (`vpay-db`)                                                                                      |
 | scope: lacking `account_holders:read` refused 403 Forbidden                     | `credential_without_account_holders_read_scope_is_refused_403`, `a_nominated_payee_refund_without_account_holders_read_is_refused_403` (integration)                                                                                                   |
 | the route, end to end, over a socket, against a real WireMock MTN               | `backends/tests/integration/tests/account_holders.rs` — nine cases                                                                                                                                                                                     |
 | both SDKs speak the same query string and read the same object                  | `docs/sdks/parity.md`, five `account_holders` rows                                                                                                                                                                                                     |

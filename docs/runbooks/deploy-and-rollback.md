@@ -103,7 +103,13 @@ Five things the tooling will not check for you:
    (to pair an individual console key when no IdP or vaam pairing service is reachable)
    and `vpay-server staff revoke-key` (to immediately revoke a compromised key).
    Neither break-glass subcommand creates or upgrades an administrator; cross-tenant admin reads
-   remain explicitly scoped and audited ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
+   remain explicitly scoped and logged ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
+   **What this does not give you:** break-glass access that is time-bounded or auditable. A key
+   paired with `staff pair-key` lives the ordinary 30 days, needs no second person, and is
+   recorded only by one log line on the process's output. Issue #152 asks for both properties;
+   neither is built (`GAP-152-BREAK-GLASS` in `schemas/security-inventory.yaml`). Revoke a
+   break-glass key with `staff revoke-key` as soon as the emergency is over, and record who ran
+   what, and when, outside vpay.
 
 ### Two things this release changes on `/dash/v1`
 

@@ -43,6 +43,27 @@ use crate::resource_auth::{AuthRejection, JwtValidator};
 use crate::v1::payment_intents::{self, PostRequest};
 use crate::v1::{self, MerchantScope, ResourceConfig, refunds};
 
+/// The credential a tool call runs `/v1`'s code as: the token's own OAuth
+/// client and **exactly** the scopes it authenticated with
+/// ([`MerchantMcpAuth`] holds them to the registration's current YAML, as
+/// `/v1`'s bearer path does).
+///
+/// # Why it is not invented here (PR #396 review, P1)
+///
+/// This used to be a principal named `mcp:<merchant>` holding
+/// `payments:write` and `payments:read` whatever the token held. Two defects
+/// followed. A nominated-payee refund needs `account_holders:read`
+/// (`v1::refunds::resolve_target`), which that principal never held, so
+/// every such refund over MCP was refused `403` even for a client granted
+/// the scope; and the lookup budget and audit actor were the **tenant**, so
+/// two clients of one merchant shared one budget, which is not "per key"
+/// (RFC-0002 D6's own warning). Now the identity is the `client_id`, the
+/// same one a `/v1` bearer token of that client is counted under, and the
+/// scopes are the token's: nothing is granted that the credential lacks.
+fn caller_of(call: &MerchantCall) -> CallerCredential {
+    CallerCredential::for_machine_token(call.client_id.clone(), call.scopes.clone())
+}
+
 /// [`vpay_db::MerchantOperations`] over `/v1`'s own functions.
 pub struct MerchantOps {
     repositories: Arc<dyn Repositories>,
@@ -74,13 +95,7 @@ impl MerchantOps {
     }
 
     async fn run(&self, call: MerchantCall) -> Result<Response, ApiError> {
-        let caller = CallerCredential::for_machine_token(
-            format!("mcp:{}", call.merchant_id),
-            vec![
-                v1::SCOPE_PAYMENTS_WRITE.to_owned(),
-                v1::SCOPE_PAYMENTS_READ.to_owned(),
-            ],
-        );
+        let caller = caller_of(&call);
         let scope = MerchantScope::for_mcp(call.merchant_id);
         let tool = call.operation.tool_name();
         let repositories = self.repositories.as_ref();
@@ -463,9 +478,25 @@ impl McpAuthenticator for MerchantMcpAuth {
                 "the token holds neither payments:read nor payments:write".to_owned(),
             ));
         }
+        // The effective scopes, computed exactly as `/v1`'s bearer path does
+        // (`envelope::scope::token_scope`): the registration's current YAML
+        // grant, kept only where the token also holds it.
+        let scopes = self
+            .config
+            .scopes_for_client(&claims.subject)
+            .map(|granted| {
+                granted
+                    .iter()
+                    .filter(|scope| claims.has_scope(scope))
+                    .cloned()
+                    .collect()
+            })
+            .unwrap_or_default();
         Ok(McpCaller {
             merchant_id: merchant_id.to_owned(),
             can_write,
+            client_id: claims.subject.clone(),
+            scopes,
         })
     }
 }
@@ -544,9 +575,13 @@ pub fn merchant_router(parts: MerchantMcpParts) -> Result<axum::Router, vpay_db:
     let endpoint = vpay_db::McpEndpoint {
         allowed_origins: vec![origin_of(&parts.public_base_url)],
         authorization_servers: vec![parts.issuer],
+        // `account_holders:read` is listed because `create_refund` with a
+        // nominated payee needs it (a rail lookup of the payee runs first),
+        // so an MCP client reading this metadata learns to ask for it.
         scopes: vec![
             v1::SCOPE_PAYMENTS_READ.to_owned(),
             v1::SCOPE_PAYMENTS_WRITE.to_owned(),
+            v1::SCOPE_ACCOUNT_HOLDERS_READ.to_owned(),
         ],
         resource,
     };
@@ -712,6 +747,8 @@ mod tests {
             Ok(McpCaller {
                 merchant_id: "acme-cameroon-tenant".to_owned(),
                 can_write: true,
+                client_id: "acme-cameroon".to_owned(),
+                scopes: vec!["payments:write".to_owned()],
             }),
             "the control"
         );
@@ -777,6 +814,8 @@ mod tests {
             Ok(McpCaller {
                 merchant_id: "acme-cameroon-tenant".to_owned(),
                 can_write: false,
+                client_id: "acme-cameroon".to_owned(),
+                scopes: vec!["payments:read".to_owned()],
             }),
             "write was removed from the YAML, so the token no longer writes"
         );
@@ -803,6 +842,77 @@ mod tests {
             both.auth.authenticate(&token).await.map(|c| c.can_write),
             Ok(false),
             "a token cannot widen its own grant"
+        );
+    }
+
+    /// `account_holders:read` reaches a tool call when, and only when, the
+    /// token holds it **and** the registration grants it (PR #396 review,
+    /// P1). Before this the MCP principal was invented with the payments
+    /// scopes alone, so a nominated-payee refund over MCP was refused for a
+    /// client entitled to it; the opposite mistake — granting the scope to a
+    /// token that lacks it — is the second half of this test.
+    ///
+    /// The decisive mutations: put `v1::SCOPE_ACCOUNT_HOLDERS_READ` (or the
+    /// YAML grant) into `scopes` unconditionally, or go back to a fixed list.
+    #[tokio::test]
+    async fn an_mcp_callers_scopes_are_the_tokens_held_to_the_yaml_and_never_widened() {
+        use crate::test_fixtures::MemoryKillSwitch;
+        let none_disabled = || Arc::new(MemoryKillSwitch::disabling(&[]));
+        let lookup = v1::SCOPE_ACCOUNT_HOLDERS_READ;
+
+        // Both grant it: it reaches the call, and the identity is the client.
+        let granted = Harness::new(&["payments:write", lookup], none_disabled()).await;
+        let token = granted.token("acme-cameroon", &format!("payments:write {lookup}"));
+        let caller = granted.auth.authenticate(&token).await.expect("admitted");
+        assert_eq!(caller.client_id, "acme-cameroon");
+        assert_eq!(
+            caller.scopes,
+            vec!["payments:write".to_owned(), lookup.to_owned()]
+        );
+        let credential = caller_of(&MerchantCall {
+            merchant_id: caller.merchant_id.clone(),
+            client_id: caller.client_id.clone(),
+            scopes: caller.scopes.clone(),
+            operation: vpay_db::MerchantOperation::RetrieveRefund {
+                id: "re_1".to_owned(),
+            },
+        });
+        assert!(credential.has_scope(lookup));
+        assert_eq!(
+            credential.id(),
+            "acme-cameroon",
+            "per client, not per tenant"
+        );
+
+        // The token asks for it; the YAML does not grant it: not held.
+        let yaml_lacks = Harness::new(&["payments:write"], none_disabled()).await;
+        let token = yaml_lacks.token("acme-cameroon", &format!("payments:write {lookup}"));
+        let caller = yaml_lacks
+            .auth
+            .authenticate(&token)
+            .await
+            .expect("admitted");
+        assert!(!caller.scopes.iter().any(|scope| scope == lookup));
+
+        // The YAML grants it; the token did not ask for it: not held.
+        let token_lacks = granted.token("acme-cameroon", "payments:write");
+        let caller = granted
+            .auth
+            .authenticate(&token_lacks)
+            .await
+            .expect("admitted");
+        assert_eq!(caller.scopes, vec!["payments:write".to_owned()]);
+        let credential = caller_of(&MerchantCall {
+            merchant_id: caller.merchant_id.clone(),
+            client_id: caller.client_id.clone(),
+            scopes: caller.scopes.clone(),
+            operation: vpay_db::MerchantOperation::RetrieveRefund {
+                id: "re_1".to_owned(),
+            },
+        });
+        assert!(
+            !credential.has_scope(lookup),
+            "a tool call is never granted a scope its token lacks"
         );
     }
 

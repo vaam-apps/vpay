@@ -560,7 +560,12 @@ material_controls:
       - "a_key_expires_thirty_days_after_it_was_paired"
       - "a_session_bearer_and_a_console_key_both_read_dash_v1"
       - "with_the_method_off_the_staff_routes_404_and_dash_refuses_unsigned_requests"
-    status: "implemented"
+      - "a_console_or_service_key_cannot_reach_v1"
+    # `partial` since the PR #396 review: break-glass access (`vpay-server staff
+    # pair-key` / `revoke-key` on the host) is a runbook statement, not a
+    # time-bounded, auditable mechanism. GAP-152-BREAK-GLASS.
+    status: "partial"
+    related_gap: "GAP-152-BREAK-GLASS"
 
   - id: "A.8.7"
     theme: "Technological"
@@ -764,9 +769,16 @@ known_security_gaps:
   - id: "GAP-56"
     title: "Account-holder lookup audit and rate limiting controls"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/56"
-    description: "Dedicated scope (`account_holders:read`), durable rate limiting per credential in `rate_limit_windows`, and privacy-minimal audit logging in `audit_events` with HMAC-SHA256 target representation are implemented (ADR-0020, #56). Operator surface 56-6 remains pending RFC-0002 D8."
-    status: "closed"
+    description: "Narrowed, not closed. Built on PROVISIONAL RFC-0002 answers (D3, D5, D6, D7, D9 are all still OPEN): a dedicated scope (`account_holders:read`), a durable per-credential limit in `rate_limit_windows`, and an append-only `audit_events` journal (database-enforced) with an HMAC-SHA256 target. Still open: (1) no operator can query the journal — the only reader is a repository method no route, CLI or screen calls, and RFC-0002 D8 (operator principal and surface) is unbuilt; (2) the journal has no retention handler and grows without bound (D9)."
+    status: "open"
     related_control: "A.5.15"
+
+  - id: "GAP-152-BREAK-GLASS"
+    title: "Break-glass access is not time-bounded or auditable"
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
+    description: "Issue #152 asks that break-glass access, if supported, be time-bounded and auditable. What exists is a runbook statement (docs/runbooks/deploy-and-rollback.md, item 5): host or pod execution of `vpay-server staff pair-key` and `revoke-key`. A key paired that way lives the ordinary 30 days, needs no approval, and is recorded only by one `tracing` line on the process's output; no audit row, no shorter expiry, no second person."
+    status: "open"
+    related_control: "A.8.2"
 
   - id: "GAP-151"
     title: "Formal secure SDLC policy and vulnerability remediation evidence"

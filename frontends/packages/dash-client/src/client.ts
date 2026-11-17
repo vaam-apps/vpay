@@ -143,7 +143,6 @@ import type {
   EnvelopeNonceOrderByClause,
   EnvelopeNonceFindMany,
   AuditEvent,
-  UpdateAuditEventInput,
   AuditEventWhere,
   AuditEventOrderByClause,
   AuditEventFindMany,
@@ -1581,24 +1580,6 @@ export class AuditEventApi {
     }));
   }
 
-  update(
-    id: string,
-    input: UpdateAuditEventInput,
-    options: CratestackWriteRequestConfig = {},
-  ): Promise<AuditEvent> {
-    return this.runtime.patch<unknown>(`/audit_events/${encodeURIComponent(String(id))}`, input, {
-      headers: withIfMatchHeader(options.headers, options.ifMatch),
-      signal: options.signal,
-    })
-      .then((value) => reviveWireFields(value, 'AuditEvent') as AuditEvent);
-  }
-
-  delete(id: string, options: CratestackWriteRequestConfig = {}): Promise<void> {
-    return this.runtime.delete<void>(`/audit_events/${encodeURIComponent(String(id))}`, {
-      headers: withIfMatchHeader(options.headers, options.ifMatch),
-      signal: options.signal,
-    });
-  }
 }
 
 export class ConsoleKeyApi {

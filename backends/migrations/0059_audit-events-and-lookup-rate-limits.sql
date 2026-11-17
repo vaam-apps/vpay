@@ -76,6 +76,36 @@ CREATE TABLE audit_events (
     CONSTRAINT audit_events_operation_id_length CHECK (char_length(operation_id) BETWEEN 1 AND 64)
 );
 
+-- Append-only, enforced by the database rather than by convention.
+--
+-- `vpay_db::audit_events` exposes no update or delete, but that is a Rust
+-- convention: any statement on the same role could still rewrite or remove
+-- a row. These two triggers refuse UPDATE, DELETE and TRUNCATE on the table
+-- for every role, so a mistaken hand-written statement, a generated delegate
+-- or an operator's ad-hoc SQL fails loudly instead of silently editing the
+-- evidence. Proven against a real Postgres by `vpay-db`'s
+-- `the_audit_journal_refuses_update_delete_and_truncate`.
+--
+-- What this is NOT: tamper-proofing against the table's owner. The owner (the
+-- role migrations run as) can `ALTER TABLE ... DISABLE TRIGGER` or drop the
+-- trigger, and a superuser can do anything. A retention handler (RFC-0002 D9,
+-- not built) will need its own deliberate exception to this rule.
+CREATE FUNCTION audit_events_refuse_mutation() RETURNS trigger
+    LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'audit_events is append-only: % is refused', TG_OP
+        USING ERRCODE = 'restrict_violation';
+END;
+$$;
+
+CREATE TRIGGER audit_events_append_only
+    BEFORE UPDATE OR DELETE ON audit_events
+    FOR EACH ROW EXECUTE FUNCTION audit_events_refuse_mutation();
+
+CREATE TRIGGER audit_events_no_truncate
+    BEFORE TRUNCATE ON audit_events
+    FOR EACH STATEMENT EXECUTE FUNCTION audit_events_refuse_mutation();
+
 -- Queries filtering by tenant and ordered by time (ADR-0020 §3, bounded tenant reads).
 CREATE INDEX audit_events_tenant_occurred_at_idx ON audit_events (tenant, occurred_at);
 
