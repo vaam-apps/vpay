@@ -203,7 +203,27 @@ the rails that already exist ([hosted-checkout.md](hosted-checkout.md)).
 Building an invoice page would be a second payer surface to keep correct, and
 the one that exists is the one the browser tests already drive.
 
-**The payer is not shown the invoice number, and that is a gap rather than a
+**The payer is shown the invoice number since 2026-11-17 (issue #91, D6).**
+Both browser reads of the checkout session —
+`GET /v1/browser/checkout/sessions/{id}` and its `/return` — carry an
+`invoice` member, `{"number": "…"}` and nothing else, when the session's
+intent is the one `pay` minted, and omit the member for every other payment.
+The number is looked up by `vpay_db::Invoices::number_for_intent`, which
+selects that one column scoped to the session's merchant, so no other invoice
+field — not the `in_…` id, the customer, the lines or the metadata — can
+reach that unauthenticated surface; `frontends/apps/checkout` renders it as
+an "Invoice: …" / "Facture: …" line under the amount on the payment page and
+on the return page. It is **not** parsed out of the intent's `description`,
+which a merchant can set to anything on any intent. Proven by
+`the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_about_it`
+(`invoices.rs`) and
+`a_session_whose_intent_pays_no_invoice_renders_no_invoice_member`
+(`checkout_sessions.rs`) against a real Postgres, and in the page by
+`checkout-view.test.tsx`'s "the invoice a payment settles" cases; evidence in
+[../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
+The paragraph below is what this said until then.
+
+_(Until 2026-11-17:)_ **The payer is not shown the invoice number, and that is a gap rather than a
 decision** (recorded by the S4b review, 2026-09-07). `pay` writes
 `Invoice {number}` into the intent's `description`, so the number _reaches_
 the payer's browser — `GET /v1/browser/checkout/sessions/{id}` expands the
@@ -707,6 +727,18 @@ pair. Migration 0032 had to rename `providers.flow`'s after the fact.
 
 ## Status
 
+**Updated 2026-11-17 (issue #91): the payer sees the number (D6), and the
+Stripe-compat suite has invoice cases.** `invoices.rs` is **thirty-two**
+cases, 32 passed, 0 ignored, two of them new for D6 (see [Paying](#paying);
+the second asks `Invoices::number_for_intent` for merchant A's intent as
+merchant B and gets nothing); `checkout_sessions.rs` gains the negative half (36
+passed, 0 ignored). Of issue #91's five items, 1 (except its Stripe-compat
+half, which is this change), 3 and 4 had landed (#95 and #110) — item 3
+deliberately **without** amending
+`paid_means_nothing_remaining`, for the reason migration `0042`'s header
+gives — and item 5, the Cypress case, is still not written (below). Evidence:
+[../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
+
 **Built and proven against a real Postgres and the shipping router (2026-09-07,
 S4b, amended the same day by review).**
 `backends/tests/integration/tests/invoices.rs` is **sixteen** cases (twelve as
@@ -820,14 +852,34 @@ green while a settlement paid an invoice it was never bound to.
   and no stub answering `201` to anything could have said so.
   `invoices.rs` is still what proves the _server_, over a socket, against a
   real Postgres.
-- **The Stripe-compat suite still has no invoice cases.** `sdks/stripe-compat`
-  drives the real `stripe@22.6.1` package rather than either merchant SDK, so
-  the row above says nothing about it. It gets no parity rows of its own
-  (ADR-0015 decision 4), and this is recorded here instead.
+- ~~**The Stripe-compat suite still has no invoice cases.**~~ **Written
+  2026-11-17 (issue #91): `sdks/stripe-compat/src/invoices.compat.test.ts`,
+  six cases, every one asserting response bodies.** `sdks/stripe-compat`
+  drives the real `stripe@22.6.1` package rather than either merchant SDK.
+  `stripe.invoices` drives the nine routes it can reach (`create`, `retrieve`,
+  `update`, `del`, `list` with `autoPagingToArray`, `finalizeInvoice`,
+  `voidInvoice`, `markUncollectible`, `pay` — cast-free with Stripe's own
+  `paid_out_of_band`, one cast for the hosted `success_url`/`cancel_url`).
+  **`stripe.invoiceItems` reaches none of the line routes**: it addresses
+  `/v1/invoiceitems`, vpay mounts `/v1/invoice_items`, and the sealing client
+  refuses the unknown operation unsent — a case pins that, and the suite adds
+  lines through the same client's `rawRequest`. `listLineItems`
+  (`/v1/invoices/{id}/lines`) is not mounted either. **The six cases passed,
+  6 of 6, against a real `vpay-server`** (the branch's own build, run natively
+  with the demo overlay over a Postgres container — not the compose images,
+  and with no worker or rails, which no invoice case needs); see
+  [../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
+  CI's `e2e (compose)` job is the first place they run beside the rest of the
+  suite. The suite gets no parity rows of its own (ADR-0015 decision 4).
 - **No Cypress case renders an invoice's `hosted_invoice_url`.** The URL is
   asserted to be a real checkout-session URL by the integration suite, and the
   checkout page it points at is covered by `checkout.cy.ts` — but nothing has
-  driven a browser from an invoice to a paid charge.
+  driven a browser from an invoice to a paid charge. _(2026-11-17: the
+  blocker issue #91 named for this item, #78's hard-coded dashboard port, is
+  gone — #78 was closed by PR #94 on 2026-09-10. The case is still unwritten:
+  it needs the compose e2e stack, which the #91 slice that closed D6 could
+  not build or run, and a browser spec nothing has run would be a claim
+  nothing checked.)_
 - **No PDF, no e-mail, no hosted invoice page.** There is nothing to send and
   nothing to send it with. `hosted_invoice_url` is a checkout session, not a
   document.
@@ -872,10 +924,12 @@ green while a settlement paid an invoice it was never bound to.
   way to undo one** — a paid invoice is terminal, as it always was.
 - **The dashboard has no invoice screen.** `/dash/v1` exposes nothing about
   this resource.
-- **The payer's checkout page does not show the invoice number** (2026-09-07).
-  See [Paying](#paying): the number is in the intent's `description` and on
-  the wire the page reads; the page renders the amount and the merchant name
-  only.
+- ~~**The payer's checkout page does not show the invoice number**
+  (2026-09-07). See [Paying](#paying): the number is in the intent's
+  `description` and on the wire the page reads; the page renders the amount
+  and the merchant name only.~~ **Built 2026-11-17 (issue #91, D6)** — see
+  [Paying](#paying). Both browser reads carry `invoice.number` and nothing
+  else about the invoice; both pages render it.
 - ~~**A refund does not move an invoice** (2026-09-07)~~ **— decided
   2026-09-10 (issue #91, D5); see [Refunds](#refunds).** The invoice stays
   `paid` and gains `amount_refunded`. No credit note and no sixth status.

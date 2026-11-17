@@ -24,6 +24,7 @@ import { providerReason } from "./failures";
 import { railChoices, type RailChoices, type SupportedRail } from "./rails";
 import type {
   CheckoutError,
+  CheckoutInvoice,
   CheckoutMerchant,
   CheckoutSession,
   PaymentIntent,
@@ -44,6 +45,13 @@ export interface CheckoutContext {
    * string, or an identifier standing in for a name.
    */
   merchant: CheckoutMerchant | null;
+  /**
+   * The invoice this payment settles, or `null` — the server renders the
+   * member only for an intent `POST /v1/invoices/{id}/pay` minted (issue
+   * #91, D6), and every other payment is `null` here. The summary then
+   * draws no invoice line at all, rather than an empty one.
+   */
+  invoice: CheckoutInvoice | null;
   /**
    * The deployment's `checkout.allowed_methods` (`config.yaml`), or `null`
    * for "no opinion".
@@ -88,23 +96,26 @@ export function contextOf(
   view: CheckoutSession & {
     payment_intent: PaymentIntent | PublicPaymentIntent;
     merchant?: CheckoutMerchant | undefined;
+    invoice?: CheckoutInvoice | undefined;
   },
   allowedMethods: readonly string[] | null = null,
 ): CheckoutContext {
   const {
     payment_intent: intent,
     merchant: rawMerchant,
+    invoice: rawInvoice,
     client_secret: _sessionSecret,
     ...session
   } = view;
   const merchant = merchantOf(rawMerchant);
+  const invoice = invoiceOf(rawInvoice);
   // The session's own `client_secret` is dropped on the way in. The
   // controller already holds it as a credential; keeping a second copy on
   // the object every screen renders from would put it inside anything that
   // ever serialises a state — a devtools snapshot, an error report, a
   // `postMessage` written in a hurry. `secrets.test.ts` and
   // `machine.test.ts` both pin its absence.
-  return { session, intent, merchant, allowedMethods };
+  return { session, intent, merchant, invoice, allowedMethods };
 }
 
 /**
@@ -128,6 +139,26 @@ export function merchantOf(value: unknown): CheckoutMerchant | null {
   }
   const name: unknown = (value as { name?: unknown }).name;
   return typeof name === "string" && name.trim().length > 0 ? { name } : null;
+}
+
+/**
+ * The invoice number as this page will use it, or `null`.
+ *
+ * Takes `unknown` for {@link merchantOf}'s reason: `isSessionEnvelope` does
+ * not require the member, so it arrives here straight out of `JSON.parse`.
+ * Absent, `null`, a bare string, an object whose `number` is not a string,
+ * and a blank number are all the same answer — there is no invoice line to
+ * draw — and none of them is a reason to refuse the payment. "Invoice: "
+ * with nothing after it would read as a bill whose reference was lost.
+ */
+export function invoiceOf(value: unknown): CheckoutInvoice | null {
+  if (typeof value !== "object" || value === null) {
+    return null;
+  }
+  const number: unknown = (value as { number?: unknown }).number;
+  return typeof number === "string" && number.trim().length > 0
+    ? { number }
+    : null;
 }
 
 /**

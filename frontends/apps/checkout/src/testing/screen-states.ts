@@ -182,6 +182,39 @@ export const CHECKOUT_SCREENS: Record<string, CheckoutState> = {
   },
 };
 
+/**
+ * Issue #91, D6: the number a payment that settles an invoice is shown
+ * beside its amount. A real number's shape (`docs/flows/invoices.md` §
+ * Numbering): eight Crockford characters, a dash, six digits.
+ */
+export const INVOICE_NUMBER = "K7Q2M9XD-000042";
+
+/**
+ * Two screens again, for a payment `POST /v1/invoices/{id}/pay` minted — the
+ * only payments whose browser read carries an `invoice` member. Kept apart
+ * from {@link CHECKOUT_SCREENS} because that list is one entry per state the
+ * machine can be in, and an invoice changes the summary, not the state.
+ */
+export const INVOICE_SCREENS = {
+  select_rail: {
+    name: "select_rail",
+    context: makeContext({}, BOTH_RAILS, "Boutique Test", null, INVOICE_NUMBER),
+    rails: { supported: [...RAILS.supported], unsupported: [] },
+  } satisfies CheckoutState,
+  return_outcome_succeeded: {
+    name: "outcome",
+    context: {
+      session: makeSession({ status: "complete", payment_status: "paid" }),
+      intent: makePublicIntent({ status: "succeeded" }),
+      merchant: { name: "Boutique Test" },
+      invoice: { number: INVOICE_NUMBER },
+    },
+    kind: "succeeded",
+    failure: null,
+    reason: null,
+  } satisfies ReturnState,
+};
+
 export const RETURN_SCREENS: Record<string, ReturnState> = {
   loading: { name: "loading" },
   redirect_leg: { name: "redirect_leg" },
@@ -192,6 +225,7 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
       session: makeSession(),
       intent: makePublicIntent({ status: "requires_action" }),
       merchant: { name: "Boutique Test" },
+      invoice: null,
     },
     notice: null,
   },
@@ -201,6 +235,7 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
       session: makeSession({ status: "expired" }),
       intent: makePublicIntent(),
       merchant: { name: "Boutique Test" },
+      invoice: null,
     },
   },
   outcome_succeeded: {
@@ -209,6 +244,7 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
       session: makeSession({ status: "complete", payment_status: "paid" }),
       intent: makePublicIntent({ status: "succeeded" }),
       merchant: { name: "Boutique Test" },
+      invoice: null,
     },
     kind: "succeeded",
     failure: null,
@@ -226,6 +262,7 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
         },
       }),
       merchant: { name: "Boutique Test" },
+      invoice: null,
     },
     kind: "failed",
     failure: "payer_timeout",

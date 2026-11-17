@@ -1956,3 +1956,60 @@ handler or ladder moved. Two follow-ups to
 - **Not run:** `just test-e2e` (no Cypress spec touches the form — they click
   `#pay`/`#cancel` only — so the browser half of this is the conformance case,
   not a browser). See the verification page.
+
+## The checkout read names the invoice a payment settles (2026-11-17, issue #91 D6)
+
+**Built and proven against a real Postgres and the shipping router.** Both
+browser reads — `GET /v1/browser/checkout/sessions/{id}` and its `/return` —
+carry `"invoice": {"number": "…"}` when the session's intent is the one
+`POST /v1/invoices/{id}/pay` minted, and **omit the member** for every other
+intent. The number is read by a new `vpay_db::Invoices::number_for_intent`
+(a `&'static str` statement, so `sql_audit`'s count does not move, selecting
+`number` alone and bound to the session's `merchant_id` as well as its
+`payment_intent_id`), so no other invoice field can reach this surface,
+whose caller holds a session secret or a return token and no merchant
+credential. It is not parsed out of the intent's `description`, which a
+merchant may set to anything. Wire type: `vpay_api::model::CheckoutInvoiceObject`
+on `CheckoutSessionForPayer`, beside `merchant`.
+
+- `invoices.rs`'s
+  `the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_about_it`
+  pays two invoices of one merchant and asserts each session's two reads
+  carry exactly `{"number": <its own number>}`, and never the `in_…` id or a
+  line's description. `checkout_sessions.rs`'s
+  `a_session_whose_intent_pays_no_invoice_renders_no_invoice_member` asserts
+  the member's absence on both reads for an ordinary intent.
+  `invoices.rs`'s `the_invoice_number_lookup_is_scoped_to_the_merchant`
+  asks `number_for_intent` for merchant A's paying intent as merchant B and
+  asserts `None` (and as merchant A, the number).
+- **Run:** `invoices.rs` 32 passed, 0 ignored; `checkout_sessions.rs` 36
+  passed, 0 ignored — both against `postgres:16-alpine` containers, on the
+  committed source.
+- **Mutations, each measured:** answering `None` from `for_payer` together
+  with dropping the field's `skip_serializing_if` fails both new cases
+  (`"invoice": null`); keying the lookup on the merchant alone fails the
+  positive case with the first invoice's number on the second session;
+  dropping `merchant_id = $1` from the statement fails the cross-tenant case
+  (merchant B's lookup answered A's `Q2KP9CJJ-000001`) while the positive
+  case stays green — which is why the cross-tenant case exists.
+- **Privacy inventory:** no new column, so `schemas/privacy-inventory.yaml`
+  is unchanged — `invoices.number` is already registered under
+  `sys_identifier`. The inventory does not enumerate wire surfaces
+  (`non_db_surfaces` names `merchant_api` as "not centrally registered"), so
+  this new payer-facing projection is recorded here rather than there.
+- **SDKs:** no merchant SDK models the browser read's payer envelope
+  (`sdks/flutter`'s decoder of it ignores unknown keys and does not model
+  `merchant` either), so no parity row moves.
+
+**The Stripe-compat suite gained invoice cases the same day** —
+`sdks/stripe-compat/src/invoices.compat.test.ts`, six cases asserting
+response bodies through the real `stripe@22.6.1`: `stripe.invoices` drives
+the nine routes it can reach (its `listLineItems`, `/v1/invoices/{id}/lines`, is not mounted); `stripe.invoiceItems` drives none, because it
+addresses `/v1/invoiceitems` and vpay mounts `/v1/invoice_items` (pinned by a
+case: the sealing client refuses it unsent). **6 of 6 passed** against the
+branch's own `vpay-server`, run natively with the demo overlay over a
+Postgres container (not the compose images; no worker, no rails — no invoice
+case needs either); see
+[../flows/stripe-sdk-compat.md](../flows/stripe-sdk-compat.md) § Status.
+Evidence for both:
+[verification/2026-11-17-invoice-number-on-checkout.md](verification/2026-11-17-invoice-number-on-checkout.md).

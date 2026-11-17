@@ -2011,6 +2011,48 @@ async fn both_browser_reads_carry_the_merchants_display_name() -> anyhow::Result
     Ok(())
 }
 
+/// Issue #91, D6, the negative half: a session whose intent pays **no**
+/// invoice renders no `invoice` member on either browser read — not `null`,
+/// not an empty object, not a placeholder number.
+///
+/// The page decides whether to draw an "Invoice" line from the member's
+/// presence (`invoiceOf` in `frontends/apps/checkout/src/lib/machine.ts`),
+/// so a server that rendered `"invoice": null` or `{}` for every plain
+/// payment would be one front-end refactor away from a payer reading
+/// "Invoice: " on a bill that is not one. Most intents pay no invoice, so
+/// this is the answer the overwhelming majority of reads give.
+///
+/// The positive half — an intent `POST /v1/invoices/{id}/pay` minted names
+/// its invoice's number — is `invoices.rs`'s
+/// `the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_about_it`.
+///
+/// **The decisive mutation:** make `CheckoutSessionForPayer::invoice`
+/// serialise when `None` (drop its `skip_serializing_if`) — both assertions
+/// fail on `"invoice": null`.
+#[tokio::test]
+async fn a_session_whose_intent_pays_no_invoice_renders_no_invoice_member() -> anyhow::Result<()> {
+    let h = harness().await?;
+    let session = hosted_session(&h).await?;
+    let token = return_token(&h.pool, &session.id).await?;
+
+    let (status, body) = session_read(&h, &session.id, PK_A, &session.secret).await?;
+    assert_eq!(status, 200, "{body:#}");
+    assert!(
+        body.get("invoice").is_none(),
+        "an intent that pays no invoice renders no `invoice` member on the session read: {body:#}"
+    );
+
+    let (status, body) = return_read(&h, &session.id, PK_A, &token).await?;
+    assert_eq!(status, 200, "{body:#}");
+    assert!(
+        body.get("invoice").is_none(),
+        "nor on the return read: {body:#}"
+    );
+
+    h.shutdown().await;
+    Ok(())
+}
+
 /// Claim 12: both browser reads stop answering at `expires_at`, whatever the
 /// session's `status` — and the **read** is what enforces it, not the sweep.
 ///

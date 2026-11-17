@@ -85,18 +85,22 @@ export function makePublicIntent(
  * `merchantName: null` builds the context of a read that carried no usable
  * name; `allowedMethods` is the deployment's `config.yaml` policy, `null`
  * for a deployment with no opinion (which is every fixture but the ones
- * about the allow-list itself).
+ * about the allow-list itself). `invoiceNumber` is `null` — a payment
+ * that settles no invoice, which is most of them — unless a test is about
+ * the invoice line (issue #91, D6).
  */
 export function makeContext(
   session: Partial<CheckoutSession> = {},
   intent: Partial<PaymentIntent> = {},
   merchantName: string | null = "Boutique Test",
   allowedMethods: readonly string[] | null = null,
+  invoiceNumber: string | null = null,
 ): CheckoutContext {
   return {
     session: makeSession(session),
     intent: makeIntent(intent),
     merchant: merchantName === null ? null : { name: merchantName },
+    invoice: invoiceNumber === null ? null : { number: invoiceNumber },
     allowedMethods,
   };
 }

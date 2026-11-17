@@ -218,6 +218,34 @@ export function confirmIntent(
   return stripe.paymentIntents.confirm(id, params, options);
 }
 
+/** The two forwarding URLs vpay's hosted `pay` needs and Stripe's does not have. */
+export interface HostedPayArgs {
+  success_url: string;
+  cancel_url: string;
+}
+
+/**
+ * `POST /v1/invoices/{id}/pay` as a **hosted** payment.
+ *
+ * The cast is on the params: Stripe's `pay` charges a payment method the
+ * merchant already has on file, so `InvoicePayParams` has nowhere to send a
+ * payer and declares neither URL. vpay has no stored methods on this market
+ * — paying mints a checkout session, and a session needs both — so a
+ * merchant on stripe-node sends two keys its types do not know. A merchant
+ * that configured `merchant_clients[].invoices` may omit them; the demo
+ * stack's `demo-merchant` configures none, which is why this suite sends
+ * them. The wire is `success_url=…&cancel_url=…` either way.
+ */
+export function payInvoiceHosted(
+  stripe: Stripe,
+  id: string,
+  args: HostedPayArgs,
+  options: Stripe.RequestOptions = {},
+): Promise<Stripe.Response<Stripe.Invoice>> {
+  const params = args as unknown as Stripe.InvoicePayParams;
+  return stripe.invoices.pay(id, params, options);
+}
+
 /**
  * Runs `fn` and returns the error it threw, failing if it did not throw.
  *

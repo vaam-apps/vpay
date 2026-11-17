@@ -15,6 +15,7 @@ export const fr: Record<MessageKey, string> = {
   "page.pay_to_unnamed": "Paiement à régler",
   "page.amount_label": "Montant",
   "page.reference_label": "Référence",
+  "page.invoice_label": "Facture",
   "page.testmode": "Mode test — aucun argent ne circule sur ce déploiement.",
   "page.operator_logo_alt": "Logo",
   "page.support": "Assistance : {contact}",
