@@ -190,7 +190,7 @@ Rust SDK or the Flutter plugin.
 
 ## 7. Known Gaps and Residual Risks
 
-1. **GAP-103: Web dependency audit allowlist** ([#103](https://github.com/vaam-apps/vpay/issues/103)) — `pnpm audit` runs at `--audit-level=moderate`; GHSA-vfj7-8cjw-p6xm is ignored by id under the maintainer decision of 2026-10-09, and the dated allowlist-with-reason escape hatch is not built.
+1. **GAP-103: Web dependency audit allowlist** ([#103](https://github.com/vaam-apps/vpay/issues/103)) — `pnpm audit` runs at `--audit-level=moderate`; GHSA-vfj7-8cjw-p6xm is ignored by id under the maintainer decision of 2026-10-09, GHSA-fc5q-39xc-vjpf (picomatch, no fixed release yet) since 2026-11-17 pending the maintainer's acceptance, and the dated allowlist-with-reason escape hatch is not built.
 2. **GAP-56: Account-holder lookup audit and rate limiting** ([#56](https://github.com/vaam-apps/vpay/issues/56)) — A dedicated scope and durable per-key audit log are not built.
 3. **GAP-151: Secure SDLC and vulnerability management evidence** ([#151](https://github.com/vaam-apps/vpay/issues/151)) — No written CVE intake and fix-release SLA.
 4. **GAP-152: Production key lifecycle hardening** ([#152](https://github.com/vaam-apps/vpay/issues/152)) — Automated rotation and dual control for rail and signing keys are not built.

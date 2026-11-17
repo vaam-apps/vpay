@@ -444,6 +444,26 @@ minimumReleaseAgeExclude:
 # `overrides` like the brace-expansion ones, and delete this block. Re-check
 # on every audit pass, since an ignore that outlives its reason hides the next
 # finding against the same id.
+# GHSA-fc5q-39xc-vjpf: picomatch <=4.0.7, high, ReDoS through
+#   single-branch repeated extglobs. Published 2026-11-17; the advisory names
+#   >=4.0.8 as the fix, and npm has no such release (dist-tags.latest is
+#   4.0.7, last published 2026-08-24, checked 2026-11-17T17:22Z against
+#   registry.npmjs.org), so there is nothing to pin to. `pnpm audit --json`
+#   on 2026-11-17 reaches it only through build, test and lint tooling:
+#   `@vpay/config > @next/eslint-plugin-next` and `typescript-eslint` (the
+#   `--prod` pass, for the same reason as braces above), `vite`, `vitest`
+#   and Storybook in examples/shop, examples/tauri-checkout and
+#   frontends/apps/checkout. Every pattern those match is written in this
+#   repository's own config; none comes from a request.
+#
+#   **Proposed, pending the maintainer's acceptance (2026-11-17).** Unlike
+#   braces, no maintainer has decided this one; it was added because the
+#   advisory turned `web` red on master and on every open PR the day it was
+#   published.
+#
+# REMOVE WHEN: picomatch publishes 4.0.8 (or a fixed 2.x for micromatch's
+# `^2.3.1`). Then add a floor under `overrides` and delete this block.
 auditConfig:
   ignoreGhsas:
     - GHSA-vfj7-8cjw-p6xm
+    - GHSA-fc5q-39xc-vjpf

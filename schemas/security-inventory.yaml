@@ -733,7 +733,7 @@ known_security_gaps:
   - id: "GAP-103"
     title: "Web dependency audit allowlist and one ignored advisory"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/103"
-    description: "pnpm audit runs at --audit-level=moderate. GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) is ignored by id in pnpm-workspace.yaml under the maintainer decision of 2026-10-09; the dated allowlist-with-reason escape hatch #103 asked for is not built."
+    description: "pnpm audit runs at --audit-level=moderate. GHSA-vfj7-8cjw-p6xm (braces <=3.0.3) is ignored by id in pnpm-workspace.yaml under the maintainer decision of 2026-10-09, and GHSA-fc5q-39xc-vjpf (picomatch <=4.0.7, no fixed release published; build/test/lint tooling only) is ignored since 2026-11-17 pending the maintainer's acceptance; the dated allowlist-with-reason escape hatch #103 asked for is not built."
     status: "open"
     related_control: "A.8.7"
 
