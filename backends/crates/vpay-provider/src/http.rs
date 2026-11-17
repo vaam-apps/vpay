@@ -645,7 +645,7 @@ mod tests {
     /// The canary URL: MTN's `basicuserinfo` shape with the payer's MSISDN in
     /// the path, plus userinfo, a query credential and a fragment — every
     /// place a URL can hide something (issue #147, RFC-0002 PR 4).
-    const CANARY_URL: &str = "http://user:pw-canary@127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000789/basicuserinfo?vpay_token=secref05#frag-canary";
+    const CANARY_URL: &str = "https://user:pw-canary@127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000789/basicuserinfo?vpay_token=secref05#frag-canary";
 
     /// A real `reqwest::Error` against a closed loopback port, carrying
     /// [`CANARY_URL`] exactly as a live failure would.
@@ -688,7 +688,7 @@ mod tests {
             );
         }
         assert!(
-            rendered.contains("http://127.0.0.1:1/"),
+            rendered.contains("https://127.0.0.1:1/"),
             "no origin in {rendered}"
         );
         assert!(
