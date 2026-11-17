@@ -32,6 +32,7 @@ Personal data has its own inventory, which a gate checks:
 Security assets, trust boundaries and ISO 27001 control evidence are documented
 in:
 
+- [privileged-access-matrix.md](privileged-access-matrix.md) — role and surface authorization matrix, credential isolation and proving tests
 - [trust-boundaries.md](trust-boundaries.md) — five trust tiers and their
   crossing controls
 - [data-flows.md](data-flows.md) — payment, webhook and console-key pairing data-flow maps

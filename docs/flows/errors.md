@@ -240,6 +240,13 @@ called from `IntoResponse` and nowhere else — holds for the family.) `InvalidP
 length-bounded at render time so a caller cannot reflect a megabyte back
 into the envelope.
 
+Rate-limiting variants (`ApiError::AccountHolderLookupRateLimited` and
+`ApiError::StaffSignInRateLimited`) classify as `Category::RateLimited` (HTTP 429,
+`rate_limit_error`, code `rate_limit`). In addition to the standard Stripe-shaped
+error envelope, `IntoResponse` sets the `Retry-After: <seconds>` header
+indicating the seconds remaining in the rate-limit window, rounded up
+(ADR-0020, provisional pending RFC-0002 D6).
+
 **`vpay_worker::JobError`** wraps `DbError`, `ProviderError`, `MoneyError`
 and `LedgerError` and adds job-level variants (`Poisoned`, `Exhausted`).
 Its `decision(attempt)` is derived from `Classify::retry` and

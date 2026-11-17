@@ -110,8 +110,8 @@ merchant_clients:
       - public_key: ${LIVE_MERCHANT_COSE_KEY}
         label: live-sandbox
     grant_types: [client_credentials]
-    # Both scopes, so a single merchant can read its own intents too.
-    scopes: [payments:write, payments:read]
+    # All three scopes, so a single merchant can read its own intents and lookup account holders.
+    scopes: [payments:write, payments:read, account_holders:read]
     # The `aud` the OP must stamp on every /v1 token. REQUIRED, or boot fails.
     allowed_audiences: ["vpay:v1"]
     # Optional: a publishable key for the payer-facing /v1/browser surface.
@@ -129,3 +129,21 @@ merchant_clients:
 # (ConfigError::DashboardUnknownMerchant).
 dashboard:
   merchant_id: live-merchant
+
+# Privacy controls and account-holder lookup configuration (ADR-0020, #56).
+#
+# PROVISIONAL — pending RFC-0002 D3 and D6, which are still OPEN in the RFC's
+# decision register. Nothing below is an approved value:
+# - `lookup_audit_salt` keys the HMAC-SHA256 audit target (D3: key custody,
+#   rotation and overlap are undecided; rotating it today breaks correlation
+#   with every earlier audit row);
+# - `attempts: 10` per `window_seconds: 60`, per credential, is the
+#   implementing PR's placeholder budget (D6), and every attempt counts —
+#   including a malformed number — before the rail is asked.
+# Change them when D3/D6 are recorded, not before. docs/flows/account-holder-lookup.md
+# § Status lists every provisional answer this configuration carries.
+privacy:
+  lookup_audit_salt: ${VPAY_LOOKUP_AUDIT_SALT}
+  lookup_rate_limit:
+    attempts: 10 # PROVISIONAL pending RFC-0002 D6
+    window_seconds: 60 # PROVISIONAL pending RFC-0002 D6

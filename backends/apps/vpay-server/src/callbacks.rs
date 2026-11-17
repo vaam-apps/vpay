@@ -232,6 +232,7 @@ mod tests {
             staff_auth: None,
             routing: Default::default(),
             auth: Default::default(),
+            privacy: Default::default(),
         }
     }
 

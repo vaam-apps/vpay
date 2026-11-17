@@ -11920,7 +11920,8 @@ async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyh
     for expected in 1..=3_i64 {
         let attempts = repositories
             .count_attempt(&key, "sign_in:email", window, start)
-            .await?;
+            .await?
+            .attempts;
         assert_eq!(attempts, expected, "the position inside the first window");
     }
 
@@ -11932,14 +11933,16 @@ async fn an_elapsed_rate_limit_window_is_replaced_rather_than_extended() -> anyh
             window,
             start + window - time::Duration::seconds(1),
         )
-        .await?;
+        .await?
+        .attempts;
     assert_eq!(attempts, 4, "inside the window, the count carries on");
 
     // At the boundary the window has elapsed — `window_started_at <= now -
     // window` — and is replaced.
     let attempts = repositories
         .count_attempt(&key, "sign_in:email", window, start + window)
-        .await?;
+        .await?
+        .attempts;
     assert_eq!(
         attempts, 1,
         "an elapsed window is a NEW window starting now, so the answer is 1. Anything else is a \
@@ -11979,14 +11982,16 @@ async fn the_rate_limit_id_is_the_budget_and_the_scope_column_is_only_a_label() 
     assert_eq!(
         repositories
             .count_attempt(&two, "sign_in:email", window, now)
-            .await?,
+            .await?
+            .attempts,
         1,
         "another key's first attempt is its first attempt"
     );
     assert_eq!(
         repositories
             .count_attempt(&one, "sign_in:address", window, now)
-            .await?,
+            .await?
+            .attempts,
         6,
         "the SAME id under another scope is the SAME row. The scope column is not part of the \
          key, so a caller that stopped hashing the scope into the id would merge two budgets \
@@ -12070,6 +12075,73 @@ async fn the_rate_limit_table_grows_by_one_window_and_is_then_swept() -> anyhow:
         swept >= 40,
         "the sweep must never take the row the same statement is INSERTing — `id <> $1` — so the \
          40 live keys are all still there; found {swept}"
+    );
+
+    Ok(())
+}
+
+/// **A short-window scope's count never sweeps a longer-window row that is
+/// still inside its own window.**
+///
+/// Before migration 0061 the sweep judged every row by the *calling* request's
+/// window: a 60-second `lookup:merchant_key` (issue #56) deleted staff
+/// `sign_in:email` rows (300 seconds) whose `window_started_at` was more than
+/// 60 seconds old but still inside their own 300-second window, resetting their
+/// brute-force budget the moment a merchant performed a lookup. `COUNT_ATTEMPT`
+/// now stores each row's own `window_expires_at` and sweeps only rows whose own
+/// expiry has passed.
+///
+/// **The mutation:** go back to `window_started_at <= $4` (the calling window's
+/// horizon) in the sweep, and the `staff` row below is deleted by the lookup's
+/// count — this test then fails on the `remaining == 1` assertion.
+#[tokio::test]
+async fn a_short_scope_count_never_sweeps_a_longer_scope_row_inside_its_own_window()
+-> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    let now = time::OffsetDateTime::now_utc();
+    let short_window = time::Duration::seconds(60);
+    let long_window = time::Duration::seconds(300);
+
+    let staff_key = "s".repeat(64);
+    let lookup_key = "l".repeat(64);
+
+    // A staff sign-in counter, opened now, live for 300 seconds.
+    repositories
+        .count_attempt(&staff_key, "sign_in:email", long_window, now)
+        .await?;
+
+    // 100 seconds later — inside the staff row's window (300s) but past a
+    // 60-second window's end — a merchant performs a lookup. Its sweep must
+    // not take the staff row.
+    let later = now + time::Duration::seconds(100);
+    repositories
+        .count_attempt(&lookup_key, "lookup:merchant_key", short_window, later)
+        .await?;
+
+    let remaining: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM rate_limit_windows WHERE id = $1")
+            .bind(&staff_key)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        remaining, 1,
+        "the 300-second staff sign-in row must survive the 60-second lookup's sweep; the lookup \
+         must only remove rows whose OWN window has elapsed"
+    );
+
+    // Once the staff row's own window has truly elapsed, a later count does
+    // take it.
+    let past = later + time::Duration::seconds(300);
+    let _ = repositories
+        .count_attempt(&staff_key, "sign_in:email", long_window, past)
+        .await?;
+    let after: i64 = sqlx::query_scalar("SELECT count(*) FROM rate_limit_windows WHERE id = $1")
+        .bind(&staff_key)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(
+        after, 1,
+        "the staff row is replaced (same id), not doubled, once its own window elapses"
     );
 
     Ok(())
@@ -14040,5 +14112,349 @@ async fn a_credential_export_taken_before_0056_is_restored_after_0058() -> anyho
     .fetch_one(&pool)
     .await?;
     assert_eq!(link, 1, "the oidc link was never touched");
+    Ok(())
+}
+
+/// ADR-0020 §3, ISO 27001 A.12.4: `audit_events` integration tests.
+///
+/// Asserts:
+/// 1. Appending an audit event succeeds and can be read back.
+/// 2. Strict tenant scoping: querying tenant_a never returns tenant_b events.
+/// 3. Bounded pagination: limit is respected.
+/// 4. Vocabulary CHECK constraints refuse illegal actions and outcomes.
+/// 5. Transactional append in UnitOfWork works.
+#[tokio::test]
+async fn audit_events_append_and_query_by_tenant() -> anyhow::Result<()> {
+    let (_container, repositories, _pool) = migrated_postgres().await?;
+
+    let now = time::OffsetDateTime::now_utc();
+    let event1 = vpay_db::NewAuditEvent {
+        id: "aud_011111111111111111111111".to_owned(),
+        occurred_at: now,
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "initiated".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_011111111111111111111111".to_owned(),
+    };
+
+    let appended1 = repositories.append_audit_event(&event1).await?;
+    assert_eq!(appended1.id, event1.id);
+    assert_eq!(appended1.tenant, event1.tenant);
+    assert_eq!(appended1.outcome, "initiated");
+
+    // Terminal row linked by operation_id
+    let event2 = vpay_db::NewAuditEvent {
+        id: "aud_022222222222222222222222".to_owned(),
+        occurred_at: now + time::Duration::milliseconds(50),
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "found".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_011111111111111111111111".to_owned(),
+    };
+    let appended2 = repositories.append_audit_event(&event2).await?;
+    assert_eq!(appended2.id, event2.id);
+    assert_eq!(appended2.outcome, "found");
+
+    // Event for a different tenant
+    let event_other_tenant = vpay_db::NewAuditEvent {
+        id: "aud_033333333333333333333333".to_owned(),
+        occurred_at: now,
+        tenant: "merchant_test_b".to_owned(),
+        actor_kind: "machine_token".to_owned(),
+        actor_id: "client_12345".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "not_found".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_033333333333333333333333".to_owned(),
+    };
+    repositories.append_audit_event(&event_other_tenant).await?;
+
+    // Query tenant A: must return exactly event2 and event1 (newest first), NEVER event_other_tenant
+    let tenant_a_events = repositories
+        .list_audit_events_by_tenant("merchant_test_a", 10)
+        .await?;
+    assert_eq!(tenant_a_events.len(), 2);
+    assert_eq!(tenant_a_events.first().map(|e| &e.id), Some(&event2.id));
+    assert_eq!(tenant_a_events.get(1).map(|e| &e.id), Some(&event1.id));
+
+    // Limit is respected
+    let bounded = repositories
+        .list_audit_events_by_tenant("merchant_test_a", 1)
+        .await?;
+    assert_eq!(bounded.len(), 1);
+    assert_eq!(bounded.first().map(|e| &e.id), Some(&event2.id));
+
+    // Query tenant B: returns only event_other_tenant
+    let tenant_b_events = repositories
+        .list_audit_events_by_tenant("merchant_test_b", 10)
+        .await?;
+    assert_eq!(tenant_b_events.len(), 1);
+    assert_eq!(
+        tenant_b_events.first().map(|e| &e.id),
+        Some(&event_other_tenant.id)
+    );
+
+    // Query non-existent tenant: returns empty list
+    let empty_events = repositories
+        .list_audit_events_by_tenant("merchant_unknown", 10)
+        .await?;
+    assert!(empty_events.is_empty());
+
+    // CHECK constraint: unknown outcome is refused
+    let invalid_outcome = vpay_db::NewAuditEvent {
+        id: "aud_044444444444444444444444".to_owned(),
+        occurred_at: now,
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "bogus_outcome".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_044444444444444444444444".to_owned(),
+    };
+    let err = repositories
+        .append_audit_event(&invalid_outcome)
+        .await
+        .expect_err("unknown outcome must fail CHECK");
+    match err {
+        vpay_db::DbError::Query(sqlx_err) => {
+            let constraint = sqlx_err
+                .as_database_error()
+                .and_then(sqlx::error::DatabaseError::constraint);
+            assert_eq!(constraint, Some("audit_events_outcome_is_known"));
+        }
+        other => panic!("expected DbError::Query with CHECK violation, got: {other:?}"),
+    }
+
+    // Append in transaction
+    let tx_event = vpay_db::NewAuditEvent {
+        id: "aud_055555555555555555555555".to_owned(),
+        occurred_at: now + time::Duration::milliseconds(100),
+        tenant: "merchant_test_a".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "rate_limited".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_055555555555555555555555".to_owned(),
+    };
+    repositories
+        .transaction(|tx| {
+            let ev = tx_event.clone();
+            Box::pin(async move {
+                let row = tx.append_audit_event_in_tx(&ev).await?;
+                Ok::<_, vpay_db::DbError>(vpay_db::TxOutcome::Commit(row))
+            })
+        })
+        .await?;
+
+    let after_tx = repositories
+        .list_audit_events_by_tenant("merchant_test_a", 10)
+        .await?;
+    assert_eq!(after_tx.len(), 3);
+    assert_eq!(after_tx.first().map(|e| &e.id), Some(&tx_event.id));
+
+    Ok(())
+}
+
+/// `audit_events` is append-only **in the database**, not only by the Rust
+/// convention that `vpay_db::audit_events` exposes no update or delete
+/// (PR #396 review, P2). Migration 0060's triggers refuse `UPDATE`, `DELETE`
+/// and `TRUNCATE` for the role the application runs as, and the row is
+/// unchanged afterwards.
+///
+/// The decisive mutation: drop either trigger from 0060 and the matching
+/// statement below succeeds.
+#[tokio::test]
+async fn the_audit_journal_refuses_update_delete_and_truncate() -> anyhow::Result<()> {
+    let (_container, repositories, pool) = migrated_postgres().await?;
+
+    let event = vpay_db::NewAuditEvent {
+        id: "aud_0aaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+        occurred_at: time::OffsetDateTime::now_utc(),
+        tenant: "merchant_append_only".to_owned(),
+        actor_kind: "signer".to_owned(),
+        actor_id: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".to_owned(),
+        action: "account_holder:lookup".to_owned(),
+        outcome: "initiated".to_owned(),
+        target_class: "account_holder".to_owned(),
+        target_repr: "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789".to_owned(),
+        operation_id: "op_0aaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+    };
+    repositories.append_audit_event(&event).await?;
+
+    for statement in [
+        "UPDATE audit_events SET outcome = 'found' WHERE id = 'aud_0aaaaaaaaaaaaaaaaaaaaaaaa'",
+        "UPDATE audit_events SET target_repr = 'rewritten'",
+        "DELETE FROM audit_events WHERE id = 'aud_0aaaaaaaaaaaaaaaaaaaaaaaa'",
+        "DELETE FROM audit_events",
+        "TRUNCATE audit_events",
+    ] {
+        let error = sqlx::query(statement)
+            .execute(&pool)
+            .await
+            .expect_err(statement);
+        let database = error
+            .as_database_error()
+            .with_context(|| format!("{statement}: not a database error: {error}"))?;
+        assert_eq!(
+            database.code().as_deref(),
+            Some("23001"),
+            "{statement}: refused as restrict_violation by the trigger, not by anything else: \
+             {database}"
+        );
+        assert!(
+            database.message().contains("append-only"),
+            "{statement}: the trigger's own message: {database}"
+        );
+    }
+
+    let rows = repositories
+        .list_audit_events_by_tenant("merchant_append_only", 10)
+        .await?;
+    assert_eq!(rows.len(), 1, "nothing was removed");
+    assert_eq!(
+        rows.first().map(|row| row.outcome.as_str()),
+        Some("initiated"),
+        "nothing was rewritten"
+    );
+    Ok(())
+}
+
+/// Migration 0061 gives every **in-flight** rate-limit row the expiry of its
+/// own window, measured from its own start — it does not expire them all at
+/// the instant the migration runs (PR #396 review, P2).
+///
+/// The migration as first written added the column `NOT NULL DEFAULT now()`
+/// and then backfilled `WHERE window_expires_at IS NULL`, which matched no
+/// row: the DEFAULT had already filled them all with the migration's own
+/// instant. Every staff sign-in and change-password counter part-way through
+/// its window was therefore reset at deploy. This test applies migrations up
+/// to 0060, writes counters as the pre-0061 code wrote them, applies 0061, and
+/// then counts one more attempt through the shipping statement: a budget
+/// that survived the migration answers `attempts + 1`, a reset one answers 1.
+///
+/// The decisive mutation: restore the DEFAULT-then-`IS NULL` shape and the
+/// in-flight row's expiry is the migration instant, so the count answers 1.
+#[tokio::test]
+async fn migration_0061_backfills_each_in_flight_window_from_its_own_start() -> anyhow::Result<()> {
+    let container = vpay_testkit::containers::start_postgres_with_retry()
+        .await
+        .context("postgres:16-alpine container starts")?;
+    let host = container.get_host().await.context("container host")?;
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .context("container port")?;
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPool::connect(&url)
+        .await
+        .context("the raw pool connects")?;
+
+    // --- the world as it was before 0061 -----------------------------------
+    let migrator = sqlx::migrate!("../../migrations");
+    let mut applied = 0_u32;
+    for migration in migrator.iter() {
+        if migration.version > 60 {
+            continue;
+        }
+        // `AssertSqlSafe`: the string is `backends/migrations/*.sql`, embedded
+        // by `sqlx::migrate!` at compile time from this repository's own
+        // files. It interpolates nothing and no caller's value reaches it.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration.sql.as_str().to_owned()))
+            .execute(&pool)
+            .await
+            .with_context(|| format!("applying migration {}", migration.version))?;
+        applied += 1;
+    }
+    assert_eq!(applied, 60, "the pre-0061 schema was actually built");
+
+    // An attacker two minutes into a five-minute sign-in window, nine
+    // attempts spent; and a row whose window ended an hour ago.
+    sqlx::query(
+        "INSERT INTO rate_limit_windows (id, scope, window_started_at, attempts, updated_at) \
+         VALUES (repeat('a', 64), 'sign_in:email', now() - interval '2 minutes', 9, now()), \
+                (repeat('b', 64), 'sign_in:address', now() - interval '1 hour', 4, now())",
+    )
+    .execute(&pool)
+    .await
+    .context("writing counters in the pre-0061 shape")?;
+
+    // --- the change under test ---------------------------------------------
+    let zero_zero_six_one = migrator
+        .iter()
+        .find(|migration| migration.version == 61)
+        .context("migration 0061 is in the embedded set")?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        zero_zero_six_one.sql.as_str().to_owned(),
+    ))
+    .execute(&pool)
+    .await
+    .context("migration 0061 applies to a table that already has rows")?;
+
+    // Each row's expiry is its own start plus the 300-second staff window.
+    let off_by: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT id, \
+                CAST(EXTRACT(EPOCH FROM window_expires_at - window_started_at) AS BIGINT) \
+           FROM rate_limit_windows ORDER BY id",
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(
+        off_by,
+        vec![("a".repeat(64), 300), ("b".repeat(64), 300)],
+        "every pre-existing row expires window_started_at + 300 seconds"
+    );
+
+    let nullable: String = sqlx::query_scalar(
+        "SELECT is_nullable FROM information_schema.columns \
+          WHERE table_name = 'rate_limit_windows' AND column_name = 'window_expires_at'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(nullable, "NO", "the column ends NOT NULL");
+    let default: Option<String> = sqlx::query_scalar(
+        "SELECT column_default FROM information_schema.columns \
+          WHERE table_name = 'rate_limit_windows' AND column_name = 'window_expires_at'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(default, None, "and carries no DEFAULT (0034's rule)");
+
+    // The behaviour that matters, through the shipping statement.
+    let repositories = vpay_db::connect(&url).await?;
+    let now = time::OffsetDateTime::now_utc();
+    let in_flight = repositories
+        .count_attempt(
+            &"a".repeat(64),
+            "sign_in:email",
+            time::Duration::minutes(5),
+            now,
+        )
+        .await?;
+    assert_eq!(
+        in_flight.attempts, 10,
+        "the in-flight budget survived the migration: nine spent, this is the tenth"
+    );
+    let long_gone = repositories
+        .count_attempt(
+            &"b".repeat(64),
+            "sign_in:address",
+            time::Duration::minutes(5),
+            now,
+        )
+        .await?;
+    assert_eq!(long_gone.attempts, 1, "an elapsed window still restarts");
     Ok(())
 }

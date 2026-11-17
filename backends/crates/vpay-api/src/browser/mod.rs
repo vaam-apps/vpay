@@ -62,6 +62,7 @@ use axum::Router;
 // `FromRequest` is named rather than let axum call it: `confirm` reads the
 // whole request itself, exactly as `v1::payment_intents::confirm` does.
 use axum::extract::{FromRequest as _, Path, Request, State};
+use axum::http::Method;
 use axum::response::Response;
 use axum::routing::{get, post};
 use serde::Deserialize;
@@ -122,20 +123,27 @@ const RESOURCE: &str = "payment intent";
 /// [`checkout_sessions`]'s module docs for the ladder). Nothing here weakens
 /// the two originals: `browser::authenticate` is untouched, and the new
 /// handlers reuse [`secrets_match`] rather than introducing a second compare.
+pub(crate) fn no_scopes(_: &Method) -> &'static [&'static str] {
+    &[]
+}
+
 pub const BROWSER_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/payment_intents/{id}",
         methods: &["GET"],
+        scopes: no_scopes,
         mount: || get(retrieve),
     },
     V1Route {
         path: "/payment_intents/{id}/confirm",
         methods: &["POST"],
+        scopes: no_scopes,
         mount: || post(confirm),
     },
     V1Route {
         path: "/checkout/sessions/{id}",
         methods: &["GET"],
+        scopes: no_scopes,
         mount: || get(checkout_sessions::retrieve),
     },
     // A *sibling* path pattern of the read above, not a nest and not the same
@@ -146,6 +154,7 @@ pub const BROWSER_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/checkout/sessions/{id}/return",
         methods: &["GET"],
+        scopes: no_scopes,
         mount: || get(checkout_sessions::retrieve_for_return),
     },
     // No `{id}` and no secret: the answer is a property of the tenant the
@@ -154,6 +163,7 @@ pub const BROWSER_ROUTES: &[V1Route] = &[
     V1Route {
         path: "/checkout/origins",
         methods: &["GET"],
+        scopes: no_scopes,
         mount: || get(checkout_sessions::origins),
     },
 ];

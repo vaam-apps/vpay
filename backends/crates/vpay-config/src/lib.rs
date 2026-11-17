@@ -31,8 +31,8 @@ pub use cli::{
 };
 pub use config::{
     CallbackRegistration, CallbackVerification, CheckoutConfig, Config, CurrencyEntry,
-    ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits, Routing,
-    RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
+    PrivacyConfig, ProviderCallbacks, ProviderHost, RailDisplayName, RateLimitPolicy, RateLimits,
+    Routing, RoutingWeight, StaffAuth, StaffSso, WebhookPolicy,
 };
 pub use console::{Dashboard, ServiceCapability, ServiceClient};
 pub use oauth::{
@@ -1733,6 +1733,22 @@ pub enum ConfigError {
         /// The configuration that belongs to it.
         key: String,
     },
+
+    /// In `livemode: true`, `privacy.lookup_audit_salt` must be configured and non-empty
+    /// (`docs/flows/configuration.md`).
+    #[error("livemode requires privacy.lookup_audit_salt to be configured and non-empty")]
+    MissingPrivacyLookupAuditSalt,
+
+    /// `privacy.lookup_audit_salt` is configured (lookups enabled) but
+    /// `privacy.lookup_rate_limit` is not. A lookup with no per-credential
+    /// budget is the control being silently absent (PR #396, P1): boot refuses
+    /// so a deployment that documented the limit cannot serve unlimited
+    /// lookups without it.
+    #[error(
+        "privacy.lookup_audit_salt is configured but privacy.lookup_rate_limit is not; \
+         account-holder lookups must be rate limited per credential"
+    )]
+    MissingPrivacyLookupRateLimit,
 }
 
 impl vpay_core::Classify for ConfigError {
