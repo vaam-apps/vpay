@@ -65,12 +65,15 @@
           "",
           "PRIORITY 4 IS NOW BETWEEN THREE THINGS, not two (2026-09-10, issue #58).",
           "Below the reference-keyed cases in transactionstatus.json (1) and below",
-          "every mapping in stub-hosted-page.json that answers from a payer's",
-          "presence or action (3) -- a payer standing on the rail's page outranks an",
-          "amount a merchant chose, which is the whole of the fix. Above the two",
-          "unconditional rungs of the payer's window (6) and the catch-all (10), so",
-          "`just demo-walk` -- which opens no browser and never GETs the hosted page",
-          "-- still gets this answer on the FIRST rung and its timings did not move."
+          "the mappings in stub-hosted-page.json that answer from a payer's",
+          "PRESENCE (3) -- a payer standing on the rail's page outranks an amount a",
+          "merchant chose, and a PENDING answer settles nothing. Above the payer's",
+          "ACTIONS -- /pay, /cancel and the answers they arm (5) -- since",
+          "2026-11-17 (issue #106), so a click on another charge's page can never",
+          "pay or expire a 5001/5002 charge. Above the two unconditional rungs of",
+          "the payer's window (6) and the catch-all (10), so `just demo-walk` --",
+          "which opens no browser and never GETs the hosted page -- still gets this",
+          "answer on the FIRST rung and its timings did not move."
         ]
       }
     },
@@ -128,7 +131,7 @@
       "response": {
         "status": 302,
         "headers": {
-          "Location": "{{{request.query.return}}}",
+          "Location": "{{{urlEncode request.query.return decode=true}}}",
           "Cache-Control": "no-store"
         }
       },
@@ -157,6 +160,14 @@
           "the `/pay` mapping that carries every OTHER number -- including the `#pay`",
           "link, which sends no number at all. These two sit at priority 3 and that one",
           "at 5, so a documented test number wins.",
+          "",
+          "`decode=true` on the Location, since 2026-11-17 (issue #106): only the",
+          "form reaches these two arms, and the form's hidden inputs now carry the",
+          "return URL percent-encoded so that a quote in it cannot close the",
+          "attribute. The browser encodes that value again on submit and WireMock",
+          "decodes once, so one more decode is what lands the payer on the",
+          "original URL. stub-hosted-page.json's form arm does the same, and its",
+          "metadata carries the measurement.",
           "",
           "Proven against a real container, driving this page and this form, by",
           "`a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`",
@@ -198,7 +209,7 @@
       "response": {
         "status": 302,
         "headers": {
-          "Location": "{{{request.query.return}}}",
+          "Location": "{{{urlEncode request.query.return decode=true}}}",
           "Cache-Control": "no-store"
         }
       },
@@ -227,6 +238,14 @@
           "the `/pay` mapping that carries every OTHER number -- including the `#pay`",
           "link, which sends no number at all. These two sit at priority 3 and that one",
           "at 5, so a documented test number wins.",
+          "",
+          "`decode=true` on the Location, since 2026-11-17 (issue #106): only the",
+          "form reaches these two arms, and the form's hidden inputs now carry the",
+          "return URL percent-encoded so that a quote in it cannot close the",
+          "attribute. The browser encodes that value again on submit and WireMock",
+          "decodes once, so one more decode is what lands the payer on the",
+          "original URL. stub-hosted-page.json's form arm does the same, and its",
+          "metadata carries the measurement.",
           "",
           "Proven against a real container, driving this page and this form, by",
           "`a_test_number_typed_on_the_rails_hosted_page_reaches_the_documented_outcome`",
@@ -273,8 +292,9 @@
           "",
           "PRIORITY 3 is deliberate and sits between two things: BELOW the order_id-keyed",
           "mappings in transactionstatus.json (priority 1), which the conformance suite",
-          "depends on and which must keep winning; and ABOVE both the amount-keyed demo",
-          "mappings in this file (priority 4) and the catch-all SUCCESS (priority 10).",
+          "depends on and which must keep winning; and ABOVE the amount-keyed demo",
+          "mappings in this file (priority 4), stub-hosted-page.json's payer-action",
+          "answers (priority 5) and the catch-all SUCCESS (priority 10).",
           "A container whose payer has never used this form cannot reach these mappings",
           "at all -- no state, no answer.",
           "",
@@ -310,8 +330,9 @@
           "",
           "PRIORITY 3 is deliberate and sits between two things: BELOW the order_id-keyed",
           "mappings in transactionstatus.json (priority 1), which the conformance suite",
-          "depends on and which must keep winning; and ABOVE both the amount-keyed demo",
-          "mappings in this file (priority 4) and the catch-all SUCCESS (priority 10).",
+          "depends on and which must keep winning; and ABOVE the amount-keyed demo",
+          "mappings in this file (priority 4), stub-hosted-page.json's payer-action",
+          "answers (priority 5) and the catch-all SUCCESS (priority 10).",
           "A container whose payer has never used this form cannot reach these mappings",
           "at all -- no state, no answer.",
           "",

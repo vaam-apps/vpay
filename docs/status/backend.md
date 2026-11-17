@@ -1912,3 +1912,47 @@ was broken on purpose, is
   against any provider but a simulated one and Keycloak 26.6.1 in a container,
   and the Keycloak suite was **not run in this session** (no Docker daemon).
   Nothing in the chart has run in a cluster.
+
+## The Orange stub's form stops injecting, and the payer's actions sit below the demo (2026-11-17, #106)
+
+**A change to a stub and its tests, and to nothing else** — no adapter,
+handler or ladder moved. Two follow-ups to
+[the payer's window](backend-orange-hosted-page.md), both decided in
+[#106](https://github.com/vaam-apps/vpay/issues/106); the issue's third item
+(the e2e fixture ports) had already landed in #127.
+
+- **The hidden inputs are percent-encoded.** `stub-hosted-page.json`'s
+  test-number form wrote `value="{{request.query.return}}"`, and WireMock
+  3.9.2 escapes no stache, so a `return_url` carrying `"` — which
+  `checked_return_url` accepts — closed the attribute and injected into the
+  page. Measured before the change on a bare `wiremock/wiremock:3.9.2` with
+  `https://m.test/back?q="x"&y=<z> w`: the input rendered raw, a parser read
+  it as `https://m.test/back?q=`, and the form's `302` went there. Both inputs
+  are now `{{{urlEncode …}}}`, as the links always were, and `/pay` is split on
+  the presence of `msisdn` (only the form sends it): the links' arm answers as
+  before, and the form's arm and `demo-outcomes.json`'s two test-number arms
+  answer `{{{urlEncode request.query.return decode=true}}}`, undoing the layer
+  a GET form adds. Same URL after: the input renders percent-encoded and the
+  form, `#pay` and `#cancel` all `302` to it byte for byte. The page's
+  `stub-limits` note is down to its one remaining limit.
+- **Every payer action is priority 5**: `/pay` (both arms), `/cancel` (was 3)
+  and the `SUCCESS`/`EXPIRED` answers they arm (were 3), below every mapping in
+  `demo-outcomes.json` (3 and 4). The sabotage review's third measurement — G
+  at `5001`, H clicks Pay, G polls, G is **paid** — is closed: G gets its
+  `EXPIRED`, and H, still armed, gets `SUCCESS` on its own next poll.
+- **Tests** (`backends/tests/conformance`): `the_payers_actions_on_the_hosted_page_sit_below_every_demo_mapping`
+  reads both files and pins the ladder (no container);
+  `a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge` (pay,
+  cancel) drives the overlap against a container;
+  `a_hostile_return_url_survives_the_form_on_the_rails_page` submits the page's
+  own form and links with that URL. `a_test_number_typed…` now submits the
+  page's form as a browser does instead of rebuilding the URL from the
+  `payment_url`. Five mutations, each caught — see
+  [verification/2026-11-17-orange-stub-106.md](verification/2026-11-17-orange-stub-106.md).
+- **Still not fixed, and not fixable by a priority.** One scenario per
+  container: two overlapping Orange charges still share it, and a click on one
+  page still decides a charge steered by a test number typed on another (the
+  click overwrites that state). Nothing here drives two at once.
+- **Not run:** `just test-e2e` (no Cypress spec touches the form — they click
+  `#pay`/`#cancel` only — so the browser half of this is the conformance case,
+  not a browser). See the verification page.

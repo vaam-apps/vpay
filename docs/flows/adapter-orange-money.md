@@ -373,6 +373,25 @@ them). How many seconds the chain is worth against the worker's own ladder is
 `backends/tests/integration`, which reads the mapping file and
 `vpay_worker::poll_delay` and multiplies.
 
+**Two follow-ups to that window** (2026-11-17, issue #106), again about the
+stub and not this adapter. The page's test-number form writes its hidden
+inputs percent-encoded, as its links always were, so a `return_url` carrying a
+`"` can no longer close the attribute and inject into the page — `/v1`'s
+`checked_return_url` would accept one — and the form's arm of `/pay` decodes
+the extra layer a GET form adds on submit:
+`a_hostile_return_url_survives_the_form_on_the_rails_page` submits a URL with
+`"`, `<`, `&` and a space through the page's own form and links and asserts
+each `302` lands on it byte for byte. And every payer action — `/pay`,
+`/cancel` and the answers they arm — now sits at priority 5, below every
+mapping in `demo-outcomes.json`, so a click on one charge's page no longer
+pays or expires a charge whose amount the demo steers:
+`the_payers_actions_on_the_hosted_page_sit_below_every_demo_mapping` reads
+both files and pins the ladder, and
+`a_click_on_one_charges_page_does_not_decide_a_demo_amounts_charge` drives the
+overlap against a container. A charge steered by a test number typed on its
+own page is still exposed to another page's click: that is one shared
+scenario, which no priority can key per charge.
+
 **What the transport refuses.** Every call goes through
 `vpay_provider::http`: redirects are returned rather than followed
 (`redirects_are_refused_and_never_followed`), proxies are ignored, and bodies

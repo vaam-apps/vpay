@@ -70,16 +70,39 @@ they share an `Idempotency-Key` (`shop-order-{id}-session-hosted`). That is
 deliberate: a payer whose popup is blocked falls back to a redirect and gets
 the session they already had, rather than a second one.
 
-### The popup, and why its completion message comes from _this_ shop
+### The popup, and the two messages that can complete it
 
-A popup is not a frame. Inside one `window.parent === window`, so vpay's
-checkout page has no framer to post `vpay:complete` to and deliberately says
-nothing (`frontends/apps/checkout/src/lib/frame.ts` returns `null` when there
-is no parent). So the popup loads the **hosted** page, and what closes the
-loop is `success_url` — this shop's own `/orders/{id}/return`, running
-_inside_ the popup, calling `@vaam-apps/vpay-stripe-js`'s
-`notifyCheckoutOpener`, which posts to `window.opener`. The **opener** then
-closes the popup, on a message it accepted from the window it opened.
+A popup is not a frame. Inside one `window.parent === window`, so the popup
+loads the **hosted** page, and vpay's checkout page talks to `window.opener`
+instead of a framer. Two messages can tell this shop the payer is finished,
+and `@vaam-apps/vpay-stripe-js`'s `openCheckoutPopup` takes whichever arrives
+first, **once per checkout session** (issue #65):
+
+1. **vpay's own page** posts `vpay:complete` to the opener when the outcome
+   appears. The SDK accepts it from the origin of `checkoutBaseUrl`
+   (`VPAY_CHECKOUT_URL`, which `CheckoutForm` passes to `loadStripe`) and
+   from the popup it opened. This is the primary channel.
+2. **This shop's `success_url`** — `/orders/{id}/return`, running _inside_
+   the popup when vpay's page could not pin its opener and navigated there
+   instead — calls `notifyCheckoutOpener`, which posts the same message from
+   this shop's origin. This is the fallback.
+
+Either way the **opener** then closes the popup, on a message it accepted
+from the window it opened.
+
+**Why this shop sets `Referrer-Policy`.** vpay's page decides whether it may
+post to the opener by matching `document.referrer` against this merchant's
+registered `checkout_origins`, and stays silent when there is no referrer.
+A shop served with `Referrer-Policy: no-referrer` (or `same-origin`) would
+therefore lose the primary channel **without any error**: the popup still
+completes, through the fallback, so nothing looks broken. `next.config.ts`
+serves `strict-origin-when-cross-origin` on every route — it sends vpay this
+shop's origin and never a path — and `src/referrer-policy.test.ts` fails if
+it is removed, narrowed to one route, or replaced by a policy that strips the
+origin. It is also the browsers' default; it is set explicitly because a
+proxy or header middleware in front of a shop is the usual way a stricter
+one arrives. An `https` shop opening an `http` checkout sends no referrer
+under it, so do not mix the two.
 
 `notifyCheckoutOpener` answers `false` and does nothing when there is no
 opener, which is what a payer who came back by an ordinary redirect has — so
@@ -296,16 +319,11 @@ a redirect rail, so vpay never sees the number.
 > charges in flight: the second never gets its `PENDING` rung, because the
 > first consumed it; and a payer clicking **Pay** or **Cancel** on one charge's
 > page decides _whichever charge asks the rail next_ — including a charge these
-> numbers promise will fail. Nothing here drives two at once, so you will not
+> numbers promise will fail. Since 2026-11-17 (issue #106) a click no longer
+> decides a charge whose _amount_ the demo steers (`5001`, `5002`): those
+> answers outrank every payer action. A charge steered by a number typed on its
+> own page is still exposed. Nothing here drives two at once, so you will not
 > meet it by following this README; two browser tabs on two orders will.
->
-> **And the stub's page is not safe for a `return_url` containing a `"`.** The
-> two links percent-encode; the test-number form's hidden inputs do not, and
-> vpay's own `return_url` validation checks only the scheme and the length. A
-> quote closes the attribute and injects into the stub's page. It is a WireMock
-> test stub (ADR-0006) and no test in this repository sends such a URL, so it is
-> recorded — on the page itself, in the mapping's metadata and in
-> `docs/status.md` — rather than fixed.
 
 | Number         | What happens                                     | Order    | vpay code        | The rail said |
 | -------------- | ------------------------------------------------ | -------- | ---------------- | ------------- |

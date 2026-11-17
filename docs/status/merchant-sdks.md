@@ -378,3 +378,39 @@ and its absence`, a row in [sdks/parity.md](../sdks/parity.md). Also:
   keys and ignores this one. No Dart toolchain was available to change it.
 
 [verification/2026-10-24-rail-on-v1.md](verification/2026-10-24-rail-on-v1.md).
+
+## Popup completion: vpay's page first, `success_url` as fallback, once per session (2026-11-17, issue #65)
+
+`@vaam-apps/vpay-stripe-js`'s `openCheckoutPopup` now accepts the
+`vpay:complete` vpay's checkout page posts to `window.opener` as the
+**primary** completion, pinned to the origin of `loadStripe`'s
+`checkoutBaseUrl` and to the window it opened. The merchant's `success_url`
+page calling `notifyCheckoutOpener` stays as the **fallback**, pinned to
+`completionOrigin` as before. Completion is deduplicated per checkout
+session id, on the opening window, so `onComplete` fires once whichever
+message arrives first — including a late duplicate reaching a later
+`openCheckoutPopup` that reused the window by name. Without `checkoutBaseUrl`
+the primary channel is off and the fallback alone completes the popup, which
+is the behaviour before this change. The page's message already carried the
+session id (`CompleteMessage` in `frontends/apps/checkout/src/lib/frame.ts`:
+`{type, session, status}`), so the checkout app did not change.
+
+- 14 new cases in `src/popup.test.ts` (41 in all, from 27), named in
+  [../sdks/parity.md](../sdks/parity.md) § "The browser surface": both
+  orders of arrival, a different session not deduplicated against, wrong
+  origin, wrong source, malformed and empty-session messages, no
+  `checkoutBaseUrl`, and the `loadStripe` wiring. Eight mutations of
+  `popup.ts`/`client.ts` each turn at least one red.
+- `examples/shop` serves `Referrer-Policy: strict-origin-when-cross-origin`
+  on every route (`next.config.ts`), because vpay's page pins the opener by
+  `document.referrer` and a `no-referrer` shop silently loses the primary
+  channel. `src/referrer-policy.test.ts` pins it. The SDK README states the
+  requirement for every merchant.
+- **Still not proven in a browser.** Every window in those tests is a stub;
+  the dated ⛔ row in [../sdks/parity.md](../sdks/parity.md) for a real popup
+  stands. The Tauri plugin's web host (`guest-js/host-web.ts`) and the
+  Flutter plugin's web platform open popups with the same merchant-origin
+  protocol and were **not** changed: they still ignore vpay's own message
+  and complete on the `success_url` fallback only.
+
+[verification/2026-11-17-popup-completion.md](verification/2026-11-17-popup-completion.md).

@@ -65,7 +65,7 @@ vpay merchant demo
       each one: create → retrieve → confirm → the worker settles it → the signed webhook it produced
 
   ── 1/6  mtn_momo · the payer approves on their handset ─────────────────────────
-     selected by: MSISDN 237600000ce0 enters the `mtn-e2e-poll` scenario (requesttopay-scenario.json): PENDING on the first status query, SUCCESSFUL on the second
+     selected by: MSISDN 237670000900 enters the `mtn-e2e-poll` scenario (requesttopay-scenario.json): PENDING on the first status query, SUCCESSFUL on the second
      ✔ POST /v1/payment_intents
        id             pi_sjt5sp38m962z3xgs66vrxq7
        status         requires_payment_method
@@ -97,7 +97,7 @@ vpay merchant demo
        data.object.status succeeded
 
   ── 2/6  mtn_momo · the payer has no balance ─────────────────────────
-     selected by: MSISDN 237600000f01 arms the `mtn-demo-decline` scenario (demo-outcomes.json), which answers the next status query FAILED/NOT_ENOUGH_FUNDS
+     selected by: MSISDN 237670000101 arms the `mtn-demo-decline` scenario (demo-outcomes.json), which answers the next status query FAILED/NOT_ENOUGH_FUNDS
      ✔ POST /v1/payment_intents
        id             pi_jfk35g1bkd6y1be1w1wwftcp
        status         requires_payment_method
@@ -131,7 +131,7 @@ vpay merchant demo
        data.object.status requires_payment_method
 
   ── 3/6  mtn_momo · the prompt expires unanswered ─────────────────────────
-     selected by: MSISDN 237600000f02 arms the `mtn-demo-expiry` scenario (demo-outcomes.json), which answers FAILED with the OBJECT-shaped reason COULD_NOT_PERFORM_TRANSACTION — MTN's ~5-minute PIN window
+     selected by: MSISDN 237670000102 arms the `mtn-demo-expiry` scenario (demo-outcomes.json), which answers FAILED with the OBJECT-shaped reason COULD_NOT_PERFORM_TRANSACTION — MTN's ~5-minute PIN window
      ✔ POST /v1/payment_intents
        id             pi_fqd7rpchax5v5ddfgz92wg6f
        status         requires_payment_method
