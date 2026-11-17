@@ -339,10 +339,10 @@ impl SignInLimiter {
     ) -> Result<Verdict, ApiError> {
         let scope = budget.as_wire_str();
         let id = tokens::digest(&format!("{scope}:{value}"));
-        let attempts = repositories
+        let outcome = repositories
             .count_attempt(&id, scope, policy.window, now)
             .await?;
-        Ok(Verdict::of(attempts, policy))
+        Ok(Verdict::of(outcome.attempts, policy))
     }
 }
 

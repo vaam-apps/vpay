@@ -51,7 +51,10 @@ checks it.
   merchant id. Another merchant's object is the same "not found" as one that
   does not exist.
 - **A write needs `payments:write`.** A `payments:read` token is refused by
-  the procedure's own `@allow`, before any body runs.
+  the procedure's own `@allow`, before any body runs. `create_refund` with a
+  `destination` — every refund of an `mtn_momo` or `orange_money` payment —
+  needs `account_holders:read` too, exactly as `POST /v1/refunds` does
+  ([account-holder-lookup.md](account-holder-lookup.md) rule 5).
 - **Every write takes a required `idempotency_key`.** It is claimed in vpay's
   own per-merchant store under `("MCP", "tool/<name>", hash of the
 arguments)`. A replay returns the first answer. The same key with different

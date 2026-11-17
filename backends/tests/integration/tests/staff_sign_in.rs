@@ -531,6 +531,7 @@ fn config_with(base_url: &str, jwks_a: Value, jwks_b: Value, staff_auth: StaffAu
         // both its blocks are written, which is the whole of what this suite
         // needs; the cases about the method being off build their own.
         auth: Default::default(),
+        privacy: Default::default(),
     }
 }
 

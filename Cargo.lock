@@ -5476,6 +5476,8 @@ dependencies = [
  "cratestack-client-rust",
  "cratestack-core",
  "cratestack-parser",
+ "hex",
+ "hmac 0.12.1",
  "jsonwebtoken",
  "metrics",
  "metrics-exporter-prometheus",

@@ -148,6 +148,8 @@ base64 = "0.22"
 # `staff_sign_in.rs`'s PKCE challenge until VP-6a deleted that suite.)
 # Workspace pin, already in this crate's graph.
 sha2.workspace = true
+hmac.workspace = true
+hex.workspace = true
 # `tests/merchant_token_flow.rs` and `tests/client_store.rs` encode a merchant's
 # `client_assertion` by hand, signed with an RSA key they generate. Not a
 # workspace dependency (see the root manifest), so pinned directly here at

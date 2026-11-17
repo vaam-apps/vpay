@@ -165,10 +165,11 @@ fn the_envelope_mode_follows_auth_methods() {
 /// The valid token reaches the handler (`503`: the fixture's database is a pool
 /// that never connects, which is what proves the handler ran) and is answered
 /// in plain JSON, not as a COSE message.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn both_ways_a_valid_token_reaches_the_handler_and_is_answered_in_plain_json() {
     let log = CapturedLog::default();
     let _subscriber = tracing::subscriber::set_default(captured_log_subscriber(log.clone()));
+    tracing::callsite::rebuild_interest_cache();
     let (encoding_key, jwk) = generate_keypair("tok-1");
     let jwks = jwks_server(&jwk).await;
     let token = mint_token(
@@ -795,12 +796,13 @@ async fn a_signer_no_merchant_holds_is_forbidden() {
 /// handler's `503`: what differs is how that answer arrives. The SDK refuses an
 /// answer that is not a message sealed under the pinned server key
 /// (`Error::Unsigned`), so an `Error::Api` is the proof it was sealed.
-#[tokio::test]
+#[tokio::test(flavor = "current_thread")]
 async fn the_same_router_seals_for_a_signer_and_answers_a_token_in_plain_json() {
     use vpay_sdk::{Client, Credentials, Error, ServerKeys};
 
     let log = CapturedLog::default();
     let _subscriber = tracing::subscriber::set_default(captured_log_subscriber(log.clone()));
+    tracing::callsite::rebuild_interest_cache();
     let (encoding_key, jwk) = generate_keypair("tok-1");
     let jwks = jwks_server(&jwk).await;
     let config = config_with_merchant_key(BOTH);

@@ -47,9 +47,12 @@ pub(super) async fn perform<T: serde::de::DeserializeOwned>(
         ));
     };
     let merchant_id = tenant_of(ctx)?.to_owned();
+    let (client_id, scopes) = credential_of(ctx)?;
     let outcome = ops
         .perform(MerchantCall {
             merchant_id,
+            client_id,
+            scopes,
             operation,
         })
         .await
@@ -61,6 +64,36 @@ pub(super) async fn perform<T: serde::de::DeserializeOwned>(
             "a merchant operation answered a body its tool's output type cannot hold: {error}"
         ))
     })
+}
+
+/// The authenticated credential a merchant context carries: its OAuth
+/// client and its effective scopes (`crate::mcp_transport`'s table).
+///
+/// A context with no `client_id` claim is refused as the policy refuses:
+/// only `merchant_context` builds a context that reaches a body with the
+/// port present, and it always sets one, so a miss is a wiring defect that
+/// must not run as nobody in particular. A missing or malformed `scopes`
+/// claim is the empty list, which can only refuse more, never admit more.
+fn credential_of(ctx: &CratestackContext) -> Result<(String, Vec<String>), CratestackError> {
+    let client_id = match ctx.auth_field(crate::mcp_transport::CLIENT_ID_CLAIM) {
+        Some(cratestack::Value::String(id)) if !id.is_empty() => id.clone(),
+        _ => {
+            return Err(CratestackError::Forbidden(
+                "procedure policy denied this operation".to_owned(),
+            ));
+        }
+    };
+    let scopes = match ctx.auth_field(crate::mcp_transport::SCOPES_CLAIM) {
+        Some(cratestack::Value::List(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                cratestack::Value::String(scope) => Some(scope.clone()),
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
+    };
+    Ok((client_id, scopes))
 }
 
 /// `/v1`'s refusal, as the error the MCP transport renders.
@@ -211,6 +244,8 @@ mod tests {
         let ctx = crate::mcp_transport::merchant_context(&crate::McpCaller {
             merchant_id: "acct_1".to_owned(),
             can_write: true,
+            client_id: "client-1".to_owned(),
+            scopes: vec!["payments:write".to_owned()],
         });
         let result: Result<serde_json::Value, _> = perform(
             None,
@@ -221,5 +256,84 @@ mod tests {
         )
         .await;
         assert!(matches!(result, Err(CratestackError::Forbidden(_))));
+    }
+
+    /// The port is handed the credential that authenticated, with exactly
+    /// its scopes (PR #396 review, P1). Before this, `vpay-api` invented a
+    /// principal holding only the payments scopes, so a token that held
+    /// `account_holders:read` was refused a nominated-payee refund it was
+    /// entitled to, and the lookup budget was kept per tenant, not per key.
+    ///
+    /// The decisive mutations: drop `client_id`/`scopes` from the call, or
+    /// fill them with anything but the context's claims.
+    #[tokio::test]
+    async fn the_call_carries_the_contexts_client_and_exactly_its_scopes() {
+        #[derive(Default)]
+        struct Capturing(std::sync::Mutex<Vec<MerchantCall>>);
+
+        #[async_trait::async_trait]
+        impl MerchantOperations for Capturing {
+            async fn perform(
+                &self,
+                call: MerchantCall,
+            ) -> Result<crate::merchant_operations::OperationOutcome, OperationRefusal>
+            {
+                if let Ok(mut calls) = self.0.lock() {
+                    calls.push(call);
+                }
+                Ok(crate::merchant_operations::OperationOutcome {
+                    body: serde_json::json!({}),
+                })
+            }
+        }
+
+        let capturing = Arc::new(Capturing::default());
+        let ops: Arc<dyn MerchantOperations> = capturing.clone();
+        let ctx = crate::mcp_transport::merchant_context(&crate::McpCaller {
+            merchant_id: "acct_1".to_owned(),
+            can_write: true,
+            client_id: "client-1".to_owned(),
+            scopes: vec![
+                "payments:write".to_owned(),
+                "account_holders:read".to_owned(),
+            ],
+        });
+        let _: serde_json::Value = perform(
+            Some(&ops),
+            &ctx,
+            MerchantOperation::RetrieveRefund {
+                id: "re_1".to_owned(),
+            },
+        )
+        .await
+        .expect("the capturing port answers");
+
+        let calls = capturing.0.lock().expect("not poisoned").clone();
+        let call = calls.first().expect("one call reached the port");
+        assert_eq!(call.merchant_id, "acct_1");
+        assert_eq!(call.client_id, "client-1");
+        assert_eq!(
+            call.scopes,
+            vec![
+                "payments:write".to_owned(),
+                "account_holders:read".to_owned()
+            ]
+        );
+    }
+
+    /// A context with no client reaches no port: it is a wiring defect, and
+    /// running it as nobody in particular is how a per-key budget is bypassed.
+    #[test]
+    fn a_context_without_a_client_is_refused_before_the_port() {
+        let ctx = crate::mcp_transport::merchant_context(&crate::McpCaller {
+            merchant_id: "acct_1".to_owned(),
+            can_write: true,
+            client_id: String::new(),
+            scopes: Vec::new(),
+        });
+        assert!(matches!(
+            credential_of(&ctx),
+            Err(CratestackError::Forbidden(_))
+        ));
     }
 }
