@@ -115,6 +115,7 @@ export function CheckoutView(props: CheckoutViewProps) {
             merchant={merchant}
             amount={amount}
             reference={context.session.id}
+            invoiceNumber={context.invoice?.number ?? null}
             livemode={context.session.livemode}
           />
         )}

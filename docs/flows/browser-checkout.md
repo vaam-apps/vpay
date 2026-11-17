@@ -414,7 +414,7 @@ against. The page's message already carried the session id, so
 popup must send vpay its origin as the referrer (vpay's page pins the opener
 by `document.referrer`), so `examples/shop` now serves
 `Referrer-Policy: strict-origin-when-cross-origin` on every route and the
-SDK README states the requirement. Proven by `src/popup.test.ts` — **39**
+SDK README states the requirement. Proven by `src/popup.test.ts` — **41**
 cases now, every window still a **stub** — and `examples/shop`'s
 `src/referrer-policy.test.ts`; rows in [../sdks/parity.md](../sdks/parity.md),
 evidence in

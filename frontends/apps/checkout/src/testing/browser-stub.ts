@@ -77,6 +77,12 @@ export interface CheckoutStubOptions {
   intentSecret?: string;
   /** Defaults to `{ kind: 'named', name: 'Boutique Test' }`. */
   merchant?: StubMerchant;
+  /**
+   * The `invoice` member's number (issue #91, D6). Absent by default, and
+   * then the stub renders **no key at all** — the server's answer for every
+   * payment `POST /v1/invoices/{id}/pay` did not mint.
+   */
+  invoiceNumber?: string;
   amount?: number;
   currency?: string;
   paymentMethodTypes?: string[];
@@ -298,6 +304,12 @@ export function startCheckoutStub(
     };
   };
 
+  /** The `invoice` member, spreadable like {@link merchantMember}'s. */
+  const invoiceMember = (): Record<string, unknown> =>
+    options.invoiceNumber === undefined
+      ? {}
+      : { invoice: { number: options.invoiceNumber } };
+
   /**
    * An expanded intent.
    *
@@ -406,6 +418,7 @@ export function startCheckoutStub(
           ...sessionObject(true),
           payment_intent: intentObject(true, { nextAction: false }),
           ...merchantMember(),
+          ...invoiceMember(),
         });
         return;
       }
@@ -438,6 +451,7 @@ export function startCheckoutStub(
           ...sessionObject(false),
           payment_intent: intentObject(false, { nextAction: false }),
           ...merchantMember(),
+          ...invoiceMember(),
         });
         return;
       }

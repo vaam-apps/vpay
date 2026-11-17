@@ -579,8 +579,12 @@ pub(crate) async fn record_payment_error(
 /// the charge, not the intent, is the record of whether a confirm happened.
 ///
 /// `succeeded` and `canceled` stay out, and that is what keeps the guard a
-/// guard: neither can coexist with a live charge, so either one appearing here
-/// is a broken invariant that must page rather than settle.
+/// guard. `succeeded` cannot coexist with a live charge, so it appearing here
+/// is a broken invariant that must page rather than settle. `canceled` *can*:
+/// a cancel that commits before a confirm's charge does leaves exactly that
+/// pair (issue #96). It still must not settle, and since 2026-11-17 the
+/// settlement parks the charge in `requires_review` instead of paging
+/// (`crate::settlement`'s `park_for_review`, via [`canceled_in_tx`]).
 ///
 /// `docs/reference/vpay-db.md` §"Which intent statuses a settlement may land
 /// on" says what excluding `requires_payment_method` used to cost and why
@@ -604,9 +608,11 @@ const LAST_PAYMENT_ERROR_MESSAGE_MAX_CHARS: usize = 512;
 ///
 /// `Ok(None)` means the guard refused: no such intent, or a status outside
 /// `SETTLEABLE_STATUSES` — which, for the settlement transaction, leaves only
-/// `succeeded` and `canceled`. Both are invariant violations rather than
-/// races, and [`crate::settlement`] turns them into
-/// [`DbError::WriteMatchedNoRow`] rather than committing half a settlement.
+/// `succeeded` and `canceled`. [`crate::settlement`] never commits half a
+/// settlement on either: `succeeded` is an invariant violation and becomes
+/// [`DbError::WriteMatchedNoRow`], and `canceled` is the cancel-and-confirm
+/// race of issue #96, which parks the charge in `requires_review` and writes
+/// nothing else.
 ///
 /// # Why `pub(crate)`
 ///
@@ -639,6 +645,40 @@ pub(crate) async fn succeed_after_submission(
         .fetch_optional(&mut *tx)
         .await
         .map_err(classify_write)
+}
+
+/// The intent, if it is `canceled` — the one refusal of
+/// [`succeed_after_submission`]'s guard that is a race rather than a broken
+/// invariant (issue #96).
+///
+/// A plain read, not a lock: `canceled` has no outgoing edge
+/// (`vpay_core::next_status` answers `None` for every verb from it), so the
+/// answer cannot go stale before the caller's transaction commits. Read on
+/// the caller's connection, after the guarded `UPDATE` has already waited
+/// for whatever held the row, so it sees the committed status that made the
+/// guard refuse.
+///
+/// `pub(crate)` for [`succeed_after_submission`]'s reason: its only caller is
+/// the settlement transaction, deciding whether a refused settlement is a
+/// payment to park for review or a bug to page on.
+///
+/// # Errors
+///
+/// [`DbError::Query`] if the read fails.
+pub(crate) async fn canceled_in_tx(
+    tx: &mut sqlx::PgConnection,
+    id: &str,
+) -> Result<Option<PaymentIntentRow>, DbError> {
+    let sql = format!(
+        "SELECT {COLUMNS} FROM payment_intents \
+         WHERE id = $1 AND status = 'canceled'"
+    );
+
+    sqlx::query_as::<_, PaymentIntentRow>(AssertSqlSafe(sql))
+        .bind(id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(DbError::Query)
 }
 
 /// Returns the intent of a declined charge to `requires_payment_method`

@@ -25,6 +25,7 @@ function context(session = {}, intent = {}) {
     session: makeSession(session),
     intent: makePublicIntent(intent),
     merchant: { name: "Boutique Test" },
+    invoice: null,
   };
 }
 
@@ -149,6 +150,31 @@ describe("the return controller against the stub", () => {
       expect(state.context.intent).not.toHaveProperty("client_secret");
       expect(state.context.session).not.toHaveProperty("client_secret");
     }
+  });
+
+  it("carries the invoice number the return read names, and keeps it off the session half (#91, D6)", async () => {
+    const d = await drive({
+      pollsBeforeTerminal: 0,
+      invoiceNumber: "K7Q2M9XD-000042",
+    });
+    await d.controller.start();
+    const state = d.controller.state;
+    expect(state).toMatchObject({
+      name: "outcome",
+      context: { invoice: { number: "K7Q2M9XD-000042" } },
+    });
+    if ("context" in state) {
+      expect(state.context.session).not.toHaveProperty("invoice");
+    }
+  });
+
+  it("carries null for a return read with no `invoice` member", async () => {
+    const d = await drive({ pollsBeforeTerminal: 0 });
+    await d.controller.start();
+    expect(d.controller.state).toMatchObject({
+      name: "outcome",
+      context: { invoice: null },
+    });
   });
 
   it("forwards with {CHECKOUT_SESSION_ID} substituted", async () => {

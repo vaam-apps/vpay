@@ -66,6 +66,19 @@ export interface CheckoutMerchant {
 }
 
 /**
+ * The invoice this payment settles — its number, and nothing else about it
+ * (issue #91, D6; `vpay_api::model::CheckoutInvoiceObject`).
+ *
+ * Present only when the intent was minted by `POST /v1/invoices/{id}/pay`;
+ * the server omits the member for every other payment. Read defensively
+ * (`invoiceOf` in `machine.ts`) for {@link CheckoutSessionView.merchant}'s
+ * reason: it is a nicety beside the amount, never a reason to refuse one.
+ */
+export interface CheckoutInvoice {
+  number: string;
+}
+
+/**
  * `GET /v1/browser/checkout/sessions/{cs_id}?key&client_secret`.
  *
  * The session object itself, with `payment_intent` **expanded** and its own
@@ -85,6 +98,8 @@ export interface CheckoutMerchant {
 export interface CheckoutSessionView extends CheckoutSession {
   payment_intent: PaymentIntent;
   merchant?: CheckoutMerchant | undefined;
+  /** Optional, for the same reason as {@link CheckoutSessionView.merchant}. */
+  invoice?: CheckoutInvoice | undefined;
 }
 
 /**
@@ -99,6 +114,8 @@ export interface CheckoutReturnView extends CheckoutSession {
   payment_intent: PublicPaymentIntent;
   /** Optional, for the same reason as {@link CheckoutSessionView.merchant}. */
   merchant?: CheckoutMerchant | undefined;
+  /** Optional, for the same reason as {@link CheckoutSessionView.merchant}. */
+  invoice?: CheckoutInvoice | undefined;
 }
 
 /** `GET /v1/browser/checkout/origins?key`. */

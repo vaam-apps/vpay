@@ -282,13 +282,32 @@ read-committed recheck), so a charge another worker moved between the two —
 
 **What `None` does not mean.** It never means "the intent guard refused". After
 the widening above, the only statuses left outside it are `succeeded` and
-`canceled`, and neither can coexist with a live charge (`cancel` refuses to run
-while one exists, and "one charge per intent, forever" means a settled intent
-cannot acquire another). Either of them appearing is a broken invariant, and it
-is reported as `DbError::WriteMatchedNoRow` — `Category::Internal`, which pages —
-rather than being folded into the idempotent `None` a caller treats as "already
-done". Committing the charge half and reporting success would leave the
-merchant's intent permanently out of step with the money.
+`canceled`. `succeeded` cannot coexist with a live charge ("one charge per
+intent, forever" means a settled intent cannot acquire another), so it is a
+broken invariant, reported as `DbError::WriteMatchedNoRow` —
+`Category::Internal`, which pages — rather than being folded into the
+idempotent `None` a caller treats as "already done". Committing the charge
+half and reporting success would leave the merchant's intent permanently out
+of step with the money.
+
+~~`canceled` cannot coexist with a live charge either, because `cancel` refuses
+to run while one exists.~~ **Corrected 2026-11-17 (issue #96):** it can. A
+confirm's charge insert that waits on a cancel's row lock (migration `0054`)
+commits onto the `canceled` intent once the cancel has, which is a legal
+interleaving of two requests. `apply_succeeded` used to treat it as the broken
+invariant above and roll back whole, discarding the rail's answer for money
+that had moved. It now **parks** the charge: in the same transaction, the
+`succeeded` its compare-and-swap wrote becomes `requires_review`
+(`park_for_review`, migration `0059`), the transaction commits with no intent
+write, no event, no session or invoice flip and no ledger posting, and only
+then is `vpay_charge_transitions_total{to="requires_review"}` counted and an
+`alert = true` line written with the charge id. The answer is
+`Ok(Some((charge, intent)))` with the charge in `requires_review` and the
+intent still `canceled`. A caller reads the charge's state to tell it from a
+settlement. `requires_review` is outside `LIVE_CHARGE_STATES`, so a second
+delivery of the same answer matches no row and returns `None`. `apply_failed`
+was not changed: a decline on a canceled intent still rolls back with
+`WriteMatchedNoRow`.
 
 ### Which intent statuses a settlement may land on
 

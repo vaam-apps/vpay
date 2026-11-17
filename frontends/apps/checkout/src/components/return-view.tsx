@@ -75,6 +75,7 @@ export function ReturnView(props: ReturnViewProps) {
                 merchant={merchant}
                 amount={amount}
                 reference={context.session.id}
+                invoiceNumber={context.invoice?.number ?? null}
                 livemode={context.session.livemode}
               />
             )}

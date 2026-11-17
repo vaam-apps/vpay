@@ -79,6 +79,96 @@ tests:
       - eval_time: 80m
         alertname: VpayUnresolvedChargesRising
         exp_alerts: []
+  - name: "VpayChargeRequiresReview: one parked charge fires at once, and stops an hour later"
+    interval: 1m
+    input_series:
+      - series: 'vpay_charge_transitions_total{provider="mtn_momo",from="submitted",to="requires_review"}'
+        values: "0x9 1x80"
+      - series: 'vpay_charge_transitions_total{provider="mtn_momo",from="pending",to="succeeded"}'
+        values: "0+5x90"
+      - series: 'vpay_charge_transitions_total{provider="notchpay",from="pending",to="unresolved"}'
+        values: "0x9 1x80"
+    alert_rule_test:
+      # Nothing parked yet: the settled and unresolved series beside it never fire this.
+      - eval_time: 5m
+        alertname: VpayChargeRequiresReview
+        exp_alerts: []
+      # Parked at 10m; `for: 0m`, so it fires on the next evaluation.
+      - eval_time: 12m
+        alertname: VpayChargeRequiresReview
+        exp_alerts:
+          - exp_labels:
+              from: "submitted"
+              provider: "mtn_momo"
+              provisional: "true"
+              severity: "critical"
+              to: "requires_review"
+            exp_annotations:
+              description: "At least one charge on mtn_momo was reported paid by the rail after its payment intent had been canceled. vpay parked it in `requires_review`: the intent stays `canceled`, nothing was posted to the ledger, and no refund was made. Each one is a payer who was charged for a payment the merchant withdrew; find it with the runbook's query."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/charges-requires-review.md"
+              summary: "A rail-accepted payment landed on a canceled intent and was parked for review"
+      # No new parked charge in the last hour.
+      - eval_time: 80m
+        alertname: VpayChargeRequiresReview
+        exp_alerts: []
+  # THE CASE THE FIRST VERSION OF THIS RULE MISSED. Nothing registers the
+  # `to="requires_review"` series at 0: `vpay_db::charges::record_transition`
+  # creates it on its first increment, so a deployment's first parked charge
+  # appears as a series whose first sample is already 1. `increase()` over a
+  # series with no earlier sample is 0, and `increase(...) > 0` alone stayed
+  # silent here. `_x9` is "no sample at all" for the first ten minutes, not 0.
+  - name: "VpayChargeRequiresReview: a series that first appears already at 1 fires, and stops an hour later"
+    interval: 1m
+    input_series:
+      - series: 'vpay_charge_transitions_total{provider="notchpay",from="pending",to="requires_review"}'
+        values: "_x9 1x80"
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: VpayChargeRequiresReview
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: VpayChargeRequiresReview
+        exp_alerts:
+          - exp_labels:
+              from: "pending"
+              provider: "notchpay"
+              provisional: "true"
+              severity: "critical"
+              to: "requires_review"
+            exp_annotations:
+              description: "At least one charge on notchpay was reported paid by the rail after its payment intent had been canceled. vpay parked it in `requires_review`: the intent stays `canceled`, nothing was posted to the ledger, and no refund was made. Each one is a payer who was charged for a payment the merchant withdrew; find it with the runbook's query."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/charges-requires-review.md"
+              summary: "A rail-accepted payment landed on a canceled intent and was parked for review"
+      # The series is an hour old and has not moved: quiet.
+      - eval_time: 80m
+        alertname: VpayChargeRequiresReview
+        exp_alerts: []
+  # The other half: a series older than the window (a pod that parked a
+  # charge more than an hour ago) parks another. Only `increase()` can see
+  # this one, since the series existed an hour ago.
+  - name: "VpayChargeRequiresReview: a second parked charge on an old series fires"
+    interval: 1m
+    input_series:
+      - series: 'vpay_charge_transitions_total{provider="mtn_momo",from="pending",to="requires_review"}'
+        values: "1x69 2x30"
+    alert_rule_test:
+      # An hour and more after the first one, before the second: quiet.
+      - eval_time: 65m
+        alertname: VpayChargeRequiresReview
+        exp_alerts: []
+      - eval_time: 72m
+        alertname: VpayChargeRequiresReview
+        exp_alerts:
+          - exp_labels:
+              from: "pending"
+              provider: "mtn_momo"
+              provisional: "true"
+              severity: "critical"
+              to: "requires_review"
+            exp_annotations:
+              description: "At least one charge on mtn_momo was reported paid by the rail after its payment intent had been canceled. vpay parked it in `requires_review`: the intent stays `canceled`, nothing was posted to the ledger, and no refund was made. Each one is a payer who was charged for a payment the merchant withdrew; find it with the runbook's query."
+              runbook_url: "https://github.com/vaam-apps/vpay/blob/master/docs/runbooks/charges-requires-review.md"
+              summary: "A rail-accepted payment landed on a canceled intent and was parked for review"
   - name: "VpayJobQueueBehind: 400s behind fires after 10m"
     interval: 1m
     input_series:

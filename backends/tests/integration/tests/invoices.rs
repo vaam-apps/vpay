@@ -2277,6 +2277,199 @@ async fn paying_uses_the_merchants_configured_urls_and_a_passed_one_still_wins()
     Ok(())
 }
 
+// --------------------------------------- what the payer is shown (#91, D6)
+
+/// The three parts of a `hosted_invoice_url`: the session id out of the
+/// path, the publishable key out of `?key=`, and the session secret out of
+/// the fragment — exactly what `frontends/apps/checkout` reads off its own
+/// URL before its first call (`vpay_api::v1::checkout_sessions::hosted_url`).
+fn hosted_parts(hosted: &str) -> (String, String, String) {
+    let (before_fragment, secret) = hosted
+        .split_once('#')
+        .expect("a hosted URL carries its secret in the fragment");
+    let (path, query) = before_fragment
+        .split_once('?')
+        .expect("a hosted URL carries `?key=`");
+    let session = path
+        .rsplit('/')
+        .next()
+        .expect("a hosted URL ends in the session id");
+    let key = query
+        .strip_prefix("key=")
+        .expect("the query is `key=` alone");
+    (session.to_owned(), key.to_owned(), secret.to_owned())
+}
+
+/// Both browser reads the checkout page makes, as the page makes them — the
+/// session read and the return read — with no merchant credential, only what
+/// the URL (or the return token) carries.
+async fn payer_reads(harness: &Harness, hosted: &str) -> anyhow::Result<Vec<(u16, Value)>> {
+    let (session, key, secret) = hosted_parts(hosted);
+    let (token,): (String,) =
+        sqlx::query_as("SELECT return_token FROM checkout_sessions WHERE id = $1")
+            .bind(&session)
+            .fetch_one(&harness.pool)
+            .await
+            .context("reading the session's return token")?;
+    let client = reqwest::Client::new();
+    let mut out = Vec::with_capacity(2);
+    for (path, query) in [
+        (
+            format!("/v1/browser/checkout/sessions/{session}"),
+            [("key", key.as_str()), ("client_secret", secret.as_str())],
+        ),
+        (
+            format!("/v1/browser/checkout/sessions/{session}/return"),
+            [("key", key.as_str()), ("t", token.as_str())],
+        ),
+    ] {
+        let response = client
+            .get(harness.url(&path))
+            .query(&query)
+            .send()
+            .await
+            .context("a payer's browser read")?;
+        let status = response.status().as_u16();
+        out.push((status, response.json().await.unwrap_or(Value::Null)));
+    }
+    Ok(out)
+}
+
+/// A payer who follows a `hosted_invoice_url` is told **which invoice** they
+/// are paying — its number, on both browser reads, and nothing else about
+/// the invoice (issue #91, D6).
+///
+/// Two invoices of one merchant are paid side by side so that each session
+/// must name *its own* number: a lookup keyed on the merchant alone, or one
+/// that returned the first row it found, renders the same number twice and
+/// fails the second pass. The read is asserted to carry exactly
+/// `{"number": …}` and never the `in_…` id or a line's description, because
+/// this surface is unauthenticated by a merchant and the rest of an invoice
+/// is the merchant's record, not the payer's receipt.
+///
+/// # The decisive mutations
+///
+/// * Drop `.with_invoice_number(..)` from `vpay_api::browser::checkout_sessions`'
+///   `for_payer` — the first assertion fails: no `invoice` member.
+/// * Key `Invoices::number_for_intent` on `merchant_id` alone — the second
+///   invoice's session renders the first one's number.
+///
+/// The other half — an intent that pays no invoice renders no `invoice`
+/// member at all — is `checkout_sessions.rs`'s
+/// `a_session_whose_intent_pays_no_invoice_renders_no_invoice_member`.
+#[tokio::test]
+async fn the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_about_it()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        let invoice = open_invoice(&harness, CLIENT_A).await?;
+        let (status, finalized) = harness
+            .get(CLIENT_A, &format!("/v1/invoices/{invoice}"))
+            .await?;
+        assert_eq!(status, 200, "{finalized}");
+        let number = field(&finalized, "number")
+            .as_str()
+            .expect("a finalized invoice has a number")
+            .to_owned();
+
+        let (status, paying) = harness
+            .post(
+                CLIENT_A,
+                &format!("/v1/invoices/{invoice}/pay"),
+                &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+            )
+            .await?;
+        assert_eq!(status, 200, "{paying}");
+        let hosted = field(&paying, "hosted_invoice_url")
+            .as_str()
+            .expect("pay produces a hosted URL")
+            .to_owned();
+
+        let reads = payer_reads(&harness, &hosted).await?;
+        assert_eq!(reads.len(), 2, "both browser reads were made");
+        for (which, (status, body)) in ["session", "return"].into_iter().zip(&reads) {
+            assert_eq!(*status, 200, "the {which} read: {body:#}");
+            assert_eq!(
+                body.get("invoice"),
+                Some(&serde_json::json!({ "number": number })),
+                "the {which} read names the invoice by its number, and by nothing else: {body:#}"
+            );
+            let rendered = body.to_string();
+            assert!(
+                !rendered.contains(&invoice),
+                "the invoice's own id must not reach the payer's {which} read: {body:#}"
+            );
+            assert!(
+                !rendered.contains("One month of hosting"),
+                "a line's description must not reach the payer's {which} read: {body:#}"
+            );
+        }
+        seen.push(number);
+    }
+    assert_ne!(
+        item(&seen, 0, "number"),
+        item(&seen, 1, "number"),
+        "two invoices, two numbers"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
+/// `Invoices::number_for_intent` answers **nothing** for another merchant,
+/// even given the exact `pi_…` that pays one of merchant A's invoices.
+///
+/// The browser read only ever asks with the session's own merchant, after
+/// `authenticate` has proved the publishable key's tenant owns the session,
+/// so no HTTP request can reach this lookup cross-tenant today. That is
+/// precisely why the second scope is in the statement: a bug in that proof
+/// must not put tenant A's invoice number on tenant B's page. This drives
+/// the repository seam directly, because it is the one caller that can.
+///
+/// The same intent asked for as merchant A answers the number, so the
+/// `None` is about the tenant and not about a lookup that finds nothing.
+///
+/// **The decisive mutation:** drop `merchant_id = $1` from the statement —
+/// the lookup as merchant B answers A's number.
+#[tokio::test]
+async fn the_invoice_number_lookup_is_scoped_to_the_merchant() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let invoice = open_invoice(&harness, CLIENT_A).await?;
+    let (status, paying) = harness
+        .post(
+            CLIENT_A,
+            &format!("/v1/invoices/{invoice}/pay"),
+            &[("success_url", SUCCESS_URL), ("cancel_url", CANCEL_URL)],
+        )
+        .await?;
+    assert_eq!(status, 200, "{paying}");
+    let intent = field(&paying, "payment_intent")
+        .as_str()
+        .expect("pay attaches an intent")
+        .to_owned();
+    let number = field(&paying, "number")
+        .as_str()
+        .expect("an open invoice has a number")
+        .to_owned();
+
+    let repositories = harness.repositories.as_ref();
+    assert_eq!(
+        vpay_db::Invoices::number_for_intent(repositories, MERCHANT_A, &intent).await?,
+        Some(number),
+        "the owning merchant's lookup finds the number"
+    );
+    assert_eq!(
+        vpay_db::Invoices::number_for_intent(repositories, MERCHANT_B, &intent).await?,
+        None,
+        "another merchant's lookup of the same intent finds nothing"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 // ------------------------------------------- out-of-band payments (RFC-0004 § 6)
 
 /// The constraint a refused statement tripped, or `None` if it was not

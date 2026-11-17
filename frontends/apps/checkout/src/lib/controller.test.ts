@@ -514,6 +514,26 @@ describe("the merchant name is a nicety, not a precondition", () => {
   });
 });
 
+describe("the invoice number rides through from the read (issue #91, D6)", () => {
+  it("carries it into the context when the session read names one", async () => {
+    const h = await harness({ invoiceNumber: "K7Q2M9XD-000042" });
+    await h.controller.start();
+    expect(h.controller.state).toMatchObject({
+      name: "collect_msisdn",
+      context: { invoice: { number: "K7Q2M9XD-000042" } },
+    });
+  });
+
+  it("carries null when the read has no `invoice` member — a payment that settles no invoice", async () => {
+    const h = await harness();
+    await h.controller.start();
+    expect(h.controller.state).toMatchObject({
+      name: "collect_msisdn",
+      context: { invoice: null },
+    });
+  });
+});
+
 describe("the rail selector", () => {
   it("offers both rails when the intent does, and drives whichever is chosen", async () => {
     const h = await harness({

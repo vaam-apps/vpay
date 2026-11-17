@@ -29,7 +29,11 @@ import type { CheckoutState } from "../lib/machine";
 import { CheckoutView } from "./checkout-view";
 import { ReturnView } from "./return-view";
 import { makeBranding, makeMemoryControls } from "../testing/fixtures";
-import { CHECKOUT_SCREENS, RETURN_SCREENS } from "../testing/screen-states";
+import {
+  CHECKOUT_SCREENS,
+  INVOICE_SCREENS,
+  RETURN_SCREENS,
+} from "../testing/screen-states";
 
 const NOOP = () => undefined;
 const BRANDING = makeBranding();
@@ -211,6 +215,39 @@ export const ReturnRedirectLegInEnglish: Story = {
       locale="en"
       branding={BRANDING}
       destination={null}
+      onReturnToMerchant={NOOP}
+      onLocaleChange={NOOP}
+    />
+  ),
+};
+
+/**
+ * A payment that settles an invoice (issue #91, D6): the summary names the
+ * invoice by its number, under the amount. Here so the extra caption line
+ * gets the same real-browser axe and colour-contrast verdict as the rest of
+ * the card, in both locales — "Facture" and "Invoice" lay out differently.
+ */
+export const ChooseRailForAnInvoice: Story = {
+  args: { state: INVOICE_SCREENS.select_rail, locale: "fr" },
+};
+
+export const ChooseRailForAnInvoiceInEnglish: Story = {
+  args: { state: INVOICE_SCREENS.select_rail, locale: "en" },
+};
+
+/** The return page for the same payment: the number is still there to keep. */
+export const ReturnSucceededForAnInvoice: Story = {
+  args: {
+    state: CHECKOUT_SCREENS["outcome_succeeded"] as CheckoutState,
+    locale: "fr",
+  },
+  render: () => (
+    <ReturnView
+      state={INVOICE_SCREENS.return_outcome_succeeded}
+      t={translator("fr")}
+      locale="fr"
+      branding={BRANDING}
+      destination="https://shop.example/done"
       onReturnToMerchant={NOOP}
       onLocaleChange={NOOP}
     />

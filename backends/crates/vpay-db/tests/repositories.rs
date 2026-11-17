@@ -1891,7 +1891,9 @@ async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
 /// What stops that from becoming a payment settled onto a withdrawn intent is
 /// the **settlement's own** status guard —
 /// `payment_intents::succeed_after_submission`'s
-/// `WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in.
+/// `WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in —
+/// and, since issue #96, what the settlement does when that guard refuses:
+/// it parks the charge in `requires_review` rather than settling it.
 ///
 /// Nothing asserted that before this case, and the cancel becoming an event
 /// writer (issue #57) is what makes it worth asserting: a merchant now
@@ -1918,15 +1920,15 @@ async fn a_cancel_and_its_event_roll_back_together() -> anyhow::Result<()> {
 /// released: the job ran until it was cancelled after two hours, in
 /// vaam-apps/vpay#365's first CI run.)_
 ///
-/// The settlement's answer is [`vpay_db::DbError::WriteMatchedNoRow`], and
-/// that is asserted rather than glossed: `vpay_db::settlement`'s own comment
-/// says such a case "pages rather than being reported as a merchant's
-/// problem". This is a rail-accepted payment on a withdrawn intent — money
-/// an operator has to reconcile by hand — and the property that matters is
-/// that it is **loud and rolled back**, not that it is impossible. The charge
-/// is asserted still `submitting` afterwards for exactly that reason: a
-/// settlement that half-committed would leave the charge succeeded with no
-/// event and no intent to match it.
+/// The settlement's answer was [`vpay_db::DbError::WriteMatchedNoRow`] until
+/// 2026-11-17, and the charge was asserted still `submitted` afterwards: a
+/// rail-accepted payment on a withdrawn intent rolled back whole, and a page
+/// was the only record of it. Issue #96 replaced that with a parked charge,
+/// and this case now asserts the outcome that matters to the merchant: one
+/// terminal status, the cancel's, and one terminal event. What the parking
+/// itself must and must not write, and that a duplicate delivery neither
+/// parks twice nor alerts twice, is
+/// [`a_settlement_onto_a_canceled_intent_parks_the_charge_for_review_once`].
 ///
 /// # Direction 2 is the outcome, asserted sequentially
 ///
@@ -2014,7 +2016,7 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
         .context("the charge task did not panic")?
         .context("the charge a confirm commits before calling the rail")?;
 
-    let refused = repositories
+    let (parked, _) = repositories
         .apply_succeeded(
             "ch_race_cancel_first",
             Some("MTN-TXN-RACE"),
@@ -2023,16 +2025,11 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
             None,
         )
         .await
-        .expect_err("a settlement onto a canceled intent must not succeed quietly");
-    assert!(
-        matches!(
-            refused,
-            vpay_db::DbError::WriteMatchedNoRow {
-                table: "payment_intents",
-                ..
-            }
-        ),
-        "the settlement must fail loudly on the intent, not skip it: {refused:?}"
+        .context("a settlement onto a canceled intent commits the parking")?
+        .context("the charge was live, so it was matched")?;
+    assert_eq!(
+        parked.state, "requires_review",
+        "the settlement must park the charge, not settle it and not skip it"
     );
 
     let after = PaymentIntents::get_for_merchant(
@@ -2054,9 +2051,9 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
     );
     assert_eq!(
         charge_state(&pool, "ch_race_cancel_first").await?,
-        "submitted",
-        "the refused settlement rolled back whole — a charge left `succeeded` with no event \
-         and no matching intent is the state an operator cannot reconcile"
+        "requires_review",
+        "parked for an operator: never `succeeded` with no event and no matching intent, and \
+         no longer live, so nothing polls it again"
     );
 
     // ------------------------------------ direction 2: the settlement wins
@@ -2092,6 +2089,259 @@ async fn a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event() 
         vec!["payment_intent.succeeded".to_owned()],
         "and the refusal writes no event — `cancel_with_event` abandons its transaction on \
          exactly this answer"
+    );
+
+    Ok(())
+}
+
+/// Opens a charge onto an intent a cancel has just withdrawn, through the
+/// one real interleaving that produces that state since migration `0054`.
+///
+/// The cancel's transaction takes the intent's row (its `NOT EXISTS` finds
+/// no live charge, so it matches), and a confirm opens a charge on another
+/// connection while it is held. `charges::insert_for_intent` writes the
+/// intent's row too, so it waits; once the cancel commits, the charge commits
+/// onto the `canceled` intent. That is the state a rail-accepted payment then
+/// settles into, and it exists because both requests were legal when each
+/// one started.
+///
+/// [`a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event`]
+/// proves that the confirm waits (its 750 ms assertion); this helper only
+/// stages the outcome, so it does not re-assert the wait.
+async fn charge_opened_onto_a_canceled_intent(
+    repositories: &Arc<dyn Repositories>,
+    intent_id: &'static str,
+    charge_id: &'static str,
+) -> anyhow::Result<()> {
+    repositories
+        .insert(&fixture_intent(intent_id, "XAF"))
+        .await
+        .context("inserting the intent both writers want")?;
+
+    let (canceled, cancel_is_in) = tokio::sync::oneshot::channel::<()>();
+    let (release, wait_for_release) = tokio::sync::oneshot::channel::<()>();
+    let canceller = Arc::clone(repositories);
+    let cancel = tokio::spawn(async move {
+        canceller
+            .transaction(|tx| {
+                Box::pin(async move {
+                    let row = tx.cancel_in_tx("merchant_a", intent_id).await?.ok_or_else(|| {
+                        vpay_db::DbError::WriteMatchedNoRow {
+                            table: "payment_intents",
+                            key: intent_id.to_owned(),
+                        }
+                    })?;
+                    tx.insert_in_tx(&vpay_db::NewEvent {
+                        id: vpay_db::events::event_id(),
+                        merchant_id: row.merchant_id.clone(),
+                        livemode: row.livemode,
+                        event_type: "payment_intent.canceled".to_owned(),
+                        object_id: row.id.clone(),
+                        data: json!({"id": row.id, "object": "payment_intent", "status": "canceled"}),
+                    })
+                    .await?;
+                    let _ = canceled.send(());
+                    let _ = wait_for_release.await;
+                    Ok::<_, vpay_db::DbError>(TxOutcome::Commit(()))
+                })
+            })
+            .await
+    });
+    cancel_is_in.await.context("the cancel took the row")?;
+
+    let mut charge = fixture_charge(charge_id, intent_id);
+    charge.state = "submitted".to_owned();
+    let opener = Arc::clone(repositories);
+    let opening =
+        tokio::spawn(async move { one_tx::insert_for_intent(opener.as_ref(), &charge).await });
+
+    // Give the confirm time to reach the intent's row lock before the cancel
+    // lets go, so the charge really is opened *during* the cancel.
+    tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    release
+        .send(())
+        .map_err(|()| anyhow::anyhow!("the cancel stopped waiting"))?;
+    cancel
+        .await
+        .context("the cancel task did not panic")?
+        .context("the cancel commits")?;
+    opening
+        .await
+        .context("the charge task did not panic")?
+        .context("the charge a confirm commits before calling the rail")?;
+    Ok(())
+}
+
+/// **Issue #96 item 1.** A rail-accepted payment that lands on an intent a
+/// cancel already withdrew is parked as `requires_review`, in a committed
+/// transaction with the rail's answer kept, and a second delivery of the
+/// same answer neither parks it again nor alerts again.
+///
+/// # What this replaced
+///
+/// Until 2026-11-17 the settlement met the `canceled` intent, failed
+/// `WriteMatchedNoRow` and rolled back **whole**: the money had moved at the
+/// rail, the charge stayed `submitted`, the rail's transaction id was thrown
+/// away, and the poll job retried the same refusal until it was dead-lettered.
+/// The only record of the payment was a page. The decision on #96 is that no
+/// refund happens automatically: the charge is parked where an operator can
+/// find it, the intent stays `canceled`, an alert carries the charge id, and
+/// what happens next (a refund through the rail, or "reconciled") is an
+/// operator action that does not exist yet.
+///
+/// # Every assertion here is a way the parking can be wrong
+///
+/// * it rolls back (the first `apply_succeeded` is an `Err` and the charge is
+///   still `submitted`), which is what this test failed on before the change;
+/// * it settles the intent instead (`succeeded`, `amount_received`, a
+///   `payment_intent.succeeded` the merchant would receive after being told
+///   the payment was canceled, a capture posting in the ledger);
+/// * it loses the rail's answer (`provider_txn_id`, `amount`,
+///   `provider_reference_id`, the three things an operator reconciles with);
+/// * it parks twice (the second delivery overwrites the rail's id, or moves
+///   `updated_at`) or alerts twice (the transition counter reads `2`).
+///
+/// A plain `#[test]` with its own current-thread runtime, for
+/// [`a_settlement_counts_the_transition_it_actually_made`]'s reason: the
+/// local recorder is thread-local, and the counter is the alert's input
+/// (`VpayChargeRequiresReview` in
+/// `deploy/helm/vpay/templates/prometheusrule.yaml`).
+#[test]
+fn a_settlement_onto_a_canceled_intent_parks_the_charge_for_review_once() -> anyhow::Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .context("a current-thread runtime builds")?;
+    let _entered = runtime.enter();
+
+    let (_container, repositories, pool) = runtime.block_on(async {
+        let (container, repositories, pool) = migrated_postgres().await?;
+        seed_reference_data(repositories.as_ref()).await?;
+        charge_opened_onto_a_canceled_intent(&repositories, "pi_review", "ch_review").await?;
+        anyhow::Ok((container, repositories, pool))
+    })?;
+
+    let (reference_before, opened_at): (uuid::Uuid, time::OffsetDateTime) =
+        runtime.block_on(async {
+            sqlx::query_as("SELECT provider_reference_id, updated_at FROM charges WHERE id = $1")
+                .bind("ch_review")
+                .fetch_one(&pool)
+                .await
+                .context("reading the charge as the confirm left it")
+        })?;
+
+    let recorder = metrics_exporter_prometheus::PrometheusBuilder::new().build_recorder();
+    let handle = recorder.handle();
+    let data = json!({"id": "pi_review", "object": "payment_intent", "status": "succeeded"});
+
+    let (first, second) = metrics::with_local_recorder(&recorder, || {
+        runtime.block_on(async {
+            let first = repositories
+                .apply_succeeded(
+                    "ch_review",
+                    Some("MTN-TXN-REVIEW"),
+                    "evt_review_1",
+                    &data,
+                    None,
+                )
+                .await;
+            // The poll and a callback can both deliver the rail's answer:
+            // the second one must find nothing left to do.
+            let second = repositories
+                .apply_succeeded(
+                    "ch_review",
+                    Some("MTN-TXN-OTHER"),
+                    "evt_review_2",
+                    &data,
+                    None,
+                )
+                .await;
+            (first, second)
+        })
+    });
+
+    let (charge, intent) = first
+        .context("the settlement must commit the parking, not roll back whole")?
+        .context("a live charge was matched, so the answer is the parked pair")?;
+    assert_eq!(charge.state, "requires_review");
+    assert_eq!(
+        intent.status, "canceled",
+        "the intent keeps the cancel the merchant was told about"
+    );
+    assert_eq!(
+        second.context("a second delivery is not an error")?,
+        None,
+        "a parked charge is not live, so a second delivery matches nothing"
+    );
+
+    runtime.block_on(async {
+        assert_eq!(charge_state(&pool, "ch_review").await?, "requires_review");
+        let (txn_id, amount, reference, parked_at): (
+            Option<String>,
+            i64,
+            uuid::Uuid,
+            time::OffsetDateTime,
+        ) = sqlx::query_as(
+            "SELECT provider_txn_id, amount, provider_reference_id, updated_at \
+             FROM charges WHERE id = $1",
+        )
+        .bind("ch_review")
+        .fetch_one(&pool)
+        .await
+        .context("re-reading the parked charge")?;
+        assert_eq!(
+            txn_id.as_deref(),
+            Some("MTN-TXN-REVIEW"),
+            "the rail's id from the delivery that parked it, not the duplicate's"
+        );
+        assert_eq!(amount, 5000, "the amount the rail took");
+        assert_eq!(
+            reference, reference_before,
+            "the reference the rail knows it by"
+        );
+        assert!(parked_at >= opened_at);
+        assert_eq!(
+            parked_at, charge.updated_at,
+            "the duplicate delivery wrote nothing at all"
+        );
+
+        let (status, amount_received): (String, i64) =
+            sqlx::query_as("SELECT status, amount_received FROM payment_intents WHERE id = $1")
+                .bind("pi_review")
+                .fetch_one(&pool)
+                .await
+                .context("re-reading the intent")?;
+        assert_eq!(
+            (status.as_str(), amount_received),
+            ("canceled", 0),
+            "the intent was not settled"
+        );
+        assert_eq!(
+            events_about(&pool, "pi_review").await?,
+            vec!["payment_intent.canceled".to_owned()],
+            "a merchant told the payment was withdrawn is not also told it succeeded"
+        );
+        let postings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM ledger_transactions")
+            .fetch_one(&pool)
+            .await
+            .context("counting ledger postings")?;
+        assert_eq!(
+            postings, 0,
+            "no capture is posted for money whose disposition an operator has not decided"
+        );
+        anyhow::Ok(())
+    })?;
+
+    let scrape = handle.render();
+    assert!(
+        scrape.contains(
+            r#"vpay_charge_transitions_total{provider="mtn_momo",from="submitted",to="requires_review"} 1"#
+        ),
+        "the alert's input counts the parking exactly once across two deliveries:\n{scrape}"
+    );
+    assert!(
+        !scrape.contains(r#"to="succeeded""#),
+        "no settled transition is counted for a payment that was parked:\n{scrape}"
     );
 
     Ok(())
@@ -8233,30 +8483,39 @@ async fn a_decline_after_a_crashed_confirm_stamps_the_error_without_moving_the_s
 
 /// The intent half of the settlement is a compare-and-swap too, and it is
 /// the one that keeps a broken database from becoming a wrong balance: a
-/// live charge against a `canceled` intent is an invariant violation, and the
-/// settlement refuses it outright rather than moving an intent the merchant
-/// withdrew to `succeeded`.
+/// live charge against an intent that is already `succeeded` is an invariant
+/// violation, and the settlement refuses it outright rather than settling the
+/// same intent a second time.
 ///
-/// `canceled` and not `requires_payment_method`: that one is now a legal
-/// settlement source (see above), while this one is genuinely unreachable —
-/// `payment_intents::cancel`'s `NOT EXISTS` refuses to cancel an intent with
-/// a live charge, so the pairing can only be produced by a bug. `succeeded`
-/// is the other unreachable one, kept out by "one charge per intent, forever".
+/// # Why `succeeded` and no longer `canceled`
 ///
-/// The whole transaction must roll back — the charge stays live, no event is
-/// queued — so a retry finds exactly the state it expects.
+/// Until 2026-11-17 this case staged a live charge on a `canceled` intent and
+/// called that pairing "genuinely unreachable": `cancel_in_tx`'s `NOT EXISTS`
+/// refuses to cancel an intent with a live charge. It is reachable. A
+/// confirm's charge insert that waits on a cancel's row lock commits onto the
+/// `canceled` intent (migration `0054`; see
+/// [`charge_opened_onto_a_canceled_intent`]), and issue #96 decided that
+/// pairing is **parked** in `requires_review` rather than rolled back
+/// ([`a_settlement_onto_a_canceled_intent_parks_the_charge_for_review_once`]).
+/// `succeeded` is the one status outside `SETTLEABLE_STATUSES` that is still
+/// unreachable ("one charge per intent, forever"), so it is what this case
+/// stages now, and it must still page. The parking must not swallow it.
+///
+/// The whole transaction must roll back: the charge stays live, no event is
+/// queued, and the charge is **not** parked, so a retry finds exactly the
+/// state it expects.
 #[tokio::test]
-async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyhow::Result<()> {
+async fn apply_succeeded_refuses_a_succeeded_intent_and_commits_nothing() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
     seed_reference_data(repositories.as_ref()).await?;
-    // Not reachable through the API (cancel refuses while a charge is live) —
-    // which is the point: this is the shape a bug elsewhere would present,
-    // and it must not settle.
+    // Not reachable through the API (one charge per intent, and a settled
+    // intent's charge is terminal), which is the point: this is the shape a
+    // bug elsewhere would present, and it must neither settle nor park.
     live_charge(
         repositories.as_ref(),
         "pi_broken",
         "ch_broken",
-        "canceled",
+        "succeeded",
         "submitted",
     )
     .await?;
@@ -8270,7 +8529,7 @@ async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyh
             None,
         )
         .await
-        .expect_err("settling against a canceled intent must not report success");
+        .expect_err("settling against a succeeded intent must not report success");
     assert!(
         matches!(
             error,
@@ -8285,7 +8544,8 @@ async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyh
     assert_eq!(
         charge_state(&pool, "ch_broken").await?,
         "submitted",
-        "the charge half must have rolled back with the rest"
+        "the charge half must have rolled back with the rest, and must not be parked: \
+         `requires_review` is for a canceled intent only"
     );
     let status: String =
         sqlx::query_scalar("SELECT status::TEXT FROM payment_intents WHERE id = $1")
@@ -8293,11 +8553,110 @@ async fn apply_succeeded_refuses_a_canceled_intent_and_commits_nothing() -> anyh
             .fetch_one(&pool)
             .await
             .context("re-reading the intent must succeed")?;
-    assert_eq!(status, "canceled", "the intent must not have moved");
+    assert_eq!(status, "succeeded", "the intent must not have moved");
     assert_eq!(
         event_count(&pool, "pi_broken").await?,
         0,
         "and nothing may be announced"
+    );
+
+    Ok(())
+}
+
+/// **A known open hole, pinned so that changing it is a decision.** A rail
+/// *decline* for a live charge whose intent a cancel already withdrew still
+/// rolls the whole of `apply_failed` back with
+/// [`vpay_db::DbError::WriteMatchedNoRow`] on `payment_intents`.
+///
+/// It is the sibling of
+/// [`a_settlement_onto_a_canceled_intent_parks_the_charge_for_review_once`].
+/// It is produced by the same cancel-and-confirm race
+/// ([`charge_opened_onto_a_canceled_intent`]), and `fail_after_submission`'s
+/// guard refuses `canceled` exactly as `succeed_after_submission`'s does.
+/// Issue #96 decided what happens when the rail says the money **moved**. It
+/// decided nothing about a decline, where no money moved. So this path was
+/// left as it was, and `docs/status/backend.md` (the `requires_review` row,
+/// item 4 of "four things this does not do") records it as open.
+///
+/// What it does today, asserted rather than described:
+///
+/// * the answer is `WriteMatchedNoRow` on `payment_intents`, which
+///   classifies as `Category::Internal`: `Severity::Page` and
+///   `Retry::Never`. The worker therefore pages and dead-letters the poll
+///   job (`vpay_worker::JobError::decision`: `Retry::Never` →
+///   `Decision::DeadLetter`);
+/// * the charge half rolls back with it, so the charge is still live
+///   (`submitted`) with no `failure_code`, and is **not** parked;
+/// * the intent stays `canceled`, and the merchant's only event is still
+///   `payment_intent.canceled`.
+///
+/// If a future change gives this case an outcome of its own (fail the charge
+/// and leave the intent, say), this test is meant to fail, and to be
+/// rewritten in the same change as the status row that calls the hole open.
+#[tokio::test]
+async fn apply_failed_onto_a_canceled_intent_still_rolls_back_and_pages() -> anyhow::Result<()> {
+    use vpay_core::Classify as _;
+
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    seed_reference_data(repositories.as_ref()).await?;
+    charge_opened_onto_a_canceled_intent(&repositories, "pi_declined_late", "ch_declined_late")
+        .await?;
+
+    let error = repositories
+        .apply_failed(
+            "ch_declined_late",
+            "payer_declined",
+            "APPROVAL_REJECTED",
+            "The payer declined the payment.",
+            "evt_declined_late",
+            &json!({ "id": "pi_declined_late" }),
+        )
+        .await
+        .expect_err("today a decline onto a canceled intent is refused, not recorded");
+    assert!(
+        matches!(
+            error,
+            vpay_db::DbError::WriteMatchedNoRow {
+                table: "payment_intents",
+                ..
+            }
+        ),
+        "the refusal names the intent that did not move: {error}"
+    );
+    assert_eq!(error.category(), vpay_core::Category::Internal);
+    assert_eq!(
+        error.severity(),
+        vpay_core::Severity::Page,
+        "it pages, which is the only signal this case produces today"
+    );
+    assert_eq!(
+        error.retry(),
+        vpay_core::Retry::Never,
+        "and the worker dead-letters the job rather than retrying it"
+    );
+
+    assert_eq!(
+        charge_state(&pool, "ch_declined_late").await?,
+        "submitted",
+        "the charge half rolled back with the rest, and a decline is not parked"
+    );
+    let failure_code: Option<String> =
+        sqlx::query_scalar("SELECT failure_code FROM charges WHERE id = $1")
+            .bind("ch_declined_late")
+            .fetch_one(&pool)
+            .await
+            .context("re-reading the charge's failure code")?;
+    assert_eq!(failure_code, None, "nothing of the decline was kept");
+    let status: String = sqlx::query_scalar("SELECT status FROM payment_intents WHERE id = $1")
+        .bind("pi_declined_late")
+        .fetch_one(&pool)
+        .await
+        .context("re-reading the intent")?;
+    assert_eq!(status, "canceled");
+    assert_eq!(
+        events_about(&pool, "pi_declined_late").await?,
+        vec!["payment_intent.canceled".to_owned()],
+        "no payment_failed is written for an intent the merchant was told is canceled"
     );
 
     Ok(())

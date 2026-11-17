@@ -22,9 +22,15 @@ import type { FailureCode } from "@vaam-apps/vpay-stripe-js";
 import type { MessageKey } from "../i18n/index";
 import type { BrowserCheckoutApi, ReturnCredentials } from "./api";
 import type { FrameChannel } from "./frame";
-import { intentOutcome, merchantOf, type OutcomeKind } from "./machine";
+import {
+  intentOutcome,
+  invoiceOf,
+  merchantOf,
+  type OutcomeKind,
+} from "./machine";
 import type {
   CheckoutError,
+  CheckoutInvoice,
   CheckoutMerchant,
   CheckoutSession,
   PublicPaymentIntent,
@@ -35,6 +41,8 @@ export interface ReturnContext {
   intent: PublicPaymentIntent;
   /** `null` where the read carried no usable name — see `CheckoutContext.merchant`. */
   merchant: CheckoutMerchant | null;
+  /** `null` for a payment that settles no invoice — see `CheckoutContext.invoice`. */
+  invoice: CheckoutInvoice | null;
 }
 
 export type ReturnState =
@@ -228,11 +236,17 @@ export class ReturnController {
         const {
           payment_intent: intent,
           merchant: rawMerchant,
+          invoice: rawInvoice,
           ...session
         } = result.value;
         this.#dispatch({
           type: "read",
-          context: { session, intent, merchant: merchantOf(rawMerchant) },
+          context: {
+            session,
+            intent,
+            merchant: merchantOf(rawMerchant),
+            invoice: invoiceOf(rawInvoice),
+          },
         });
       } else if (this.#state.name === "loading") {
         this.#dispatch({ type: "read_failed", error: result.error });

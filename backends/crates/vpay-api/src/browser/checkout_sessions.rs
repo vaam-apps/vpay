@@ -80,7 +80,7 @@ use time::OffsetDateTime;
 use vpay_core::ids;
 use vpay_core::routing::MethodType;
 use vpay_db::{
-    CheckoutSessionRow, CheckoutSessions, PaymentIntentRow, PaymentIntents, Repositories,
+    CheckoutSessionRow, CheckoutSessions, Invoices, PaymentIntentRow, PaymentIntents, Repositories,
 };
 use vpay_provider::ProviderAdapter;
 
@@ -354,19 +354,43 @@ fn rendered_session(row: &CheckoutSessionRow) -> CheckoutSessionObject {
 /// for why nothing is the honest answer; the page tolerates the absence
 /// (`frontends/apps/checkout/src/lib/api.ts`, Step 9 lane 3b) and paints a
 /// neutral heading.
-fn for_payer(
+///
+/// # And the invoice number, when the intent pays an invoice (issue #91, D6)
+///
+/// A payer who followed a `hosted_invoice_url` out of an e-mail is otherwise
+/// shown an amount and a merchant name and nothing that ties them to the
+/// document that asked for the money. The number — and only the number —
+/// is looked up here, scoped to the row's merchant for the reason the name
+/// is taken from the row, through [`Invoices::number_for_intent`], which
+/// selects that one column so no other invoice field can reach this
+/// unauthenticated surface. Both reads render it: the return page is where
+/// a payer who has just paid wants it for their records.
+///
+/// The intent's `description` also carries `Invoice {number}` (`pay` writes
+/// it), and it is **not** what this reads: a `description` is free text a
+/// merchant may set to anything on any intent, so parsing it would let a
+/// merchant's string pose as a document number on a payment page.
+///
+/// # Errors
+///
+/// [`ApiError`] from the database read.
+async fn for_payer(
     config: &ResourceConfig,
+    repositories: &dyn Repositories,
     row: &CheckoutSessionRow,
     session: CheckoutSessionObject,
     rails: Vec<RailSpec>,
-) -> CheckoutSessionForPayer {
-    CheckoutSessionForPayer::new(
+) -> Result<CheckoutSessionForPayer, ApiError> {
+    let invoice_number =
+        Invoices::number_for_intent(repositories, &row.merchant_id, &row.payment_intent_id).await?;
+    Ok(CheckoutSessionForPayer::new(
         session,
         config
             .merchant_display_name(&row.merchant_id)
             .map(str::to_owned),
         rails,
     )
+    .with_invoice_number(invoice_number))
 }
 
 /// Builds the server-driven rail spec (`crate::model::RailSpec`): one entry
@@ -534,10 +558,12 @@ pub(super) async fn retrieve(
         StatusCode::OK,
         &for_payer(
             &config,
+            repositories.as_ref(),
             &session,
             rendered_session(&session).with_expanded_intent(expanded),
             rails,
-        ),
+        )
+        .await?,
     )
 }
 
@@ -584,6 +610,7 @@ pub(super) async fn retrieve_for_return(
         StatusCode::OK,
         &for_payer(
             &config,
+            repositories.as_ref(),
             &session,
             rendered_session(&session).with_expanded_intent(expanded),
             // No adapter map on this route (this handler takes no
@@ -594,7 +621,8 @@ pub(super) async fn retrieve_for_return(
             // could not confirm anyway". An empty rail spec here is the
             // honest answer, not a shortcut.
             Vec::new(),
-        ),
+        )
+        .await?,
     )
 }
 

@@ -218,6 +218,21 @@ detail and
 [../status/verification/2026-11-17-popup-completion.md](../status/verification/2026-11-17-popup-completion.md)
 the gate output.
 
+**Updated 2026-11-17 (issue #91, D6): the page names the invoice a payment
+settles.** Both browser reads carry an `invoice` member — `{"number": "…"}`
+and nothing else about the invoice — when the session's intent is the one
+`POST /v1/invoices/{id}/pay` minted, and omit it otherwise; the payment page
+and the return page draw an "Invoice: …" / "Facture: …" line under the amount
+when it is there and nothing when it is not. Proven against a real Postgres
+by `the_payers_checkout_reads_name_the_invoice_number_and_nothing_else_about_it`
+(`invoices.rs`) and
+`a_session_whose_intent_pays_no_invoice_renders_no_invoice_member`
+(`checkout_sessions.rs`), in jsdom by `checkout-view.test.tsx`, and through
+Storybook's Chromium axe run by three new stories. Not driven end to end in
+a browser: no Cypress case follows a `hosted_invoice_url`
+([invoices.md](invoices.md) § Status). Evidence:
+[../status/verification/2026-11-17-invoice-number-on-checkout.md](../status/verification/2026-11-17-invoice-number-on-checkout.md).
+
 **Updated 2026-09-23 (RFC-0004 § 5): `GET /v1/checkout/sessions` takes a
 `customer` filter.** It compares the session's **own** `customer_id`
 (migration `0034`), not its intent's — the two differ for a session created

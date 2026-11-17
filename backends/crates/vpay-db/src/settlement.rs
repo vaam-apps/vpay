@@ -583,14 +583,27 @@ pub trait Settlement: Send + Sync {
     /// (`vpay-api`'s shape — this crate does not know it), and `event_id` is a
     /// caller-generated `evt_…` ([`crate::events::event_id`]).
     ///
+    /// # A charge whose intent was canceled is parked, not settled
+    ///
+    /// If the charge was live and its intent is `canceled` (a cancel that
+    /// committed before this charge did, issue #96), the answer is still
+    /// `Ok(Some(..))`, but the pair is the charge **in `requires_review`** and
+    /// the intent **still `canceled`**: the charge was parked for an operator
+    /// in a committed transaction, with no intent write, no event, no session
+    /// or invoice flip and no ledger posting, and an alert was raised. A
+    /// caller tells the two apart by the charge's state
+    /// (`vpay_core::ChargeState::RequiresReview`). `event_id`, `event_data`
+    /// and `invoice` are unused on that path. See `park_for_review` (private,
+    /// so named without a link).
+    ///
     /// # Errors
     ///
     /// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the charge was
-    /// live but its intent was outside
-    /// `payment_intents::SETTLEABLE_STATUSES` — i.e. `succeeded` or
-    /// `canceled`, a broken invariant, which pages rather than being reported as
-    /// a merchant's problem. [`DbError::UniqueViolation`] if `event_id` was
-    /// already emitted.
+    /// live but its intent was `succeeded`, the one status outside
+    /// `payment_intents::SETTLEABLE_STATUSES` that is not the race above. It
+    /// cannot coexist with a live charge, so it is a broken invariant, which
+    /// pages rather than being reported as a merchant's problem.
+    /// [`DbError::UniqueViolation`] if `event_id` was already emitted.
     /// [`DbError::Query`] if any statement or the commit fails; the transaction
     /// is rolled back, so a failure leaves the charge exactly where a retry
     /// expects it.
@@ -906,6 +919,136 @@ pub(crate) async fn fail_refund_in_tx(
     Ok(Some(refund))
 }
 
+/// The charge state a rail-accepted payment is parked in when its intent was
+/// already `canceled` (issue #96). `vpay_core::ChargeState::RequiresReview`'s
+/// label, spelled as text for the reason [`LIVE_CHARGE_STATES`] is: this
+/// crate carries the vocabularies as `String` (D4), and
+/// `charges_state_enum_check` (migration `0059`) is what closes it.
+const REQUIRES_REVIEW: &str = "requires_review";
+
+/// Finishes [`Settlement::apply_succeeded`] when the intent guard refused:
+/// parks the charge in `requires_review` and commits **that**, or rolls back
+/// and pages if the refusal was not the race this exists for.
+///
+/// # The race, and the decision
+///
+/// A cancel and a confirm can interleave so that the confirm's charge commits
+/// onto an intent the cancel has already moved to `canceled`: since migration
+/// `0054` the charge insert writes the intent's row, waits for the cancel's
+/// lock, and commits once the cancel has. The merchant has been sent
+/// `payment_intent.canceled`. The rail is then called and the payer pays.
+/// When that answer arrives here the charge compare-and-swap has matched and
+/// the intent guard has not.
+///
+/// Until 2026-11-17 that rolled the whole transaction back with
+/// [`DbError::WriteMatchedNoRow`]. The charge stayed live, the rail's
+/// transaction id was discarded, the poll job retried the same refusal until
+/// it was dead-lettered, and a page was the only record that money had moved.
+/// Issue #96 decided against refunding automatically: the charge is parked
+/// where an operator can find it, the intent stays `canceled`, an alert
+/// carries the charge id, and the operator decides what happens to the money.
+///
+/// # What is written, and what deliberately is not
+///
+/// One statement, in the transaction the charge compare-and-swap already
+/// opened (so it already holds the charge's row lock and has already written
+/// `provider_txn_id` with `COALESCE`): the charge moves from the `succeeded`
+/// that compare-and-swap wrote to `requires_review`. `amount`,
+/// `provider_reference_id` and `provider_txn_id` are untouched, which is the
+/// rail's answer an operator reconciles with. Nothing else is written:
+///
+/// * **no intent write**: it stays `canceled`, `amount_received = 0`;
+/// * **no event**: the merchant was told `canceled`, and
+///   `type_is_a_documented_event` has no type for "the payment you cancelled
+///   was paid anyway". What to tell them is part of the operator action;
+/// * **no session or invoice flip**, for the same reason;
+/// * **no ledger posting**: a capture would credit `merchant_payable` for
+///   money whose fate nobody has decided, and a refund would then have to
+///   reverse it.
+///
+/// # Idempotency
+///
+/// `requires_review` is outside [`LIVE_CHARGE_STATES`], so a second delivery
+/// of the rail's answer (the poll and a callback, a retried job, two workers)
+/// fails the opening compare-and-swap and answers `Ok(None)` without reaching
+/// this function. The transition counter and the alert line below are written
+/// only after this commit, by the one delivery whose compare-and-swap moved
+/// the charge, so they fire once per charge.
+///
+/// # Errors
+///
+/// [`DbError::WriteMatchedNoRow`] on `payment_intents` if the intent is not
+/// `canceled` either. The only other status outside
+/// `SETTLEABLE_STATUSES` is `succeeded`, which cannot coexist with a live
+/// charge under one charge per intent, so it is still a broken invariant and
+/// still pages, with the transaction rolled back. [`DbError::Query`] if a
+/// statement or the commit fails, with everything rolled back.
+async fn park_for_review(
+    mut tx: Transaction<'_, Postgres>,
+    previous_state: &str,
+    charge: &ChargeRow,
+) -> Result<Option<(ChargeRow, PaymentIntentRow)>, DbError> {
+    let Some(intent) = payment_intents::canceled_in_tx(&mut tx, &charge.payment_intent_id).await?
+    else {
+        tx.rollback().await.map_err(DbError::Query)?;
+        return Err(DbError::WriteMatchedNoRow {
+            table: "payment_intents",
+            key: charge.payment_intent_id.clone(),
+        });
+    };
+
+    // `state = 'succeeded'` is this transaction's own write, a statement
+    // ago: the compare-and-swap that opened it. Matching on it rather than on
+    // the id alone keeps this a compare-and-swap like every other charge
+    // write, and the row lock that statement took means nothing else can
+    // have moved it.
+    let sql = format!(
+        "UPDATE charges \
+         SET state = '{REQUIRES_REVIEW}', updated_at = now() \
+         WHERE id = $1 AND state = 'succeeded' \
+         RETURNING {columns}",
+        columns = crate::charges::COLUMNS,
+    );
+    let parked = sqlx::query_as::<_, ChargeRow>(AssertSqlSafe(sql))
+        .bind(&charge.id)
+        .fetch_optional(&mut *tx)
+        .await
+        .map_err(classify_write)?
+        .ok_or_else(|| DbError::WriteMatchedNoRow {
+            table: "charges",
+            key: charge.id.clone(),
+        })?;
+
+    tx.commit().await.map_err(DbError::Query)?;
+
+    // After the commit, for `apply_succeeded`'s reason: this counter is the
+    // input of `VpayChargeRequiresReview`, and a rolled-back parking parked
+    // nothing. `previous_state` is the live state the charge was in before
+    // this transaction, not the `succeeded` it passed through inside it.
+    record_transition(&parked.provider_code, previous_state, &parked.state);
+
+    // The alert line. The counter above cannot carry the charge id (one
+    // series per charge), so this does, at `ERROR` with `alert = true` like
+    // every other line in this repository a person must act on.
+    // `docs/runbooks/charges-requires-review.md` quotes the message, so a
+    // change to it is a change to that page.
+    tracing::error!(
+        alert = true,
+        charge_id = %parked.id,
+        payment_intent_id = %parked.payment_intent_id,
+        provider_code = %parked.provider_code,
+        provider_reference_id = %parked.provider_reference_id,
+        provider_txn_id = %parked.provider_txn_id.as_deref().unwrap_or("<none>"),
+        amount = parked.amount,
+        currency_code = %parked.currency_code,
+        from = %previous_state,
+        "a rail-accepted payment landed on a canceled intent; the charge was parked in \
+         requires_review for an operator — no refund was made and nothing was posted"
+    );
+
+    Ok(Some((parked, intent)))
+}
+
 #[async_trait::async_trait]
 impl Settlement for crate::repository::PgRepositories {
     async fn apply_succeeded(
@@ -943,12 +1086,15 @@ impl Settlement for crate::repository::PgRepositories {
             return Ok(None);
         };
 
-        let intent = payment_intents::succeed_after_submission(&mut tx, &charge.payment_intent_id)
-            .await?
-            .ok_or_else(|| DbError::WriteMatchedNoRow {
-                table: "payment_intents",
-                key: charge.payment_intent_id.clone(),
-            })?;
+        let Some(intent) =
+            payment_intents::succeed_after_submission(&mut tx, &charge.payment_intent_id).await?
+        else {
+            // The intent guard refused. One reason is a race and not a bug:
+            // a cancel committed before this charge did (issue #96). The rail
+            // has the money, so this transaction parks the charge and commits
+            // that rather than rolling the rail's answer away.
+            return park_for_review(tx, &previous_state, &charge).await;
+        };
 
         // Before the emit rather than after, so the ordering inside the
         // transaction reads the way the object graph does: charge, intent,

@@ -31,7 +31,12 @@ import {
 } from "../testing/fixtures";
 import { CheckoutView, type CheckoutViewProps } from "./checkout-view";
 import { ReturnView } from "./return-view";
-import { CHECKOUT_SCREENS, RETURN_SCREENS } from "../testing/screen-states";
+import {
+  CHECKOUT_SCREENS,
+  INVOICE_NUMBER,
+  INVOICE_SCREENS,
+  RETURN_SCREENS,
+} from "../testing/screen-states";
 
 const NOOP = () => undefined;
 
@@ -191,6 +196,93 @@ describe("the summary", () => {
   });
 });
 
+describe("the invoice a payment settles (issue #91, D6)", () => {
+  // Every query here is scoped to its own `container` and every render is
+  // unmounted in a `finally`: a failure must not leave a tree mounted for
+  // the next case's queries to find, or one regression reads as six.
+  for (const locale of LOCALES) {
+    it(`names it by its number on the payment page, in ${locale}`, () => {
+      const { container, unmount } = renderState(
+        INVOICE_SCREENS.select_rail,
+        locale,
+      );
+      try {
+        expect(
+          within(container).getByTestId("invoice-number").textContent,
+        ).toBe(
+          `${DICTIONARIES[locale]["page.invoice_label"]}: ${INVOICE_NUMBER}`,
+        );
+      } finally {
+        unmount();
+      }
+    });
+
+    it(`names it on the return page too, in ${locale}`, () => {
+      const { container, unmount } = renderReturn(
+        INVOICE_SCREENS.return_outcome_succeeded,
+        locale,
+      );
+      try {
+        expect(
+          within(container).getByTestId("invoice-number").textContent,
+        ).toBe(
+          `${DICTIONARIES[locale]["page.invoice_label"]}: ${INVOICE_NUMBER}`,
+        );
+      } finally {
+        unmount();
+      }
+    });
+  }
+
+  it("draws no invoice line on any payment-page screen that settles no invoice", () => {
+    let checked = 0;
+    for (const [name, state] of Object.entries(CHECKOUT_SCREENS)) {
+      if (!("context" in state) || state.context === null) {
+        continue;
+      }
+      for (const locale of LOCALES) {
+        const { container, unmount } = renderState(state, locale);
+        try {
+          const view = within(container);
+          expect(
+            view.queryByTestId("invoice-number"),
+            `${name} in ${locale}`,
+          ).toBeNull();
+          expect(container.textContent, `${name} in ${locale}`).not.toContain(
+            `${DICTIONARIES[locale]["page.invoice_label"]}:`,
+          );
+          // The summary itself did render, so the absence above is about
+          // the invoice line and not about a screen with no summary.
+          expect(view.queryByTestId("amount"), name).not.toBeNull();
+          checked += 1;
+        } finally {
+          unmount();
+        }
+      }
+    }
+    expect(checked, "screens with a summary were checked").toBeGreaterThan(10);
+  });
+
+  it("draws no invoice line on any return-page screen that settles no invoice", () => {
+    let checked = 0;
+    for (const [name, state] of Object.entries(RETURN_SCREENS)) {
+      if (!("context" in state)) {
+        continue;
+      }
+      const { container, unmount } = renderReturn(state, "fr");
+      try {
+        const view = within(container);
+        expect(view.queryByTestId("invoice-number"), name).toBeNull();
+        expect(view.queryByTestId("amount"), name).not.toBeNull();
+        checked += 1;
+      } finally {
+        unmount();
+      }
+    }
+    expect(checked, "return screens with a summary were checked").toBe(4);
+  });
+});
+
 describe("a session whose read carried no merchant name", () => {
   /** The same screens, with `context.merchant` as `merchantOf` renders a missing name. */
   const MTN = {
@@ -303,6 +395,7 @@ describe("a session whose read carried no merchant name", () => {
           session: makeSession({ status: "complete", payment_status: "paid" }),
           intent: makePublicIntent({ status: "succeeded" }),
           merchant: null,
+          invoice: null,
         },
         kind: "succeeded",
         failure: null,

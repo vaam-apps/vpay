@@ -402,7 +402,12 @@ mod tests {
     /// the `submitting`-only compare-and-swap that merges a `prepare`'s key
     /// material into `provider_ref_extra`. It interpolates `COLUMNS` and
     /// nothing else; the charge id and the key material are bound.
-    const EXPECTED_ASSERT_SITES: usize = 75;
+    /// **75 → 77 on 2026-11-17** (issue #96, a rail-accepted payment on a
+    /// canceled intent): `payment_intents::canceled_in_tx`, the read that
+    /// tells a race from a broken invariant, and `settlement::park_for_review`'s
+    /// compare-and-swap onto `requires_review`. Each interpolates a `COLUMNS`
+    /// constant and nothing else; the ids are bound.
+    const EXPECTED_ASSERT_SITES: usize = 77;
 
     /// **The gate.** No `format!` that becomes a statement interpolates
     /// anything but a crate constant.
