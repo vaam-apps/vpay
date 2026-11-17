@@ -16,7 +16,7 @@ carry their corrections here too rather than in the file. `verify-links` does
 not read `.sql`, so nothing but a reader was ever going to catch it.) It is Stripe's `invoice`, narrowed to the
 subset a Cameroon merchant needs to bill a phone — there is no PDF, no e-mail,
 no tax, no credit note, no dunning and no subscription. Every one of those is
-listed under [What is not built](#what-is-not-built) with a date, because a
+listed under [Status](#status) with a date, because a
 document that lists only what exists is how somebody comes to believe an
 invoice gets sent.
 
