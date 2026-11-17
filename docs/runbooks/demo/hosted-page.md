@@ -9,7 +9,7 @@ New in Step 9, and the only part of this runbook that needs a browser.
 `just demo`'s step 5 ends by printing two things. The first is a URL — in the
 run pasted above:
 
-```
+```text
       HOSTED — open this in a browser:
 
         http://localhost:3080/c/cs_938t20sg8x07x5c08nh7nk7f?key=pk_test_demomerchantsandbox01#cs_938t20sg8x07x5c08nh7nk7f_secret_1ex13vm04s2bhbk6rbxyvahpkh79zfkd
@@ -42,7 +42,7 @@ are seeing is the return trip, not a cancellation.
 The second thing step 5 prints is the embedded session, and its `client_secret`
 is **redacted**:
 
-```
+```text
       EMBEDDED — what a merchant's own page does with it:
 
         import { initEmbeddedCheckout } from '@vaam-apps/vpay-stripe-js';

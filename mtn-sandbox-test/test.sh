@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# jq programs are single-quoted on purpose: $h and friends are jq variables.
+# shellcheck disable=SC2016
 #
 # Manual test of MTN MoMo's sandbox Collections API, to capture the callback
 # MTN sends to X-Callback-Url. Not part of vpay; run it by hand.
