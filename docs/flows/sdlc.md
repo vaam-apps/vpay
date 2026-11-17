@@ -140,7 +140,7 @@ the same way they read any other security decision:
 
 The current state of this exception path is recorded in the `A.8.7` control and
 the `GAP-103` gap in `schemas/security-inventory.yaml`. On the **web** graph
-two advisories are accepted today (2026-11-17), each a reasoned entry with a
+two advisories are ignored today (2026-11-17), one accepted by the maintainer and one pending acceptance, each a reasoned entry with a
 `REMOVE WHEN` condition in `pnpm-workspace.yaml`'s `auditConfig.ignoreGhsas`:
 
 - `GHSA-vfj7-8cjw-p6xm` (braces, high, stack exhaustion on deeply nested
@@ -155,7 +155,7 @@ The glob and minimatch advisories this page listed when it was drafted
 (`GHSA-3g3m-2fjr-6pw4`, `GHSA-g3hv-75wg-m249`) were fixed by scoped overrides
 on 2026-11-17 (vaam-apps/vpay#400) and are no longer accepted.
 
-On the **Rust** graph `deny.toml` accepts five advisories: `RUSTSEC-2023-0071`,
+On the **Rust** graph `deny.toml` ignores five advisories: `RUSTSEC-2023-0071`,
 `RUSTSEC-2024-0449` and `RUSTSEC-2026-0387` under dated maintainer decisions,
 and `RUSTSEC-2026-0543` (chrono) and `RUSTSEC-2026-0440` (astral-tokio-tar),
 both "unmaintained" notices added 2026-11-17 pending the maintainer's
