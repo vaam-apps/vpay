@@ -35,7 +35,7 @@ change does not get a `cargo deny` run in CI, even though `just ci` always runs
 | ---------------- | --------------------------------------------------------------------------------------------------- | ---------------------- |
 | `fmt-check`      | rustfmt drift                                                                                       | green `just ci`        |
 | `clippy`         | a warning, a denied lint, or `unsafe`/`unwrap`/`expect`/`panic`/`todo`                              | green `just ci`        |
-| `verify`         | the seventeen invariant gates (below)                                                               | green `just ci`        |
+| `verify`         | the invariant gates the `verify` recipe lists (below)                                               | green `just ci`        |
 | `test-rust`      | a failing Rust test (`cargo nextest run --workspace`)                                               | green `just ci`        |
 | `test-doc`       | a failing doctest (`cargo test --doc --workspace`)                                                  | green `just ci`        |
 | `verify-ignored` | a test skipped without a reason                                                                     | green `just ci`        |
@@ -52,7 +52,7 @@ binary this workspace does not build are run by CI even though they are not in
 
 ### The `verify` gates
 
-`just verify` is seventeen gates and one advisory report, all listed and dated
+`just verify` is the gates its recipe lists and one advisory report, all listed and dated
 in [docs/status.md](../status.md)'s gate table. The ones a security reader
 should know by name are the security and supply-chain invariants:
 
@@ -103,7 +103,11 @@ When a change is security-relevant:
 3. **The change gets review from a reviewer who is asked to assess the
    threat.** PR review is not waived for a security-relevant change; the
    reviewer checks the change against the trust boundary it sits on and the
-   threat model that precedes it.
+   threat model that precedes it. **This is practice, not an enforced
+   control:** the repository carries no `CODEOWNERS` file, and nothing in
+   this tree requires a review or a green gate before a merge to `master`.
+   Whether a GitHub branch-protection rule or ruleset does is a repository
+   setting outside the tree and is not evidenced here (2026-11-17).
 
 ## Dependency and advisory scanning: the required gate and its threshold
 
@@ -159,12 +163,17 @@ against the same packages — still fails the gate.
 A vulnerability finding gets, at intake:
 
 - **Severity** — the advisory's own CVSS/label (pnpm and cargo-deny carry it);
-- **Owner** — the maintainer who merges the fix is the accountable owner;
-- **Remediation target** — the SLA below;
+- **Owner** — the maintainer who merges the fix, named on its pull request.
+  No standing owner is designated and there is no `CODEOWNERS` file, so an
+  advisory nobody picks up has no owner until someone does; naming one is
+  open (#151);
+- **Remediation target** — the proposed SLA below;
 - **Exception or acceptance path** — if it cannot be fixed in target, the
   dated, reasoned allowlist entry described above.
 
-Remediation targets, as policy:
+Remediation targets — **proposed, pending maintainer approval (2026-11-17).**
+No ADR or RFC records these numbers yet; they are written here so there is
+something concrete to approve or change:
 
 | Severity | Fix or risk-accept within |
 | -------- | ------------------------- |
@@ -173,21 +182,27 @@ Remediation targets, as policy:
 | Moderate | 90 days                   |
 | Low      | next release              |
 
-The target is the engineering commitment. A finding that reaches its target
-without a fix and without a dated allowlist entry is a CI failure waiting to
-happen, because `audit-web` and `deny` will not stop failing while it is open.
+Nothing enforces these targets. `audit-web` and `deny` fail while a finding
+is open and unaccepted, which forces a decision, but an allowlist entry makes
+both green with no time limit, so a target can lapse with every gate green.
+Tracking a finding against its target is a manual review today.
 
 ## CI evidence: retained and reproducibly queryable
 
-- **Retained:** every CI run is a GitHub Actions workflow run, retained by the
-  repository, with the failing step named and the gate's output attached.
+- **Retained:** every CI run is a GitHub Actions workflow run, kept for
+  GitHub's default log-retention period; this repository configures no
+  longer retention and keeps no copy of its own, so CI logs are not a
+  durable evidence store.
 - **Reproducible:** `just ci` and `just verify` run the same gates locally, so
   any claimed evidence can be re-derived from a clean checkout without the
   network (the network-only steps — `audit-web`, `deny`'s advisory fetch, the
   supply-chain scans — are named as such in their recipes).
-- **Release-attached:** the release workflow builds, signs and publishes from
-  `master`, and the gates above must be green before a merge, so a release's
-  provenance is the merged history plus the signed artifact.
+- **Release-attached:** the release workflow builds, signs (`cosign sign`)
+  and publishes from `master`, so a release's provenance is the merged history
+  plus the signed artifact. Two limits: nothing in the tree requires the gates
+  to be green before a merge (see above), and no `cosign verify` of a
+  published artifact has ever been run. No per-release evidence bundle is
+  produced.
 
 ## Security test coverage
 
@@ -220,7 +235,8 @@ not an unwritten one.
 
 ## Status
 
-**This page is the policy; the enforcement it describes is built and gated.**
+**This page is the policy. Part of the enforcement it describes is built and
+gated; part is practice only.**
 
 - The `just ci` / `just verify` path, `audit-web` at `moderate`, `deny`, the
   security inventory and the threat-model-before-code rule all exist and are
@@ -231,6 +247,7 @@ not an unwritten one.
   cross-release CVE history ledger. Those are organisation-level records that
   an ISMS reader maintains outside this tree; this page gives them the
   repository's evidence to cite.
-- The remediation SLA above is policy written down here; nothing machine
-  enforces the calendar target, because the gates already fail while a finding
-  is open — the target is what makes that failure mean something.
+- Practice only, not enforced by anything in the tree: PR review of a
+  security-relevant change (no `CODEOWNERS`, no evidenced branch protection),
+  a named vulnerability owner, and the remediation SLA, which is itself still
+  a proposal pending maintainer approval.

@@ -35,8 +35,8 @@ mandatory retrospective.
 
 1. **Branch + PR** — as normal, on a short-lived branch.
 2. **Minimum gates that may never be skipped:** the build must compile, the
-   Rust unit and integration suites must pass, `verify` (the seventeen offline
-   gates) must pass, and the change must not introduce a new
+   Rust unit and integration suites must pass, `verify` (the offline gates its
+   recipe lists) must pass, and the change must not introduce a new
    `ProviderError::NotImplemented` token without declaring it. These are the
    gates that protect data and the money path; they are non-negotiable.
 3. **Authorisation:** the repository maintainer authorises the emergency
@@ -44,6 +44,12 @@ mandatory retrospective.
    suite, or `helm-check` needing a network) and names it in the PR.
 4. **Merge** — the maintainer merges with the normal review, or with an
    explicitly recorded single-reviewer sign-off.
+
+Nothing in this repository enforces steps 2–4: there is no `CODEOWNERS`
+file, no evidenced branch protection on `master`, no record template and no
+tracker for the retrospective below. CI's path filters can also skip a suite
+a change does not appear to touch, so "must pass" means the author runs it.
+This page is a procedure people follow, not a control the tree applies.
 
 No gate is ever skipped silently. If `just ci` cannot complete, the PR records
 exactly which gate was skipped, why, and by whose authority.
