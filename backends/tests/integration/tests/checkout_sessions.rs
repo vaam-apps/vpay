@@ -246,6 +246,7 @@ fn config_with(
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         auth: Default::default(),
     }

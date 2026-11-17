@@ -22,6 +22,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use sqlx::{PgConnection, PgPool, Postgres, Transaction};
 
+use crate::audit_events::AuditEvents;
 use crate::authorization_codes::AuthorizationCodes;
 use crate::charges::Charges;
 use crate::checkout_sessions::CheckoutSessions;
@@ -755,6 +756,16 @@ pub trait TxRepositories: Send {
         raw: &str,
         now: time::OffsetDateTime,
     ) -> Result<Option<crate::SettledRefund>, DbError>;
+
+    /// `audit_events`: appends one audit record in the caller's transaction.
+    ///
+    /// # Errors
+    ///
+    /// [`DbError`] if the insert fails.
+    async fn append_audit_event_in_tx(
+        &mut self,
+        event: &crate::NewAuditEvent,
+    ) -> Result<crate::AuditEventRow, DbError>;
 }
 
 #[async_trait]
@@ -998,6 +1009,13 @@ impl TxRepositories for PendingTransaction {
     ) -> Result<Option<crate::SettledRefund>, DbError> {
         crate::settlement::fail_refund_in_tx(self.conn(), refund_id, code, raw, now).await
     }
+
+    async fn append_audit_event_in_tx(
+        &mut self,
+        event: &crate::NewAuditEvent,
+    ) -> Result<crate::AuditEventRow, DbError> {
+        crate::audit_events::append_in_tx(self.conn(), event).await
+    }
 }
 
 /// Where a transaction comes from.
@@ -1114,7 +1132,8 @@ impl<S: TransactionSource + ?Sized> UnitOfWork for S {
 /// dozen parameters: a handler that needs `jobs` and `events` names one
 /// value, and the *method* it calls says which table it touched.
 pub trait Repositories:
-    Charges
+    AuditEvents
+    + Charges
     + CheckoutSessions
     + ClientAssertions
     + ConfigReconcile

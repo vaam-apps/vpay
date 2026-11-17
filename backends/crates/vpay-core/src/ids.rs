@@ -1,5 +1,5 @@
 //! The public ids vpay's objects are named by — `pi_…`, `ch_…`, `re_…`,
-//! `evt_…`, `cs_…`, `cus_…`, `in_…`, `ii_…`, `mp_…` — and the two payer credentials
+//! `evt_…`, `cs_…`, `cus_…`, `in_…`, `ii_…`, `mp_…`, `aud_…`, `op_…` — and the two payer credentials
 //! that ride in URLs: the
 //! `client_secret` a browser presents, and the `return_token` a redirect
 //! rail's bounce carries back.
@@ -162,6 +162,12 @@ pub const MANUAL_PAYMENT_PREFIX: &str = "mp_";
 /// vocabulary, so the id is not invented at whichever call site writes one
 /// first — and not for a uniqueness property the derivation already has.
 pub const LEDGER_TRANSACTION_PREFIX: &str = "lt_";
+
+/// The prefix on an AuditEvent id (ADR-0020 §3).
+pub const AUDIT_EVENT_PREFIX: &str = "aud_";
+
+/// The prefix on an Operation id (ADR-0020 §3).
+pub const OPERATION_PREFIX: &str = "op_";
 
 /// Whether `id` is shaped like an id this module would have minted under
 /// `prefix`: the prefix, then exactly 24 characters, every one of them in the
@@ -508,6 +514,38 @@ pub fn manual_payment_id() -> String {
     new_id(MANUAL_PAYMENT_PREFIX)
 }
 
+/// A new AuditEvent id, `aud_…` (ADR-0020 § 3, ISO 27001 A.12.4).
+///
+/// Minted before the insert into `audit_events`.
+///
+/// ```
+/// use vpay_core::ids::{self, AUDIT_EVENT_PREFIX};
+///
+/// let id = ids::audit_event_id();
+/// assert!(ids::is_well_formed(AUDIT_EVENT_PREFIX, &id));
+/// assert_ne!(id, ids::audit_event_id());
+/// ```
+#[must_use]
+pub fn audit_event_id() -> String {
+    new_id(AUDIT_EVENT_PREFIX)
+}
+
+/// A new Operation id, `op_…` (ADR-0020 § 3, ISO 27001 A.12.4).
+///
+/// Groups an operation's audit records (e.g. `initiated` and terminal outcome).
+///
+/// ```
+/// use vpay_core::ids::{self, OPERATION_PREFIX};
+///
+/// let id = ids::operation_id();
+/// assert!(ids::is_well_formed(OPERATION_PREFIX, &id));
+/// assert_ne!(id, ids::operation_id());
+/// ```
+#[must_use]
+pub fn operation_id() -> String {
+    new_id(OPERATION_PREFIX)
+}
+
 /// What joins an object id to its secret suffix: `pi_…` + this + the suffix.
 ///
 /// Public because it is a **wire contract**: `@vaam-apps/vpay-stripe-js` splits a
@@ -654,7 +692,7 @@ mod tests {
     /// being listed here is a generator none of the properties below hold of
     /// — the length, the alphabet, the id-column CHECK and the
     /// percent-encoding identity are claims about *every* id vpay mints.
-    const GENERATORS: [Generator; 13] = [
+    const GENERATORS: [Generator; 15] = [
         (payment_intent_id as fn() -> String, PAYMENT_INTENT_PREFIX),
         (charge_id, CHARGE_PREFIX),
         (refund_id, REFUND_PREFIX),
@@ -668,6 +706,8 @@ mod tests {
         (invoice_id, INVOICE_PREFIX),
         (invoice_item_id, INVOICE_ITEM_PREFIX),
         (manual_payment_id, MANUAL_PAYMENT_PREFIX),
+        (audit_event_id, AUDIT_EVENT_PREFIX),
+        (operation_id, OPERATION_PREFIX),
     ];
 
     /// `sdks/rust/src/form.rs`'s `is_safe_byte`, copied verbatim rather than

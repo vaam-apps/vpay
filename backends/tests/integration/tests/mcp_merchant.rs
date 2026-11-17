@@ -303,6 +303,7 @@ fn config_with(base_url: &str, jwks: [Value; 4], surfaces: Option<Vec<String>>) 
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         auth: Default::default(),
     }

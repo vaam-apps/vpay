@@ -269,7 +269,7 @@ merchant_clients:
     # `SCOPE_PAYMENTS_READ`; nothing validates this list against them at
     # boot, so a typo here is a 403 at runtime rather than a refusal to
     # start.
-    scopes: [payments:write]
+    scopes: [payments:write, account_holders:read]
     # Must contain "vpay:v1" — `vpay_config::MERCHANT_AUDIENCE`, the `aud`
     # `vpay_api::resource_auth::Surface::Merchant` requires on every `/v1`
     # token. This said `vpay` until 2026-09-02, which would have booted fine
@@ -439,3 +439,21 @@ checkout:
 # `staff_auth.password_pepper` and `staff_auth.totp_encryption_key` (the secret
 # store): exported staff passwords and TOTP seeds never verify again without them
 # (docs/flows/dashboard-auth.md, "Upgrading from before VP-6a").
+
+# Privacy controls and account-holder lookup configuration (ADR-0020, #56).
+#
+# PROVISIONAL — pending RFC-0002 D3 and D6, which are still OPEN in the RFC's
+# decision register. Nothing below is an approved value:
+# - `lookup_audit_salt` keys the HMAC-SHA256 audit target (D3: key custody,
+#   rotation and overlap are undecided; rotating it today breaks correlation
+#   with every earlier audit row);
+# - `attempts: 10` per `window_seconds: 60`, per credential, is the
+#   implementing PR's placeholder budget (D6), and every attempt counts —
+#   including a malformed number — before the rail is asked.
+# Change them when D3/D6 are recorded, not before. docs/flows/account-holder-lookup.md
+# § Status lists every provisional answer this configuration carries.
+privacy:
+  lookup_audit_salt: "local-dev-lookup-salt"
+  lookup_rate_limit:
+    attempts: 10 # PROVISIONAL pending RFC-0002 D6
+    window_seconds: 60 # PROVISIONAL pending RFC-0002 D6

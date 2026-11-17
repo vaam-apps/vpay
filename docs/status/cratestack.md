@@ -892,3 +892,53 @@ suite pinned) and through `0058` under this schema:
   `check-schema`); the dashboard mounts only `procedure_router`, so no CRUD route
   for them is served (`no_generated_model_route_is_mounted_only_the_one_procedure_is`
   now probes 184 paths).
+
+## 2026-11-06 — migration `0060` (`audit_events`) and `0061` (`rate_limit_windows.window_expires_at`), and drift goes 221 → 232, measured
+
+_Renumbered on integration, 2026-11-17: the PR branch shipped these as `0059` and
+`0060`; issue #96's `0059_charges-requires-review.sql` took `0059` first, so they
+landed as `0060_audit-events-and-lookup-rate-limits.sql` and
+`0061_rate-limit-window-expiry.sql`, and every citation of them (and the
+`migration_0061_…` test's name) was moved with them. Neither file's bytes
+changed apart from two comment lines in `0061` naming its neighbour and that
+test._
+
+PR #396 (issue #56/#152) adds `model AuditEvent` and `model RateLimitWindow`
+gains `window_expires_at` in `schemas/vpay.cstack`; migrations `0060` and `0061`
+create the matching tables/columns. Measured with `cratestack migrate baseline
+--strict` (the pinned 0.16.0) on Postgres 16 migrated through `0060` and `0061`:
+`drift detected in 31 table(s)/view(s) (232 change(s) total)`.
+
+- `audit_events` rejoins declared-but-differing as a modelled table: 11 `[safe]`
+  lines (the 9 hand-named CHECKs and 2 indexes 0060 ships), which the report
+  counts, for **+11**.
+- `rate_limit_windows.window_expires_at` is declared in the model and created by
+  `0061`, so it adds **no** net line (the column matches the model).
+- 221 + 11 = 232; `EXPECTED_DRIFTED_RELATIONS` is 31 (30 + `audit_events`). The
+  two multi-column CHECKs `0060`/`0061` carry (`audit_events` has none;
+  `rate_limit_windows` has none) leave the count unchanged.
+- `schema_migrates_cleanly_on_an_empty_database` pins **60** migrations, and
+  `vpay-db`'s `MODEL_TABLES` lists 24 models.
+- `audit_events` holds no `@@allow` arm (ADR-0034; the query surface is the
+  hand-written `vpay_db::AuditEvents` repository), so it contributes no route.
+
+## 2026-11-17 — `model AuditEvent` gains `@@internal`, and `0060` gains an append-only trigger (PR #396 review)
+
+`model AuditEvent` now declares `@@internal("create")`, `@@internal("update")`
+and `@@internal("delete")` — cratestack 0.16.0's route-suppression attribute
+(`cratestack_core::model_verbs`), one action per declaration. The generated
+surfaces stop offering the three verbs: `just gen-dash-client` dropped
+`AuditEventApi.update`, `AuditEventApi.delete`, `UpdateAuditEventInput` and the
+`DELETE /audit_events/{id}` op contract from `frontends/packages/dash-client`
+(there was no `create` to drop: a model with no `@@allow` arm already had
+none). `list`/`get` stay and answer no rows, as `RateLimitWindow`'s do. The
+attribute is a generation-time decision, so it changes no column and no drift
+line.
+
+Migration `0060` (new in the same PR, never on `master`, so edited in place with
+`MANIFEST.sha256` updated) now also creates `audit_events_refuse_mutation()` and
+two triggers refusing `UPDATE`, `DELETE` and `TRUNCATE`. Migration `0061`
+(likewise) adds `window_expires_at` nullable, backfills it, then sets
+`NOT NULL`. See [backend.md](backend.md)'s account-holder row and
+[verification/2026-11-17-pr396-review.md](verification/2026-11-17-pr396-review.md)
+for the drift figure measured after both.

@@ -251,6 +251,7 @@ async fn harness_configured(scopes: &[&str], methods: Option<&[&str]>) -> anyhow
         service_clients: Vec::new(),
         dashboard_client: None,
         staff_auth: None,
+        privacy: Default::default(),
         routing: Default::default(),
         auth: vpay_config::AuthConfig {
             methods: methods.map(|names| names.iter().map(|name| (*name).to_owned()).collect()),

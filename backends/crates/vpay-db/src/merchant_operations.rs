@@ -36,6 +36,14 @@ use async_trait::async_trait;
 pub struct MerchantCall {
     /// The tenant the call acts as.
     pub merchant_id: String,
+    /// The authenticated token's OAuth client, from the context's
+    /// `client_id` claim — never from the agent's arguments.
+    pub client_id: String,
+    /// The authenticated token's effective scopes, from the context's
+    /// `scopes` claim. The implementation checks them exactly as `/v1`
+    /// checks a credential's (`account_holders:read` on a nominated-payee
+    /// refund) and must never add to them.
+    pub scopes: Vec<String>,
     /// What it asks for.
     pub operation: MerchantOperation,
 }

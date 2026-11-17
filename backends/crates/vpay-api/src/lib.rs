@@ -171,6 +171,7 @@ pub use vpay_provider::http as http_client;
 
 pub use browser::{BROWSER_ROUTES, PayerScope};
 pub use dash::{DASH_NEST, DASH_ROUTES, DashRoute};
+pub use envelope::{CallerCredential, CredentialKind};
 pub use error::ApiError;
 pub use provider_callback::{PROVIDER_CALLBACK_ROUTE, PROVIDER_NEST};
 pub use svc::{SVC_NEST, SVC_ROUTES, SvcRoute};
@@ -182,8 +183,9 @@ pub use svc::{SVC_NEST, SVC_ROUTES, SvcRoute};
 /// did.
 pub use v1::boot;
 pub use v1::{
-    DashboardBinding, MerchantScope, ResourceConfig, SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE,
-    V1_ROUTES, V1Route, WebhookEndpointConfig, required_scopes,
+    DashboardBinding, MerchantScope, ResourceConfig, SCOPE_ACCOUNT_HOLDERS_READ,
+    SCOPE_PAYMENTS_READ, SCOPE_PAYMENTS_WRITE, V1_NEST, V1_ROUTES, V1Route, WebhookEndpointConfig,
+    account_holders_read_scope, default_payment_scopes, required_scopes, required_scopes_for,
 };
 
 /// The header carrying the request id, in and out.

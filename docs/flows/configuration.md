@@ -450,6 +450,27 @@ adapter declares at least one type, which the conformance suite's
 mutation-checked on 2026-10-23
 ([the verification page](../status/verification/2026-10-23-method-type-routing.md)).
 
+## `privacy:` — lookup audit salt and rate limits (ADR-0020, issue #56)
+
+An optional block in YAML. Since PR #396 a configured `lookup_audit_salt` **requires**
+`lookup_rate_limit` to accompany it — a salt that enables lookups with no per-credential
+budget is refused at boot with `ConfigError::MissingPrivacyLookupRateLimit`, because that
+is the per-credential control being silently absent (issue #56). With neither key set,
+the block is empty and lookups are refused at request time for want of the salt. In
+`livemode: true` an empty `lookup_audit_salt` is refused with
+`ConfigError::MissingPrivacyLookupAuditSalt` at boot:
+
+```yaml
+privacy:
+  lookup_audit_salt: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+  lookup_rate_limit:
+    attempts: 10
+    window_seconds: 60
+```
+
+- `lookup_audit_salt`: 32-byte secret used to key HMAC-SHA256 digests of phone numbers stored in `audit_events.target_repr` (provisional pending RFC-0002 D3). Redacted in `Debug` output to prevent secret leakage in logs. In livemode, must be present and non-empty.
+- `lookup_rate_limit`: fixed-window rate limit configuration applied to account-holder lookups across `GET /v1/account_holders` and `POST /v1/refunds` (provisional pending RFC-0002 D6). The keys are `attempts` and `window_seconds` — the same `vpay_config::RateLimitPolicy` the staff sign-in limits use — and both must be at least 1. **It must be present whenever `lookup_audit_salt` is configured** (PR #396). _(The example above spelled the first key `max_attempts` until 2026-11-17; no code reads that name: it is ignored, so an overlay that sets it changes nothing, and a block that has no `attempts` key at all does not deserialise.)_ On `POST /v1/refunds` the budget is spent by every refund on a rail that can look a payee up, which is `mtn_momo` today ([account-holder-lookup.md](account-holder-lookup.md) rule 4).
+
 ## The checkout page reads its own two files, and they are not these
 
 Everything above is `vpay-server` and `vpay-worker`: one document

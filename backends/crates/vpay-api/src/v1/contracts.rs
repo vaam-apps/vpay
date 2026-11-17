@@ -98,6 +98,7 @@ mod tests {
         V1Route {
             path,
             methods,
+            scopes: crate::v1::default_payment_scopes,
             mount: || get(|| async {}).post(|| async {}),
         }
     }
@@ -137,6 +138,7 @@ mod tests {
         routes.extend(V1_ROUTES.iter().map(|r| V1Route {
             path: r.path,
             methods: r.methods,
+            scopes: r.scopes,
             mount: || get(|| async {}),
         }));
         routes.push(route("/widgets", &["GET", "POST"]));
@@ -204,6 +206,7 @@ mod tests {
             .map(|route| V1Route {
                 path: route.path,
                 methods: route.methods,
+                scopes: route.scopes,
                 mount: || post(|| async {}),
             })
             .collect();
