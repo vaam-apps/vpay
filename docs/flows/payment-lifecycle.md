@@ -114,6 +114,15 @@ noticeably from Stripe's ergonomics, and it is deliberate.
 
 ## Status
 
+**Updated 2026-11-17: a push charge carries its payer's mask (issue #79).**
+The lifecycle did not change. The charge insert that opens a confirm's one
+charge now writes `payer_ref_masked` beside `payer_ref` — `+237••••67`, the
+first three and last two digits of the normalised number — and NULL on a
+redirect rail, which has no number. Migration `0062` backfilled existing
+rows and refuses any mask that is not exactly the mask of its row's number.
+See [../status/backend.md](../status/backend.md)'s payer-mask row and
+[verification](../status/verification/2026-11-17-payer-mask.md).
+
 **Updated 2026-10-24: the intent names the rail its charge was made on.**
 The lifecycle did not change. When a confirm opens the intent's one charge,
 the same transaction copies the charge's rail and payment-method type onto

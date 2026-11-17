@@ -654,21 +654,18 @@ pub(crate) fn canonical_msisdn(input: &str) -> Option<String> {
     Some(format!("{CM_COUNTRY_CODE}{national}"))
 }
 
-/// A canonical MSISDN in the shape `charges.payer_ref_masked` is documented
-/// to hold: `+2376••••000`.
+/// A canonical MSISDN masked for a log line: `+2376••••000`.
 ///
 /// Country code, the leading `6` every Cameroon mobile number starts with,
 /// four bullets, and the last three digits — enough for a merchant reading
 /// their own logs to tell two of their payers apart, and not enough to
-/// reconstruct a number. The literal shape is the one
-/// `backends/crates/vpay-db/tests/repositories.rs` pins for that column.
+/// reconstruct a number.
 ///
-/// **Nothing writes that column yet.** The confirm path stores `None`
-/// (`crate::v1::payment_intents`'s `open_attempt`), so this is the first
-/// producer of the shape in the workspace and the two are not yet wired
-/// together — a gap, named in `docs/status.md` rather than closed here,
-/// because writing the column is a change to the charge path and not to this
-/// route.
+/// **Not the stored mask.** Since 2026-11-17 the confirm path writes
+/// `charges.payer_ref_masked` with `vpay_core::privacy::payer_msisdn_mask`
+/// (`+237••••00`, issue #79). The two are deliberately separate until
+/// RFC-0002 D3 decides the log and telemetry shape; #79 decided only the
+/// stored column.
 ///
 /// The bullet count is **fixed at four** and is not the number of digits
 /// hidden; a mask whose length revealed the input's length would be a small
@@ -803,12 +800,18 @@ mod tests {
         NoRecord,
         /// The rail could not be finished with.
         Unreachable,
+        /// The rail could not be finished with, and the failure is a real
+        /// `reqwest::Error` whose URL carries the number asked about — MTN's
+        /// `basicuserinfo` shape — wrapped by `ProviderError::transport_from`
+        /// exactly as the adapters wrap one.
+        UnreachableWithUrl,
         /// The rail has no such API at all — the port's default.
         NoSuchApi,
     }
 
     /// A rail that answers whatever the case asked it to, and reaches no
-    /// network.
+    /// network — except [`Answer::UnreachableWithUrl`]'s one connection to a
+    /// closed loopback port, which is refused before anything is sent.
     ///
     /// **Not a test double of an adapter**, on `v1::boot`'s `TestRail`'s
     /// terms and `vpay_provider::measured`'s `Answering`'s: what is under
@@ -891,7 +894,7 @@ mod tests {
 
         async fn account_holder_name(
             &self,
-            _msisdn: &str,
+            msisdn: &str,
             _config: &ProviderConfig,
         ) -> Result<Option<AccountHolder>, ProviderError> {
             match self.answer {
@@ -900,6 +903,20 @@ mod tests {
                 Answer::Unreachable => Err(ProviderError::transport(
                     "test_rail: the request to the rail failed".to_owned(),
                 )),
+                Answer::UnreachableWithUrl => {
+                    let failure = vpay_provider::http::client()
+                        .expect("the vendored-roots client builds")
+                        .get(format!(
+                            "http://127.0.0.1:1/collection/v1_0/accountholder/msisdn/{msisdn}/basicuserinfo"
+                        ))
+                        .send()
+                        .await
+                        .expect_err("nothing listens on loopback port 1");
+                    Err(ProviderError::transport_from(
+                        "test_rail: the request to the rail failed",
+                        failure,
+                    ))
+                }
                 // Reaching this at all would mean the handler skipped the
                 // capability check ADR-0002 asks it to make first.
                 Answer::NoSuchApi => Err(ProviderError::Unsupported),
@@ -1226,6 +1243,55 @@ mod tests {
         );
     }
 
+    /// **A lookup that fails — at the rail, or on a number that does not
+    /// validate — never logs the number it was asked about** (issue #147,
+    /// RFC-0002 PR 4). The success path is pinned above; these are the error
+    /// paths, each rendered through the shipping `ApiError` response (which
+    /// is where the `api error` line is written) and captured at the sink.
+    /// Both directions: neither spelling of the number appears, and the
+    /// error's code does.
+    ///
+    /// The `UnreachableWithUrl` case is the regression test for
+    /// `vpay_provider::http::redact_url` on this route: its transport error is
+    /// a real `reqwest::Error` whose URL path carries the number, so without
+    /// the redaction the `api error` line's `source_chain` prints it. The
+    /// plain `Unreachable` case carries no URL and guards the route's own
+    /// lines (the masked `lookup failed at the rail` warning) only.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_failed_lookup_never_logs_the_number_it_was_asked_about() {
+        // Fifteen digits: one past what `canonical_msisdn` accepts, so it is
+        // refused before the rail is asked.
+        const INVALID: &str = "+237600000200999";
+        for (answer, msisdn, code) in [
+            (Answer::Unreachable, MSISDN, "provider_unavailable"),
+            (Answer::UnreachableWithUrl, MSISDN, "provider_unavailable"),
+            (Answer::Holder, INVALID, "invalid_request"),
+        ] {
+            let sink = crate::test_log::CapturedLog::default();
+            let guard = tracing::subscriber::set_default(crate::test_log::captured_log_subscriber(
+                sink.clone(),
+            ));
+            let error = lookup(answer, true, Some(msisdn), Some(RAIL))
+                .await
+                .expect_err("a failed lookup is an error");
+            let response = axum::response::IntoResponse::into_response(error);
+            drop(guard);
+            assert!(!response.status().is_success());
+
+            let logged = sink.contents();
+            for spelling in [msisdn, msisdn.trim_start_matches('+')] {
+                assert!(
+                    !logged.contains(spelling),
+                    "the number reached a log line:\n{logged}"
+                );
+            }
+            assert!(
+                logged.contains("api error") && logged.contains(code),
+                "the failure must still be logged with its code ({code}):\n{logged}"
+            );
+        }
+    }
+
     /// One counter, one label, four values — and **no label carrying the
     /// number or the name**, which is the property that makes the metric
     /// safe to ship to wherever a scrape goes.
@@ -1364,9 +1430,8 @@ mod tests {
         assert_eq!(canonical_msisdn(&"6".repeat(100_000)), None);
     }
 
-    /// The mask is the shape `charges.payer_ref_masked` is documented to
-    /// hold, and it hides the middle of the number rather than a count of
-    /// its digits.
+    /// The log mask is the documented shape, and it hides the middle of the
+    /// number rather than a count of its digits.
     #[test]
     fn the_mask_is_the_documented_shape_and_reveals_only_the_ends() {
         assert_eq!(masked("237600000000"), "+2376••••000");

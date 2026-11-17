@@ -159,9 +159,8 @@ Postgres).
 ### 3. Logs carry a masked number and never a name
 
 One line per request, at `info` (or `warn` on a rail failure), carrying the
-rail's code, `+2376••••200` and whether a holder was found. The mask is the
-shape `charges.payer_ref_masked` is documented to hold: country code, the
-leading `6`, four bullets, the last three digits. The bullet count is
+rail's code, `+2376••••200` and whether a holder was found. The mask is
+country code, the leading `6`, four bullets, the last three digits. The bullet count is
 **fixed**, not one per hidden digit — a mask whose length revealed the
 input's length would be a small oracle for free.
 
@@ -171,10 +170,11 @@ debug line, by the conformance case named in rule 1 — which asserts the
 holder's name, the unmasked number and all eight other personal fields are
 absent from everything written to the subscriber during the call.
 
-**A gap, named:** nothing writes `charges.payer_ref_masked` yet. The confirm
-path stores `NULL` there, and this route's mask is the first producer of the
-shape in the workspace. The two are not wired together, because writing that
-column is a change to the charge path and not to this route.
+**Not the stored mask.** Since 2026-11-17 the confirm path writes
+`charges.payer_ref_masked` as `+237••••00` (issue #79: the first three and
+last two digits). The log mask and the stored mask are deliberately separate
+until RFC-0002 D3 decides the log and telemetry shape; #79 decided only the
+stored column.
 
 ### 4. Rate limiting — per-credential fixed window (ADR-0020, issue #56, provisional pending RFC-0002 D6)
 

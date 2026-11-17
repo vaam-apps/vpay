@@ -37,7 +37,7 @@ use reqwest::StatusCode;
 use reqwest::header::{HeaderName, HeaderValue};
 use tokio::sync::RwLock;
 use vpay_core::routing::{MethodType, MethodTypes};
-use vpay_core::{FailureCode, Money, ProviderFlow};
+use vpay_core::{Money, ProviderFlow};
 use vpay_provider::{
     AccountHolder, CallbackCheck, CallbackRef, CallbackUrlMode, Capabilities, ChargeRef,
     ChargeStatus, PayerField, PayerFieldKind, PhonePayerType, ProviderAdapter, ProviderConfig,
@@ -323,10 +323,9 @@ pub(crate) async fn read_body(
 /// The rail refusing *our* partner credentials, in the one shape
 /// `docs/flows/failures.md` says pages.
 fn rail_credentials_refused(status: StatusCode) -> ProviderError {
-    ProviderError::Rejected {
-        code: FailureCode::ProviderAccountBlocked,
-        message: format!("mtn_momo: the rail refused our credentials (HTTP {status})"),
-    }
+    ProviderError::credentials_refused(format!(
+        "mtn_momo: the rail refused our credentials (HTTP {status})"
+    ))
 }
 
 /// What a `requesttopay` response means, as a pure function of the status and
@@ -354,6 +353,7 @@ fn submit_outcome(status: StatusCode, body: &str) -> Result<Submitted, ProviderE
             let error = wire::ApiError::parse(body);
             let raw = error.code.clone().unwrap_or_else(|| truncated(body));
             Err(ProviderError::Rejected {
+                context: None,
                 code: mapping::failure_code(&raw),
                 message: format!(
                     "mtn_momo: {raw}{}",
@@ -466,6 +466,7 @@ fn refund_outcome(status: StatusCode, body: &str) -> Result<Refunded, ProviderEr
             let error = wire::ApiError::parse(body);
             let raw = error.code.clone().unwrap_or_else(|| truncated(body));
             Err(ProviderError::Rejected {
+                context: None,
                 code: mapping::failure_code(&raw),
                 message: format!(
                     "mtn_momo: transfer {raw}{}",
@@ -519,7 +520,7 @@ fn status_outcome(status: StatusCode, body: &str) -> Result<ChargeStatus, Provid
     match status.as_u16() {
         200 => {
             let parsed: wire::StatusResponse = serde_json::from_str(body)
-                .map_err(|e| ProviderError::malformed(format!("mtn_momo: status response: {e}")))?;
+                .map_err(|e| ProviderError::malformed_json("mtn_momo: status response", &e))?;
             match parsed.status.to_ascii_uppercase().as_str() {
                 "PENDING" => Ok(ChargeStatus::Pending),
                 "SUCCESSFUL" => Ok(ChargeStatus::Succeeded {
@@ -656,8 +657,10 @@ fn account_holder_outcome(
 ) -> Result<Option<AccountHolder>, ProviderError> {
     match status.as_u16() {
         200 => {
+            // `malformed_json`, never serde's own text: this body is the one
+            // that holds the holder's name (issue #147).
             let parsed: wire::BasicUserInfo = serde_json::from_str(body).map_err(|e| {
-                ProviderError::malformed(format!("mtn_momo: basicuserinfo response: {e}"))
+                ProviderError::malformed_json("mtn_momo: basicuserinfo response", &e)
             })?;
             // A 200 that names nobody is an answer this adapter cannot act
             // on, and emphatically **not** `Ok(None)`: see the function doc.
@@ -680,9 +683,20 @@ fn account_holder_outcome(
         // came from the caller, past `/v1`'s own E.164 check — and
         // emphatically not `Ok(None)`, which would report a rejected request
         // as an unregistered person.
+        //
+        // The rail's error *code* is kept and its body is not: a refusal to
+        // parse a number is the answer most likely to echo that number, and
+        // this context is the `Display` every log line renders (issue #147,
+        // RFC-0002 PR 4).
         400 => Err(ProviderError::malformed(format!(
-            "mtn_momo: basicuserinfo answered HTTP {status}: {}",
-            truncated(body)
+            "mtn_momo: basicuserinfo answered HTTP {status} ({}); its body ({} characters) is \
+             withheld",
+            wire::ApiError::parse(body)
+                .code
+                .as_deref()
+                .and_then(vpay_provider::http::rail_token)
+                .unwrap_or("no documented error code"),
+            body.chars().count()
         ))),
         // The same 500 table `submit` uses: three of MTN's 500s are really
         // our misconfiguration and must not be retried forever.
@@ -904,8 +918,10 @@ impl ProviderAdapter for Adapter {
     /// reference of ours — see `wire::CallbackBody::reference` for which
     /// field is used and why.
     fn parse_callback(&self, body: &[u8]) -> Result<CallbackRef, ProviderError> {
+        // An unauthenticated body naming the payer (`payer.partyId`): serde's
+        // own message would quote whatever it chokes on (issue #147).
         let parsed: wire::CallbackBody = serde_json::from_slice(body).map_err(|e| {
-            ProviderError::malformed(format!("mtn_momo: callback body is not JSON: {e}"))
+            ProviderError::malformed_json("mtn_momo: callback body is not the documented JSON", &e)
         })?;
         Ok(CallbackRef {
             reference_id: parsed.reference()?,
@@ -1216,7 +1232,7 @@ mod tests {
 
     use serde_json::{Value, json};
     use uuid::Uuid;
-    use vpay_core::{Currency, Money};
+    use vpay_core::{Currency, FailureCode, Money};
 
     use super::*;
 
@@ -1642,7 +1658,7 @@ mod tests {
             StatusCode::BAD_REQUEST,
             r#"{"code":"PAYEE_NOT_FOUND","message":"Party not found"}"#,
         );
-        let Err(ProviderError::Rejected { code, message }) = outcome else {
+        let Err(ProviderError::Rejected { code, message, .. }) = outcome else {
             panic!("a 400 from the rail is a decision, got {outcome:?}");
         };
         assert_eq!(code, FailureCode::InvalidPayee);
@@ -2015,6 +2031,115 @@ mod tests {
             "the chain is what an operator sees: {}",
             vpay_core::error::source_chain(&error)
         );
+    }
+
+    /// **An account-holder lookup that fails in transport never puts the
+    /// payer's number on the error's `Display` chain** (issue #147, RFC-0002
+    /// PR 4). The URL is the one this adapter really sends — built by
+    /// [`account_holder_url`], MSISDN in the path — the failure is a real
+    /// `reqwest::Error` against a closed port, and it is wrapped by
+    /// [`transport`], the one function every call site here uses. The chain
+    /// is what `ApiError`'s `source_chain` log field and `jobs.last_error`
+    /// render, so it is asserted in full; `Debug` too, in both directions.
+    ///
+    /// Failed before the fix: reqwest's `Display` ended in `for url
+    /// (http://127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000200/basicuserinfo)`.
+    #[tokio::test]
+    async fn a_lookup_transport_failure_never_prints_the_payers_number() {
+        let msisdn = "237600000200";
+        let url = account_holder_url(base_url(&config()), msisdn).expect("digits are a segment");
+        assert!(
+            url.contains(msisdn),
+            "the fixture must carry the number: {url}"
+        );
+        let failure = adapter()
+            .http
+            .get(&url)
+            .send()
+            .await
+            .expect_err("nothing is listening on the configured port");
+        let error = transport(failure);
+
+        for printed in [
+            vpay_core::error::display_with_chain(&error),
+            format!("{error:?}"),
+        ] {
+            assert!(!printed.contains(msisdn), "leaked the MSISDN in {printed}");
+            assert!(
+                !printed.contains("basicuserinfo"),
+                "leaked the path in {printed}"
+            );
+            assert!(
+                printed.contains("127.0.0.1:1"),
+                "the rail's origin must survive: {printed}"
+            );
+        }
+    }
+
+    /// **A `basicuserinfo` body serde cannot decode never has its values
+    /// quoted** (issue #147). An integer where a name belongs makes serde say
+    /// `invalid type: integer `237600000200`, expected a string`; the adapter
+    /// used to forward that into `Malformed`'s context and so into every log
+    /// line the error reached. Going back to `format!("…: {e}")` is the
+    /// mutation this catches.
+    #[test]
+    fn an_undecodable_lookup_body_never_quotes_a_value() {
+        let body = r#"{"given_name":237600000200,"family_name":"Lovelace"}"#;
+        let serde_says = serde_json::from_str::<wire::BasicUserInfo>(body)
+            .err()
+            .map(|error| error.to_string())
+            .unwrap_or_default();
+        assert!(
+            serde_says.contains("237600000200"),
+            "the canary must make serde quote the value: {serde_says}"
+        );
+        let error = account_holder_outcome(StatusCode::OK, body).expect_err("undecodable");
+        let printed = format!("{error} {error:?}");
+        assert!(!printed.contains("237600000200"), "{printed}");
+        assert!(
+            printed.contains("basicuserinfo response") && printed.contains("line 1"),
+            "the operator still learns which answer and where: {printed}"
+        );
+    }
+
+    /// **A lookup MTN refuses as a bad request never has its body quoted**
+    /// (issue #147): a refusal to parse a number is the answer most likely
+    /// to repeat it. The documented error code survives, because it is what
+    /// an operator branches on. Putting `truncated(body)` back in the
+    /// context is the mutation this catches.
+    #[test]
+    fn a_refused_lookup_withholds_the_rails_body_and_keeps_its_code() {
+        let body = r#"{"code":"INVALID_PARAMETER","message":"party 237600000200 is not valid"}"#;
+        let error = account_holder_outcome(StatusCode::BAD_REQUEST, body).expect_err("a 400");
+        let printed = format!("{error} {error:?}");
+        assert!(!printed.contains("237600000200"), "{printed}");
+        assert!(printed.contains("INVALID_PARAMETER"), "{printed}");
+    }
+
+    /// **A refusal of our own credentials says 401 or 403 on the page**
+    /// (review of issue #147's PR 4), and a code field that is not a code's
+    /// shape is not printed in its place. Building the refusal without its
+    /// adapter-authored `context` is what the first half catches; dropping
+    /// `rail_token` from the 400 arm, the second.
+    #[test]
+    fn a_credential_refusal_keeps_its_status_and_a_sentence_is_not_a_code() {
+        for (status, digits) in [
+            (StatusCode::UNAUTHORIZED, "401"),
+            (StatusCode::FORBIDDEN, "403"),
+        ] {
+            let error = account_holder_outcome(status, "").expect_err("refused");
+            let printed = vpay_core::error::display_with_chain(&error);
+            assert!(
+                printed.contains("provider_account_blocked") && printed.contains(digits),
+                "{printed}"
+            );
+        }
+        let body = r#"{"code":"party 237600000200 unknown"}"#;
+        let printed = account_holder_outcome(StatusCode::BAD_REQUEST, body)
+            .expect_err("a 400")
+            .to_string();
+        assert!(!printed.contains("237600000200"), "{printed}");
+        assert!(printed.contains("no documented error code"), "{printed}");
     }
 
     /// An expired token must be re-minted rather than resent — same

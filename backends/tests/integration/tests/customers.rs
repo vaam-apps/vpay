@@ -1856,7 +1856,9 @@ async fn an_erasure_leaves_no_payer_identifier_in_any_column_of_any_table() -> a
     .bind(RAIL)
     .bind(AMOUNT)
     .bind(PHONE)
-    .bind(format!("*** *** {}", &PHONE[PHONE.len() - 3..]))
+    // The mask the confirm path writes (issue #79), which migration 0062's
+    // `payer_ref_masked_derives_from_payer_ref` CHECK requires of any mask.
+    .bind(vpay_core::privacy::payer_msisdn_mask(PHONE))
     .bind(format!(
         "PAYER_NOT_FOUND: subscriber {PHONE} is not registered"
     ))
@@ -2276,7 +2278,7 @@ async fn stage_payment(
     .bind(RAIL)
     .bind(AMOUNT)
     .bind(msisdn)
-    .bind(format!("*** *** {}", &msisdn[msisdn.len() - 3..]))
+    .bind(vpay_core::privacy::payer_msisdn_mask(msisdn))
     .bind(format!(
         "PAYER_NOT_FOUND: subscriber {msisdn} is not registered"
     ))

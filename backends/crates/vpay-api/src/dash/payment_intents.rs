@@ -19,12 +19,14 @@
 //!
 //! # What is not here, and why it is absent rather than empty
 //!
-//! * **No `search` by payer phone.** `charges.payer_ref` and
-//!   `charges.payer_ref_masked` are **never written** — the confirm path
-//!   stores `None` in both (`crate::v1::payment_intents`'s `open_attempt`),
-//!   a gap `docs/status.md` names. A phone filter over a column that is
-//!   always `NULL` would answer "no results" for every payer who ever paid,
-//!   which is worse than no filter: it reads as an answer.
+//! * **No `search` by payer phone.** Since 2026-11-17 a push confirm writes
+//!   both `charges.payer_ref` and `charges.payer_ref_masked` (issue #79),
+//!   but neither is a search key. The mask keeps five digits, three of them
+//!   the country code, so it names a bucket of payers rather than one; and a
+//!   filter over `payer_ref` would make this staff surface accept an
+//!   unmasked third-party number as input, which nobody has decided it may
+//!   (RFC-0002 D3). Redirect-rail charges have neither, so any such filter
+//!   would also answer "no results" for every Orange Money payer.
 //! * **No `search` by id.** An id search over one tenant is
 //!   [`retrieve`] with a `404`; a *prefix* search is a different query with
 //!   an index that does not exist (`payment_intents` is indexed on
@@ -264,17 +266,22 @@ impl PaymentDetail {
 /// reference, the state, the amounts, the failure pair, and the *masked*
 /// payer reference.
 ///
-/// # `payer_ref_masked` is `null` on every row this deployment has ever
-/// written
+/// # `payer_ref_masked` is rendered from the column, never derived here
 ///
-/// Nothing writes that column — `open_attempt` stores `None`
-/// (`docs/status.md`). It is rendered anyway, and rendered from the column
-/// rather than derived here, for two reasons: deriving a mask in the
-/// renderer would mean reading `payer_ref`, the unmasked value, into a staff
-/// surface; and a field that appears the day the column is written is a
-/// smaller change than a field added then. What must not happen is this
-/// field quietly becoming the *unmasked* value because the masked one was
-/// empty.
+/// Since 2026-11-17 the confirm path writes the column — `+237••••67`, the
+/// first three and last two digits of the normalised number (issue #79
+/// decision 4, [`vpay_core::privacy::payer_msisdn_mask`]) — and migration
+/// 0062 backfilled the rows written before. It is `null` where there is no
+/// normalised number to mask: a redirect-rail charge, a charge whose payer
+/// was erased, and a pre-normalisation row whose number was stored verbatim.
+///
+/// It is rendered from the column rather than derived here because deriving
+/// a mask in the renderer would mean reading `payer_ref`, the unmasked value,
+/// into a staff surface. What must not happen is this field quietly becoming
+/// the *unmasked* value because the masked one was empty — and the column
+/// itself cannot hold one: migration 0062's
+/// `payer_ref_masked_derives_from_payer_ref` CHECK admits only `NULL` or the
+/// exact mask of the row's own number.
 #[derive(Clone, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 struct ChargeSummary {
@@ -295,8 +302,8 @@ struct ChargeSummary {
     amount: i64,
     /// Lower-case, matching the merchant surface's `currency`.
     currency: String,
-    /// The payer's instrument, masked. See this struct's docs: `null` on
-    /// every row written so far.
+    /// The payer's instrument, masked (`+237••••67`). See this struct's
+    /// docs for when it is `null`.
     payer_ref_masked: Option<String>,
     /// The closed failure vocabulary, once it failed.
     failure_code: Option<String>,
@@ -612,7 +619,7 @@ mod debug_tests {
     use super::ChargeSummary;
 
     const RAIL_WORDS: &str = "237600000789 has insufficient funds";
-    const MASKED_PAYER: &str = "2376*****789";
+    const MASKED_PAYER: &str = "+237••••89";
 
     fn charge_summary() -> ChargeSummary {
         ChargeSummary {

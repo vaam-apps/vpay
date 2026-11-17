@@ -278,8 +278,21 @@ pub(crate) fn internal_error(code: Option<&str>, raw: &str) -> ProviderError {
         // Ambiguity resolves to the rail's side, because reporting it as a
         // decline would close a charge that may still be alive, whereas
         // reporting it as transport leaves the status query to settle it.
-        Some(code) => ProviderError::transport(format!("mtn_momo: HTTP 500 {code}")),
-        None => ProviderError::transport(format!("mtn_momo: HTTP 500 {raw}")),
+        // Printed only when it has a code's shape
+        // (`vpay_provider::http::rail_token`): the field is the rail's, and a
+        // sentence or a number in it is the body by another name (#147).
+        Some(code) => ProviderError::transport(format!(
+            "mtn_momo: HTTP 500 {}",
+            vpay_provider::http::rail_token(code).unwrap_or("with an undocumented error code")
+        )),
+        // The body's length, never the body: this context is `Display`, which
+        // every log line and `jobs.last_error` render, and an unexplained
+        // rail body is rail-authored text that may quote the payer the request
+        // named (issue #147, RFC-0002 PR 4).
+        None => ProviderError::transport(format!(
+            "mtn_momo: HTTP 500 with no error code; its body ({} characters) is withheld",
+            raw.chars().count()
+        )),
     }
 }
 
@@ -467,5 +480,20 @@ mod tests {
                 "{code:?} produced {error:?}"
             );
         }
+    }
+
+    /// **A 500 with no code never puts the rail's body in the error's
+    /// `Display`** (issue #147, RFC-0002 PR 4) — the one thing about it an
+    /// operator still learns is its length. Going back to `HTTP 500 {raw}` is
+    /// the mutation this catches.
+    #[test]
+    fn an_unexplained_500_withholds_its_body() {
+        let body = "gateway fault while debiting 237600000789";
+        let printed = internal_error(None, body).to_string();
+        assert!(!printed.contains("237600000789"), "{printed}");
+        assert!(
+            printed.contains("HTTP 500") && printed.contains(&body.len().to_string()),
+            "{printed}"
+        );
     }
 }

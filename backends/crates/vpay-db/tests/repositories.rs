@@ -1190,8 +1190,8 @@ fn fixture_charge(id: &str, payment_intent_id: &str) -> vpay_db::NewCharge {
         state: "submitting".to_owned(),
         amount: 5000,
         currency_code: "XAF".to_owned(),
-        payer_ref: Some("+237600000000".to_owned()),
-        payer_ref_masked: Some("+2376••••000".to_owned()),
+        payer_ref: Some("237600000000".to_owned()),
+        payer_ref_masked: vpay_core::privacy::payer_msisdn_mask("237600000000"),
         method_type: None,
     }
 }
@@ -14456,5 +14456,221 @@ async fn migration_0061_backfills_each_in_flight_window_from_its_own_start() -> 
         )
         .await?;
     assert_eq!(long_gone.attempts, 1, "an elapsed window still restarts");
+    Ok(())
+}
+
+/// Migration 0062 (issue #79, decision 4): every charge whose `payer_ref` is
+/// a normalised MSISDN gets the first-three/last-two mask, **every other row
+/// stays `NULL`**, and from then on the database refuses a mask that is not
+/// exactly the mask of its own row's number.
+///
+/// Built the way the 0061 case is: migrations up to 0061 applied by hand,
+/// rows written in each state a pre-0062 database can hold, then 0062 alone.
+///
+/// The states, and what each one proves:
+///
+/// | `payer_ref` | why it exists | after 0062 |
+/// |---|---|---|
+/// | `237671234567` | a push rail, normalised by `payer_fields` | `+237••••67` |
+/// | `237671234567890` | the longest E.164 the rule admits | `+237••••90` |
+/// | `NULL` | a redirect rail (Orange): vpay never learnt the number | `NULL` |
+/// | `[redacted]` | a row erasure already reached (`erase_in_tx`) | `NULL` — never "unmasked" |
+/// | `+237 671 23 45 67` | written verbatim before `payer_fields` normalised | `NULL` — not the normalised number |
+/// | `237671234511`, mask `237671234511` | the unmasked number already in the masked column | `+237••••11` — cleared, then derived |
+/// | `[redacted]`, mask `+2376••••567` | a mask left beside erasure's marker | `NULL` — cleared, and the migration still applies |
+///
+/// Each masked value is compared with
+/// [`vpay_core::privacy::payer_msisdn_mask`] over the same input, so the SQL
+/// backfill and the Rust writer are held to one answer, row by row — not
+/// each to a literal that could be updated without the other.
+///
+/// The decisive mutations: drop the `~ '^[0-9]{8,15}$'` predicate and the
+/// redacted row gets `+[re••••d]`-shaped garbage and the legacy row a mask of
+/// the wrong string; drop the CHECK and the four refusals at the end are
+/// accepted; drop the clearing UPDATE and the migration itself fails on the
+/// two pre-existing masks.
+#[tokio::test]
+async fn migration_0062_backfills_the_payer_mask_and_leaves_the_rest_null() -> anyhow::Result<()> {
+    let container = vpay_testkit::containers::start_postgres_with_retry()
+        .await
+        .context("postgres:16-alpine container starts")?;
+    let host = container.get_host().await.context("container host")?;
+    let port = container
+        .get_host_port_ipv4(5432)
+        .await
+        .context("container port")?;
+    let url = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+    let pool = PgPool::connect(&url)
+        .await
+        .context("the raw pool connects")?;
+
+    // --- the world as it was before 0062 -----------------------------------
+    let migrator = sqlx::migrate!("../../migrations");
+    let mut applied = 0_u32;
+    for migration in migrator.iter() {
+        if migration.version > 61 {
+            continue;
+        }
+        // `AssertSqlSafe`: `backends/migrations/*.sql`, embedded at compile
+        // time by `sqlx::migrate!`; it interpolates nothing.
+        sqlx::raw_sql(sqlx::AssertSqlSafe(migration.sql.as_str().to_owned()))
+            .execute(&pool)
+            .await
+            .with_context(|| format!("applying migration {}", migration.version))?;
+        applied += 1;
+    }
+    assert_eq!(applied, 61, "the pre-0062 schema was actually built");
+
+    let repositories = vpay_db::connect(&url).await?;
+    seed_reference_data(repositories.as_ref()).await?;
+
+    // `(charge, payer_ref, payer_ref_masked before 0062)`. Nothing shipped
+    // wrote the mask before 0062, so the first five carry NULL; the last two
+    // carry a value something else put there, which must neither survive
+    // nor stop the migration (its ADD CONSTRAINT would otherwise fail on
+    // them, and with it every boot).
+    let states: [(&str, Option<&str>, Option<&str>); 7] = [
+        ("ch_mask_normalised", Some("237671234567"), None),
+        ("ch_mask_longest", Some("237671234567890"), None),
+        ("ch_mask_redirect", None, None),
+        ("ch_mask_erased", Some(vpay_db::REDACTED), None),
+        ("ch_mask_verbatim", Some("+237 671 23 45 67"), None),
+        // The unmasked number itself, in the masked column.
+        (
+            "ch_mask_was_garbage",
+            Some("237671234511"),
+            Some("237671234511"),
+        ),
+        // A mask left beside erasure's marker.
+        (
+            "ch_mask_was_stale",
+            Some(vpay_db::REDACTED),
+            Some("+2376••••567"),
+        ),
+    ];
+    for (charge, payer_ref, pre_existing_mask) in states {
+        let intent = format!("pi_{charge}");
+        repositories
+            .insert(&fixture_intent(&intent, "XAF"))
+            .await
+            .with_context(|| format!("inserting {intent}"))?;
+        // Raw, because the pre-0062 shape is the point: no CHECK yet, so
+        // any value the column held is writable.
+        sqlx::query(
+            "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
+             state, amount, currency_code, payer_ref, payer_ref_masked) \
+             VALUES ($1, $2, 'mtn_momo', gen_random_uuid(), 'submitted', 5000, 'XAF', $3, $4)",
+        )
+        .bind(charge)
+        .bind(&intent)
+        .bind(payer_ref)
+        .bind(pre_existing_mask)
+        .execute(&pool)
+        .await
+        .with_context(|| format!("writing {charge} in the pre-0062 shape"))?;
+    }
+
+    // --- the change under test ---------------------------------------------
+    let zero_zero_six_two = migrator
+        .iter()
+        .find(|migration| migration.version == 62)
+        .context("migration 0062 is in the embedded set")?;
+    sqlx::raw_sql(sqlx::AssertSqlSafe(
+        zero_zero_six_two.sql.as_str().to_owned(),
+    ))
+    .execute(&pool)
+    .await
+    .context("migration 0062 applies to a table that already has rows, garbage masks included")?;
+
+    for (charge, payer_ref, _) in states {
+        let (stored_ref, masked): (Option<String>, Option<String>) =
+            sqlx::query_as("SELECT payer_ref, payer_ref_masked FROM charges WHERE id = $1")
+                .bind(charge)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(
+            stored_ref.as_deref(),
+            payer_ref,
+            "{charge}: the backfill never rewrites the number itself"
+        );
+        assert_eq!(
+            masked,
+            payer_ref.and_then(vpay_core::privacy::payer_msisdn_mask),
+            "{charge}: the SQL backfill and the Rust writer disagree"
+        );
+    }
+    // And the literals, so the comparison above cannot pass by both sides
+    // returning nothing.
+    let masks: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT id, payer_ref_masked FROM charges ORDER BY id")
+            .fetch_all(&pool)
+            .await?;
+    assert_eq!(
+        masks,
+        vec![
+            ("ch_mask_erased".to_owned(), None),
+            ("ch_mask_longest".to_owned(), Some("+237••••90".to_owned())),
+            (
+                "ch_mask_normalised".to_owned(),
+                Some("+237••••67".to_owned())
+            ),
+            ("ch_mask_redirect".to_owned(), None),
+            ("ch_mask_verbatim".to_owned(), None),
+            (
+                "ch_mask_was_garbage".to_owned(),
+                Some("+237••••11".to_owned())
+            ),
+            ("ch_mask_was_stale".to_owned(), None),
+        ],
+        "a mask for exactly the three normalised numbers (one of them replacing the unmasked \
+         number that was in the column), and NULL for the redirect rail, both erased rows and \
+         the verbatim one"
+    );
+
+    // --- the CHECK, from now on --------------------------------------------
+    for (what, statement) in [
+        (
+            "the unmasked number in the masked column",
+            "UPDATE charges SET payer_ref_masked = payer_ref WHERE id = 'ch_mask_normalised'",
+        ),
+        (
+            "an erasure that redacts the number and forgets its mask",
+            "UPDATE charges SET payer_ref = '[redacted]' WHERE id = 'ch_mask_normalised'",
+        ),
+        (
+            "a mask on a charge that has no number",
+            "UPDATE charges SET payer_ref_masked = '+237••••67' WHERE id = 'ch_mask_redirect'",
+        ),
+        (
+            "a mask in another shape (the one account_holders logs, +2376••••NNN)",
+            "UPDATE charges SET payer_ref_masked = '+2376••••567' WHERE id = 'ch_mask_normalised'",
+        ),
+    ] {
+        let error = sqlx::query(statement).execute(&pool).await.expect_err(what);
+        let database = error
+            .as_database_error()
+            .with_context(|| format!("{what}: not a database error: {error}"))?;
+        assert_eq!(
+            database.code().as_deref(),
+            Some("23514"),
+            "{what}: {database}"
+        );
+        assert_eq!(
+            database.constraint(),
+            Some("payer_ref_masked_derives_from_payer_ref"),
+            "{what}: refused by this CHECK and not another"
+        );
+    }
+
+    // The control: erasure's own statement shape — the marker AND a NULL
+    // mask, together — is accepted.
+    sqlx::query(
+        "UPDATE charges SET payer_ref = $1, payer_ref_masked = NULL \
+         WHERE id = 'ch_mask_normalised'",
+    )
+    .bind(vpay_db::REDACTED)
+    .execute(&pool)
+    .await
+    .context("an erasure that clears the mask beside the marker is legal")?;
     Ok(())
 }

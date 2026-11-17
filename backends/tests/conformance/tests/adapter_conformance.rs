@@ -2593,7 +2593,7 @@ async fn a_refund_to_a_payee_the_rail_rejects_is_a_decline_and_never_an_accepted
         .refund(&charge, charge.amount, destination.as_ref(), &rail.config)
         .await;
 
-    let Err(ProviderError::Rejected { code, message }) = &outcome else {
+    let Err(ProviderError::Rejected { code, message, .. }) = &outcome else {
         panic!(
             "{}: a payee the rail refuses is a decision the rail made, not a transport \
              failure and emphatically not an accepted transfer: {outcome:?}",

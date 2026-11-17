@@ -413,19 +413,19 @@ exist; the event store is one already-classified column; browser storage is one
 file; the observability listener is two routes), **not** evidence that anything
 re-checks it. Nothing fails if OTLP tracing is added tomorrow.
 
-| Surface           | Enumerable | Status                                                                                                                                  |
-| ----------------- | ---------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule is the only guard                                                 |
-| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                     |
-| `traces`          | yes        | OTLP traces deliberately absent (`docs/status.md`: deferred)                                                                            |
-| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                            |
-| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                    |
-| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                    |
-| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                               |
-| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                      |
-| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies |
-| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                       |
-| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                       |
+| Surface           | Enumerable | Status                                                                                                                                                       |
+| ----------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `logs`            | no         | no static scanner over `tracing!` sites yet; the Debug-redaction rule, PR 4's `Display`-side redactions and one manual sweep (2026-11-17) are the only guard |
+| `metrics`         | no         | metric-label derivation is not centrally registered                                                                                                          |
+| `traces`          | yes        | OTLP traces deliberately absent (`docs/status.md`: deferred)                                                                                                 |
+| `event_store`     | yes        | `events.data` — redacted on customer erasure                                                                                                                 |
+| `webhook_payload` | no         | per-event projections (RFC-0002 D2) not yet implemented; payload == API object today                                                                         |
+| `browser_storage` | yes        | checkout page local memory on the payer's own device                                                                                                         |
+| `provider_rail`   | no         | no static scan of adapter request builders; guarded by `RefundTarget`'s redacting `Debug`                                                                    |
+| `merchant_api`    | no         | wire object projections are per-resource, not centrally registered                                                                                           |
+| `merchant_mcp`    | no         | `/mcp/v1`'s tool outputs (ADR-0033): `/v1`'s projections reshaped, so `merchant_api`'s gap; erasure cannot reach an agent host's copies                      |
+| `observability`   | yes        | `/livez` and `/metrics` on `--observability-bind`                                                                                                            |
+| `backup`          | no         | PITR/WAL and full backups — external store; retention of restore copies is a deployment obligation (RFC-0002 D13)                                            |
 
 A surface with `enumerable: false` is an **unmet criterion**: the gate records it
 and keeps #144 open on it rather than manufacturing a self-check (RFC-0002 PR 2).
@@ -514,6 +514,25 @@ registrations in all) and the gate now reads a path-qualified derive — see the
 built ahead of their first use so PR 4's telemetry work and #56's audit rows
 inherit one representation; adopting either for a live surface before D3 names
 its keying/masking answers is what the module's own docs forbid.
+
+**RFC-0002 PR 4 (the parts not blocked on D3/D4), 2026-11-17:** one manual
+sweep of every shipping `tracing` site and every `Display` an error chain
+renders. A rail URL now reaches an error's `Display` chain as its origin only
+(`vpay_provider::http::redact_url`, at `RailFailure`'s `From` and
+`HttpBodyError::read`), so `jobs.last_error`, the `api error` line and
+`webhook_deliveries.response_excerpt` no longer carry MTN's MSISDN-bearing
+lookup path or a webhook endpoint's query; a decline's `Display` no longer
+carries the rail's words (`rail_failure_text` stays in `failure_raw`); a rail
+body serde cannot decode, and the non-2xx bodies the two shipping adapters
+used to quote in `Transport`/`Config` contexts, are withheld; the webhook
+`exhausted` alert prints the endpoint through `SafeUrl`. No `Masked` or
+`Pseudonymous` consumer was added, no D3/D4 answer was assumed, and the three
+pre-existing masked-MSISDN log lines were left as they were — see
+[runbooks/privacy-telemetry.md](../runbooks/privacy-telemetry.md), the
+operator's statement of what each telemetry surface can hold, and
+[status/verification/2026-11-17-telemetry-sweep.md](../status/verification/2026-11-17-telemetry-sweep.md)
+for every site changed or left. The `logs` surface stays `enumerable: false`:
+the sweep is evidence for one date, not a scanner.
 
 What is **not** done, and each of these keeps #144 open:
 

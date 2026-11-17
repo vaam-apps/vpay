@@ -233,27 +233,27 @@ means a case with the same intent over the new sign-in; **retire** means the
 mechanism it tested no longer exists and it needs a successor only if VP-6b
 builds an equivalent.
 
-| #   | Deleted case                                                                          | VP-6b                                                                           |
-| --- | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| 1   | sends an unauthenticated visitor to the sign-in form, and no further                  | Restore: an unpaired browser sees the pairing state and nothing of the console  |
-| 2   | signs a staff member in through the real OP, enrolling their second factor on the way | Retire; successor: a browser generates a key, vaam pairs it, the console opens  |
-| 3   | keeps the session token httpOnly and the access token out of the browser entirely     | Retire; successor: the private key is non-extractable and never serialised      |
-| 4   | shows the sign-in form — not an error page — for a cookie vpay refuses                | Restore: a revoked or expired key shows the re-pair state, not an error page    |
-| 5   | lists this merchant's payments and opens one of them                                  | Restore                                                                         |
-| 6   | takes a payment through the shop, the way the person who reported this did            | Restore                                                                         |
-| 7   | shows the demo staff member that payment, in the list and by id                       | Restore                                                                         |
-| 8   | reads the Overview and the four procedure-backed lists, none of them refused          | Restore                                                                         |
-| 9   | renders the masked payer as a dash, because nothing writes that column                | Restore                                                                         |
-| 10  | serves the signed-in staff member's own browser fetch, on the browser's own headers   | Retire with the BFF; restate if VP-6b adds a browser-reachable surface          |
-| 11  | refuses the same browser fetch the moment the session cookie is gone                  | Retire with the BFF; successor: a revoked key's next request is refused         |
-| 12  | refuses a cross-origin fetch from another site's page, cookie and all                 | Retire with the BFF; restate if VP-6b adds one                                  |
-| 13  | refuses a cross-origin FRAME of the same URL, which carries no Origin at all          | Retire with the BFF; restate if VP-6b adds one                                  |
-| 14  | answers a browser's OPTIONS with 405 and no Allow header                              | Retire with the BFF; restate if VP-6b adds one                                  |
-| 15  | replaces the access token before it expires, so a long session never sees a 401       | Retire; successor: a key 30 days old is refused and the console asks to re-pair |
-| 16  | pages forward and back through a list, returning the same rows in both directions     | Restore                                                                         |
-| 17  | filters the list by status, and the table narrows to match                            | Restore                                                                         |
-| 18  | refuses everything again after signing out                                            | Restore: after revoking the key                                                 |
-| 19  | signs the same staff member back in with the password they set                        | Retire (no password)                                                            |
+| #   | Deleted case                                                                          | VP-6b                                                                                                                             |
+| --- | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | sends an unauthenticated visitor to the sign-in form, and no further                  | Restore: an unpaired browser sees the pairing state and nothing of the console                                                    |
+| 2   | signs a staff member in through the real OP, enrolling their second factor on the way | Retire; successor: a browser generates a key, vaam pairs it, the console opens                                                    |
+| 3   | keeps the session token httpOnly and the access token out of the browser entirely     | Retire; successor: the private key is non-extractable and never serialised                                                        |
+| 4   | shows the sign-in form — not an error page — for a cookie vpay refuses                | Restore: a revoked or expired key shows the re-pair state, not an error page                                                      |
+| 5   | lists this merchant's payments and opens one of them                                  | Restore                                                                                                                           |
+| 6   | takes a payment through the shop, the way the person who reported this did            | Restore                                                                                                                           |
+| 7   | shows the demo staff member that payment, in the list and by id                       | Restore                                                                                                                           |
+| 8   | reads the Overview and the four procedure-backed lists, none of them refused          | Restore                                                                                                                           |
+| 9   | renders the masked payer as a dash, because nothing writes that column                | Restore, changed: since 2026-11-17 (#79) the column is written — assert the mask on a push payment and the dash on a redirect one |
+| 10  | serves the signed-in staff member's own browser fetch, on the browser's own headers   | Retire with the BFF; restate if VP-6b adds a browser-reachable surface                                                            |
+| 11  | refuses the same browser fetch the moment the session cookie is gone                  | Retire with the BFF; successor: a revoked key's next request is refused                                                           |
+| 12  | refuses a cross-origin fetch from another site's page, cookie and all                 | Retire with the BFF; restate if VP-6b adds one                                                                                    |
+| 13  | refuses a cross-origin FRAME of the same URL, which carries no Origin at all          | Retire with the BFF; restate if VP-6b adds one                                                                                    |
+| 14  | answers a browser's OPTIONS with 405 and no Allow header                              | Retire with the BFF; restate if VP-6b adds one                                                                                    |
+| 15  | replaces the access token before it expires, so a long session never sees a 401       | Retire; successor: a key 30 days old is refused and the console asks to re-pair                                                   |
+| 16  | pages forward and back through a list, returning the same rows in both directions     | Restore                                                                                                                           |
+| 17  | filters the list by status, and the table narrows to match                            | Restore                                                                                                                           |
+| 18  | refuses everything again after signing out                                            | Restore: after revoking the key                                                                                                   |
+| 19  | signs the same staff member back in with the password they set                        | Retire (no password)                                                                                                              |
 
 Ten cases (1, 4 to 9 and 16 to 18) are restored; the other nine are retired with the mechanism they tested.
 `dashboardTasks.ts` (the TOTP and staff helpers) was deleted with them;

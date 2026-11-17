@@ -15,6 +15,7 @@
 
 use std::time::{Duration, Instant};
 
+use vpay_core::privacy::SafeUrl;
 use vpay_provider::ProviderError;
 use vpay_provider::token::CachedToken;
 
@@ -47,15 +48,24 @@ const EXPIRY_MARGIN: Duration = Duration::from_secs(60);
 /// [`ProviderError::Config`] if `base` is not an absolute URL — a
 /// deployment-time mistake in `providers[].host.url`, which is what
 /// `Category::Configuration` and exit 78 exist for.
+///
+/// The `base_url` is printed through [`SafeUrl`], never as written: it is the
+/// operator's configuration, but a URL's userinfo, path or query can carry a
+/// credential, and this message is a `Display` every log line and
+/// `jobs.last_error` render (review of issue #147's PR 4). An unparseable one
+/// therefore prints as `SafeUrl([unparsed])`; `url::ParseError`'s own text,
+/// which never quotes the input, says what is wrong with it.
 pub(crate) fn token_url(base: &str) -> Result<String, ProviderError> {
-    let base = reqwest::Url::parse(base).map_err(|error| {
+    let parsed = reqwest::Url::parse(base).map_err(|error| {
         ProviderError::Config(format!(
-            "orange_money: base_url {base:?} is not an absolute URL: {error}"
+            "orange_money: base_url {:?} is not an absolute URL: {error}",
+            SafeUrl::new(base)
         ))
     })?;
-    let token = base.join(TOKEN_PATH).map_err(|error| {
+    let token = parsed.join(TOKEN_PATH).map_err(|error| {
         ProviderError::Config(format!(
-            "orange_money: cannot derive the token endpoint from base_url {base}: {error}"
+            "orange_money: cannot derive the token endpoint from base_url {:?}: {error}",
+            SafeUrl::new(base)
         ))
     })?;
     Ok(token.into())
@@ -150,6 +160,24 @@ mod tests {
     fn a_base_url_that_is_not_a_url_is_a_configuration_error() {
         let error = token_url("wiremock-orange:8080").expect_err("no scheme, no derivation");
         assert!(matches!(error, ProviderError::Config(_)), "{error:?}");
+    }
+
+    /// **The configured `base_url` reaches the error only through `SafeUrl`**
+    /// (review of issue #147's PR 4). The first base parses as a URL with no
+    /// host under the scheme `secref12`, so `join` refuses it; the second, with
+    /// a space in its host, does not parse at all. Neither error repeats what
+    /// was configured. Formatting `base` directly again is what this catches.
+    #[test]
+    fn a_refused_base_url_is_never_repeated_as_written() {
+        for base in [
+            "secref12:opaque-path-canary",
+            "https://user:secref12@exa mple/p",
+        ] {
+            let printed = token_url(base).expect_err("refused").to_string();
+            assert!(!printed.contains("secref12"), "{printed}");
+            assert!(!printed.contains("canary"), "{printed}");
+            assert!(printed.contains("SafeUrl("), "{printed}");
+        }
     }
 
     #[test]

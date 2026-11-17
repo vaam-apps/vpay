@@ -614,6 +614,7 @@ mod tests {
         );
         assert!(
             !pass(RailCheck::Provider(ProviderError::Rejected {
+                context: None,
                 code: FailureCode::ProviderAccountBlocked,
                 message: "keys refused".to_owned(),
             }))

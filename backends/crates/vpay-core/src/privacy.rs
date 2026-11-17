@@ -29,6 +29,11 @@
 //! keying and masking answers. ADOPTING EITHER FOR A LIVE SURFACE BEFORE D3
 //! IS ANSWERED IS THE MISTAKE THIS MODULE EXISTS TO PREVENT.
 //!
+//! The one exception is a decided one: [`payer_msisdn_mask`], the stored
+//! display mask of a payer's number on a charge, whose shape issue #79
+//! decision 4 fixed for that single surface. It is a function and not a
+//! `Debug` wrapper because its output is *stored*, not printed.
+//!
 //! Which types must carry a hand-written `Debug` at all is not a convention
 //! left to memory: each one is registered in
 //! [`schemas/privacy-inventory.yaml`](../../../../schemas/privacy-inventory.yaml)'s
@@ -256,6 +261,84 @@ impl fmt::Debug for SafeUrl<'_> {
     }
 }
 
+/// How many leading digits of a normalised MSISDN [`payer_msisdn_mask`]
+/// keeps (issue #79, decision 4).
+pub const PAYER_MASK_HEAD_DIGITS: usize = 3;
+
+/// How many trailing digits of a normalised MSISDN [`payer_msisdn_mask`]
+/// keeps (issue #79, decision 4).
+pub const PAYER_MASK_TAIL_DIGITS: usize = 2;
+
+/// What stands in for the hidden middle: **four** bullets, however many
+/// digits they hide.
+pub const PAYER_MASK_MIDDLE: &str = "••••";
+
+/// The fewest digits [`payer_msisdn_mask`] will mask. The mask always shows
+/// five digits, so at this minimum it shows five of eight and hides only
+/// three; a twelve-digit Cameroon number shows five of twelve. The floor
+/// guarantees that at least three digits are hidden, not that most are.
+/// It is below the length of any mobile number this workspace accepts.
+pub const PAYER_MASK_MIN_DIGITS: usize = 8;
+
+/// The most digits [`payer_msisdn_mask`] will mask — E.164's ceiling.
+pub const PAYER_MASK_MAX_DIGITS: usize = 15;
+
+/// The display mask of a payer's **normalised** MSISDN, as
+/// `charges.payer_ref_masked` stores it: `+237••••67` for `237671234567`.
+///
+/// # This is a decided surface, not D3
+///
+/// RFC-0002's D3 — which identifiers may appear masked, on which surface —
+/// is still open in general. Issue #79 decision 4 answers it for exactly one
+/// value: the payer's number on a charge, read by staff, is shown as its
+/// **first three and last two digits**, written at the confirm path from
+/// the normalised number and backfilled by migration `0062`. It is **not**
+/// the mask `vpay_api::v1::account_holders` and `vpay_api::v1::refunds` log
+/// (`+2376••••200`): the log mask and the stored mask are deliberately
+/// separate until D3 decides the log and telemetry shape, because #79
+/// decided only the stored column.
+///
+/// # The input must already be normalised, and nothing else is masked
+///
+/// The input is the digits-only E.164 form every push rail is given
+/// (`vpay_api::v1::payer_fields`, `237671234567`). Anything else — a `+`,
+/// a separator, a letter, erasure's `[redacted]` marker, fewer than
+/// [`PAYER_MASK_MIN_DIGITS`] or more than [`PAYER_MASK_MAX_DIGITS`] digits —
+/// is `None`, **never** a best-effort mask: a mask derived from a string
+/// that is not the normalised number is a mask of something else, and a
+/// mask of the marker would be a rendering of a value erasure removed.
+/// Migration `0062`'s backfill applies the identical rule in SQL, and
+/// `vpay-db`'s `migration_0062_backfills_the_payer_mask_and_leaves_the_rest_null`
+/// holds the two together.
+///
+/// The bullet count is fixed: a mask whose length revealed how many digits
+/// it hid would be a small oracle for free.
+///
+/// # Examples
+///
+/// ```
+/// use vpay_core::privacy::payer_msisdn_mask;
+///
+/// assert_eq!(payer_msisdn_mask("237671234567").as_deref(), Some("+237••••67"));
+/// // Not normalised: no mask, rather than a mask of the wrong string.
+/// assert_eq!(payer_msisdn_mask("+237 671 23 45 67"), None);
+/// // Erasure's marker is never masked.
+/// assert_eq!(payer_msisdn_mask("[redacted]"), None);
+/// ```
+#[must_use]
+pub fn payer_msisdn_mask(normalised: &str) -> Option<String> {
+    let length = normalised.len();
+    if !(PAYER_MASK_MIN_DIGITS..=PAYER_MASK_MAX_DIGITS).contains(&length)
+        || !normalised.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    // ASCII digits only, so byte offsets are character offsets.
+    let head = normalised.get(..PAYER_MASK_HEAD_DIGITS)?;
+    let tail = normalised.get(length - PAYER_MASK_TAIL_DIGITS..)?;
+    Some(format!("+{head}{PAYER_MASK_MIDDLE}{tail}"))
+}
+
 #[cfg(test)]
 mod tests {
     //! Every wrapper's output is pinned, in both directions: the value's
@@ -265,7 +348,7 @@ mod tests {
     //! `no_customer_type_ever_prints_a_payers_identifiers_street_or_gps_point`
     //! argues for the customer rows.
 
-    use super::{Masked, Pseudonymous, SafeUrl, Secret};
+    use super::{Masked, Pseudonymous, SafeUrl, Secret, payer_msisdn_mask};
 
     /// The canary every negative assertion in this module keys on: unique,
     /// pronounceable, and nothing any fixture would accidentally contain.
@@ -363,5 +446,63 @@ mod tests {
             format!("{:?}", SafeUrl::new("mailto:someone@example.com")),
             "SafeUrl([no host])"
         );
+    }
+
+    /// Issue #79 decision 4, pinned: the first three and the last two
+    /// digits of the normalised number, four bullets between them, and a
+    /// `+` in front.
+    #[test]
+    fn the_payer_mask_keeps_the_first_three_and_last_two_digits() {
+        assert_eq!(
+            payer_msisdn_mask("237671234567").as_deref(),
+            Some("+237••••67")
+        );
+        assert_eq!(
+            payer_msisdn_mask("237690000419").as_deref(),
+            Some("+237••••19")
+        );
+        let rendered = payer_msisdn_mask("237671234567").unwrap_or_default();
+        for hidden in ["2376", "567", "71234"] {
+            assert!(
+                !rendered.contains(hidden),
+                "{hidden:?} must not survive the mask: {rendered}"
+            );
+        }
+    }
+
+    /// A fixed four bullets, so the mask's length says nothing about the
+    /// number's: eight digits and fifteen render the same width.
+    #[test]
+    fn the_payer_mask_does_not_reveal_how_many_digits_it_hides() {
+        let short = payer_msisdn_mask("23767123").unwrap_or_default();
+        let long = payer_msisdn_mask("237671234567890").unwrap_or_default();
+        assert_eq!(short, "+237••••23");
+        assert_eq!(long, "+237••••90");
+        assert_eq!(short.chars().count(), long.chars().count());
+        assert_eq!(short.matches('•').count(), 4);
+    }
+
+    /// Only the normalised form is masked. Everything else is `None` —
+    /// never a best-effort mask of a string that is not the number, and
+    /// never a mask of erasure's marker.
+    #[test]
+    fn the_payer_mask_refuses_anything_but_a_normalised_number() {
+        for not_normalised in [
+            "+237671234567",
+            "237 671 23 45 67",
+            "237-671-234-567",
+            "23767123456a",
+            "[redacted]",
+            "",
+            "2376712",
+            "2376712345678901",
+            "\u{ff12}\u{ff13}\u{ff17}\u{ff16}\u{ff17}\u{ff11}\u{ff12}\u{ff13}",
+        ] {
+            assert_eq!(
+                payer_msisdn_mask(not_normalised),
+                None,
+                "{not_normalised:?}"
+            );
+        }
     }
 }

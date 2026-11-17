@@ -942,3 +942,19 @@ two triggers refusing `UPDATE`, `DELETE` and `TRUNCATE`. Migration `0061`
 `NOT NULL`. See [backend.md](backend.md)'s account-holder row and
 [verification/2026-11-17-pr396-review.md](verification/2026-11-17-pr396-review.md)
 for the drift figure measured after both.
+
+## 2026-11-17 — migration `0062` (the payer mask), and drift stays 232, measured
+
+Issue #79 item 4. `0062_charges-payer-ref-masked.sql` backfills
+`charges.payer_ref_masked` (a column `model Charge` has declared since it was
+written) and adds one CHECK, `payer_ref_masked_derives_from_payer_ref`, over
+`payer_ref` and `payer_ref_masked`. Two columns, so `cratestack migrate
+baseline` cannot see it in either direction: `postgres_smoke.rs`'s
+`the_cstack_schema_drifts_from_the_migrations_by_a_measured_amount` passed
+unchanged at `EXPECTED_DRIFT_CHANGES = 232` and `EXPECTED_DRIFTED_RELATIONS =
+31` against Postgres 16 migrated through `0062` with the pinned 0.16.0, and the
+new constraint joins that test's list of multi-column CHECKs it reads from
+`pg_constraint`. `schemas/vpay.cstack` gained a `//` comment on the field and
+nothing a generator reads, so `@vpay/dash-client` did not move.
+`schema_migrates_cleanly_on_an_empty_database` pins **62** migrations. Evidence:
+[verification/2026-11-17-payer-mask.md](verification/2026-11-17-payer-mask.md).

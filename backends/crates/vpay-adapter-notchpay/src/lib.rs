@@ -597,6 +597,7 @@ impl ProviderAdapter for Adapter {
             Answer::Refused(refusal) => match mapping::initialize_refusal(&refusal) {
                 Initialized::AlreadyExists => match prior {
                     PriorSubmits::None => Err(ProviderError::Rejected {
+                        context: None,
                         code: FailureCode::ProviderUnavailable,
                         message: "notchpay: initialize answered 409 for this reference, and no \
                                   submit was ever made for the charge: an earlier initialize \

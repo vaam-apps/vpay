@@ -43,8 +43,8 @@ export const OTHER_INTENT: PaymentIntentObject = {
 };
 
 /**
- * A charge whose `payer_ref_masked` is `null` — which is every charge this
- * deployment has ever written, because nothing writes that column.
+ * A charge whose `payer_ref_masked` is `null` — what a redirect-rail charge,
+ * an erased payer's charge or a pre-normalisation row carries.
  */
 export const CHARGE: ChargeSummary = {
   object: "charge",

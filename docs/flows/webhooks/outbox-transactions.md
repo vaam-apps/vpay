@@ -122,6 +122,23 @@ The chain was added in Step 7 for the reason `jobs.last_error` carries one
 operator already has and keeps "connection refused" in its `source()`. The
 excerpt is bounded by migration `0022`'s `excerpt_length` CHECK either way.
 
+**Updated 2026-11-17 (issue #147, RFC-0002 PR 4): the URL in that excerpt,
+and in the `exhausted` alert, is the endpoint's origin only.** An endpoint URL
+may carry a receiver's credential in its query — whether it may is RFC-0002
+D4, still open, so vpay still accepts and stores one in
+`webhook_deliveries.url`. What changed is that vpay no longer repeats it:
+`transport_excerpt` passes the reqwest error through
+`vpay_provider::http::redact_url` before rendering it (`no response: error
+sending request for url (https://host/): …`), and the alert's `url` field is
+`SafeUrl(https://host)`. Proven against a real Postgres by
+`an_exhausted_delivery_never_logs_or_stores_the_endpoints_query`, which
+asserts the token absent and the origin and delivery id present in both the
+captured log and the row, and by the worker's
+`a_failed_attempts_excerpt_keeps_the_origin_and_never_the_query`. Rows
+written before this change still hold the whole URL;
+[runbooks/privacy-telemetry.md](../../runbooks/privacy-telemetry.md) says how
+to find them and that what to do with them is undecided (RFC-0002 D9).
+
 **Acknowledge first, then work.** The delivery client is
 `vpay_provider::http::client_pinned_to`, built per delivery from
 `vpay_worker::ssrf`'s vetted addresses over the same two budgets

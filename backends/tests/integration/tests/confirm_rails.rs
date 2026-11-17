@@ -501,12 +501,14 @@ struct StoredCharge {
     return_url: Option<String>,
     failure_code: Option<String>,
     failure_raw: Option<String>,
+    payer_ref: Option<String>,
+    payer_ref_masked: Option<String>,
 }
 
 async fn stored_charge(pool: &PgPool, payment_intent_id: &str) -> anyhow::Result<StoredCharge> {
     sqlx::query_as::<_, StoredCharge>(
         "SELECT id, state::TEXT AS state, provider_ref_extra, redirect_url, return_url, \
-         failure_code::TEXT AS failure_code, failure_raw \
+         failure_code::TEXT AS failure_code, failure_raw, payer_ref, payer_ref_masked \
          FROM charges WHERE payment_intent_id = $1",
     )
     .bind(payment_intent_id)
@@ -811,6 +813,69 @@ async fn a_push_confirm_the_rail_accepts_moves_the_intent_to_processing() -> any
     Ok(())
 }
 
+/// The payer number as a payer types it: a `+`, the country code, and
+/// separators. Digits chosen so that the first three and last two
+/// (`237`/`67`) differ from the first four and last three (`2376`/`567`) a
+/// different mask rule would keep, and so that no MTN stub keys on it — the
+/// catch-all `202` answers.
+const TYPED_MSISDN: &str = "+237 6 71 23 45 67";
+
+/// Issue #79 decision 4, end to end: a push confirm writes
+/// `charges.payer_ref_masked` — the first three and last two digits of the
+/// **normalised** number — in the same row as the number, before the rail is
+/// called.
+///
+/// Read from Postgres after the response, so the mask is what was committed.
+/// The number is typed with a `+` and separators, so a mask taken from the
+/// raw input (`+23••••67`, or a refusal) rather than from `payer_fields`'
+/// normalised value fails here. Writing `None` again in `open_charge` — the
+/// state this column was in from migration 0004 until 2026-11-17 — fails the
+/// first assertion.
+#[tokio::test]
+async fn a_push_confirm_writes_the_payer_mask_from_the_normalised_number() -> anyhow::Result<()> {
+    let harness = harness().await?;
+    let client = harness.a();
+
+    let intent = client
+        .payment_intents()
+        .create(
+            create_params(PaymentMethodType::MtnMomo),
+            RequestOptions::new(),
+        )
+        .await
+        .context("creating the intent to confirm")?;
+    let confirmed = client
+        .payment_intents()
+        .confirm(
+            &intent.id,
+            ConfirmPaymentIntentParams::mtn_momo(TYPED_MSISDN),
+            RequestOptions::new(),
+        )
+        .await
+        .context("the MTN stub's catch-all 202 accepts this number")?;
+    assert_eq!(confirmed.status, IntentStatus::Processing);
+
+    let charge = stored_charge(&harness.pool, &intent.id).await?;
+    assert_eq!(
+        charge.payer_ref_masked.as_deref(),
+        Some("+237••••67"),
+        "the first three and last two digits of the normalised number, four bullets between"
+    );
+    assert_eq!(
+        charge.payer_ref.as_deref(),
+        Some("237671234567"),
+        "the number the mask was taken from is the normalised one the rail was given"
+    );
+    assert_eq!(
+        charge.payer_ref_masked,
+        vpay_core::privacy::payer_msisdn_mask("237671234567"),
+        "one mask function, so the confirm path and migration 0062's backfill agree"
+    );
+
+    harness.shutdown().await;
+    Ok(())
+}
+
 // ------------------------------------------------------------------ test 2
 
 /// A redirect confirm: `200`, `requires_action`, `next_action.redirect_to_url`
@@ -878,6 +943,17 @@ async fn redirect_confirm_commits_the_rails_material_before_it_answers() -> anyh
         charge.return_url.as_deref(),
         Some(RETURN_URL),
         "the merchant's return_url is a column, written before the rail was called"
+    );
+    // Issue #79: a redirect rail's payer authenticates with the rail and vpay
+    // never learns the number, so there is nothing to mask — and the mask is
+    // NULL rather than something derived from the URL or the token.
+    assert_eq!(
+        (
+            charge.payer_ref.as_deref(),
+            charge.payer_ref_masked.as_deref()
+        ),
+        (None, None),
+        "a redirect rail has no payer number and therefore no payer mask"
     );
     let pay_token = charge
         .provider_ref_extra
@@ -2890,6 +2966,21 @@ async fn a_two_step_confirm_prepares_commits_and_then_prompts() -> anyhow::Resul
         1,
         "one process, by the committed reference"
     );
+
+    // Issue #79: Notch Pay is a push rail with a normalised MSISDN, so its
+    // charge carries the payer mask exactly as MTN's does — written in the
+    // charge insert, before the prepare call.
+    let masked: Option<String> =
+        sqlx::query_scalar("SELECT payer_ref_masked FROM charges WHERE id = $1")
+            .bind(&charge_id)
+            .fetch_one(&harness.pool)
+            .await?;
+    assert_eq!(
+        masked,
+        vpay_core::privacy::payer_msisdn_mask(MSISDN),
+        "a Notch Pay charge carries the payer mask"
+    );
+    assert!(masked.is_some(), "and the mask is not absent");
 
     harness.shutdown().await;
     Ok(())

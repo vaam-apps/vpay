@@ -609,6 +609,10 @@ model Charge {
   currency_code String
   currency Currency @relation(fields: [currency_code], references: [code])
   payer_ref String? @sensitive
+  // `+237••••67`: the first three and last two digits of the normalised
+  // `payer_ref` (issue #79, migration 0062). Its CHECK,
+  // `payer_ref_masked_derives_from_payer_ref`, names two columns, so it has
+  // no `@@check(expr)` to be declared with and the drift report cannot see it.
   payer_ref_masked String?
   failure_code FailureCode?
   // vpay_provider::ChargeStatus::Failed carries both `code` AND `raw`.

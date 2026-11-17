@@ -1030,7 +1030,7 @@ async fn prepare_again(
         }
         Err(error) => {
             match &error {
-                ProviderError::Rejected { code, message } => {
+                ProviderError::Rejected { code, message, .. } => {
                     settle_failed_with(
                         repositories,
                         job,
@@ -1136,7 +1136,7 @@ async fn submit_again(
         }
         Err(error) => {
             match &error {
-                ProviderError::Rejected { code, message } => {
+                ProviderError::Rejected { code, message, .. } => {
                     settle_failed_with(
                         repositories,
                         job,
@@ -2491,6 +2491,7 @@ async fn intent_snapshot(
 /// `charges.failure_raw`, for an operator (`docs/flows/errors.md`).
 fn merchant_message(code: FailureCode, raw: &str) -> String {
     ProviderError::Rejected {
+        context: None,
         code,
         message: raw.to_owned(),
     }
@@ -2869,6 +2870,7 @@ mod tests {
             ),
             (
                 ProviderError::Rejected {
+                    context: None,
                     code: FailureCode::ProviderAccountBlocked,
                     message: "the rail refused our key".to_owned(),
                 },

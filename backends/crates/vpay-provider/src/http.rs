@@ -309,6 +309,87 @@ impl fmt::Debug for HttpBodyError {
     }
 }
 
+impl HttpBodyError {
+    /// [`HttpBodyError::Read`], with the error's URL first cut back to its
+    /// origin by [`redact_url`].
+    ///
+    /// The constructor [`bounded_body`] uses, so the obvious way to build the
+    /// variant is the one that cannot put a payer's number on the `Display`
+    /// chain (issue #147, RFC-0002 PR 4).
+    #[must_use]
+    pub fn read(error: reqwest::Error) -> Self {
+        Self::Read(redact_url(error))
+    }
+}
+
+/// `text`, if it has the shape of a rail's **error code** — and `None` if it
+/// could be anything else.
+///
+/// An adapter that withholds a rail's error body from a `Display` (issue
+/// #147, RFC-0002 PR 4) still wants to name the documented code the rail
+/// answered with (`PAYER_NOT_FOUND`, `INTERNAL_PROCESSING_ERROR`, `503`):
+/// it is what an operator greps for and what a mapping table is fixed from.
+/// But the field is the rail's, and nothing stops a rail putting a sentence
+/// or a number in it. So this admits only a token: 1–64 characters, ASCII
+/// letters, digits, `_`, `-` and `.`, **no whitespace**, and at most four
+/// digits — enough for an HTTP-style or vendor numeric code, too few for a
+/// phone number, an amount with its minor units or a card fragment.
+///
+/// ```
+/// use vpay_provider::http::rail_token;
+///
+/// assert_eq!(rail_token(" PAYER_NOT_FOUND "), Some("PAYER_NOT_FOUND"));
+/// assert_eq!(rail_token("1102"), Some("1102"));
+/// assert_eq!(rail_token("237600000789"), None, "too many digits to be a code");
+/// assert_eq!(rail_token("payer Ada not found"), None, "a sentence is not a code");
+/// ```
+#[must_use]
+pub fn rail_token(text: &str) -> Option<&str> {
+    const MAX_CHARS: usize = 64;
+    const MAX_DIGITS: usize = 4;
+    let text = text.trim();
+    let shaped = !text.is_empty()
+        && text.len() <= MAX_CHARS
+        && text
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+        && text.chars().filter(char::is_ascii_digit).count() <= MAX_DIGITS;
+    shaped.then_some(text)
+}
+
+/// `error`, with the URL it carries cut back to `scheme://host[:port]/`.
+///
+/// `reqwest::Error`'s `Display` ends in `for url (…)` with the request URL
+/// in full, and [`vpay_core::error::source_chain`] and
+/// [`vpay_core::error::display_with_chain`] render that `Display` into every
+/// log line an `ApiError` or `JobError` writes, into `jobs.last_error` and
+/// into `webhook_deliveries.response_excerpt`. A rail's URL is not always
+/// free of the payer — MTN's `basicuserinfo` lookup puts the payer's MSISDN
+/// in the **path** — and a merchant's webhook endpoint may carry a
+/// receiver's credential in its **query** (whether it may is RFC-0002 D4,
+/// open). So the path, query, fragment and userinfo go and the origin stays:
+/// "which host did this fail against" is the part an operator needs and the
+/// part that names nobody (issue #147, RFC-0002 PR 4).
+///
+/// Mutates in place rather than calling [`reqwest::Error::without_url`],
+/// which would drop the host too, and leaves the rest of the error — its
+/// kind, its status, its `source()` — untouched, so a downcast along the
+/// chain still reaches the `reqwest::Error` ADR-0011 wants reachable.
+/// Pinned by `tests::a_redacted_reqwest_error_keeps_its_origin_and_nothing_after_it`.
+#[must_use]
+pub fn redact_url(mut error: reqwest::Error) -> reqwest::Error {
+    if let Some(url) = error.url_mut() {
+        url.set_query(None);
+        url.set_fragment(None);
+        // Both refuse only a URL that cannot carry userinfo at all, which then
+        // has none to remove.
+        let _ = url.set_username("");
+        let _ = url.set_password(None);
+        url.set_path("/");
+    }
+    error
+}
+
 /// A `reqwest::Error` printed without the request URL's path, query,
 /// fragment or userinfo, and without its inner source.
 ///
@@ -324,9 +405,13 @@ impl fmt::Debug for HttpBodyError {
 /// connection, the status if the rail answered, and **which rail host** (the
 /// URL through [`SafeUrl`]). The inner `source` is omitted: it is hyper's or
 /// the OS's text for the cause and is still on the `Display` chain
-/// [`vpay_core::error::source_chain`] renders — which, being reqwest's own
-/// `Display`, still ends in `for url (…)`. That is a separate, wider leak
-/// this type does not touch; see `docs/status/verification/2026-10-01-protected-diagnostics.md`.
+/// [`vpay_core::error::source_chain`] renders. That chain used to end in
+/// reqwest's own `for url (…)` with the whole URL — the wider leak
+/// `docs/status/verification/2026-10-01-protected-diagnostics.md` recorded as
+/// open. [`redact_url`] now closes it where the error is wrapped
+/// (`RailFailure`'s `From` and [`HttpBodyError::read`]), so by the time this
+/// prints, the URL is already an origin; [`SafeUrl`] stays as the second
+/// line of defence for an error built some other way.
 pub(crate) struct RedactedReqwest<'a>(pub(crate) &'a reqwest::Error);
 
 impl fmt::Debug for RedactedReqwest<'_> {
@@ -391,7 +476,7 @@ pub async fn bounded_body(
     // No `with_capacity`: sizing the allocation from `Content-Length` would
     // let a peer that declares 200 KiB and sends nothing still cost 200 KiB.
     let mut body = Vec::new();
-    while let Some(chunk) = response.chunk().await.map_err(HttpBodyError::Read)? {
+    while let Some(chunk) = response.chunk().await.map_err(HttpBodyError::read)? {
         if body.len().saturating_add(chunk.len()) > max {
             return Err(HttpBodyError::TooLarge { max });
         }
@@ -555,6 +640,84 @@ mod tests {
     #[test]
     fn a_client_builds_without_a_process_wide_crypto_provider() {
         assert!(client().is_ok(), "the vendored-roots client must build");
+    }
+
+    /// The canary URL: MTN's `basicuserinfo` shape with the payer's MSISDN in
+    /// the path, plus userinfo, a query credential and a fragment — every
+    /// place a URL can hide something (issue #147, RFC-0002 PR 4).
+    const CANARY_URL: &str = "https://user:pw-canary@127.0.0.1:1/collection/v1_0/accountholder/msisdn/237600000789/basicuserinfo?vpay_token=secref05#frag-canary";
+
+    /// A real `reqwest::Error` against a closed loopback port, carrying
+    /// [`CANARY_URL`] exactly as a live failure would.
+    async fn canary_failure() -> reqwest::Error {
+        let error = client()
+            .expect("the vendored-roots client builds")
+            .get(CANARY_URL)
+            .send()
+            .await
+            .expect_err("nothing listens on loopback port 1");
+        assert!(
+            error.to_string().contains("237600000789"),
+            "the fixture must make reqwest's own Display print the MSISDN, \
+             or the assertions below prove nothing: {error}"
+        );
+        error
+    }
+
+    const CANARY_LITERALS: [&str; 6] = [
+        "237600000789",
+        "basicuserinfo",
+        "secref05",
+        "vpay_token",
+        "pw-canary",
+        "frag-canary",
+    ];
+
+    /// **The `Display` chain of a redacted error names the rail's origin and
+    /// nothing after it**, in both directions: none of the canary's path,
+    /// query, userinfo or fragment survives, and the origin and the cause do.
+    /// Removing [`redact_url`]'s body is the mutation this catches.
+    #[tokio::test]
+    async fn a_redacted_reqwest_error_keeps_its_origin_and_nothing_after_it() {
+        let error = redact_url(canary_failure().await);
+        let rendered = format!("{error} | {}", vpay_core::error::source_chain(&error));
+        for literal in CANARY_LITERALS {
+            assert!(
+                !rendered.contains(literal),
+                "leaked {literal:?} in {rendered}"
+            );
+        }
+        assert!(
+            rendered.contains("https://127.0.0.1:1/"),
+            "no origin in {rendered}"
+        );
+        assert!(
+            error.is_connect(),
+            "the error's kind must survive: {error:?}"
+        );
+    }
+
+    /// The body stage's constructor redacts too, so the `Display` chain of a
+    /// `Malformed` raised from a failed body read is as clean as a
+    /// `Transport`'s. Building `HttpBodyError::Read` directly instead of
+    /// through [`HttpBodyError::read`] is the mutation this catches.
+    #[tokio::test]
+    async fn a_body_read_failure_is_built_without_the_urls_path_or_query() {
+        let error = ProviderError::malformed_from(
+            "mtn_momo: reading the rail's response",
+            HttpBodyError::read(canary_failure().await),
+        );
+        let rendered = vpay_core::error::display_with_chain(&error);
+        for literal in CANARY_LITERALS {
+            assert!(
+                !rendered.contains(literal),
+                "leaked {literal:?} in {rendered}"
+            );
+        }
+        assert!(
+            rendered.contains("mtn_momo") && rendered.contains("127.0.0.1:1"),
+            "the context and the origin must survive: {rendered}"
+        );
     }
 
     /// A `RootCertStore` with nothing in it would still let `client()` return

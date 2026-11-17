@@ -1401,6 +1401,7 @@ mod tests {
             (
                 || {
                     ApiError::Provider(ProviderError::Rejected {
+                        context: None,
                         code: vpay_core::FailureCode::InsufficientFunds,
                         message: "balance too low".into(),
                     })
@@ -1872,6 +1873,70 @@ mod tests {
         );
     }
 
+    /// **A rail error that carries a payer's number never puts it in the
+    /// `api error` log line or the response body** (issue #147, RFC-0002
+    /// PR 4). Two representative error paths, each through the shipping
+    /// [`ApiError::into_response`] and captured at the sink:
+    ///
+    /// * an account-holder lookup that fails in transport — a real
+    ///   `reqwest::Error` against a closed port, its URL MTN's
+    ///   `basicuserinfo` shape with the MSISDN in the path, wrapped by
+    ///   [`ProviderError::transport_from`] exactly as the adapters wrap it.
+    ///   Its `source_chain` used to end in reqwest's `for url (…)`;
+    /// * a decline whose rail text quotes the payer back. Its `Display`
+    ///   used to carry the text after the code.
+    ///
+    /// Both directions: the MSISDN never appears; the code an operator
+    /// greps for and the rail's origin always do.
+    #[tokio::test]
+    async fn a_rail_error_carrying_a_payers_number_never_reaches_the_log_or_the_body() {
+        const MSISDN: &str = "237600000913";
+        let failure = vpay_provider::http::client()
+            .expect("the vendored-roots client builds")
+            .get(format!(
+                "http://127.0.0.1:1/collection/v1_0/accountholder/msisdn/{MSISDN}/basicuserinfo"
+            ))
+            .send()
+            .await
+            .expect_err("nothing listens on loopback port 1");
+        assert!(
+            failure.to_string().contains(MSISDN),
+            "the fixture must make reqwest print the number: {failure}"
+        );
+
+        let cases = [
+            (
+                ApiError::Provider(ProviderError::transport_from(
+                    "mtn_momo: the request to the rail failed",
+                    failure,
+                )),
+                "provider_unavailable",
+                "127.0.0.1:1",
+            ),
+            (
+                ApiError::Provider(ProviderError::Rejected {
+                    context: None,
+                    code: vpay_core::FailureCode::InvalidPayer,
+                    message: format!("subscriber {MSISDN} is not registered"),
+                }),
+                "charge_declined",
+                "invalid_payer",
+            ),
+        ];
+        for (error, code, kept) in cases {
+            let (response, log) = with_captured_log(|| error.into_response());
+            let body = body_string(response).await;
+            for (sink, text) in [("log", &log), ("body", &body)] {
+                assert!(
+                    !text.contains(MSISDN),
+                    "the {sink} leaked the MSISDN: {text}"
+                );
+            }
+            assert!(log.contains(code), "the log must carry the code: {log}");
+            assert!(log.contains(kept), "the log lost {kept:?}: {log}");
+        }
+    }
+
     #[test]
     fn severity_decides_the_level_and_a_page_is_marked_for_alerting() {
         let (_, info) = with_captured_log(|| ApiError::Internal("x".into()).log());
@@ -2196,10 +2261,12 @@ mod tests {
 
         assert_delegates!(
             ApiError::Provider(ProviderError::Rejected {
+                context: None,
                 code: vpay_core::FailureCode::ProviderAccountBlocked,
                 message: "partner account suspended".into(),
             }),
             ProviderError::Rejected {
+                context: None,
                 code: vpay_core::FailureCode::ProviderAccountBlocked,
                 message: "partner account suspended".into(),
             }
@@ -2243,6 +2310,7 @@ mod tests {
         // actually disagrees with its category's defaults — otherwise a
         // category-only delegation would pass them all.
         let declined = ProviderError::Rejected {
+            context: None,
             code: vpay_core::FailureCode::ProviderAccountBlocked,
             message: "partner account suspended".into(),
         };

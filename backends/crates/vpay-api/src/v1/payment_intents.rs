@@ -1510,7 +1510,21 @@ async fn open_charge(
             // settles in a different one.
             currency_code: intent.currency_code.clone(),
             payer_ref: target.payer_ref.clone(),
-            payer_ref_masked: None,
+            // Issue #79 decision 4: the staff-facing mask, in the SAME insert
+            // as the number it masks, so no committed row ever holds one
+            // without the other. (The decision says "at `open_attempt`":
+            // that is where this row was built when it was written, before
+            // ADR-0032 split the charge write out into this step.)
+            //
+            // From the number exactly as the rail is given it, which on a
+            // push rail is `payer_fields`' normalised E.164 digits — never
+            // from what the payer typed. A redirect rail has no number and
+            // gets no mask; so does anything the mask does not recognise as
+            // normalised, rather than a mask of the wrong string.
+            payer_ref_masked: target
+                .payer_ref
+                .as_deref()
+                .and_then(vpay_core::privacy::payer_msisdn_mask),
             method_type: target
                 .method_type
                 .map(|method_type| method_type.as_wire_str().to_owned()),
@@ -1802,7 +1816,7 @@ async fn refuse_confirm(
         // arm of [`finish_confirm`], on purpose: an answered row beside a
         // `submitting` charge is what `recovery_step` reads as `Advance`,
         // which is wrong for a decline. See that function's doc.
-        ProviderError::Rejected { code, message } => {
+        ProviderError::Rejected { code, message, .. } => {
             persist_decline(
                 repositories,
                 scope,
@@ -3685,6 +3699,7 @@ mod tests {
         );
         assert_eq!(
             error_kind(&ProviderError::Rejected {
+                context: None,
                 code: vpay_core::FailureCode::InsufficientFunds,
                 message: "NOT_ENOUGH_FUNDS".to_owned(),
             }),

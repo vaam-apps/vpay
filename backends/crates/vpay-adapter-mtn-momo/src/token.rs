@@ -53,7 +53,6 @@ use std::time::{Duration, Instant};
 
 use reqwest::header::{CONTENT_TYPE, HeaderName, HeaderValue};
 use serde::Deserialize;
-use vpay_core::FailureCode;
 use vpay_provider::token::CachedToken;
 use vpay_provider::{ProviderConfig, ProviderError};
 
@@ -428,7 +427,7 @@ impl ExpiresIn {
 ///
 /// # Errors
 ///
-/// * [`ProviderError::Rejected`] with [`FailureCode::ProviderAccountBlocked`]
+/// * [`ProviderError::Rejected`] with [`vpay_core::FailureCode::ProviderAccountBlocked`]
 ///   on a 401/403. That is *our* partner credentials being refused, not a
 ///   payer's problem, and `docs/flows/failures.md` says it pages. Retrying a
 ///   mint with the same rejected key would only turn a page into a loop.
@@ -473,10 +472,13 @@ pub(crate) async fn mint(
     let (status, body) = crate::read_body(response).await?;
     if status.is_success() {
         let parsed: TokenResponse = serde_json::from_str(&body).map_err(|e| {
-            // The body is *not* included: it contains the token.
-            ProviderError::malformed(format!(
-                "mtn_momo: token response is not the documented shape: {e}"
-            ))
+            // The body is *not* included: it contains the token. Nor is
+            // serde's own message, which quotes the scalar it choked on —
+            // possibly the token itself (issue #147).
+            ProviderError::malformed_json(
+                "mtn_momo: token response is not the documented shape",
+                &e,
+            )
         })?;
         tracing::debug!(
             rail = "mtn_momo",
@@ -492,10 +494,9 @@ pub(crate) async fn mint(
     }
 
     Err(match status.as_u16() {
-        401 | 403 => ProviderError::Rejected {
-            code: FailureCode::ProviderAccountBlocked,
-            message: format!("mtn_momo: the rail refused our credentials (HTTP {status})"),
-        },
+        401 | 403 => ProviderError::credentials_refused(format!(
+            "mtn_momo: the token endpoint refused our credentials (HTTP {status})"
+        )),
         _ if status.is_server_error() => {
             ProviderError::transport(format!("mtn_momo: token endpoint answered HTTP {status}"))
         }
