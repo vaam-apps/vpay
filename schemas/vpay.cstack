@@ -158,7 +158,11 @@ enum IntentStatus {
 }
 
 // backends/crates/vpay-core/src/state.rs — ChargeState. Charge, unlike
-// PaymentIntent, does have a real terminal `failed`.
+// PaymentIntent, does have a real terminal `failed`. `requires_review` since
+// migration 0059 (issue #96): the rail reported the charge paid after its
+// intent was canceled, and the settlement parked it for an operator. The
+// label is added to charges_state_enum_check in the same migration, so the
+// drift report sees one enum on both sides.
 enum ChargeState {
   submitting
   submitted
@@ -166,6 +170,7 @@ enum ChargeState {
   unresolved
   succeeded
   failed
+  requires_review
 }
 
 // backends/crates/vpay-core/src/failure.rs — FailureCode. Closed vocabulary

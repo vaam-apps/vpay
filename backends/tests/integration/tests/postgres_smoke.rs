@@ -189,8 +189,8 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
         .context("querying sqlx's own migration bookkeeping table")?
         .get("n");
     assert_eq!(
-        applied, 58,
-        "all fifty-eight migration files under backends/migrations should be recorded as applied \
+        applied, 59,
+        "all fifty-nine migration files under backends/migrations should be recorded as applied \
          (0001-0008 plus 0009 drop merchant_api_keys, 0010 reshape oauth_signing_keys, \
          0011 oauth_client_assertion_jtis, 0012 disabled_clients, \
          0013 add-authkestra-op-0-7-columns, Step 2's 0014 payment-intent API fields, \
@@ -395,7 +395,7 @@ async fn schema_migrates_cleanly_on_an_empty_database() -> anyhow::Result<()> {
          decision for each routed charge, written in the transaction that \
          opens it (D10), and 0054, which copies the charge's rail and type \
          onto payment_intents.charge_rail and charge_method_type -- what /v1 \
-         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VPA-2's 0058, which creates staff_sessions, oauth_authorization_codes and staff_sso_attempts again, empty and exactly as 0035, 0040 and 0050 shipped them, and drops credentials_password_and_totp_are_retired so a password or a TOTP seed may be stored (owner ruling R5: authentication methods are deployment configuration), and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock.)"
+         renders as payment_method_details, D10 as amended on 2026-10-24. and VP-6a's 0056, console_keys: a person's registered console signing key, the 30-day life as a CHECK, with the three sign-in tables and the password and TOTP rows dropped in the same step, and 0057, console_keys_thumbprint_prefix_idx, a text_pattern_ops index on console_keys.thumbprint (partial on revoked_at IS NULL) that the signed transport's per-request lookup by COSE kid can use under any collation, and VPA-2's 0058, which creates staff_sessions, oauth_authorization_codes and staff_sso_attempts again, empty and exactly as 0035, 0040 and 0050 shipped them, and drops credentials_password_and_totp_are_retired so a password or a TOTP seed may be stored (owner ruling R5: authentication methods are deployment configuration), and VP-3's 0055, envelope_nonces: the replay cache of the signed /v1 transport, one row per accepted (kid, cti) with the instant its window closes, claimed by one INSERT ... ON CONFLICT DO UPDATE ... WHERE expired ... RETURNING so that two replicas opening the same captured request are serialised by the row lock., and issue #96's 0059, which adds requires_review to charges_state_enum_check: a charge the rail reported paid after its intent was canceled, parked by the settlement for an operator instead of rolled back, and deliberately absent from charges_live_idx so nothing polls it again)"
     );
 
     // And the tables they create are genuinely queryable. merchant_api_keys
@@ -6746,6 +6746,20 @@ async fn every_enum_check_0037_created_refuses_a_value_outside_it() -> anyhow::R
                 )
             })?;
     }
+    // The seventh label, which 0059 added to the same constraint (issue #96).
+    // Not in `CHARGE_STATE_LABELS`, because that constant is the *native
+    // enum's* six and the 0037 round-trip test above restores exactly that
+    // type. Only `vpay_db::settlement` writes it, and only when a rail's
+    // success meets a canceled intent — so a typo here would stay silent
+    // until the first such race, and then fail the very transaction that
+    // exists to record the money.
+    sqlx::query("UPDATE charges SET state = 'requires_review' WHERE id = 'ch_vocab'")
+        .execute(&pool)
+        .await
+        .context(
+            "charges_state_enum_check refused requires_review, which migration 0059 added and \
+             vpay_db::settlement writes when a rail-accepted payment meets a canceled intent",
+        )?;
     for status in INTENT_STATUS_LABELS {
         sqlx::query("UPDATE payment_intents SET status = $1 WHERE id = 'pi_vocab'")
             .bind(status)

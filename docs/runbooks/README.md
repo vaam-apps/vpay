@@ -6,6 +6,7 @@ do, and how do I know it is fixed.
 | Runbook                                                      | Trigger                                                                                                                                                                                                                                                | Alert                                        |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------- |
 | [unresolved-charges.md](unresolved-charges.md)               | A charge passed 24h with no terminal answer                                                                                                                                                                                                            | `VpayUnresolvedChargesRising`                |
+| [charges-requires-review.md](charges-requires-review.md)     | The rail reported a charge paid after its intent was cancelled; the charge was parked in `requires_review` and nothing was refunded (issue #96)                                                                                                        | `VpayChargeRequiresReview`                   |
 | [provider-error-rate.md](provider-error-rate.md)             | Failed rail calls rising as a share of all calls (any `error_kind`)                                                                                                                                                                                    | `VpayProviderErrorRateHigh`                  |
 | [worker-queue.md](worker-queue.md)                           | A dead-lettered job, a stranded lease, or a rail contradicting a settled charge                                                                                                                                                                        | `VpayJobQueueBehind`, `VpayJobsDeadLettered` |
 | [callback-endpoints.md](callback-endpoints.md)               | No `ensure_callbacks` pass confirmed vpay's callback endpoint on a rail for a whole window (3h): `missing`, `drifted`, `failed` or `locked`                                                                                                            | `VpayCallbackEndpointUnconfirmed`            |
@@ -37,7 +38,8 @@ trusted on its own:
   default, and `metrics.prometheusRule.enabled` is `false`. So these rules
   have never been _evaluated_ against real series — the metric existing and
   the alert working are two claims, and only the first has evidence.
-  _(Since 2026-10-23 the six rules are evaluated against **synthetic**
+  _(Since 2026-10-23 the rules — six then, seven since
+  `VpayChargeRequiresReview` joined them on 2026-11-17 — are evaluated against **synthetic**
   series: `just test-alert-rules` renders the chart's rules and runs
   `promtool test rules` over `deploy/helm/vpay/ci/prometheusrule.test.yaml`
   in CI's `deploy (helm chart)` job, with a firing and a silent case per

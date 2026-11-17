@@ -275,10 +275,15 @@ NOTHING`, then `TxRepositories::pull_forward_in_tx`), and **the floor has a
   `vpay_api::provider_callback::PULL_FORWARD_FLOOR` and
   `vpay_worker::poll_delay(0)` and fails if either moves.
 - **The state table.** `vpay_core::settlement::settle(StatusKind, ChargeState)`
-  is a `const fn`, total and wildcard-free in both dimensions; its 24-pair
-  table is transcribed as a test, and a second test proves the transcription
-  covers every pair exactly once. A terminal charge answers `None`: no rail
-  answer moves one, in either direction.
+  is a `const fn`, total and wildcard-free in both dimensions; its 28-pair
+  table (24 until 2026-11-17, when `requires_review` became the seventh
+  `ChargeState`) is transcribed as a test, and a second test proves the
+  transcription covers every pair exactly once. A terminal charge answers
+  `None`: no rail answer moves one, in either direction. `requires_review`
+  is terminal in this sense. It is where `vpay_db::settlement` parks a charge
+  the rail reported paid after its intent was canceled (issue #96, see
+  [payment-lifecycle.md](payment-lifecycle.md)), so the poll ladder never
+  touches it again and a second delivery of the rail's answer is a no-op.
 - **The 24-hour escalation, and it does not stop the polling.**
   `RecoveryPolicy::unresolved_after` (default 24 h, measured from
   `charges.created_at`, which is written before the rail is called) moves the

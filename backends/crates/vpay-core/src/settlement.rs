@@ -129,7 +129,12 @@ pub const fn settle(status: StatusKind, charge: ChargeState) -> Option<Settlemen
         // a `succeeded` charge that a later poll calls `failed` is a rail
         // contradiction for a human to reconcile against a settlement
         // statement, never something this function silently applies.
-        ChargeState::Succeeded | ChargeState::Failed => None,
+        //
+        // `RequiresReview` is the same answer for the same reason, and it is
+        // also what makes a parked charge idempotent: the poll and a callback
+        // can both deliver the rail's `succeeded`, and only the first may park
+        // it and alert (issue #96).
+        ChargeState::Succeeded | ChargeState::Failed | ChargeState::RequiresReview => None,
         ChargeState::Submitting | ChargeState::Submitted => match status {
             // The rail has it and is working on it: the ambiguity of
             // "submitted" is over, so the charge advances to the state that
@@ -166,7 +171,9 @@ pub const fn settle(status: StatusKind, charge: ChargeState) -> Option<Settlemen
 /// until the rail's monthly statement, so the caller finishes the job and
 /// raises an alert (`docs/runbooks/unresolved-charges.md`).
 ///
-/// Only the two money-bearing disagreements count; see
+/// Only the money-bearing disagreements count: a decline against a charge
+/// recorded as paid (`succeeded`, or parked in `requires_review` since issue
+/// #96), and a success against a `failed` one. See
 /// [docs/reference/vpay-core.md § contradictions](../../../../docs/reference/vpay-core.md#contradictions)
 /// for why `Pending` and `NotFound` deliberately do not.
 ///
@@ -204,6 +211,15 @@ pub const fn contradiction(status: StatusKind, charge: ChargeState) -> bool {
             StatusKind::Succeeded => true,
             StatusKind::Pending | StatusKind::Failed(_) | StatusKind::NotFound => false,
         },
+        // Parked because the rail said the money moved (issue #96). A later
+        // `failed` reverses that, exactly as it would for `Succeeded`, and it
+        // changes what the operator working the parked charge has to do. A
+        // second `succeeded` is the duplicate delivery the parking absorbs,
+        // and alerting on it would page twice for one charge.
+        ChargeState::RequiresReview => match status {
+            StatusKind::Failed(_) => true,
+            StatusKind::Pending | StatusKind::Succeeded | StatusKind::NotFound => false,
+        },
     }
 }
 
@@ -213,13 +229,14 @@ mod tests {
 
     /// Every [`ChargeState`], written out rather than derived, so adding one
     /// makes the exhaustiveness assertion below fail to compile.
-    const STATES: [ChargeState; 6] = [
+    const STATES: [ChargeState; 7] = [
         ChargeState::Submitting,
         ChargeState::Submitted,
         ChargeState::Pending,
         ChargeState::Unresolved,
         ChargeState::Succeeded,
         ChargeState::Failed,
+        ChargeState::RequiresReview,
     ];
 
     /// One representative decline code. The table does not branch on which
@@ -239,7 +256,7 @@ mod tests {
     /// The whole of §3 of `docs/plans/2026-09-03-step4-worker.md`, as data.
     /// Every `(StatusKind × ChargeState)` pair appears exactly once; the
     /// count assertion below is what keeps that true.
-    const TABLE: [(StatusKind, ChargeState, Option<Settlement>); 24] = [
+    const TABLE: [(StatusKind, ChargeState, Option<Settlement>); 28] = [
         // --- the rail is still working on it
         (
             StatusKind::Pending,
@@ -263,6 +280,7 @@ mod tests {
         ),
         (StatusKind::Pending, ChargeState::Succeeded, None),
         (StatusKind::Pending, ChargeState::Failed, None),
+        (StatusKind::Pending, ChargeState::RequiresReview, None),
         // --- the money moved
         (
             StatusKind::Succeeded,
@@ -286,6 +304,7 @@ mod tests {
         ),
         (StatusKind::Succeeded, ChargeState::Succeeded, None),
         (StatusKind::Succeeded, ChargeState::Failed, None),
+        (StatusKind::Succeeded, ChargeState::RequiresReview, None),
         // --- the rail refused
         (
             StatusKind::Failed(DECLINE),
@@ -309,6 +328,11 @@ mod tests {
         ),
         (StatusKind::Failed(DECLINE), ChargeState::Succeeded, None),
         (StatusKind::Failed(DECLINE), ChargeState::Failed, None),
+        (
+            StatusKind::Failed(DECLINE),
+            ChargeState::RequiresReview,
+            None,
+        ),
         // --- the rail has no record
         (
             StatusKind::NotFound,
@@ -332,9 +356,10 @@ mod tests {
         ),
         (StatusKind::NotFound, ChargeState::Succeeded, None),
         (StatusKind::NotFound, ChargeState::Failed, None),
+        (StatusKind::NotFound, ChargeState::RequiresReview, None),
     ];
 
-    /// The two money-bearing disagreements, and nothing else. Written as the
+    /// The money-bearing disagreements, and nothing else. Written as the
     /// full cartesian product rather than as two positive cases, because the
     /// bug this guards against is an over-eager alert: a rule that fires on
     /// `Pending` or `NotFound` against a settled charge pages on every late
@@ -346,8 +371,10 @@ mod tests {
             for kind in kinds() {
                 let expected = matches!(
                     (kind, state),
-                    (StatusKind::Failed(_), ChargeState::Succeeded)
-                        | (StatusKind::Succeeded, ChargeState::Failed)
+                    (
+                        StatusKind::Failed(_),
+                        ChargeState::Succeeded | ChargeState::RequiresReview
+                    ) | (StatusKind::Succeeded, ChargeState::Failed)
                 );
                 assert_eq!(
                     contradiction(kind, state),

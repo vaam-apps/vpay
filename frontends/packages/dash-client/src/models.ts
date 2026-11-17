@@ -575,7 +575,7 @@ export const IntentStatusValues = [
   "canceled",
 ] as const satisfies readonly IntentStatus[];
 
-export type ChargeState = 'submitting' | 'submitted' | 'pending' | 'unresolved' | 'succeeded' | 'failed';
+export type ChargeState = 'submitting' | 'submitted' | 'pending' | 'unresolved' | 'succeeded' | 'failed' | 'requires_review';
 export const ChargeStateValues = [
   "submitting",
   "submitted",
@@ -583,6 +583,7 @@ export const ChargeStateValues = [
   "unresolved",
   "succeeded",
   "failed",
+  "requires_review",
 ] as const satisfies readonly ChargeState[];
 
 export type FailureCode = 'insufficient_funds' | 'payer_timeout' | 'payer_declined' | 'invalid_payer' | 'payer_limit_reached' | 'payer_account_blocked' | 'invalid_payee' | 'payee_account_blocked' | 'provider_account_blocked' | 'provider_unavailable' | 'provider_error';

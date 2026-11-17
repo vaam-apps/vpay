@@ -181,19 +181,37 @@ close the other one: a confirm may commit its charge **while** a cancel's
 transaction is open, which is a legal interleaving of two requests and not a
 defect in either. What stops that becoming a payment settled onto a withdrawn
 intent is `payment_intents::succeed_after_submission`'s own
-`WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in: the
-settlement blocks on the row the cancel holds, re-evaluates against the
-committed `canceled` row, matches nothing, and the whole settlement
-transaction rolls back with `DbError::WriteMatchedNoRow`.
+`WHERE … status IN (SETTLEABLE_STATUSES)`, which `canceled` is not in. Since
+migration `0054` the confirm's charge insert writes the intent's row, so it
+waits for the cancel and commits onto the `canceled` intent. The rail is
+called, and when its answer is settled the intent guard matches nothing.
 
-That is a **loud** outcome and not a safe one: the rail accepted a payment for
-an intent that was withdrawn, the charge is left where a retry expects it, and
-`vpay_db::settlement` classifies the answer as something that pages rather
-than as a merchant's problem. Reconciling it is an operator's job and vpay has
-no repair path for it. `a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event`
-in `backends/crates/vpay-db/tests/repositories.rs` forces the interleaving with
-a barrier and pins all four halves: one status, one event, the settlement's
-error, and the charge unchanged.
+**Since 2026-11-17 (issue #96) that charge is parked, not rolled back.**
+Until then the whole settlement transaction rolled back with
+`DbError::WriteMatchedNoRow`. The charge stayed live, the rail's transaction
+id was discarded, and the poll job retried the same refusal until it was
+dead-lettered: a page was the only record that money had moved. Now the
+settlement commits the charge as **`requires_review`** with its `amount`,
+`provider_reference_id` and `provider_txn_id` intact. The intent stays
+`canceled`, the merchant's one terminal event is still
+`payment_intent.canceled`, and nothing is posted, flipped or refunded. After
+the commit `vpay_charge_transitions_total{to="requires_review"}` counts it
+once and an `alert = true` line names the charge id
+(`VpayChargeRequiresReview`,
+[runbooks/charges-requires-review.md](../runbooks/charges-requires-review.md)).
+`requires_review` is not a live state, so a second delivery of the same rail
+answer finds nothing to do and alerts nothing.
+
+**What is still missing is the repair.** No operator action moves a charge
+out of `requires_review`: neither a refund through the rail nor "mark
+reconciled" exists, and no dashboard list can find parked charges (`/dash/v1`
+lists intents by intent status only). Those are the open half of issue #96.
+`a_cancel_racing_a_settlement_leaves_one_terminal_state_and_one_event` in
+`backends/crates/vpay-db/tests/repositories.rs` forces the interleaving with
+a barrier and pins one status, one event and the parked charge.
+`a_settlement_onto_a_canceled_intent_parks_the_charge_for_review_once` pins
+what the parking keeps, what it must not write, and that a duplicate delivery
+neither parks twice nor alerts twice.
 
 **Updated 2026-09-03 (Step 3): `confirm` now moves the intent, because it
 now reaches a rail.** It commits a charge in `submitting`, records the

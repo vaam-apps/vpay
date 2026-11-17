@@ -151,6 +151,14 @@ pub enum ChargeState {
     Succeeded,
     /// The rail refused.
     Failed,
+    /// The rail says the money moved, and the intent it was for had already
+    /// been `canceled` (issue #96). Terminal for the rail and for the
+    /// reconciler: nothing polls it and no rail answer moves it. The intent
+    /// stays `canceled`, no event is written, nothing is posted to the ledger
+    /// and nothing is refunded; an operator decides what happens to the money
+    /// (`docs/runbooks/charges-requires-review.md`). Reached only by
+    /// `vpay_db::Settlement::apply_succeeded`.
+    RequiresReview,
 }
 
 impl ChargeState {
@@ -174,6 +182,10 @@ impl ChargeState {
     /// Whether the rail has given a final answer. Exactly the complement of
     /// [`ChargeState::is_live`].
     ///
+    /// [`ChargeState::RequiresReview`] is terminal in this sense: the rail's
+    /// answer is in and final. What is still open about it is a person's
+    /// decision, not the rail's.
+    ///
     /// ```
     /// use vpay_core::ChargeState;
     ///
@@ -183,7 +195,7 @@ impl ChargeState {
     /// ```
     #[must_use]
     pub const fn is_terminal(self) -> bool {
-        matches!(self, Self::Succeeded | Self::Failed)
+        matches!(self, Self::Succeeded | Self::Failed | Self::RequiresReview)
     }
 }
 
@@ -420,13 +432,14 @@ impl ChargeState {
 
     /// Every charge state, live ones first. Read by
     /// [`ChargeState::from_wire`].
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Submitting,
         Self::Submitted,
         Self::Pending,
         Self::Unresolved,
         Self::Succeeded,
         Self::Failed,
+        Self::RequiresReview,
     ];
 
     /// The exact label this state carries in Postgres — see
@@ -449,6 +462,7 @@ impl ChargeState {
             Self::Unresolved => "unresolved",
             Self::Succeeded => "succeeded",
             Self::Failed => "failed",
+            Self::RequiresReview => "requires_review",
         }
     }
 
@@ -566,6 +580,19 @@ mod tests {
     fn unresolved_is_still_polled() {
         assert!(ChargeState::Unresolved.is_live());
         assert!(!ChargeState::Unresolved.is_terminal());
+    }
+
+    /// A parked charge is never polled again (issue #96): the rail has
+    /// answered, and a poll that could move it would let a second delivery of
+    /// the same answer park it — and alert — a second time.
+    #[test]
+    fn a_charge_parked_for_review_is_not_polled() {
+        assert!(!ChargeState::RequiresReview.is_live());
+        assert!(ChargeState::RequiresReview.is_terminal());
+        assert_eq!(
+            ChargeState::from_wire("requires_review"),
+            Some(ChargeState::RequiresReview)
+        );
     }
 
     #[test]
@@ -789,6 +816,7 @@ mod tests {
             ChargeState::Unresolved,
             ChargeState::Succeeded,
             ChargeState::Failed,
+            ChargeState::RequiresReview,
         ] {
             let serialised =
                 serde_json::to_string(&state).expect("a ChargeState serialises as a string");
@@ -845,6 +873,7 @@ mod tests {
             ChargeState::Unresolved,
             ChargeState::Succeeded,
             ChargeState::Failed,
+            ChargeState::RequiresReview,
         ] {
             assert_ne!(s.is_live(), s.is_terminal(), "{s:?} is neither or both");
         }
