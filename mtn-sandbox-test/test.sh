@@ -389,17 +389,17 @@ poll_payment() {
 
 	write_payment_json
 	case $OUTCOME in
-		SUCCESSFUL)
-			step "Payment $PAY_N SUCCESSFUL at $SUCCEEDED_AT (local: $SUCCEEDED_AT_LOCAL)"
-			info "Evidence: evidence/payment-$PAY_N/"
-			info "Now check the inspector and fill in evidence-template.md."
-			;;
-		GAVE_UP)
-			die "payment $PAY_N was still ${status:-unknown} after ${POLL_TIMEOUT_S}s. Re-check later with ./test.sh status $PAY_N"
-			;;
-		*)
-			die "payment $PAY_N ended with status $OUTCOME; see evidence/payment-$PAY_N/final-status-response.json"
-			;;
+	SUCCESSFUL)
+		step "Payment $PAY_N SUCCESSFUL at $SUCCEEDED_AT (local: $SUCCEEDED_AT_LOCAL)"
+		info "Evidence: evidence/payment-$PAY_N/"
+		info "Now check the inspector and fill in evidence-template.md."
+		;;
+	GAVE_UP)
+		die "payment $PAY_N was still ${status:-unknown} after ${POLL_TIMEOUT_S}s. Re-check later with ./test.sh status $PAY_N"
+		;;
+	*)
+		die "payment $PAY_N ended with status $OUTCOME; see evidence/payment-$PAY_N/final-status-response.json"
+		;;
 	esac
 }
 
@@ -515,19 +515,19 @@ main() {
 	local cmd=${1:-help}
 	shift || true
 	case $cmd in
-		help | -h | --help)
-			usage
-			return 0
-			;;
-		reset)
-			cmd_reset
-			return 0
-			;;
-		setup | pay | status) ;;
-		*)
-			usage >&2
-			exit 2
-			;;
+	help | -h | --help)
+		usage
+		return 0
+		;;
+	reset)
+		cmd_reset
+		return 0
+		;;
+	setup | pay | status) ;;
+	*)
+		usage >&2
+		exit 2
+		;;
 	esac
 
 	require_tools
@@ -537,9 +537,9 @@ main() {
 	trap on_exit EXIT
 
 	case $cmd in
-		setup) cmd_setup "$@" ;;
-		pay) cmd_pay "$@" ;;
-		status) cmd_status "$@" ;;
+	setup) cmd_setup "$@" ;;
+	pay) cmd_pay "$@" ;;
+	status) cmd_status "$@" ;;
 	esac
 }
 
