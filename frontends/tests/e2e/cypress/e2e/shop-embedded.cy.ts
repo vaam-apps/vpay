@@ -367,12 +367,25 @@ describe("the shop, paid inside an iframe on its own page", () => {
       inFrame("#vpay-msisdn").type(MTN.unknownPayer);
       inFrame('button[type="submit"]').click();
 
-      // The payer's half: the confirm is a 409 and vpay's page returns them
-      // to the number they submitted, with the reason on the field. There is
-      // no outcome screen for this one — nothing was ever in flight.
-      inFrame('[data-testid="msisdn-problem"]', { timeout: 60_000 })
-        .should("be.visible")
-        .and("not.be.empty");
+      // The payer's half: the confirm is a `409 charge_declined`, and since
+      // 2026-11-18 (vpay#408) vpay's page re-reads the intent and lands on the
+      // FAILED OUTCOME with the taxonomy's own reason — not the number form
+      // with a problem on it, because the intent's one charge is spent and a
+      // second confirm would be refused. Until #408 this asserted
+      // `[data-testid="msisdn-problem"]`, the screen #408 retired.
+      inFrame('[data-outcome="failed"]', { timeout: 60_000 }).should(
+        "be.visible",
+      );
+      // The reason is the decline's own (`invalid_payer`), not the
+      // `failure.unknown` fallback #408 shows only when the re-read fails.
+      // Either dictionary: the page picks its language from the browser's
+      // Accept-Language.
+      inFrame('[data-testid="outcome-body"]')
+        .invoke("text")
+        .should(
+          "match",
+          /This number cannot pay with the method you chose|Ce numéro ne peut pas payer avec le moyen choisi/,
+        );
 
       // The merchant's half, and the one that did not exist before: the
       // shop's own database, moved by its own webhook handler after verifying
