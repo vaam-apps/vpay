@@ -361,6 +361,38 @@ describe("the shop, paid inside an iframe on its own page", () => {
     // nobody having watched it happen.
     buyWithoutLeavingTheShop();
 
+    // WHY `vpay:complete` IS HELD BACK FROM THE SHOP HERE.
+    //
+    // Since vpay#408 a decline at confirm lands on the failed outcome AND
+    // posts one `vpay:complete`. The shop's `onComplete` answers that with
+    // `router.push('/orders/{id}/return')`, which unmounts the iframe — so
+    // the outcome screen below lived only as long as that navigation took,
+    // and asserting it raced the shop (green on #409's run, red on #401's).
+    // A capture-phase listener records the message and stops it reaching the
+    // SDK, exactly as the Orange case does for `vpay:redirect`, so the frame
+    // stays put. What that does NOT prove — the shop's `onComplete`
+    // navigation — the MTN success case above proves on the same component.
+    cy.window().then((win) => {
+      const store: { origin: string; data: unknown }[] = [];
+      (win as unknown as { __vpayCompletes: typeof store }).__vpayCompletes =
+        store;
+      win.addEventListener(
+        "message",
+        (event: MessageEvent) => {
+          const data: unknown = event.data;
+          if (
+            typeof data === "object" &&
+            data !== null &&
+            (data as { type?: unknown }).type === "vpay:complete"
+          ) {
+            store.push({ origin: event.origin, data });
+            event.stopImmediatePropagation();
+          }
+        },
+        true,
+      );
+    });
+
     orderIdFromUrl().then((orderId) => {
       inFrame('[data-screen="select_rail"]').should("be.visible");
       inFrame('button[data-rail="mtn_momo"]').click();
@@ -386,6 +418,21 @@ describe("the shop, paid inside an iframe on its own page", () => {
           "match",
           /This number cannot pay with the method you chose|Ce numéro ne peut pas payer avec le moyen choisi/,
         );
+
+      // And the frame told the shop exactly once, from vpay's own origin —
+      // the cue the shop's `onComplete` would have acted on.
+      cy.window()
+        .its("__vpayCompletes", { timeout: 60_000 })
+        .should("have.length", 1)
+        .then((completes) => {
+          const [message] = completes as unknown as {
+            origin: string;
+            data: unknown;
+          }[];
+          expect(message?.origin, "the message's origin").to.equal(
+            checkoutOrigin(),
+          );
+        });
 
       // The merchant's half, and the one that did not exist before: the
       // shop's own database, moved by its own webhook handler after verifying
