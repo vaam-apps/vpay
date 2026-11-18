@@ -33,6 +33,7 @@ import { normalizeCameroonMsisdn } from "./msisdn";
 import {
   INITIAL_STATE,
   contextOf,
+  intentOutcome,
   redirectUrlOf,
   reduce,
   type CheckoutContext,
@@ -46,6 +47,13 @@ import type {
   CheckoutSessionView,
   PaymentIntent,
 } from "./types";
+
+/**
+ * The code every rail decision at confirm answers with (`409`,
+ * `ProviderError::Rejected`'s `code()`). The taxonomy's own code is not in
+ * the envelope; it is on the intent's `last_payment_error`.
+ */
+const CHARGE_DECLINED = "charge_declined";
 
 /** Maps a `@vaam-apps/vpay-stripe-js` error onto a message this page can show in either language. */
 export function messageForStripeError(error: StripeError): MessageKey {
@@ -322,6 +330,10 @@ export class CheckoutController {
    */
   async #afterConfirm(result: PaymentIntentResult): Promise<void> {
     if (result.error !== undefined) {
+      if (result.error.code === CHARGE_DECLINED) {
+        await this.#afterDecline();
+        return;
+      }
       this.#dispatch({
         type: "problem",
         problem: messageForStripeError(result.error),
@@ -344,6 +356,48 @@ export class CheckoutController {
     }
     this.#dispatch({ type: "redirect_required", url });
     this.#navigateTopLevel(url);
+  }
+
+  /**
+   * The rail refused the confirm's own call (`409 charge_declined`).
+   *
+   * That is an **answer**, not a failure to get one: the server has already
+   * failed the charge and put the reason on the intent's
+   * `last_payment_error` (`refuse_confirm`). So the intent is re-read and
+   * handed to the reducer like any poll result, which lands on the failed
+   * outcome with the taxonomy's own message (`invalid_payer`: the number is
+   * not one the chosen network takes) — the same screen a reload shows.
+   *
+   * Not the entry screen with a problem on it: an intent has one charge,
+   * forever, so a second confirm on it is refused (`create a new payment
+   * intent to try again`) and a "fix the number and press Pay" form would be
+   * a promise this session cannot keep. Trying again is the merchant's new
+   * session, reached through the outcome's "Back to {merchant}".
+   *
+   * Before 2026-11-18 this was `messageForStripeError`, whose catch-all
+   * rendered "Something went wrong on our side" for a payer who had typed
+   * an MTN number under Orange Money.
+   */
+  async #afterDecline(): Promise<void> {
+    const clientSecret = this.#intentSecret();
+    const reread =
+      clientSecret === null
+        ? null
+        : await this.#options.stripe.retrievePaymentIntent(clientSecret);
+    if (
+      reread === null ||
+      reread.error !== undefined ||
+      intentOutcome(reread.paymentIntent) === null
+    ) {
+      // The decline is certain even when its reason could not be read: say
+      // the payment did not go through rather than blame the server.
+      this.#dispatch({ type: "problem", problem: "failure.unknown" });
+      return;
+    }
+    this.#dispatch({ type: "intent_updated", intent: reread.paymentIntent });
+    if (this.#state.name === "outcome") {
+      await this.#announceOutcome();
+    }
   }
 
   /** Re-runs the poll after a `waitForPaymentIntent` that could not be answered. */

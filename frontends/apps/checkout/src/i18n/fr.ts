@@ -75,7 +75,8 @@ export const fr: Record<MessageKey, string> = {
   "failure.insufficient_funds": "Le solde du compte était insuffisant.",
   "failure.payer_timeout": "Vous n’avez pas validé le paiement à temps.",
   "failure.payer_declined": "Vous avez refusé le paiement.",
-  "failure.invalid_payer": "Ce compte ne peut pas être débité.",
+  "failure.invalid_payer":
+    "Ce numéro ne peut pas payer avec le moyen choisi. Vérifiez qu’il s’agit bien d’un numéro de ce réseau.",
   "failure.payer_limit_reached":
     "Le compte a atteint sa limite de transactions.",
   "failure.payer_account_blocked": "Le compte est bloqué.",

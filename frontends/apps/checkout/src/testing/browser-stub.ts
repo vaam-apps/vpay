@@ -133,6 +133,16 @@ export interface CheckoutStubOptions {
   /** Status queries answered as still moving before {@link terminal} is applied. */
   pollsBeforeTerminal?: number;
   terminal?: StubTerminal;
+  /**
+   * The rail refuses the confirm's own call, as `refuse_confirm` answers it:
+   * `409 charge_declined` whose message names the code, the charge failed
+   * and the intent back at `requires_payment_method` carrying
+   * `last_payment_error`. **The session stays `open`/`unpaid`**: the decline
+   * at confirm goes through `persist_decline`, not the settlement
+   * transaction, which is what prod showed for `cs_11576mj9r57vh2mbkdfvrj9c`
+   * on 2026-11-18 (a Notch Pay `422` on an MTN number sent as Orange).
+   */
+  declineAtConfirm?: { failure: FailureCode; message: string };
 }
 
 export interface CheckoutStub {
@@ -293,6 +303,7 @@ export function startCheckoutStub(
   const hasSession = options.standaloneIntent !== true;
   const terminal: StubTerminal = options.terminal ?? { kind: "succeeded" };
   let pollsRemaining = options.pollsBeforeTerminal ?? 1;
+  const declineAtConfirm = options.declineAtConfirm ?? null;
 
   const intent: IntentModel = {
     id: intentId,
@@ -618,6 +629,24 @@ export function startCheckoutStub(
             invalidParamEnvelope(
               "return_url",
               "A return_url is required to confirm a payment method that redirects, unless the PaymentIntent belongs to an open Checkout Session.",
+            ),
+          );
+          return;
+        }
+        if (declineAtConfirm !== null) {
+          intent.status = "requires_payment_method";
+          intent.next_action = null;
+          intent.last_payment_error = {
+            code: declineAtConfirm.failure,
+            message: declineAtConfirm.message,
+          };
+          json(
+            res,
+            409,
+            errorEnvelope(
+              "invalid_request_error",
+              "charge_declined",
+              `The payment was declined (${declineAtConfirm.failure}).`,
             ),
           );
           return;
