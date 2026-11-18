@@ -522,6 +522,74 @@ describe("the choices are the server's rail spec, so a type and any rail it serv
   });
 });
 
+describe("a rail that refuses the confirm itself (409 charge_declined)", () => {
+  const NOTCHPAY_ONLY = { mtn_wallet: "notchpay", orange_wallet: "notchpay" };
+  // vpay's own sentence (`vpay-adapter-notchpay` `wrong_number`), which the
+  // server stores on the charge and renders as `last_payment_error.message`.
+  const WRONG_NETWORK =
+    "notchpay: processing a payment answered 422 on the payer's phone alone: the number is not one the chosen network accepts (a number on the other network, for one)";
+
+  async function orangeWalletDeclined(): Promise<Harness> {
+    const h = await harness(
+      {
+        paymentMethodTypes: ["mtn_wallet", "orange_wallet"],
+        routes: NOTCHPAY_ONLY,
+        declineAtConfirm: { failure: "invalid_payer", message: WRONG_NETWORK },
+      },
+      "parent",
+    );
+    await h.controller.start();
+    const state = h.controller.state;
+    if (state.name !== "select_rail") throw new Error(state.name);
+    h.controller.chooseRail(state.rails.supported[1]!);
+    // An MTN number under Orange Money: what prod saw on 2026-11-18.
+    await h.controller.submitMsisdn("+237 670 000 000");
+    return h;
+  }
+
+  it("shows the decline's own reason, never 'something went wrong on our side'", async () => {
+    const h = await orangeWalletDeclined();
+
+    expect(h.controller.state).toMatchObject({
+      name: "outcome",
+      kind: "failed",
+      failure: "invalid_payer",
+      reason: WRONG_NETWORK,
+    });
+    expect(JSON.stringify(h.controller.state)).not.toContain(
+      "error.unexpected",
+    );
+  });
+
+  it("reads the reason off the intent, because the envelope carries only `charge_declined`", async () => {
+    const h = await orangeWalletDeclined();
+    const after = h.stub.requests.slice(
+      h.stub.requests.findIndex((r) => r.method === "POST") + 1,
+    );
+    expect(
+      after.some(
+        (r) =>
+          r.method === "GET" &&
+          r.url.startsWith("/v1/browser/payment_intents/"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not confirm the same intent again — its one charge is spent", async () => {
+    const h = await orangeWalletDeclined();
+    const confirms = () =>
+      h.stub.requests.filter((r) => r.method === "POST").length;
+    expect(confirms()).toBe(1);
+    await h.controller.submitMsisdn("+237 690 000 000");
+    expect(confirms()).toBe(1);
+  });
+
+  it("tells the parent the payment is over, once", async () => {
+    const h = await orangeWalletDeclined();
+    expect(h.posted.filter((m) => m.type === "vpay:complete")).toHaveLength(1);
+  });
+});
+
 describe("the confirm’s return_url, as the server rules on it", () => {
   /*
    * The ruling (integrator, Step 9 lane 3b): a confirm on an intent that

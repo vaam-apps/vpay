@@ -201,6 +201,24 @@ other three make.
 
 ## Status
 
+**Updated 2026-11-18 (later): a decline at confirm shows the decline, not
+"Something went wrong on our side".** When the rail refuses the confirm's own
+call, the server answers `409 charge_declined`, fails the intent's one charge
+and puts the taxonomy code on `last_payment_error` (`refuse_confirm`). The
+envelope carries only `charge_declined`, and the page sent every error that was
+not a network failure or a `resource_missing` to `error.unexpected`. Prod hit
+it on Notch Pay: an MTN number entered under Orange Money (`cm.orange`) was
+refused `422` on `errors.phone`, mapped to `invalid_payer`, and the payer read a
+server error. `#afterDecline` (`controller.ts`) now re-reads the intent and
+lands on the failed outcome with the code's message, which is what a reload
+already showed. It is an outcome and not the number form with a problem on it,
+because a second confirm on the same intent is refused: retrying is a new
+session, through "Back to {merchant}". `failure.invalid_payer` now says the
+number cannot pay with the chosen method and to check that it is on that
+network. Proven in `controller.test.ts` ("a rail that refuses the confirm
+itself") against the browser stub's new `declineAtConfirm`, which leaves the
+session `open` as prod did. The four cases fail on the old controller.
+
 **Updated 2026-11-18: the page takes its choices from the server's rail spec, so
 a payment-method type, and a rail it has no message for, can be paid.** The
 session read has carried `rails` since 2026-09-16 (#186): one

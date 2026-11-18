@@ -120,7 +120,8 @@ export const en = {
   "failure.insufficient_funds": "There was not enough money in the account.",
   "failure.payer_timeout": "You did not approve the payment in time.",
   "failure.payer_declined": "You declined the payment.",
-  "failure.invalid_payer": "That account cannot be charged.",
+  "failure.invalid_payer":
+    "This number cannot pay with the method you chose. Check that it is a number on that network.",
   "failure.payer_limit_reached":
     "The account has reached its transaction limit.",
   "failure.payer_account_blocked": "The account is blocked.",
