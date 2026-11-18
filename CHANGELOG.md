@@ -1,5 +1,39 @@
 # Changelog
 
+## [0.17.0](https://github.com/vaam-apps/vpay/compare/v0.16.0...v0.17.0) (2026-11-18)
+
+
+### ⚠ BREAKING CHANGES
+
+* account-holder lookups, and every refund that names a destination (every refund on mtn_momo and orange_money), now require the account_holders:read scope. It is enforced immediately; the migration window is undecided (RFC-0002 D5).
+
+### Features
+
+* account-holder lookup scope, limiter and audit; privileged-access evidence ([#56](https://github.com/vaam-apps/vpay/issues/56), [#152](https://github.com/vaam-apps/vpay/issues/152)) ([#404](https://github.com/vaam-apps/vpay/issues/404)) ([c335835](https://github.com/vaam-apps/vpay/commit/c3358352e8876d9408217f0dbc543b3f20650f38))
+* **checkout:** take the payer's choices from the server's rail spec ([#407](https://github.com/vaam-apps/vpay/issues/407)) ([108107d](https://github.com/vaam-apps/vpay/commit/108107d4499950c8df8159134e72db45ef6fe090))
+* formalise secure SDLC policy and vulnerability remediation evidence (ISO 27001 A.8.25) ([#405](https://github.com/vaam-apps/vpay/issues/405)) ([9580c2d](https://github.com/vaam-apps/vpay/commit/9580c2d826def45857a03c47882be45c89c60407)), closes [#151](https://github.com/vaam-apps/vpay/issues/151)
+* invoice number on the checkout page ([#91](https://github.com/vaam-apps/vpay/issues/91)), requires_review for a payment settled on a canceled intent ([#96](https://github.com/vaam-apps/vpay/issues/96)) ([#403](https://github.com/vaam-apps/vpay/issues/403)) ([1710317](https://github.com/vaam-apps/vpay/commit/1710317723be98d727a86f179fb25d7ca8a2a2c6))
+
+
+### Bug Fixes
+
+* **checkout:** show a decline at confirm as the decline, not a server error ([#408](https://github.com/vaam-apps/vpay/issues/408)) ([7a4329a](https://github.com/vaam-apps/vpay/commit/7a4329a94cd6c0f2f26ba46586fcdcfe5dc32ff9))
+* **demo:** migrate merchant-demo MTN steering codes to phonenumber-valid twins ([#11](https://github.com/vaam-apps/vpay/issues/11)) ([#399](https://github.com/vaam-apps/vpay/issues/399)) ([44b19d6](https://github.com/vaam-apps/vpay/commit/44b19d69ddad5ee1c59e097a0f2a46d3bffe1181))
+* **privacy:** telemetry sweep ([#147](https://github.com/vaam-apps/vpay/issues/147) PR 4) and the stored payer mask ([#79](https://github.com/vaam-apps/vpay/issues/79) item 4) ([#406](https://github.com/vaam-apps/vpay/issues/406)) ([d70e342](https://github.com/vaam-apps/vpay/commit/d70e342d23474fa7f468be1f4a2b93cc6b3c4843))
+* rmcp advisory, Orange stub hidden inputs ([#106](https://github.com/vaam-apps/vpay/issues/106)), popup completion ([#65](https://github.com/vaam-apps/vpay/issues/65)), MTN sandbox helper ([#395](https://github.com/vaam-apps/vpay/issues/395)), demo docs ([#11](https://github.com/vaam-apps/vpay/issues/11)) ([#402](https://github.com/vaam-apps/vpay/issues/402)) ([3579edf](https://github.com/vaam-apps/vpay/commit/3579edf340ab626a431d17a63809d999ddc39ecf))
+
+
+### Tests
+
+* **e2e:** a decline at confirm lands on the failed outcome, as [#408](https://github.com/vaam-apps/vpay/issues/408) made it ([#409](https://github.com/vaam-apps/vpay/issues/409)) ([7c93940](https://github.com/vaam-apps/vpay/commit/7c93940a7a1efe682c8944ca6555466d33f99f46))
+* **e2e:** hold back the decline's vpay:complete so the frame's outcome can be read ([#410](https://github.com/vaam-apps/vpay/issues/410)) ([09c5f4c](https://github.com/vaam-apps/vpay/commit/09c5f4c8265fbb263632eaf8b81edee49dac95e6))
+
+
+### Chores
+
+* **ci:** add verify-adr-numbers gate and confirm [#103](https://github.com/vaam-apps/vpay/issues/103)/[#125](https://github.com/vaam-apps/vpay/issues/125) fixes ([#397](https://github.com/vaam-apps/vpay/issues/397)) ([7b6d494](https://github.com/vaam-apps/vpay/commit/7b6d49471c8747f4900bb0da618e97dab07b8297)), closes [#170](https://github.com/vaam-apps/vpay/issues/170)
+* **deps:** clear the 2026-11-17 glob, minimatch, hono and next advisories ([#400](https://github.com/vaam-apps/vpay/issues/400)) ([fbe580a](https://github.com/vaam-apps/vpay/commit/fbe580a03d7460aedcab690df358cbfdf1a5def7))
+
 ## [0.16.0](https://github.com/vaam-apps/vpay/compare/v0.15.0...v0.16.0) (2026-11-01)
 
 
