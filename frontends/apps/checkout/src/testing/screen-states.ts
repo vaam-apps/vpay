@@ -269,3 +269,58 @@ export const RETURN_SCREENS: Record<string, ReturnState> = {
     reason: "Payer did not approve in time (OM-TIMEOUT)",
   },
 };
+
+const MTN_WALLET = {
+  code: "mtn_wallet",
+  flow: "mobile_money_push",
+  label: null,
+  name: { en: "MTN Mobile Money", fr: "MTN Mobile Money" },
+} as const;
+const ORANGE_WALLET = {
+  code: "orange_wallet",
+  flow: "mobile_money_push",
+  label: null,
+  name: { en: "Orange Money", fr: "Orange Money" },
+} as const;
+const NOTCHPAY = {
+  code: "notchpay",
+  flow: "mobile_money_push",
+  label: null,
+  name: { en: "Mobile money (Notch Pay)", fr: "Mobile money (Notch Pay)" },
+} as const;
+
+/**
+ * The choices the server's rail spec gives (`rails`), on a deployment whose
+ * only rail is Notch Pay: the two payment-method types, each named after its
+ * network and flowing as the rail they route to (a push), and the rail code
+ * `notchpay` itself under the deployment's own name. Kept apart from
+ * {@link CHECKOUT_SCREENS} for {@link INVOICE_SCREENS}' reason: the same
+ * states, different choices.
+ */
+export const WALLET_SCREENS = {
+  select_rail: {
+    name: "select_rail",
+    context: makeContext(
+      {},
+      { payment_method_types: ["mtn_wallet", "orange_wallet"] },
+    ),
+    rails: { supported: [MTN_WALLET, ORANGE_WALLET], unsupported: [] },
+  } satisfies CheckoutState,
+  collect_msisdn_wallet: {
+    name: "collect_msisdn",
+    context: makeContext(
+      {},
+      { payment_method_types: ["mtn_wallet", "orange_wallet"] },
+    ),
+    rails: { supported: [MTN_WALLET, ORANGE_WALLET], unsupported: [] },
+    rail: MTN_WALLET,
+    problem: null,
+  } satisfies CheckoutState,
+  collect_msisdn_notchpay: {
+    name: "collect_msisdn",
+    context: makeContext({}, { payment_method_types: ["notchpay"] }),
+    rails: { supported: [NOTCHPAY], unsupported: [] },
+    rail: NOTCHPAY,
+    problem: null,
+  } satisfies CheckoutState,
+};
