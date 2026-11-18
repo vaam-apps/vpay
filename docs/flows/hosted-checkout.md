@@ -201,6 +201,46 @@ other three make.
 
 ## Status
 
+**Updated 2026-11-18: the page takes its choices from the server's rail spec, so
+a payment-method type, and a rail it has no message for, can be paid.** The
+session read has carried `rails` since 2026-09-16 (#186): one
+`vpay_api::model::RailSpec` per code in the intent's `payment_method_types`,
+with its `flow`, the `fields` to collect and its names. Since #346 a
+payment-method type (`mtn_wallet`, `orange_wallet`) is one entry flowing as
+the rail the router ranks first. The page ignored the member and decided from
+its own two-rail `RAIL_PAGE_FLOWS`, so an intent offering the types, or the
+rail code `notchpay`, landed on "This page cannot continue". A deployment
+whose one rail is Notch Pay could take no payment through its hosted checkout.
+`railChoices` (`frontends/apps/checkout/src/lib/rails.ts`) now builds the
+payer's choices from `rails`:
+
+- a `push` asking for exactly one Cameroon number (`msisdn`, `phone`, `CM`)
+  opens the number form;
+- a `redirect` asking for nothing opens the button;
+- anything else is listed as unsupported (D9);
+- `checkout.allowed_methods` still narrows.
+
+Names: the page's own message for `label_key` when it has one, else the
+server's `display_name` in the page's language, then the other, then the code
+(`railLabel`). A push confirm names the entry's code and the number under it,
+with `redirect: 'if_required'`, and follows the answer, because the ranking at
+render is advisory (D10). A read with no `rails` member (a server older than
+the spec) falls back to the two-rail map.
+
+Proven in `controller.test.ts` ("the choices are the server's rail spec…")
+against the browser stub, whose session read now renders `rails` as
+`build_rails` does:
+
+- a wallet type paid on a Notch Pay-only deployment;
+- Orange's wallet as a redirect;
+- a push that the confirm re-routes to a redirect;
+- the rail code `notchpay` under its configured name;
+- the fallback.
+
+`rails.test.ts` covers the shape rules and the name order. The four flow cases
+fail when the machine ignores `rails`. Not proven against a real Notch Pay:
+the first such payment is the sandbox run this was written for.
+
 **Updated 2026-11-17 (issue #65): the merchant's side now listens to vpay's
 popup message.** Until today `@vaam-apps/vpay-stripe-js` ignored the
 `vpay:complete` this page posts to an opener it could pin, and completed a

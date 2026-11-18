@@ -98,6 +98,14 @@ export interface CheckoutInvoice {
 export interface CheckoutSessionView extends CheckoutSession {
   payment_intent: PaymentIntent;
   merchant?: CheckoutMerchant | undefined;
+  /**
+   * The server-driven rail spec (`vpay_api::model::CheckoutSessionForPayer`
+   * `rails`): one entry per code in the intent's `payment_method_types`.
+   * Optional so a server older than the spec still renders a payable page
+   * (`rails.ts` falls back to its own two rails); read defensively
+   * (`railSpecsOf` in `machine.ts`).
+   */
+  rails?: RailSpec[] | undefined;
   /** Optional, for the same reason as {@link CheckoutSessionView.merchant}. */
   invoice?: CheckoutInvoice | undefined;
 }
@@ -116,6 +124,34 @@ export interface CheckoutReturnView extends CheckoutSession {
   merchant?: CheckoutMerchant | undefined;
   /** Optional, for the same reason as {@link CheckoutSessionView.merchant}. */
   invoice?: CheckoutInvoice | undefined;
+}
+
+/**
+ * One payer field a rail needs (`vpay_provider::PayerField`, flattened with
+ * its `type`): `{"name": "msisdn", "type": "phone", "region": "CM",
+ * "phone_type": "mobile", "required": true}` for a mobile-money push.
+ */
+export interface RailSpecField {
+  name: string;
+  type: string;
+  region?: string | undefined;
+  phone_type?: string | undefined;
+  required?: boolean | undefined;
+}
+
+/**
+ * One payment method the session offers (`vpay_api::model::RailSpec`,
+ * `docs/reference/rails.md`). `code` is what the confirm names: a rail code,
+ * or a payment-method type whose `flow` and `fields` are those of the rail
+ * the server's router ranks first.
+ */
+export interface RailSpec {
+  code: string;
+  flow: string;
+  label_key: string;
+  display_name?:
+    { en?: string | undefined; fr?: string | undefined } | undefined;
+  fields: RailSpecField[];
 }
 
 /** `GET /v1/browser/checkout/origins?key`. */

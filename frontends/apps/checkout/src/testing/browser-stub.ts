@@ -94,6 +94,35 @@ export interface CheckoutStubOptions {
   /** Where a redirect rail sends the payer. */
   redirectUrl?: string;
   /**
+   * The rail the server routes each payment-method **type** to
+   * (`route_the_confirm`): a confirm naming `mtn_wallet` is charged on the
+   * rail this maps it to, and answers as that rail does. Defaults to the
+   * direct rails (`mtn_wallet` → `mtn_momo`, `orange_wallet` →
+   * `orange_money`); a deployment whose only rail is an aggregator maps both
+   * to `notchpay`. A rail code confirmed directly is not looked up.
+   */
+  routes?: Record<string, string>;
+  /**
+   * `false` renders the session read **without** its `rails` member: a
+   * server older than the rail spec (2026-09-16), which the page meets with
+   * its own two rails. Default `true`: the member, built as the server builds
+   * it (see `railSpecs`).
+   */
+  railsMember?: boolean;
+  /**
+   * The routing the `rails` member renders with, when it should differ from
+   * the confirm's (`routes`): the server ranks at render and again at confirm
+   * (D10), so the flow a page was shown can be overtaken by the confirm's
+   * answer. Defaults to `routes`.
+   */
+  specRoutes?: Record<string, string>;
+  /**
+   * The deployment's own name for a rail (`providers[].display_name`), as the
+   * spec renders it. Defaults to Notch Pay's as Another's production
+   * configures it; the direct rails have none.
+   */
+  railNames?: Record<string, { en?: string; fr?: string }>;
+  /**
    * `true` models a PaymentIntent that belongs to **no** checkout session —
    * one a merchant created directly through `/v1/payment_intents`. The two
    * checkout-session routes then answer 404 (there is no session), and the
@@ -179,6 +208,16 @@ export function invalidParamEnvelope(
  */
 const REDIRECT_RAILS: ReadonlySet<string> = new Set(["orange_money"]);
 
+/**
+ * A payment-method type's name, as the server renders it for a type
+ * (`method_type_name`): the network's own product name, in both languages.
+ */
+const METHOD_TYPE_NAMES: Readonly<Record<string, { en: string; fr: string }>> =
+  {
+    mtn_wallet: { en: "MTN Mobile Money", fr: "MTN Mobile Money" },
+    orange_wallet: { en: "Orange Money", fr: "Orange Money" },
+  };
+
 /** The uniform 404 every credential failure on the browser surface renders. */
 export function notFoundEnvelope(
   resource: string,
@@ -240,6 +279,16 @@ export function startCheckoutStub(
   };
   const uiMode = options.uiMode ?? "hosted";
   const redirectUrl = options.redirectUrl ?? DEFAULTS.redirectUrl;
+  const railNames = options.railNames ?? {
+    notchpay: {
+      en: "Mobile money (Notch Pay)",
+      fr: "Mobile money (Notch Pay)",
+    },
+  };
+  const routes: Record<string, string> = options.routes ?? {
+    mtn_wallet: "mtn_momo",
+    orange_wallet: "orange_money",
+  };
   const origins = options.origins ?? [];
   const hasSession = options.standaloneIntent !== true;
   const terminal: StubTerminal = options.terminal ?? { kind: "succeeded" };
@@ -303,6 +352,40 @@ export function startCheckoutStub(
         merchant.kind === "named" ? { name: merchant.name } : merchant.value,
     };
   };
+
+  /**
+   * The session read's `rails` member, as `build_rails`
+   * (`vpay_api::browser::checkout_sessions`) renders it: one entry per code in
+   * `payment_method_types`, in order. A rail code is that rail's own entry;
+   * a payment-method type is **one** entry under the type's code, flowing as
+   * the rail it routes to (here `routes`), named after its network. A push
+   * rail asks for a Cameroon mobile number under `msisdn`; a redirect rail
+   * asks for nothing.
+   */
+  const railSpecs = (): Record<string, unknown>[] =>
+    paymentMethodTypes.map((code) => {
+      const rail = (options.specRoutes ?? routes)[code] ?? code;
+      const push = !REDIRECT_RAILS.has(rail);
+      const typeName = METHOD_TYPE_NAMES[code];
+      const name = typeName ?? railNames[code];
+      return {
+        code,
+        flow: push ? "push" : "redirect",
+        label_key: `rail.${code}`,
+        ...(name === undefined ? {} : { display_name: name }),
+        fields: push
+          ? [
+              {
+                name: "msisdn",
+                type: "phone",
+                region: "CM",
+                phone_type: "mobile",
+                required: true,
+              },
+            ]
+          : [],
+      };
+    });
 
   /** The `invoice` member, spreadable like {@link merchantMember}'s. */
   const invoiceMember = (): Record<string, unknown> =>
@@ -419,6 +502,7 @@ export function startCheckoutStub(
           payment_intent: intentObject(true, { nextAction: false }),
           ...merchantMember(),
           ...invoiceMember(),
+          ...(options.railsMember === false ? {} : { rails: railSpecs() }),
         });
         return;
       }
@@ -509,7 +593,10 @@ export function startCheckoutStub(
           return;
         }
         confirmedReturnUrl = form.get("return_url");
-        const railCode = form.get("payment_method_data[type]") ?? "";
+        const requested = form.get("payment_method_data[type]") ?? "";
+        // A payment-method type is routed to a rail, as the server does; a
+        // rail code is charged on that rail.
+        const railCode = routes[requested] ?? requested;
         // The server's rule, mirrored rather than assumed away.
         //
         // A redirect rail needs somewhere to send the payer back to. The

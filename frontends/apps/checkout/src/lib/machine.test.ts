@@ -473,7 +473,26 @@ describe("contextOf", () => {
       merchant: { name: "Boutique" },
       invoice: null,
       allowedMethods: null,
+      // The read had no `rails` member: an older server.
+      rails: null,
     });
+  });
+
+  it("carries the read's rails, keeps them off the session half, and drops an entry that is not the documented shape", () => {
+    const session = makeContext().session;
+    const spec = {
+      code: "mtn_wallet",
+      flow: "push",
+      label_key: "rail.mtn_wallet",
+      fields: [{ name: "msisdn", type: "phone", region: "CM" }],
+    };
+    const context = contextOf({
+      ...session,
+      payment_intent: makeIntent(),
+      rails: [spec, { code: 42 }, null, "notchpay"],
+    });
+    expect(context.rails).toEqual([spec]);
+    expect("rails" in context.session).toBe(false);
   });
 
   it("carries the invoice number when the read names one, and keeps it off the session half", () => {

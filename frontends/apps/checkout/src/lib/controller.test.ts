@@ -391,6 +391,137 @@ describe("the Orange redirect", () => {
   });
 });
 
+describe("the choices are the server's rail spec, so a type and any rail it serves can be paid", () => {
+  const NOTCHPAY_ONLY = { mtn_wallet: "notchpay", orange_wallet: "notchpay" };
+
+  it("pays a wallet type on a deployment whose only rail is Notch Pay: the type is confirmed, never a rail", async () => {
+    const h = await harness({
+      paymentMethodTypes: ["mtn_wallet", "orange_wallet"],
+      routes: NOTCHPAY_ONLY,
+      pollsBeforeTerminal: 1,
+    });
+    await h.controller.start();
+    expect(h.controller.state).toMatchObject({
+      name: "select_rail",
+      rails: {
+        supported: [
+          {
+            code: "mtn_wallet",
+            flow: "mobile_money_push",
+            label: null,
+            name: { en: "MTN Mobile Money" },
+          },
+          {
+            code: "orange_wallet",
+            flow: "mobile_money_push",
+            label: null,
+            name: { en: "Orange Money" },
+          },
+        ],
+        unsupported: [],
+      },
+    });
+    const state = h.controller.state;
+    if (state.name !== "select_rail") throw new Error(state.name);
+    h.controller.chooseRail(state.rails.supported[0]!);
+    expect(h.controller.state.name).toBe("collect_msisdn");
+
+    await h.controller.submitMsisdn(" +237 600 000 400 ");
+
+    const confirm = h.stub.requests.find((r) => r.method === "POST");
+    expect(confirm?.body).toContain("payment_method_data[type]=mtn_wallet");
+    expect(confirm?.body).toContain(
+      "payment_method_data[mtn_wallet][msisdn]=237600000400",
+    );
+    expect(confirm?.body).not.toContain("notchpay");
+    expect(h.controller.state).toMatchObject({
+      name: "outcome",
+      kind: "succeeded",
+    });
+    expect(h.navigated).toEqual([]);
+  });
+
+  it("drives Orange's wallet as a redirect where the server routes it to Orange's own page", async () => {
+    const h = await harness({
+      paymentMethodTypes: ["orange_wallet"],
+      redirectUrl: "https://rail.example/stub-hosted-page/tok_wallet",
+    });
+    await h.controller.start();
+    expect(h.controller.state).toMatchObject({
+      name: "ready_redirect",
+      rail: { code: "orange_wallet", flow: "redirect" },
+    });
+
+    await h.controller.startRedirect();
+
+    const confirm = h.stub.requests.find((r) => r.method === "POST");
+    expect(confirm?.body).toContain("payment_method_data[type]=orange_wallet");
+    expect(h.navigated).toEqual([
+      "https://rail.example/stub-hosted-page/tok_wallet",
+    ]);
+  });
+
+  it("follows the confirm's redirect when the server routes a type it showed as a push to a redirect rail (D10)", async () => {
+    const h = await harness({
+      paymentMethodTypes: ["orange_wallet"],
+      specRoutes: { orange_wallet: "notchpay" },
+      routes: { orange_wallet: "orange_money" },
+      redirectUrl: "https://rail.example/stub-hosted-page/tok_rerouted",
+    });
+    await h.controller.start();
+    expect(h.controller.state.name).toBe("collect_msisdn");
+
+    await h.controller.submitMsisdn(VALID_MSISDN);
+
+    expect(h.controller.state).toMatchObject({
+      name: "redirecting",
+      url: "https://rail.example/stub-hosted-page/tok_rerouted",
+    });
+    expect(h.navigated).toEqual([
+      "https://rail.example/stub-hosted-page/tok_rerouted",
+    ]);
+  });
+
+  it("pays a rail the page has no message for, under the deployment's own name", async () => {
+    const h = await harness({
+      paymentMethodTypes: ["notchpay"],
+      pollsBeforeTerminal: 0,
+    });
+    await h.controller.start();
+    expect(h.controller.state).toMatchObject({
+      name: "collect_msisdn",
+      rail: {
+        code: "notchpay",
+        flow: "mobile_money_push",
+        label: null,
+        name: { en: "Mobile money (Notch Pay)" },
+      },
+    });
+    await h.controller.submitMsisdn(VALID_MSISDN);
+    const confirm = h.stub.requests.find((r) => r.method === "POST");
+    expect(confirm?.body).toContain("payment_method_data[type]=notchpay");
+    expect(h.controller.state).toMatchObject({
+      name: "outcome",
+      kind: "succeeded",
+    });
+  });
+
+  it("falls back to its own two rails when the read carries no rails member (an older server)", async () => {
+    const h = await harness({
+      paymentMethodTypes: ["mtn_momo", "mtn_wallet"],
+      railsMember: false,
+    });
+    await h.controller.start();
+    // The page's own map knows mtn_momo and nothing else: the type is listed
+    // as unsupported (D9), and the one rail it can drive is opened.
+    expect(h.controller.state).toMatchObject({
+      name: "collect_msisdn",
+      rail: { code: "mtn_momo", label: "rail.mtn_momo" },
+      rails: { unsupported: ["mtn_wallet"] },
+    });
+  });
+});
+
 describe("the confirm’s return_url, as the server rules on it", () => {
   /*
    * The ruling (integrator, Step 9 lane 3b): a confirm on an intent that

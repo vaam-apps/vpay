@@ -132,15 +132,22 @@ export function format(
   }
 }
 
-/** The message lookup a component receives. Bound to one locale. */
-export type Translate = (
+/**
+ * The message lookup a component receives. Bound to one locale, which it
+ * carries for the text that does not come from this page's dictionaries (a
+ * payment method's name, from the server; see `railLabel`). Optional so a
+ * test or a story may hand a bare function.
+ */
+export type Translate = ((
   key: MessageKey,
   values?: Record<string, string | number>,
-) => string;
+) => string) & { locale?: Locale | undefined };
 
 export function translator(locale: Locale): Translate {
   const dictionary = DICTIONARIES[locale];
-  return (key, values) => format(dictionary[key], values);
+  const translate: Translate = (key, values) => format(dictionary[key], values);
+  translate.locale = locale;
+  return translate;
 }
 
 /** Placeholder names used by a template, in order of first appearance. */

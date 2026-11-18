@@ -29,6 +29,7 @@ import type {
   CheckoutSession,
   PaymentIntent,
   PublicPaymentIntent,
+  RailSpec,
 } from "./types";
 
 /**
@@ -64,6 +65,12 @@ export interface CheckoutContext {
    * pass it. It can only narrow: see `railChoices`.
    */
   allowedMethods: readonly string[] | null;
+  /**
+   * The session read's `rails` (the server-driven rail spec), or `null` when
+   * the read carried none: what `railChoices` builds the payer's choices
+   * from. See `rails.ts`.
+   */
+  rails: readonly RailSpec[] | null;
 }
 
 export type OutcomeKind = "succeeded" | "failed" | "canceled";
@@ -97,6 +104,7 @@ export function contextOf(
     payment_intent: PaymentIntent | PublicPaymentIntent;
     merchant?: CheckoutMerchant | undefined;
     invoice?: CheckoutInvoice | undefined;
+    rails?: unknown;
   },
   allowedMethods: readonly string[] | null = null,
 ): CheckoutContext {
@@ -104,18 +112,46 @@ export function contextOf(
     payment_intent: intent,
     merchant: rawMerchant,
     invoice: rawInvoice,
+    rails: rawRails,
     client_secret: _sessionSecret,
     ...session
   } = view;
   const merchant = merchantOf(rawMerchant);
   const invoice = invoiceOf(rawInvoice);
+  const rails = railSpecsOf(rawRails);
   // The session's own `client_secret` is dropped on the way in. The
   // controller already holds it as a credential; keeping a second copy on
   // the object every screen renders from would put it inside anything that
   // ever serialises a state — a devtools snapshot, an error report, a
   // `postMessage` written in a hurry. `secrets.test.ts` and
   // `machine.test.ts` both pin its absence.
-  return { session, intent, merchant, invoice, allowedMethods };
+  return { session, intent, merchant, invoice, allowedMethods, rails };
+}
+
+/**
+ * The read's `rails`, or `null` when it carried none.
+ *
+ * Takes `unknown` for `merchantOf`'s reason: `isSessionEnvelope` does not
+ * require the member, so here it has only been through `JSON.parse`. An
+ * absent member is an older server (`rails.ts` falls back to its own two
+ * rails). An entry that is not the documented shape is kept out rather than
+ * guessed at, and the others still render: a malformed entry is the server's
+ * bug, not a reason to refuse the methods it did describe.
+ */
+export function railSpecsOf(value: unknown): RailSpec[] | null {
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const isText = (v: unknown): v is string => typeof v === "string";
+  return value.filter(
+    (entry): entry is RailSpec =>
+      typeof entry === "object" &&
+      entry !== null &&
+      isText((entry as RailSpec).code) &&
+      isText((entry as RailSpec).flow) &&
+      isText((entry as RailSpec).label_key) &&
+      Array.isArray((entry as RailSpec).fields),
+  );
 }
 
 /**
@@ -370,7 +406,7 @@ export function stateForContext(context: CheckoutContext): CheckoutState {
     };
   }
 
-  const rails = railChoices(intent, context.allowedMethods);
+  const rails = railChoices(intent, context.allowedMethods, context.rails);
 
   if (intent.status === "processing") {
     // Already confirmed and moving on its own — a reload, or a payer coming
@@ -503,7 +539,11 @@ export function reduce(
         return {
           ...entryStateFor(
             state.context,
-            railChoices(state.context.intent, state.context.allowedMethods),
+            railChoices(
+              state.context.intent,
+              state.context.allowedMethods,
+              state.context.rails,
+            ),
             state.rail,
           ),
           problem: event.problem,
@@ -544,7 +584,11 @@ export function reduce(
           return {
             name: "resume_redirect",
             context,
-            rails: railChoices(context.intent, context.allowedMethods),
+            rails: railChoices(
+              context.intent,
+              context.allowedMethods,
+              context.rails,
+            ),
             rail: state.rail,
             url,
           };

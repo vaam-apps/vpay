@@ -20,7 +20,11 @@
  *   lands on a spinner nothing will ever resolve. `#withNextAction` has the
  *   mechanism.
  */
-import type { Stripe, StripeError } from "@vaam-apps/vpay-stripe-js";
+import type {
+  PaymentIntentResult,
+  Stripe,
+  StripeError,
+} from "@vaam-apps/vpay-stripe-js";
 
 import type { MessageKey } from "../i18n/index";
 import type { BrowserCheckoutApi, SessionCredentials } from "./api";
@@ -236,7 +240,9 @@ export class CheckoutController {
   }
 
   /**
-   * The MTN path: normalise, confirm, then poll.
+   * The push path (a push rail such as MTN's, or a payment-method type the
+   * server ranked to one): normalise, confirm, then poll — or follow the
+   * redirect the confirm answered with.
    *
    * The raw input never leaves this method — what goes to the rail is the
    * canonical `2376XXXXXXXX` {@link normalizeCameroonMsisdn} produced, so
@@ -259,26 +265,21 @@ export class CheckoutController {
       return;
     }
     this.#dispatch({ type: "confirm_started" });
-    const result = await this.#options.stripe.confirmMobileMoneyPayment(
+    // `confirmPayment` with `redirect: 'if_required'` rather than
+    // `confirmMobileMoneyPayment`, which would follow a redirect itself: the
+    // code may be a payment-method type (`mtn_wallet`), whose rail the server
+    // picks again at confirm (the spec's flow is its ranking at render, which
+    // is advisory, D10), so the answer can be a redirect after all. Who
+    // navigates is this page's call (see `startRedirect`). The body is the
+    // same `type` plus `[<type>][msisdn]` the mobile-money helper writes.
+    const result = await this.#options.stripe.confirmPayment({
       clientSecret,
-      {
-        type: rail.code,
-        msisdn,
+      confirmParams: {
+        payment_method_data: { type: rail.code, [rail.code]: { msisdn } },
       },
-    );
-    if (result.error !== undefined) {
-      this.#dispatch({
-        type: "problem",
-        problem: messageForStripeError(result.error),
-      });
-      return;
-    }
-    this.#dispatch({ type: "intent_updated", intent: result.paymentIntent });
-    if (this.#state.name === "waiting") {
-      await this.#poll();
-    } else if (this.#state.name === "outcome") {
-      await this.#announceOutcome();
-    }
+      redirect: "if_required",
+    });
+    await this.#afterConfirm(result);
   }
 
   /**
@@ -311,6 +312,15 @@ export class CheckoutController {
       confirmParams: { payment_method_data: { type: state.rail.code } },
       redirect: "if_required",
     });
+    await this.#afterConfirm(result);
+  }
+
+  /**
+   * After a confirm whose answer decides the next step (a redirect rail, or a
+   * wallet the server routed): follow a `next_action.redirect_to_url`, or
+   * else wait on the intent like a push.
+   */
+  async #afterConfirm(result: PaymentIntentResult): Promise<void> {
     if (result.error !== undefined) {
       this.#dispatch({
         type: "problem",
@@ -321,8 +331,9 @@ export class CheckoutController {
     const intent = result.paymentIntent;
     const url = redirectUrlOf(intent);
     if (url === null) {
-      // A redirect rail that answered without a redirect. Not an error —
-      // poll and let the intent say what happened.
+      // No redirect: a push (the payer approves on the handset), or a
+      // redirect rail that answered without one. Not an error — poll and let
+      // the intent say what happened.
       this.#dispatch({ type: "intent_updated", intent });
       if (this.#state.name === "waiting") {
         await this.#poll();
