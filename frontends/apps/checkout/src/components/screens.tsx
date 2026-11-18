@@ -143,7 +143,7 @@ import { checkoutOutcomeVariant } from "@vpay/tokens";
 import type { MessageKey, Translate } from "../i18n/index";
 import type { Branding } from "../config/settings";
 import type { OutcomeKind } from "../lib/machine";
-import type { RailChoices, SupportedRail } from "../lib/rails";
+import { railLabel, type RailChoices, type SupportedRail } from "../lib/rails";
 
 /**
  * `@vaam-apps/ui`'s `CheckboxFieldProps` declares no `as`, `type` or
@@ -441,7 +441,7 @@ export function RailSelector({
               data-rail={rail.code}
               onClick={() => onChoose(rail)}
             >
-              {t(rail.label)}
+              {railLabel(rail, t)}
               {rail.code === lastRail ? (
                 <Badge variant="outline" data-testid="last-used">
                   {t("memory.last_used")}
@@ -608,7 +608,9 @@ export function MsisdnForm({
   return (
     <section>
       <div className="flex flex-col gap-4">
-        <ScreenHeading screen="collect_msisdn">{t(rail.label)}</ScreenHeading>
+        <ScreenHeading screen="collect_msisdn">
+          {railLabel(rail, t)}
+        </ScreenHeading>
         <form
           onSubmit={(event) => {
             event.preventDefault();
@@ -697,7 +699,9 @@ export function RedirectPrompt({
   return (
     <section>
       <div className="flex flex-col gap-4">
-        <ScreenHeading screen="ready_redirect">{t(rail.label)}</ScreenHeading>
+        <ScreenHeading screen="ready_redirect">
+          {railLabel(rail, t)}
+        </ScreenHeading>
         <p className="text-muted-foreground">{t("state.redirecting_body")}</p>
         {problem === null ? null : (
           // `data-testid` moved onto this wrapping `<div>`, 2026-09-12:
@@ -713,7 +717,7 @@ export function RedirectPrompt({
         <MemoryOptIn
           t={t}
           controls={memory}
-          label={t("memory.remember_method", { rail: t(rail.label) })}
+          label={t("memory.remember_method", { rail: railLabel(rail, t) })}
         />
         <Button
           type="button"

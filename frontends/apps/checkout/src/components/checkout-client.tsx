@@ -280,10 +280,12 @@ export function CheckoutClient(props: CheckoutClientProps) {
       // Normalised here as well as in the controller, and deliberately: what
       // is stored is the canonical `2376XXXXXXXX`, and a number the page
       // would refuse to send is a number it must not keep either.
-      rememberOnSubmit(normalizeCameroonMsisdn(raw), "mtn_momo");
+      // The method the payer chose: a push rail's code or a wallet type.
+      const rail = state.name === "collect_msisdn" ? state.rail.code : null;
+      rememberOnSubmit(normalizeCameroonMsisdn(raw), rail);
       void controllerRef.current?.submitMsisdn(raw);
     },
-    [rememberOnSubmit],
+    [rememberOnSubmit, state],
   );
 
   const onStartRedirect = useCallback(() => {

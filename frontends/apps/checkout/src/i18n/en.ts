@@ -51,8 +51,9 @@ export const en = {
   "rail.unsupported": "This page cannot take a payment on {rail}.",
   "rail.none": "This payment offers no payment method this page can show.",
 
-  "msisdn.label": "MTN MoMo number",
-  "msisdn.hint": "Your Cameroon MTN number, for example +237 6 71 23 45 67.",
+  "msisdn.label": "Mobile money number",
+  "msisdn.hint":
+    "The Cameroon mobile money number that will pay, for example +237 6 71 23 45 67.",
   "msisdn.invalid":
     "Enter a Cameroon mobile number: 6 followed by 8 digits, with or without +237.",
   "msisdn.submit": "Pay {amount}",

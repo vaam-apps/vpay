@@ -102,6 +102,9 @@ export function makeContext(
     merchant: merchantName === null ? null : { name: merchantName },
     invoice: invoiceNumber === null ? null : { number: invoiceNumber },
     allowedMethods,
+    // No `rails` member: the page's own two rails (`rails.ts`'s fallback),
+    // which is what every fixture's `payment_method_types` names.
+    rails: null,
   };
 }
 

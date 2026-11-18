@@ -33,9 +33,9 @@ export const fr: Record<MessageKey, string> = {
   "rail.none":
     "Ce paiement ne propose aucun moyen de paiement que cette page sait afficher.",
 
-  "msisdn.label": "Numéro MTN MoMo",
+  "msisdn.label": "Numéro mobile money",
   "msisdn.hint":
-    "Votre numéro MTN camerounais, par exemple +237 6 71 23 45 67.",
+    "Le numéro mobile money camerounais qui va payer, par exemple +237 6 71 23 45 67.",
   "msisdn.invalid":
     "Saisissez un numéro mobile camerounais : 6 suivi de 8 chiffres, avec ou sans +237.",
   "msisdn.submit": "Payer {amount}",

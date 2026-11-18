@@ -33,6 +33,7 @@ import {
   CHECKOUT_SCREENS,
   INVOICE_SCREENS,
   RETURN_SCREENS,
+  WALLET_SCREENS,
 } from "../testing/screen-states";
 
 const NOOP = () => undefined;
@@ -252,4 +253,29 @@ export const ReturnSucceededForAnInvoice: Story = {
       onLocaleChange={NOOP}
     />
   ),
+};
+
+/**
+ * The choices the server's rail spec gives on a deployment whose only rail is
+ * Notch Pay: the payer picks a network (the payment-method types, named after
+ * the networks), never a rail. Here so the names that come from the server
+ * rather than the dictionaries get the same real-browser axe and contrast
+ * verdict, in both locales.
+ */
+export const ChooseAWallet: Story = {
+  args: { state: WALLET_SCREENS.select_rail, locale: "fr" },
+};
+
+export const ChooseAWalletInEnglish: Story = {
+  args: { state: WALLET_SCREENS.select_rail, locale: "en" },
+};
+
+/** The number form for a wallet type: the same form, the network's name. */
+export const WalletNumber: Story = {
+  args: { state: WALLET_SCREENS.collect_msisdn_wallet, locale: "fr" },
+};
+
+/** The rail code `notchpay` itself, under the deployment's own name. */
+export const NotchPayNumber: Story = {
+  args: { state: WALLET_SCREENS.collect_msisdn_notchpay, locale: "fr" },
 };
