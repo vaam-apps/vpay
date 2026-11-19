@@ -240,15 +240,25 @@ rust_decimal = "1"
 # otherwise (`cratestack-pg-0.12.0/src/lib.rs`, unchanged in shape at 0.15.0), so the crate has to be
 # nameable under that word or nothing the macro expands to resolves.
 #
-# `=0.16.0`, exactly, and for a stronger reason than the authkestra pins'
+# `=0.20.4`, exactly, and for a stronger reason than the authkestra pins'
 # "pre-1.0 and fast-moving": this version is *already* written down in three
 # other places that a floating pin would silently outrun — `justfile`'s
 # `cratestack_version` (which `just check-schema` and CI's `self-checks` job
 # install), the `cratestack migrate baseline` measurement in
 # `postgres_smoke.rs`, and `rust-toolchain.toml`'s 1.98.0 pin, which exists
-# *because* every 0.16.0 crate declares `rust-version = "1.98.0"`. The CLI
+# *because* every 0.20.4 crate declares `rust-version = "1.98.0"` (as 0.16.0's
+# did; re-read from the 0.20.4 manifests, not carried over). The CLI
 # that checks `schemas/vpay.cstack` and the library that compiles it must be
 # the same grammar; a caret pin would let them diverge with nothing failing.
+#
+# **`=0.16.0` -> `=0.20.4` on 2026-11-19** (issue #412), so that a second
+# merchant on CrateStack 0.20.x can depend on `vpay-sdk` without a second
+# CrateStack in its lock: `cratestack-*` siblings require each other as `=x.y.z`
+# since 0.20.2, so two minors cannot share one resolution. The `/v1` envelope
+# is byte-identical across the two versions, measured and pinned by
+# `sdks/rust/tests/wire_golden.rs`; the one source change this workspace needed
+# was `PageInfo::next_cursor` (0.19.4). See `docs/status/cratestack.md`,
+# "CrateStack 0.16.0 -> 0.20.4".
 #
 # **`=0.15.0` -> `=0.16.0` on 2026-10-26**, and `envelope` + `cose` switched on
 # (see "WHY THIS FEATURE SET" below). A version bump that stays
@@ -311,7 +321,7 @@ rust_decimal = "1"
 # of `cratestack-pg` with no feature gating them, and both depend on
 # `minicbor` unconditionally. There is no feature combination that yields a
 # data layer without them — see `docs/reference/vpay-db.md` § CrateStack.
-cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features = false, features = ["postgres", "envelope", "cose", "mcp"] }
+cratestack = { package = "cratestack-pg", version = "=0.20.4", default-features = false, features = ["postgres", "envelope", "cose", "mcp"] }
 # The two `cratestack-*` crates a signed-transport caller names directly rather
 # than through the `cratestack` facade above (VP-2, 2026-10-26), at the same
 # `=0.16.0` and in the same bump as it. Both are already in the lock through
@@ -330,15 +340,15 @@ cratestack = { package = "cratestack-pg", version = "=0.16.0", default-features 
 # * `cratestack-core` is `AcceptedContracts`, the type the `EnvelopeLayer` takes
 #   its contract table as, which `vpay-wire` declares `V1_CONTRACTS` in.
 #   `default-features = false` drops `decimal-rust-decimal`, as on the facade.
-cratestack-cose = { version = "=0.16.0", default-features = false }
-cratestack-core = { version = "=0.16.0", default-features = false }
+cratestack-cose = { version = "=0.20.4", default-features = false }
+cratestack-core = { version = "=0.20.4", default-features = false }
 # `cratestack-parser`, a dev-dependency of `vpay-tests-integration` alone
 # (VP-6a): `tests/support/sealed.rs` parses `schemas/vpay.cstack` and reads the
 # digest of `POST /$procs/<name>` off `cratestack_core::bound_contracts`, so the
 # harness that seals a procedure call binds it from the schema file itself and
 # not from the generated module the server's layer is built over. Already in
 # the graph (`cratestack-macros` parses with it).
-cratestack-parser = { version = "=0.16.0", default-features = false }
+cratestack-parser = { version = "=0.20.4", default-features = false }
 # `cratestack-axum` taken directly by `vpay-api` (VP-3, 2026-10-26) for the
 # `EnvelopeLayer`, `BindingResolver` and `ResolvedRoute` that `vpay-api`'s
 # hand-written `/v1` is wrapped in. Already in the lock through the facade, so a
@@ -348,13 +358,13 @@ cratestack-parser = { version = "=0.16.0", default-features = false }
 # back on would change `cratestack-core`'s `Decimal` for the whole graph by
 # feature unification. `envelope` and `cose` are what the facade already enables
 # on it.
-cratestack-axum = { version = "=0.16.0", default-features = false, features = ["envelope", "cose"] }
+cratestack-axum = { version = "=0.20.4", default-features = false, features = ["envelope", "cose"] }
 # `cratestack-client-rust` taken directly by `vpay-sdk` (VP-5) for
 # `ClientEnvelope::seal_call` / `PendingResponse::open`. It is a non-optional
 # dependency of the facade already, so a direct edge and no new package.
 # `default-features = false` for the facade's reason; `cose` is the signed
 # transport and the only feature a `/v1` caller needs.
-cratestack-client-rust = { version = "=0.16.0", default-features = false, features = ["cose"] }
+cratestack-client-rust = { version = "=0.20.4", default-features = false, features = ["cose"] }
 # Not part of vpay's own `time`-crate convention (docs above/ADR none yet) —
 # pulled in because `authkestra-op`'s own API is chrono-typed: every
 # `DateTime<Utc>` in `code.rs`, `refresh.rs`, `device.rs` and, the one that

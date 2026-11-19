@@ -1846,7 +1846,7 @@ verify-npm-scope:
 # jobs there already use to read the compiler channel out of
 # `rust-toolchain.toml`. Bump it here and CI follows; there is no second copy
 # to forget.
-cratestack_version := "0.16.0"
+cratestack_version := "0.20.4"
 
 # The floor for `check-schema`'s "is there anything here?" assertion: the
 # number of top-level `model`/`enum` declarations schemas/vpay.cstack must
@@ -2019,7 +2019,7 @@ check-schema:
     #
     # Against a COPY without `node_modules/`, not the package itself, and
     # that is a measured upstream bug rather than caution (cratestack#1235):
-    # cratestack 0.15.0's and 0.16.0's drift walker follows pnpm's
+    # cratestack 0.15.0's, 0.16.0's (and, until re-measured, 0.20.4's) drift walker follows pnpm's
     # `node_modules/decimal.js` symlink, asks `git check-ignore` about the
     # files beyond it, gets "fatal: pathspec ... is beyond a symbolic link"
     # (exit 128), and `drift.rs`'s `git_ignored`
@@ -3238,7 +3238,10 @@ expected_ignored := "0"
 # the previous bump and these are two more files under `tests/`, each its own
 # binary because each boots its own stack. Measured by `just verify-ignored`
 # below.
-expected_suites := "58"
+#
+# 58 -> 59 on 2026-11-19 (issue #412): `sdks/rust/tests/wire_golden.rs`, the
+# 0.16.0 envelope vector, is one more binary.
+expected_suites := "59"
 # A floor, not a target — set a little under the measured 1059
 # rather than to it, so it is not a number people bump reflexively. Bump it in
 # the same commit that legitimately adds tests, never to make a red run green.
