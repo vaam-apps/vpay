@@ -999,7 +999,15 @@ sealing is `sdks/rust/wasm`, which is Rust and moved with the workspace);
 A live merchant is on a 0.16.0 SDK (or the Node SDK built from 0.16.0's
 sealing), and a live server is on 0.16.0. Measured, not assumed:
 
-- **Source.** Between the two tags `cratestack-cose`'s `seal.rs`, `open.rs`, `tbs.rs`,
+- **Source, the trust path in two crates.** `cratestack-axum`'s `envelope_layer` is where
+  the server's checks live, and it did change: `signed.rs`, `unsigned.rs`, `dispatch.rs`,
+  `mode.rs`, `payload.rs` and `unresolved.rs` differ. Read against 0.16.0: the principal
+  mapping moved verbatim into `signed_principal::admit` (same coarse `401` for a refused
+  signer, same `500`s); `EnvelopeMode::UnsignedRequestSealedReply`, `@frames(unsigned)`
+  signed subscription opens and compact payload types are additions that `vpay-api` does
+  not select (it uses `Required` and `Optional`, with `unresolved_mode(Required)` as
+  before); `refusal`, `seal`, `contract` and `media` are unchanged. In
+  `cratestack-cose`, between the two tags `seal.rs`, `open.rs`, `tbs.rs`,
   `wire.rs`, `aad.rs`, `alg.rs`, `thumbprint.rs` and `envelope/` are byte-identical,
   `BINDING_VERSION` is unchanged, and the shared language-neutral vectors
   (`tests/vectors/*.json`) are identical. What moved is additive (claim objects,
@@ -1022,11 +1030,15 @@ sealing), and a live server is on 0.16.0. Measured, not assumed:
 - **Bytes.** With every input pinned (seeds, clock, `cti`, audience, call), 0.16.0
   and 0.20.4 produce the identical sealed request and the identical sealed answer.
   That vector is now a permanent test, `sdks/rust/tests/wire_golden.rs` (7 tests): it
-  seals with the pinned CrateStack and compares to the 0.16.0 bytes, opens the
-  0.16.0 request with the pinned verifier and compares its answer, opens the
-  0.16.0 answer with the pinned client, and refuses the same bytes on replay, outside
-  the 300 s skew (and accepts them at the edge), tampered, from an unknown signer and
-  for another audience. The identical file passes against CrateStack 0.16.0.
+  seals with CrateStack's client envelope and compares to the 0.16.0 bytes, opens the
+  0.16.0 request with its `EnvelopeLayer` and compares the answer, opens the
+  0.16.0 answer with its client, and refuses the same bytes on replay, outside
+  the 300 s skew (and accepts them at the edge), with a flipped payload byte and a
+  flipped signature byte (the handler never runs), from an unknown signer and
+  for another audience. **It drives CrateStack's `ClientEnvelope` and `EnvelopeLayer`
+  directly, not `vpay_sdk::Client::send_signed`, and not `vpay-api`'s router,
+  `PgNonceStore` or principal mapper**; those run in the SDK's and the workspace's
+  suites at 0.20.4 only. The identical file passes against CrateStack 0.16.0.
   **If it fails after a later bump, the bump is a wire break; do not regenerate it.**
 
 Not shown here: a 0.16.0 SDK against the real `vpay-api` router over Postgres. The

@@ -29,10 +29,11 @@ is [../cratestack.md](../cratestack.md), "CrateStack 0.16.0 → 0.20.4".
 **The four that did not pass** (`a_forwarded_for_header_from_an_untrusted_peer_buys_no_fresh_budget`,
 `the_second_factor_is_rate_limited_and_not_only_the_password`,
 `the_sign_in_rate_limit_is_per_source_address`, `two_replicas_share_one_sign_in_budget`)
-bind source addresses `127.0.0.2`, `.4`, `.20` and `.30`, which macOS does not assign to `lo0`
-(`EADDRNOTAVAIL`, os error 49; the test's own message names the `sudo ifconfig lo0 alias` fix).
-That is a machine setting this session did not change. They do not touch CrateStack, and
-they have to be run on Linux (CI) or with the aliases added.
+bind source addresses `127.0.0.2`, `.4`, `.20` and `.30` through `client_bound_to`
+(`backends/tests/integration/tests/support/mod.rs`), which macOS does not assign to `lo0`
+(`EADDRNOTAVAIL`, os error 49; the test's message names the `sudo ifconfig lo0 alias` fix).
+The failure is environmental, but these tests do go through `vpay-db`'s rate limit (the
+generated `RATE_LIMIT_WINDOW_MODEL`), which is CrateStack-generated code: **they still need the Linux CI run on 0.20.4.**
 
 **Not run:** `just test-e2e` (the compose stack: builds images and boots the rails),
 `just test-storybook`, `just helm-check`. CI's `e2e` job is the gate of record for the
@@ -42,17 +43,24 @@ first.
 
 Method and results are in [../cratestack.md](../cratestack.md). The pairing and refusal
 tests ran in a throwaway crate (not committed); the committed evidence is
-`sdks/rust/tests/wire_golden.rs`. Its guards were each broken once to prove a failure:
+`sdks/rust/tests/wire_golden.rs`, which drives CrateStack's client envelope and
+`EnvelopeLayer` only. Its guards were each broken once to prove a failure:
 
-| Mutation of the test's fixture                             | Failed                                        |
-| ---------------------------------------------------------- | --------------------------------------------- |
-| server skew widened to 1,000,000 s                         | `…refused_outside_the_clock_skew`             |
-| replay memory dropped (fresh store for the second request) | `…refused_the_second_time`                    |
-| "unknown signer" given the real merchant key               | `…tampered_or_foreign…`                       |
-| one hex digit of the golden request changed                | 4 tests, including the seal and open ones     |
-| the foreign-audience layer given the sealed audience       | `…tampered_or_foreign…`                       |
-| client pins a different server key                         | `…opens_a_0_16_0_answer_under_the_pinned_key` |
-| signer clock moved by one second                           | the seal and open tests                       |
+| Mutation                                                                                                                | Failed                                                                                                                                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| server skew widened to 1,000,000 s                                                                                      | `…refused_outside_the_clock_skew`                                                                                                                                                                                                                                                                                                                                |
+| replay memory dropped (fresh store for the second request)                                                              | `…refused_the_second_time`                                                                                                                                                                                                                                                                                                                                       |
+| "unknown signer" given the real merchant key                                                                            | `…tampered_or_foreign…`                                                                                                                                                                                                                                                                                                                                          |
+| one hex digit of the golden request changed                                                                             | 4 tests, including the seal and open ones                                                                                                                                                                                                                                                                                                                        |
+| the foreign-audience layer given the sealed audience                                                                    | `…tampered_or_foreign…`                                                                                                                                                                                                                                                                                                                                          |
+| client pins a different server key                                                                                      | `…opens_a_0_16_0_answer_under_the_pinned_key`                                                                                                                                                                                                                                                                                                                    |
+| signer clock moved by one second                                                                                        | the seal and open tests                                                                                                                                                                                                                                                                                                                                          |
+| **signature verification disabled** in a patched `cratestack-cose` 0.20.4 (`MUT_SIG=1`, one `key.verify` call bypassed) | the flipped-payload-byte case in `…tampered_or_foreign…`, and `a_0_16_0_answer_does_not_open_for_another_request` (the 0.16.0 answer's signature is what refuses it). With the variable unset the patched crate passes all 7; the real crate passes all 7. Run alone with the payload offset removed, the flipped-signature-byte case fails the same way (`a flipped signature byte`: 201 where 401 was expected) |
+
+**Correction (review of this branch).** The first version of the tamper case flipped byte 66
+of 132, which is the CBOR length byte `0x58` before the signature, so its `401` came from
+the CBOR parser and still passed with signature verification off. It now flips a payload
+byte (offset 50) and a signature byte (offset 100) and asserts the handler never ran.
 
 ## Outside workspace
 

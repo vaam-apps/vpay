@@ -352,7 +352,7 @@ cratestack-parser = { version = "=0.20.4", default-features = false }
 # `cratestack-axum` taken directly by `vpay-api` (VP-3, 2026-10-26) for the
 # `EnvelopeLayer`, `BindingResolver` and `ResolvedRoute` that `vpay-api`'s
 # hand-written `/v1` is wrapped in. Already in the lock through the facade, so a
-# direct edge and no new package. Same `=0.16.0` pin, and
+# direct edge and no new package. Same `=0.20.4` pin, and
 # **`default-features = false`**: the crate's default is `decimal-rust-decimal`,
 # which `cratestack` above deliberately drops, and a second dependent turning it
 # back on would change `cratestack-core`'s `Decimal` for the whole graph by

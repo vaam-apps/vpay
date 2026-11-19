@@ -12,14 +12,22 @@
 //! the call. This test redoes the exchange with whatever CrateStack this
 //! workspace pins and compares:
 //!
-//! * the sealed request, byte for byte (so a 0.16.0 server opens what an upgraded
-//!   SDK sends);
+//! * the sealed request, byte for byte (so a 0.16.0 layer opens what an upgraded
+//!   client seals);
 //! * the sealed answer, byte for byte (so a 0.16.0 SDK opens what an upgraded
 //!   server answers);
 //! * the old request opened by the current verifier, and the old answer opened by
 //!   the current client;
 //! * and the refusals that make the transport a trust boundary, on the same
 //!   bytes: a replay, a stale `iat`, a tampered byte, an unknown signer.
+//!
+//! **What this drives, and what it does not.** CrateStack's own
+//! `ClientEnvelope::seal_call` / `PendingResponse::open` and its `EnvelopeLayer`
+//! in `Required` mode, with a hand-built resolver and an in-memory nonce store.
+//! It does not run `vpay_sdk::Client::send_signed` (tests/signing.rs and the
+//! resource tests do, against the same layer, at the pinned version only), nor
+//! `vpay-api`'s router, `PgNonceStore` or principal mapper (the workspace's
+//! integration suites do, at the pinned version only).
 //!
 //! **If this fails after a CrateStack bump, do not regenerate the vector.** It is
 //! the evidence that live merchants keep working. A change here is a wire break
@@ -262,7 +270,7 @@ fn app(now: i64) -> (Router, Seen) {
 }
 
 #[tokio::test]
-async fn the_sdk_seals_the_bytes_cratestack_0_16_0_sealed() {
+async fn cratestack_client_envelope_seals_the_bytes_0_16_0_sealed() {
     let sealed = seal(&MERCHANT_SEED).await;
     let (golden_headers, golden_body) = golden_request();
     assert_eq!(
@@ -274,7 +282,7 @@ async fn the_sdk_seals_the_bytes_cratestack_0_16_0_sealed() {
 }
 
 #[tokio::test]
-async fn the_server_opens_a_0_16_0_request_and_answers_the_0_16_0_bytes() {
+async fn cratestack_envelope_layer_opens_a_0_16_0_request_and_answers_the_0_16_0_bytes() {
     let (golden_headers, golden_body) = golden_request();
     let (app, seen) = app(NOW);
     let answer = post(&app, &golden_headers, golden_body).await;
@@ -296,7 +304,7 @@ async fn the_server_opens_a_0_16_0_request_and_answers_the_0_16_0_bytes() {
 }
 
 #[tokio::test]
-async fn the_sdk_opens_a_0_16_0_answer_under_the_pinned_key() {
+async fn cratestack_client_envelope_opens_a_0_16_0_answer_under_the_pinned_key() {
     let sealed = seal(&MERCHANT_SEED).await;
     let headers: HeaderMap = GOLDEN_RESPONSE_HEADERS
         .iter()
@@ -398,15 +406,35 @@ async fn the_golden_request_is_refused_outside_the_clock_skew() {
 #[tokio::test]
 async fn a_tampered_or_foreign_golden_request_is_refused_with_the_coarse_401() {
     let (golden_headers, golden_body) = golden_request();
-    let coarse = {
-        let (app, _) = app(NOW);
+    // The golden message is `d2 84 58 27 <39 protected> a0 55 <21 payload> 58 40
+    // <64 signature>`: a flip anywhere but the payload and the signature is
+    // refused by the CBOR parser before any key is consulted, so this pins the
+    // two regions only signature verification can catch.
+    assert_eq!(golden_body.len(), 132);
+    assert_eq!(
+        &golden_body[44..46],
+        &[0x55, b'p'],
+        "the payload starts at 45"
+    );
+    assert_eq!(
+        &golden_body[66..68],
+        &[0x58, 0x40],
+        "the signature starts at 68"
+    );
+    let mut coarse = None;
+    for (region, offset) in [("payload", 50_usize), ("signature", 100)] {
+        let (app, seen) = app(NOW);
         let mut tampered = golden_body.clone();
-        let middle = tampered.len() / 2;
-        tampered[middle] ^= 0x01;
-        post(&app, &golden_headers, tampered).await
-    };
-    assert_eq!(coarse.status, 401);
-
+        tampered[offset] ^= 0x01;
+        let answer = post(&app, &golden_headers, tampered).await;
+        assert_eq!(answer.status, 401, "a flipped {region} byte");
+        assert!(
+            seen.lock().expect("lock").is_empty(),
+            "the handler ran for a flipped {region} byte"
+        );
+        coarse = Some(answer);
+    }
+    let coarse = coarse.expect("two regions flipped");
     // Signed by a key the server does not hold: the same answer, byte for byte.
     let seen: Seen = Arc::default();
     let stranger = server(NOW, public_of(&[0x33; 32]), Arc::clone(&seen));
