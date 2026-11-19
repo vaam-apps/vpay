@@ -162,15 +162,20 @@ sequenceDiagram
 
 The second door is the break-glass (owner ruling Q2): an operator with database
 access runs `vpay-server staff pair-key --staff <email|stf_…> --public-key <key>
-[--label …]` for an **existing, active** member. It needs no proof of possession,
-because the operator already holds more authority than a pairing grants; it
-creates no member, changes no flag, and prints one line (`<staff id> <key id>
-<thumbprint> <expires_at>`). It is also the **only** way a key reaches an
-administrator, and `vpay-server staff add --admin` the only way one is made. Its
-twin, `vpay-server staff revoke-key --thumbprint <t>`, runs the same function
-`DELETE /svc/v1/console_keys/{thumbprint}` does (`console_keys::revoke`), so the
-door that can pair can also revoke, with no database access beyond the
-command's own.
+[--label …] --operator <identity> [--ttl-hours <n>]` for an **existing, active**
+member. It needs no proof of possession, because the operator already holds more
+authority than a pairing grants; it creates no member and changes no flag. Since
+2026-11-19 ([ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md),
+issue #152) it is **bounded and auditable**: the key lives **24 hours** by
+default (`--ttl-hours`, at most the ordinary 30 days), the command **requires
+`--operator`**, and it writes a `console_key:pair` row to the append-only
+`audit_events` journal in the same transaction as the key. It prints one line
+(`<staff id> <key id> <thumbprint> <expires_at>`). It is also the **only** way a
+key reaches an administrator, and `vpay-server staff add --admin` the only way
+one is made. Its twin, `vpay-server staff revoke-key --thumbprint <t> --operator
+<identity>`, revokes any key and journals a `console_key:revoke` row the same
+way, so the door that can pair can also revoke, with no database access beyond
+the command's own.
 
 What a pairing never does (owner rulings R2 and 2026-10-09):
 
@@ -231,8 +236,9 @@ Postgres replay cache, and the coarse refusal. Three things differ.
 /svc/v1/console_keys/{thumbprint}` or `vpay-server staff revoke-key`
   therefore ends a key at once, and either may revoke an administrator's key
   (incident response: revocation is never refused for the most privileged
-  keys); a key ends itself 30 days after `paired_at`, enforced by a `CHECK` and
-  by the read, with no job to run.
+  keys); a key ends itself at most 30 days after `paired_at`, enforced by a
+  `CHECK` and by the read, with no job to run — exactly 30 days for a vaam
+  pairing, 24 hours by default for the operator's break-glass ([ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md), issue #152).
 - **A database that cannot answer is a `500`, never a miss.** Treating a failed
   key lookup as "no key" would make an outage look like a revocation, and treating
   it as "yes" would make it a bypass.

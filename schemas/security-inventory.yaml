@@ -544,9 +544,11 @@ material_controls:
       - "backends/crates/vpay-api/src/staff/sso/mod.rs"
       - "backends/crates/vpay-api/src/staff/sso/verify.rs"
       - "backends/crates/vpay-api/src/staff_auth/mod.rs"
-    evidence: "A key expires 30 days after pairing (a CHECK), a revoked or expired key is the layer's coarse 401 on the next request, a merchant key never reaches /svc, and an administrator is made only by an operator on the command line. With human_login served: TOTP replay guard, OIDC ID-token checks (a pending flow is taken exactly once and expires, and the second factor must be proved by acr or amr), session revocation, per-source-address and per-email sign-in limits in rate_limit_windows, and the member re-read on every request; with it off the sign-in routes are not mounted and /dash/v1 takes a signature alone. Dual control and automated key lifecycle remain gap #152."
+      - "backends/apps/vpay-server/src/main.rs"
+    evidence: "A key lives at most 30 days (a CHECK); the operator's break-glass `staff pair-key` writes 24 hours by default and every break-glass pair/revoke requires `--operator` and is journalled to `audit_events` in the same transaction (issue #152), a revoked or expired key is the layer's coarse 401 on the next request, a merchant key never reaches /svc, and an administrator is made only by an operator on the command line. With human_login served: TOTP replay guard, OIDC ID-token checks (a pending flow is taken exactly once and expires, and the second factor must be proved by acr or amr), session revocation, per-source-address and per-email sign-in limits in rate_limit_windows, and the member re-read on every request; with it off the sign-in routes are not mounted and /dash/v1 takes a signature alone. Dual control and automated key lifecycle remain gap #152."
     evidence_paths:
       - "docs/adr/0036-the-console-is-a-signed-message-under-a-paired-key.md"
+      - "docs/adr/0038-break-glass-console-keys-are-bounded-and-audited.md"
       - "docs/adr/0017-staff-authentication.md"
       - "docs/adr/0030-staff-sign-in-federates-to-an-oidc-provider.md"
       - "docs/adr/0037-authentication-methods-are-deployment-configuration.md"
@@ -561,11 +563,14 @@ material_controls:
       - "a_session_bearer_and_a_console_key_both_read_dash_v1"
       - "with_the_method_off_the_staff_routes_404_and_dash_refuses_unsigned_requests"
       - "a_console_or_service_key_cannot_reach_v1"
-    # `partial` since the PR #396 review: break-glass access (`vpay-server staff
-    # pair-key` / `revoke-key` on the host) is a runbook statement, not a
-    # time-bounded, auditable mechanism. GAP-152-BREAK-GLASS.
-    status: "partial"
-    related_gap: "GAP-152-BREAK-GLASS"
+      - "staff_pair_key_and_revoke_key_journal_the_operator"
+      - "a_console_key_lives_at_most_thirty_days_and_the_database_says_so"
+    # `implemented` since 2026-11-19 (ADR-0038, issue #152): break-glass
+    # (`vpay-server staff pair-key` / `revoke-key` on the host) is now
+    # time-bounded (24 hours by default, at most 30 days) and journalled to the
+    # append-only `audit_events` journal in the same transaction as the key
+    # write, with a mandatory `--operator`. GAP-152-BREAK-GLASS is closed.
+    status: "implemented"
 
   - id: "A.8.7"
     theme: "Technological"
@@ -782,8 +787,8 @@ known_security_gaps:
   - id: "GAP-152-BREAK-GLASS"
     title: "Break-glass access is not time-bounded or auditable"
     tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
-    description: "Issue #152 asks that break-glass access, if supported, be time-bounded and auditable. What exists is a runbook statement (docs/runbooks/deploy-and-rollback.md, item 5): host or pod execution of `vpay-server staff pair-key` and `revoke-key`. A key paired that way lives the ordinary 30 days, needs no approval, and is recorded only by one `tracing` line on the process's output; no audit row, no shorter expiry, no second person."
-    status: "open"
+    description: "Resolved 2026-11-19 (migration 0063, ADR-0038). Issue #152 asked that break-glass access, if supported, be time-bounded and auditable. `vpay-server staff pair-key` now defaults to a 24-hour key (`--ttl-hours`, at most 30 days), and both `staff pair-key` and `staff revoke-key` require `--operator` and append an `audit_events` row (action `console_key:pair` / `console_key:revoke`, actor kind `operator`, target the key's thumbprint) in the same transaction as the key write. Dual-control approval remains an open organisational control outside this tree."
+    status: "closed"
     related_control: "A.8.2"
 
   - id: "GAP-151"

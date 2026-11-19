@@ -9,14 +9,14 @@
 //! with `cratestack-cose`, and hands it the base64url text and the thumbprint
 //! it computed), it **never decides who may pair** (the route and the command
 //! line do), and it **never reads a clock of its own**: every instant is an
-//! argument, so the 30-day life is a property a test can walk across by
+//! argument, so the key's life is a property a test can walk across by
 //! pairing in the past.
 //!
 //! # Life of a key
 //!
 //! ```text
-//!   pair ──▶ live ──(720 h after paired_at)──▶ expired   never extended, never deleted
-//!             │
+//!   pair ──▶ live ──(expires_at, at most 720 h after paired_at)──▶ expired
+//!             │                                          never extended, never deleted
 //!             └──(revoke)──▶ revoked                      revoked_at keeps its first value
 //! ```
 //!
@@ -51,13 +51,14 @@ const MODEL: &str = "ConsoleKey";
 /// (`console_keys_alg_enum_check`).
 pub const ALG_ESP256: &str = "esp256";
 
-/// How long a key lives: exactly 720 hours from `paired_at` (owner ruling R3,
-/// "a console key expires 30 days after pairing").
+/// How long an ordinary (vaam) paired key lives: exactly 720 hours from
+/// `paired_at`. The **maximum** a key may live — a break-glass pairing may ask
+/// for less ([`BREAK_GLASS_KEY_LIFETIME`], issue #152) — the database caps every
+/// life here (`console_keys_lives_at_most_thirty_days`).
 ///
-/// Hours, not days, and the same figure the database enforces
-/// (`console_keys_lives_exactly_thirty_days`): a calendar-day interval differs
-/// from thirty 24-hour days across a DST change in a non-UTC session, and the
-/// two sides must compute one number.
+/// Hours, not days, and the same figure the database enforces: a calendar-day
+/// interval differs from thirty 24-hour days across a DST change in a non-UTC
+/// session, and the two sides must compute one number.
 ///
 /// ```
 /// use vpay_db::CONSOLE_KEY_LIFETIME;
@@ -65,6 +66,24 @@ pub const ALG_ESP256: &str = "esp256";
 /// assert_eq!(CONSOLE_KEY_LIFETIME.whole_seconds(), 30 * 24 * 60 * 60);
 /// ```
 pub const CONSOLE_KEY_LIFETIME: Duration = Duration::hours(720);
+
+/// How long a key paired by the **operator's break-glass command**
+/// (`vpay-server staff pair-key`) lives by default: 24 hours, unless the
+/// operator asks for another life with `--ttl-hours`.
+///
+/// The gap `GAP-152-BREAK-GLASS` (issue #152) named a key that "lives the
+/// ordinary 30 days" as the emergency door's missing bound. 24 hours is the
+/// ordinary incident: long enough to finish the work the door was opened for
+/// and short enough that a forgotten key stops authenticating the next day.
+/// Every value this can carry is still capped at [`CONSOLE_KEY_LIFETIME`] by
+/// `console_keys_lives_at_most_thirty_days`.
+///
+/// ```
+/// use vpay_db::BREAK_GLASS_KEY_LIFETIME;
+///
+/// assert_eq!(BREAK_GLASS_KEY_LIFETIME.whole_hours(), 24);
+/// ```
+pub const BREAK_GLASS_KEY_LIFETIME: Duration = Duration::hours(24);
 
 /// One `console_keys` row, exactly as stored.
 #[derive(Clone, PartialEq, Eq)]
@@ -83,7 +102,8 @@ pub struct ConsoleKeyRow {
     pub label: Option<String>,
     /// When it was paired.
     pub paired_at: OffsetDateTime,
-    /// `paired_at` plus [`CONSOLE_KEY_LIFETIME`].
+    /// `paired_at` plus the life the pairing chose: [`CONSOLE_KEY_LIFETIME`]
+    /// for a vaam pairing, a shorter life for `staff pair-key` (issue #152).
     pub expires_at: OffsetDateTime,
     /// When it was revoked, if it was.
     pub revoked_at: Option<OffsetDateTime>,
@@ -139,7 +159,7 @@ impl fmt::Debug for ConsoleKeyRow {
 }
 
 /// Everything a writer supplies to pair a key. `expires_at` is not here: it is
-/// `now + CONSOLE_KEY_LIFETIME`, computed once, in [`ConsoleKeys::pair_console_key`].
+/// `now + lifetime`, computed once, in [`ConsoleKeys::pair_console_key`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NewConsoleKey {
     /// `ck_…`, from `vpay_core::ids::console_key_id`.
@@ -153,6 +173,12 @@ pub struct NewConsoleKey {
     pub thumbprint: String,
     /// A name for the key, 1 to 64 characters.
     pub label: Option<String>,
+    /// How long the key lives from `now`: [`CONSOLE_KEY_LIFETIME`] for a phone
+    /// pairing through vaam, a shorter life for `vpay-server staff pair-key`
+    /// (issue #152). `expires_at = now + lifetime`, and the database refuses
+    /// anything above [`CONSOLE_KEY_LIFETIME`] or at or below zero
+    /// (`console_keys_lives_at_most_thirty_days`).
+    pub lifetime: Duration,
     /// The pairing instant; also `paired_at`.
     pub now: OffsetDateTime,
 }
@@ -160,10 +186,10 @@ pub struct NewConsoleKey {
 /// The repository for `console_keys`.
 #[async_trait]
 pub trait ConsoleKeys {
-    /// Inserts one key, live from `new.now` for [`CONSOLE_KEY_LIFETIME`].
+    /// Inserts one key, live from `new.now` for `new.lifetime`.
     ///
     /// `now` is truncated to the microsecond Postgres stores, so
-    /// `console_keys_lives_exactly_thirty_days` compares two values with one
+    /// `console_keys_lives_at_most_thirty_days` compares two values with one
     /// fractional part.
     ///
     /// # Errors
@@ -171,8 +197,9 @@ pub trait ConsoleKeys {
     /// [`DbError::Persistence`] — [`crate::PersistenceError::Unique`] when the
     /// thumbprint (or id) is taken, [`crate::PersistenceError::ForeignKey`]
     /// when the member does not exist, [`crate::PersistenceError::Check`] when
-    /// a shape rule is broken, [`crate::PersistenceError::Denied`] if `model
-    /// ConsoleKey` loses its `create` arm.
+    /// a shape rule is broken (including a `new.lifetime` above
+    /// [`CONSOLE_KEY_LIFETIME`] or at or below zero), [`crate::PersistenceError::Denied`]
+    /// if `model ConsoleKey` loses its `create` arm.
     async fn pair_console_key(&self, new: NewConsoleKey) -> Result<(), DbError>;
 
     /// The key with this thumbprint, live or not, or `None`.
@@ -223,8 +250,8 @@ fn micros(at: OffsetDateTime) -> OffsetDateTime {
 }
 
 /// The generated create input for a key paired at `new.now`: live for
-/// [`CONSOLE_KEY_LIFETIME`], never revoked. The one place the 30-day life is
-/// computed, shared by the pool path and the in-transaction one.
+/// `new.lifetime`, never revoked. The one place a key's life is computed,
+/// shared by the pool path and the in-transaction one.
 fn create_input(new: NewConsoleKey) -> cratestack_schema::CreateConsoleKeyInput {
     let paired_at = micros(new.now);
     cratestack_schema::CreateConsoleKeyInput {
@@ -235,7 +262,7 @@ fn create_input(new: NewConsoleKey) -> cratestack_schema::CreateConsoleKeyInput 
         thumbprint: new.thumbprint,
         label: new.label,
         paired_at: to_chrono(paired_at),
-        expires_at: to_chrono(paired_at + CONSOLE_KEY_LIFETIME),
+        expires_at: to_chrono(paired_at + new.lifetime),
         revoked_at: None,
     }
 }
@@ -258,6 +285,35 @@ pub(crate) async fn pair_in_tx(
         .await
         .map_err(|error| DbError::from(classify_cratestack(MODEL, "create", error)))?;
     Ok(())
+}
+
+/// [`ConsoleKeys::revoke_console_key`] inside a caller's transaction: the
+/// revoke that commits (or rolls back) with the audit row `staff revoke-key`
+/// writes beside it (issue #152), so the journal never lags the revocation it
+/// records.
+///
+/// # Errors
+///
+/// [`ConsoleKeys::revoke_console_key`]'s.
+pub(crate) async fn revoke_in_tx(
+    cs: &cratestack_schema::Cratestack,
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    thumbprint: &str,
+    now: OffsetDateTime,
+) -> Result<bool, DbError> {
+    let summary = cs
+        .console_key()
+        .update_many()
+        .where_(console_key::thumbprint().eq(thumbprint.to_owned()))
+        .where_(console_key::revoked_at().is_null())
+        .set(cratestack_schema::UpdateConsoleKeyInput {
+            revoked_at: Some(Some(to_chrono(micros(now)))),
+            ..cratestack_schema::UpdateConsoleKeyInput::default()
+        })
+        .run_in_tx(&mut *tx, &system_context())
+        .await
+        .map_err(|error| DbError::from(classify_cratestack(MODEL, "update", error)))?;
+    Ok(summary.value.ok == 1)
 }
 
 #[async_trait]

@@ -968,8 +968,23 @@ async fn run_command(args: &ServerArgs, command: vpay_config::StaffCommand) -> a
             staff,
             public_key,
             label,
-        } => pair_key(args, &staff, &public_key, label.as_deref()).await,
-        vpay_config::StaffCommand::RevokeKey { thumbprint } => revoke_key(args, &thumbprint).await,
+            ttl_hours,
+            operator,
+        } => {
+            pair_key(
+                args,
+                &staff,
+                &public_key,
+                label.as_deref(),
+                ttl_hours,
+                &operator,
+            )
+            .await
+        }
+        vpay_config::StaffCommand::RevokeKey {
+            thumbprint,
+            operator,
+        } => revoke_key(args, &thumbprint, &operator).await,
     }
 }
 
@@ -1171,11 +1186,18 @@ async fn staff_add(
 ///
 /// There is no proof of possession: an operator who can run this against the
 /// database already holds more authority than a pairing grants. So it is bounded
-/// the other way: it creates no member, changes no admin flag, and shares
-/// [`vpay_api::console_keys::store_key`] with the service route, so the 30-day
-/// life, the thumbprint's uniqueness and "a revoked or expired key is never
-/// reinstated" are decided in one place. Idempotent for the same member's live
-/// key; any other collision is an error.
+/// the other way (issue #152, `GAP-152-BREAK-GLASS`):
+///
+/// * it creates no member and changes no admin flag;
+/// * the key's life is bounded — **24 hours** by default, an operator-chosen
+///   `--ttl-hours` up to 720, never the ordinary 30 days unless asked for
+///   (`console_keys_lives_at_most_thirty_days`);
+/// * it **requires `--operator`**, and records the pairing in the append-only
+///   `audit_events` journal in the same transaction as the key, so the act is
+///   attributable and cannot go unrecorded.
+///
+/// It remains idempotent for the same member's live key (which writes no second
+/// audit row); any other collision is an error.
 ///
 /// The key is parsed before the configuration is read, before any connection:
 /// a key that is not a P-256 point is answered in milliseconds.
@@ -1185,14 +1207,17 @@ async fn staff_add(
 ///
 /// # Errors
 ///
-/// [`anyhow::Error`] naming the step: a key that does not parse, a member who
-/// does not exist or is disabled, a key already registered to someone else,
-/// revoked or expired.
+/// [`anyhow::Error`] naming the step: a key that does not parse, an
+/// un-attributable or over-long operator, a lifetime outside `(0, 720]` hours,
+/// a member who does not exist or is disabled, a key already registered to
+/// someone else, revoked or expired.
 async fn pair_key(
     args: &ServerArgs,
     staff: &str,
     public_key: &str,
     label: Option<&str>,
+    ttl_hours: u64,
+    operator: &str,
 ) -> anyhow::Result<()> {
     let key = vpay_api::console_keys::parse_public_key(public_key)
         .map_err(|error| anyhow::anyhow!("--public-key: {error}"))?;
@@ -1200,6 +1225,21 @@ async fn pair_key(
         .map(vpay_api::console_keys::clean_label)
         .transpose()
         .map_err(|error| anyhow::anyhow!("--label: {error}"))?;
+    let operator = vpay_api::console_keys::clean_operator(operator)
+        .map_err(|error| anyhow::anyhow!("--operator: {error}"))?;
+    // Validate the raw hours before building the `Duration`: `Duration::hours`
+    // panics on a value outside `time`'s range, and `i64::try_from(u64)` alone
+    // would let an enormous `--ttl-hours` reach it. After this bound the
+    // conversion cannot fail, and `pair_from_operator` re-checks the same
+    // rule (`check_lifetime`) on the value it is handed.
+    anyhow::ensure!(
+        (1..=720).contains(&ttl_hours),
+        "--ttl-hours {ttl_hours}: a console key lives at least 1 hour and at most 720 hours \
+         (30 days)"
+    );
+    let lifetime = time::Duration::hours(
+        i64::try_from(ttl_hours).context("--ttl-hours is larger than any key may live")?,
+    );
 
     let database_url = args
         .common
@@ -1220,11 +1260,13 @@ async fn pair_key(
          authenticate nobody"
     );
 
-    let paired = vpay_api::console_keys::store_key(
+    let paired = vpay_api::console_keys::pair_from_operator(
         repositories.as_ref(),
         &member,
         &key,
         label,
+        lifetime,
+        &operator,
         time::OffsetDateTime::now_utc(),
     )
     .await
@@ -1235,6 +1277,8 @@ async fn pair_key(
         is_admin = member.is_admin,
         thumbprint = %paired.key.thumbprint,
         created = paired.created,
+        operator = %operator,
+        ttl_hours,
         "a console key was paired from the command line"
     );
 
@@ -1258,10 +1302,13 @@ async fn pair_key(
 
 /// `vpay-server staff revoke-key` — revokes a console key by thumbprint: the
 /// break-glass counterpart of `staff pair-key`, for when no vaam service can
-/// (VP-6a). It runs [`vpay_api::console_keys::revoke`], the function
-/// `DELETE /svc/v1/console_keys/{thumbprint}` runs, so the two cannot decide
-/// differently: any member's key, an administrator's included, is revocable;
-/// the first `revoked_at` is kept; a revoked thumbprint stays taken.
+/// (VP-6a). It runs [`vpay_api::console_keys::revoke_from_operator`] (issue
+/// #152), which **requires `--operator`** and records the revocation in the
+/// append-only `audit_events` journal in the same transaction as the revoke,
+/// so it is attributable and cannot go unrecorded. Otherwise the semantics
+/// match `DELETE /svc/v1/console_keys/{thumbprint}`: any member's key, an
+/// administrator's included, is revocable; the first `revoked_at` is kept; a
+/// revoked thumbprint stays taken.
 ///
 /// The thumbprint's shape is checked before the database is opened, so a typo is
 /// answered in milliseconds and needs no configuration.
@@ -1271,11 +1318,13 @@ async fn pair_key(
 ///
 /// # Errors
 ///
-/// [`anyhow::Error`] naming the step: a thumbprint of the wrong shape, or one no
-/// key registered.
-async fn revoke_key(args: &ServerArgs, thumbprint: &str) -> anyhow::Result<()> {
+/// [`anyhow::Error`] naming the step: a thumbprint of the wrong shape, an
+/// un-attributable or over-long operator, or a thumbprint no key registered.
+async fn revoke_key(args: &ServerArgs, thumbprint: &str, operator: &str) -> anyhow::Result<()> {
     vpay_api::console_keys::check_thumbprint(thumbprint)
         .map_err(|error| anyhow::anyhow!("--thumbprint: {error}"))?;
+    let operator = vpay_api::console_keys::clean_operator(operator)
+        .map_err(|error| anyhow::anyhow!("--operator: {error}"))?;
 
     let database_url =
         args.common.database_url.as_deref().context(
@@ -1283,9 +1332,10 @@ async fn revoke_key(args: &ServerArgs, thumbprint: &str) -> anyhow::Result<()> {
         )?;
     let repositories = vpay_api::boot::open_migrated_database(database_url).await?;
 
-    let key = vpay_api::console_keys::revoke(
+    let key = vpay_api::console_keys::revoke_from_operator(
         repositories.as_ref(),
         thumbprint,
+        &operator,
         time::OffsetDateTime::now_utc(),
     )
     .await
@@ -1302,6 +1352,7 @@ async fn revoke_key(args: &ServerArgs, thumbprint: &str) -> anyhow::Result<()> {
     tracing::info!(
         staff_id = %key.staff_member_id,
         thumbprint = %key.thumbprint,
+        operator = %operator,
         "a console key was revoked from the command line"
     );
 

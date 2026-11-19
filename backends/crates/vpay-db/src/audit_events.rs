@@ -34,17 +34,24 @@ pub struct NewAuditEvent {
     pub occurred_at: OffsetDateTime,
     /// The tenant (merchant_id) owning this event.
     pub tenant: String,
-    /// Actor kind: `signer` or `machine_token`.
+    /// Actor kind: `signer`, `machine_token`, or `operator` (a break-glass
+    /// console-key command line, issue #152).
     pub actor_kind: String,
-    /// Actor identifier: lowercase hex thumbprint for signer, client_id for machine_token.
+    /// Actor identifier: lowercase hex thumbprint for signer, client_id for
+    /// machine_token, or the `--operator` identity for an operator.
     pub actor_id: String,
-    /// Privacy/security action: `account_holder:lookup`.
+    /// Privacy/security action: `account_holder:lookup`, `console_key:pair`, or
+    /// `console_key:revoke`.
     pub action: String,
-    /// Outcome: `initiated`, `found`, `not_found`, `invalid`, `unsupported`, `rate_limited`, `rail_error`.
+    /// Outcome: `initiated`, `found`, `not_found`, `invalid`, `unsupported`,
+    /// `rate_limited`, `rail_error` for a lookup; `paired` or `revoked` for a
+    /// break-glass console-key operation.
     pub outcome: String,
-    /// Target class: `account_holder`.
+    /// Target class: `account_holder` or `console_key`.
     pub target_class: String,
-    /// Approved target representation: keyed HMAC-SHA256 hex digest (provisional pending RFC-0002 D3).
+    /// Approved target representation: a keyed HMAC-SHA256 hex digest for an
+    /// account-holder lookup (provisional pending RFC-0002 D3), or a console
+    /// key's RFC 9679 thumbprint for a break-glass pair/revoke. Never raw PII.
     pub target_repr: String,
     /// `op_…`, groups initiated and terminal rows of one operation.
     pub operation_id: String,

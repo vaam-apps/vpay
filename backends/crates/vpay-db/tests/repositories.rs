@@ -12710,6 +12710,7 @@ fn console_key(
         public_key: format!("B{}", "A".repeat(86)),
         thumbprint: ch.to_string().repeat(64),
         label: None,
+        lifetime: vpay_db::CONSOLE_KEY_LIFETIME,
         now,
     }
 }
@@ -12730,16 +12731,19 @@ async fn staff_for_keys(repositories: &dyn Repositories, id: &str) -> anyhow::Re
     Ok(())
 }
 
-/// **A console key lives exactly thirty days, and the database says so**
-/// (owner ruling R3), not only the Rust constant.
+/// **A console key lives at most thirty days, and the database says so**
+/// (owner ruling R3 as amended by [ADR-0038], issue #152), not only the Rust
+/// constant.
 ///
-/// Three layers, each with a mutation that was run: `expires_at` is
+/// Three layers, each with a mutation that was run: the ordinary pairing writes
 /// `paired_at + 720 hours` (change `CONSOLE_KEY_LIFETIME` to 31 days and the
-/// first assertion fails), and `console_keys_lives_exactly_thirty_days` refuses
-/// any other row written around the repository (drop the CHECK and the
-/// 31-day and 29-day rows below land).
+/// first assertion fails), a shorter break-glass life is stored as asked, and
+/// `console_keys_lives_at_most_thirty_days` refuses a life above 720 hours or at
+/// or below zero (drop the CHECK and the 744-hour and 0-hour rows below land).
+///
+/// [ADR-0038]: ../../../../docs/adr/0038-break-glass-console-keys-are-bounded-and-audited.md
 #[tokio::test]
-async fn a_console_key_lives_exactly_thirty_days_and_the_database_says_so() -> anyhow::Result<()> {
+async fn a_console_key_lives_at_most_thirty_days_and_the_database_says_so() -> anyhow::Result<()> {
     let (_container, repositories, pool) = migrated_postgres().await?;
     staff_for_keys(repositories.as_ref(), "stf_keys").await?;
     let now = time::OffsetDateTime::now_utc();
@@ -12756,15 +12760,30 @@ async fn a_console_key_lives_exactly_thirty_days_and_the_database_says_so() -> a
     assert_eq!(
         row.expires_at - row.paired_at,
         time::Duration::days(30),
-        "a key lives exactly thirty days"
+        "the ordinary pairing lives exactly thirty days"
     );
     assert_eq!(vpay_db::CONSOLE_KEY_LIFETIME, time::Duration::days(30));
+    assert_eq!(vpay_db::BREAK_GLASS_KEY_LIFETIME, time::Duration::hours(24));
     assert_eq!(row.revoked_at, None);
+
+    // A shorter break-glass life (#152) is a valid row: the constraint is an
+    // upper bound, not an equality.
+    let mut short = console_key("ck_short", "stf_keys", 'd', now);
+    short.lifetime = vpay_db::BREAK_GLASS_KEY_LIFETIME;
+    vpay_db::ConsoleKeys::pair_console_key(repositories.as_ref(), short).await?;
+    let short_row = vpay_db::ConsoleKeys::find_console_key(repositories.as_ref(), &"d".repeat(64))
+        .await?
+        .context("the break-glass key reads back")?;
+    assert_eq!(
+        short_row.expires_at - short_row.paired_at,
+        time::Duration::hours(24),
+        "a break-glass key lives the shorter life it was paired with"
+    );
 
     for (name, interval) in [
         ("ck_31", "744 hours"),
-        ("ck_29", "696 hours"),
         ("ck_0", "0 hours"),
+        ("ck_neg", "-1 hours"),
     ] {
         // `AssertSqlSafe`: `interval` is one of the literals above.
         let error = sqlx::query(sqlx::AssertSqlSafe(format!(
@@ -12777,11 +12796,11 @@ async fn a_console_key_lives_exactly_thirty_days_and_the_database_says_so() -> a
         )))
         .execute(&pool)
         .await
-        .expect_err("a lifetime other than thirty days is refused by the table");
+        .expect_err("a life above thirty days or at or below zero is refused by the table");
         assert!(
             error
                 .to_string()
-                .contains("console_keys_lives_exactly_thirty_days"),
+                .contains("console_keys_lives_at_most_thirty_days"),
             "{name} was refused by the wrong constraint: {error}"
         );
     }

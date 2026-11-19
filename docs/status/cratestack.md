@@ -813,7 +813,10 @@ freshly migrated Postgres 16:
   `console_keys_lives_exactly_thirty_days` is invisible to the report and sits in
   `postgres_smoke.rs`'s multi-column list instead (25 entries now: that one in,
   `staff_sessions_token_expiry_is_paired` and
-  `staff_sso_attempts_lifetime_is_positive` out).
+  `staff_sso_attempts_lifetime_is_positive` out). _(That CHECK was renamed
+  `console_keys_lives_at_most_thirty_days` and became an upper bound by migration
+  0063, [ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md),
+  issue #152, 2026-11-19; the list still carries one `console_keys` entry.)_
 - `credentials` gained `credentials_password_and_totp_are_retired`, a
   single-column CHECK that closes the two kinds the migration retires: **+1**.
 - Nothing lossy: every `console_keys` column is `TEXT`/`TIMESTAMPTZ`, so
@@ -958,3 +961,16 @@ new constraint joins that test's list of multi-column CHECKs it reads from
 nothing a generator reads, so `@vpay/dash-client` did not move.
 `schema_migrates_cleanly_on_an_empty_database` pins **62** migrations. Evidence:
 [verification/2026-11-17-payer-mask.md](verification/2026-11-17-payer-mask.md).
+
+**2026-11-19 (issue #152, migration `0063`, [ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md)):**
+the console-key life CHECK became an **upper bound**
+(`console_keys_lives_exactly_thirty_days` → `console_keys_lives_at_most_thirty_days`:
+one two-column CHECK swapped for another) and the `audit_events` vocabulary was
+widened in place (four single-column CHECKs re-stated under the same names). No
+table, column or index changes, so `EXPECTED_DRIFT_CHANGES` stays **232** and
+`EXPECTED_DRIFTED_RELATIONS` stays **31**; the multi-column list in
+`postgres_smoke.rs` carries the renamed `console_keys` entry. `schemas/vpay.cstack`'s
+`expires_at` comment moved to the upper bound. `_sqlx_migrations` rows are
+`schema_migrates_cleanly_on_an_empty_database`'s number, which now pins **63**
+migrations. Evidence:
+[verification/2026-11-19-break-glass-bounds-and-audit.md](verification/2026-11-19-break-glass-bounds-and-audit.md).

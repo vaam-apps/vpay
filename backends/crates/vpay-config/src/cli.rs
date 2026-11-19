@@ -608,8 +608,10 @@ pub enum StaffCommand {
     /// against the database already holds more authority than a pairing
     /// grants. So it is bounded the other way: it creates no member and
     /// changes no admin flag, and it is the *only* way a key reaches an
-    /// administrator (`POST /svc/v1/console_keys` refuses one). The key
-    /// expires 30 days after it is paired, like any other.
+    /// administrator (`POST /svc/v1/console_keys` refuses one). The key lives
+    /// **24 hours by default** (`--ttl-hours`, at most the ordinary 30 days),
+    /// and every run requires `--operator` and is written to the append-only
+    /// audit journal (issue #152, ADR-0038).
     PairKey {
         /// The member, by email (lower-cased) or by `stf_…` id.
         #[arg(long)]
@@ -628,14 +630,30 @@ pub enum StaffCommand {
         /// A name for the key in logs, 1 to 64 characters.
         #[arg(long)]
         label: Option<String>,
+
+        /// How long the key lives, in hours. **Defaults to 24** (#152): a
+        /// break-glass key is meant to outlive the incident, not the month, so
+        /// the default is one day and not the ordinary 30. At most 720.
+        #[arg(long, default_value_t = 24)]
+        ttl_hours: u64,
+
+        /// Who is acting. Required, and recorded in the append-only
+        /// `audit_events` journal beside the pairing (#152): a break-glass act
+        /// with no attributable actor is the gap this closes.
+        #[arg(long)]
+        operator: String,
     },
 
     /// Revoke a console key by thumbprint: the break-glass way to cut a key off
-    /// when no vaam service can (VP-6a). The same function `DELETE
-    /// /svc/v1/console_keys/{thumbprint}` runs, so the two cannot disagree.
+    /// when no vaam service can (VP-6a). Runs
+    /// `vpay_api::console_keys::revoke_from_operator`, which requires
+    /// `--operator` and journals the act to `audit_events` in the same
+    /// transaction as the revoke (issue #152, ADR-0038); otherwise its
+    /// semantics match `DELETE /svc/v1/console_keys/{thumbprint}`.
     ///
     /// Takes effect on the key's next request. Idempotent: a key already
-    /// revoked keeps its first `revoked_at`. It revokes any member's key,
+    /// revoked keeps its first `revoked_at`, and a repeat writes no second
+    /// journal row. It revokes any member's key,
     /// an administrator's included (incident response), and never re-enables
     /// one: a revoked thumbprint stays taken for ever.
     RevokeKey {
@@ -643,6 +661,12 @@ pub enum StaffCommand {
         /// `staff pair-key` printed it.
         #[arg(long)]
         thumbprint: String,
+
+        /// Who is acting. Required, and recorded in the append-only
+        /// `audit_events` journal beside the revocation (#152): a break-glass
+        /// act with no attributable actor is the gap this closes.
+        #[arg(long)]
+        operator: String,
     },
 }
 
@@ -1162,7 +1186,8 @@ mod tests {
     /// (VP-6a). A base64url string does about one time in sixty-four, and
     /// without `allow_hyphen_values` clap reads it as a flag and answers with
     /// a message about an unknown option, so an operator locked out of the
-    /// console would be told their key is not a key.
+    /// console would be told their key is not a key. The break-glass bound and
+    /// actor (#152) parse beside it.
     #[test]
     fn pair_key_takes_a_public_key_that_starts_with_a_hyphen() {
         let key = "-QJkl_xJ-ZGtMCwG2h9Xz7vN8B3U4o0yXW1pS5aTq6c";
@@ -1176,6 +1201,10 @@ mod tests {
             key,
             "--label",
             "break-glass",
+            "--ttl-hours",
+            "6",
+            "--operator",
+            "oncall@acme.example",
         ])
         .expect("a key starting with `-` must parse as the value of --public-key");
         let Some(ServerCommand::Staff {
@@ -1184,6 +1213,8 @@ mod tests {
                     staff,
                     public_key,
                     label,
+                    ttl_hours,
+                    operator,
                 },
         }) = args.command
         else {
@@ -1192,10 +1223,31 @@ mod tests {
         assert_eq!(staff, "ops@acme.example");
         assert_eq!(public_key, key);
         assert_eq!(label.as_deref(), Some("break-glass"));
+        assert_eq!(ttl_hours, 6);
+        assert_eq!(operator, "oncall@acme.example");
     }
 
-    /// `staff revoke-key --thumbprint` parses, and takes nothing else: it is
-    /// the break-glass twin of `pair-key` and names a key, not a member.
+    /// A break-glass pairing refuses to parse without an operator (#152): the
+    /// audit row must name who acted, so the flag is not optional.
+    #[test]
+    fn pair_key_requires_an_operator() {
+        assert!(
+            ServerArgs::try_parse_from([
+                "vpay-server",
+                "staff",
+                "pair-key",
+                "--staff",
+                "ops@acme.example",
+                "--public-key",
+                "-QJkl_xJ-ZGtMCwG2h9Xz7vN8B3U4o0yXW1pS5aTq6c",
+            ])
+            .is_err(),
+            "an operator is required"
+        );
+    }
+
+    /// `staff revoke-key --thumbprint` parses, and names the actor. It is the
+    /// break-glass twin of `pair-key` and names a key, not a member.
     #[test]
     fn revoke_key_takes_a_thumbprint() {
         let thumbprint = "ab".repeat(32);
@@ -1205,15 +1257,33 @@ mod tests {
             "revoke-key",
             "--thumbprint",
             &thumbprint,
+            "--operator",
+            "oncall@acme.example",
         ])
         .expect("`staff revoke-key --thumbprint <t>` parses");
         let Some(ServerCommand::Staff {
-            command: StaffCommand::RevokeKey { thumbprint: parsed },
+            command:
+                StaffCommand::RevokeKey {
+                    thumbprint: parsed,
+                    operator,
+                },
         }) = args.command
         else {
             panic!("expected `staff revoke-key`");
         };
         assert_eq!(parsed, thumbprint);
+        assert_eq!(operator, "oncall@acme.example");
+        assert!(
+            ServerArgs::try_parse_from([
+                "vpay-server",
+                "staff",
+                "revoke-key",
+                "--thumbprint",
+                &thumbprint
+            ])
+            .is_err(),
+            "the operator is required"
+        );
         assert!(
             ServerArgs::try_parse_from(["vpay-server", "staff", "revoke-key"]).is_err(),
             "the thumbprint is required"

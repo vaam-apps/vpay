@@ -2919,6 +2919,7 @@ fn staff_pair_key_attaches_a_key_prints_one_line_and_is_idempotent() {
             bin()
                 .args(["staff", "pair-key", "--staff", staff, "--public-key", key])
                 .args(["--label", "break-glass"])
+                .args(["--operator", "oncall@example.test"])
                 .env("VPAY_CONFIG", staff_config_path())
                 .env("DATABASE_URL", &database_url)
                 .env("VPAY_LOG_FORMAT", "json")
@@ -2948,8 +2949,8 @@ fn staff_pair_key_attaches_a_key_prints_one_line_and_is_idempotent() {
             .expect("after the epoch")
             .as_secs() as i64;
         assert!(
-            (expires - now - 30 * 24 * 60 * 60).abs() < 120,
-            "a key lives 30 days from now: {expires} vs {now}"
+            (expires - now - 24 * 60 * 60).abs() < 120,
+            "a break-glass key lives 24 hours by default (issue #152): {expires} vs {now}"
         );
 
         // Idempotent for the same member.
@@ -3017,6 +3018,8 @@ fn staff_pair_key_refuses_a_bad_key_before_it_needs_a_config_or_a_database() {
                 "ada@example.test",
                 "--public-key",
                 key,
+                "--operator",
+                "oncall@example.test",
             ])
             .env_remove("VPAY_CONFIG")
             .env_remove("DATABASE_URL")
@@ -3060,6 +3063,8 @@ fn staff_pair_key_refuses_an_unknown_member() {
                 "nobody@example.test",
                 "--public-key",
                 &generated_console_public_key(),
+                "--operator",
+                "oncall@example.test",
             ])
             .env("VPAY_CONFIG", staff_config_path())
             .env("DATABASE_URL", &database_url)
@@ -3082,7 +3087,14 @@ fn staff_revoke_key_refuses_a_malformed_thumbprint_before_it_needs_a_config_or_a
         ("not hex", "zz".repeat(32)),
     ] {
         let output = bin()
-            .args(["staff", "revoke-key", "--thumbprint", &thumbprint])
+            .args([
+                "staff",
+                "revoke-key",
+                "--thumbprint",
+                &thumbprint,
+                "--operator",
+                "oncall@example.test",
+            ])
             .env_remove("VPAY_CONFIG")
             .env_remove("DATABASE_URL")
             .output()
@@ -3143,6 +3155,8 @@ fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempot
             "root@example.test",
             "--public-key",
             &key,
+            "--operator",
+            "oncall@example.test",
         ]);
         assert!(
             paired.status.success(),
@@ -3156,7 +3170,14 @@ fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempot
             .expect("pair-key prints the thumbprint third")
             .to_owned();
 
-        let revoked = run(&["staff", "revoke-key", "--thumbprint", &thumbprint]);
+        let revoked = run(&[
+            "staff",
+            "revoke-key",
+            "--thumbprint",
+            &thumbprint,
+            "--operator",
+            "oncall@example.test",
+        ]);
         let stdout = String::from_utf8_lossy(&revoked.stdout);
         let stderr = String::from_utf8_lossy(&revoked.stderr);
         assert!(revoked.status.success(), "{stdout}\n{stderr}");
@@ -3179,7 +3200,14 @@ fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempot
 
         // Idempotent: the first instant is kept.
         std::thread::sleep(std::time::Duration::from_millis(1100));
-        let again = run(&["staff", "revoke-key", "--thumbprint", &thumbprint]);
+        let again = run(&[
+            "staff",
+            "revoke-key",
+            "--thumbprint",
+            &thumbprint,
+            "--operator",
+            "oncall@example.test",
+        ]);
         assert!(again.status.success());
         let again_stdout = String::from_utf8_lossy(&again.stdout).into_owned();
         assert_eq!(
@@ -3189,7 +3217,14 @@ fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempot
         );
 
         // A well-formed thumbprint nothing registered is refused and prints nothing.
-        let unknown = run(&["staff", "revoke-key", "--thumbprint", &"0".repeat(64)]);
+        let unknown = run(&[
+            "staff",
+            "revoke-key",
+            "--thumbprint",
+            &"0".repeat(64),
+            "--operator",
+            "oncall@example.test",
+        ]);
         assert!(!unknown.status.success());
         assert!(String::from_utf8_lossy(&unknown.stdout).trim().is_empty());
         assert!(
@@ -3206,12 +3241,251 @@ fn staff_revoke_key_revokes_an_administrators_key_prints_one_line_and_is_idempot
             "root@example.test",
             "--public-key",
             &key,
+            "--operator",
+            "oncall@example.test",
         ]);
         assert!(
             !repaired.status.success(),
             "a revoked key is never reinstated"
         );
     });
+}
+
+/// A break-glass pairing and revocation are **attributable and bounded**
+/// (issue #152, `GAP-152-BREAK-GLASS`): `staff pair-key --ttl-hours` writes a
+/// key that expires when asked, and both commands append a row to the
+/// append-only `audit_events` journal naming the operator, in the same
+/// transaction as the write.
+///
+/// The decisive mutation: drop the `append_audit_event_in_tx` call and the
+/// journal read below is empty while the exit code and the printed line stay
+/// green.
+#[test]
+fn staff_pair_key_and_revoke_key_journal_the_operator() {
+    with_live_postgres(|database_url| {
+        let run = |args: &[&str]| {
+            bin()
+                .args(args)
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .env("VPAY_LOG_FORMAT", "json")
+                .env_remove("VPAY_OAUTH_SIGNING_KEY_FILE")
+                .output()
+                .expect("running `vpay-server staff ...`")
+        };
+        let added = run(&[
+            "staff",
+            "add",
+            "--merchant",
+            "acme-cameroon-tenant",
+            "--email",
+            "grace@example.test",
+            "--name",
+            "Grace",
+        ]);
+        assert!(
+            added.status.success(),
+            "{}",
+            String::from_utf8_lossy(&added.stderr)
+        );
+
+        let key = generated_console_public_key();
+        let paired = run(&[
+            "staff",
+            "pair-key",
+            "--staff",
+            "grace@example.test",
+            "--public-key",
+            &key,
+            "--ttl-hours",
+            "2",
+            "--operator",
+            "oncall@example.test",
+        ]);
+        let stdout = String::from_utf8_lossy(&paired.stdout).into_owned();
+        assert!(
+            paired.status.success(),
+            "{stdout}\n{}",
+            String::from_utf8_lossy(&paired.stderr)
+        );
+        let fields: Vec<&str> = stdout.split(' ').collect();
+        let thumbprint = fields
+            .get(2)
+            .expect("thumbprint is the third field")
+            .to_owned();
+        let expires: i64 = fields
+            .get(3)
+            .expect("expiry is the fourth field")
+            .trim()
+            .parse()
+            .expect("unix seconds");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("after the epoch")
+            .as_secs() as i64;
+        assert!(
+            (expires - now - 2 * 60 * 60).abs() < 120,
+            "the key lives the two hours it was asked for: {expires} vs {now}"
+        );
+
+        let rows = read_back_audit_rows(&database_url, "acme-cameroon-tenant");
+        assert!(
+            rows.iter().any(|row| row.actor_kind == "operator"
+                && row.actor_id == "oncall@example.test"
+                && row.action == "console_key:pair"
+                && row.outcome == "paired"
+                && row.target_repr == thumbprint),
+            "the pairing is journalled: {rows:?}"
+        );
+
+        // A repeat pairing before revocation is a no-op and writes no second
+        // row: the journal says a change happened, and a repeat changed nothing.
+        let pair_again = run(&[
+            "staff",
+            "pair-key",
+            "--staff",
+            "grace@example.test",
+            "--public-key",
+            &key,
+            "--ttl-hours",
+            "2",
+            "--operator",
+            "oncall@example.test",
+        ]);
+        assert!(
+            pair_again.status.success(),
+            "{}",
+            String::from_utf8_lossy(&pair_again.stderr)
+        );
+        let rows = read_back_audit_rows(&database_url, "acme-cameroon-tenant");
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.action == "console_key:pair")
+                .count(),
+            1,
+            "a repeat pairing journals nothing: {rows:?}"
+        );
+
+        let revoked = run(&[
+            "staff",
+            "revoke-key",
+            "--thumbprint",
+            thumbprint,
+            "--operator",
+            "oncall@example.test",
+        ]);
+        assert!(
+            revoked.status.success(),
+            "{}",
+            String::from_utf8_lossy(&revoked.stderr)
+        );
+        let rows = read_back_audit_rows(&database_url, "acme-cameroon-tenant");
+        assert!(
+            rows.iter().any(|row| row.actor_kind == "operator"
+                && row.actor_id == "oncall@example.test"
+                && row.action == "console_key:revoke"
+                && row.outcome == "revoked"
+                && row.target_repr == thumbprint),
+            "the revocation is journalled: {rows:?}"
+        );
+
+        // A repeat revocation (`revoked_at` already set) likewise journals
+        // nothing.
+        let revoke_again = run(&[
+            "staff",
+            "revoke-key",
+            "--thumbprint",
+            thumbprint,
+            "--operator",
+            "oncall@example.test",
+        ]);
+        assert!(revoke_again.status.success());
+        let rows = read_back_audit_rows(&database_url, "acme-cameroon-tenant");
+        assert_eq!(
+            rows.iter()
+                .filter(|r| r.action == "console_key:revoke")
+                .count(),
+            1,
+            "a repeat revocation journals nothing: {rows:?}"
+        );
+    });
+}
+
+/// `--ttl-hours` is bounded by the delivery, before any database: 0 and 721
+/// are refused (issue #152), and a key never lives past the ordinary 30 days.
+#[test]
+fn staff_pair_key_refuses_a_lifetime_outside_one_to_seven_hundred_twenty_hours() {
+    with_live_postgres(|database_url| {
+        let run = |ttl: &str| {
+            bin()
+                .args([
+                    "staff",
+                    "pair-key",
+                    "--staff",
+                    "grace@example.test",
+                    "--public-key",
+                    &generated_console_public_key(),
+                    "--operator",
+                    "oncall@example.test",
+                    "--ttl-hours",
+                    ttl,
+                ])
+                .env("VPAY_CONFIG", staff_config_path())
+                .env("DATABASE_URL", &database_url)
+                .output()
+                .expect("running `vpay-server staff pair-key`")
+        };
+        for ttl in ["0", "721", "9999999999999999999"] {
+            let output = run(ttl);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(!output.status.success(), "--ttl-hours {ttl}: {stderr}");
+            assert!(
+                stderr.contains("--ttl-hours"),
+                "--ttl-hours {ttl}: the refusal names the flag: {stderr}"
+            );
+        }
+    });
+}
+
+/// The `audit_events` rows for a tenant, read through the repository on a
+/// thread of its own (see [`read_back_key_revocation`]).
+fn read_back_audit_rows(database_url: &str, tenant: &str) -> Vec<AuditRow> {
+    let (database_url, tenant) = (database_url.to_owned(), tenant.to_owned());
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("build a tokio runtime on the reader thread");
+        rt.block_on(async move {
+            let repositories = vpay_db::connect(&database_url)
+                .await
+                .expect("connecting to read the rows back");
+            vpay_db::AuditEvents::list_audit_events_by_tenant(repositories.as_ref(), &tenant, 100)
+                .await
+                .expect("reading the journal")
+                .into_iter()
+                .map(|row| AuditRow {
+                    actor_kind: row.actor_kind,
+                    actor_id: row.actor_id,
+                    action: row.action,
+                    outcome: row.outcome,
+                    target_repr: row.target_repr,
+                })
+                .collect()
+        })
+    })
+    .join()
+    .expect("the reader thread panicked")
+}
+
+/// The fields of an `audit_events` row these tests assert on.
+#[derive(Debug)]
+struct AuditRow {
+    actor_kind: String,
+    actor_id: String,
+    action: String,
+    outcome: String,
+    target_repr: String,
 }
 
 /// The key's `revoked_at` as unix seconds, read through the repository on a

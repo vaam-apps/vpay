@@ -3,9 +3,10 @@
 Every `.sql` file here is applied, in filename order, by
 `sqlx::migrate!("../../migrations")` — from `vpay_db::migrations`, which both
 binaries call at boot, and from every container-backed test suite. There are
-**62** <!-- count:files-with-suffix backends/migrations .sql --> of them,
-re-measured 2026-11-17 (59 with #96's `0059`, then 61 with #56's `0060` and
-`0061`, then 62 with #79's `0062`, all the same day; 58 from 2026-10-28, 57 before) and gated since 2026-10-26 by
+**63** <!-- count:files-with-suffix backends/migrations .sql --> of them,
+re-measured 2026-11-19 (62 with #79's `0062` on 2026-11-17, then 63 with #152's
+`0063`; 59 with #96's `0059`, then 61 with #56's `0060` and `0061`, all the
+same day; 58 from 2026-10-28, 57 before) and gated since 2026-10-26 by
 `cargo xtask verify-doc-counts`, which re-counts the directory on every
 `just verify` — so this figure cannot drift the way the prose counts elsewhere
 in this repository did until then.

@@ -613,6 +613,20 @@ pub trait TxRepositories: Send {
     /// it, and with it the member and link provisioned beside this call.
     async fn pair_console_key_in_tx(&mut self, new: crate::NewConsoleKey) -> Result<(), DbError>;
 
+    /// `console_keys`: [`crate::ConsoleKeys::revoke_console_key`] inside this
+    /// transaction, so a break-glass revocation and the audit row
+    /// `vpay-server staff revoke-key` writes beside it commit together or not
+    /// at all (issue #152).
+    ///
+    /// # Errors
+    ///
+    /// [`DbError::Persistence`]; `true` when this call set `revoked_at`.
+    async fn revoke_console_key_in_tx(
+        &mut self,
+        thumbprint: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DbError>;
+
     /// `payment_intents`: stamps `last_payment_error` without moving the
     /// status the intent never left.
     ///
@@ -929,6 +943,15 @@ impl TxRepositories for PendingTransaction {
     async fn pair_console_key_in_tx(&mut self, new: crate::NewConsoleKey) -> Result<(), DbError> {
         let (cs, tx) = self.cratestack_tx();
         crate::console_keys::pair_in_tx(cs, tx, new).await
+    }
+
+    async fn revoke_console_key_in_tx(
+        &mut self,
+        thumbprint: &str,
+        now: time::OffsetDateTime,
+    ) -> Result<bool, DbError> {
+        let (cs, tx) = self.cratestack_tx();
+        crate::console_keys::revoke_in_tx(cs, tx, thumbprint, now).await
     }
 
     async fn record_payment_error(
