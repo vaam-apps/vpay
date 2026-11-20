@@ -714,16 +714,19 @@ material_controls:
       - "backends/crates/vpay-api/src/staff_auth/secret_box.rs"
       - "backends/crates/vpay-api/src/staff_auth/totp.rs"
       - "backends/crates/vpay-worker/src/signing.rs"
-    evidence: "Primitives are implemented and tested. Automated key rotation and dual control for production keys are gap #152."
+    evidence: "Primitives are implemented and tested. Provider-credential rotation is proven at the adapter level for MTN and Orange (a rolled secret evicts the cached token), and the Notch Pay callback-secret overlap and merchant webhook two-secret overlap are tested. Automated rotation of production rail credentials and signing keys remains gap #152 (issue #419)."
     evidence_paths:
       - "docs/adr/0005-rustls-only.md"
       - "docs/security/privileged-access-matrix.md"
       - "docs/runbooks/rotate-signing-key.md"
+      - "docs/runbooks/rotate-rail-credentials.md"
     evidence_tests:
       - "every_signature_is_64_lowercase_hex_characters"
       - "boot_logging_never_leaks_configured_secrets"
       - "audit_table_holds_hmac_target_representation_and_no_raw_pii"
       - "an_answer_is_refused_by_a_client_pinning_the_wrong_server_key"
+      - "rotating_only_the_api_key_mints_a_new_token"
+      - "rotating_only_the_client_secret_mints_a_new_token"
     status: "partial"
     related_gap: "GAP-152"
 
@@ -798,8 +801,8 @@ known_security_gaps:
 
   - id: "GAP-152-DUAL-CONTROL"
     title: "Break-glass has no second approver, no authenticated operator identity and no journal of refused attempts"
-    tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
-    description: "Residual risk left after GAP-152-BREAK-GLASS closed (ADR-0038). `vpay-server staff pair-key` / `revoke-key` journal the operator named by `--operator`, but that name is free text declared by whoever holds DATABASE_URL: nothing proves it names the person at the keyboard, so the journal attributes by declaration, not by authentication. No second person approves a pairing (dual control). An attempt that is refused (unknown or disabled member, taken key, bad lifetime) writes no `audit_events` row, so failed break-glass attempts are not journalled. A person with direct SQL access can insert a `console_keys` row with no journal row at all. Closing it needs an authenticated operator identity (for example a signed command or the deployment's identity provider), a second approver, journalling of refused attempts, and a database-side guard on `console_keys` inserts; none is built."
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/418"
+    description: "Residual risk left after GAP-152-BREAK-GLASS closed (ADR-0038); moved to its own issue #418 on 2026-11-20. `vpay-server staff pair-key` / `revoke-key` journal the operator named by `--operator`, but that name is free text declared by whoever holds DATABASE_URL: nothing proves it names the person at the keyboard, so the journal attributes by declaration, not by authentication. No second person approves a pairing (dual control). An attempt that is refused (unknown or disabled member, taken key, bad lifetime) writes no `audit_events` row, so failed break-glass attempts are not journalled. A person with direct SQL access can insert a `console_keys` row with no journal row at all. Closing it needs an authenticated operator identity (for example a signed command or the deployment's identity provider), a second approver, journalling of refused attempts, and a database-side guard on `console_keys` inserts; none is built."
     status: "open"
     related_control: "A.8.2"
 
@@ -812,8 +815,8 @@ known_security_gaps:
 
   - id: "GAP-152"
     title: "Hardened privileged access and cryptographic key lifecycle"
-    tracking_issue: "https://github.com/vaam-apps/vpay/issues/152"
-    description: "Privileged access matrix, access review export, key revocation runbooks, and secret redaction are documented and verified (#152). Automated rotation and dual-control procedures for production rail and signing keys remain unbuilt."
+    tracking_issue: "https://github.com/vaam-apps/vpay/issues/419"
+    description: "Privileged access matrix, access review export, key revocation runbooks, and secret redaction are documented and verified (#152). Provider-credential rotation is now proven at the adapter level for MTN and Orange (`rotating_only_the_api_key_mints_a_new_token`, `rotating_only_the_client_secret_mints_a_new_token`), with the Notch Pay callback-secret overlap and the merchant webhook two-secret overlap already tested. What remains, and is moved to its own issue #419 on 2026-11-20, is automated rotation of production rail credentials and signing keys (and the timed owner for the manual procedure)."
     status: "open"
     related_control: "A.8.24"
 
