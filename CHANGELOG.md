@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.18.1](https://github.com/vaam-apps/vpay/compare/v0.18.0...v0.18.1) (2026-11-20)
+
+
+### Bug Fixes
+
+* **deps:** clear the effect and next advisories (GHSA-7589-6fvf-x4pw and three next advisories) ([#416](https://github.com/vaam-apps/vpay/issues/416)) ([6dfdf6d](https://github.com/vaam-apps/vpay/commit/6dfdf6d5e2446c9e893c1dd93ec8aa24a8353c70))
+* **staff:** the break-glass guards are tested, the operator check refuses invisible text, and the docs state the residual risk ([#152](https://github.com/vaam-apps/vpay/issues/152)) ([#415](https://github.com/vaam-apps/vpay/issues/415)) ([81cf246](https://github.com/vaam-apps/vpay/commit/81cf246737c0edb8769b5237a2fe5193845a714c))
+
 ## [0.18.0](https://github.com/vaam-apps/vpay/compare/v0.17.0...v0.18.0) (2026-11-20)
 
 
