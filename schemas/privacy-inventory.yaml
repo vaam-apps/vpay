@@ -1323,9 +1323,12 @@ elements:
   # are append-only (migration 0060's trigger refuses UPDATE and DELETE), so a
   # handler will need its own, deliberate exception when D9 is decided.
   lookup_audit_target:
-    # The keyed HMAC-SHA256 of tenant + canonical MSISDN (provisional D3). A
-    # pseudonym of a payer's phone number is still personal data, so this is
-    # `subject: payer`, not `none`.
+    # For an account-holder lookup, the keyed HMAC-SHA256 of tenant + canonical
+    # MSISDN (provisional D3). A pseudonym of a payer's phone number is still
+    # personal data, so this is `subject: payer`, not `none`. Since migration
+    # 0063 (issue #152) a break-glass row holds a console key's RFC 9679
+    # thumbprint here instead: a public identifier, not personal data, but the
+    # column stays classified by the stricter of its two contents.
     subject: payer
     purpose: account-holder-lookup-audit
     necessary: true
@@ -1338,10 +1341,26 @@ elements:
       - kind: column
         table: audit_events
         column: target_repr
-  lookup_audit_actor:
-    # The calling credential: a signing-key thumbprint or an OAuth client_id.
-    subject: merchant
-    purpose: account-holder-lookup-audit
+  audit_actor_identity:
+    # `audit_events.actor_id` is polymorphic, and the element carries the
+    # strictest of what it holds. For an account-holder lookup it is a
+    # signing-key thumbprint or an OAuth client_id (a merchant's credential
+    # identifier). Since migration 0063 (issue #152) a break-glass
+    # `staff pair-key` / `revoke-key` row ALSO puts the operator's `--operator`
+    # value here: a self-declared, unauthenticated string of up to 128
+    # characters whose documented examples are email addresses, i.e. a staff
+    # member's personal data, on an append-only table. Hence `subject: staff`,
+    # not `merchant`. The runbook tells operators to pass a staff handle rather
+    # than a personal email, but nothing enforces that.
+    #
+    # NO RETENTION OR ERASURE HANDLER EXISTS for this column (`control: none`
+    # records the absence, it is not a promise): migration 0060's trigger
+    # refuses UPDATE and DELETE, nothing deletes, anonymises or pseudonymises a
+    # row, and a staff member's erasure or offboarding request cannot reach the
+    # operator name already written. PROVISIONAL pending RFC-0002 D9, like the
+    # rest of the journal.
+    subject: staff
+    purpose: audit-journal-attribution
     necessary: true
     tenant_boundary: merchant
     recipients: []
@@ -1353,6 +1372,10 @@ elements:
         table: audit_events
         column: actor_id
   lookup_audit_record:
+    # Since migration 0063 these columns also describe a break-glass act
+    # (`action` console_key:pair / console_key:revoke, `actor_kind` operator,
+    # `outcome` paired / revoked, `target_class` console_key): vocabulary and
+    # timestamps, no personal data.
     subject: none
     purpose: account-holder-lookup-audit
     necessary: true

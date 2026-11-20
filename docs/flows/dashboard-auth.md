@@ -134,8 +134,10 @@ generated from commits, and is not edited by hand).
 
 ## Pairing a key
 
-A key reaches `console_keys` by exactly two doors, and both end in the same
-function (`vpay_api::console_keys::store_key`).
+A key reaches `console_keys` by exactly two doors. The vaam door stores through
+`vpay_api::console_keys::store_vaam_key`, which takes no lifetime (exactly 30
+days); the break-glass door through `pair_from_operator`, the only function that
+chooses a shorter one.
 
 ```mermaid
 sequenceDiagram
@@ -166,10 +168,14 @@ access runs `vpay-server staff pair-key --staff <email|stf_…> --public-key <ke
 member. It needs no proof of possession, because the operator already holds more
 authority than a pairing grants; it creates no member and changes no flag. Since
 2026-11-19 ([ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md),
-issue #152) it is **bounded and auditable**: the key lives **24 hours** by
+issue #152) it is **bounded and journalled**: the key lives **24 hours** by
 default (`--ttl-hours`, at most the ordinary 30 days), the command **requires
 `--operator`**, and it writes a `console_key:pair` row to the append-only
-`audit_events` journal in the same transaction as the key. It prints one line
+`audit_events` journal in the same transaction as the key. **The operator name
+is free text the person holding `DATABASE_URL` declares, not an authenticated
+identity** (pass a staff handle, not a personal email: it is kept in an
+append-only table), a refused attempt is not journalled, and direct SQL still
+bypasses the journal (`GAP-152-DUAL-CONTROL`). It prints one line
 (`<staff id> <key id> <thumbprint> <expires_at>`). It is also the **only** way a
 key reaches an administrator, and `vpay-server staff add --admin` the only way
 one is made. Its twin, `vpay-server staff revoke-key --thumbprint <t> --operator

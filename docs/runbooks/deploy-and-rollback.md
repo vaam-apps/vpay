@@ -104,20 +104,24 @@ Five things the tooling will not check for you:
    and `vpay-server staff revoke-key` (to immediately revoke a compromised key).
    Neither break-glass subcommand creates or upgrades an administrator; cross-tenant admin reads
    remain explicitly scoped and logged ([ADR-0018](../adr/0018-cross-tenant-admin-reads.md)).
-   **Since 2026-11-19 the break-glass door is bounded and auditable** ([ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md),
+   **Since 2026-11-19 the break-glass door is bounded and journalled** ([ADR-0038](../adr/0038-break-glass-console-keys-are-bounded-and-audited.md),
    issue #152): `staff pair-key` mints a key that lives **24 hours** by default
    (`--ttl-hours`, at most the ordinary 30 days), and **both** commands require
    **`--operator <identity>`** and append a row to the append-only `audit_events`
    journal (`action` `console_key:pair` / `console_key:revoke`, `actor_kind`
    `operator`, `target_repr` the key's thumbprint) in the same transaction as the
    key write. So run, for example:
-   `vpay-server staff pair-key --staff ops@acme.example --public-key <P-256> --ttl-hours 8 --operator oncall@acme.example`
-   and `vpay-server staff revoke-key --thumbprint <64 hex> --operator oncall@acme.example`.
-   The journal row survives the process and names the actor; record the incident
-   ticket alongside it. **What this still does not give you:** dual-control
-   approval (a second operator confirming the pairing) — that is an open
-   organisational control on issue #152, not built here. Revoke a
-   break-glass key with `staff revoke-key` as soon as the emergency is over.
+   `vpay-server staff pair-key --staff ops@acme.example --public-key <P-256> --ttl-hours 8 --operator oncall-ops`
+   and `vpay-server staff revoke-key --thumbprint <64 hex> --operator oncall-ops`.
+   The journal row survives the process, but `--operator` is **free text you
+   declare**, not an authenticated identity: pass a staff handle, not a personal
+   email address (the value is kept in an append-only table). **What this still
+   does not give you:** dual-control approval (a second operator confirming the
+   pairing), an authenticated operator identity, a journal row for an attempt that
+   was refused, or protection against someone with direct SQL access inserting a
+   key with no journal row; these stay open as `GAP-152-DUAL-CONTROL` on issue
+   #152. Revoke a break-glass key with `staff revoke-key` as soon as the
+   emergency is over, and record who ran what, and when, outside vpay.
 
 ### Two things this release changes on `/dash/v1`
 
