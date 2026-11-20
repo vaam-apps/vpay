@@ -334,6 +334,24 @@ shamefullyHoist: false
 #   with it. Remove when `typescript-eslint` is bumped to >=8.73.0, which
 #   needs no override.
 #
+# overrides['@prisma/config>effect'] — 2026-11-20. GHSA-7589-6fvf-x4pw
+#   (high): ReDoS in the regex `Schema.TemplateLiteral` compiles. Vulnerable
+#   `<=3.22.0`, fixed in >=3.22.1 (2026-07-30). `@prisma/config` pins
+#   `effect: 3.21.0` EXACTLY, and so does 6.19.3, the newest 6.x and the
+#   newest `prisma` that `@zenstackhq/cli` accepts (`^6.19.0`, unchanged in
+#   the newest CLI, 3.10.3, 2026-11-19), so no bump of a direct dependency
+#   clears it; the registry's `latest` `@prisma/config` is 7.10.1, a major
+#   the CLI's range excludes. Reached only through `examples/shop >
+#   @zenstackhq/cli (devDependency) > prisma > @prisma/config`, so it
+#   reaches no production image, and scoped to that one dependent for the
+#   reason the `deepmerge-ts` override above is. It resolves 3.22.4
+#   (2026-10-22); 3.22.5 (2026-11-19) was inside `minimumReleaseAge` and no
+#   exclusion was added. `^3.22.1` stays on the 3.x line `@prisma/config`
+#   was written against, and 3.22.1 declares only `fast-check` and
+#   `@standard-schema/spec`, as 3.21.0 did. Measured in
+#   docs/status/verification/2026-11-20-npm-advisories.md. Remove when
+#   Prisma's own pin reaches >=3.22.1.
+#
 # NOT cleared by anything in this file: braces <=3.0.3 (GHSA-vfj7-8cjw-p6xm,
 #   high, stack exhaustion on deeply nested patterns), which names >=3.0.4 as
 #   the fix. npm has no braces newer than 3.0.3 (checked 2026-10-09 against
@@ -347,6 +365,7 @@ shamefullyHoist: false
 overrides:
   "next>postcss": ^8.5.28
   "@prisma/config>deepmerge-ts": ^8.0.2
+  "@prisma/config>effect": ^3.22.1
   "brace-expansion@<1.1.21": ^1.1.21
   "brace-expansion@>=4.0.0 <5.0.12": ^5.0.12
   "sharp@<0.35.5": ^0.35.5
