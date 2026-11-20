@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.18.0](https://github.com/vaam-apps/vpay/compare/v0.17.0...v0.18.0) (2026-11-20)
+
+
+### Features
+
+* **staff:** bound break-glass console keys and journal the operator ([#152](https://github.com/vaam-apps/vpay/issues/152)) ([#411](https://github.com/vaam-apps/vpay/issues/411)) ([88e900f](https://github.com/vaam-apps/vpay/commit/88e900fc76f88a76c86485d46df50746f2410fc6))
+
+
+### Dependencies
+
+* cratestack 0.20.4 (from 0.16.0) across the workspace, wire-compatible with 0.16.0 ([#412](https://github.com/vaam-apps/vpay/issues/412)) ([#413](https://github.com/vaam-apps/vpay/issues/413)) ([5e2d401](https://github.com/vaam-apps/vpay/commit/5e2d401cc85f8fb7fd470383c7e21d177abc299c))
+
 ## [0.17.0](https://github.com/vaam-apps/vpay/compare/v0.16.0...v0.17.0) (2026-11-18)
 
 
