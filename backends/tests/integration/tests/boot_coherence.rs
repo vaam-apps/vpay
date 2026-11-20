@@ -136,6 +136,7 @@ fn config_with(code: &str) -> Config {
             livemode: false,
             public_base_url: "http://localhost:8080".to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: code.to_owned(),

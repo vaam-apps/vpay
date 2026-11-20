@@ -335,6 +335,7 @@ async fn stack() -> anyhow::Result<Stack> {
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: "mtn_momo".to_owned(),

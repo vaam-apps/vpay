@@ -213,6 +213,7 @@ fn config_with(mtn_url: &str, orange_url: &str) -> Config {
             livemode: false,
             public_base_url: "http://127.0.0.1:8080".to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![
             ProviderHost {

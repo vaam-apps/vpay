@@ -330,6 +330,7 @@ pub(crate) fn merchant_client_with(
         // the `400` naming both parameters.
         // `merchant_client_with_invoice_urls` is how a suite opts in.
         invoices: vpay_config::InvoiceDefaults::default(),
+        legal_entity: None,
     }
 }
 

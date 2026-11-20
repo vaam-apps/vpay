@@ -11,6 +11,8 @@ deployment:
   name: vpay
   livemode: false
   public_base_url: http://localhost:8080
+  legal_entity:
+    id: acme-sarl
 
 checkout:
   public_base_url: http://localhost:3001
@@ -18,6 +20,7 @@ checkout:
 merchant_clients:
   - client_id: acme-cameroon
     merchant_id: acme-cameroon-tenant
+    legal_entity: acme-sarl
     jwks:
       keys:
         - kty: RSA
@@ -29,6 +32,7 @@ merchant_clients:
     checkout_origins: ["https://shop.example"]
   - client_id: beta-douala
     merchant_id: beta-douala-tenant
+    legal_entity: acme-sarl
     jwks:
       keys:
         - kty: RSA
