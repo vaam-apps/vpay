@@ -175,6 +175,7 @@ fn config_with(
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![ProviderHost {
             code: PUSH_RAIL.to_owned(),

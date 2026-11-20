@@ -1,0 +1,38 @@
+# Fixture for `merchant_of_another_legal_entity_is_rejected`
+# (backends/crates/vpay-config/src/config.rs, RFC-0009 § 6 boot rule 2).
+#
+# `deployment.legal_entity` is `acme-sarl`, and `beta-douala` declares
+# `legal_entity: beta-sarl`. Its money cannot land in this deployment's
+# rail-level accounts until Phase B gives it its own.
+
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+  legal_entity:
+    id: acme-sarl
+    name: ACME SARL
+
+merchant_clients:
+  - client_id: acme-cameroon
+    merchant_id: acme-cameroon-tenant
+    legal_entity: acme-sarl
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k1
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]
+  - client_id: beta-douala
+    merchant_id: beta-douala-tenant
+    legal_entity: beta-sarl
+    jwks:
+      keys:
+        - kty: RSA
+          kid: k2
+          n: placeholder
+          e: AQAB
+    grant_types: [client_credentials]
+    allowed_audiences: ["vpay:v1"]

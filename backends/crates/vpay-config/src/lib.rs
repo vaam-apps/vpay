@@ -88,6 +88,25 @@ pub struct Deployment {
     #[serde(default)]
     #[garde(skip)]
     pub surfaces: Option<Vec<String>>,
+    /// The legal entity this deployment collects revenue for (RFC-0009 § 6).
+    ///
+    /// Required when two or more distinct `merchant_id`s are configured so the
+    /// operator declares in writing that all projects belong to one company.
+    /// Optional for a single-merchant deployment.
+    #[serde(default)]
+    #[garde(dive)]
+    pub legal_entity: Option<LegalEntity>,
+}
+
+/// The legal entity a deployment collects revenue for (RFC-0009 § 6).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, garde::Validate)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+pub struct LegalEntity {
+    #[garde(length(min = 1))]
+    pub id: String,
+    #[serde(default)]
+    #[garde(length(min = 1))]
+    pub name: Option<String>,
 }
 
 /// The legal values of `deployment.surfaces` (ADR-0022).
@@ -387,6 +406,32 @@ pub enum ConfigError {
     /// the intended shape. See [`oauth::MerchantClient::merchant_id`].
     #[error("duplicate merchant_id: {0}")]
     DuplicateMerchantId(String),
+    /// Two or more `merchant_clients` entries name distinct `merchant_id`s,
+    /// but `deployment.legal_entity` is not configured (RFC-0009 § 6, boot rule 1).
+    #[error(
+        "deployment.legal_entity is required when two or more merchants are configured \
+         (merchants: {merchant_ids:?}); the configuration has not declared whose money it collects"
+    )]
+    MerchantsWithoutLegalEntity {
+        /// Distinct `merchant_id`s configured on this deployment.
+        merchant_ids: Vec<String>,
+    },
+    /// A merchant's `legal_entity` is missing (when two or more merchants are
+    /// configured) or does not match `deployment.legal_entity.id`
+    /// (RFC-0009 § 6, boot rule 2).
+    #[error(
+        "merchant {merchant_id} has legal_entity {merchant_legal_entity:?}, expected \
+         deployment.legal_entity {deployment_legal_entity:?}: this merchant is another company \
+         and its money cannot land in this deployment's accounts until phase B gives it its own"
+    )]
+    MerchantOfAnotherLegalEntity {
+        /// The `merchant_id` whose `legal_entity` is missing or mismatched.
+        merchant_id: String,
+        /// The `legal_entity` declared on the merchant, if any.
+        merchant_legal_entity: Option<String>,
+        /// The `deployment.legal_entity.id` configured on the deployment, if any.
+        deployment_legal_entity: Option<String>,
+    },
     /// ADR-0010: `private_key_jwt` with no key can never authenticate, so
     /// booting with an empty or missing JWK set is exactly as pointless as
     /// booting with none configured at all. See
@@ -1957,6 +2002,7 @@ mod tests {
             livemode: false,
             public_base_url: "https://api.vpay.test".to_owned(),
             surfaces: surfaces.map(|list| list.into_iter().map(str::to_owned).collect()),
+            legal_entity: None,
         }
     }
 

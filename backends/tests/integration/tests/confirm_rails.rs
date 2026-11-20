@@ -287,6 +287,7 @@ fn config_with(base_url: &str, jwks_a: Value, mtn: &RailSetup, orange: &RailSetu
             livemode: false,
             public_base_url: base_url.to_owned(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: vec![
             ProviderHost {

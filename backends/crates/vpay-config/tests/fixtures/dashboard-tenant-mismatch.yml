@@ -8,16 +8,20 @@ deployment:
   name: vpay
   livemode: false
   public_base_url: http://localhost:8080
+  legal_entity:
+    id: acme-sarl
 
 merchant_clients:
   - client_id: acme-cameroon
     merchant_id: acme-cameroon-tenant
+    legal_entity: acme-sarl
     cose_keys:
       - public_key: 11qYAYKxCrfVS_7TyWQHOg7hcvPapiMlrwIaaPcHURo
         label: acme-ci
 
   - client_id: beta
     merchant_id: beta-tenant
+    legal_entity: acme-sarl
     cose_keys:
       - public_key: PUAXw-hDiVqStwqnTRt-vJyYLM8uxJaMwM1V8Sr0Zgw
 

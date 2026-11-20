@@ -982,3 +982,37 @@ staff_auth:
   `dashboard_client` mounts `/dash/v1` and no `/svc/v1`: pairing needs `dashboard:`.
 - `vpay-server staff add` mints a one-time password only where the method is
   served; it never prints a password on a deployment that does not serve one.
+
+---
+
+## `deployment.legal_entity` and `merchant_clients[].legal_entity` (RFC-0009 Phase A)
+
+Until Phase B introduces per-account rail credentials, all `merchant_clients` on a
+single deployment share the deployment's rail-level accounts. To prevent accidental
+aggregation across separate companies ([RFC-0009 § 6](../rfc/0009-provider-accounts-per-merchant.md#6-one-company-many-projects)):
+
+```yaml
+deployment:
+  name: vpay
+  livemode: false
+  public_base_url: http://localhost:8080
+  legal_entity:
+    id: acme-sarl
+    name: ACME SARL # optional display label
+
+merchant_clients:
+  - client_id: shop-web
+    merchant_id: shop
+    legal_entity: acme-sarl
+  - client_id: events-web
+    merchant_id: events
+    legal_entity: acme-sarl
+```
+
+- **Two or more distinct `merchant_id`s without `deployment.legal_entity`**: refused at
+  boot (`ConfigError::MerchantsWithoutLegalEntity`), naming the merchants.
+- **Any merchant whose `legal_entity` is missing (when >=2 merchants) or differs from
+  `deployment.legal_entity.id`**: refused at boot
+  (`ConfigError::MerchantOfAnotherLegalEntity`), naming the merchant and both values.
+- **One `merchant_id`**: both `legal_entity` fields are optional so existing
+  single-merchant deployments boot unchanged (explicit mismatches are still refused).

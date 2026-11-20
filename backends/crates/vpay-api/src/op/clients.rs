@@ -307,6 +307,7 @@ mod tests {
             // would be putting a merchant's "thank you" page into a
             // `ClientRegistration`.
             invoices: vpay_config::InvoiceDefaults::default(),
+            legal_entity: None,
         }
     }
 

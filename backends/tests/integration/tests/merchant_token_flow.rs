@@ -232,6 +232,7 @@ async fn harness_configured(scopes: &[&str], methods: Option<&[&str]>) -> anyhow
             livemode: false,
             public_base_url: base_url.clone(),
             surfaces: None,
+            legal_entity: None,
         },
         providers: Vec::new(),
         currencies: Vec::new(),
