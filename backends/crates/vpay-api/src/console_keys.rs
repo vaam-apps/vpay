@@ -443,15 +443,7 @@ pub async fn pair_through_vaam(
 
     if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
         require_pairable(&member, tenant)?;
-        return store_key(
-            repositories.as_ref(),
-            &member,
-            &key,
-            label,
-            CONSOLE_KEY_LIFETIME,
-            now,
-        )
-        .await;
+        return store_vaam_key(repositories.as_ref(), &member, &key, label, now).await;
     }
     provision_and_pair(
         repositories,
@@ -570,15 +562,7 @@ async fn provision_and_pair(
         Err(DbError::Persistence(PersistenceError::Unique { .. })) => {
             if let Some(member) = linked(repositories.as_ref(), vaam_user_id).await? {
                 require_pairable(&member, tenant)?;
-                return store_key(
-                    repositories.as_ref(),
-                    &member,
-                    key,
-                    label,
-                    CONSOLE_KEY_LIFETIME,
-                    now,
-                )
-                .await;
+                return store_vaam_key(repositories.as_ref(), &member, key, label, now).await;
             }
             if repositories
                 .find_console_key(&key.thumbprint)
@@ -614,21 +598,27 @@ async fn linked(
     ))
 }
 
-/// Stores `key` for `member`, or finds that this member's live key is already
-/// stored (an idempotent repeat). The one write both entry points make, so the
-/// key's `lifetime`, the thumbprint's uniqueness and "a revoked or expired key is
-/// never reinstated" are decided in one place.
+/// Stores a **vaam** `key` for `member`, or finds that this member's live key is
+/// already stored (an idempotent repeat).
+///
+/// The one write the vaam paths make (the linked branch of
+/// [`pair_through_vaam`] and the race branch of `provision_and_pair`), and it
+/// takes **no lifetime**: a vaam pairing lives exactly
+/// [`CONSOLE_KEY_LIFETIME`] (owner ruling R3, ADR-0036), and a parameter would
+/// let a caller hand it another life. The only path that chooses a shorter life
+/// is [`pair_from_operator`], which builds its own insert beside its audit row.
+/// The thumbprint's uniqueness and "a revoked or expired key is never
+/// reinstated" are decided here.
 ///
 /// # Errors
 ///
 /// [`ConsoleKeyError::KeyTaken`] when the thumbprint is another member's,
 /// revoked or expired; the database's own error otherwise.
-pub async fn store_key(
+async fn store_vaam_key(
     repositories: &dyn Repositories,
     member: &StaffRow,
     key: &ParsedConsoleKey,
     label: Option<String>,
-    lifetime: time::Duration,
     now: OffsetDateTime,
 ) -> Result<Paired, crate::ApiError> {
     let new = NewConsoleKey {
@@ -637,7 +627,7 @@ pub async fn store_key(
         public_key: key.public_key.clone(),
         thumbprint: key.thumbprint.clone(),
         label,
-        lifetime,
+        lifetime: CONSOLE_KEY_LIFETIME,
         now,
     };
     match repositories.pair_console_key(new).await {
@@ -736,22 +726,75 @@ pub use vpay_db::BREAK_GLASS_KEY_LIFETIME;
 /// `audit_events_actor_id_length` bound the journal enforces.
 const OPERATOR_MAX_CHARS: usize = 128;
 
-/// The operator identity a break-glass command must name (issue #152): the
-/// account the `audit_events` row is attributed to.
+/// Whether `c` is invisible or reorders text and so has no place in an identity
+/// that lands in an append-only journal: any control character, the Unicode
+/// "format" (`Cf`) characters (zero-width and bidirectional marks, the soft
+/// hyphen, the byte-order mark, the tag characters and the like) and the line
+/// and paragraph separators.
 ///
-/// A break-glass act with no attributable actor is exactly the gap
-/// `GAP-152-BREAK-GLASS` names, so an empty identity is refused rather than
-/// journalled as blank.
+/// `Cf` is transcribed from the Unicode character database because no property
+/// crate is a direct dependency of this workspace and adding one for a
+/// 40-line table would be the larger change. A character `Cf` gains in a later
+/// Unicode version is the one gap; a control or visible-looking identity
+/// remains refused regardless.
+fn is_invisible_or_control(c: char) -> bool {
+    c.is_control()
+        || matches!(
+            u32::from(c),
+            0x00AD
+                | 0x0600..=0x0605
+                | 0x061C
+                | 0x06DD
+                | 0x070F
+                | 0x0890..=0x0891
+                | 0x08E2
+                | 0x180E
+                | 0x200B..=0x200F
+                | 0x2028..=0x202E
+                | 0x2060..=0x2064
+                | 0x2066..=0x206F
+                | 0xFEFF
+                | 0xFFF9..=0xFFFB
+                | 0x110BD
+                | 0x110CD
+                | 0x13430..=0x1343F
+                | 0x1BCA0..=0x1BCA3
+                | 0x1D173..=0x1D17A
+                | 0xE0001
+                | 0xE0020..=0xE007F
+        )
+}
+
+/// The operator identity a break-glass command must name (issue #152): the
+/// handle the `audit_events` row is attributed to.
+///
+/// It is **self-declared text**, not an authenticated identity: whoever holds
+/// the database URL chooses it, and nothing here checks that it names the
+/// person running the command. What the check guarantees is that a name is
+/// given, that it is readable (no control, zero-width or direction-changing
+/// character that could make two rows look alike or hide one), and that it fits
+/// the journal. Operators should pass a staff handle, not a personal email
+/// address: the value is kept in an append-only table.
+///
+/// Surrounding whitespace is trimmed; length is counted in characters, as the
+/// journal's `char_length` CHECK counts them.
 ///
 /// # Errors
 ///
-/// [`ConsoleKeyError::Malformed`] for an empty or over-long identity.
+/// [`ConsoleKeyError::Malformed`] for an empty, over-long or
+/// control/invisible-character identity.
 pub fn clean_operator(operator: &str) -> Result<String, ConsoleKeyError> {
     let trimmed = operator.trim();
     if trimmed.is_empty() {
         return Err(ConsoleKeyError::Malformed {
             field: "operator",
             reason: "must name who is acting; an unattributable break-glass act is the gap",
+        });
+    }
+    if trimmed.chars().any(is_invisible_or_control) {
+        return Err(ConsoleKeyError::Malformed {
+            field: "operator",
+            reason: "must not contain control, zero-width or direction-changing characters",
         });
     }
     if trimmed.chars().count() > OPERATOR_MAX_CHARS {
@@ -802,6 +845,14 @@ fn check_lifetime(lifetime: time::Duration) -> Result<(), ConsoleKeyError> {
             reason: "must be more than zero and at most 30 days",
         });
     }
+    // `timestamptz` stores microseconds: a finer life would be rounded by
+    // Postgres and could then trip the CHECK as a raw constraint error.
+    if lifetime.subsec_nanoseconds() % 1_000 != 0 {
+        return Err(ConsoleKeyError::Malformed {
+            field: "ttl",
+            reason: "must be a whole number of microseconds",
+        });
+    }
     Ok(())
 }
 
@@ -809,7 +860,7 @@ fn check_lifetime(lifetime: time::Duration) -> Result<(), ConsoleKeyError> {
 /// key with a `lifetime` shorter than the ordinary 30 days and record the act
 /// in `audit_events`, both in one transaction so the journal cannot lag the key.
 ///
-/// Idempotent for a member's own live key, exactly as [`store_key`] is: a
+/// Idempotent for a member's own live key, exactly as `store_vaam_key` is: a
 /// repeat returns the stored key and writes no second audit row.
 ///
 /// # Errors
@@ -1187,9 +1238,10 @@ mod tests {
         );
     }
 
-    /// An un-attributable break-glass act is the gap `GAP-152-BREAK-GLASS`
+    /// A break-glass act with no name on it is the gap `GAP-152-BREAK-GLASS`
     /// names, so an empty (or whitespace-only) operator and an over-long one
-    /// are both refused; a normal identity is trimmed and kept.
+    /// are both refused; a normal identity is trimmed and kept. (The name is
+    /// self-declared: this proves it is present and well-formed, not true.)
     #[test]
     fn an_empty_or_overlong_operator_is_refused() {
         assert!(clean_operator("   ").is_err());
@@ -1200,6 +1252,50 @@ mod tests {
             "oncall@acme.example"
         );
         assert!(clean_operator(&"x".repeat(OPERATOR_MAX_CHARS)).is_ok());
+    }
+
+    /// An identity is counted in **characters** (the journal's `char_length`
+    /// CHECK), and carries nothing invisible: a control character, an escape
+    /// sequence, a zero-width or direction-changing mark would let two journal
+    /// rows look alike or hide one.
+    ///
+    /// Mutations run: `chars().count()` -> `len()` fails the 128 x `é` case
+    /// (256 bytes); dropping the `is_invisible_or_control` check fails every
+    /// refusal below.
+    #[test]
+    fn an_operator_is_counted_in_characters_and_carries_nothing_invisible() {
+        assert!(
+            clean_operator(&"é".repeat(OPERATOR_MAX_CHARS)).is_ok(),
+            "128 two-byte characters fit"
+        );
+        assert!(
+            clean_operator(&"é".repeat(OPERATOR_MAX_CHARS + 1)).is_err(),
+            "129 do not"
+        );
+        for (what, operator) in [
+            ("a newline inside", "on\ncall"),
+            ("a tab inside", "on\tcall"),
+            ("an ANSI escape sequence", "oncall\u{1b}[31m"),
+            ("a NUL", "on\u{0}call"),
+            ("a zero-width space only", "\u{200B}"),
+            ("a zero-width space inside", "on\u{200B}call"),
+            ("a soft hyphen", "on\u{00AD}call"),
+            ("an Arabic letter mark", "on\u{061C}call"),
+            ("a Mongolian vowel separator", "on\u{180E}call"),
+            ("a right-to-left override", "on\u{202E}call"),
+            ("a left-to-right mark", "on\u{200E}call"),
+            ("a word joiner", "on\u{2060}call"),
+            ("an isolate", "on\u{2066}call"),
+            ("a byte-order mark", "on\u{FEFF}call"),
+            ("a line separator", "on\u{2028}call"),
+            ("a tag character", "on\u{E0041}call"),
+        ] {
+            assert!(clean_operator(operator).is_err(), "{what} is refused");
+        }
+        assert_eq!(
+            clean_operator("  Zoë Nguyen-Ékwé ").expect("letters from any script"),
+            "Zoë Nguyen-Ékwé"
+        );
     }
 
     /// The break-glass lifetime must be more than zero and at most the ordinary
@@ -1213,5 +1309,12 @@ mod tests {
         assert!(check_lifetime(CONSOLE_KEY_LIFETIME + time::Duration::seconds(1)).is_err());
         assert!(check_lifetime(time::Duration::ZERO).is_err());
         assert!(check_lifetime(time::Duration::seconds(-1)).is_err());
+        // A life Postgres would round to a microsecond is refused here, in the
+        // command's vocabulary, rather than as a raw CHECK error.
+        assert!(check_lifetime(time::Duration::microseconds(1)).is_ok());
+        assert!(check_lifetime(time::Duration::nanoseconds(1_500)).is_err());
+        assert!(
+            check_lifetime(time::Duration::hours(24) + time::Duration::nanoseconds(1)).is_err()
+        );
     }
 }

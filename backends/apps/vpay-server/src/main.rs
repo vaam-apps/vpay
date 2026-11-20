@@ -1192,12 +1192,21 @@ async fn staff_add(
 /// * the key's life is bounded — **24 hours** by default, an operator-chosen
 ///   `--ttl-hours` up to 720, never the ordinary 30 days unless asked for
 ///   (`console_keys_lives_at_most_thirty_days`);
-/// * it **requires `--operator`**, and records the pairing in the append-only
-///   `audit_events` journal in the same transaction as the key, so the act is
-///   attributable and cannot go unrecorded.
+/// * it **requires `--operator`** and records the pairing in the append-only
+///   `audit_events` journal in the same transaction as the key, so a pairing
+///   made through this command never exists without its journal row.
+///
+/// What that does **not** give (residual risk, tracked as
+/// `GAP-152-DUAL-CONTROL` in `schemas/security-inventory.yaml`): `--operator` is
+/// free text declared by whoever holds `DATABASE_URL`, not an authenticated
+/// identity; a refused attempt (unknown member, disabled member, taken key) is
+/// not journalled; and a person with direct SQL access can still insert a
+/// `console_keys` row with no journal row at all. Pass a staff handle, not a
+/// personal email: the value is kept in an append-only table.
 ///
 /// It remains idempotent for the same member's live key (which writes no second
-/// audit row); any other collision is an error.
+/// audit row, and whose answer carries that key's real expiry); any other
+/// collision is an error.
 ///
 /// The key is parsed before the configuration is read, before any connection:
 /// a key that is not a P-256 point is answered in milliseconds.
@@ -1278,7 +1287,7 @@ async fn pair_key(
         thumbprint = %paired.key.thumbprint,
         created = paired.created,
         operator = %operator,
-        ttl_hours,
+        expires_at = paired.key.expires_at.unix_timestamp(),
         "a console key was paired from the command line"
     );
 
@@ -1304,8 +1313,9 @@ async fn pair_key(
 /// break-glass counterpart of `staff pair-key`, for when no vaam service can
 /// (VP-6a). It runs [`vpay_api::console_keys::revoke_from_operator`] (issue
 /// #152), which **requires `--operator`** and records the revocation in the
-/// append-only `audit_events` journal in the same transaction as the revoke,
-/// so it is attributable and cannot go unrecorded. Otherwise the semantics
+/// append-only `audit_events` journal in the same transaction as the revoke.
+/// The operator name is self-declared and unauthenticated, and a revocation made
+/// with direct SQL leaves no row (see `pair_key`). Otherwise the semantics
 /// match `DELETE /svc/v1/console_keys/{thumbprint}`: any member's key, an
 /// administrator's included, is revocable; the first `revoked_at` is kept; a
 /// revoked thumbprint stays taken.

@@ -367,6 +367,167 @@ async fn a_second_key_for_the_same_person_joins_the_same_member() -> anyhow::Res
     Ok(())
 }
 
+/// **A linked member's later vaam pairing lives exactly 720 hours** from its own
+/// `paired_at`, like the first (owner ruling R3, ADR-0036): the break-glass
+/// life (issue #152) never reaches a vaam path. `store_vaam_key` takes no
+/// lifetime, so this is a property of the types as well as of the test.
+///
+/// The decisive mutation: `lifetime: CONSOLE_KEY_LIFETIME` ->
+/// `BREAK_GLASS_KEY_LIFETIME` in `store_vaam_key`; the second key then expires in
+/// 24 hours and the assertion fails.
+#[tokio::test]
+async fn a_linked_members_second_vaam_pairing_lives_exactly_seven_hundred_twenty_hours()
+-> anyhow::Result<()> {
+    let harness = harness().await?;
+    let (status, first) = harness.pair(&body_for("kim-laptop", "kim")).await?;
+    assert_eq!(status, 201, "{first}");
+    let (status, second) = harness.pair(&body_for("kim-phone", "kim")).await?;
+    assert_eq!(status, 201, "{second}");
+    assert_eq!(
+        at(&first, "/staff_member_id"),
+        at(&second, "/staff_member_id"),
+        "the second pairing took the linked branch"
+    );
+    for label in ["kim-laptop", "kim-phone"] {
+        let row = vpay_db::ConsoleKeys::find_console_key(
+            harness.repositories.as_ref(),
+            &sealed::console_thumbprint(label),
+        )
+        .await?
+        .with_context(|| format!("{label} is stored"))?;
+        assert_eq!(
+            row.expires_at - row.paired_at,
+            time::Duration::hours(720),
+            "{label} lives exactly 720 hours from its own paired_at"
+        );
+    }
+    Ok(())
+}
+
+// ----------------------------- the operator's pair and revoke are one transaction
+
+/// **`staff pair-key` / `staff revoke-key` and their `audit_events` row commit
+/// together or not at all** (issue #152): a journal insert that fails takes the
+/// key (or the revocation) down with it, so the act never exists unrecorded.
+///
+/// The test database gets a trigger that raises on an `audit_events` insert
+/// whose `actor_id` is the marker operator. The control calls with another
+/// operator succeed, so the refusal is the journal's and nothing else's.
+///
+/// The decisive mutation: write the key (or the revocation) and the journal row
+/// in two separate transactions (`pair_console_key` then `append_audit_event`);
+/// the marker call errors but the `console_keys` row / `revoked_at` is left
+/// behind and the assertions below fail.
+#[tokio::test]
+async fn an_operator_pair_and_revoke_commit_with_their_journal_row_or_not_at_all()
+-> anyhow::Result<()> {
+    const MARKER: &str = "journal-refuses-this-operator";
+    let (_container, repositories, pool) = migrated_postgres().await?;
+    create_staff(
+        repositories.as_ref(),
+        "stf_breakglass",
+        MERCHANT_A,
+        "bg@example.test",
+        true,
+    )
+    .await?;
+    let member = vpay_db::Staff::find(repositories.as_ref(), "stf_breakglass")
+        .await?
+        .context("the seeded member")?;
+    sqlx::query(
+        "CREATE FUNCTION refuse_the_marker_operator() RETURNS trigger LANGUAGE plpgsql AS $$ \
+         BEGIN RAISE EXCEPTION 'the journal refuses this operator'; END $$",
+    )
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "CREATE TRIGGER refuse_the_marker_operator BEFORE INSERT ON audit_events \
+         FOR EACH ROW WHEN (NEW.actor_id = 'journal-refuses-this-operator') \
+         EXECUTE FUNCTION refuse_the_marker_operator()",
+    )
+    .execute(&pool)
+    .await?;
+    let journal_rows = || async {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM audit_events")
+            .fetch_one(&pool)
+            .await
+    };
+
+    let key = vpay_api::console_keys::parse_public_key(&sealed::console_public_b64("bg-key"))
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    let now = OffsetDateTime::now_utc();
+    let day = vpay_db::BREAK_GLASS_KEY_LIFETIME;
+
+    // Pair: the journal refuses, so no key is written.
+    let refused = vpay_api::console_keys::pair_from_operator(
+        repositories.as_ref(),
+        &member,
+        &key,
+        None,
+        day,
+        MARKER,
+        now,
+    )
+    .await;
+    assert!(refused.is_err(), "the journal's refusal fails the pairing");
+    assert!(
+        vpay_db::ConsoleKeys::find_console_key(repositories.as_ref(), &key.thumbprint)
+            .await?
+            .is_none(),
+        "no console_keys row survives a pairing whose journal row failed"
+    );
+    assert_eq!(journal_rows().await?, 0);
+
+    // Control: another operator pairs the same key, and is journalled.
+    let paired = vpay_api::console_keys::pair_from_operator(
+        repositories.as_ref(),
+        &member,
+        &key,
+        None,
+        day,
+        "oncall",
+        now,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert!(paired.created);
+    assert_eq!(journal_rows().await?, 1);
+
+    // Revoke: the journal refuses, so `revoked_at` stays unset.
+    let refused = vpay_api::console_keys::revoke_from_operator(
+        repositories.as_ref(),
+        &key.thumbprint,
+        MARKER,
+        now,
+    )
+    .await;
+    assert!(
+        refused.is_err(),
+        "the journal's refusal fails the revocation"
+    );
+    let row = vpay_db::ConsoleKeys::find_console_key(repositories.as_ref(), &key.thumbprint)
+        .await?
+        .context("the key is still stored")?;
+    assert_eq!(
+        row.revoked_at, None,
+        "a revocation whose journal row failed is rolled back"
+    );
+    assert_eq!(journal_rows().await?, 1);
+
+    // Control: another operator revokes it, and is journalled.
+    let revoked = vpay_api::console_keys::revoke_from_operator(
+        repositories.as_ref(),
+        &key.thumbprint,
+        "oncall",
+        now,
+    )
+    .await
+    .map_err(|error| anyhow::anyhow!("{error}"))?;
+    assert!(revoked.revoked_at.is_some());
+    assert_eq!(journal_rows().await?, 2);
+    Ok(())
+}
+
 // --------------------------------------------------- who may call /svc/v1
 
 /// A merchant's key, a paired console key and an unsigned request cannot reach

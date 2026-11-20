@@ -3366,6 +3366,26 @@ fn staff_pair_key_and_revoke_key_journal_the_operator() {
             "a repeat pairing journals nothing: {rows:?}"
         );
 
+        // The repeat's log line says what happened: `created=false` and the
+        // key's real expiry, not a lifetime the repeat never applied.
+        let again_stderr = String::from_utf8_lossy(&pair_again.stderr).into_owned();
+        let line = again_stderr
+            .lines()
+            .find(|line| line.contains("a console key was paired from the command line"))
+            .unwrap_or_else(|| panic!("the pairing is logged: {again_stderr}"));
+        assert!(
+            line.contains("\"created\":false"),
+            "a repeat pairing logs created=false: {line}"
+        );
+        assert!(
+            line.contains(&format!("\"expires_at\":{expires}")),
+            "a repeat pairing logs the live key's real expiry: {line}"
+        );
+        assert!(
+            !line.contains("ttl_hours"),
+            "no lifetime the repeat did not apply is logged: {line}"
+        );
+
         let revoked = run(&[
             "staff",
             "revoke-key",
@@ -3411,40 +3431,119 @@ fn staff_pair_key_and_revoke_key_journal_the_operator() {
     });
 }
 
-/// `--ttl-hours` is bounded by the delivery, before any database: 0 and 721
-/// are refused (issue #152), and a key never lives past the ordinary 30 days.
+/// The break-glass commands **validate every operator-supplied value before the
+/// database is opened** (issue #152): `DATABASE_URL` points at an address
+/// nothing listens on, so a check made *after* the open would surface as a
+/// connection failure (exit `69`, "Postgres"), never as the validation message
+/// and exit `1` asserted here.
+///
+/// Mutations run: moving the `--ttl-hours` range check after
+/// `open_migrated_database` fails the three lifetime cases; removing the two CLI
+/// `clean_operator` calls fails every operator case (the same refusal then only
+/// happens inside `pair_from_operator`/`revoke_from_operator`, after the open).
 #[test]
-fn staff_pair_key_refuses_a_lifetime_outside_one_to_seven_hundred_twenty_hours() {
-    with_live_postgres(|database_url| {
-        let run = |ttl: &str| {
-            bin()
-                .args([
-                    "staff",
-                    "pair-key",
-                    "--staff",
-                    "grace@example.test",
-                    "--public-key",
-                    &generated_console_public_key(),
-                    "--operator",
-                    "oncall@example.test",
-                    "--ttl-hours",
-                    ttl,
-                ])
-                .env("VPAY_CONFIG", staff_config_path())
-                .env("DATABASE_URL", &database_url)
-                .output()
-                .expect("running `vpay-server staff pair-key`")
-        };
-        for ttl in ["0", "721", "9999999999999999999"] {
-            let output = run(ttl);
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            assert!(!output.status.success(), "--ttl-hours {ttl}: {stderr}");
-            assert!(
-                stderr.contains("--ttl-hours"),
-                "--ttl-hours {ttl}: the refusal names the flag: {stderr}"
-            );
-        }
-    });
+fn staff_break_glass_commands_refuse_bad_input_before_the_database_is_opened() {
+    const UNCONNECTABLE: &str = "postgres://vpay@127.0.0.1:1/none";
+    let pair = |ttl: &str, operator: &str| {
+        bin()
+            .args([
+                "staff",
+                "pair-key",
+                "--staff",
+                "grace@example.test",
+                "--public-key",
+                &generated_console_public_key(),
+                "--ttl-hours",
+                ttl,
+                "--operator",
+                operator,
+            ])
+            .env("VPAY_CONFIG", staff_config_path())
+            .env("DATABASE_URL", UNCONNECTABLE)
+            .output()
+            .expect("running `vpay-server staff pair-key`")
+    };
+    let long_operator = "x".repeat(129);
+    let cases: [(&str, &str, &str, &str); 7] = [
+        ("ttl 0", "0", "oncall", "--ttl-hours"),
+        ("ttl 721", "721", "oncall", "--ttl-hours"),
+        (
+            "ttl past u64",
+            "9999999999999999999",
+            "oncall",
+            "--ttl-hours",
+        ),
+        ("an empty operator", "2", "", "--operator"),
+        ("a blank operator", "2", "   ", "--operator"),
+        (
+            "a 129-character operator",
+            "2",
+            &long_operator,
+            "--operator",
+        ),
+        (
+            "a control character in the operator",
+            "2",
+            "on\u{1b}call",
+            "--operator",
+        ),
+    ];
+    for (what, ttl, operator, flag) in cases {
+        let output = pair(ttl, operator);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "pair-key, {what}: a validation refusal, not a connection failure: {stderr}"
+        );
+        assert!(
+            stderr.contains(flag),
+            "pair-key, {what}: the refusal names {flag}: {stderr}"
+        );
+        assert!(
+            !stderr.contains("Postgres") && !stderr.contains("DATABASE_URL"),
+            "pair-key, {what}: refused before the database was opened: {stderr}"
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    }
+
+    let revoke = |operator: &str| {
+        bin()
+            .args([
+                "staff",
+                "revoke-key",
+                "--thumbprint",
+                &"ab".repeat(32),
+                "--operator",
+                operator,
+            ])
+            .env("VPAY_CONFIG", staff_config_path())
+            .env("DATABASE_URL", UNCONNECTABLE)
+            .output()
+            .expect("running `vpay-server staff revoke-key`")
+    };
+    for (what, operator) in [
+        ("an empty operator", ""),
+        ("a blank operator", "   "),
+        ("a zero-width operator", "\u{200B}"),
+    ] {
+        let output = revoke(operator);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(
+            output.status.code(),
+            Some(1),
+            "revoke-key, {what}: a validation refusal, not a connection failure: {stderr}"
+        );
+        assert!(
+            stderr.contains("--operator"),
+            "revoke-key, {what}: the refusal names the flag: {stderr}"
+        );
+        assert!(
+            !stderr.contains("Postgres") && !stderr.contains("DATABASE_URL"),
+            "revoke-key, {what}: refused before the database was opened: {stderr}"
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).trim().is_empty());
+    }
 }
 
 /// The `audit_events` rows for a tenant, read through the repository on a
