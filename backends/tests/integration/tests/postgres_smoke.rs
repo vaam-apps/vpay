@@ -162,8 +162,8 @@ async fn insert_charge(
 ) -> Result<sqlx::postgres::PgQueryResult, sqlx::Error> {
     sqlx::query(
         "INSERT INTO charges \
-            (id, payment_intent_id, provider_code, provider_reference_id, state, amount, currency_code) \
-         VALUES ($1, $2, 'mtn_momo', $3, 'submitting', 5000, 'XAF')",
+            (id, payment_intent_id, provider_code, provider_account_id, provider_reference_id, state, amount, currency_code) \
+         VALUES ($1, $2, 'mtn_momo', 'default', $3, 'submitting', 5000, 'XAF')",
     )
     .bind(id)
     .bind(payment_intent_id)
@@ -6518,9 +6518,9 @@ async fn migration_0037_keeps_every_stored_label_on_a_populated_database() -> an
         .with_context(|| format!("seeding the intent behind a {state} charge"))?;
         sqlx::query(
             "INSERT INTO charges \
-                (id, payment_intent_id, provider_code, provider_reference_id, state, amount, \
-                 currency_code, failure_code, failure_raw) \
-             VALUES ($1, $2, 'mtn_momo', $3, $4::charge_state, 5000, 'XAF', $5::failure_code, \
+                (id, payment_intent_id, provider_code, provider_account_id, provider_reference_id, \
+                 state, amount, currency_code, failure_code, failure_raw) \
+             VALUES ($1, $2, 'mtn_momo', 'default', $3, $4::charge_state, 5000, 'XAF', $5::failure_code, \
                      'the rail said so')",
         )
         .bind(format!("ch_label_{state}"))

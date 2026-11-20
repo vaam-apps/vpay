@@ -1897,6 +1897,33 @@ impl std::fmt::Debug for ProviderConfig {
     }
 }
 
+/// Resolves the [`ProviderConfig`] for a charge's `(provider_code, provider_account_id)`
+/// (RFC-0009 § 3).
+///
+/// In Phase A only [`vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID`] (`default`) exists;
+/// any other `provider_account_id` returns [`ProviderError::Config`] naming the
+/// id, never falling back to another account.
+///
+/// # Errors
+/// [`ProviderError::Config`] if `provider_account_id` is not configured or `code`
+/// has no rail-level configuration.
+pub fn resolve_account_config<'a>(
+    code: &str,
+    provider_account_id: &str,
+    default_config: Option<&'a ProviderConfig>,
+) -> Result<&'a ProviderConfig, ProviderError> {
+    if provider_account_id != vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID {
+        return Err(ProviderError::Config(format!(
+            "provider account `{provider_account_id}` on rail `{code}` is not configured"
+        )));
+    }
+    default_config.ok_or_else(|| {
+        ProviderError::Config(format!(
+            "rail `{code}` has no configuration on this deployment"
+        ))
+    })
+}
+
 /// The handshake budget every deployment gets.
 ///
 /// Long enough for a TLS handshake to a rail in the same region, short
@@ -3610,5 +3637,30 @@ mod debug_tests {
         assert!(!secret.contains(PAYER_REF));
         let url = format!("{:?}", SafeUrl::new(REDIRECT_URL));
         assert!(!url.contains("secref01"));
+    }
+
+    #[test]
+    fn resolve_account_config_refuses_unknown_account_without_fallback() {
+        let cfg = crate::ProviderConfig {
+            base_url: "https://sandbox.example".to_owned(),
+            callback_url: "https://api.example/callback".to_owned(),
+            currency: vpay_core::Currency::Xaf,
+            settings: std::collections::BTreeMap::new(),
+            credentials: std::collections::BTreeMap::new(),
+            connect_timeout: crate::DEFAULT_CONNECT_TIMEOUT,
+            request_timeout: crate::DEFAULT_REQUEST_TIMEOUT,
+        };
+        assert!(
+            crate::resolve_account_config(
+                "mtn_momo",
+                vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID,
+                Some(&cfg)
+            )
+            .is_ok()
+        );
+        let err = crate::resolve_account_config("mtn_momo", "acct_retired_123", Some(&cfg))
+            .expect_err("unknown account must be refused even when default config exists");
+        assert!(matches!(err, crate::ProviderError::Config(_)));
+        assert!(err.to_string().contains("acct_retired_123"));
     }
 }

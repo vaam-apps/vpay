@@ -1183,6 +1183,7 @@ fn fixture_charge(id: &str, payment_intent_id: &str) -> vpay_db::NewCharge {
         id: id.to_owned(),
         payment_intent_id: payment_intent_id.to_owned(),
         provider_code: "mtn_momo".to_owned(),
+        provider_account_id: vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID.to_owned(),
         provider_reference_id: uuid::Uuid::new_v4(),
         provider_ref_extra: None,
         redirect_url: None,
@@ -14595,9 +14596,9 @@ async fn migration_0062_backfills_the_payer_mask_and_leaves_the_rest_null() -> a
         // Raw, because the pre-0062 shape is the point: no CHECK yet, so
         // any value the column held is writable.
         sqlx::query(
-            "INSERT INTO charges (id, payment_intent_id, provider_code, provider_reference_id, \
-             state, amount, currency_code, payer_ref, payer_ref_masked) \
-             VALUES ($1, $2, 'mtn_momo', gen_random_uuid(), 'submitted', 5000, 'XAF', $3, $4)",
+            "INSERT INTO charges (id, payment_intent_id, provider_code, provider_account_id, \
+             provider_reference_id, state, amount, currency_code, payer_ref, payer_ref_masked) \
+             VALUES ($1, $2, 'mtn_momo', 'default', gen_random_uuid(), 'submitted', 5000, 'XAF', $3, $4)",
         )
         .bind(charge)
         .bind(&intent)

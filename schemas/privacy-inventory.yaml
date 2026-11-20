@@ -780,6 +780,9 @@ elements:
         column: method_type
       - kind: column
         table: charges
+        column: provider_account_id
+      - kind: column
+        table: charges
         column: provider_code
       - kind: column
         table: currencies

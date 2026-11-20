@@ -81,11 +81,7 @@ pub const RETRY_SOON: Duration = Duration::from_secs(5 * 60);
 
 /// The provider account every rail has until RFC-0009 phase B: a deployment
 /// holds one account per rail, and its marker says `default`.
-///
-/// The same word `charges.provider_account_id` will record in phase A
-/// (RFC-0009), so that the day a second account exists, the marker of the
-/// first one already names it.
-pub const DEFAULT_ACCOUNT: &str = "default";
+pub use vpay_core::DEFAULT_PROVIDER_ACCOUNT_ID as DEFAULT_ACCOUNT;
 
 /// `providers[].callbacks.register`, per rail; when the operator set none,
 /// the rail's own default, which its adapter declares

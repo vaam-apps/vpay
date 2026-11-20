@@ -590,6 +590,9 @@ model Charge {
   payment_intent PaymentIntent @relation(fields: [payment_intent_id], references: [id])
   provider_code String
   provider Provider @relation(fields: [provider_code], references: [code])
+  // RFC-0009 § 3 (migration 0064): provider account used for this charge.
+  // Phase A writes `default`; operator identifier, not personal data.
+  provider_account_id String
   // matches vpay_provider::ChargeRef::reference_id: Uuid exactly. `uuid` IS
   // in `map_scalar`, unlike `jsonb` — this column is compared.
   provider_reference_id Uuid
