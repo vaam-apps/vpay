@@ -637,9 +637,11 @@ pub enum StaffCommand {
         #[arg(long, default_value_t = 24)]
         ttl_hours: u64,
 
-        /// Who is acting. Required, and recorded in the append-only
-        /// `audit_events` journal beside the pairing (#152): a break-glass act
-        /// with no attributable actor is the gap this closes.
+        /// Who is acting: a staff handle, not a personal email address (it is
+        /// kept in an append-only table). Required, and recorded in the
+        /// append-only `audit_events` journal beside the pairing (#152). It is
+        /// self-declared text, not an authenticated identity: nothing checks it
+        /// names the person running the command.
         #[arg(long)]
         operator: String,
     },
@@ -662,9 +664,10 @@ pub enum StaffCommand {
         #[arg(long)]
         thumbprint: String,
 
-        /// Who is acting. Required, and recorded in the append-only
-        /// `audit_events` journal beside the revocation (#152): a break-glass
-        /// act with no attributable actor is the gap this closes.
+        /// Who is acting: a staff handle, not a personal email address (it is
+        /// kept in an append-only table). Required, and recorded in the
+        /// append-only `audit_events` journal beside the revocation (#152). It
+        /// is self-declared text, not an authenticated identity.
         #[arg(long)]
         operator: String,
     },

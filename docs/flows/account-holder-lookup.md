@@ -449,6 +449,11 @@ about the _rail_, and this one answers a question about the _route_.
   never deleted, anonymised or pseudonymised, so the journal grows without
   bound. The append-only trigger means the handler, when D9 is decided, will
   need its own deliberate exception.
+  Since migration `0063` (issue #152) the journal also holds the break-glass
+  operator's self-declared `--operator` string in `actor_id` — a staff member's
+  personal data when it is an email address — which an erasure request cannot
+  reach for the same reason; the privacy inventory classifies the column
+  `subject: staff` (`audit_actor_identity`).
 - **The MCP nominated-payee path is proven at its seams, not end to end**:
   `an_mcp_callers_scopes_are_the_tokens_held_to_the_yaml_and_never_widened`
   (`vpay-api`) and `the_call_carries_the_contexts_client_and_exactly_its_scopes`

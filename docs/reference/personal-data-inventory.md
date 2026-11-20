@@ -487,6 +487,13 @@ D9's "approved, configurable" requirement — see RFC-0002). Legal basis,
 controller/processor role and purpose-necessity approval are RFC-0002 D1 and
 are `unresolved`, not guessed.
 
+One concrete case: `audit_events.actor_id` holds the operator identity a
+break-glass `vpay-server staff pair-key` / `revoke-key` is given with
+`--operator` (migration `0063`, issue #152) — free text, self-declared, up to
+128 characters, kept in an append-only table. It is classified `subject: staff`
+(`audit_actor_identity`), and **no retention or erasure handler exists for it**;
+operators are told to pass a staff handle rather than a personal email address.
+
 ## Status
 
 **2026-09-16, amended 2026-09-17 on review, amended 2026-10-01 (RFC-0002 PR

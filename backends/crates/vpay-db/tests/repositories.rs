@@ -12739,7 +12739,8 @@ async fn staff_for_keys(repositories: &dyn Repositories, id: &str) -> anyhow::Re
 /// `paired_at + 720 hours` (change `CONSOLE_KEY_LIFETIME` to 31 days and the
 /// first assertion fails), a shorter break-glass life is stored as asked, and
 /// `console_keys_lives_at_most_thirty_days` refuses a life above 720 hours or at
-/// or below zero (drop the CHECK and the 744-hour and 0-hour rows below land).
+/// or below zero (drop the CHECK and the 744-hour and 0-hour rows below land; `'720 hours'` ->
+/// `'721 hours'` in migration 0063 lands the 720-hours-and-one-microsecond row).
 ///
 /// [ADR-0038]: ../../../../docs/adr/0038-break-glass-console-keys-are-bounded-and-audited.md
 #[tokio::test]
@@ -12780,28 +12781,46 @@ async fn a_console_key_lives_at_most_thirty_days_and_the_database_says_so() -> a
         "a break-glass key lives the shorter life it was paired with"
     );
 
-    for (name, interval) in [
-        ("ck_31", "744 hours"),
-        ("ck_0", "0 hours"),
-        ("ck_neg", "-1 hours"),
+    // The table's own bound, written around the repository so only the CHECK
+    // decides: exactly 720 hours and a 29-day life are accepted, one microsecond
+    // more than 720 hours is refused. `now()` is one value inside a statement,
+    // so `expires_at - paired_at` is exactly the interval.
+    let insert = |name: &'static str, thumbprint: char, interval: &'static str| {
+        let pool = pool.clone();
+        async move {
+            // `AssertSqlSafe`: `interval` is one of the literals below.
+            sqlx::query(sqlx::AssertSqlSafe(format!(
+                "INSERT INTO console_keys (id, staff_member_id, alg, public_key, thumbprint, label,
+                     paired_at, expires_at, revoked_at)
+                 VALUES ('{name}', 'stf_keys', 'esp256', 'B{a}', '{b}', NULL,
+                     now(), now() + interval '{interval}', NULL)",
+                a = "A".repeat(86),
+                b = thumbprint.to_string().repeat(64),
+            )))
+            .execute(&pool)
+            .await
+        }
+    };
+    for (name, thumbprint, interval) in [("ck_720", 'e', "720 hours"), ("ck_29d", 'f', "696 hours")]
+    {
+        insert(name, thumbprint, interval)
+            .await
+            .unwrap_or_else(|error| panic!("{name} ({interval}) is within the bound: {error}"));
+    }
+    for (name, thumbprint, interval) in [
+        ("ck_720_1us", '1', "720 hours 1 microsecond"),
+        ("ck_31", '2', "744 hours"),
+        ("ck_0", '3', "0 hours"),
+        ("ck_neg", '4', "-1 hours"),
     ] {
-        // `AssertSqlSafe`: `interval` is one of the literals above.
-        let error = sqlx::query(sqlx::AssertSqlSafe(format!(
-            "INSERT INTO console_keys (id, staff_member_id, alg, public_key, thumbprint, label,
-                 paired_at, expires_at, revoked_at)
-             VALUES ('{name}', 'stf_keys', 'esp256', 'B{a}', '{b}', NULL,
-                 now(), now() + interval '{interval}', NULL)",
-            a = "A".repeat(86),
-            b = "b".repeat(64),
-        )))
-        .execute(&pool)
-        .await
-        .expect_err("a life above thirty days or at or below zero is refused by the table");
+        let error = insert(name, thumbprint, interval)
+            .await
+            .expect_err("a life above 720 hours or at or below zero is refused by the table");
         assert!(
             error
                 .to_string()
                 .contains("console_keys_lives_at_most_thirty_days"),
-            "{name} was refused by the wrong constraint: {error}"
+            "{name} ({interval}) was refused by the wrong constraint: {error}"
         );
     }
     Ok(())

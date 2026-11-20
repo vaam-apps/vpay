@@ -48,10 +48,13 @@ be read back (WebCrypto, `extractable: false`).
    private half (ECDSA-SHA256 over `"vpay.console-pair.v1\n" + publicKey + "\n" +
 issuedAt`, within 300 s of the server's clock). `vpay-server staff pair-key`
    is the **break-glass**: an operator with database access enrols a key for an
-   existing member. Both go through one function (`console_keys::store_key`).
+   existing member. The vaam door stores through `console_keys::store_vaam_key`,
+   which takes no lifetime (exactly 30 days); the break-glass door through
+   `console_keys::pair_from_operator` ([ADR-0038](0038-break-glass-console-keys-are-bounded-and-audited.md)).
    Revocation has two doors the same way: `DELETE
 /svc/v1/console_keys/{thumbprint}` and `vpay-server staff revoke-key
---thumbprint`, both through `console_keys::revoke`, so a deployment never has
+--thumbprint`, through `console_keys::revoke` and `console_keys::revoke_from_operator` (which
+   also journals the act, ADR-0038), so a deployment never has
    to reach for SQL to end a key.
    **The proof binds the key and the instant, not an audience.** It is not
    addressed to this deployment or to a vaam user: it reaches vpay relayed by the
